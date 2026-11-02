@@ -58,7 +58,7 @@ import androidx.compose.ui.window.PopupProperties
  * there to edit and send. Nothing is sent but by Send. Before them, the usage gauge.
  */
 @Composable
-fun Composer(box: String, prompt: String, onSend: (text: String, spoken: Boolean) -> Unit, onStop: (() -> Unit)? = null, enabled: Boolean = true,
+fun Composer(box: String, prompt: String, onSend: (text: String, spoken: Boolean) -> Boolean, onStop: (() -> Unit)? = null, enabled: Boolean = true,
              fill: String? = null, onFilled: () -> Unit = {}, focusAsked: Int = 0, takesFocus: (Int) -> Boolean = { false }) {
     val phone = LocalPhone.current
     val c = Tokens.c
@@ -100,8 +100,8 @@ fun Composer(box: String, prompt: String, onSend: (text: String, spoken: Boolean
         // The keyboard lets go first: cleared while it still holds a word it's composing, it writes
         // its old text back into the box, and the words sent stay there to go again.
         focusManager.clearFocus()
-        onSend(text, dictated)
-        set("")
+        // Words refused here (too long) stay in the box to be cut down.
+        if (onSend(text, dictated)) set("")
     }
 
     fun toggleDictation() {

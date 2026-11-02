@@ -188,6 +188,7 @@ fun ConversationPage(id: String?, isNew: Boolean) {
                          val asked = phone.talkHere
                          // While Oby asks its question, words in the box answer it; else they're a message for Oby.
                          if (asked is Phone.Talk.Asked) phone.answer(text, asked.said, asked.question) else phone.ask(text, spoken)
+                         true
                      })
         }
     }

@@ -138,6 +138,7 @@ fun HomeView() {
         Composer(Drafts.HOME, HomeLine.placeholder(owner ?: ""), onSend = { text, spoken ->
             phone.ask(text, spoken, new = true)
             phone.push(Route.NewConversation)
+            true
         }, focusAsked = phone.focusHome, takesFocus = { asked -> (asked > phone.focusHomeTaken).also { if (it) phone.focusHomeTaken = asked } })
     }
 }
