@@ -21,13 +21,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-/** Settings › Voice (apps/shared/VoiceSettings.swift): the language Oby writes down what you say in. */
+/** Speech is English only (apps/shared/VoiceSettings.swift, the owner's decision of 2026-11-01). */
 object VoiceSettings {
-    const val LANGUAGE = "voice.language"
-    const val SYSTEM_NAME = "Phone language"
-    val languages = listOf("en-US" to "English", "pt-BR" to "Português (Brasil)", "pt-PT" to "Português (Portugal)")
-
-    fun locale(selected: String?): Locale = if (selected == null || selected == "system") Locale.getDefault() else Locale.forLanguageTag(selected)
+    val locale: Locale = Locale.US
 }
 
 /**
@@ -108,7 +104,7 @@ class PhoneVoice(private val context: Context) {
             }
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
-        val locale = VoiceSettings.locale(Store.prefs(context).getString(VoiceSettings.LANGUAGE, "system"))
+        val locale = VoiceSettings.locale
         r.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale.toLanguageTag())

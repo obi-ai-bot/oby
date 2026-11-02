@@ -38,7 +38,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen() {
     val phone = LocalPhone.current
-    val activity = LocalActivity.current
     val c = Tokens.c
     val scope = rememberCoroutineScope()
     val (appearance, setAppearance) = LocalAppearance.current
@@ -79,15 +78,7 @@ fun SettingsScreen() {
             Routines()
             Notifications()
 
-            val speech = Store.prefs(activity)
-            var language by remember { mutableStateOf(speech.getString(VoiceSettings.LANGUAGE, "system") ?: "system") }
-            SetGroup("Voice", rows = listOf(
-                { SetRow("Speech language") {
-                    SetSelect("Speech language", language, listOf("system" to VoiceSettings.SYSTEM_NAME) + VoiceSettings.languages) {
-                        language = it; speech.edit().putString(VoiceSettings.LANGUAGE, it).apply()
-                    }
-                } },
-            ))
+            // No Voice group: speech is English only (the owner's decision of 2026-11-01), as on the iPhone
             SetGroup("Appearance", rows = listOf {
                 SetRow("Appearance") { SetSegmented(appearance, listOf("system" to "System", "light" to "Light", "dark" to "Dark"), setAppearance) }
             })
