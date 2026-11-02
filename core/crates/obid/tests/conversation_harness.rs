@@ -877,12 +877,9 @@ fn oby_offer_starts_nothing_until_the_owners_start() {
     for item in &items {
         assert_eq!(item["conversation"], conversation.as_str(), "{item}");
         assert_eq!(item["offer"]["id"], user, "{item}");
-        assert!(
-            item["offer"]["what"]
-                .as_str()
-                .unwrap()
-                .starts_with("build fixture-app (Greeting), on "),
-            "{item}"
+        assert_eq!(
+            item["offer"]["what"], "build fixture-app (Greeting)",
+            "obid's internal auto is never said (#1792): {item}"
         );
         assert_eq!(item["offer"]["task"], "Add a greeting", "{item}");
         assert_eq!(item["offer"]["untrusted"], false, "{item}");
@@ -1543,7 +1540,7 @@ fn a_routine_said_in_chat_waits_for_the_owners_confirm() {
     let item = confirm("Make the routine ");
     assert_eq!(
         item["title"],
-        "Make the routine Readme check (Weekdays at 9:00, build fixture-app in Bypass mode, on auto · auto)"
+        "Make the routine Readme check (Weekdays at 9:00, build fixture-app in Bypass mode)"
     );
     assert!(
         item["text"]
