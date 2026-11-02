@@ -32,6 +32,11 @@ type Live = {
   turns: Record<string, Turn[]>; // by conversation: each opened one's, and any that came since
   loaded: Set<string>;           // the conversations whose turns were fetched
   working: Record<string, string>;            // a turn under way, by conversation: what it's on
+  on: Record<string, string>;                 // and whose words it's for, by conversation: a supervisor's are nobody's
+  // words this app sent whose answer is on its way: their turn, and the conversation as shown
+  expected: Record<string, string>;
+  // words whose next answer isn't theirs (a supervisor's came first): they keep what they started
+  unanswered: Set<string>;
   words: Record<string, string>;              // its words so far (delta events), by conversation
   // Oby's words as shown, by conversation: a word at a time toward `to` (its words so far, then its
   // turn's once that's in; the turn waits, hidden, until they're all shown). History shows at once.
@@ -56,7 +61,7 @@ type Live = {
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {}, previews: {}, gone: new Set(),
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, expected: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {}, previews: {}, gone: new Set(),
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -77,6 +82,10 @@ const minutesAgo = (iso: string | null | undefined) => (iso ? Math.max(0, (Date.
 const byAt = (a: Turn, b: Turn) => a.at.localeCompare(b.at);
 const merged = (had: Turn[], more: Turn[]) => [...had.filter((t) => !more.some((m) => m.id === t.id)), ...more].sort(byAt);
 const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, ...rest } = r; return rest; };
+// Oby answering words: not a job's report or a routine's run, which come whenever they come
+const answers = (t: Turn) => t.who === 'oby' && !t.ended && !t.routine;
+// words this app has on their way in a conversation
+const inFlight = (s: Live, c: string) => Object.values(s.expected).includes(s.alias[c] ?? c);
 // of two copies of a job, the one to keep: the newer by obid's revision, as an answer can come
 // after an event that's newer than it (#1709). One with none (an older obid, after a downgrade)
 // is taken as it comes, never held off by a revision from before
@@ -127,15 +136,21 @@ export function chatOf(s: Live, c: Conversation): Chat {
   const confirm = (m: Omit<Message, 'confirm'>, by?: string) => confirms.filter((i) => (by === undefined || Date.parse(i.created) <= Date.parse(by)) && !confirmed.has(i.id) && confirmed.add(i.id))
     .forEach((i) => said.push({ ...m, confirm: { id: i.id, ask: { ...itemAsk(i), text: i.text } } }));
   let asked: string | undefined, askedWords: Message | undefined;
-  // words more words followed with no answer between keep what they started, or its card is lost.
-  // ponytail: the last words wait, as the app can't tell no answer is coming (one may be on its way)
+  // words more words followed with no answer between keep what they started, or its card is lost
   const unanswered = () => {
     const kept = byTurn.filter((j) => j.turn === asked && !carded.has(j.id) && carded.add(j.id)).map((j) => j.id);
     if (kept.length && askedWords) askedWords.jobs = [...(askedWords.jobs ?? []), ...kept];
   };
-  for (const t of (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn)) {
+  const turns = (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn);
+  // and so do the last words once no answer to them is on its way (a Stop, #1788), even under a
+  // report later: anything else under way (the next words, a supervisor's turn) isn't for them
+  const lastWords = turns.map((t) => t.who).lastIndexOf('user');
+  const last = turns[lastWords];
+  const coming = !!last && (!!p?.turn || last.id in s.expected || (s.on[c.id] === last.id && (c.id in s.working || c.id in s.words || !!p)));
+  const settled = !coming && !turns.slice(lastWords + 1).some(answers) ? last : undefined;
+  for (const t of turns) {
     if (t.who === 'user') unanswered();
-    const answer = t.who === 'oby' && !t.ended && !t.routine ? asked : undefined;
+    const answer = answers(t) ? asked : undefined;
     const mine = answer ? byTurn.filter((j) => j.turn === answer).map((j) => j.id) : [];
     const jobs = [...t.jobs, ...mine].filter((j) => !carded.has(j) && carded.add(j));
     // the files that went with your words: their tags (a photo's preview while this app has it)
@@ -144,7 +159,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
     said.push(message);
     for (const offer of offers.filter((o) => o.id === answer)) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer });
     if (t.who === 'oby') confirm({ who: 'oby', text: '', ago: minutesAgo(t.at) }, t.at);
-    if (t.who === 'user') { asked = t.id; askedWords = message; }
+    if (t.who === 'user') { asked = t.id; askedWords = message; if (t === settled || s.unanswered.has(t.id)) unanswered(); }
     else if (answer) asked = undefined;
   }
   const words = p ? wordsOf(p.to).slice(0, p.n).join('') : s.words[c.id], q = s.waiting[c.id];
@@ -442,22 +457,38 @@ function apply(s: Live, e: Event): Live {
         alias = { ...alias, [c]: s.starting.id };
       }
       const next = { ...s, alias, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } };
-      // one sent again (its jobs changed): only it changes, unless it's the answer still being shown
-      if (s.turns[c]?.some((t) => t.id === e.turn.id) && s.pace[c]?.turn !== e.turn.id) return next;
+      // an answer: the words it answers expect nothing more (the next, not here yet, still do). One
+      // a turn for other words gave (a supervisor's) leaves the last words what they started
+      const said = next.turns[c].filter((t) => t.who === 'user').at(-1);
+      const answered = {
+        expected: Object.fromEntries(Object.entries(s.expected).filter(([t]) => !next.turns[c].some((x) => x.id === t))),
+        unanswered: said && s.on[c] && s.on[c] !== said.id && c in s.working ? new Set([...s.unanswered, said.id]) : s.unanswered,
+      };
+      // one sent again (its jobs changed): only it changes, unless it's the answer still being shown.
+      // (Fetched before its event, the last answer still ends the turn: the plan's answer left that to it)
+      if (s.turns[c]?.some((t) => t.id === e.turn.id) && s.pace[c]?.turn !== e.turn.id) {
+        return answers(e.turn) && next.turns[c].at(-1)?.id === e.turn.id ? { ...next, ...answered, working: without(s.working, c), words: without(s.words, c) } : next;
+      }
+      // a job's report or a routine's run ends no turn this app is waiting on, nor says an answer
+      // came. It does end what only events said was under way (words stopped on another device:
+      // obid sends nothing for that), and a turn really going on says so again at its next step
+      if (!answers(e.turn) && e.turn.who === 'oby' && !s.pace[c]?.turn) {
+        return inFlight(s, c) ? next : { ...next, working: without(s.working, c), words: without(s.words, c), pace: without(s.pace, c) };
+      }
       // Oby's answer: its turn is over, its words final (paced on from those shown, if it was talking here)
       const live = c in s.working || c in s.words || c in s.pace;
-      if (e.turn.who === 'oby') return { ...next, working: without(s.working, c), words: without(s.words, c), pace: live ? paced(s, c, e.turn.text, e.turn.id) : s.pace };
+      if (e.turn.who === 'oby') return { ...next, ...answered, working: without(s.working, c), words: without(s.words, c), pace: live ? paced(s, c, e.turn.text, e.turn.id) : s.pace };
       // your words after Oby's: the rest of its last answer shows whole
       return s.pace[c]?.turn ? { ...next, pace: without(s.pace, c) } : next;
     }
     case 'step': {
       const c = e.step.conversation ?? Object.keys(s.turns).find((k) => s.turns[k].some((t) => t.id === e.step.turn));
       if (!c || e.step.state !== 'running') return s;
-      return { ...s, working: { ...s.working, [c]: e.step.text } };
+      return { ...s, working: { ...s.working, [c]: e.step.text }, on: { ...s.on, [c]: e.step.turn } };
     }
     case 'delta': {
       const c = e.delta.conversation, words = (s.words[c] ?? '') + e.delta.text;
-      return { ...s, working: { ...s.working, [c]: s.working[c] ?? 'Writing' }, words: { ...s.words, [c]: words }, pace: paced(s, c, words) };
+      return { ...s, working: { ...s.working, [c]: s.working[c] ?? 'Writing' }, on: { ...s.on, [c]: e.delta.turn }, words: { ...s.words, [c]: words }, pace: paced(s, c, words) };
     }
     case 'accounts':
       return s.status ? { ...s, status: { ...s.status, accounts: e.accounts } } : s;
@@ -578,7 +609,7 @@ function down(mine: number, problem: string, why?: Live['why']) {
   if (mine !== generation) return;
   generation++;
   unfollow?.();
-  set({ connection: 'down', problem, why, working: {}, words: {}, pace: {} });
+  set({ connection: 'down', problem, why, working: {}, expected: {}, words: {}, pace: {} });
   // every second while main starts obid before the first load (the splash, main.tsx), so the chat
   // comes soon after it; otherwise backing off, as a failure won't clear that fast
   reconnecting = setTimeout(connect, state.status || why !== 'waiting' ? Math.min(10_000, 1000 * 2 ** retry++) : 1000);
@@ -714,9 +745,10 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
   const words = q ? said.trim() : said.trim() ? inRepo(said.trim(), repo, shown) : '';
   if (repo && !q) set({ picked: { ...state.picked, [id]: { repo, at: new Date().toISOString() } } });
   // (the rest of Oby's last answer, if it's still being shown, shows whole)
-  if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' }, ...(state.pace[c]?.turn ? { pace: without(state.pace, c) } : {}) });
+  set({ expected: { ...state.expected, [turn]: id } });
+  if (c) set({ waiting: without(state.waiting, c), working: { ...state.working, [c]: 'Thinking' }, on: { ...state.on, [c]: turn }, ...(state.pace[c]?.turn ? { pace: without(state.pace, c) } : {}) });
   else set({ starting: { id, said: words, turn, files: files.map(({ name, preview }) => ({ name, preview })) } });
-  let failed = false;
+  let failed = false, answerComing = false;
   const paths = files.map((f) => f.path!);
   void (async () => {
     try {
@@ -743,15 +775,20 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
         const turns = await api.conversation({ id: where, limit: 100 });
         set({ turns: { ...state.turns, [where]: merged(state.turns[where] ?? [], turns) } });
       }
+      // Oby's turn is in a reply or a question (its event may land after this answer, and the card
+      // would jump); a `none` has none, unless it's the same words again, answered in their turn.
+      // The one just fetched has what obid had.
+      else answerComing = a.kind !== 'none' || a.repeated === true;
     } catch (e) {
       failed = true;
       // obid refused the words: their files go too (one it didn't answer may have them)
       if (e instanceof ApiError && e.status) forgetUploads(paths);
       say(e);
     } finally {
-      // (words still being shown carry on to the turn, unless it failed)
+      // (words still being shown carry on to their turn, unless it failed; with none they stop)
       const where = c ?? Object.keys(state.alias).find((k) => state.alias[k] === id);
-      set({ starting: state.starting?.id === id ? null : state.starting, ...(where ? { working: without(state.working, where), words: without(state.words, where), ...(failed ? { pace: without(state.pace, where) } : {}) } : {}) });
+      if (!answerComing) set({ expected: without(state.expected, turn) });
+      set({ starting: state.starting?.id === id ? null : state.starting, ...(where && !answerComing && !Object.values(state.expected).includes(id) ? { working: without(state.working, where), words: without(state.words, where), ...(failed || !state.pace[where]?.turn ? { pace: without(state.pace, where) } : {}) } : {}) });
     }
   })();
   return id;

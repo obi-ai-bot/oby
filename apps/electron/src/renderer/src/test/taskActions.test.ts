@@ -225,6 +225,141 @@ describe('the task menu on obid', () => {
 // What the owner does takes obid's answer over the state as it is when the answer comes, so an
 // event obid sent while the request was out isn't undone until a reload (the side panel's deleted
 // task that stayed, #1707)
+describe('a turn\'s answer, as the plan\'s answer and its events land (#1788)', () => {
+  beforeEach(() => { answers = {}; });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const convo = { id: 'c1', title: 'Fixes', pinned: false, created: '2026-11-01T12:00:00Z', lastActivity: '2026-11-01T12:00:00Z', cursor: '' };
+  const turn = (id: string, who: string, more: Record<string, unknown> = {}) => ({ id, who, text: id, at: `2026-11-01T12:0${id.at(-1)}:00Z`, jobs: [], conversation: 'c1', ...more });
+  // words sent in a conversation, their plan's answer held; a job they started, and what obid has so far
+  async function sentWords(said = 'Fix it') {
+    const { live } = await load(true);
+    vi.stubGlobal('matchMedia', () => ({ matches: true }));
+    const event = await following(live, []);
+    event('conversation', convo);
+    const plan = held();
+    answers['POST /v1/plans'] = { status: 200, body: { kind: 'none', jobs: [], conversation: 'c1' }, hold: plan.hold };
+    live.ask(said, 'c1');
+    await flush();
+    // (the words' turn has the id the app sent them with)
+    const sentAs = (calls.at(-1)!.body as { id: string }).id;
+    event('turn', turn('u1', 'user', { id: sentAs }));
+    event('job', job({ conversation: 'c1', turn: sentAs, status: 'running', finished: null }));
+    const shown = () => live.chatOf(live.liveState(), convo);
+    const under = (id: string) => shown().said.find((m) => m.text === id)?.jobs ?? [];
+    return { live, event, plan, shown, under, sentAs };
+  }
+  const landed = async (go: () => void) => { go(); for (let i = 0; i < 3; i++) await flush(); };
+
+  it('Stop: the plan answers none, so no answer is coming and the card shows under the words', async () => {
+    const { plan, shown, under } = await sentWords();
+    expect([shown().typing, under('u1')]).toEqual([true, []]);
+    await landed(plan.go);
+    expect([shown().typing, under('u1')]).toEqual([false, ['j1']]);
+  });
+
+  it('a reply whose turn lands after the plan\'s answer: Oby is still answering and the card never shows under the words', async () => {
+    const { event, plan, shown, under } = await sentWords();
+    answers['POST /v1/plans'].body = { kind: 'reply', text: 'On it', jobs: [], conversation: 'c1' };
+    await landed(plan.go);
+    expect([shown().typing, under('u1')]).toEqual([true, []]);
+    event('turn', turn('o2', 'oby'));
+    expect([shown().typing, under('u1'), under('o2')]).toEqual([false, [], ['j1']]);
+  });
+
+  it('a question too has its turn; the same words again answered none are answered in their turn', async () => {
+    for (const body of [{ kind: 'question', said: 'Fix it', question: { text: 'Which?', options: [], recommended: null }, jobs: [], conversation: 'c1' }, { kind: 'none', repeated: true, jobs: [], conversation: 'c1' }]) {
+      const { plan, shown, under } = await sentWords();
+      answers['POST /v1/plans'].body = body;
+      await landed(plan.go);
+      expect([shown().typing, under('u1')]).toEqual([true, []]);
+    }
+  });
+
+  it('a job\'s report during the turn neither ends it nor counts as the answer', async () => {
+    const { live, event, shown, under, sentAs } = await sentWords();
+    event('delta', { turn: sentAs, conversation: 'c1', text: 'On it' });
+    event('turn', turn('r2', 'oby', { ended: true, jobs: ['j0'] }));
+    expect([shown().typing, under('u1'), live.liveState().words.c1]).toEqual([true, [], 'On it']);
+  });
+
+  it('words stopped on another device: the job\'s report ends what only events said was under way', async () => {
+    const { live } = await load(true);
+    vi.stubGlobal('matchMedia', () => ({ matches: true }));
+    const event = await following(live, []);
+    event('conversation', convo);
+    event('turn', turn('u1', 'user'));
+    event('job', job({ conversation: 'c1', turn: 'u1', status: 'running', finished: null }));
+    event('step', { turn: 'u1', conversation: 'c1', index: 0, text: 'Reading', state: 'running' });
+    const shown = () => live.chatOf(live.liveState(), convo);
+    expect([shown().typing, shown().step, shown().said[0].jobs]).toEqual([true, 'Reading', undefined]);
+    event('turn', turn('r2', 'oby', { ended: true, jobs: ['j1'] }));
+    expect([shown().typing, shown().said[0].jobs]).toEqual([false, ['j1']]);
+  });
+
+  it('the next words after a Stop never hide the card, before or after their turn lands', async () => {
+    const { live, event, plan, under, sentAs } = await sentWords();
+    event('step', { turn: sentAs, conversation: 'c1', index: 0, text: 'Reading', state: 'running' });
+    await landed(plan.go);
+    expect(under('u1')).toEqual(['j1']);
+    const next = held();
+    answers['POST /v1/plans'] = { status: 200, body: { kind: 'reply', text: 'Ok', jobs: [], conversation: 'c1' }, hold: next.hold };
+    live.ask('And this', 'c1');
+    await flush();
+    expect(under('u1')).toEqual(['j1']);
+    event('turn', turn('u2', 'user', { id: (calls.at(-1)!.body as { id: string }).id }));
+    expect(under('u1')).toEqual(['j1']);
+  });
+
+  it('a supervisor\'s turn after a Stop: the card stays under the words throughout, and after its answer', async () => {
+    const { event, plan, shown, under } = await sentWords();
+    await landed(plan.go);
+    event('step', { turn: 'supervisor-turn', conversation: 'c1', index: 0, text: 'Reading', state: 'running' });
+    expect([shown().typing, under('u1')]).toEqual([true, ['j1']]);
+    event('turn', turn('o3', 'oby'));
+    expect([shown().typing, under('u1'), under('o3')]).toEqual([false, ['j1'], []]);
+  });
+
+  it('a bare stop answers none while the words it stops are still on their way: their turn is still answering', async () => {
+    const { plan, shown, under, live } = await sentWords();
+    const stop = held();
+    answers['POST /v1/plans'] = { status: 200, body: { kind: 'none', jobs: [], conversation: 'c1' }, hold: stop.hold };
+    live.ask('stop', 'c1');
+    await flush();
+    await landed(stop.go);
+    expect([shown().typing, under('u1')]).toEqual([true, []]);
+    await landed(plan.go);
+    expect([shown().typing, under('u1')]).toEqual([false, ['j1']]);
+  });
+
+  it('words already showing stop with a none, and no streaming line stays', async () => {
+    const { event, plan, shown, under, sentAs } = await sentWords();
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    event('delta', { turn: sentAs, conversation: 'c1', text: 'On it ' });
+    await landed(plan.go);
+    expect([shown().said.some((m) => m.streaming), under('u1')]).toEqual([false, ['j1']]);
+  });
+
+  it('an answer a fetch brought before its event: its event still ends the turn', async () => {
+    const { live, event, plan, shown, under, sentAs } = await sentWords();
+    answers['POST /v1/plans'].body = { kind: 'reply', text: 'On it', jobs: [], conversation: 'c1' };
+    answers['GET /v1/conversation?id=c1&limit=100'] = { status: 200, body: [turn('u1', 'user', { id: sentAs }), turn('o2', 'oby')] };
+    await landed(plan.go);
+    await live.openConversation('c1');
+    await flush();
+    expect(shown().typing).toBe(true);
+    event('turn', turn('o2', 'oby'));
+    expect([shown().typing, under('o2')]).toEqual([false, ['j1']]);
+  });
+
+  it('a send that fails: no answer is coming, and the card shows', async () => {
+    const { plan, shown, under } = await sentWords();
+    Object.assign(answers['POST /v1/plans'], { status: 422, body: { error: 'No.' } });
+    await landed(plan.go);
+    expect([shown().typing, under('u1')]).toEqual([false, ['j1']]);
+  });
+});
+
 describe('obid\'s answers over the events that came meanwhile', () => {
   beforeEach(() => { answers = {}; });
   afterEach(() => { vi.unstubAllGlobals(); });
