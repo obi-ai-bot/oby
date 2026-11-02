@@ -387,6 +387,24 @@ fn answers(url: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// PERMISSIONS-8 (#1831): git runs in a conversation's shell, where the shim at `/usr/bin/git` has
+/// to load Xcode's library, and it has no credential helper: Xcode's git names the Keychain's in
+/// its own settings, whatever `GIT_CONFIG_NOSYSTEM` says. Only reads settings: a helper set in the
+/// room comes before the empty one, and none runs here.
+#[test]
+fn permissions_8_git_runs_in_a_conversations_room() {
+    let (_folder, obid) = obid("shell-git-runs");
+    let (text, _) = shell(
+        &obid,
+        None,
+        json!({"command": "git version && git init -q t && git -C t status && git -C t config credential.helper fake && [ -z \"$(git -C t config --get-all credential.helper | tail -1)\" ] && echo no-helper"}),
+    );
+    assert!(text.contains("Exit status 0."), "{text}");
+    assert!(text.contains("git version"), "{text}");
+    assert!(text.contains("No commits yet"), "{text}");
+    assert!(text.contains("no-helper"), "{text}");
+}
+
 /// A git setting that runs a program, planted in the room, never runs without the owner: git
 /// isn't a read, so once the conversation read something (any command), `git status` asks, and a
 /// no keeps it from running (#774's re-review, 4).

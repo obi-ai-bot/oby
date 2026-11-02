@@ -1233,6 +1233,30 @@ pub fn shows_nothing_hidden(dir: &Path, hidden: &[PathBuf], never: &[PathBuf]) -
     })
 }
 
+/// The developer tools `/usr/bin/git`, `make` and their like hand over to on macOS: the folder
+/// `xcode-select` chose, or the Command Line Tools. These shims load a library from there, so a
+/// confined run ([`Sandbox::wrap_reading_only_its_own`]) that can't read it runs none of them
+/// (#1831). Also the file that says the Xcode license was accepted, for without it they stop and
+/// say it wasn't. Nothing when there are none, or the folder would show something hidden.
+pub fn developer_tools(hidden: &[PathBuf], never: &[PathBuf]) -> Vec<PathBuf> {
+    let chosen = std::fs::read_link("/var/db/xcode_select_link")
+        .ok()
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("/Library/Developer/CommandLineTools"));
+    // Xcode's tools read the rest of its bundle too (its version, its frameworks).
+    let folder = chosen
+        .parent()
+        .filter(|_| chosen.ends_with("Contents/Developer"))
+        .map_or_else(|| chosen.clone(), Path::to_path_buf);
+    if !folder.is_dir() || !shows_nothing_hidden(&folder, hidden, never) {
+        return Vec::new();
+    }
+    vec![
+        folder,
+        PathBuf::from("/Library/Preferences/com.apple.dt.Xcode.plist"),
+    ]
+}
+
 /// What a confined run ([`Sandbox::wrap_reading_only_its_own`]) reads of the software on `path`
 /// outside the hidden folders (`/opt/homebrew/bin`, `/usr/local/bin`): each folder, and the
 /// install prefix around a `bin` or `sbin` (its libraries, a symbolic link's target in it), never

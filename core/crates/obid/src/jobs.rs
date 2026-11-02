@@ -6950,6 +6950,10 @@ impl Jobs {
             std::slice::from_ref(&self.config.home),
         );
         read_only.extend(sandbox::path_software(&process::tools_path(), &hidden));
+        read_only.extend(sandbox::developer_tools(
+            &hidden,
+            std::slice::from_ref(&self.config.home),
+        ));
         let spec = Spec {
             worktree: room.to_path_buf(),
             git_admin: None,
@@ -6981,10 +6985,16 @@ impl Jobs {
         .map(OsString::from)
         .collect();
         // git reads no settings but the room's own (and runs no program they name: git isn't one
-        // of the commands that run without asking).
+        // of the commands that run without asking). Xcode's git reads its own settings all the
+        // same, and they name the Keychain's credential helper, which from a box makes macOS ask
+        // the owner: no helper.
         let git = [
             ("GIT_CONFIG_NOSYSTEM", OsString::from("1")),
             ("GIT_CONFIG_GLOBAL", OsString::from("/dev/null")),
+            (
+                "GIT_CONFIG_PARAMETERS",
+                OsString::from("'credential.helper='"),
+            ),
         ];
         Ok(Launch {
             own_sandbox: false,
