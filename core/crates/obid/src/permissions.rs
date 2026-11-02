@@ -2601,8 +2601,8 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
         if !allowing
             && simple_commands(command).is_some_and(|commands| {
                 commands.iter().any(|c| {
-                    fits(&c.words[shell_grammar(&c.words)..].join(" "))
-                        || program_index(&c.words).is_some_and(|p| fits(&c.words[p..].join(" ")))
+                    fits(&c.args[shell_grammar(&c.args)..].join(" "))
+                        || program_index(&c.args).is_some_and(|p| fits(&c.args[p..].join(" ")))
                 })
             })
         {
@@ -4625,6 +4625,26 @@ mod tests {
                 "{command}"
             );
         }
+        // An exact rule holds whatever the command's output or input is sent through.
+        for command in [
+            "make lint",
+            "make lint > out",
+            "make lint < in",
+            "make lint &> o",
+            "make lint 2>&1",
+            "> out make lint",
+        ] {
+            assert!(
+                matches("Bash(make lint)", &bash(command), worktree, false),
+                "{command}"
+            );
+        }
+        assert!(!matches(
+            "Bash(make lint)",
+            &bash("make lint x"),
+            worktree,
+            false
+        ));
         for command in ["{ sudo curl x; }", "! sudo curl x", "sudo curl x"] {
             assert!(
                 matches("Bash(sudo:*)", &bash(command), worktree, false),
