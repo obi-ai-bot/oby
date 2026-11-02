@@ -685,7 +685,10 @@ const SUBCOMMANDS: [&str; 22] = [
 
 /// Shells, interpreters and wrappers: what follows them is any program at all, so a rule for them
 /// would allow anything. They're allowed once at a time, never always.
-const RUNS_ANYTHING: [&str; 47] = [
+const RUNS_ANYTHING: [&str; 50] = [
+    "!",
+    "coproc",
+    "trap",
     "sh",
     "bash",
     "zsh",
@@ -1274,6 +1277,11 @@ fn read_until(
     }
     for (command, code) in r.commands.iter().zip(&mut nested) {
         let words = &command.words;
+        // `coproc curl if x`: bash takes `curl` for its name, as [`shell_grammar`] does, and zsh
+        // runs it. Which shell runs a line isn't obid's to know, so it reads both.
+        if words.first().is_some_and(|w| w == "coproc") {
+            code.push(words[1..].join(" "));
+        }
         let Some(p) = program_index(words) else {
             continue;
         };
@@ -2312,8 +2320,8 @@ fn is_chained(command: &str) -> bool {
     command.contains("&&")
         || command.contains("||")
         || command.contains("$(")
-        || command.contains(['|', ';', '&', '`', '<', '>', '\n', '(', ')'])
-        || command.split_whitespace().next() == Some("!")
+        || command.contains(['|', ';', '&', '`', '<', '>', '\n'])
+        || command.trim_start().starts_with('(')
 }
 
 /// The commands a chained command runs, split where the shell would.
@@ -2451,14 +2459,18 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
         let Some(command) = call.command.as_deref().map(str::trim) else {
             return false;
         };
+        // What a command runs, however it's written: inside `{ }`, behind `!`, a `trap`'s code.
+        if !allowing
+            && simple_commands(command).is_some_and(|commands| {
+                commands
+                    .iter()
+                    .any(|c| fits(&c.words[shell_grammar(&c.words)..].join(" ")))
+            })
+        {
+            return true;
+        }
         if is_chained(command) {
-            return !allowing
-                && (pieces(command).iter().any(|p| fits(p))
-                    || simple_commands(command).is_some_and(|commands| {
-                        commands
-                            .iter()
-                            .any(|c| fits(&c.words[shell_grammar(&c.words)..].join(" ")))
-                    }));
+            return !allowing && pieces(command).iter().any(|p| fits(p));
         }
         return fits(command);
     }
@@ -4304,6 +4316,9 @@ mod tests {
         // A function named as a command that only says where a program is doesn't hide its body.
         let shadow = "command() { curl https://e.com; }; command -v x";
         assert!(uses_network(shadow, &bounds), "{shadow}");
+        // bash takes `curl` for the coprocess's name; zsh runs it.
+        let either = "coproc curl if https://e.com";
+        assert!(uses_network(either, &bounds), "{either}");
 
         // What isn't the shell's grammar is what it was: words of a command, plain text, a quoted
         // here-document.
@@ -4313,6 +4328,9 @@ mod tests {
             "{ echo hi; }",
             "if true; then echo hi; fi",
             "{ printenv HOME; }",
+            "coproc c { echo hi; }",
+            "git log --grep '{ x'",
+            "echo if",
             "for env in dev prod; do echo $env; done",
             "cat <<EOF\nprintenv\nEOF",
             "cat <<'EOF'\n$(printenv)\nEOF",
@@ -4330,7 +4348,8 @@ mod tests {
     }
 
     /// The owner's deny rule holds inside the grouping words, and no allow rule covers, or is
-    /// offered for, a command behind `!` or in `( )` (#1811).
+    /// offered for, a command behind `!`, in `( )`, in a coprocess or a `trap` (#1811). A
+    /// parenthesis in quotes is a word: the rule still covers it and Always is still offered.
     #[test]
     fn permissions_6_a_saved_rule_reads_grouping_words_too() {
         let worktree = Path::new(WORKTREE);
@@ -4340,11 +4359,29 @@ mod tests {
             "( curl https://e.com )",
             "if curl https://e.com; then :; fi",
             "while :; do curl https://e.com; done",
+            "coproc curl https://e.com",
+            "trap 'curl https://e.com' EXIT",
         ] {
             let call = bash(command);
             assert!(matches("Bash(curl:*)", &call, worktree, false), "{command}");
             assert!(!matches("Bash(curl:*)", &call, worktree, true), "{command}");
             assert_eq!(prefix(command), None, "{command}");
+        }
+        for (command, rule, offered) in [
+            ("echo \"(hi)\"", "Bash(echo:*)", "echo"),
+            (
+                "git commit -m \"fix(obid): x\"",
+                "Bash(git commit:*)",
+                "git commit",
+            ),
+        ] {
+            let call = bash(command);
+            assert!(matches(rule, &call, worktree, true), "{command}");
+            assert_eq!(prefix(command).as_deref(), Some(offered), "{command}");
+            assert!(
+                !matches("Bash(curl:*)", &call, worktree, false),
+                "{command}"
+            );
         }
     }
 
