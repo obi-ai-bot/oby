@@ -5,13 +5,26 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -23,151 +36,274 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import java.time.Instant
 
 /**
- * Settings, opened over Home from your picture (Sangam's SettingsView.tsx, apps/ios/app/SettingsScreen.swift):
- * Your Mac, Accounts, Connectors, Models, Permissions, Routines, Notifications, Voice, Appearance, About,
- * then the publishing key. Signing in happens on the Mac, where the tools run.
+ * Settings, opened over Home from your picture: the Electron app's pages on obid, in its order
+ * (apps/electron/src/renderer/src/SettingsView.tsx, Sangam's design; the iPhone's SettingsScreen.swift):
+ * General, Agents, Remote access, Connectors, About, each a page of his cards. What only the Mac can
+ * do (open at login, adding or signing in an agent, connecting GitHub or Tetrix, pairing another
+ * device, updating Oby) stays on the Mac, and its rows say so.
  */
 @Composable
 fun SettingsScreen() {
     val phone = LocalPhone.current
-    val c = Tokens.c
-    val scope = rememberCoroutineScope()
-    val (appearance, setAppearance) = LocalAppearance.current
-    var options by remember { mutableStateOf<ModelOptions?>(null) }
-    var problem by remember { mutableStateOf<String?>(null) }
-    var stopping by remember { mutableStateOf(false) }
-    LaunchedEffect(phone.base) { options = try { phone.runner.modelOptions() } catch (e: Exception) { problem = e.message; null } }
-
-    Page("") {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Tokens.gutter).padding(top = 8.dp, bottom = 32.dp)) {
-            T("Settings", 28.sp, c.ink, FontWeight.SemiBold, Modifier.padding(bottom = 16.dp).semantics { heading() })
-
-            // Your Mac: its name, how it's reached, a green dot while connected; a tap opens pairing.
-            val link = phone.link
-            SetGroup("Your Mac", rows = listOf {
-                SetRow(link?.name ?: "No Mac paired yet", about = if (link == null) "Pair this phone with Oby on your Mac." else phone.route?.label,
-                       onClick = { phone.push(Route.Connect) }) {
-                    if (link != null) SetValue(phone.notice?.title ?: if (phone.connection == Connection.Live) "Connected" else "Connecting…", phone.connection == Connection.Live)
-                    Icon(Icons.Filled.ChevronRight, null, tint = c.muted)
-                }
-            })
-
-            val now = rememberNow(60)
-            SetGroup("Accounts", footer = "Each tool signs in on your Mac, with its own login.", rows = listOf {
-                SetRow(Usage.mostRoom(phone.accounts.map { it.usage }, now), quiet = phone.accounts.isEmpty())
-            })
-            for (agent in Usage.agents(phone.accounts.map { it.agent })) {
-                SetGroup(Usage.tool(agent), rows = phone.accounts.filter { it.agent == agent }.map { account -> { AccountRow(account) } })
-            }
-
-            // Tetrix, which obid on the Mac holds once for every agent: its sign-in and its login stay on the Mac.
-            val tetrix = phone.accounts.any { it.tetrix == true }
-            SetGroup("Connectors", footer = if (tetrix) null else "Connect Tetrix on your Mac, in Settings › Connectors: one sign-in, for every agent. Its login stays there, never on this phone.",
-                     rows = listOf { SetRow("Tetrix", about = "Project knowledge and blast radius") { SetValue(if (tetrix) "Connected" else "Connect on your Mac", tetrix) } })
-
-            Models(options, phone.models) { scope.launch { problem = try { phone.setModels(it); null } catch (e: Exception) { e.message } } }
-            Permissions()
-            Routines()
-            Notifications()
-
-            // No Voice group: speech is English only (the owner's decision of 2026-11-01), as on the iPhone
-            SetGroup("Appearance", rows = listOf {
-                SetRow("Appearance") { SetSegmented(appearance, listOf("system" to "System", "light" to "Light", "dark" to "Dark"), setAppearance) }
-            })
-            if (phone.active.isNotEmpty()) SetGroup(footer = "Stops every task on your Mac, as ⌃⌥⌘. does there.", rows = listOf {
-                SetRow("Stop every task", about = "${phone.active.size} running") { SetButton("Stop", destructive = true) { stopping = true } }
-            })
-            SetGroup("About", rows = listOf(
-                { SetRow("Version") { SetValue("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})") } },
-                { SetRow("Mac") { SetValue(phone.host.ifEmpty { "Not reached yet" }) } },
-            ))
-            SetGroup("Publishing key", problem = problem,
-                     footer = "Oby opens a pull request by itself once a job's check passes and the secret scan is clean. When that failed, publish by hand here: your tap is the approval, signed by this phone's key.",
-                     rows = listOf { SetRow("This phone's key") {
-                         SetValue(if (phone.deviceID == null) "Not registered yet" else "Registered")
-                     } })
-        }
+    SettingsPageFrame("Settings") {
+        SetGroup(rows = SettingsPage.entries.map { page -> {
+            SetRow(page.label, onClick = { phone.push(Route.SettingsPage(page)) }) { Icon(Icons.Filled.ChevronRight, null, tint = Tokens.c.muted) }
+        } })
     }
-    if (stopping) AlertDialog(onDismissRequest = { stopping = false }, containerColor = c.surface,
-        title = { T("Stop ${if (phone.active.size == 1) "the running task" else "all ${phone.active.size} running tasks"}?", 17.sp, c.ink, FontWeight.SemiBold) },
-        text = { T("Each ends where it is. What they changed stays on their branches.", Tokens.textBase, c.text) },
-        confirmButton = { TextButton({ stopping = false; scope.launch { problem = try { phone.stopAll(); null } catch (e: Exception) { e.message } } }) { T("Stop every task", Tokens.textBase, c.danger) } },
-        dismissButton = { TextButton({ stopping = false }) { T("Cancel", Tokens.textBase, c.muted) } })
 }
 
-/** One account on the Mac: its name, when its week resets, the week's bar, the 5-hour window past 80%, its reserve, and Tetrix. */
+/** Electron's Settings pages on obid, in its order. */
+enum class SettingsPage(val label: String) { General("General"), Agents("Agents"), Remote("Remote access"), Connectors("Connectors"), About("About") }
+
 @Composable
-private fun AccountRow(account: Account) {
+fun SettingsPageScreen(page: SettingsPage) {
+    SettingsPageFrame(page.label) {
+        when (page) {
+            SettingsPage.General -> { Permissions(); Notifications() }
+            SettingsPage.Agents -> AgentsPage()
+            SettingsPage.Remote -> RemotePage()
+            SettingsPage.Connectors -> ConnectorsPage()
+            SettingsPage.About -> SetGroup(rows = listOf { SetRow("Version") { SetValue("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})") } })
+        }
+    }
+}
+
+/** A Settings page: its 28/600 title over its cards. */
+@Composable
+private fun SettingsPageFrame(title: String, content: @Composable () -> Unit) {
+    Page("") {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Tokens.gutter).padding(top = 8.dp, bottom = 32.dp)) {
+            T(title, 28.sp, Tokens.c.ink, FontWeight.SemiBold, Modifier.padding(bottom = 16.dp).semantics { heading() })
+            content()
+        }
+    }
+}
+
+/**
+ * Agents (Electron's Settings › Agents): which agent new tasks go to, then a card per agent with its
+ * 5-hour session and week, its model and efforts, each changed here as there. Adding, signing in and
+ * removing an agent happen on the Mac, where its tool runs (the gateway carries none of those).
+ */
+@Composable
+private fun AgentsPage() {
     val phone = LocalPhone.current
-    val c = Tokens.c
     val scope = rememberCoroutineScope()
-    val now = rememberNow(60)
+    var options by remember { mutableStateOf<ModelOptions?>(null) }
     var problem by remember { mutableStateOf<String?>(null) }
-    val usage = account.usage
-    SetRow(account.name, label = {
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Box(Modifier.width(16.dp).padding(top = 2.dp)) { AgentMark(account.agent, 14.dp) }
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                T(account.name, Tokens.textBase, c.ink)
-                SetAbout(if (account.signedIn) Usage.about(usage, now) else "Signed out: sign in on your Mac")
-                Usage.week(usage, now)?.let { SetMeter(it * 100, Modifier.padding(top = 4.dp)) }
-                Usage.fiveHourLine(usage, now)?.let { SetAbout(it, if ((usage.fiveHour ?: 0.0) > 0.9) c.over else c.full) }
-                if (usage.reserved(now)) SetAbout(Usage.RESERVED_TEXT, c.needsInk)
-                if (usage.signedIn && usage.inReserve(now)) {
-                    Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        T(Usage.LIFT_TEXT, Tokens.textBase, c.ink, modifier = Modifier.weight(1f))
-                        SetSwitch(usage.liftedUntil(now) != null, Usage.LIFT_TEXT) { on ->
-                            scope.launch { problem = try { phone.runner.liftReserve(account.id, on); null } catch (e: Exception) { e.message } }
-                        }
-                    }
-                    SetAbout(Usage.liftNote(usage))
-                    problem?.let { SetAbout(it, c.danger) }
-                }
-                if (account.signedIn) SetAbout(TetrixJobReport.accountLine(account.tetrix == true, account.tetrixJobs ?: 0, account.tetrixUsed ?: 0, "on your Mac"),
-                                               if (account.tetrix == true) c.muted else c.needsInk)
+    LaunchedEffect(phone.base) {
+        options = runCatching { phone.runner.modelOptions() }.getOrNull()
+        phone.readDefaultAccount()
+    }
+    val order = listOf("claude", "codex", "cursor")
+    val agents = phone.accounts.sortedBy { order.indexOf(it.agent).let { i -> if (i < 0) 9 else i } }
+    val ready = agents.filter { it.signedIn }
+    val chosen = ready.firstOrNull { it.id == phone.defaultAccount } ?: ready.firstOrNull()
+    SetGroup("Default agent", footer = "Add, sign in or remove an agent in Settings › Agents on your Mac, where it runs.", problem = problem, rows = listOf {
+        if (chosen == null) SetRow("No agents yet", quiet = true)
+        else SetRow("New tasks go to") {
+            SetSelect("Default agent", chosen.id, ready.map { it.id to "${it.name} · ${Usage.tool(it.agent)}" }) { id ->
+                if (id != chosen.id) scope.launch { problem = try { phone.setDefaultAccount(id); null } catch (e: Exception) { e.message } }
             }
         }
     })
+    for (account in agents) androidx.compose.runtime.key(account.id) { AgentCard(account, options, base(phone.models, account.agent)) }
 }
 
-/** The model and effort the runner's Claude Code, Codex and Cursor jobs use, saved there as soon as a choice changes. */
+/** What the tool runs when the account chose nothing (obid's status `models`). */
+private fun base(models: ModelSettings?, agent: String): ModelChoice? = when (agent) {
+    "claude" -> models?.claude
+    "codex" -> models?.codex
+    "cursor" -> models?.cursor?.let { ModelChoice(it.model, "") }
+    else -> null
+}
+
+/** One agent's card: its usage (Electron's: the 5-hour session's bar, the week in words under it), its model and its efforts. */
 @Composable
-private fun Models(options: ModelOptions?, models: ModelSettings?, save: (ModelSettings) -> Unit) {
-    options ?: return
-    var chosen by remember { mutableStateOf<ModelSettings?>(null) }
-    val current = chosen ?: models ?: return
-    fun change(update: (ModelSettings) -> ModelSettings) { val next = update(current); chosen = next; save(next) }
-    fun efforts(list: List<String>) = list.map { it to ModelChoice.effortName(it) }
-    val claudeEfforts = options.claude.efforts.orEmpty()
-    val claudeComplex = options.claude.complexEfforts ?: claudeEfforts
-    val codexEfforts = options.codex.models.firstOrNull { it.id == current.codex.model }?.efforts.orEmpty()
-    SetGroup("Claude Code", rows = listOf(
-        { SetRow("Model") { SetSelect("Claude Code model", current.claude.model, options.claude.models.map { it.id to it.name }) { v -> change { it.copy(claude = it.claude.copy(model = v)) } } } },
-        { SetRow("Effort") { SetSelect("Claude Code effort", current.claude.effort, efforts(claudeEfforts)) { v -> change { it.copy(claude = it.claude.copy(effort = v)) } } } },
-        { SetRow("Complex job effort") { SetSelect("Claude Code complex job effort", current.claude.complexEffort ?: current.claude.effort, efforts(claudeComplex)) { v -> change { it.copy(claude = it.claude.copy(complexEffort = v)) } } } },
-    ))
-    SetGroup("Codex", rows = listOf(
-        { SetRow("Model") { SetSelect("Codex model", current.codex.model, options.codex.models.map { it.id to it.name }) { v -> change { it.copy(codex = it.codex.copy(model = v)) } } } },
-        { SetRow("Effort") { SetSelect("Codex effort", current.codex.effort, efforts(codexEfforts)) { v -> change { it.copy(codex = it.codex.copy(effort = v)) } } } },
-        { SetRow("Complex job effort") { SetSelect("Codex complex job effort", current.codex.complexEffort ?: current.codex.effort, efforts(codexEfforts)) { v -> change { it.copy(codex = it.codex.copy(complexEffort = v)) } } } },
-    ))
-    options.cursor?.let { cursor ->
-        val choices = listOf("auto" to "Auto") + cursor.models.filter { it.id != "auto" }.map { it.id to it.name }
-        SetGroup("Cursor", rows = listOf {
-            SetRow("Model") { SetSelect("Cursor model", current.cursor?.model ?: "auto", choices) { v -> change { it.copy(cursor = CursorModelChoice(v)) } } }
+private fun AgentCard(account: Account, options: ModelOptions?, base: ModelChoice?) {
+    val phone = LocalPhone.current
+    val c = Tokens.c
+    val scope = rememberCoroutineScope()
+    var problem by remember { mutableStateOf<String?>(null) }
+    val usage = AgentUsage(account, rememberNow(60))
+    val tool = when (account.agent) { "claude" -> options?.claude; "codex" -> options?.codex; "cursor" -> options?.cursor; else -> null }
+    // What the account runs on: its own choice, else the tool's (Electron's `useModels`).
+    val model = account.model ?: base?.model ?: ""
+    val effort = account.effort ?: base?.effort ?: ""
+    val complexEffort = account.complexEffort ?: base?.complexEffort ?: effort
+    // The efforts it takes: Codex's are its model's, the others' the tool's.
+    val efforts = if (account.agent == "codex") tool?.models?.firstOrNull { it.id == model }?.efforts.orEmpty() else tool?.efforts.orEmpty()
+    fun tune(change: Map<String, String>) { scope.launch { problem = try { phone.tune(account.id, change); null } catch (e: Exception) { e.message } } }
+    val rows = mutableListOf<@Composable () -> Unit>({
+        SetRow(account.name, label = {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.width(16.dp).padding(top = 2.dp)) { AgentMark(account.agent, 14.dp) }
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        T(Usage.tool(account.agent), Tokens.textBase, c.ink, modifier = Modifier.weight(1f))
+                        usage.session?.let { SetValue("$it% used") }
+                    }
+                    when {
+                        !account.signedIn -> SetAbout(account.label ?: "Not signed in: sign in on your Mac")
+                        usage.session != null -> {
+                            SetAbout("5-hour session" + (usage.sessionResets?.let { " · resets $it" } ?: ""))
+                            SetMeter(usage.session.toDouble(), Modifier.padding(vertical = 4.dp))
+                            SetAbout(usage.week)
+                        }
+                        else -> SetAbout(usage.week)
+                    }
+                }
+            }
         })
+    }, {
+        SetRow("Model") {
+            ModelMenu("${account.name} model and effort", choices(tool?.models.orEmpty().map { it.id to it.name }, model), model,
+                      if (account.agent == "cursor") emptyList() else choices(efforts.map { it to effortName(it) }, effort), effort,
+                      onModel = { if (it != model) tune(mapOf("model" to it)) }, onEffort = { if (it != effort) tune(mapOf("effort" to it)) })
+        }
+    })
+    if (account.agent != "cursor") rows += {
+        SetRow("Effort on complex tasks") {
+            SetSelect("${account.name} complex task effort", complexEffort, choices(tool?.complexEfforts.orEmpty().map { it to effortName(it) }, complexEffort)) {
+                if (it != complexEffort) tune(mapOf("complexEffort" to it))
+            }
+        }
+    }
+    SetGroup(account.name, problem = problem, rows = rows)
+}
+
+private val effortNames = mapOf("low" to "Low", "medium" to "Medium", "high" to "High", "xhigh" to "Extra high", "max" to "Max", "ultra" to "Ultra")
+private fun effortName(effort: String) = effortNames[effort] ?: effort
+
+/** A pop-up's choices, the one set kept even when the choices don't have it (Electron's `choices`). */
+internal fun choices(list: List<Pair<String, String>>, set: String) = (if (set.isEmpty() || list.any { it.first == set }) emptyList() else listOf(set to set)) + list
+
+/** An account's usage as Electron's `accountRow` and `weekWords` say it (the iPhone's AgentUsage). */
+class AgentUsage(a: Account, now: Instant) {
+    /** The 5-hour session's share: signed in, not Cursor; past its reset, 0. */
+    val session: Int?
+    val sessionResets: String?
+    val week: String
+
+    init {
+        val over = a.fiveHourResets?.let { it <= now } ?: false
+        session = if (a.agent == "cursor" || !a.signedIn || a.fiveHour == null) null else if (over) 0 else Math.round(a.fiveHour * 100).toInt()
+        sessionResets = if (session != null && !over) a.fiveHourResets?.let(Format::time) else null
+        val used = if (a.agent == "cursor") null else (a.sevenDay ?: a.fiveHour)?.let { Math.round(it * 100).toInt() }
+        val resets = when {
+            !a.signedIn -> a.label ?: "Not signed in"
+            a.agent == "cursor" -> "Cursor doesn’t report usage"
+            used == null -> "No use reported yet"
+            else -> a.sevenDayResets?.let { "Resets ${Format.weekday(it)}" } ?: "No reset reported"
+        }
+        week = when {
+            a.sevenDay != null && used != null -> "This week $used% · " + if (resets.startsWith("Resets")) "resets" + resets.drop(6) else resets
+            a.sevenDay == null && session != null -> "No weekly use reported yet"
+            else -> resets
+        }
     }
 }
 
-/** Settings › Permissions: the mode new jobs get, and the rules Always allow (or Deny) saved, each removed with its button. */
+/**
+ * Electron's ModelPicker: one button, the model and after it in grey its effort; one menu with the
+ * models, then Effort and the efforts. No efforts (Cursor's): the models only.
+ */
+@Composable
+private fun ModelMenu(title: String, models: List<Pair<String, String>>, model: String, efforts: List<Pair<String, String>>, effort: String,
+                      onModel: (String) -> Unit, onEffort: (String) -> Unit) {
+    val c = Tokens.c
+    var open by remember { mutableStateOf(false) }
+    fun name(id: String, list: List<Pair<String, String>>) = list.firstOrNull { it.first == id }?.second ?: id.ifEmpty { "—" }
+    Box {
+        Row(Modifier.height(32.dp).clip(RoundedCornerShape(Tokens.iconRadius)).background(c.field).border(1.dp, c.line, RoundedCornerShape(Tokens.iconRadius))
+            .clickable { open = true }.padding(start = 14.dp, end = 10.dp)
+            .semantics { contentDescription = "$title: " + (if (efforts.isEmpty()) name(model, models) else "${name(model, models)}, ${name(effort, efforts)}") },
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            T(name(model, models), Tokens.textBase, c.ink, lines = 1, modifier = Modifier.widthIn(max = 120.dp))
+            if (efforts.isNotEmpty()) T(name(effort, efforts), Tokens.textBase, c.muted, lines = 1)
+            Icon(Icons.Filled.ExpandMore, null, Modifier.size(14.dp), tint = c.muted)
+        }
+        DropdownMenu(open, { open = false }, containerColor = c.surface) {
+            for ((id, label) in models) DropdownMenuItem({ T(label, Tokens.textBase, c.ink) }, { open = false; onModel(id) },
+                                                         trailingIcon = { if (id == model) Icon(Icons.Filled.Check, null, tint = c.ink) })
+            if (efforts.isNotEmpty()) {
+                HorizontalDivider(color = c.line)
+                T("Effort", Tokens.textSm, c.muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                for ((id, label) in efforts) DropdownMenuItem({ T(label, Tokens.textBase, c.ink) }, { open = false; onEffort(id) },
+                                                              trailingIcon = { if (id == effort) Icon(Icons.Filled.Check, null, tint = c.ink) })
+            }
+        }
+    }
+}
+
+/** Remote access, from the phone's side: the Mac it reaches, how, until when, and Unpair. Pairing a device and the list of paired ones are the Mac's own. */
+@Composable
+private fun RemotePage() {
+    val phone = LocalPhone.current
+    val c = Tokens.c
+    var unpairing by remember { mutableStateOf(false) }
+    val link = phone.link
+    if (link == null) {
+        SetGroup("Your Mac", footer = "On your Mac, open Settings › Remote access › Pair a device, then scan its code.", rows = listOf { SetRow("No Mac paired yet", quiet = true) })
+        return
+    }
+    SetGroup("Your Mac", footer = "Unpair makes this phone forget your Mac. To end its pairing on the Mac too, revoke it in your Mac’s Settings › Remote access.", rows = listOf(
+        { SetRow(link.name, about = listOfNotNull(phone.route?.label, phone.pairedUntil?.let { "Paired until ${Format.monthDay(it)}" }).joinToString(" · ")) {
+            SetValue(phone.notice?.title ?: if (phone.connection == Connection.Live) "Connected" else "Connecting…", phone.connection == Connection.Live)
+        } },
+        { SetRow("Unpair this phone") { SetButton("Unpair", destructive = true) { unpairing = true } } },
+    ))
+    if (unpairing) AlertDialog(onDismissRequest = { unpairing = false }, containerColor = c.surface,
+        title = { T("Unpair from ${link.name}?", 17.sp, c.ink, FontWeight.SemiBold) },
+        text = { T("This phone forgets its device token. Scan the code on your Mac to connect again.", Tokens.textBase, c.text) },
+        confirmButton = { TextButton({ unpairing = false; phone.unpair(); phone.homePath = emptyList() }) { T("Unpair", Tokens.textBase, c.danger) } },
+        dismissButton = { TextButton({ unpairing = false }) { T("Cancel", Tokens.textBase, c.muted) } })
+}
+
+/** Connectors (Electron's on obid): Connected, then Available, each with its line. Connecting and disconnecting happen on the Mac, whose logins they are. */
+@Composable
+private fun ConnectorsPage() {
+    val phone = LocalPhone.current
+    class Connector(val name: String, val mark: Int, val tinted: Boolean, val about: String, val connected: Boolean)
+    // GitHub: obid's gh is signed in (its GitHub work says so, and as whom); Tetrix: the accounts' agents have it.
+    val github = phone.gitHubWork
+    val tetrix = phone.accounts.any { it.tetrix == true }
+    val all = listOf(
+        Connector("GitHub", R.drawable.mark_github, true, if (github?.signedIn == true) github.login ?: "Signed in" else "Repos, pull requests and checks", github?.signedIn == true),
+        Connector("Tetrix", R.drawable.mark_tetrix, false, if (tetrix) "For all your agents" else "Project knowledge and blast radius", tetrix),
+    )
+    for (connected in listOf(true, false)) {
+        val items = all.filter { it.connected == connected }
+        if (items.isEmpty()) continue
+        SetGroup(if (connected) "Connected" else "Available",
+                 footer = if (connected) null else "Connect them in Settings › Connectors on your Mac: their logins stay there, never on this phone.",
+                 rows = items.map { item -> {
+                     SetRow(item.name, label = {
+                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                             Image(painterResource(item.mark), null, Modifier.size(22.dp), colorFilter = if (item.tinted) ColorFilter.tint(Tokens.c.ink) else null)
+                             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                 T(item.name, Tokens.textBase, Tokens.c.ink)
+                                 SetAbout(item.about)
+                             }
+                         }
+                     }) { SetValue(if (item.connected) "Connected" else "On your Mac", item.connected) }
+                 } })
+    }
+}
+
+/** General › Permissions on your Mac: the mode new tasks get, and the rules Always allow (or Deny) saved, each removed with its button. */
 @Composable
 private fun Permissions() {
     val phone = LocalPhone.current
@@ -186,7 +322,7 @@ private fun Permissions() {
                 if (m != null) scope.launch { problem = try { phone.setDefaultMode(m); null } catch (e: Exception) { e.message } }
             }
         } }
-        if (rules?.isEmpty() == true) rows += { SetRow("No saved rules", quiet = true) }
+        // None saved: no row, as Electron's (its note says how one gets here).
         for (rule in rules.orEmpty()) rows += {
             SetRow(rule.rule, about = listOfNotNull(if (rule.decision == "deny") "Denied" else "Allowed", rule.repo).joinToString(" · "), label = { SetCode(rule.rule) }) {
                 SetButton("Remove", destructive = true) {
@@ -195,49 +331,11 @@ private fun Permissions() {
             }
         }
     }
-    SetGroup("Permissions", problem = problem, rows = rows,
-             footer = "Ask: the agent asks before it edits or runs anything. Always allow saves a rule, so it doesn’t ask again; remove the rule to be asked again.")
+    SetGroup("Permissions on your Mac", problem = problem, rows = rows,
+             footer = "Default mode sets how often your agents check with you before they edit files or run commands. To change it for one task, use that task’s Mode menu. Always allow adds a rule here; remove it to be asked again.")
 }
 
-/** Settings › Routines (#395): every routine obid runs on a schedule, with a switch that pauses it, Run now, and Delete (asked first). */
-@Composable
-private fun Routines() {
-    val phone = LocalPhone.current
-    val c = Tokens.c
-    val scope = rememberCoroutineScope()
-    var routines by remember { mutableStateOf<List<RunnerRoutine>?>(null) }
-    var problem by remember { mutableStateOf<String?>(null) }
-    var deleting by remember { mutableStateOf<RunnerRoutine?>(null) }
-    suspend fun load() { routines = try { phone.runner.routines() } catch (e: Exception) { problem = e.message; routines } }
-    LaunchedEffect(phone.base, phone.routineChanges) { load() }
-    fun act(work: suspend () -> Unit) { scope.launch { problem = try { work(); null } catch (e: Exception) { e.message }; load() } }
-    val list = routines
-    val rows: List<@Composable () -> Unit> = when {
-        list == null -> listOf { SetRow("This Oby has no routines.", quiet = true) }
-        list.isEmpty() -> listOf { SetRow("No routines yet", quiet = true) }
-        else -> list.map { routine -> {
-            SetRow(routine.name, about = routine.about()) {
-                SetButton("Run now") { act { phone.runner.runRoutine(routine.id) } }
-                SetButton("Delete", destructive = true) { deleting = routine }
-                SetSwitch(routine.enabled, if (routine.enabled) "Pause ${routine.name}" else "Resume ${routine.name}") { on ->
-                    routines = routines?.map { if (it.id == routine.id) it.copy(enabled = on) else it }
-                    act { phone.runner.setRoutine(routine.id, on) }
-                }
-            }
-        } }
-    }
-    SetGroup("Routines", problem = problem, rows = rows,
-             footer = "Ask Oby for one, like “every weekday at 9, review the open pull requests in obi”: it waits for your OK in the inbox. Each run is a job on Home, under Routines, with the same checks as any job.")
-    deleting?.let { routine ->
-        AlertDialog(onDismissRequest = { deleting = null }, containerColor = c.surface,
-            title = { T("Delete ${routine.name}?", 17.sp, c.ink, FontWeight.SemiBold) },
-            text = { T("It won't run again. The jobs it started stay.", Tokens.textBase, c.text) },
-            confirmButton = { TextButton({ deleting = null; act { phone.runner.deleteRoutine(routine.id) } }) { T("Delete", Tokens.textBase, c.danger) } },
-            dismissButton = { TextButton({ deleting = null }) { T("Cancel", Tokens.textBase, c.muted) } })
-    }
-}
-
-/** Notifications: whether Oby may alert you when a job needs you, a way to allow it, and the way to the system's settings. */
+/** General › Notifications: whether Oby may alert you when a task needs you, a way to allow it, and the way to the system's settings. */
 @Composable
 private fun Notifications() {
     val phone = LocalPhone.current
@@ -262,5 +360,5 @@ private fun Notifications() {
             pushes == false -> "Oby on your Mac doesn't send pushes yet."
             else -> null
         }) { SetValue(if (configured && pushes == true) "On" else "Off") } },
-    ), footer = "Oby alerts you when a job needs you: ready to publish, failed or interrupted, a question for you, out of reviews or not merged. An alert opens its job.")
+    ), footer = "Oby alerts you when a job needs you, like a question or a failed run. Tap an alert to open the job.")
 }

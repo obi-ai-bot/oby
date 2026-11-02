@@ -342,6 +342,8 @@ object PublishedLink {
     val fiveHour: Double? = null, val sevenDay: Double? = null, val fiveHourResets: Date? = null, val sevenDayResets: Date? = null,
     val running: Int = 0, val fullUntil: Date? = null, val tetrix: Boolean? = null, val tetrixJobs: Int? = null, val tetrixUsed: Int? = null,
     val reserved: Boolean? = null, val reserveLiftedUntil: Date? = null,
+    /** The model and efforts its tasks run on, each only when the owner chose it; null: the tool's own (obid only, #1574). */
+    val model: String? = null, val effort: String? = null, val complexEffort: String? = null,
 ) {
     val usage get() = UsageSnapshot(agent, name, label, fiveHour, sevenDay, fiveHourResets, sevenDayResets, running, reserveLiftedUntil, signedIn)
 }
@@ -405,6 +407,8 @@ data class InboxWords(val headline: String?, val happened: String?, val recommen
 @Serializable data class RunnerStatus(
     val runner: Info, val accounts: List<Account> = emptyList(), val models: ModelSettings? = null, val clearedAt: Date? = null,
     val permissions: Permissions? = null,
+    /** The account new tasks go to (Settings › Agents), or null for routing's own order (obid only). */
+    val defaultAccount: String? = null,
 ) {
     @Serializable data class Info(val version: String = "", val host: String = "")
     @Serializable data class Permissions(val mode: String? = null)

@@ -67,8 +67,8 @@ val LocalActivity = staticCompositionLocalOf<MainActivity> { error("no activity"
  * Back pops the stack, and on Home itself leaves the app.
  */
 @Composable
-fun PhoneRoot(phone: Phone, activity: MainActivity, appearance: String, setAppearance: (String) -> Unit) {
-    CompositionLocalProvider(LocalPhone provides phone, LocalActivity provides activity, LocalAppearance provides (appearance to setAppearance)) {
+fun PhoneRoot(phone: Phone, activity: MainActivity) {
+    CompositionLocalProvider(LocalPhone provides phone, LocalActivity provides activity) {
         Box(Modifier.fillMaxSize().background(Tokens.bg)) {
             if (phone.needsPairing) {
                 Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
@@ -80,7 +80,6 @@ fun PhoneRoot(phone: Phone, activity: MainActivity, appearance: String, setAppea
     }
 }
 
-val LocalAppearance = staticCompositionLocalOf<Pair<String, (String) -> Unit>> { "system" to {} }
 
 @Composable
 private fun Panelled(phone: Phone) {
@@ -143,7 +142,7 @@ private fun HomeStack(phone: Phone) {
                 Route.Archived -> ArchivedPage()
                 Route.Inbox -> InboxPage()
                 Route.Settings -> SettingsScreen()
-                Route.Connect -> Page(title = "") { ConnectScreen(first = false) }
+                is Route.SettingsPage -> SettingsPageScreen(route.page)
             }
         }
     }

@@ -185,7 +185,7 @@ private fun UsageGauge() {
                 .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     T("Usage this week", Tokens.textSm, c.label, modifier = Modifier.weight(1f))
-                    Box(Modifier.size(36.dp).clickable { open = false; phone.panel = null; phone.push(Route.Settings) }.semantics { contentDescription = "Manage accounts" },
+                    Box(Modifier.size(36.dp).clickable { open = false; phone.panel = null; phone.push(Route.SettingsPage(SettingsPage.Agents)) }.semantics { contentDescription = "Manage accounts" },
                         contentAlignment = Alignment.Center) { Icon(Icons.Filled.Settings, null, Modifier.size(16.dp), tint = c.muted) }
                 }
                 for (account in phone.accounts) {
