@@ -3,7 +3,8 @@ import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
 import { MODES } from './modes';
-import { AGENTS, ASK_LABEL, TELL, ago, type CheckRow, type Page, type Stage, type ToolGroup } from './mock';
+import { AGENTS, ASK_LABEL, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './mock';
+import { api, type PublishChoices } from './obid';
 import { answer, changeCheck, changeMode, markSeen, openOnGitHub, type Task } from './tasks';
 import { prName, prUrl } from './jobPage';
 import { Menu } from './Menu';
@@ -119,6 +120,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
               )}
             </Section>
           )}
+
+          {j.publish && <PublishByHand key={j.id} id={j.id} offer={j.publish} />}
 
           {/* The timeline: the time track, then the stages as its spine, with what
               each one is doing hanging under it (the work's tools, the checks) */}
@@ -276,6 +279,54 @@ function CheckField({ initial, empty, label = 'The check’s command', use = 'Us
       <button type="submit" className="tc-option" disabled={!typed && !empty}>{typed || !empty ? use : empty}</button>
       <button type="button" className="tc-option is-quiet" onClick={onCancel}>Cancel</button>
     </form>
+  );
+}
+
+// Publish by hand (PUBLISHING-14), as the iPhone's: the exact sentence shows first, in obid's own
+// words, and exactly that goes out on the click, signed in main. Another branch and Replace what's
+// there are the owner's own choices (PUBLISHING-10): the sentence names them before they click.
+function PublishByHand({ id, offer }: { id: string; offer: NonNullable<Job['publish']> }) {
+  const [shown, setShown] = useState<{ action: string; choices: PublishChoices; over?: string } | null>(null);
+  const [branch, setBranch] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const run = async (work: () => Promise<void>) => {
+    setBusy(true);
+    setProblem(null);
+    try { await work(); } catch (e) { setProblem(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  const look = (choices: PublishChoices) => run(async () => {
+    const { action, over } = await api.publishAction(id, choices);
+    setShown({ action, choices, over });
+  });
+  const start: PublishChoices = offer.anyway ? { anyway: true } : {};
+  return (
+    <Section title="Publish">
+      {offer.why && <p className="tc-report">{offer.why}</p>}
+      {shown ? <p className="tc-report">{shown.action}</p> : null}
+      {problem && <p className="tc-report is-problem">{problem}</p>}
+      {branch && shown ? (
+        <CheckField
+          initial={shown.choices.to ?? ''} label="The branch it goes to" use="Use it" max={200}
+          onUse={(to) => { setBranch(false); if (to) void look({ ...shown.choices, to }); }} onCancel={() => setBranch(false)}
+        />
+      ) : shown ? (
+        <div className="tc-options">
+          <button className="tc-option is-primary" disabled={busy} onClick={() => void run(async () => { await api.publish(id, shown.action, shown.choices); setShown(null); })}>
+            {busy ? 'Publishing…' : 'Publish'}
+          </button>
+          <button className="tc-option" disabled={busy} onClick={() => setBranch(true)}>Another branch…</button>
+          {!shown.choices.force && <button className="tc-option" disabled={busy} onClick={() => void look({ ...shown.choices, force: true })}>Replace what’s there…</button>}
+          <button className="tc-option is-quiet" disabled={busy} onClick={() => { setShown(null); setProblem(null); }}>Not now</button>
+        </div>
+      ) : (
+        <div className="tc-options">
+          <button className="tc-option is-primary" disabled={busy} onClick={() => void look(start)}>{offer.label}</button>
+          {/* obid said no to what it offers by itself: the owner's word still goes (PUBLISHING-9) */}
+          {problem && !offer.anyway && <button className="tc-option" disabled={busy} onClick={() => void look({ anyway: true })}>Publish anyway…</button>}
+        </div>
+      )}
+    </Section>
   );
 }
 

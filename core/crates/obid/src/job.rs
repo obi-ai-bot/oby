@@ -1144,6 +1144,23 @@ impl Job {
             && self.checked_head.is_some()
     }
 
+    /// Ended with commits that aren't on its pull request, which [`Job::can_publish`] doesn't offer:
+    /// its check didn't pass, say. The owner's own word still sends them (PUBLISHING-9), so the
+    /// apps offer it (PUBLISHING-14). Not once dismissed, never on a review or research job, never
+    /// once its pull request was merged or closed.
+    pub fn can_publish_anyway(&self) -> bool {
+        matches!(
+            self.status,
+            Status::Done | Status::Failed | Status::Stopped | Status::Interrupted
+        ) && !self.can_publish()
+            && self.kind != "research"
+            && self.kind != "review"
+            && self.base.is_some()
+            && self.unpublished() > 0
+            && self.dismissed.is_none()
+            && self.pull_request_open()
+    }
+
     /// Failed or interrupted, and nothing of it waits on the owner any more (TASKS-13): its pull
     /// request, an Oby review's being `reviewed`'s, was merged or closed. Not with commits that
     /// never went out, as [`Job::stranded`] keeps them; not one an account limit holds, the
@@ -1434,6 +1451,7 @@ impl Job {
         // Whether obid offers Publish by hand (`can_publish`): its check passed on the branch's
         // commit (`checked_head`, kept in its file only), so the apps follow obid, never guess (#1772).
         value["canPublish"] = json!(self.can_publish());
+        value["canPublishAnyway"] = json!(self.can_publish_anyway());
         // Jobs run only on this Mac now (compute sharing is gone): null, for the apps that decode it.
         value["runsOn"] = Value::Null;
         value["nextStep"] = json!(self.next_step);
@@ -2041,8 +2059,8 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-two, `supervised` and `revision`.
-        assert_eq!(object.len(), 89);
+        // The Swift runner's 65 keys, obid's twenty-three, `supervised` and `revision`.
+        assert_eq!(object.len(), 90);
         assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);
@@ -2184,6 +2202,34 @@ mod tests {
     /// only once its pull request merged (runner-api.md, "obid only: merging").
     /// The apps follow obid's own Publish (#1772): `canPublish` is `can_publish`, so a done job with
     /// commits out of its pull request offers it only while its check passed on its branch's commit.
+    /// PUBLISHING-14: the apps offer the owner's word where obid wouldn't send it by itself.
+    #[test]
+    fn publishing_14_can_publish_anyway_goes_to_the_apps() {
+        let mut job = job();
+        job.kind = "fix".into();
+        job.base = Some("dev".into());
+        job.commits = Some(2);
+        job.status = Status::Interrupted;
+        assert_eq!(job.to_json()["canPublishAnyway"], true);
+        // what Publish itself offers isn't "anyway"
+        job.status = Status::Done;
+        job.checked_head = Some("a".repeat(40));
+        assert_eq!(job.to_json()["canPublish"], true);
+        assert_eq!(job.to_json()["canPublishAnyway"], false);
+        job.checked_head = None;
+        assert_eq!(job.to_json()["canPublishAnyway"], true);
+        let each = |change: &dyn Fn(&mut Job)| {
+            let mut other = job.clone();
+            change(&mut other);
+            other.to_json()["canPublishAnyway"].clone()
+        };
+        assert_eq!(each(&|j| j.status = Status::Running), false);
+        assert_eq!(each(&|j| j.kind = "review".into()), false);
+        assert_eq!(each(&|j| j.kind = "research".into()), false);
+        assert_eq!(each(&|j| j.commits = Some(0)), false);
+        assert_eq!(each(&|j| j.pushed = Some(2)), false);
+    }
+
     #[test]
     fn can_publish_goes_to_the_apps() {
         let mut job = job();

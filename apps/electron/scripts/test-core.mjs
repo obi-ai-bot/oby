@@ -15,6 +15,9 @@
 //      neither `process` nor `require`, and the preload's bridge still works.
 //   8. A task deleted from the side panel on its Confirm (work that isn't committed, TASKS-11)
 //      leaves the side panel as obid deletes it, with no reload (#1707).
+//   9. A task stopped at its check's limit goes out by hand, on the owner's own click: its page
+//      shows obid's sentence first, main's own dialog asks with it, and exactly that is pushed
+//      (PUBLISHING-14). A script's call with no click, or with a sentence obid doesn't say, asks nothing.
 // Screenshots of each step go to OBY_CORE_SHOTS (a folder), when it's set.
 // Run: cargo build -p obid (or OBY_TEST_OBID=<obid>), npm run build, then npm run test:core.
 import assert from 'node:assert/strict';
@@ -164,8 +167,9 @@ async function main() {
   await send(page, 'Tell Oby about this task…', `OBY oby_tell_job {"id":"${own.id}","words":"why wasn't this merged?"}`);
   const follow = await until('the follow-up', async () => (await jobs(s)).find((j) => j.followUpOf === own.id));
   assert.equal(follow.conversation, own.conversation, 'TASKCONV-3: the follow-up is in the task’s conversation');
-  const turns = await s.call('GET', `/v1/conversation?id=${own.conversation}`);
-  assert.ok(turns.some((t) => t.who === 'oby' && t.jobs?.includes(follow.id)), 'TASKCONV-3: its card in the conversation');
+  // (the job exists a moment before its turn says so, under load)
+  await until('TASKCONV-3: its card in the conversation', async () =>
+    (await s.call('GET', `/v1/conversation?id=${own.conversation}`)).some((t) => t.who === 'oby' && t.jobs?.includes(follow.id)));
   await until('the conversation open, the follow-up’s card in it', async () => (await shown(page)).includes('Follow-up: Fix CI leccoflow #1'));
   await shot(page, '3-follow-up-in-conversation');
 
@@ -226,6 +230,68 @@ async function main() {
   await sleep(1000);
   assert.equal(await row.count(), 0, 'gone for good: the Confirm’s answer doesn’t bring it back');
   await shot(page, '8-deleted-on-its-confirm');
+
+  // 9. Publish by hand (PUBLISHING-14): a check that keeps failing stops the task; its page offers
+  // the owner's word, shows obid's sentence, and goes out on the click, signed in main.
+  const { id: stopped } = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'build', title: 'Stopped task', task: 'COMMIT: stopped.txt', check: 'exit 1', rounds: 1 } })
+    .then((a) => a.job ?? a);
+  const stoppedJob = await until('it stops at its limit', async () => {
+    const j = await s.call('GET', `/v1/jobs/${stopped}`);
+    return j.status === 'interrupted' && j;
+  }, 120_000);
+  assert.equal(stoppedJob.published, null, 'its check failed, so nothing went out by itself');
+  await page.evaluate((id) => dispatchEvent(new CustomEvent('oby:open', { detail: { kind: 'task', id }, cancelable: true })), stopped);
+  const anyway = page.getByRole('button', { name: 'Publish anyway…' });
+  await until('Publish anyway on its page', async () => (await anyway.count()) === 1);
+  await anyway.click();
+  const go = page.getByRole('button', { name: 'Publish', exact: true });
+  await until('its sentence', async () => (await go.count()) === 1 && (await page.locator('.tc-report').allInnerTexts()).some((t) => t.includes('it goes out anyway')));
+  await shot(page, '9-publish-sentence');
+  // no click: main refuses, whatever the page asks
+  const asked = await s.call('GET', `/v1/jobs/${stopped}/publish?anyway=true`);
+  const unclicked = await page.evaluate(async ([id, action]) => {
+    await new Promise((done) => setTimeout(done, 2500));
+    return (await window.app.obid.publish(id, action, { anyway: true })).status;
+  }, [stopped, asked.action]);
+  assert.equal(unclicked, 403, 'PUBLISHING-14: no click, no signature');
+  // main's own dialog asks, with obid's sentence: a stand-in here for the owner's answer, since a
+  // test can't click a native dialog. It records what it was shown.
+  await app.evaluate(({ dialog }) => {
+    globalThis.asked = [];
+    dialog.showMessageBox = async (...args) => { const o = args.at(-1); globalThis.asked.push(o.detail); return { response: globalThis.answerPublish ?? 1 }; };
+  });
+  // a real click, but a sentence obid doesn't say: main refuses before it asks or signs
+  await page.locator('.tc-report').first().click();
+  const forged = await page.evaluate(([id]) => window.app.obid.publish(id, 'Push it anywhere.', { anyway: true }), [stopped]);
+  assert.equal(forged.status, 409, `PUBLISHING-14: only obid's sentence is signed: ${forged.text}`);
+  assert.deepEqual(await app.evaluate(() => globalThis.asked), [], 'PUBLISHING-14: nothing asked for a sentence obid doesn’t say');
+  // Another branch: the owner's choice is in obid's sentence before they click (PUBLISHING-10)
+  await page.getByRole('button', { name: 'Another branch…' }).click();
+  await page.getByRole('textbox', { name: 'The branch it goes to' }).fill('codex/elsewhere');
+  await page.getByRole('button', { name: 'Use it', exact: true }).click();
+  await until('the sentence names the branch', async () => (await page.locator('.tc-report').allInnerTexts()).some((t) => t.includes('codex/elsewhere')));
+  await shot(page, '9-another-branch');
+  await page.getByRole('button', { name: 'Not now' }).click();
+  await until('nothing went out, and it offers again', async () => (await anyway.count()) === 1);
+  await anyway.click();
+  await until('its sentence again', async () => (await go.count()) === 1 && !(await page.locator('.tc-report').allInnerTexts()).some((t) => t.includes('codex/elsewhere')));
+  // Publish on the page asks in main's dialog; Not now there sends nothing
+  await go.click();
+  await until('main asked, with obid’s sentence', async () => (await app.evaluate(() => globalThis.asked)).length === 1);
+  assert.equal((await app.evaluate(() => globalThis.asked))[0], (await s.call('GET', `/v1/jobs/${stopped}/publish?anyway=true`)).action);
+  await until('it says so', async () => (await page.locator('.tc-report').allInnerTexts()).some((t) => t.includes('you said not now')));
+  assert.ok(!(await s.call('GET', `/v1/jobs/${stopped}`)).outgoing?.some((o) => o.action === 'push'), 'PUBLISHING-14: Not now in main’s dialog sends nothing');
+  await app.evaluate(() => { globalThis.answerPublish = 0; });
+  await go.click();
+  const sent = await until('it went out', async () => {
+    const j = await s.call('GET', `/v1/jobs/${stopped}`);
+    return j.outgoing?.some((o) => o.action === 'push') && j;
+  }, 60_000).catch(async (e) => {
+    await shot(page, '9-not-published');
+    throw new Error(`${e.message}: the page says ${JSON.stringify(await page.locator('.tc-report').allInnerTexts())}, obid's ${JSON.stringify((await s.call('GET', `/v1/jobs/${stopped}`)).publishError)}`);
+  });
+  assert.equal(sent.outgoing.find((o) => o.action === 'push').branch, stoppedJob.branch);
+  await shot(page, '9-published');
 
   assert.deepEqual(errors, [], 'no page errors');
   console.log('core: Home → task → its conversation → follow-ups, the owner’s words signed: all passed');

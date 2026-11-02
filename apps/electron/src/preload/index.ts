@@ -110,6 +110,9 @@ contextBridge.exposeInMainWorld('app', {
     call: (method: string, path: string, body?: unknown) => ipcRenderer.invoke('obid', method, path, body, signs(method, path, body)) as Promise<Answer>,
     // Confirm on an open confirm item, by its id: main signs it with this Mac's device key
     confirm: (item: string) => ipcRenderer.invoke('obid-confirm', item) as Promise<Answer>,
+    // Publish by hand, on the owner's click: main reads obid's sentence again and signs it
+    publish: (job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }) =>
+      ipcRenderer.invoke('obid-publish', job, action, choices) as Promise<Answer>,
     limitAnswer: (item: string, revision: number, choice: string, account?: string) =>
       ipcRenderer.invoke('obid-limit-answer', item, revision, choice, account) as Promise<Answer>,
     // Pair a device: main signs the invitation with this Mac's device key

@@ -31,6 +31,18 @@ const STOPPED = new Set(['failed', 'stopped', 'interrupted']);
 // when a current stage's time ends: now, or when the task stopped (none known: it has no time)
 const stageEnd = (j: Job, now: number) => (STOPPED.has(j.status) ? (j.finished ? Date.parse(j.finished) : null) : now);
 
+// Whether a follow-up carries `j`'s branch on, as obid counts it for Publish (jobs.rs, `carried`): on
+// its branch, at work or done, and not let go. That one publishes it, so `j` doesn't offer to.
+export const carriedOn = (j: Job, jobs: Job[]) => jobs.some((o) => o.followUpOf === j.id && o.branch === j.branch && !o.dismissed && ['queued', 'running', 'done'].includes(o.status));
+
+// Publish by hand (PUBLISHING-14), as obid offers it: Publish, or the owner's own word for commits
+// Oby wouldn't send (PUBLISHING-9).
+export function publishOf(j: Job, followedUp = false): { label: string; anyway?: true; why?: string } | undefined {
+  const why = j.publishError ?? undefined;
+  if (j.canPublish) return { label: j.published ? 'Publish the new commits…' : 'Publish…', why };
+  return j.canPublishAnyway && !followedUp ? { label: 'Publish anyway…', anyway: true, why } : undefined;
+}
+
 // The stages, with how long each took (or should: "≈ 6m"), and the agent's activity and latest
 // words under Work
 export function stagesOf(j: Job, now = Date.now()): Stage[] {

@@ -459,6 +459,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-option.is-primary { background: var(--ink); color: #111; font-weight: 500; }
 .tc-option.is-primary:hover { background: #fff; }
 .tc-option.is-danger { color: var(--danger); }
+.tc-report.is-problem { color: var(--danger); }
 .tc-option.is-quiet { background: none; color: var(--muted); }
 .tc-option.is-quiet:hover { color: var(--ink); background: var(--hover); }
 /* a check's Edit: the command in Settings' field, as wide as the card leaves it */
