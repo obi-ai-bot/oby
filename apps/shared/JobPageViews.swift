@@ -7,23 +7,15 @@ import SwiftUI
 // obid doesn't serve yet isn't drawn. Not on the Watch.
 
 extension Job {
-    /// Its stages, from the runner's pipeline (Engine's on the Mac).
+    /// Its stages, from the runner's pipeline.
     var pageStages: [JobStage] {
-        #if os(macOS)
-        pipeline.stages
-        #else
         pipeline?.stages ?? []
-        #endif
     }
 
     /// Its pull request as the page words it: "Merged", "Approved", "Waiting for review"…
     var pullRequestWords: String? {
         guard published != nil else { return nil }
-        #if os(macOS)
-        let review = pullRequest?.reviewDecision?.rawValue
-        #else
         let review = pullRequest?.reviewDecision
-        #endif
         switch (pullRequestState, review) {
         case ("MERGED", _): return "Merged"
         case ("CLOSED", _): return "Closed"
@@ -37,11 +29,7 @@ extension Job {
 extension JobStage {
     /// Its id as obid names it: "prepare", "work", "check", "publish", "review"…
     var key: String {
-        #if os(macOS)
-        id.rawValue
-        #else
         id
-        #endif
     }
 }
 

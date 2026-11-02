@@ -369,7 +369,7 @@ final class ConversationModel {
     }
 
     /// Whether the decision of `job` belongs in the conversation shown (Sangam: a decision lives
-    /// with its task, mac-design C3): with obid's conversations (`served`), only one whose job a
+    /// with its task): with obid's conversations (`served`), only one whose job a
     /// turn here started or obid says `startedIn` this one. One with no job (a plan waiting for
     /// Start, a confirm) only in the conversation it came `from`, never opened out in another;
     /// one from no conversation waits in Needs you. A runner with one thread shows every decision.

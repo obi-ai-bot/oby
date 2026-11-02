@@ -1,9 +1,5 @@
 import SwiftUI
-#if canImport(AppKit)
-import AppKit
-#elseif canImport(UIKit)
 import UIKit
-#endif
 
 /// Read-only research report with explicit, confirmed issue filing actions.
 struct ReportView: View {
@@ -94,10 +90,7 @@ struct ReportView: View {
     }
 
     private func copy() {
-        #if canImport(AppKit)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(report.markdown, forType: .string)
-        #elseif os(iOS)
+        #if os(iOS)
         UIPasteboard.general.string = report.markdown
         #endif
     }

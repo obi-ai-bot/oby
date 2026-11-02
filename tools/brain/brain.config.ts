@@ -120,9 +120,9 @@ export const config: BrainConfig = {
       text: 'The iPhone and Apple Watch apps stay in Swift on obid\'s API: new keys and values only, never a renamed or removed one, and no new value in an enum they decode as closed.',
       code: [`${APP}/shared/obid-wire.ts`],
       // The Swift client (apps/shared/Runner.swift) compiled against today's obid: what the iPhone and Watch decode.
-      tests: [`${TESTS}/mac_app.rs#the_mac_app_follows_obid_and_lists_its_jobs`],
+      tests: [`${TESTS}/swift_client.rs#the_swift_client_follows_obid_and_lists_its_jobs`],
     },
   ],
   internalHosts: ['34-45-0-97.sslip.io', 'tail8de49b'],
-  hostScan: ['core/crates', 'apps/electron/src', 'apps/mac', 'apps/ios', 'apps/shared', 'mcp', 'docs', 'scripts', 'install', 'Runner', 'Engine', 'README.md', 'AGENTS.md'],
+  hostScan: ['core/crates', 'apps/electron/src', 'apps/ios', 'apps/shared', 'mcp', 'docs', 'scripts', 'install', 'README.md', 'AGENTS.md'],
 };

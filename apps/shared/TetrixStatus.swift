@@ -238,32 +238,3 @@ nonisolated struct TetrixJobReport: Codable, Equatable, Sendable {
     }
 }
 
-#if os(macOS)
-extension Runner {
-    /// obid's Tetrix, or nil from a runner that doesn't hold one (404).
-    func tetrix() async throws -> TetrixStatus? {
-        do {
-            return try await call("GET", "v1/tetrix")
-        } catch let error as RunnerError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// Starts signing obid in to `server`: a preset by its id, else its address. A second one ends
-    /// the one under way.
-    func startTetrixSignIn(_ server: TetrixStatus.Server) async throws -> TetrixSignIn {
-        struct Body: Encodable { var preset: String?; var url: URL? }
-        return try await call("POST", "v1/tetrix/sign-in", body: server.preset.map { Body(preset: $0) } ?? Body(url: server.url))
-    }
-
-    /// Ends the sign-in under way, if any.
-    func cancelTetrixSignIn() async throws {
-        try await send("DELETE", "v1/tetrix/sign-in")
-    }
-
-    /// Signs obid out of Tetrix: agents stop getting its tools.
-    func disconnectTetrix() async throws {
-        try await send("DELETE", "v1/tetrix")
-    }
-}
-#endif

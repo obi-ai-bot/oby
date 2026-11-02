@@ -1,4 +1,4 @@
-#if os(iOS) || os(macOS)
+#if os(iOS)
 import SwiftUI
 
 // Sangam's Settings building blocks (design/app/src/renderer/src/app.css `.set-*`, SettingsView.tsx), on

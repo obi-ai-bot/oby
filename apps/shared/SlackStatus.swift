@@ -72,8 +72,7 @@ nonisolated struct WatchStatus: Decodable, Equatable, Sendable {
 
 /// A `watch`, `listen` or `pluginEvent` inbox item (obid only: the watcher, the channel listener, a
 /// plug-in's or Sentry's offer), as the Mac's inbox card and notification show it, and a `github`
-/// offer, which only notifies (its card is the GitHub item's in Review PR or Issues). Engine's inbox
-/// doesn't know these kinds. Only obid's own words are shown (`title`, `text`), and the link when it's
+/// offer, which only notifies (its card is the GitHub item's in Review PR or Issues). Only obid's own words are shown (`title`, `text`), and the link when it's
 /// https on slack.com or github.com (sentry.io for Sentry's): never what was written (`watch.quoted`,
 /// `plugin.quoted`, `github.quoted`).
 nonisolated struct WatchNotice: Decodable, Equatable, Identifiable, Sendable {
@@ -171,56 +170,3 @@ nonisolated struct WatchNotice: Decodable, Equatable, Identifiable, Sendable {
     var needsYou: Bool { triage == nil || triage == "needs_you" }
 }
 
-#if os(macOS)
-extension Runner {
-    /// obid's Slack, or nil from a runner that doesn't hold one (404).
-    func slack() async throws -> SlackStatus? {
-        do {
-            return try await call("GET", "v1/slack")
-        } catch let error as RunnerError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// Gives obid the Slack app's tokens: it checks them with Slack and keeps them in its vault. The
-    /// app-level token (`app`) is for the channel listener's Socket Mode; nil leaves it out.
-    func connectSlack(user: String, bot: String, app: String?) async throws -> SlackStatus {
-        struct Body: Encodable { var user: String; var bot: String; var app: String? }
-        return try await call("PUT", "v1/slack", body: Body(user: user, bot: bot, app: app))
-    }
-
-    /// Whether a posted review's author is told on Slack, as the owner.
-    func setSlackTellAuthors(_ on: Bool) async throws -> SlackStatus {
-        struct Body: Encodable { var tellAuthors: Bool }
-        return try await call("PATCH", "v1/slack", body: Body(tellAuthors: on))
-    }
-
-    /// obid forgets the Slack tokens: the watcher reads only GitHub until they're pasted again.
-    func disconnectSlack() async throws {
-        try await send("DELETE", "v1/slack")
-    }
-
-    /// Settles a `watch` or `listen` item: Dismiss, Approve (a review's: obid posts it on GitHub),
-    /// done or later. Engine's inbox doesn't read these kinds, so the answer is read as one.
-    func settle(notice id: String, answer: String? = nil, later: Date? = nil) async throws -> WatchNotice {
-        struct Body: Encodable { var answer: String?; var later: Date? }
-        let data = try await send("POST", "v1/inbox/\(id)/answer", body: Body(answer: answer, later: later))
-        return try Runner.decoder.decode(WatchNotice.self, from: data)
-    }
-
-    /// The watcher, or nil from a runner that has none to say (404).
-    func watch() async throws -> WatchStatus? {
-        do {
-            return try await call("GET", "v1/watch")
-        } catch let error as RunnerError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// Turns the watcher's Slack message to the owner on (`live`) or back to a dry run.
-    func setWatchLive(_ live: Bool) async throws -> WatchStatus {
-        struct Body: Encodable { var live: Bool }
-        return try await call("PATCH", "v1/watch", body: Body(live: live))
-    }
-}
-#endif

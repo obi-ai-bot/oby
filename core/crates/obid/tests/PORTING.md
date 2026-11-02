@@ -64,7 +64,7 @@ The Rust core's done-when includes "the ported API-level tests from `RunnerTests
 | GatewayTests.gatewayScrubsSessionIDsAndAccountHomes | gateway_api.rs `gateway_answers_lose_vault_secrets_session_ids_and_account_homes`; src/gateway.rs `answers_lose_session_ids_and_account_homes` | the Swift test's own answers in the unit test |
 | WaitingTests.theAPISendsWhatItWaitsFor | runner_api.rs `admission_3_a_seventh_job_waits_for_a_slot_and_says_so` | and the null half in `jobs_have_iso_dates_and_every_key` |
 
-Also from the Mac app's side: tests/mac_app.rs builds the Mac app's own client (apps/shared/Runner.swift and the Engine/ and apps/shared/ files it needs) and follows obid as apps/mac/app/RunnerFeed.swift does.
+Also from the apps' side: tests/swift_client.rs builds the iPhone's and the Watch's own client (apps/shared/Runner.swift and the apps/shared/ files it needs) and follows obid. The Swift tests named here went with the Swift Mac app on 2026-11-02 (the owner's decision); git history has them.
 
 ## The brain, ported (#546)
 

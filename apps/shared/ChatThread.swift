@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// What the conversation works out with no view in the way, so the tests read it
-/// (apps/ios/tests/ChatTests.swift, apps/mac/tests): the words a send carries, and its echoes, the
+/// (apps/ios/tests/ChatTests.swift): the words a send carries, and its echoes, the
 /// words shown in the thread the instant Send is pressed until the runner lists them.
 nonisolated enum ChatThread {
     /// The words a send carries: trimmed, or nil for nothing to send.

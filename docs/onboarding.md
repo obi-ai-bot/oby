@@ -1,5 +1,7 @@
 # Setting up Oby on a new Mac and iPhone
 
+> Written while the Swift Mac app existed. It was deleted by the owner's decision of 2026-11-02 (git history has it): its screens, its `apps/mac/…`, `Engine/…` and `Runner/…` pointers below are history. What a person sees on the Mac is the Electron app, Sangam's (`apps/electron`).
+
 The owner's bar: the setup is so easy people believe Apple built it. Open the app on the Mac, and everything else is guided or automatic; on the iPhone, scan one code.
 
 Oby is open source and self-hostable: anyone runs obid on their own Mac or server with no account, and anyone hosts an **Obysphere**, the network between people's Obys, free on their own Cloudflare account from one Deploy to Cloudflare button (its protocol and server: the [`obi-ai-bot/obi-sphere`](https://github.com/obi-ai-bot/obi-sphere) repository). At launch the Obysphere is also how the iPhone reaches the Mac (section 3). **Oby Cloud**, for later, is the paid option: remote access with nothing to host, and teams (today's control plane: `cloud/control-plane`, [remote-access.md](remote-access.md), hidden at launch). So the design's setup has two paths from its first screen, and neither needs an account to start Oby on the Mac; at launch only the first is offered (section 8).
@@ -186,7 +188,7 @@ What exists today, what must be built, and where. Local work (obid, the Mac and 
 | End-to-end encryption (#287) | — | Keys from pairing; sealed requests, answers and event frames through the gateway on every route; the device-key signature on each request | obid, Mac, iPhone | L |
 | iPhone 3: asking at the right time | `Notifications.ask()` on connection (`apps/ios/app/Phone.swift:427-428`) | The screen, and asking after the first task otherwise | iPhone | S |
 | Mac 8 and 9: the first task | `POST /v1/plans` | One suggestion in Home's box, made from the first repository obid lists (done, #1399); notifications ask when the first task finishes (done) | Mac | S |
-| The setup window | FirstLaunch (`apps/mac/app/FirstLaunch.swift`) | Replace its steps with the screens above on Sangam's components (docs/mac-design.md B1); drop the Models and Permissions steps; fix "menu bar" and "Screen Recording" copy | Mac | M |
+| The setup window | FirstLaunch (`apps/mac/app/FirstLaunch.swift`) | Replace its steps with the screens above on Sangam's components; drop the Models and Permissions steps; fix "menu bar" and "Screen Recording" copy | Mac | M |
 | Asked later | Permission rows (`apps/mac/app/Setup.swift:9-101`) | The one-line explainers before each system prompt, at the moments above; the window's voice button listening on a click (AGENTS.md, as decided) | Mac, iPhone | S |
 | Errors and recovery | Mac offline banner (`apps/mac/app/App/RunnerOfflineNotice.swift`), iPhone offline line (`apps/ios/app/Phone.swift:238-242`) | One notice view in `apps/shared` and the states in the table above | Mac, iPhone | M |
 | Keep the Mac available | `MacAvailability` (`apps/mac/app/Availability.swift:77-100`), app-side only | On by default on a desktop Mac and on power; obid itself holds the assertion while jobs run, so it holds with the app closed | Mac, obid | S |
@@ -213,7 +215,7 @@ What exists today, what must be built, and where. Local work (obid, the Mac and 
 - **Local, L:** obid inside Oby.app with `SMAppService` · end-to-end encryption (#287).
 - **Oby Cloud:** the relay (L) · accounts and billing (L) · teams (M).
 - **Anyone's to host:** the Obysphere (L).
-- **Being built elsewhere:** obid's accounts API and its sign-in command (the obid-accounts session, docs/mac-design.md A2, A3); Settings' components, Settings in the window and one account list (the mac-settings session, B1, A1, C1).
+- **Being built elsewhere:** obid's accounts API and its sign-in command (the obid-accounts session); Settings' components, Settings in the window and one account list (the mac-settings session).
 
 ## 7. Order of work
 

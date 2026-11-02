@@ -51,7 +51,7 @@ The watch keeps the last application context and the id of the ask it waits for.
 
 ### Without the iPhone
 
-watchOS has no Tailscale or VPN, so a paired watch reaches the runner's Watch API through a Cloudflare Tunnel behind Cloudflare Access (`docs/runner-api.md`, "The Watch API"; setting it up: `Runner/README.md`). `apps/watch/WatchLink.swift` is that line: plain HTTPS from `URLSession`.
+watchOS has no Tailscale or VPN, so a paired watch reaches the runner's Watch API through a Cloudflare Tunnel behind Cloudflare Access (`docs/runner-api.md`, "The Watch API"). Only the Swift runner served that API, and it was deleted on 2026-11-02; obid does not serve it (#454, not planned), so a watch reaches obid through its iPhone. `apps/watch/WatchLink.swift` is that line: plain HTTPS from `URLSession`.
 
 - **Pairing** (`apps/ios/app/WatchPairing.swift`, Settings › Apple Watch (with `showEverything`) on the phone): the watch makes a P-256 key in its Secure Enclave (CryptoKit) and hands the public half to the phone over WatchConnectivity; the phone's key signs it (the owner's tap); the runner keeps the key, and the Access service token in its vault; the watch gets its id, the Watch API's address and the token, kept in the keychain of the app group, so the widget can use them too. Swiping the watch away on the phone unpairs it.
 - **Every request** carries the service token (Access lets it through and adds its JWT) and the watch's signature over the method, path, body, time and a fresh nonce, so a replayed request fails.
@@ -115,7 +115,7 @@ Not built here (no Xcode on the Linux runner). On a real watch:
 
 ## Verification for the Watch without its iPhone
 
-The runner's side (the Watch API, the JWT and signature checks, replays, pairing, pushes) is tested in `RunnerTests/WatchTests.swift`. Nothing on the Apple side could be built or run here (no Xcode on the Linux runner). To verify on Xcode and real devices:
+The runner's side (the Watch API, the JWT and signature checks, replays, pairing, pushes) was the Swift runner's, with its tests (git history: `Runner/`, `RunnerTests/WatchTests.swift`); obid does not serve it (#454, not planned). Nothing on the Apple side could be built or run here (no Xcode on the Linux runner). To verify on Xcode and real devices:
 
 - The watch app, the widget (it now compiles `apps/shared/` too, except `Character.swift`) and the iPhone app build; `WKRunsIndependentlyOfCompanionApp` is on.
 - The Secure Enclave key on the watch, and the keychain items shared with the widget through the app group (`kSecAttrAccessGroup` set to the group).

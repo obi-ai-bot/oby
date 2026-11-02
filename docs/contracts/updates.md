@@ -6,7 +6,7 @@ The business behavior contract for Settings › About's updater rows in the Elec
 
 - **Outcome:** The owner keeps Oby current without thinking about it, or, with Update automatically off, decides when; an update that isn't Deskree's, or isn't what was published, never installs.
 - **Status:** **Implemented** in the Electron app (`apps/electron`): the decisions in `src/shared/updates.ts`, carried out by `src/main/updates.ts` with electron-updater; About's rows in `SettingsView.tsx` (`Updates`). Publishing a release (below) is the owner's step.
-- **Scope:** the Mac app's own build (the Electron app, obid inside it). **Out of scope:** the Swift Mac app's Sparkle feed on `downloads.oby.deskree.com` (it stays, for installed 0.4.5 Macs), the iPhone and Watch (the App Store and TestFlight), Windows and Linux, a release channel or a beta, and Sangam's later screens (design/app: the island offering to restart; waiting for a runner's check before a restart).
+- **Scope:** the Mac app's own build (the Electron app, obid inside it). **Out of scope:** the Swift Mac app's Sparkle feed on `downloads.oby.deskree.com` (the app was deleted from this repository on 2026-11-02; the feed stays, for installed 0.4.5 Macs), the iPhone and Watch (the App Store and TestFlight), Windows and Linux, a release channel or a beta, and Sangam's later screens (design/app: the island offering to restart; waiting for a runner's check before a restart).
 
 ## Behavior
 

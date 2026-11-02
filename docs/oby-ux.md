@@ -1,5 +1,7 @@
 # Oby's UX model: one logic, Mac and iPhone
 
+> Written while the Swift Mac app existed. It was deleted by the owner's decision of 2026-11-02 (git history has it): its screens, its `apps/mac/…`, `Engine/…` and `Runner/…` pointers below are history. What a person sees on the Mac is the Electron app, Sangam's (`apps/electron`).
+
 One page that says how Oby works for the person using it, the same on the Mac and on the iPhone, and then every place the apps or obid don't follow it yet. **Sangam's design (`design/app`, run with the `sangam-design` configuration in `.claude/launch.json`) is the model** (AGENTS.md, "Sangam's design leads", the owner's decision of 2026-10-18): where the apps, obid or a doc differ from it about what the user sees or does, they change. AGENTS.md's rules are how his design is built underneath, never a reason to change what the user sees. Where his design says nothing (setup, offline, memory), this page fills the gap in his language. docs/mac-design.md (PR #663) and docs/ios-design.md are the per-platform gap lists; docs/conversation-harness.md is the logic under a conversation; docs/runner-api.md is the API.
 
 The setup of a new Mac and iPhone is its own document, [onboarding.md](onboarding.md).

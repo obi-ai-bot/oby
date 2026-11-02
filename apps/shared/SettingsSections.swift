@@ -1,4 +1,4 @@
-#if os(iOS) || os(macOS)
+#if os(iOS)
 import SwiftUI
 import UserNotifications
 #if os(iOS)
@@ -7,9 +7,7 @@ import UIKit
 import AppKit
 #endif
 
-// Settings' sections the iPhone and the Mac both show, so the two stay alike: apps/ios/app/SettingsScreen.swift
-// puts them in its form, apps/mac/app/Settings.swift on its pages as Sangam's cards (`settingsCards`,
-// apps/shared/SettingsComponents.swift), next to what only that device has.
+// Settings' sections the iPhone shows: apps/ios/app/SettingsScreen.swift puts them in its form.
 
 /// Voice: Oby writes down what you say in English, the only language it speaks (`VoiceSettings`, the
 /// owner's decision of 2026-11-01), and answers in writing, never aloud (2026-10-23).

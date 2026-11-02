@@ -261,7 +261,7 @@ extension Phone {
     }
 }
 
-/// What the Mac's pairing QR code carries (apps/mac/app/PairingView.swift): the gateway's URL, the Mac's
+/// What the Mac's pairing QR code carries (Settings › Remote access in the Mac's app): the gateway's URL, the Mac's
 /// link (its name and tunnel hostname) and the one-time secret. Made while obid is in an Obysphere,
 /// the link has `relay` too (docs/runner-api.md, "obid only: the phone relay"): the Sphere, the
 /// relay, this phone's relay token and the Mac's key.

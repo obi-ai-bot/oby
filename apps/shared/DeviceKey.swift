@@ -1,5 +1,5 @@
 // The watch publishes through the iPhone, or with its own pairing key (apps/watch/WatchLink.swift).
-#if os(iOS) || os(macOS)
+#if !os(watchOS)
 import CryptoKit
 import Foundation
 import OSLog
@@ -63,12 +63,7 @@ nonisolated struct Approval: Encodable, Equatable, Sendable {
 /// the runner can tell an approval came from the owner's own app, not from a job, another Oby or
 /// anything it received. The owner's click is the approval (the owner's decision of 2026-10-24):
 /// signing asks for no Touch ID, Face ID or password. What keeps other code on the device from
-/// signing is where its wrapped blob is kept: on the iPhone, Oby's own keychain, which no other app
-/// reads; on the Mac, a generic password in the login keychain, whose access list makes macOS ask
-/// the owner before any other app reads it, and which a boxed agent can't reach at all. A program
-/// that runs as the owner and that the owner lets read it could sign.
-// ponytail: the Mac's data-protection keychain, with an access group, would bind the blob to Oby
-// alone; it needs Developer ID's provisioning profile (F4, as Engine/Vault.swift's vault).
+/// signing is where its wrapped blob is kept: Oby's own keychain, which no other app reads.
 nonisolated enum DeviceKey {
     static var isAvailable: Bool { SecureEnclave.isAvailable }
 
@@ -140,19 +135,10 @@ nonisolated enum DeviceKey {
         try key().signature(for: message).derRepresentation.base64EncodedString()
     }
 
-    #if os(macOS)
-    // The Mac's login keychain, as its vault's (Engine/Vault.swift): it has no passcode class.
-    private static let protection = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-    private static let noKey = "This Mac can't make its approval key."
-    /// The keys it replaces: Touch ID only (`.biometryCurrentSet`, until 2026-10-23), then Touch ID
-    /// or the password (`.userPresence`, until 2026-10-24). Nothing signs with them any more.
-    private static let replaced = ["publish-key", "publish-key.presence"]
-    #else
     private static let protection = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
     private static let noKey = "This iPhone can't make its approval key."
     /// The Face ID key it replaces (`.biometryCurrentSet`, until 2026-10-24).
     private static let replaced = ["publish-key"]
-    #endif
     /// A key with no presence check: a new id with the runner, so each device registers it once
     /// (MacDevice.idKey, Phone.deviceKey).
     private static let account = "approval-key"

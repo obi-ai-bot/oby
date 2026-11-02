@@ -15,12 +15,9 @@
 #                         test binaries, tests/<module>.rs or tests/<module>_api.rs of a touched
 #                         module, and the binaries that name a touched folder under tests/
 #                         (support, agents, plugins); every test of another touched crate
-#   apps/mac/, apps/shared/, apps/Oby.xcodeproj, character/
-#                         the touched MacTests suites, else a build-for-testing of the Oby scheme
-#   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj
+#   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
-#   Engine/, Runner/, RunnerTests/, mcp/, Package.*
-#                         swift test (only the touched RunnerTests suites when only they changed)
+#   mcp/, Package.swift   swift test
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
@@ -64,7 +61,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' electron='' lib='' lib_all='' tests='' crates='' mac='' mac_suites='' ios='' ios_suites='' swift='' swift_suites=''
+rust='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -95,16 +92,11 @@ while IFS= read -r file; do
             crates=$(add "$crates" "${crate%%/*}") ;;
     esac
     case "$file" in
-        apps/mac/tests/*.swift) mac=1 mac_suites=$(add "$mac_suites" "$(suites MacTests/ "$file")") ;;
-        apps/mac/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) mac=1 ;;
-    esac
-    case "$file" in
         apps/ios/tests/*.swift) ios=1 ios_suites=$(add "$ios_suites" "$(suites iOSTests/ "$file")") ;;
-        apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/*) ios=1 ;;
+        apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) ios=1 ;;
     esac
     case "$file" in
-        RunnerTests/*.swift) swift_suites=$(add "$swift_suites" "$(suites '' "$file")") ;;
-        Engine/* | Runner/* | RunnerTests/* | mcp/* | Package.swift | Package.resolved) swift=1 ;;
+        mcp/* | Package.swift) swift=1 ;;
     esac
     case "$file" in
         apps/electron/*) electron=1 ;;
@@ -147,7 +139,7 @@ if [[ -n "$rust" ]]; then
     done < <(each "$crates")
 fi
 
-# Ad hoc signing with no team or profile, as the Mac checks build (Engine/Checks.swift).
+# Ad hoc signing with no team or profile.
 xcode=(xcodebuild -quiet -jobs "$jobs" -project apps/Oby.xcodeproj -derivedDataPath "$cache/DerivedData"
     -clonedSourcePackagesDirPath "$cache/SourcePackages"
     CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=
@@ -163,14 +155,9 @@ apple() {
     fi
 }
 if [[ -z "$nested" ]]; then
-    if [[ -n "$mac" ]]; then apple Oby platform=macOS "$mac_suites"; fi
     if [[ -n "$ios" ]]; then apple ObyPhone "platform=iOS Simulator,name=iPhone 17,OS=latest" "$ios_suites"; fi
-    if [[ -n "$swift" ]]; then
-        step swift test -j "$jobs" --scratch-path "$cache/swiftpm"
-    elif [[ -n "$swift_suites" ]]; then
-        step swift test -j "$jobs" --scratch-path "$cache/swiftpm" --filter "$(each "$swift_suites" | paste -sd '|' -)"
-    fi
-elif [[ -n "$mac$ios$swift$swift_suites" ]]; then
+    if [[ -n "$swift" ]]; then step swift test -j "$jobs" --scratch-path "$cache/swiftpm"; fi
+elif [[ -n "$ios$swift" ]]; then
     echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): run them on the Mac before merging"
 fi
 

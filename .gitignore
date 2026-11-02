@@ -7,7 +7,7 @@ dist/
 .build/
 .swiftpm/
 __pycache__/
-# One Mac's signing overrides and release credentials (docs/release.md): never in git.
+# One Mac's signing overrides and release credentials: never in git.
 apps/config/Signing.local.xcconfig
 # Where it was before the move to apps/config: a copy left there stays out of git too.
 Config/Signing.local.xcconfig

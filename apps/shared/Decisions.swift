@@ -27,7 +27,7 @@ nonisolated enum RunnerMode: String, Codable, CaseIterable, Identifiable, Sendab
         }
     }
 
-    /// The modes this Mac's own jobs run (Engine's PermissionMode): obid's `sandbox` is the runner's only.
+    /// The modes Sangam's Settings offers: obid's `sandbox` isn't one of them.
     static let local: [RunnerMode] = [.ask, .acceptEdits, .plan, .bypass]
 
     /// What the agent may do in it, in one line.
@@ -97,83 +97,6 @@ nonisolated struct RunnerRule: Codable, Identifiable, Equatable, Sendable {
     var created: Date?
 }
 
-#if os(macOS)
-/// A job's mode, the permission it waits on, and its question with the recommended option and the
-/// plan, as the Mac's job screen shows them: a runner's job's, read from the same JSON (never
-/// failing the job, as from a runner Engine's Job can't read).
-nonisolated struct RunnerJobExtras: Decodable, Equatable, Sendable {
-    var id: String
-    var mode: String?
-    var permission: RunnerPermission?
-    var question: Question?
-    /// obid only (#493): the conversation whose words started the job, kept when that one is deleted.
-    var conversation: String?
-    /// obid only: the user's turn whose words started it, so its card shows under them as it starts.
-    var turn: String?
-    /// What it made to be looked at (obid only), or nil.
-    var artifacts: [ArtifactRef]?
-    /// obid only (#395): the routine whose run started it.
-    var routine: RoutineMark?
-    /// Teammates' open pull requests on its files (obid only), or nil.
-    var teammates: TeammatePRs?
-    /// What its agent asked Tetrix, the session it saved and where the graph fell short, or nil.
-    var tetrix: TetrixJobReport?
-    /// The job page's facts (#739), read from the same JSON; nil for this Mac's own jobs.
-    var facts: JobFacts?
-    /// obid only: when it was archived by hand (Archive task, or a conversation's), or nil. It's
-    /// then under Archived, not on Home.
-    var archived: Date?
-    /// obid only (#808): the teammate's Mac it runs on, or nil (this one).
-    var runsOn: RunsOnMac?
-
-    /// Whose Mac a job runs on: their Obi, and its owner.
-    struct RunsOnMac: Decodable, Equatable, Sendable {
-        var obi: String
-        var owner: String
-    }
-
-    private enum Keys: String, CodingKey { case id, mode, permission, question, conversation, turn, artifacts, routine, tetrix, archived, runsOn }
-
-    private enum TeammatesKey: String, CodingKey { case teammates }
-
-    init(id: String, mode: String? = nil, permission: RunnerPermission? = nil, question: Question? = nil, conversation: String? = nil,
-         turn: String? = nil) {
-        self.id = id
-        self.mode = mode
-        self.permission = permission
-        self.question = question
-        self.conversation = conversation
-        self.turn = turn
-    }
-
-    init(from decoder: any Decoder) throws {
-        let keys = try decoder.container(keyedBy: Keys.self)
-        id = try keys.decode(String.self, forKey: .id)
-        mode = try? keys.decodeIfPresent(String.self, forKey: .mode)
-        permission = try? keys.decodeIfPresent(RunnerPermission.self, forKey: .permission)
-        question = try? keys.decodeIfPresent(Question.self, forKey: .question)
-        conversation = try? keys.decodeIfPresent(String.self, forKey: .conversation)
-        turn = try? keys.decodeIfPresent(String.self, forKey: .turn)
-        teammates = try? decoder.container(keyedBy: TeammatesKey.self).decodeIfPresent(TeammatePRs.self, forKey: .teammates)
-        artifacts = try? keys.decodeIfPresent([ArtifactRef].self, forKey: .artifacts)
-        routine = try? keys.decodeIfPresent(RoutineMark.self, forKey: .routine)
-        tetrix = try? keys.decodeIfPresent(TetrixJobReport.self, forKey: .tetrix)
-        archived = try? keys.decodeIfPresent(Date.self, forKey: .archived)
-        runsOn = try? keys.decodeIfPresent(RunsOnMac.self, forKey: .runsOn)
-        facts = (try? JobFacts(from: decoder)).flatMap { $0 == JobFacts() ? nil : $0 }
-    }
-
-    /// Each job's, by id; a list that can't be read gives none.
-    static func of(_ data: Data) -> [String: RunnerJobExtras] {
-        struct Lossy: Decodable {
-            var extras: RunnerJobExtras?
-            init(from decoder: any Decoder) throws { extras = try? RunnerJobExtras(from: decoder) }
-        }
-        let list = (try? Runner.decoder.decode([Lossy].self, from: data))?.compactMap(\.extras) ?? []
-        return Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { $1 })
-    }
-}
-#endif
 
 /// One answer on a decision card.
 nonisolated struct CardOption: Equatable, Sendable {
@@ -346,7 +269,7 @@ nonisolated struct ObiAsk: Decodable, Equatable, Sendable {
         }
     }
 
-    /// The types Home shows by their own name; the rest keep the kind Engine reads them as.
+    /// The types Home shows by their own name; the rest keep their kind.
     static let named: Set<String> = ["review_request", "host_approval"]
 
     /// Its words as a card shows them: what it asks (a question's text, a review's goal, a job's
@@ -372,14 +295,12 @@ nonisolated struct InboxWords: Decodable, Equatable, Sendable {
     var happened: String?
     var recommended: Int?
     var why: String?
-    /// On a `confirm` item (obid only, #546), what its Confirm carries out. The Mac reads the
-    /// item into Engine's InboxItem, which has no such kind: this says what it really is.
+    /// On a `confirm` item (obid only, #546), what its Confirm carries out.
     var confirm: RunnerConfirm?
     /// The conversation a plan waiting for Start (or a confirm to start a job) came from (obid
     /// only): a conversation shows it opened out only there.
     var conversation: String?
-    /// On an `obiRequest` (obid only), what another Oby asks: Engine reads it as a `question` or a
-    /// `start`, and this says what it really is.
+    /// On an `obiRequest` (obid only), what another Oby asks.
     var obi: ObiAsk?
 
     private enum Keys: String, CodingKey { case headline, happened, recommended, why, confirm, conversation, obi }
@@ -421,23 +342,6 @@ nonisolated struct InboxWords: Decodable, Equatable, Sendable {
         return words
     }
 
-    #if os(macOS)
-    /// Each runner item's words, by item id, from `GET /v1/inbox`: the Mac reads the items into
-    /// Engine's InboxItem, which doesn't have them. A list that can't be read gives none.
-    static func of(_ data: Data) -> [String: InboxWords] {
-        struct Lossy: Decodable {
-            var id: String?
-            var words: InboxWords?
-            private enum Keys: String, CodingKey { case id }
-            init(from decoder: any Decoder) throws {
-                id = try? decoder.container(keyedBy: Keys.self).decode(String.self, forKey: .id)
-                words = try? InboxWords(from: decoder)
-            }
-        }
-        let list = (try? Runner.decoder.decode([Lossy].self, from: data)) ?? []
-        return Dictionary(list.compactMap { item in item.id.flatMap { id in item.words.map { (id, $0) } } }, uniquingKeysWith: { $1 })
-    }
-    #endif
 }
 
 /// What a `confirm` inbox item's Confirm carries out (obid only, #546; docs/runner-api.md, "Inbox
@@ -498,13 +402,6 @@ extension Question {
     }
 }
 
-#if os(macOS)
-extension Plan.Question {
-    nonisolated var cardOptions: [CardOption] {
-        Question(text: text, options: options, details: details, recommended: recommended).cardOptions
-    }
-}
-#endif
 
 /// A plan in markdown, split into what the card draws: headings, list items, code and paragraphs
 /// (the card draws each one's inline markdown).

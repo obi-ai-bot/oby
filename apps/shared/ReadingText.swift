@@ -36,9 +36,7 @@ nonisolated struct Reading: Sendable {
     /// The Watch keeps its footnote (about 14 pt, set by watchOS) with a little more air; code is as big as prose.
     static let watch = Reading(size: 14, style: .footnote, lineSpacing: 2.5, paragraphGap: 6, codeRatio: 1, column: .infinity)
 
-    #if os(macOS)
-    static let current = mac
-    #elseif os(watchOS)
+    #if os(watchOS)
     static let current = watch
     #else
     static let current = phone
@@ -157,12 +155,6 @@ private struct ReadingStyle: ViewModifier {
             .foregroundStyle(color ?? (role == .secondary ? Self.secondary : Self.primary))
     }
 
-    #if os(macOS)
-    // The Mac's window is always dark.
-    static let primary = Color.white
-    static let secondary = Color.white.opacity(0.6)
-    #else
     static let primary = Color.primary
     static let secondary = Color.secondary
-    #endif
 }

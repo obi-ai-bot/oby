@@ -19,7 +19,7 @@
 </p>
 
 > [!NOTE]
-> Oby 0.4.5 is out: [download it](https://downloads.oby.deskree.com/Oby-0.4.5.dmg) for macOS 26 or later. It updates itself. It runs on the Mac only, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews through your Obysphere.
+> Oby runs on the Mac, hands work to Claude Code, Codex and Cursor, connects to GitHub and Tetrix, and asks your teammates' Obys for reviews.
 
 ## What it does
 
@@ -36,41 +36,25 @@
 - Oby merges a pull request the way it learned for that repository, once it asked "Can I remember that?" and you said yes. Until it has learned one, it asks "Ready to merge?" and leaves the pull request open. By itself, it never pushes to or force-pushes `main` or your default branch, and never merges into `main`; tell it to, and it does (still being built: today you do these on GitHub yourself).
 - Nothing goes out by itself until the job's check passes, and nothing goes out at all unless the secret scan is clean. A review goes out as you only after your Approve.
 - Approvals (publishing by hand, a Confirm, a Disconnect) are a click in Oby on your Mac, with no Touch ID, Face ID or password; whatever waits on you notifies on the Mac and shows on Home.
-- Every job has safety limits on time and tokens, and **⌃⌥⌘.** stops them all.
+- Every job has safety limits on time and tokens, and you can stop any of them.
 - No usage data leaves your Mac unless you turn it on.
 
 ## Install
 
-[Download Oby](https://downloads.oby.deskree.com/Oby-0.4.5.dmg), move it to Applications and open it. Its engine, `obid`, starts on this Mac by itself, and first launch takes a few minutes:
-
-1. **Hello**, then **hold fn to talk** (Oby asks for Accessibility, so it notices fn in any app).
-2. **Your agents.** Apple's command-line tools (git comes with them): Install runs macOS's own installer. Then Claude Code, Codex and Cursor: logins already on your Mac show Connected by themselves. A tool that isn't installed has Copy Command (Codex's needs Node.js first: nodejs.org, or `brew install node`); run it in Terminal, sign in there, and its row turns Connected without restarting anything. Connect signs in a tool that's installed but signed out, through its own login. One agent is enough.
-3. **GitHub.** gh's own sign-in, with a code to paste; then every repository your GitHub login can push to is ready.
-
-Home opens with a first task in its box. Updating from 0.3.0, Oby shows only the steps you haven't done yet, once.
-
-## Joining Deskree
-
-1. [Download Oby](https://downloads.oby.deskree.com/Oby-0.4.5.dmg) and go through first launch (above).
-2. Open the team invite link you were sent and click **Open in Oby**: Settings › Obysphere opens on **Join Deskree**. Opened before or during first launch, it waits and opens when first launch closes. Without a link, paste it in Settings › Obysphere.
+[Download Oby](https://deskree.com/oby), move it to Applications and open it. Its engine, `obid`, starts on this Mac by itself. Its first run: Hi, Tools (logins already on your Mac show by themselves), Knowledge, Obysphere, then Home.
 
 ## On your iPhone
 
-The iPhone app is in TestFlight for testers. With the Mac in an Obysphere (above, or host your own), open Settings › Runner › Pair a device on the Mac, then tap Connect in Oby on the iPhone and scan the code. The iPhone reaches the Mac through your Obysphere, sealed end to end with the Mac's key, with no Tailscale and no port to open.
+The iPhone app is in TestFlight for testers. With the Mac in an Obysphere (above, or host your own), open Settings › Remote access › Pair a device on the Mac, then tap Connect in Oby on the iPhone and scan the code. The iPhone reaches the Mac through your Obysphere, sealed end to end with the Mac's key, with no Tailscale and no port to open.
 
 ## Build from source
 
-To build it yourself, you need macOS 26 or later and Xcode 27.
-
-1. Open `apps/Oby.xcodeproj`.
-2. Run the **Oby** scheme on My Mac.
-
-The Mac app runs Oby's server, `obid`, for you (Settings › Runner › This Mac, on by default). To run `obid` on its own (on Linux, for example), see [docs/install.md](docs/install.md).
+The Mac app is Electron: `cd apps/electron && npm install && npm run dev`, with [Rust](https://rustup.rs) for its engine, `obid`. To run `obid` on its own (on Linux, for example), see [docs/install.md](docs/install.md). The iPhone and Apple Watch apps build with Xcode 27 from `apps/Oby.xcodeproj`.
 
 ## Repository
 
 ```
-apps/        the Mac and iPhone apps (SwiftUI); the Apple Watch, Android and web clients wait until the Mac app is right
+apps/        the Mac app (Electron), the iPhone and Apple Watch apps (SwiftUI), Android and web clients
 core/        obid, Oby's server (Rust): plans, runs and tracks jobs
 character/   Oby, the 3D character (three.js)
 mcp/         Oby's MCP server

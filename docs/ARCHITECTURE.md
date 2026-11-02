@@ -30,12 +30,12 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
 
 | Today | Target | Note |
 |---|---|---|
-| `Engine/`, `Runner/`, `RunnerTests/`, `Package.swift` | stay where they are | Frozen (bug fixes only). They are the specification `core/` is ported from, and the Swift runner keeps running until the apps run on `obid`. |
-| `Mac/`, `MacTests/` | `apps/mac/` | |
+| `Engine/`, `Runner/`, `RunnerTests/` | deleted | The specification `core/` was ported from; deleted with the Swift Mac app by the owner's decision of 2026-11-02 (git history has them). `Package.swift` stays, for `oby-mcp`. |
+| `Mac/`, `MacTests/` | deleted | The Swift Mac app, deleted by the owner's decision of 2026-11-02: the Mac's app is `apps/electron/`. |
 | `iOS/`, `iOSTests/`, `LiveActivity/` | `apps/ios/` | |
 | `Watch/` | `apps/watch/` | |
 | `Shared/` | `apps/shared/` | Swift code the Apple shells share. |
-| `Oby.xcodeproj`, `Config/`, `Icon/`, `ExportOptions-DeveloperID.plist` | under `apps/` | The restructure decides the exact paths; the Apple apps must keep building. |
+| `Oby.xcodeproj`, `Config/`, `Icon/` | under `apps/` | The restructure decides the exact paths; the Apple apps must keep building. |
 | `Android/` | `apps/android/` | |
 | `Character/` | `character/` | Differs only by case: on macOS move it through a temporary name (`git mv Character character.tmp && git mv character.tmp character`). |
 | `MCP/`, `MCPTests/` | `mcp/` | `MCP` to `mcp` differs only by case too: same two-step move. |
@@ -46,7 +46,7 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
 ## 2. The boundary: obid and the shells
 
 ```
- apps/mac   apps/ios   apps/watch   apps/web   mcp/
+ apps/electron  apps/ios  apps/watch  apps/web  mcp/
      │          │           │           │        │
      └──────────┴─── HTTP + SSE: docs/runner-api.md ───┘
                               │
@@ -57,10 +57,10 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
                        plug-ins (out of process)
 ```
 
-- **The runner API is the only way in.** Every shell talks to `obid` over HTTP and the `GET /v1/events` stream, exactly as the apps talk to the Swift runner today. No shell links the engine, imports its types or reads its database; `obid` serves the same API, so the Mac, iPhone and Watch apps run against it with no change to their code. Whether a later version adds an in-process binding (UniFFI) is an open decision; Phase 1 is HTTP only.
-- **Change the API in the same pull request as the code** (AGENTS.md). New endpoints that only `obid` serves go in the "obid only" section of runner-api.md; the Swift runner is frozen and never implements them.
+- **The runner API is the only way in.** Every shell talks to `obid` over HTTP and the `GET /v1/events` stream, as the apps always have. No shell links the engine, imports its types or reads its database; `obid` serves the same API, so the Mac, iPhone and Watch apps run against it with no change to their code. Whether a later version adds an in-process binding (UniFFI) is an open decision; Phase 1 is HTTP only.
+- **Change the API in the same pull request as the code** (AGENTS.md). New endpoints that only `obid` serves go in the "obid only" section of runner-api.md.
 - **Loopback and a token.** `obid` listens on 127.0.0.1 only, checks `Host`, and answers only requests with its API token; remote devices reach it through the gateway's allowlist, as today. The web app (`apps/web`) is no exception: the page sends the token on every API call, from the browser's session storage for its own origin. The one thing obid opens without the token is reading the web app's own files under `/app/`, which hold no data, with a page session: a random value obid keeps in memory, opened by signing in with the token and ended by signing out or a restart. It exists because a browser can't send a header when it opens a page and #492 keeps the page closed without the token; it admits nothing under `/v1`, since anything on the machine can replay a cookie and the headers a browser adds (runner-api.md, "obid only: the web app"). On macOS it listens on `127.0.0.1:7777` unless its configuration says otherwise: the address the Mac app already uses for a runner on the same Mac (runner-api.md, "Reaching it" and "obid only: configuration"). The Oby app's own Swift runner (its login item) listens there too, so one Mac runs one of the two: when the address is taken, `obid` doesn't start and says why in one line; it never moves to another port by itself. Its API token is only ever in `home/api-token`, never in its environment or arguments (5.3).
-- **The existing Mac app on `obid`.** In Phase 1 the Mac app is shown to pair with `obid` and list its jobs by a test that builds the app's own client code and drives it against a running `obid` (the Rust core's, section 6: it builds the app's files where they are and edits none of them). For This Mac, the app reads `api-token` from `~/Library/Application Support/Oby/Runner` (configure obid with that home and the default port); the Swift runner's keychain item remains its fallback. See runner-api.md, "obid only: configuration" (#440).
+- **The Swift clients on `obid`.** `core/crates/obid/tests/swift_client.rs` builds the iPhone's and the Watch's own client code (`apps/shared/Runner.swift` and what it needs) and drives it against a running `obid`, so an API change those apps can't read fails there.
 
 ## 3. Inside core/
 
@@ -137,7 +137,7 @@ What waits on what (everything else runs in parallel):
 **Rust core.** The workspace (`core/Cargo.toml`, `core/Cargo.lock`) and the runner API skeleton serving `GET /v1/status` and the configuration file first, then jobs, worktrees, the sandbox and the Claude Code adapter (stream-json) running the stub agent, then `obi-protocol` (passing the conformance suite with `--impl`), then Sphere membership, exchanges, the inbox item, decisions and the Obi-to-Obi review job with its publish gate, then the step bodies in `e2e/run.mjs`, then the plug-in host's wiring and routes (once the plug-in crates are in `dev`). Done when:
 
 - **The scenario's `obid` steps pass with the stub adapter**: steps 2 to 8 of SCENARIO.md, with the Sphere server's steps, under `make e2e` on Linux and macOS.
-- **The existing Mac app pairs with `obid` and lists its jobs**, shown by a test that builds the app's own client code and drives it against a running `obid` on `127.0.0.1` (section 2; the app discovers the private file token in the shared This Mac home, #440). The test is the Rust core's and lives in `core/`: `core/crates/obid/tests/mac_client.rs`, macOS only, compiles with `xcrun swiftc` the files the Mac app builds its client from, read where they are and never edited (`Shared/Runner.swift` with the `Shared/` files it needs, `Decisions.swift`, `JobList.swift`, `DeviceKey.swift` and `Elapsed.swift`, and `Engine/`, whose `Job` the Mac app reads jobs into; wherever the restructure has moved them), with `Package.swift`'s Swift settings, together with its own driver under `core/crates/obid/tests/mac-client/` (a `main.swift` that calls the client's `Runner(base:token:)`, `status()` and `jobs()`). It runs the driver against `obid` with the token from `obid`'s `home/api-token` and checks what the client decoded. It adds no target to `Package.swift` or the Xcode project and touches nothing under `apps/`, `Shared/` or `Engine/`.
+- **The Swift clients pair with `obid` and list its jobs**, shown by `core/crates/obid/tests/swift_client.rs` (section 2).
 - **`obid`'s side of 5.3 and 5.4**: its API token only from `home/api-token`, never from its environment or arguments, and no vault secret there either; `listen` defaulting to `127.0.0.1:7777` on macOS and refusing to start when the address is taken; the bundled plug-ins installed into `home/plugins/<id>` at start when missing, disabled, before `PluginHost::start` (a folder already there left as it is); and the log layer that takes the vault's secrets and their encoded forms out of the `obi_plugin` target. Each has a test.
 - **The API-level tests for every feature `obid` implements pass**: the `RunnerTests` ported to it (`core/crates/obid/tests/PORTING.md`) and its own. Among those features: the job sandbox, with a test that shows an agent and the repository's check can't write outside the job's worktree, the worktree's git directory and the job's temporary folder, can't read `obid`'s `home` beyond the worktree and the clone's git common directory, nor reach the network for the check, on Linux and on macOS, and on macOS can't reach preferences outside their own `HOME`, the pasteboard or the keychain as section 5.3 says (runner-api.md, "The job sandbox"), and that nothing the agent or the check started is left running when the job stops or ends, a descendant that called `setsid` included, on Linux and on macOS; and `GET` and `PUT /v1/obid/plugins`, answering as runner-api.md says with the host from `obi-plugin-host`.
 
