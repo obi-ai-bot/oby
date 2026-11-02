@@ -240,8 +240,8 @@ private fun Thread(shown: String?, modifier: Modifier, problem: String?, edit: (
                     onRetry = { phone.retry(row.turn.id) }, onEdit = { edit(row.turn.text); phone.discard(row.turn.id) })
                 // A decision goes with its task's card.
                 val carded = cards[row.turn.id].orEmpty().map { it.id }
-                for (item in decisions.filter { it.job in carded }) Box(Modifier.padding(top = 12.dp)) { InboxDecision(item) }
-                for (offer in offers.filter { it.id == under[row.turn.id] }) Box(Modifier.padding(top = 12.dp)) { OfferBlock(offer) }
+                for (item in decisions.filter { it.job in carded }) androidx.compose.runtime.key(item.id) { Box(Modifier.padding(top = 12.dp)) { InboxDecision(item) } }
+                for (offer in offers.filter { it.id == under[row.turn.id] }) androidx.compose.runtime.key(offer.id) { Box(Modifier.padding(top = 12.dp)) { OfferBlock(offer) } }
             }
             for (offer in offers.filter { it.id !in under.values }) item("offer-${offer.id}") { Box(Modifier.padding(top = 12.dp)) { OfferBlock(offer) } }
             if ((thinking || working) && phone.conversation.streamed.isEmpty()) item("work") {

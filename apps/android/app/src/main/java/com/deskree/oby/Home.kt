@@ -385,9 +385,12 @@ fun InboxPage() {
                 for (item in items) {
                     val offer = item.offerValue?.id?.let { id -> offers.firstOrNull { it.id == id } }
                     if (offer != null && !placed.add(offer.id)) continue
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        T(item.line(now), Tokens.textSm, c.muted, lines = 1)
-                        if (offer != null) OfferBlock(offer, opensConversation = true) else InboxDecision(item, openTask = true)
+                    // Keyed: a card's state (its answer under way, words half typed) stays its own as others go.
+                    androidx.compose.runtime.key(offer?.id ?: item.id) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            T((if (offer != null) item.copy(title = offer.title) else item).line(now), Tokens.textSm, c.muted, lines = 1)
+                            if (offer != null) OfferBlock(offer, opensConversation = true) else InboxDecision(item, openTask = true)
+                        }
                     }
                 }
                 if (items.isEmpty()) T("Nothing needs you", Tokens.textBase, c.muted)
