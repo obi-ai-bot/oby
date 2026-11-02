@@ -64,7 +64,8 @@ nonisolated enum PhoneWork {
         if item.status == .needs {
             let kind = decision.map { PhoneAsk.label($0, plan: job.question?.plan != nil) }
                 ?? (job.waitsForPermission ? "Permission" : job.waitsForAnswer ? AskKind.label("question", plan: job.question?.plan != nil)
-                    : job.reviewNeedsYou ? AskKind.label("review") : job.mergeNeedsYou ? AskKind.label("merge") : AskKind.label("failed"))
+                    : job.reviewNeedsYou ? AskKind.label("review") : job.mergeNeedsYou ? AskKind.label("merge")
+                    : job.canPublish ? "Ready to publish" : AskKind.label("failed"))
             return "Needs you · \(kind)"
         }
         if item.queued { return job.waiting.map { "Queued · \($0.text)" } ?? "Queued" }

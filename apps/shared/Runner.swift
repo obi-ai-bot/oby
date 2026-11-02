@@ -237,8 +237,14 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
         }
     }
 
-    /// Commits not on its pull request yet: all of them before it's published, then later rounds' ones.
-    var unpublished: Int { max(0, (commits ?? 0) - (published == nil ? 0 : pushed ?? commits ?? 0)) }
+    /// Commits not out yet, as obid's `Job::unpublished`: all of them before it's pushed, then later
+    /// rounds' ones. Pushed with no pull request (a remote with none, `pullRequests: false`) counts as
+    /// out, and so does a push whose pull request alone failed (#627, #1763).
+    var unpublished: Int {
+        let commits = commits ?? 0
+        let out = published != nil ? pushed ?? commits : publishError == nil ? pushed ?? 0 : 0
+        return max(0, commits - out)
+    }
     /// Not once the user dismissed it, never on Oby's own review jobs, and never once its pull
     /// request was merged or closed (as Engine's `Job.canPublish`).
     var canPublish: Bool {
