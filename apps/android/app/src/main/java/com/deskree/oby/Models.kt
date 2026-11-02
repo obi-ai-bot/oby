@@ -128,6 +128,8 @@ enum class JobStatus { queued, running, done, failed, stopped, interrupted;
     val published: String? = null,
     val pushed: Int? = null,
     val publishError: String? = null,
+    /** The commit its branch was at when its check passed and it ended done: the only one publishing pushes (PUBLISHING-1). */
+    val checkedHead: String? = null,
     val issue: Int? = null,
     val rounds: Int? = null,
     val round: Int? = null,
@@ -232,7 +234,8 @@ enum class JobStatus { queued, running, done, failed, stopped, interrupted;
         val out = if (published != null) pushed ?: commits ?: 0 else if (publishError == null) pushed ?: 0 else 0
         return maxOf(0, (commits ?: 0) - out)
     }
-    val canPublish get() = st == JobStatus.done && kind != "research" && kind != "review" && base != null && unpublished > 0 &&
+    /** As obid's `Job::can_publish`: only while its branch is at the commit its check passed on (`checkedHead`, PUBLISHING-2). */
+    val canPublish get() = st == JobStatus.done && kind != "research" && kind != "review" && base != null && unpublished > 0 && checkedHead != null &&
         dismissed == null && reviewOf == null && (pullRequestState ?: "OPEN") == "OPEN"
     val stranded get() = st == JobStatus.done && published != null && unpublished > 0 && reviewOf == null &&
         (pr_?.let { it.state != "OPEN" } ?: false)
