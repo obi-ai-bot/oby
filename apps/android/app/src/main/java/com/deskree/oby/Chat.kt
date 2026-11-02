@@ -208,6 +208,7 @@ private fun Thread(shown: String?, modifier: Modifier, problem: String?, edit: (
     val working = phone.conversation.working
     val startedBy = { job: Job -> ThreadTaskLine.startedBy(job.turn, job.conversation, shown) }
     val placed = ThreadTaskLine.shown(turns, phone.jobs, startedBy, phone.conversation::endedTurn)
+    val cards = ThreadTaskLine.cards(turns, phone.jobs, startedBy, phone.conversation::endedTurn)
     val decisions = InboxItem.waiting(phone.inbox, now)
     // What Oby offered to start, under its answer to the words it was offered for; an event turn's last.
     val offers = OfferCard.of(phone.inbox, shown, now)
@@ -232,12 +233,14 @@ private fun Thread(shown: String?, modifier: Modifier, problem: String?, edit: (
                 val row = rows[index]
                 LaunchedEffect(row.turn.jobs) { ConversationModel.missing(row.turn, phone.jobs).forEach { phone.fetch(it) } }
                 MessageRow(row, index == 0, now, column,
-                    jobs = ThreadTaskLine.cards(row.turn, turns, phone.jobs, startedBy),
+                    jobs = cards[row.turn.id].orEmpty(),
                     followUps = { job -> if (phone.conversation.endedTurn(row.turn)) emptyList() else ThreadTaskLine.attached(job, phone.jobs, placed) },
                     steps = phone.conversation.steps(row.turn, turns), streamed = phone.conversation.streamed(row.turn, turns),
                     failure = phone.failures[row.turn.id], waiting = phone.waitsToSendEcho(row.turn.id),
                     onRetry = { phone.retry(row.turn.id) }, onEdit = { edit(row.turn.text); phone.discard(row.turn.id) })
-                for (item in decisions.filter { row.turn.jobs?.contains(it.job) == true }) Box(Modifier.padding(top = 12.dp)) { InboxDecision(item) }
+                // A decision goes with its task's card.
+                val carded = cards[row.turn.id].orEmpty().map { it.id }
+                for (item in decisions.filter { it.job in carded }) Box(Modifier.padding(top = 12.dp)) { InboxDecision(item) }
                 for (offer in offers.filter { it.id == under[row.turn.id] }) Box(Modifier.padding(top = 12.dp)) { OfferBlock(offer) }
             }
             for (offer in offers.filter { it.id !in under.values }) item("offer-${offer.id}") { Box(Modifier.padding(top = 12.dp)) { OfferBlock(offer) } }
