@@ -898,6 +898,7 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
         jobs: &[],
         conversation: CONVERSATION,
         turn: "",
+        signed: false,
     };
     let ran = super::harness::event(shared, &account, &asked, &control, watch.clone()).await;
     shared.turns.end(&control);

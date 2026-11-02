@@ -40,7 +40,7 @@ pub(super) fn list() -> Value {
         "check": {"type": "string", "maxLength": 200, "description": "Only when the owner named one (\"Check: …\", \"run … to check\"): that one-line shell command, exactly as they said it, which must pass before Oby publishes. Left out, the repository's own check applies."},
         "complexity": {"type": "string", "enum": ["routine", "complex"], "description": "complex for large or tricky work, which runs at the account's effort for complex tasks. Left out, routine."},
         "base_branch": {"type": "string", "description": "Only when the owner named one: the branch the work starts from and its pull request goes into. Left out, the repository's default."},
-        "branch": {"type": "string", "description": "Only when the owner named one or the repository's own instructions set a rule for branch names: the branch the work goes on. A new one publishes by itself as Oby's own do. Left out, or on a turn that read something untrusted, Oby names one."},
+        "branch": {"type": "string", "description": "Only when the owner named one or the repository's own instructions set a rule for branch names: the branch the work goes on. A new one publishes by itself as Oby's own do. Left out, or on a turn that read something untrusted unless the owner's own words name it, Oby names one; the job's real one comes back when it starts, and that's the one to tell the owner."},
         "rounds": {"type": "integer", "minimum": 1, "maximum": 10, "description": "How many rounds the agent may take: more than 1 only when the owner asked it to keep going until done."}},
         "required": ["repo", "task"]});
     json!([
@@ -1942,7 +1942,7 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
     }
     let cards: Vec<Value> = jobs
         .iter()
-        .map(|j| json!({"id": j["id"], "title": j["title"], "status": j["status"], "repo": j["repo"]}))
+        .map(|j| json!({"id": j["id"], "title": j["title"], "status": j["status"], "repo": j["repo"], "branch": j["branch"]}))
         .collect();
     session
         .jobs
@@ -2006,6 +2006,7 @@ fn asked(session: &Session) -> Asked<'_> {
         jobs: &session.attached_jobs,
         conversation: &session.conversation,
         turn: &session.control.turn,
+        signed: session.control.signed(),
     }
 }
 
