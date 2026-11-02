@@ -192,6 +192,7 @@ class LogicTest {
         assertEquals(1, done(""""commits":2,"pushed":1,"published":"https://github.com/o/r/pull/1"""").unpublished)
         // Never pushed: everything is to go.
         assertEquals(1, done(""""commits":1""").unpublished)
+    }
 
     /** Oby's offers (Electron's live.ts `offersOf` and `chatOf`): one card per offer, under the answer to the words it was offered for. */
     @Test fun offersShowUnderTheirAnswer() {
