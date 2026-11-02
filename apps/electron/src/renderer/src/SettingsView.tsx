@@ -132,7 +132,6 @@ export function SettingsPage({ title, label = title, leaving, covered = false, o
 function General() {
   const [login, setLogin] = useSetting('login', true);
   const [speaks, setSpeaks] = useSetting('voice.speaks', true);
-  const [language, setLanguage] = useSetting('voice.language', 'system');
   return <>
     <Group i={1}>
       <Row label="Open at login"><Switch on={login} onChange={setLogin} label="Open at login" /></Row>
@@ -143,9 +142,7 @@ function General() {
     {/* Voice: back later, with talking to Oby (only with ?everything) */}
     {everything && <Group i={3} title="Voice" footer="When you talk to Oby with fn, it answers out loud and, after fn + Space, listens again for your answer until you press fn or say “stop”. Typed messages are answered in writing. Pressing fn stops it mid-sentence.">
       <Row label="Speak replies to spoken requests"><Switch on={speaks} onChange={setSpeaks} label="Speak replies to spoken requests" /></Row>
-      <Row label="Speech language">
-        <Select value={language} onChange={setLanguage} label="Speech language" options={[['system', 'Mac language'], ['en-US', 'English'], ['pt-BR', 'Português (Brasil)'], ['pt-PT', 'Português (Portugal)']]} />
-      </Row>
+      {/* Speech is English only (the owner's decision of 2026-11-01): no language to pick */}
     </Group>}
     <Notifications />
   </>;
