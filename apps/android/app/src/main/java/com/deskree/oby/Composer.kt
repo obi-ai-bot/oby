@@ -96,9 +96,12 @@ fun Composer(box: String, prompt: String, onSend: (text: String, spoken: Boolean
 
     fun send() {
         if (!sendable || !enabled) return
-        onSend(field.text, dictated)
-        set("")
+        val text = field.text
+        // The keyboard lets go first: cleared while it still holds a word it's composing, it writes
+        // its old text back into the box, and the words sent stay there to go again.
         focusManager.clearFocus()
+        onSend(text, dictated)
+        set("")
     }
 
     fun toggleDictation() {
