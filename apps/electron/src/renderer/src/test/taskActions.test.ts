@@ -313,8 +313,40 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     ['PATCH /v1/jobs/j1', (l) => l.renameJob('j1', 'Vault tests')],
     ['POST /v1/github/work/w1/start', (l) => l.startGitHubWork('w1')],
     ['POST /v1/jobs/j1/messages', (l) => l.tellJob('j1', 'And the docs')],
-    ['POST /v1/jobs/j1/dismiss', (l) => l.answerJob('j1', 'Dismiss')],
+    ['POST /v1/jobs/j1/dismiss', (l) => l.answerJob('j1', 'Stop here')],
   ];
+
+  // #1836: Sangam's failed card, on a job with no inbox item
+  describe('a failed task\'s card', () => {
+    const failed = async () => {
+      const { tasks, live } = await load(true);
+      await following(live, [job({ status: 'failed', step: 'Failed', summary: 'It broke', revision: 1 })]);
+      calls.length = 0;
+      return { tasks, live };
+    };
+    const ask = (t: Awaited<ReturnType<typeof load>>['tasks']) => t.dev!.get().find((x) => x.id === 'j1')!.job.ask;
+
+    it('offers another round and stopping, with another round first', async () => {
+      const { tasks } = await failed();
+      expect(ask(tasks)).toMatchObject({ kind: 'failed', options: ['Give it another round', 'Stop here'], recommended: 0 });
+    });
+    it('Give it another round tells its agent obid\'s Try-again words', async () => {
+      const { live } = await failed();
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', revision: 2 }) };
+      await live.answerJob('j1', 'Give it another round');
+      expect(calls.at(-1)).toMatchObject({ method: 'POST', path: '/v1/jobs/j1/messages' });
+      expect(JSON.stringify(calls.at(-1)!.body)).toContain('Try again, picking up where you left off.');
+      expect(live.liveState().jobs.j1.status).toBe('running');
+    });
+    it('a refused round says why, and leaves the choice', async () => {
+      const { tasks, live } = await failed();
+      answers['POST /v1/jobs/j1/messages'] = { status: 409, body: { error: 'It can\'t go on from here.' } };
+      await live.answerJob('j1', 'Give it another round');
+      expect(live.liveState().problem).toBe('It can\'t go on from here.');
+      expect(live.liveState().answered.j1).toBeUndefined();
+      expect(ask(tasks)!.options).toContain('Stop here');
+    });
+  });
   it.each(asJobs)('%s: an answer older than the job\'s event keeps the event\'s job, and never brings back a deleted one', async (route, act) => {
     const { tasks, live } = await load(true);
     const event = await following(live, [job({ status: 'running', step: 'Working', revision: 1 })]);

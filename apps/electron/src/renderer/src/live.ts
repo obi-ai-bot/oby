@@ -180,15 +180,20 @@ const itemOf = (s: Live, job: string) => {
   return items.find((i) => WAITS.has(i.kind)) ?? items[0];
 };
 
+// Sangam's failed card: another round tells its agent to try again where it left off (obid's
+// words, docs/runner-api.md), Stop here lets it go. His Open the session is the card's Open task.
+const ANOTHER_ROUND = 'Give it another round', STOP_HERE = 'Stop here';
+const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
+
 // What a job needs from you: that decision (a permission's command as its detail); or, failed or
-// interrupted and not let go, letting it go
+// interrupted and not let go, what's next for it
 function askOf(s: Live, j: Job): Ask | undefined {
   const item = itemOf(s, j.id);
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   if ((j.accountLimit || s.limits.some((d) => d.jobs.some((job) => job.id === j.id))) && (!item || item.kind === 'limit')) return undefined;
   if (item) return itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
   if ((j.status === 'failed' || j.status === 'interrupted') && !j.dismissed) {
-    return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: j.summary.split('\n')[0] || j.step, options: ['Dismiss'] };
+    return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: j.summary.split('\n')[0] || j.step, options: [ANOTHER_ROUND, STOP_HERE], recommended: 0 };
   }
 }
 
@@ -915,10 +920,13 @@ export async function answerJob(id: string, option: string, words?: string) {
       const said = option === TELL && words ? words : option;
       const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
       take({ kind: 'inbox', item: await api.answer(item.id, body) });
-    } else if (option === 'Dismiss') {
+    } else if (option === STOP_HERE) {
       // a failed job with no item: let go
       const next = await api.dismiss(id);
       take({ kind: 'job', job: next });
+    } else if (option === ANOTHER_ROUND) {
+      // (a refusal is said, and the card comes back)
+      if (!await tellJob(id, TRY_AGAIN)) set({ answered: without(state.answered, id) });
     }
   } catch (e) {
     // not taken: it's still yours to answer
