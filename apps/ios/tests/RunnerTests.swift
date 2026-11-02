@@ -114,6 +114,30 @@ struct RunnerTests {
         #expect(ThreadTaskLine.cards(under: report, in: thread, jobs: [started], startedBy: \.turn).isEmpty)
     }
 
+    /// A task's card sits under Oby's answer to the words that started it, and stays there once
+    /// its report arrives (Electron's `chatOf`, #1773).
+    @Test func aTasksCardStaysUnderTheAnswer() throws {
+        let named = job.replacingOccurrences(of: #""published": null}"#, with: #""published": null, "turn": "u1"}"#)
+        let started = try Runner.decoder.decode(Job.self, from: Data(named.utf8))
+        let words = Turn(id: "u1", who: .user, text: "do it")
+        let answer = Turn(id: "o1", who: .oby, text: "On it.")
+        let report = Turn(id: "r1", who: .oby, text: "Done.", jobs: [started.id])
+        let cards = { (thread: [Turn]) in
+            ThreadTaskLine.cards(in: thread, jobs: [started], startedBy: \.turn, ended: { $0.id == "r1" }).mapValues { $0.map(\.id) }
+        }
+        #expect(cards([words])["u1"] == [started.id], "before Oby answers: under the words, the moment it starts")
+        let after = cards([words, answer, report])
+        #expect(after["o1"] == [started.id])
+        #expect(after["u1"] == [] && after["r1"] == [], "not under the words, and not again under its report")
+        // Words left with no answer (Stop, or more words sent) keep what they started.
+        let more = Turn(id: "u2", who: .user, text: "and this")
+        let second = Turn(id: "o2", who: .oby, text: "On that.")
+        for thread in [[words, more], [words, more, second]] {
+            #expect(cards(thread)["u1"] == [started.id])
+            #expect(cards(thread)["u2"] == [])
+        }
+    }
+
     @Test func eventsAndPings() throws {
         var parser = EventParser()
         let account = #"[{"id": "default", "agent": "claude", "name": "Deskree", "label": "Team · w@deskree.com", "signedIn": true, "fiveHour": 0.1, "sevenDay": null, "running": 1}]"#
