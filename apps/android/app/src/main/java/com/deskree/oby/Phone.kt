@@ -766,7 +766,7 @@ class Phone(val context: Context) {
         val device = registerDevice()
         val approval = DeviceKey.approve(id, action, device)
         val url = runner.publish(id, approval)
-        jobs.firstOrNull { it.id == id }?.let { apply(RunnerEvent.JobChanged(it.copy(published = url, pushed = it.commits))) }
+        jobs.firstOrNull { it.id == id }?.let { apply(RunnerEvent.JobChanged(it.copy(published = url, pushed = it.commits, obidCanPublish = false))) }
         return url
     }
 
