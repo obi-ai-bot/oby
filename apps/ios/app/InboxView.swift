@@ -282,3 +282,109 @@ nonisolated enum PhoneAsk {
         return (first, happened.isEmpty ? nil : happened)
     }
 }
+
+/// Work Oby offers to start in a conversation (obid's `oby_offer`), as Electron's OfferCard: one
+/// card per offer (a turn's), its start items still waiting, in the order they came. Put off with
+/// Later, a card is gone until its time.
+struct PhoneOffer: Identifiable, Equatable {
+    var id: String
+    var title: String
+    var jobs: [(what: String, task: String)]
+    var untrusted: Bool
+    /// Its inbox items, each answered when the card is.
+    var items: [String]
+
+    static func == (a: PhoneOffer, b: PhoneOffer) -> Bool {
+        a.id == b.id && a.title == b.title && a.untrusted == b.untrusted && a.items == b.items
+            && a.jobs.map(\.what) == b.jobs.map(\.what) && a.jobs.map(\.task) == b.jobs.map(\.task)
+    }
+
+    static func offers(_ inbox: [InboxItem], in conversation: String?, now: Date = .now) -> [PhoneOffer] {
+        guard let conversation else { return [] }
+        let open = inbox.filter { $0.kind == "start" && $0.offer != nil && $0.conversation == conversation && $0.isOpen }
+            .sorted { $0.created < $1.created }
+        var ids: [String] = []
+        let cards = Dictionary(grouping: open) { item in
+            let id = item.offer!.id
+            if !ids.contains(id) { ids.append(id) }
+            return id
+        }
+        return ids.compactMap { id in
+            guard let items = cards[id], items.contains(where: { $0.waiting(at: now) }) else { return nil }
+            return PhoneOffer(id: id, title: items.count == 1 ? items[0].title : "\(items.count) jobs",
+                              jobs: items.map { ($0.offer!.what, $0.offer!.task) },
+                              untrusted: items.contains { $0.offer!.untrusted }, items: items.map(\.id))
+        }
+    }
+
+    /// Where each card goes: under Oby's first answer after the words it was offered for (its id),
+    /// by that answer's id; one with no answer yet (still coming, or an event turn's) goes last.
+    static func placed(_ offers: [PhoneOffer], in turns: [Turn]) -> (under: [String: [PhoneOffer]], last: [PhoneOffer]) {
+        var under: [String: [PhoneOffer]] = [:], last: [PhoneOffer] = []
+        for offer in offers {
+            if let asked = turns.firstIndex(where: { $0.id == offer.id && $0.who == .user }),
+               let answer = turns[(asked + 1)...].first(where: { $0.who == .oby }) {
+                under[answer.id, default: []].append(offer)
+            } else {
+                last.append(offer)
+            }
+        }
+        return (under, last)
+    }
+}
+
+/// An offer's card under Oby's answer: each job in obid's words with the task Oby planned, quoted,
+/// and whether Oby read something it didn't write first; then Dispatch, Skip and Later. Only this
+/// tap starts it (the owner's Start); Skip cancels it; Later puts it off an hour.
+struct OfferCard: View {
+    @Environment(Phone.self) private var phone
+    let offer: PhoneOffer
+    @State private var busy: String?
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(AskKind.label("start")).font(Tokens.font(Tokens.textSm, .medium)).foregroundStyle(Tokens.needsInk)
+            Text(offer.title).font(Tokens.font(Tokens.textBase, .medium)).foregroundStyle(Tokens.ink).lineSpacing(6)
+                .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(Array(offer.jobs.enumerated()), id: \.offset) { _, job in
+                Text("\(job.what). The task Oby planned:").font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.text).lineSpacing(6)
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+                Text(verbatim: job.task).font(Tokens.mono(12)).foregroundStyle(Tokens.text).lineSpacing(6)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Tokens.codeBg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.top, 8)
+            }
+            if offer.untrusted {
+                Text("Oby planned this after reading something it didn’t write.").font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.text)
+                    .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+            }
+            CenteredFlow(spacing: 8, centred: false) {
+                OptionPill(option: CardOption(label: "Dispatch", answer: "Start", recommended: true), index: 0, primary: true,
+                           pending: busy == "Start", disabled: busy != nil) { answer("Start") }
+                OptionPill(option: CardOption(label: "Skip", answer: "Cancel"), index: 1, pending: busy == "Cancel", disabled: busy != nil) { answer("Cancel") }
+                OptionPill(option: CardOption(label: "Later", answer: "Later"), index: nil, quiet: true, disabled: busy != nil) { answer(nil) }
+            }
+            .padding(.top, 14)
+            if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8) }
+        }
+        .modifier(AskInset(on: true))
+    }
+
+    /// Each of its jobs still waiting gets the answer: Start, Cancel, or put off an hour (nil).
+    private func answer(_ answer: String?) {
+        busy = answer ?? "Later"
+        Task {
+            defer { busy = nil }
+            do {
+                for item in offer.items {
+                    try await phone.settle(item, answer: answer, later: answer == nil ? .now.addingTimeInterval(3600) : nil)
+                }
+                problem = nil
+            } catch { problem = error.localizedDescription }
+        }
+    }
+}

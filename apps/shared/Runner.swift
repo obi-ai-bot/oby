@@ -421,6 +421,18 @@ nonisolated struct InboxItem: Codable, Identifiable, Equatable, Sendable {
     var why: String?
     /// On a `confirm` item (obid only, #546), what its Confirm carries out.
     var confirm: RunnerConfirm? = nil
+    /// On a `start` item Oby offered in a conversation (obid only, `oby_offer`): that conversation,
+    /// and the offer: its card's id (the user's turn it was offered in), obid's words for the job,
+    /// the task Oby planned, and whether the turn had read something untrusted first.
+    var conversation: String? = nil
+    var offer: Offer? = nil
+
+    nonisolated struct Offer: Codable, Equatable, Sendable {
+        var id: String
+        var what: String
+        var task: String
+        var untrusted: Bool
+    }
 
     var isOpen: Bool { done == nil }
     /// Those words, for its card.

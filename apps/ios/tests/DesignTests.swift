@@ -138,6 +138,24 @@ struct DesignTests {
     }
 
     /// Settings › Agents says an account's use as Electron's accountRow and weekWords do.
+    /// Oby's offer (obid's `oby_offer`) is a card in its conversation, as Electron's OfferCard:
+    /// one per offer, under Oby's answer to the words it was offered for, gone while put off (#1762).
+    @Test func offersAreCardsUnderObysAnswer() {
+        func start(_ id: String, offer: String, conversation: String = "c1", later: Date? = nil, untrusted: Bool = false) -> InboxItem {
+            InboxItem(kind: "start", id: id, job: "j-\(id)", title: "Fix the login", text: "", options: ["Start", "Cancel"],
+                      created: now.addingTimeInterval(Double(id.count)), later: later, conversation: conversation,
+                      offer: .init(id: offer, what: "Fix oby #12 on Claude Code", task: "Fix the login bug", untrusted: untrusted))
+        }
+        let inbox = [start("a", offer: "u1"), start("bb", offer: "u1", untrusted: true), start("c", offer: "u2", conversation: "c2"),
+                     start("dd", offer: "u3", later: now.addingTimeInterval(600))]
+        let offers = PhoneOffer.offers(inbox, in: "c1", now: now)
+        #expect(offers.map(\.id) == ["u1"], "another conversation's, and one put off, aren't here")
+        #expect(offers[0].title == "2 jobs" && offers[0].untrusted && offers[0].items == ["a", "bb"])
+        let turns = [Turn(id: "u1", date: now, who: .user, text: "fix it"), Turn(id: "o1", date: now, who: .oby, text: "Its card is on your answer")]
+        #expect(PhoneOffer.placed(offers, in: turns).under["o1"] == offers)
+        #expect(PhoneOffer.placed(offers, in: Array(turns.prefix(1))).last == offers, "its answer still coming: last")
+    }
+
     @Test func agentUsageSaysWhatElectronsSays() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         func account(_ json: String) throws -> Account { try Runner.decoder.decode(Account.self, from: Data(json.utf8)) }
