@@ -20,7 +20,9 @@ const account = { id: 'a1', agent: 'claude', name: 'Personal', signedIn: true, f
 
 describe('the task page on obid data', () => {
   it('#1795: a task that stopped has no clock on the stage it stopped on; a done one waiting on review has', () => {
-    expect(stagesOf(job({ status: 'interrupted' }), NOW).map((s) => s.took)).toEqual(['22s', undefined, '≈ 30s']);
+    // what it took until it stopped, not growing, and never an estimate
+    expect(stagesOf(job({ status: 'interrupted', finished: ago(78) }), NOW).map((s) => s.took)).toEqual(['22s', '8m 20s', '≈ 30s']);
+    expect(stagesOf(job({ status: 'interrupted', finished: null }), NOW)[1].took).toBeUndefined();
     expect(stagesOf(job({ status: 'done' }), NOW)[1].took).toBe('9m 38s so far');
   });
 

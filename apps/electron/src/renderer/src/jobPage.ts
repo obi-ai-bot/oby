@@ -28,6 +28,8 @@ const ENDED = new Set(['done', 'failed', 'stopped', 'interrupted']);
 // nothing's running and nobody else has it: a stage it stopped on has no clock. (A done job's review
 // or merge stage is current too, with someone at it, so its clock runs.)
 const STOPPED = new Set(['failed', 'stopped', 'interrupted']);
+// when a current stage's time ends: now, or when the task stopped (none known: it has no time)
+const stageEnd = (j: Job, now: number) => (STOPPED.has(j.status) ? (j.finished ? Date.parse(j.finished) : null) : now);
 
 // The stages, with how long each took (or should: "≈ 6m"), and the agent's activity and latest
 // words under Work
@@ -38,8 +40,10 @@ export function stagesOf(j: Job, now = Date.now()): Stage[] {
   const unread = j.published && j.pullRequestError ? j.pullRequestError : undefined;
   const waits = ['merged', 'review'].find((id) => stages.some((st) => st.id === id && st.state === 'current'));
   return stages.map((st) => {
+    const end = stageEnd(j, now);
     const took = st.seconds != null ? span(st.seconds)
-      : st.state === 'current' && st.started && !STOPPED.has(j.status) ? `${span(since(st.started, now) - (st.waited ?? 0))} so far`
+      : st.state === 'current' && STOPPED.has(j.status) ? (st.started && end != null ? span(since(st.started, end) - (st.waited ?? 0)) : undefined)
+      : st.state === 'current' && st.started ? `${span(since(st.started, now) - (st.waited ?? 0))} so far`
         : st.estimate ? `≈ ${span((st.estimate.low + st.estimate.high) / 2)}` : undefined;
     const work = st.id === 'work';
     return {
@@ -53,7 +57,7 @@ export function stagesOf(j: Job, now = Date.now()): Stage[] {
 // how long it has run: every stage's time, the current one's so far (waiting on the owner left out)
 function ran(j: Job, now: number) {
   return (j.pipeline?.stages ?? []).reduce((sum, st) =>
-    sum + (st.seconds ?? (st.state === 'current' && st.started && !STOPPED.has(j.status) ? Math.max(0, since(st.started, now) - (st.waited ?? 0)) : 0)), 0);
+    sum + (st.seconds ?? (st.state === 'current' && st.started && stageEnd(j, now) != null ? Math.max(0, since(st.started, stageEnd(j, now)!) - (st.waited ?? 0)) : 0)), 0);
 }
 
 // The time track: how far in, and when it should be done (from-to), as % of the track; paused
