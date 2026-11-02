@@ -751,6 +751,11 @@ fn check_words(command: &str) -> (BTreeSet<String>, BTreeSet<String>) {
 /// the owner's Merge is asked.
 pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
     if let Some(why) = job.check_refuses_secrets() {
+        // The chain of what read what is the job's own record: a person reads this.
+        let why = match job.foreign {
+            Some(_) => "its task read something Oby didn't write".to_owned(),
+            None => why,
+        };
         return Some(format!(
             "Its check passed, but {why}, so it's yours to merge."
         ));
@@ -3460,6 +3465,15 @@ mod tests {
             check_apart(&unvetted, command, Some(&files(&["a.rs"]))).as_deref(),
             Some(
                 "Its check passed, but it didn't start from the owner's own words in Oby's apps, so it's yours to merge."
+            )
+        );
+        let mut read = own.clone();
+        read.foreign =
+            Some("Oby's conversation that wrote its words read the title of job 665a79b6".into());
+        assert_eq!(
+            check_apart(&read, command, Some(&files(&["a.rs"]))).as_deref(),
+            Some(
+                "Its check passed, but its task read something Oby didn't write, so it's yours to merge."
             )
         );
         let mut untrusted = own.clone();

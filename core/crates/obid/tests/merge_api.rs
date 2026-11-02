@@ -736,6 +736,48 @@ fn tasks_13_an_oby_reviews_card_settles_once_its_pull_request_closes() {
     assert_eq!(carded["dismissed"], Value::Null, "{carded}");
 }
 
+/// MERGING-26: while Oby's own review of a pull request is at work, it has no merge card: "Ready to
+/// merge" and "nobody has approved" would be said of a head Oby is still reading.
+#[test]
+fn merging_26_no_merge_card_while_obys_review_is_at_work() {
+    let folder = Folder::new("review-at-work");
+    let mut review = obid::job::Job::new(
+        "r7c6b5a4".into(),
+        REPO.into(),
+        "review".into(),
+        "Fix the thing".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    review.status = obid::job::Status::Running;
+    review.review_of = Some(ID.into());
+    // Parked on the owner's OK, it stays at work through obid's start.
+    review.step = "Waiting for your OK".into();
+    let command = json!({"command": "git diff origin/dev...HEAD"});
+    review.permission = Some(
+        serde_json::from_value(json!({"id": "p1a2b3c", "tool": "Bash",
+            "title": "Run git diff origin/dev...HEAD", "detail": "git diff origin/dev...HEAD",
+            "rule": null, "always": null}))
+        .unwrap(),
+    );
+    review.parked =
+        Some(serde_json::from_value(json!({"tool": "Bash", "input": command})).unwrap());
+    let mut author = published();
+    author.base = Some("main".into());
+    author.reviewing = Some(review.id.clone());
+    let obid = started_with_jobs(&folder, true, None, &[author, review], &[]);
+    let file = folder.0.join("gh/view.json");
+    let mut view: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    view["baseRefName"] = json!("main");
+    std::fs::write(&file, view.to_string()).unwrap();
+    within(30, "the follower read it", || {
+        calls(&folder.0).contains("pr view").then_some(())
+    });
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    assert_eq!(merge_cards(&obid), Vec::<Value>::new());
+    assert_eq!(job(&obid)["mergeNeedsYou"], false, "{}", job(&obid));
+}
+
 /// TASKS-13: an Oby review parked on the owner's OK (its agent waited 10 minutes for a permission,
 /// so obid ended it) is still running, so its card stayed on Home after the pull request it
 /// reviewed closed (the drive of 2026-10-31). While that pull request is open the review and its

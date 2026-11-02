@@ -11715,7 +11715,11 @@ impl Jobs {
         };
         let stop =
             stop.or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
-        let card = if let Some(why) = stop {
+        let card = if job.reviewing.is_some() {
+            // Oby's own review is at work on it: it's no one's to merge yet, and "nobody has
+            // approved" would say something untrue of that review (MERGING-26).
+            None
+        } else if let Some(why) = stop {
             // A change request, red checks and a reviewer account signed out are holds the
             // owner's own Merge lifts: one card names every hold, with Merge where Oby knows how
             // it'd merge and their word lifts them all (MERGING-21).
