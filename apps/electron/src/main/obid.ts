@@ -4,6 +4,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, stat
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
+import { atLaunch, field, type Other } from '../shared/engine';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
 // answering on this Mac, adopted. Its token stays here in main: the renderer asks main for each
@@ -60,14 +61,17 @@ function reason(error?: unknown): Answer {
 // for each of the page's calls.
 const TAKEN = 'Something other than your Oby engine answers on 127.0.0.1:7777 (another user’s Oby on this Mac, or another program), so Oby sends it nothing. Quit it, or log that user out, and open Oby again.';
 let mineUntil = 0;
+// The pids of this user's on the port
+async function listening(): Promise<string[]> {
+  try {
+    return (await run('/usr/sbin/lsof', ['-nP', '-a', `-iTCP@127.0.0.1:${PORT}`, '-sTCP:LISTEN', '-t'])).stdout.split('\n').filter(Boolean);
+  } catch { return []; /* exit 1: no process of this user's listens there */ }
+}
 async function listener(): Promise<'mine' | 'foreign' | 'none'> {
   if (Date.now() < mineUntil) return 'mine';
-  let pids: string[] = [];
-  try {
-    pids = (await run('/usr/sbin/lsof', ['-nP', '-a', `-iTCP@127.0.0.1:${PORT}`, '-sTCP:LISTEN', '-t'])).stdout.split('\n').filter(Boolean);
-  } catch { /* exit 1: no process of this user's listens there */ }
+  const pids = await listening();
   if (!pids.length) return await answers() ? 'foreign' : 'none';
-  const launchds = await Promise.all([LABEL, SESSION, ...Object.keys(OTHERS)].map(async (label) => field(await launchd(label), 'pid')));
+  const launchds = await Promise.all([LABEL, SESSION, ...OTHERS].map(async (label) => field(await launchd(label), 'pid')));
   for (const pid of pids) {
     const byHand = !app.isPackaged && await run('/bin/ps', ['-o', 'comm=', '-p', pid]).then((r) => basename(r.stdout.trim()) === 'obid', () => false);
     if (launchds.includes(pid) || byHand) { mineUntil = Date.now() + 10_000; return 'mine'; }
@@ -111,9 +115,10 @@ export async function send(method: string, path: string, body: unknown, signal?:
 // plist (build/com.deskree.oby.electron.obid.plist), registered with SMAppService through
 // Electron: launchd starts it now and at every login, and keeps it running after Oby quits, with
 // its jobs and the iPhone's relay. An obid of this user's already answering on 7777 is adopted as
-// it is. While launchd has the Swift Oby's login item or install.sh's agent (OTHERS), this app
-// registers none and stands its own down, so two agents never fight for the port at login. The
-// Swift app's lessons (apps/mac/app/LoginItem.swift):
+// it is, the Swift Oby's or install.sh's (OTHERS) too, and this app's own then stands down. One of
+// those that launchd has loaded but that doesn't answer blocks nothing: this app's own starts, and
+// it's taken out of launchd until the next login only if it would come back for the port
+// (shared/engine.ts, docs/contracts/engine.md). The Swift app's lessons (apps/mac/app/LoginItem.swift):
 // - only from Applications: a translocated copy, or one on the disk image, would register a path
 //   that goes away;
 // - macOS may want the user's approval first (System Settings › General › Login Items);
@@ -127,8 +132,8 @@ export async function send(method: string, path: string, body: unknown, signal?:
 const PLIST = 'com.deskree.oby.electron.obid.plist';
 const LABEL = 'com.deskree.oby.electron.obid';
 const SESSION = `${LABEL}.session`;
-// the other agents that start an obid at login, and whose they are
-const OTHERS = { 'com.deskree.oby.obid': 'the Swift Oby', 'com.deskree.obid': 'install.sh' };
+// the other agents that start an obid at login: the Swift Oby's, install.sh's
+const OTHERS = ['com.deskree.oby.obid', 'com.deskree.obid'];
 const SERVICE = { type: 'agentService', serviceName: PLIST } as const;
 const LOGIN_ITEMS = 'x-apple.systempreferences:com.apple.LoginItems-Settings.extension';
 const run = promisify(execFile);
@@ -151,9 +156,6 @@ const helper = () => join(process.resourcesPath, '../Helpers/obid');
 async function launchd(label = LABEL): Promise<string | null> {
   try { return (await run('/bin/launchctl', ['print', `${domain()}/${label}`])).stdout; } catch { return null; }
 }
-// one `key = value` line of it
-const field = (printed: string | null, key: string) =>
-  printed?.split('\n').map((l) => l.trim()).find((l) => l.startsWith(`${key} = `))?.slice(key.length + 3);
 
 // The same obid as a job of this login session only: its plist is in the app's own folder, never in
 // ~/Library/LaunchAgents, so from the next login only the registered agent starts obid
@@ -246,19 +248,28 @@ export async function startObid() {
   if (process.platform !== 'darwin' || !app.isPackaged) return;
   starting = true;
   try {
-    const who = await listener();
+    const look = async (waited: boolean) => {
+      const others = await Promise.all(OTHERS.map(async (label) => ({ label, printed: await launchd(label) })));
+      return atLaunch(await listener(), await listening(), others.filter((o): o is Other => o.printed !== null), waited);
+    };
+    let plan = await look(false);
+    if (plan.do === 'wait') {
+      await answers(10_000);
+      plan = await look(true);
+    }
     // never in the way of another user's obid or another program: nothing registered or stopped
-    if (who === 'foreign') { problem = TAKEN; return; }
-    for (const [label, whose] of Object.entries(OTHERS).filter(([l]) => l !== LABEL)) {
-      const printed = await launchd(label);
-      if (!printed) continue;
+    if (plan.do === 'taken') { problem = TAKEN; return; }
+    if (plan.do !== 'own') {
       if (status() === 'enabled' || status() === 'requires-approval') register(false);
       await run('/bin/launchctl', ['bootout', `${domain()}/${SESSION}`]).catch(() => {});
-      const exit = field(printed, 'last exit code');
-      problem = field(printed, 'state') === 'running' ? null : `Oby’s engine on this Mac is ${whose}’s, and it isn’t running (launchd says ${exit ? `its last exit code was ${exit}` : `it’s ${field(printed, 'state') ?? 'not running'}`}). Start it there, or remove it, and open this app again.`;
+      problem = null;
       return;
     }
-    if (who === 'mine') {
+    // ponytail: only for this login; the registration stays, and at the next login both agents start
+    // and the first to bind wins. Refused or not, this app's own still goes on: obid exits 1 on a
+    // taken port.
+    for (const label of plan.retire) await run('/bin/launchctl', ['bootout', `${domain()}/${label}`]).catch(() => {});
+    if (plan.who === 'mine') {
       problem = null;
       for (const label of [LABEL, SESSION]) {
         const printed = await launchd(label);
