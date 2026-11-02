@@ -20,7 +20,7 @@ const item = (kind: string, more: Partial<InboxItem> = {}): InboxItem => ({
 const answered = (body: unknown) => ({ status: 200, text: JSON.stringify(body) });
 
 describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
-it('bypass_5_shows_the_question_as_its_headline_with_the_agents_options_and_tell_it_something', () => {
+  it('bypass_5_shows_the_question_as_its_headline_with_the_agents_options_and_tell_it_something', () => {
     const ask = live.itemAsk(item('agentQuestion', { text: 'Which store?', options: ['SQLite', 'Postgres'], details: ['One file', ''] }));
     expect(ask).toEqual({ kind: 'question', headline: 'Which store?', text: '', options: ['SQLite', 'Postgres', 'Tell it something'] });
   });
@@ -162,5 +162,12 @@ describe('MERGING-8: a failure says what happened', () => {
       kind: 'failed', headline: "Oby's review still asks for changes. Take it from here.", text: '',
       options: ['One more round', 'Merge'],
     });
+  });
+
+  it('says it once on Home, where an item with no task to show it on goes', () => {
+    const failed = item('failed', { text: "Oby's review still asks for changes. Take it from here." });
+    expect(live.homeAsk(failed)).toMatchObject({ headline: failed.text, text: '' });
+    const github = item('github', { headline: 'Review this', text: 'Its words' });
+    expect(live.homeAsk(github)).toMatchObject({ headline: 'Review this', text: 'Its words' });
   });
 });
