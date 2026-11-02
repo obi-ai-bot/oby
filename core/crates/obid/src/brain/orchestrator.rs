@@ -654,7 +654,7 @@ pub(super) async fn call(
                 return Some(Ok(OWNERS_NOW.into()));
             }
             let why = super::briefing::line(&text("why"), 300);
-            let recommends = match super::briefing::line(&text("recommend"), 120) {
+            let recommends = match super::briefing::line(&text("recommend"), 400) {
                 r if r.is_empty() => {
                     " Oby recommends that you review the evidence and choose.".to_owned()
                 }

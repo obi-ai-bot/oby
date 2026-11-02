@@ -133,7 +133,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
                 // needs you; done, it waits on someone else (a reviewer), so a plain ring
                 const state: StageMark = s.state !== 'current' ? s.state : task.status === 'needs' ? 'needs' : done ? 'upcoming' : 'current';
                 // obid's own words for each stage (who reviews it, why it isn't merged)
-                const detail = s.id === 'work' && j.round ? [`Round ${j.round[0]} of ${j.round[1]}`, s.detail].filter(Boolean).join(' · ') : s.detail;
+                const detail = s.id === 'work' && j.round && !s.detail?.startsWith('Round ') ? [`Round ${j.round[0]} of ${j.round[1]}`, s.detail].filter(Boolean).join(' · ') : s.detail;
                 return (
                   <li key={s.id} className={`is-${state}`}>
                     <span className="tc-stage-mark"><StageIcon state={state} /></span>

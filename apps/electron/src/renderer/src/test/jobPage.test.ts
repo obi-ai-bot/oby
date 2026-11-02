@@ -19,6 +19,11 @@ const job = (more: Partial<Job> = {}): Job => ({
 const account = { id: 'a1', agent: 'claude', name: 'Personal', signedIn: true, fiveHour: 0.46, sevenDay: 0.3, sevenDayResets: null, running: 1 } as Account;
 
 describe('the task page on obid data', () => {
+  it('#1795: a task that stopped has no clock on the stage it stopped on; a done one waiting on review has', () => {
+    expect(stagesOf(job({ status: 'interrupted' }), NOW).map((s) => s.took)).toEqual(['22s', undefined, '≈ 30s']);
+    expect(stagesOf(job({ status: 'done' }), NOW)[1].took).toBe('9m 38s so far');
+  });
+
   it('TASKS-4: the pull request link is its short name and opens its page on GitHub', () => {
     expect(prName('https://github.com/deskree-inc/oby/pull/375')).toBe('oby#375');
     expect(prUrl('https://github.com/deskree-inc/oby/pull/375')).toBe('https://github.com/deskree-inc/oby/pull/375');
