@@ -25,8 +25,11 @@ It prints word error rate, terms missed and seconds per clip, for each engine an
 
 - `apple-pt`, `apple-en`: Apple's SpeechTranscriber in one locale (what the iPhone uses today).
 - `apple-best`: both locales on the same clip, keeping the more confident.
-- `whisper`: Whisper large-v3-turbo through whisper.cpp, language detected (`brew install whisper-cpp`,
-  model from huggingface.co/ggerganov/whisper.cpp at `~/oby-dictation-eval/models/`).
-- Parakeet: not wired yet.
+- `parakeet`: NVIDIA Parakeet TDT 0.6B v3 (25 European languages, Portuguese among them, language
+  detected) through FluidAudio's Core ML build. The first run builds it and downloads the model from
+  Hugging Face; after that it runs offline. No hints yet.
+
+Whisper isn't here: Parakeet is smaller and faster at similar accuracy (#1749). It comes back only if
+neither engine handles mixed speech.
 
 The scorer's checks: `cd scripts/dictation-eval && python3 test_score.py`.

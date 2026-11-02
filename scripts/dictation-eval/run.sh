@@ -17,8 +17,6 @@ if [ ! -x "$bin" ] || [ "$here/transcribe.swift" -nt "$bin" ]; then
   swiftc -O -parse-as-library -o "$bin" "$here/transcribe.swift" 2>/dev/null || swiftc -O -o "$bin" "$here/transcribe.swift"
 fi
 
-json() { python3 -I -c 'import json,sys; print(json.dumps({"text": sys.argv[1], "seconds": float(sys.argv[2])}))' "$@"; }
-
 apple() {  # engine name, locales
   mkdir -p "$root/results/$1"
   for wav in "$root"/clips/*.wav; do
@@ -28,32 +26,20 @@ apple() {  # engine name, locales
   done
 }
 
-whisper() {
-  local cli; cli="$(command -v whisper-cli || true)"
-  local model="${WHISPER_MODEL:-$HOME/oby-dictation-eval/models/ggml-large-v3-turbo.bin}"
-  if [ -z "$cli" ] || [ ! -f "$model" ]; then
-    echo "skipping whisper: brew install whisper-cpp, and put ggml-large-v3-turbo.bin at $model (or set WHISPER_MODEL)" >&2
+parakeet() {  # NVIDIA Parakeet TDT 0.6B v3 through FluidAudio; the model downloads on the first run
+  local build="$root/.build/parakeet"
+  if ! swift build -c release --package-path "$here/parakeet" --scratch-path "$build" >"$root/.build/parakeet.log" 2>&1; then
+    echo "skipping parakeet: its build failed (see $root/.build/parakeet.log)" >&2
     return
   fi
-  mkdir -p "$root/results/whisper"
-  for wav in "$root"/clips/*.wav; do
-    name="$(basename "$wav" .wav)"
-    start=$(python3 -I -c 'import time; print(time.time())')
-    prompt=""; [ -n "$terms" ] && prompt="$(paste -sd, "$terms")"
-    if text="$("$cli" -m "$model" -f "$wav" -l auto -nt -np ${prompt:+--prompt "$prompt"} 2>>"$root/results/whisper/errors.log")"; then
-      end=$(python3 -I -c 'import time; print(time.time())')
-      json "$(echo "$text" | tr '\n' ' ')" "$(python3 -I -c "print($end - $start)")" > "$root/results/whisper/$name.json"
-    else
-      echo "whisper failed on $name (see errors.log)" >&2
-    fi
-  done
+  mkdir -p "$root/results/parakeet"
+  "$build/release/parakeet" "$root/results/parakeet" "$root"/clips/*.wav 2>>"$root/results/parakeet/errors.log" \
+    || echo "parakeet failed (see errors.log)" >&2
 }
 
 apple apple-pt pt-BR
 apple apple-en en-US
 apple apple-best pt-BR,en-US
-whisper
-# ponytail: Parakeet joins once its Apple tooling (FluidAudio or MLX) runs on this Mac; then one more function like whisper()
-echo "skipping parakeet: not wired yet (#1749)" >&2
+parakeet
 
 python3 "$here/score.py" "$root"
