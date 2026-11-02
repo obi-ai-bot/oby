@@ -10,6 +10,7 @@ import SessionView from './SessionView';
 import Sidebar from './Sidebar';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
+import TalkPill from './TalkPill';
 import Composer from './Composer';
 import SettingsTip, { dismissSettingsTip } from './SettingsTip';
 import { setFolders } from './folders';
@@ -21,7 +22,7 @@ import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { useSpheres } from './spheres';
 import { everything, onObid, welcome } from './lean';
-import { realId, shownId, useLive } from './live';
+import { realId, shownId, talkReady, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
@@ -413,6 +414,12 @@ export default function Home() {
               {/* a count only once there are 3 or more; fewer, the pictures say it */}
               {peerWith.length >= 3 && peerWith.length}
             </span>
+          </div>
+        )}
+        {/* in a conversation with Oby, at the right: who it talks through, and the way to change that */}
+        {shownTalk && !shownTalk.local && !leavingAll && (!onObid || talkReady(shownTalk.id)) && (
+          <div className="bar-end">
+            <TalkPill chat={shownTalk} />
           </div>
         )}
         {/* on a task's page, at the right: the way into its conversation */}

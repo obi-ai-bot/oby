@@ -50,7 +50,7 @@ const DEFAULT: Record<SetupStep, string> = {
 };
 // open: a page of Home's to open once it gets there, as a click would (Home's oby:open); home:
 // straight to Home, setting up skipped (its address has no ?welcome)
-type Open = { kind: 'settings' | 'task'; id: string };
+type Open = { kind: 'settings' | 'task' | 'talk'; id: string };
 type Scenario = { id: string; label: string; to?: SetupStep | 'task'; go?: Partial<Record<SetupStep, string>>; then?: () => void; open?: () => Open; home?: true; href?: string };
 const first = () => tk.get().at(-1);
 const SCENARIOS: Scenario[] = [
@@ -78,6 +78,11 @@ const SCENARIOS: Scenario[] = [
   { id: 'settings-agents', label: 'Settings › Agents', home: true, open: () => ({ kind: 'settings', id: 'agents' }), href: '?dev=settings-agents' },
   { id: 'settings-connectors', label: 'Settings › Connectors', home: true, open: () => ({ kind: 'settings', id: 'connectors' }), href: '?dev=settings-connectors' },
   { id: 'settings-about', label: 'Settings › About', home: true, open: () => ({ kind: 'settings', id: 'about' }), href: '?dev=settings-about' },
+  // the chat window's pill (TalkPill): the account it talked through filled, and Oby moved
+  { id: 'talk-moved', label: 'Account fills while talking', home: true, then: () => ch.add({ id: 'talk-moved', title: 'What changed this week', talkedOn: 'a3', said: [
+    { who: 'you', text: 'Summarize what changed this week', ago: 1 },
+    { who: 'oby', text: 'Three pull requests went in, and one is waiting for your review.\nPersonal hit its limit, so I moved to Codex · Deskree.', ago: 0 },
+  ] }), open: () => ({ kind: 'talk', id: 'talk-moved' }), href: '?dev=talk-moved' },
   { id: 'everything', label: 'Everything', href: '?everything' },
 ];
 const hrefOf = (s: Scenario) => s.href ?? `?welcome&dev=${s.id}`;

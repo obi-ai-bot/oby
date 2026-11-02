@@ -173,6 +173,6 @@ export const api = {
   // signs Oby out of Tetrix (its refresh token revoked where the server offers it)
   tetrixDisconnect: () => call<null>('DELETE', '/v1/tetrix'),
   conversations: (opts: { after?: string; limit?: number } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
-  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[] }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
+  editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
 };

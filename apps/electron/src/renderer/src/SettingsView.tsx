@@ -270,7 +270,7 @@ function MockRemote() {
 // "Run codex once" while it's signed out
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
-export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean };
+export type Account = { id: string; agent: Agent; name: string; payer: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // an account's week in words, under its session's bar: its share when the tool reported one, else
@@ -291,6 +291,7 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
     session,
     sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
     weekly: a.sevenDay != null,
+    full: !!a.fullUntil && Date.parse(a.fullUntil) > now,
   };
 }
 const ACCOUNTS: Account[] = [
@@ -298,6 +299,7 @@ const ACCOUNTS: Account[] = [
   { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },
   { id: 'a3', agent: 'codex', name: 'Deskree', payer: 'Deskree', used: 12, resets: 'Resets Monday', plan: 'seat', session: 5, sessionResets: '6:40 PM', weekly: true },
   { id: 'a4', agent: 'claude', name: 'Deskree API', payer: 'Deskree', used: 8, resets: '$32 of $400 this month', plan: 'api', session: null, weekly: false },
+  { id: 'a5', agent: 'cursor', name: 'Personal', payer: 'Doti', used: null, resets: 'Cursor doesn’t report usage', plan: 'personal', session: null, weekly: false },
 ];
 // the accounts and their use (the 5-hour session, and the week): here, and in the message box's usage panel (the gauge)
 export const useAccounts = () => useSetting<Account[]>('accounts', onObid ? [] : ACCOUNTS);
