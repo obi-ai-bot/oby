@@ -77,8 +77,10 @@ function held() {
 }
 
 describe('the task menu on obid', () => {
-  beforeEach(() => { answers = {}; });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  // job()'s dates are fixed, and a done task older than 3 days leaves Home for Archive by itself:
+  // the clock stays just after them, or these tests expire (TASKS-2 did on 2026-11-02, #1839)
+  beforeEach(() => { answers = {}; vi.setSystemTime('2026-10-30T11:00:00Z'); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
   it('TASKS-1: Rename sends PATCH /v1/jobs/{id}, shows at once, and goes back with obid\'s words when refused', async () => {
     const { tasks, live } = await load(true);

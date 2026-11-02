@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, extname, join } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
@@ -45,4 +46,7 @@ export default defineConfig({
   // the favicons, from Oby's icon folder (apps/icon/exports/web): served in dev, copied by a build
   publicDir: resolve(__dirname, '../icon/exports/web'),
   build: { outDir: resolve(__dirname, 'out/renderer'), emptyOutDir: true },
+  // a test's first import of the app (a cold transform, a busy Mac) can outlast vitest's 5 s, and
+  // what the timed-out test goes on to call lands in the next test's (#1839)
+  test: { testTimeout: 30_000 },
 });
