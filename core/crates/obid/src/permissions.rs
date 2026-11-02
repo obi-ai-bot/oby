@@ -1289,8 +1289,11 @@ fn read_until(
 fn program_index(words: &[String]) -> Option<usize> {
     let mut i = 0;
     while let Some(w) = words.get(i) {
-        // `command -v curl` says where curl is, and runs nothing.
-        if base(w) == "command" && matches!(words.get(i + 1).map(String::as_str), Some("-v" | "-V"))
+        // `command -v curl` says where curl is, and runs nothing. (As an option's value it's no
+        // program: `time -f command -v printenv` runs printenv.)
+        if base(w) == "command"
+            && !(i > 0 && words[i - 1].starts_with('-'))
+            && matches!(words.get(i + 1).map(String::as_str), Some("-v" | "-V"))
         {
             return None;
         }
@@ -2928,6 +2931,16 @@ mod tests {
         // It prints what it's given when there's no such program: a secret's value too.
         assert_ne!(plan("command -V \"$GH_TOKEN\""), Verdict::Allow);
         assert_ne!(plan("command -v $GITHUB_TOKEN"), Verdict::Allow);
+        // `command` as an option's value hides nothing, Bypass too.
+        assert_eq!(
+            decide(
+                &bash("/usr/bin/time -f command -v printenv"),
+                Mode::Bypass,
+                &[],
+                &bounds
+            ),
+            Verdict::Ask
+        );
         assert_eq!(
             plan("git diff origin/main...HEAD && rg -n '149|oby-drive' .obi docs package.json"),
             Verdict::Allow
