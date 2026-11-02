@@ -74,7 +74,10 @@ pub fn kept(get: impl Fn(&str) -> Option<OsString>) -> Vec<(OsString, OsString)>
 /// person: nothing an agent couldn't make for itself. Anywhere else, or when it can't be made,
 /// `path` as it is.
 fn with_own_ps(path: &OsStr) -> OsString {
-    let Some(dir) = cfg!(target_os = "macos").then(own_ps_folder).flatten() else {
+    let Some(dir) = cfg!(target_os = "macos")
+        .then(|| own_ps_folder(&std::env::temp_dir()))
+        .flatten()
+    else {
         return path.to_os_string();
     };
     let mut dirs = vec![dir];
@@ -87,12 +90,12 @@ fn with_own_ps(path: &OsStr) -> OsString {
 /// Only a private folder of theirs on an absolute path is first on anyone's `PATH` (a `TMPDIR` of
 /// `/tmp`, where another person could have made it first, or an empty one, gets none). macOS clears
 /// unused files there after some days: it's made again when it's gone.
-fn own_ps_folder() -> Option<PathBuf> {
+fn own_ps_folder(temp: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     // One at a time: two threads' copies under one name would rename a half-signed one into place.
     static MAKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let uid = nix::unistd::getuid();
-    let dir = std::env::temp_dir().join(format!("oby-tools-{uid}"));
+    let dir = temp.join(format!("oby-tools-{uid}"));
     if !dir.is_absolute() {
         return None;
     }
@@ -102,7 +105,8 @@ fn own_ps_folder() -> Option<PathBuf> {
         return None;
     }
     let ps = dir.join("ps");
-    if ps.is_file() {
+    // (a power cut can leave an empty one, which would run and print nothing)
+    if std::fs::metadata(&ps).is_ok_and(|m| m.is_file() && m.len() > 0) {
         return Some(dir);
     }
     let making = dir.join(format!("ps.{}", std::process::id()));
@@ -115,7 +119,8 @@ fn own_ps_folder() -> Option<PathBuf> {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success());
-    if !signed || std::fs::rename(&making, &ps).is_err() {
+    let kept = std::fs::File::open(&making).is_ok_and(|f| f.sync_all().is_ok());
+    if !signed || !kept || std::fs::rename(&making, &ps).is_err() {
         let _ = std::fs::remove_file(&making);
         return None;
     }
@@ -590,6 +595,29 @@ mod build_tests {
 #[cfg(test)]
 mod claude_tmpdir_tests {
     use super::*;
+
+    /// #1789: no `TMPDIR` puts someone else's folder, or the worktree, first on a box's `PATH`; a
+    /// private one gets its `ps`, again when it was left empty.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn own_ps_is_only_in_a_private_folder_on_an_absolute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(own_ps_folder(Path::new("")), None);
+        let temp = std::env::temp_dir().join(format!("obid-own-ps-{}", std::process::id()));
+        let uid = nix::unistd::getuid();
+        let dir = temp.join(format!("oby-tools-{uid}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(own_ps_folder(&temp), None, "open to others");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(dir.join("ps"), "").unwrap();
+        assert_eq!(own_ps_folder(&temp).as_deref(), Some(dir.as_path()));
+        assert!(
+            std::fs::metadata(dir.join("ps")).unwrap().len() > 0,
+            "an empty one is made again"
+        );
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
 
     /// #1789: a box runs `ps`, which macOS refuses as `/bin/ps` (setuid), and sees its own process.
     #[cfg(target_os = "macos")]
