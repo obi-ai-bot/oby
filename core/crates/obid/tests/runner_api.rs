@@ -188,6 +188,7 @@ fn jobs_have_iso_dates_and_every_key() {
                 "archived",
                 "artifactProblems",
                 "artifacts",
+                "canPublish",
                 "changes",
                 "conversation",
                 "followUpOf",
@@ -207,7 +208,7 @@ fn jobs_have_iso_dates_and_every_key() {
             "{body}"
         );
         let known = keys.keys().filter(|k| page.contains(&k.as_str())).count();
-        assert_eq!(keys.len(), 88 + known);
+        assert_eq!(keys.len(), 89 + known);
         // POST /v1/jobs: its own conversation, the owner's words its first turn (TASKCONV-1).
         assert!(body["conversation"].is_string(), "{body}");
         assert!(body["turn"].is_string(), "{body}");

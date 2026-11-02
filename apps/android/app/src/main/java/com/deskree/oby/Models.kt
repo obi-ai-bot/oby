@@ -128,8 +128,8 @@ enum class JobStatus { queued, running, done, failed, stopped, interrupted;
     val published: String? = null,
     val pushed: Int? = null,
     val publishError: String? = null,
-    /** The commit its branch was at when its check passed and it ended done: the only one publishing pushes (PUBLISHING-1). */
-    val checkedHead: String? = null,
+    /** Whether obid offers Publish by hand (its `can_publish`, #1772); null from an obid before it said so. */
+    @kotlinx.serialization.SerialName("canPublish") val obidCanPublish: Boolean? = null,
     val issue: Int? = null,
     val rounds: Int? = null,
     val round: Int? = null,
@@ -234,9 +234,9 @@ enum class JobStatus { queued, running, done, failed, stopped, interrupted;
         val out = if (published != null) pushed ?: commits ?: 0 else if (publishError == null) pushed ?: 0 else 0
         return maxOf(0, (commits ?: 0) - out)
     }
-    /** As obid's `Job::can_publish`: only while its branch is at the commit its check passed on (`checkedHead`, PUBLISHING-2). */
-    val canPublish get() = st == JobStatus.done && kind != "research" && kind != "review" && base != null && unpublished > 0 && checkedHead != null &&
-        dismissed == null && reviewOf == null && (pullRequestState ?: "OPEN") == "OPEN"
+    /** Whether Publish shows: obid's own word (#1772: it knows whether its check passed on the branch's commit), else the old guess. */
+    val canPublish get() = obidCanPublish ?: (st == JobStatus.done && kind != "research" && kind != "review" && base != null && unpublished > 0 &&
+        dismissed == null && reviewOf == null && (pullRequestState ?: "OPEN") == "OPEN")
     val stranded get() = st == JobStatus.done && published != null && unpublished > 0 && reviewOf == null &&
         (pr_?.let { it.state != "OPEN" } ?: false)
     val needsYou get() = dismissed == null && (canPublish || stranded || st == JobStatus.failed || st == JobStatus.interrupted ||

@@ -56,11 +56,11 @@ class LogicTest {
     }
 
     @Test fun whatNeedsYou() {
-        val publish = job("""{"id":"p","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix","checkedHead":"${"a".repeat(40)}"}""")
+        val publish = job("""{"id":"p","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix","canPublish":true}""")
         assertTrue(publish.canPublish)
-        // With no commit its check passed on, obid offers no Publish (job.rs can_publish, PUBLISHING-2): neither does the phone.
-        val unchecked = job("""{"id":"q","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix"}""")
-        assertFalse(unchecked.canPublish)
+        // obid says it won't (its check didn't pass on the branch's commit, PUBLISHING-2): the phone shows no Publish.
+        val unchecked = job("""{"id":"q","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix","canPublish":false}""")
+        assertFalse(unchecked.canPublish); assertFalse(unchecked.needsYou)
         assertTrue(publish.needsYou)
         assertEquals(JobBadge("Ready to publish", Tone.Orange), publish.badge)
         val dismissed = job("""{"id":"p","created":"2026-10-09T21:43:30Z","status":"failed","dismissed":"2026-10-09T21:50:00Z"}""")
@@ -189,7 +189,7 @@ class LogicTest {
         assertEquals(0, pushed.unpublished)
         assertFalse(pushed.canPublish); assertFalse(pushed.needsYou)
         // Its publish failed: the commit isn't out, and it waits for Publish.
-        val failed = done(""""commits":1,"pushed":1,"publishError":"push refused","checkedHead":"abc"""")
+        val failed = done(""""commits":1,"pushed":1,"publishError":"push refused"""")
         assertEquals(1, failed.unpublished); assertTrue(failed.canPublish)
         // Published, and a commit since: that one is still to go.
         assertEquals(1, done(""""commits":2,"pushed":1,"published":"https://github.com/o/r/pull/1"""").unpublished)
