@@ -980,11 +980,14 @@ data class OfferCard(val id: String, val title: String, val jobs: List<InboxItem
     companion object {
         const val DISPATCH = "Dispatch"; const val SKIP = "Skip"; const val LATER = "Later"
 
-        fun of(inbox: List<InboxItem>, conversation: String?, now: Instant = Instant.now()): List<OfferCard> {
+        fun of(inbox: List<InboxItem>, conversation: String?, now: Instant = Instant.now()) = all(inbox.filter { it.conversation == conversation }, now)
+
+        /** In any conversation, for where an offer shows outside it (Electron's Home stack; the phone's Inbox). */
+        fun all(inbox: List<InboxItem>, now: Instant = Instant.now()): List<OfferCard> {
             val cards = LinkedHashMap<String, List<InboxItem>>()
             for (item in inbox) {
                 val offer = item.offerValue ?: continue
-                if (item.kind == "start" && item.isOpen && item.conversation == conversation) cards[offer.id] = cards[offer.id].orEmpty() + item
+                if (item.kind == "start" && item.isOpen) cards[offer.id] = cards[offer.id].orEmpty() + item
             }
             return cards.filter { (_, items) -> items.any { it.later == null || it.later <= now } }.map { (id, items) ->
                 OfferCard(id, if (items.size == 1) items[0].title else "${items.size} jobs", items.mapNotNull { it.offerValue },
