@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { atLaunch, type Other } from '../../../shared/engine';
 
 // startObid itself, on a fake launchd, lsof and port: nothing here reaches the Mac's.
-const OWN = 'com.deskree.oby.electron.obid', SWIFT = 'com.deskree.oby.obid';
+const SWIFT = 'com.deskree.oby.obid', SCRIPT = 'com.deskree.obid', SESSION = 'com.deskree.oby.electron.obid.session';
+const TAKEN = 'Something other than your Oby engine answers';
 const mac = vi.hoisted(() => ({
   jobs: {} as Record<string, string>, pids: [] as string[], answers: false, loginItem: 'not-registered',
-  calls: [] as string[][], registered: [] as boolean[],
+  calls: [] as string[][], registered: [] as boolean[], refuse: false, lingers: 0,
 }));
 
 vi.mock('electron', () => ({
@@ -16,7 +16,9 @@ vi.mock('electron', () => ({
       mac.registered.push(openAtLogin);
       mac.loginItem = openAtLogin ? 'enabled' : 'not-registered';
       if (!openAtLogin) return;
+      // launchd starts it: it fails to bind while anything else holds the port
       mac.jobs['com.deskree.oby.electron.obid'] = 'state = running\npid = 200';
+      if (mac.pids.length) return;
       mac.pids = ['200'];
       mac.answers = true;
     },
@@ -28,16 +30,25 @@ vi.mock('node:child_process', () => ({
   execFile: (file: string, args: string[], ...rest: unknown[]) => {
     const done = rest[rest.length - 1] as (e: unknown, r?: unknown) => void;
     mac.calls.push([file, ...args]);
-    if (file.endsWith('lsof')) return mac.pids.length ? done(null, { stdout: mac.pids.join('\n') }) : done(new Error('exit 1'));
-    if (file.endsWith('launchctl') && args[0] === 'print') {
-      const printed = mac.jobs[args[1].split('/').pop()!];
-      return printed ? done(null, { stdout: printed }) : done(new Error('no such job'));
+    if (file.endsWith('lsof')) {
+      const pids = [...mac.pids];
+      // the booted-out obid leaves the port a little after launchctl comes back
+      if (mac.lingers && --mac.lingers === 0) { mac.pids = []; mac.answers = false; }
+      return pids.length ? done(null, { stdout: pids.join('\n') }) : done(new Error('exit 1'));
+    }
+    if (file.endsWith('launchctl')) {
+      const label = args[1].split('/').pop()!;
+      if (args[0] === 'print') return mac.jobs[label] ? done(null, { stdout: mac.jobs[label] }) : done(new Error('no such job'));
+      if (args[0] === 'bootout' && label === SWIFT) {
+        if (mac.refuse) return done(new Error('refused'));
+        delete mac.jobs[label];
+      }
     }
     return done(null, { stdout: '' });
   },
 }));
 
-const bootedOut = () => mac.calls.filter(([, verb]) => verb === 'bootout').map((c) => c[2].split('/').pop());
+const did = (verb: string) => mac.calls.filter(([, v]) => v === verb).map((c) => c[2].split('/').pop());
 async function launch() {
   vi.resetModules();
   const { startObid, obid } = await import('../../../main/obid');
@@ -45,13 +56,11 @@ async function launch() {
   return (await obid('GET', '/v1/status')).text;
 }
 
+const running = 'state = running\npid = 100';
 const stopped = 'state = not running\nlast exit code = 0';
-const failed = 'state = not running\nlast exit code = 1: Operation not permitted';
-const killed = 'state = not running\nlast exit code = 0\nlast terminating signal = Killed: 9';
-const other = (printed: string): Other => ({ label: SWIFT, printed });
 
 beforeEach(() => {
-  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [] });
+  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0 });
   Object.defineProperty(process, 'platform', { value: 'darwin' });
   vi.stubGlobal('fetch', async () => {
     if (!mac.answers) throw new Error('refused');
@@ -60,60 +69,74 @@ beforeEach(() => {
 });
 
 describe('the engine at launch', () => {
-  it('engine_1_loaded_and_stopped_blocks_nothing_and_stays_untouched', async () => {
-    expect(atLaunch('none', [], [other(stopped)], false)).toEqual({ do: 'own', who: 'none', retire: [] });
+  it('engine_1_swift_running_off_the_port_goes_for_good_and_this_apps_own_starts', async () => {
+    mac.jobs[SWIFT] = running;
+    await launch();
+    expect(did('bootout')).toContain(SWIFT);
+    expect(did('disable')).toEqual([SWIFT]);
+    expect(mac.registered).toEqual([true]);
+  });
+
+  it('engine_2_swift_stopped_goes_for_good_and_this_apps_own_starts', async () => {
     mac.jobs[SWIFT] = stopped;
     const text = await launch();
+    expect(did('bootout')).toEqual([SWIFT]);
+    expect(did('disable')).toEqual([SWIFT]);
     expect(mac.registered).toEqual([true]);
-    expect(bootedOut()).not.toContain(SWIFT);
     expect(text).not.toContain('Swift Oby');
   });
 
-  it('engine_2_loaded_and_answering_is_adopted_and_this_apps_own_stands_down', async () => {
-    const running = 'state = running\npid = 100';
-    expect(atLaunch('mine', ['100'], [other(running)], false)).toEqual({ do: 'adopt' });
-    Object.assign(mac, { jobs: { [SWIFT]: running }, pids: ['100'], answers: true, loginItem: 'enabled' });
-    await launch();
-    expect(mac.registered).toEqual([false]);
-    expect(bootedOut()).toEqual([`${OWN}.session`]);
-  });
-
-  it('engine_3_nothing_loaded_starts_this_apps_own', async () => {
-    expect(atLaunch('none', [], [], false)).toEqual({ do: 'own', who: 'none', retire: [] });
-    await launch();
-    expect(mac.registered).toEqual([true]);
-    expect(bootedOut()).toEqual([]);
-  });
-
-  it('engine_4_one_launchd_would_start_again_gets_its_time_then_goes_until_the_next_login', async () => {
-    const starting = 'state = running\npid = 100';
-    expect(atLaunch('none', [], [other(starting)], false)).toEqual({ do: 'wait' });
-    expect(atLaunch('none', [], [other(starting)], true)).toEqual({ do: 'own', who: 'none', retire: [SWIFT] });
-    for (const printed of [failed, killed, 'state = spawn scheduled\nlast exit code = 1']) {
-      expect(atLaunch('none', [], [other(printed)], false)).toEqual({ do: 'own', who: 'none', retire: [SWIFT] });
-    }
-    mac.jobs[SWIFT] = failed;
-    await launch();
-    expect(bootedOut()).toEqual([SWIFT]);
-    expect(mac.registered).toEqual([true]);
-  });
-
-  it('engine_5_this_apps_own_on_the_port_stays_whatever_else_is_loaded', async () => {
-    expect(atLaunch('mine', ['200'], [other(stopped)], false)).toEqual({ do: 'own', who: 'mine', retire: [] });
-    // a loser's moment: launchd says it's running, and the port is this app's
-    expect(atLaunch('mine', ['200'], [other('state = running\npid = 100')], false)).toEqual({ do: 'own', who: 'mine', retire: [SWIFT] });
-    Object.assign(mac, { jobs: { [SWIFT]: failed, [OWN]: 'state = running\npid = 200' }, pids: ['200'], answers: true, loginItem: 'enabled' });
-    await launch();
-    expect(mac.registered).toEqual([]);
-    expect(bootedOut()).toEqual([SWIFT]);
-  });
-
-  it('engine_6_a_foreign_program_on_the_port_shows_taken_and_nothing_changes', async () => {
-    expect(atLaunch('foreign', ['300'], [other(stopped)], false)).toEqual({ do: 'taken' });
-    Object.assign(mac, { jobs: { [SWIFT]: stopped }, answers: true });
+  it('engine_3_swift_on_the_port_goes_the_port_is_waited_for_and_this_apps_own_starts', async () => {
+    // it holds the port for the first look after launchctl comes back
+    Object.assign(mac, { jobs: { [SWIFT]: running }, pids: ['100'], answers: true, lingers: 1 });
     const text = await launch();
-    expect(text).toContain('Something other than your Oby engine answers');
+    expect(did('bootout')).toEqual([SWIFT]);
+    expect(did('disable')).toEqual([SWIFT]);
+    expect(mac.registered).toEqual([true]);
+    expect(text).not.toContain(TAKEN);
+  });
+
+  it('engine_4_nothing_loaded_touches_nothing_and_this_apps_own_starts', async () => {
+    await launch();
+    expect(did('bootout')).toEqual([]);
+    expect(did('disable')).toEqual([]);
+    expect(mac.registered).toEqual([true]);
+  });
+
+  it('engine_5_a_foreign_program_on_the_port_shows_taken_and_nothing_changes', async () => {
+    Object.assign(mac, { pids: ['300'], answers: true });
+    const text = await launch();
+    expect(text).toContain(TAKEN);
     expect(mac.registered).toEqual([]);
-    expect(bootedOut()).toEqual([]);
+    expect(did('bootout')).toEqual([]);
+  });
+
+  it('engine_6_swift_refusing_to_go_is_not_adopted_and_the_port_shows_taken', async () => {
+    // its 5 seconds for the port, at once
+    const now = setTimeout;
+    vi.stubGlobal('setTimeout', (done: () => void) => now(done, 0));
+    Object.assign(mac, { jobs: { [SWIFT]: running }, pids: ['100'], answers: true, refuse: true, loginItem: 'enabled' });
+    const text = await launch();
+    vi.stubGlobal('setTimeout', now);
+    expect(did('disable')).toEqual([SWIFT]);
+    expect(text).toContain(TAKEN);
+    expect(mac.registered).toEqual([]);
+  });
+
+  it('engine_7_install_sh_on_another_port_is_left_alone_and_this_apps_own_starts', async () => {
+    mac.jobs[SCRIPT] = 'state = running\npid = 400';
+    await launch();
+    expect(did('bootout')).toEqual([]);
+    expect(did('disable')).toEqual([]);
+    expect(mac.registered).toEqual([true]);
+  });
+
+  it('engine_8_install_sh_on_the_port_is_adopted_and_not_booted_out', async () => {
+    Object.assign(mac, { jobs: { [SCRIPT]: 'state = running\npid = 400' }, pids: ['400'], answers: true, loginItem: 'enabled' });
+    const text = await launch();
+    expect(mac.registered).toEqual([false]);
+    expect(did('bootout')).toEqual([SESSION]);
+    expect(did('disable')).toEqual([]);
+    expect(text).not.toContain(TAKEN);
   });
 });

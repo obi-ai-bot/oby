@@ -4,7 +4,6 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, stat
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
-import { atLaunch, field, type Other } from '../shared/engine';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
 // answering on this Mac, adopted. Its token stays here in main: the renderer asks main for each
@@ -53,7 +52,7 @@ function reason(error?: unknown): Answer {
 }
 
 // Who listens on 127.0.0.1:7777: launchd's obid of this user's ('mine': this app's agent or its
-// session job, the Swift Oby's or install.sh's), something else ('foreign': every user on the Mac
+// session job, or install.sh's), something else ('foreign': every user on the Mac
 // shares the port, so another user's obid, or any other program, an agent's from its sandbox
 // included, whatever it's named), or nothing. lsof lists only this user's processes. Only 'mine'
 // gets the token, and this app stands down only for it. In development an obid run by hand counts
@@ -71,7 +70,7 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
   if (Date.now() < mineUntil) return 'mine';
   const pids = await listening();
   if (!pids.length) return await answers() ? 'foreign' : 'none';
-  const launchds = await Promise.all([LABEL, SESSION, ...OTHERS].map(async (label) => field(await launchd(label), 'pid')));
+  const launchds = await Promise.all([LABEL, SESSION, SCRIPT].map(async (label) => field(await launchd(label), 'pid')));
   for (const pid of pids) {
     const byHand = !app.isPackaged && await run('/bin/ps', ['-o', 'comm=', '-p', pid]).then((r) => basename(r.stdout.trim()) === 'obid', () => false);
     if (launchds.includes(pid) || byHand) { mineUntil = Date.now() + 10_000; return 'mine'; }
@@ -115,10 +114,8 @@ export async function send(method: string, path: string, body: unknown, signal?:
 // plist (build/com.deskree.oby.electron.obid.plist), registered with SMAppService through
 // Electron: launchd starts it now and at every login, and keeps it running after Oby quits, with
 // its jobs and the iPhone's relay. An obid of this user's already answering on 7777 is adopted as
-// it is, the Swift Oby's or install.sh's (OTHERS) too, and this app's own then stands down. One of
-// those that launchd has loaded but that doesn't answer blocks nothing: this app's own starts, and
-// it's taken out of launchd until the next login only if it would come back for the port
-// (shared/engine.ts, docs/contracts/engine.md). The Swift app's lessons (apps/mac/app/LoginItem.swift):
+// it is, and with install.sh's holding the port this app's own stands down. The Swift Oby's is never
+// adopted: it's taken out for good (retireSwift, docs/contracts/engine.md). The Swift app's lessons (apps/mac/app/LoginItem.swift):
 // - only from Applications: a translocated copy, or one on the disk image, would register a path
 //   that goes away;
 // - macOS may want the user's approval first (System Settings › General › Login Items);
@@ -132,8 +129,9 @@ export async function send(method: string, path: string, body: unknown, signal?:
 const PLIST = 'com.deskree.oby.electron.obid.plist';
 const LABEL = 'com.deskree.oby.electron.obid';
 const SESSION = `${LABEL}.session`;
-// the other agents that start an obid at login: the Swift Oby's, install.sh's
-const OTHERS = ['com.deskree.oby.obid', 'com.deskree.obid'];
+// the other agents that start an obid at login: the Swift Oby's, install.sh's (which may listen elsewhere)
+const SWIFT = 'com.deskree.oby.obid';
+const SCRIPT = 'com.deskree.obid';
 const SERVICE = { type: 'agentService', serviceName: PLIST } as const;
 const LOGIN_ITEMS = 'x-apple.systempreferences:com.apple.LoginItems-Settings.extension';
 const run = promisify(execFile);
@@ -156,6 +154,9 @@ const helper = () => join(process.resourcesPath, '../Helpers/obid');
 async function launchd(label = LABEL): Promise<string | null> {
   try { return (await run('/bin/launchctl', ['print', `${domain()}/${label}`])).stdout; } catch { return null; }
 }
+// one `key = value` line of it
+const field = (printed: string | null, key: string) =>
+  printed?.split('\n').map((l) => l.trim()).find((l) => l.startsWith(`${key} = `))?.slice(key.length + 3);
 
 // The same obid as a job of this login session only: its plist is in the app's own folder, never in
 // ~/Library/LaunchAgents, so from the next login only the registered agent starts obid
@@ -242,34 +243,38 @@ async function restartIfStale(label: string, printed: string) {
   await answers(10_000);
 }
 
+// The owner's decision of 2026-11-02: the Swift Oby is going away, and this app's engine is the
+// engine. Its agent, when launchd has it, goes for good: `bootout` stops it and its KeepAlive, and
+// `disable` keeps a login's RunAtLoad from bringing it back (`launchctl enable` undoes that). Either
+// refused, this goes on: what still holds the port isn't this app's, so the window says it's taken.
+async function retireSwift() {
+  const printed = await launchd(SWIFT);
+  if (!printed) return;
+  await run('/bin/launchctl', ['bootout', `${domain()}/${SWIFT}`]).catch(() => {});
+  await run('/bin/launchctl', ['disable', `${domain()}/${SWIFT}`]).catch(() => {});
+  const pid = field(printed, 'pid');
+  for (let i = 0; i < 10 && pid && (await listening()).includes(pid); i++) await sleep(500);
+}
+
 // At launch: adopts the obid that answers, or starts this app's own and says why when it can't.
-// Only a packaged app has the launch agent: in development it's the obid you run, or the Swift Oby's.
+// Only a packaged app has the launch agent: in development it's the obid you run.
 export async function startObid() {
   if (process.platform !== 'darwin' || !app.isPackaged) return;
   starting = true;
   try {
-    const look = async (waited: boolean) => {
-      const others = await Promise.all(OTHERS.map(async (label) => ({ label, printed: await launchd(label) })));
-      return atLaunch(await listener(), await listening(), others.filter((o): o is Other => o.printed !== null), waited);
-    };
-    let plan = await look(false);
-    if (plan.do === 'wait') {
-      await answers(10_000);
-      plan = await look(true);
-    }
+    await retireSwift();
+    const who = await listener();
     // never in the way of another user's obid or another program: nothing registered or stopped
-    if (plan.do === 'taken') { problem = TAKEN; return; }
-    if (plan.do !== 'own') {
+    if (who === 'foreign') { problem = TAKEN; return; }
+    // install.sh's on the port is used and left running; anywhere else, or stopped, it's no matter
+    const script = field(await launchd(SCRIPT), 'pid');
+    if (who === 'mine' && script && (await listening()).includes(script)) {
       if (status() === 'enabled' || status() === 'requires-approval') register(false);
       await run('/bin/launchctl', ['bootout', `${domain()}/${SESSION}`]).catch(() => {});
       problem = null;
       return;
     }
-    // ponytail: only for this login; the registration stays, and at the next login both agents start
-    // and the first to bind wins. Refused or not, this app's own still goes on: obid exits 1 on a
-    // taken port.
-    for (const label of plan.retire) await run('/bin/launchctl', ['bootout', `${domain()}/${label}`]).catch(() => {});
-    if (plan.who === 'mine') {
+    if (who === 'mine') {
       problem = null;
       for (const label of [LABEL, SESSION]) {
         const printed = await launchd(label);

@@ -15,10 +15,10 @@ Electron), so it keeps running after Oby quits, with its jobs and the iPhone's
 relay. Until users have moved over it is `Oby Electron.app`, with its own bundle
 ID, `com.deskree.oby.electron`, and its own label, so dragged into Applications it
 never replaces the Swift `Oby.app` (`com.deskree.oby`) and never shares its login
-item. Both obids use the same configuration, home and port. When the Swift Oby's
-obid (or install.sh's) holds 7777, this app uses it and registers none of its own;
-one launchd has loaded but that doesn't answer blocks nothing, and this app starts
-its own (`docs/contracts/engine.md`). Before it adopts an obid
+item. Both obids use the same configuration, home and port. While launchd has
+the Swift Oby's login item (or install.sh's agent), this app registers none of
+its own and uses that obid; it registers its own only when no other is
+registered, so two agents never fight for 7777 at login. Before it adopts an obid
 or sends it the token, it checks that what listens on 7777 is launchd's obid of
 this user's: the pid of its own agent, its session job, the Swift Oby's or
 install.sh's (`lsof` lists only this user's processes). 7777 is shared by every

@@ -4,31 +4,32 @@ The business behavior contract for what the Electron app does about obid at laun
 
 ## Feature and status
 
-- **Outcome:** Oby works on a Mac that ever ran the Swift Oby: an old registration that does nothing can't take the app down.
-- **Status:** **Implemented** in `apps/electron`: the decision in `src/shared/engine.ts` (`atLaunch`), carried out by `startObid` in `src/main/obid.ts`. Replaces standing down for any loaded agent, running or not.
-- **Scope:** a packaged app's launch on macOS. **Out of scope:** which engine wins at the next login (below), and telling the person that their engine changed (the words would be Sangam's).
+- **Outcome:** Oby works on a Mac that ever ran the Swift Oby. This app's own engine is the engine.
+- **Status:** **Implemented** in `apps/electron`: `startObid` and `retireSwift` in `src/main/obid.ts`. The owner's decision of 2026-11-02: the Swift Oby is to be deleted, and the work is 100% on the Electron app. Replaces adopting the Swift Oby's engine and standing down for it.
+- **Scope:** a packaged app's launch on macOS. **Out of scope:** telling the person that their engine changed (the words would be Sangam's).
 
 ## Behavior
 
-- **Actors and ownership:** the app's main process decides and acts through launchd; obid owns nothing here beyond exiting 1 on a taken port.
-- **Triggers and prerequisites:** the packaged app opens. A development run starts nothing.
-- **States and transitions:** see the scenarios. A loaded agent counts only when its obid holds the port. One that runs without the port gets up to 10 seconds to bind (obid binds first, so it holds no job until it does), and then counts as stopped.
-- **Coming back for the port:** both agents' plists say `KeepAlive { SuccessfulExit: false }`, so launchd starts one again after a failure or a signal, every 10 seconds at most, and not after exit 0 until the next login. Each of those starts could take the port while this app's own restarts, so that agent is taken out of launchd with `launchctl bootout`, until the next login. Its registration and plist stay, and the Swift app doesn't re-register it while an obid answers (`obidRuns` in `apps/mac/app/LoginItem.swift`). One stopped with exit 0 isn't touched.
-- **Failures and recovery:** a refused `bootout` changes nothing else: this app's own still starts. If it can't start, the window says why, as for any start.
-- **Invariants and boundaries:** only this user's launchd obid gets the token; a foreign program on the port gets nothing, and nothing is registered or stopped for it. `launchctl disable` isn't used: it outlasts the Swift app's own registration, and the frozen Swift app couldn't undo it.
-- **At the next login:** `RunAtLoad` starts both agents while the Swift Oby's is still registered, and the first to bind wins. If that's the Swift Oby's, ENGINE-2 applies and it's used, with this app's own unregistered, until it stops answering. Removing the Swift Oby's login item ends the race.
+- **Actors and ownership:** the app's main process decides and acts through launchd. obid owns nothing here.
+- **Triggers and prerequisites:** the packaged app opens; `startObid` runs once per launch. A development run starts nothing and retires nothing.
+- **The Swift Oby's agent:** when launchd has it loaded, running or not, holding the port or not, the app runs `launchctl bootout` and then `launchctl disable` for that label, waits up to 5 seconds for its pid to leave the port, and goes on. It is never adopted, deferred to or stood down for, and its obid doesn't get the token. `bootout` stops it and its `KeepAlive`; `disable` keeps `RunAtLoad` from bringing it back at a login. This is deliberate and lasts: the Swift app can't start its engine again on that Mac until `launchctl enable gui/<uid>/com.deskree.oby.obid`.
+- **install.sh's agent:** never booted out or disabled. Holding 7777, it's adopted and this app's own stands down, as before. Running on another port, or stopped, it blocks nothing and this app's own starts. An install.sh agent can listen elsewhere with `--listen`.
+- **Failures and recovery:** a refused `bootout` or `disable` stops nothing else. If the Swift Oby's obid still holds the port, it counts as anything else on the port: the window shows the port is taken, and nothing is registered. If this app's own can't start, the window says why, as for any start.
+- **Invariants and boundaries:** only this app's own obid, or install.sh's, gets the token. A foreign program on the port gets nothing, and nothing is registered or stopped for it.
 
 ## Interfaces and dependencies
 
-launchd (`launchctl print`, `bootout`), `lsof`, SMAppService through Electron. No obid API changes.
+launchd (`launchctl print`, `bootout`, `disable`), `lsof`, SMAppService through Electron. No obid API changes.
 
 ## Acceptance scenarios
 
-Tests: `apps/electron/src/renderer/src/test/engine.test.ts`, named after these.
+Tests: `apps/electron/src/renderer/src/test/engine.test.ts`, through `startObid` on a fake launchd, `lsof` and port, named after these.
 
-- **ENGINE-1** An agent is loaded and stopped (exit 0), and nothing answers on 7777: this app registers its own, says nothing about the other, and leaves that agent alone.
-- **ENGINE-2** An agent is loaded and its obid holds the port: it's used, and this app's own stands down.
-- **ENGINE-3** Nothing is loaded and nothing answers: this app registers its own.
-- **ENGINE-4** An agent is loaded and launchd would start it again (failed, killed, or running without the port), and nothing answers: it gets its 10 seconds, then is taken out of launchd, and this app registers its own.
-- **ENGINE-5** This app's own holds the port and an agent is loaded: this app's own stays registered; the agent is taken out of launchd only if it would come back.
-- **ENGINE-6** A foreign program holds the port: the window says the port is taken, and nothing is registered or stopped, whatever launchd has loaded.
+- **ENGINE-1** The Swift Oby's agent is running off the port: it's booted out and disabled, and this app registers its own.
+- **ENGINE-2** The Swift Oby's agent is stopped: it's booted out and disabled, and this app registers its own.
+- **ENGINE-3** The Swift Oby's obid holds the port: it's booted out and disabled, the app waits for the port, registers its own, and never stands down.
+- **ENGINE-4** Nothing is loaded: no agent is touched, and this app registers its own.
+- **ENGINE-5** A foreign program holds the port: the window says the port is taken, and nothing is registered or booted out.
+- **ENGINE-6** The Swift Oby's obid holds the port and `bootout` is refused: `disable` is still tried, the window says the port is taken, its obid isn't adopted, and nothing is registered.
+- **ENGINE-7** install.sh's agent runs on another port: it's left alone, and this app registers its own.
+- **ENGINE-8** install.sh's agent holds the port: it's adopted, this app's own stands down, and it isn't booted out.
