@@ -177,4 +177,20 @@ class LogicTest {
         assertEquals(listOf("x" to "x", "a" to "A"), choices(listOf("a" to "A"), "x"))
         assertEquals(listOf("a" to "A"), choices(listOf("a" to "A"), "a"))
     }
+
+    /** A push with no pull request is out, as obid's `Job::unpublished` says (#1763): nothing to publish, so Home doesn't say "Needs you · Failed". */
+    @Test fun aPushWithNoPullRequestIsOut() {
+        fun done(extra: String) = job("""{"id":"j","request":"r","agent":"claude","account":"a","repo":"o/r","base":"main","kind":"build","status":"done","created":"2026-11-01T10:00:00Z",$extra}""")
+        // obid's shape for a push with no pull request: published null, publishError null, pushed equal to commits.
+        val pushed = done(""""commits":1,"pushed":1""")
+        assertEquals(0, pushed.unpublished)
+        assertFalse(pushed.canPublish); assertFalse(pushed.needsYou)
+        // Its publish failed: the commit isn't out, and it waits for Publish.
+        val failed = done(""""commits":1,"pushed":1,"publishError":"push refused"""")
+        assertEquals(1, failed.unpublished); assertTrue(failed.canPublish)
+        // Published, and a commit since: that one is still to go.
+        assertEquals(1, done(""""commits":2,"pushed":1,"published":"https://github.com/o/r/pull/1"""").unpublished)
+        // Never pushed: everything is to go.
+        assertEquals(1, done(""""commits":1""").unpublished)
+    }
 }
