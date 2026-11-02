@@ -183,6 +183,12 @@ struct RunnerTests {
         #expect(job.canPublish)
         job.published = "https://github.com/deskree-inc/oby/pull/40"
         #expect(!job.canPublish)
+        // Pushed to a repository with `pullRequests: false`: out, so Home doesn't say it needs you (#1763).
+        job.published = nil
+        job.pushed = 2
+        #expect(!job.canPublish && !job.needsYou)
+        job.commits = 3
+        #expect(job.canPublish, "a later round's commit isn't out yet")
     }
 
     @Test func modelLabels() {
