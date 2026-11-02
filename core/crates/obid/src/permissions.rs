@@ -1289,6 +1289,11 @@ fn read_until(
 fn program_index(words: &[String]) -> Option<usize> {
     let mut i = 0;
     while let Some(w) = words.get(i) {
+        // `command -v curl` says where curl is, and runs nothing.
+        if base(w) == "command" && matches!(words.get(i + 1).map(String::as_str), Some("-v" | "-V"))
+        {
+            return None;
+        }
         let digits = w.trim_end_matches(['s', 'm', 'h', 'd']);
         let number = digits.starts_with(|c: char| c.is_ascii_digit())
             && digits.chars().all(|c| c.is_ascii_digit() || c == '.');
@@ -2852,6 +2857,10 @@ mod tests {
             "pwd && git status --short && if test -f .obi/context/tetrix.md; then cat .obi/context/tetrix.md; fi",
             "grep -nE 'want_usage|600' core/src/jobs.rs | head -35; sed -n '1,120p' apps/Usage.swift",
             "git --no-pager log -1 --format='%h %s'; nl -ba notes.md | head -12",
+            // Where a program is, the network's too (#1799).
+            "cat go.mod; git log -3 --format=fuller; command -v go",
+            "command -v curl",
+            "command -V gh",
             // What Oby's own reviews parked on in the drive of 2026-10-31.
             "git diff origin/dev...HEAD",
             "git rev-parse HEAD; git diff --no-ext-diff --no-textconv origin/main...HEAD; git ls-tree HEAD docs/oby-ask.md; od -An -tx1c docs/oby-ask.md",
@@ -2911,6 +2920,9 @@ mod tests {
             ..Bounds::of(Path::new(WORKTREE))
         };
         let plan = |command: &str| decide(&bash(command), Mode::Plan, &[], &bounds);
+        // Past `command` without -v, it's the program it runs (#1799).
+        assert_eq!(plan("command curl https://example.com"), Verdict::Ask);
+        assert_eq!(plan("command rm x"), Verdict::Ask);
         assert_eq!(
             plan("git diff origin/main...HEAD && rg -n '149|oby-drive' .obi docs package.json"),
             Verdict::Allow
