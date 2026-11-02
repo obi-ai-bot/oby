@@ -246,12 +246,12 @@ async function restartIfStale(label: string, printed: string) {
 // The owner's decision of 2026-11-02: the Swift Oby is going away, and this app's engine is the
 // engine. Its agent, when launchd has it, goes for good: `bootout` stops it and its KeepAlive, and
 // `disable` keeps a login's RunAtLoad from bringing it back (`launchctl enable` undoes that). Either
-// refused, this goes on: what still holds the port isn't this app's, so the window says it's taken.
-async function retireSwift() {
-  const printed = await launchd(SWIFT);
+// refused or hung, this goes on: what still holds the port isn't this app's, so the window says it's
+// taken. Only once this app's own runs or is about to: anywhere else, that would leave no engine.
+async function retireSwift(printed: string | null) {
   if (!printed) return;
-  await run('/bin/launchctl', ['bootout', `${domain()}/${SWIFT}`]).catch(() => {});
-  await run('/bin/launchctl', ['disable', `${domain()}/${SWIFT}`]).catch(() => {});
+  await run('/bin/launchctl', ['bootout', `${domain()}/${SWIFT}`], { timeout: 5000 }).catch(() => {});
+  await run('/bin/launchctl', ['disable', `${domain()}/${SWIFT}`], { timeout: 5000 }).catch(() => {});
   const pid = field(printed, 'pid');
   for (let i = 0; i < 10 && pid && (await listening()).includes(pid); i++) await sleep(500);
 }
@@ -262,10 +262,12 @@ export async function startObid() {
   if (process.platform !== 'darwin' || !app.isPackaged) return;
   starting = true;
   try {
-    await retireSwift();
     const who = await listener();
-    // never in the way of another user's obid or another program: nothing registered or stopped
-    if (who === 'foreign') { problem = TAKEN; return; }
+    const swift = await launchd(SWIFT);
+    const swiftPid = field(swift, 'pid');
+    // never in the way of another user's obid or another program: nothing registered or stopped.
+    // The Swift Oby's isn't this app's either, but it's no reason to stand back: it goes, below.
+    if (who === 'foreign' && !(swiftPid && (await listening()).includes(swiftPid))) { problem = TAKEN; return; }
     // install.sh's on the port is used and left running; anywhere else, or stopped, it's no matter
     const script = field(await launchd(SCRIPT), 'pid');
     if (who === 'mine' && script && (await listening()).includes(script)) {
@@ -274,8 +276,10 @@ export async function startObid() {
       problem = null;
       return;
     }
+    const inApplications = app.isInApplicationsFolder();
     if (who === 'mine') {
       problem = null;
+      if (inApplications) await retireSwift(swift);
       for (const label of [LABEL, SESSION]) {
         const printed = await launchd(label);
         if (field(printed, 'state') !== 'running') continue;
@@ -286,7 +290,9 @@ export async function startObid() {
       // an obid nobody registered (one run by hand): adopted, this app's agent kept for later logins
       return;
     }
-    if (!app.isInApplicationsFolder()) return await moveToApplications();
+    if (!inApplications) return await moveToApplications();
+    await retireSwift(swift);
+    if (await listener() === 'foreign') { problem = TAKEN; return; }
     // registered but not running: one macOS kept from an older signature, registered again once
     if (status() === 'enabled') register(false);
     register(true);
