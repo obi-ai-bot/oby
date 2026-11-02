@@ -126,17 +126,25 @@ export function chatOf(s: Live, c: Conversation): Chat {
   const confirmed = new Set<string>();
   const confirm = (m: Omit<Message, 'confirm'>, by?: string) => confirms.filter((i) => (by === undefined || Date.parse(i.created) <= Date.parse(by)) && !confirmed.has(i.id) && confirmed.add(i.id))
     .forEach((i) => said.push({ ...m, confirm: { id: i.id, ask: { ...itemAsk(i), text: i.text } } }));
-  let asked: string | undefined;
+  let asked: string | undefined, askedWords: Message | undefined;
+  // words more words followed with no answer between keep what they started, or its card is lost.
+  // ponytail: the last words wait, as the app can't tell no answer is coming (one may be on its way)
+  const unanswered = () => {
+    const kept = byTurn.filter((j) => j.turn === asked && !carded.has(j.id) && carded.add(j.id)).map((j) => j.id);
+    if (kept.length && askedWords) askedWords.jobs = [...(askedWords.jobs ?? []), ...kept];
+  };
   for (const t of (s.turns[c.id] ?? []).filter((t) => t.id !== p?.turn)) {
+    if (t.who === 'user') unanswered();
     const answer = t.who === 'oby' && !t.ended && !t.routine ? asked : undefined;
     const mine = answer ? byTurn.filter((j) => j.turn === answer).map((j) => j.id) : [];
     const jobs = [...t.jobs, ...mine].filter((j) => !carded.has(j) && carded.add(j));
     // the files that went with your words: their tags (a photo's preview while this app has it)
     const files = t.attachments?.map((name) => { const p = s.previews[t.id]?.find((f) => f.name === name); return { name: p?.shown ?? name, preview: p?.preview }; });
-    said.push({ who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}) });
+    const message: Message = { who: t.who === 'user' ? 'you' : 'oby', text: t.text, ago: minutesAgo(t.at), ...(jobs.length ? { jobs } : {}), ...(files?.length ? { files } : {}) };
+    said.push(message);
     for (const offer of offers.filter((o) => o.id === answer)) said.push({ who: 'oby', text: '', ago: minutesAgo(t.at), offer });
     if (t.who === 'oby') confirm({ who: 'oby', text: '', ago: minutesAgo(t.at) }, t.at);
-    if (t.who === 'user') asked = t.id;
+    if (t.who === 'user') { asked = t.id; askedWords = message; }
     else if (answer) asked = undefined;
   }
   const words = p ? wordsOf(p.to).slice(0, p.n).join('') : s.words[c.id], q = s.waiting[c.id];
