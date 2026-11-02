@@ -129,3 +129,26 @@ describe('TASKCONV-7: the Confirm Oby’s answer made shows under it, and on Hom
     expect(live.chatOf({ ...s, inbox: [], turns: { c1: turns } }, convo).said.some((m) => m.confirm)).toBe(false);
   });
 });
+
+describe('a task’s card is never lost: words more words followed keep what they started (#1783)', () => {
+  const at = (m: number) => `2026-11-01T12:${String(m).padStart(2, '0')}:00Z`;
+  const convo = { id: 'c1', title: 'Fixes', pinned: false, created: at(0), lastActivity: at(9), cursor: '' };
+  const words = (id: string, m: number) => ({ id, who: 'user' as const, text: id, at: at(m), jobs: [], conversation: 'c1' });
+  const oby = (id: string, m: number) => ({ id, who: 'oby' as const, text: id, at: at(m), jobs: [] as string[], conversation: 'c1' });
+  const j = { id: 'j', conversation: 'c1', turn: 'u1', created: at(2), status: 'running', title: 'Fix it', summary: '', step: '', agent: 'claude', account: 'a', repo: 'o/r', branch: '', rounds: 1, round: 1 } as unknown as Job;
+  const cards = (turns: unknown[]) =>
+    Object.fromEntries(live.chatOf({ ...live.liveState(), jobs: { j }, turns: { c1: turns } } as never, convo).said.map((m) => [m.text, m.jobs ?? []]));
+
+  it('stays_under_the_words_that_started_it_when_more_words_follow', () => {
+    expect(cards([words('u1', 1), words('u2', 3), oby('o2', 4)])).toEqual({ u1: ['j'], u2: [], o2: [] });
+  });
+
+  it('the_last_words_wait_for_their_answer_so_the_card_never_jumps', () => {
+    expect(cards([words('u1', 1)])).toEqual({ u1: [] });
+  });
+
+  it('still_goes_under_the_answer_and_not_again_under_its_report', () => {
+    const report = { ...oby('r1', 5), jobs: ['j'], ended: true };
+    expect(cards([words('u1', 1), oby('o1', 2), report])).toEqual({ u1: [], o1: ['j'], r1: [] });
+  });
+});
