@@ -3636,7 +3636,7 @@ mod tests {
                 patterns += 1;
             }
         }
-        assert!(patterns >= 12, "{patterns}");
+        assert!(patterns >= 8, "{patterns}");
         for other in [
             "core/crates/obid/src/merge.rs",
             "apps/electron/src/x.ts",

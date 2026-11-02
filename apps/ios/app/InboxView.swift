@@ -242,7 +242,7 @@ private struct OwnWords: View {
 }
 
 /// What a decision's card says on the iPhone where the Electron app's `itemAsk` (live.ts) says it
-/// otherwise than the shared AskKind, which the frozen Mac app keeps: Sangam's labels (ASK_LABEL)
+/// otherwise than the shared AskKind: Sangam's labels (ASK_LABEL)
 /// for a Confirm and an Oby failure, a merge card labelled by what it is, and a repository's check.
 nonisolated enum PhoneAsk {
     static func label(_ item: InboxItem, plan: Bool) -> String {

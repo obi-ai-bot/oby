@@ -109,7 +109,7 @@ The words of MERGING-14's card and stage, and MERGING-17's Merge, are obid's own
 ## Test it when it's done (on a real Mac)
 
 1. In this repository (workflow `checks: mac`, Actions off), let a task's check run `scripts/oby-check.sh` on an obid-only change and publish: once Oby's review approves, it merges into `dev` by itself and says "Merged into dev, as you like".
-2. A change that touches `Engine/` (the box leaves `swift test` for the Mac): the inbox shows `Ready to merge: <task>` with Merge, saying it left the Mac's own tests; Merge merges it. The same for a change to `scripts/oby-check.sh`.
+2. A change that touches `apps/shared/` (the box leaves the Apple apps' tests for the Mac): the inbox shows `Ready to merge: <task>` with Merge, saying it left the Mac's own tests; Merge merges it. The same for a change to `scripts/oby-check.sh`.
 3. Make a task's pull request conflict with `dev` (merge a conflicting change first): within 3 minutes the task's Merged stage and a card say it conflicts and what to do.
 4. `gh auth logout` on the Mac obid runs as: the card says obid's gh isn't signed in; `gh auth login` again, and the merge goes on.
 5. With Claude Code and Codex both signed in, a task that changes an `AGENTS.md`: Oby's review runs twice, once on each tool, and it merges only after both approve. Sign Codex out and do it again: after Claude Code's approval, the task's Review stage says the second review waits for another tool, and the inbox shows `Ready to merge: <task>` with Merge.

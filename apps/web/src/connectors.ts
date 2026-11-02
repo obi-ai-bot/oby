@@ -3,7 +3,7 @@ import { BRANDS, type Brand } from './brands';
 import { AGENTS } from './tasks';
 
 // Settings › Connectors (#518): everything obid is connected to, and what's set up but not
-// connected yet, as the Mac's page lists them (apps/mac/app/Connectors.swift, #498): its accounts,
+// connected yet, (#498): its accounts,
 // Tetrix, its GitHub login, its plug-ins and its connections. Each comes from something obid
 // serves (its status, GET /v1/obid/plugins, GET /v1/connections); nothing here is a placeholder.
 // The page is read only (the owner's decision on #518): changing a connection needs a device's

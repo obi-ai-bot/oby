@@ -10,8 +10,7 @@ dist=${src:h}/dist
 out=$dist/oby
 
 # What ships. Listening, Thinking, Working and Loading stay because the states use them;
-# Hello, Grin, Agree and Confused because the apps play them (apps/ios/app/Home.swift,
-# apps/mac/app/ObyController.swift).
+# Hello, Grin, Agree and Confused because the apps play them (apps/ios/app/Home.swift).
 KEEP="Hello Listening Thinking Working Loading Agree Disagree Grin Laugh Surprised Confused Tired Yawn Distracted Hiding"
 
 rm -rf "$out" "$dist/oby.zip"

@@ -232,11 +232,7 @@ extension Job {
 
     /// The stage it's at ("Work", "Check"), or nil.
     nonisolated var stageNow: String? {
-        #if os(macOS)
-        pipeline.stages.first { $0.state == .current }?.title
-        #else
         pipeline?.stages.first { $0.state == .current }?.title
-        #endif
     }
 
     /// A task thread's last line while its agent runs: "Claude Code · Running swift test", or,

@@ -1,4 +1,4 @@
-#if os(iOS) || os(macOS)
+#if os(iOS)
 import SwiftUI
 
 /// Settings › Routines (#395), on the iPhone and in the Mac's Runner settings alike: every routine

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Sangam's design tokens (design/app/src/renderer/src/tokens.css, and the few app.css values
-/// every screen shares), in Swift: the Mac window's colours, type, sizes and motion. Views use
+/// every screen shares), in Swift: the window's colours, type, sizes and motion. Views use
 /// these names, never literal colours. Sangam's design is dark only; the iPhone follows the system
 /// with the light set the iPhone design adds (docs/ios-design.md), and the Mac and the Watch stay dark.
 nonisolated enum Tokens {

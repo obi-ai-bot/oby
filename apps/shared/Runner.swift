@@ -1,8 +1,5 @@
 import Foundation
 
-// The Mac compiles Engine/, whose Job is what the runner sends: it reads jobs into that one, and
-// has its own Account. Only the iPhone and the watch need these copies.
-#if os(iOS) || os(watchOS)
 /// A job on the runner (docs/runner-api.md).
 nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     enum Status: String, Codable, Sendable { case queued, running, done, failed, stopped, interrupted }
@@ -49,7 +46,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var check: String?
     var model: String?
     var notes: [String]?
-    /// Derived by Engine and sent by newer runners; old runners still decode.
+    /// Derived by obid and sent by newer runners; old runners still decode.
     var pipeline: JobPipeline?
     var pullRequest: PullRequestStatus?
     var pullRequestError: String?
@@ -193,7 +190,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
         case offersPublish = "canPublish"
     }
 
-    /// "Moved from Codex · Deskree to Claude Code · Personal": its latest move, or nil (as Engine's).
+    /// "Moved from Codex · Deskree to Claude Code · Personal": its latest move, or nil.
     var movedLine: String? { moves?.last.map { "Moved from \($0.from) to \($0.to)" } }
 
     /// Its merge stopped: it couldn't merge, or the Mac check failed with no round left.
@@ -203,12 +200,12 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var cloudNeedsYou: Bool { dismissed == nil && stoppedCloud == true }
 
     var isActive: Bool { status == .queued || status == .running }
-    /// How many rounds it may take and the one it's on, as Engine's Job says them.
+    /// How many rounds it may take and the one it's on.
     var maxRounds: Int { rounds ?? 1 }
     var currentRound: Int { round ?? 1 }
     /// Queued behind something (`waiting`): listed under Waiting, not counted as working (#238).
     var isWaiting: Bool { status == .queued && waiting != nil }
-    /// Running, or getting ready to: what every app counts as an agent working (as Engine's).
+    /// Running, or getting ready to: what every app counts as an agent working.
     var isWorking: Bool { isActive && !isWaiting }
     /// Its agent asked the user something and waits for the answer: its alert stays until then.
     var waitsForAnswer: Bool { question != nil && dismissed == nil && status != .stopped }
@@ -252,7 +249,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     }
     /// Whether Publish by hand is offered: what obid says; from an older one, not once the user
     /// dismissed it, never on Oby's own review jobs, and never once its pull request was merged or
-    /// closed (as Engine's `Job.canPublish`).
+    /// closed.
     var canPublish: Bool {
         if let offersPublish { return offersPublish }
         return status == .done && kind != "research" && kind != "review" && base != nil && unpublished > 0 && dismissed == nil && reviewOf == nil
@@ -263,7 +260,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     /// request is still open, as the runner says.
     var reviewNeedsYou: Bool { stoppedReview == true }
 
-    /// Done with commits its pull request won't take: merged or closed before they went out (as Engine's `Job.stranded`).
+    /// Done with commits its pull request won't take: merged or closed before they went out.
     var stranded: Bool {
         status == .done && published != nil && unpublished > 0 && reviewOf == nil
             && (pullRequest.map { $0.state != "OPEN" } ?? false)
@@ -285,7 +282,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-/// Wire types only. Pipeline state is derived by Engine, never by the phone.
+/// Wire types only. Pipeline state is derived by obid, never by the phone.
 nonisolated struct JobStage: Codable, Equatable, Identifiable, Sendable {
     enum State: String, Codable, Sendable { case done, current, upcoming, failed, skipped }
     var id: String
@@ -342,7 +339,6 @@ nonisolated struct Outgoing: Codable, Equatable, Sendable {
     var branch: String?
     var date: Date
 
-    /// As Engine/Outgoing.swift words it.
     var line: String {
         switch action {
         case "push": "Pushed \(id.prefix(7)) to \(branch ?? "its branch") in \(repo)"
@@ -395,7 +391,6 @@ nonisolated struct Account: Codable, Identifiable, Equatable, Sendable {
                        reserveLiftedUntil: reserveLiftedUntil, runnerSignedIn: signedIn)
     }
 }
-#endif
 
 nonisolated struct Question: Codable, Equatable, Sendable {
     var text: String
@@ -409,9 +404,7 @@ nonisolated struct Question: Codable, Equatable, Sendable {
     var plan: String? = nil
 }
 
-#if os(iOS) || os(watchOS)
-/// Something only the user can answer, waiting in the inbox (docs/runner-api.md). The Mac reads
-/// these into Engine's own InboxItem.
+/// Something only the user can answer, waiting in the inbox (docs/runner-api.md).
 nonisolated struct InboxItem: Codable, Identifiable, Equatable, Sendable {
     /// `question`, `review`, `failed` or `limit`; more may come.
     var kind: String
@@ -455,63 +448,10 @@ nonisolated struct InboxItem: Codable, Identifiable, Equatable, Sendable {
 
 /// What `POST /v1/jobs/{id}/delete` answers.
 nonisolated struct DeleteAnswer: Decodable, Sendable { var deleted: Bool; var ask: InboxItem? }
-#endif
 
-#if os(macOS)
-extension InboxItem {
-    /// A runner's item as Engine's InboxItem, or nil for a kind Engine doesn't know yet (a newer
-    /// runner may add one; permissions also come through job extras).
-    ///
-    /// Engine has no `confirm` kind (obid only, #546), and Engine is frozen: a confirm item reads
-    /// as a `start`, the kind closest to it (two options, no words, the user's go-ahead), and its
-    /// `InboxWords.confirm`, read from the same JSON, says what it really is. Every screen shows it
-    /// by that (`shownKind`), and the brain's briefing leaves it out (`RunnerFeed.briefingInbox`).
-    nonisolated static func runner(_ json: Data) -> InboxItem? {
-        if let item = try? Runner.decoder.decode(InboxItem.self, from: json) { return item }
-        guard var object = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any] else { return nil }
-        // A teammate asking to run a job on this Mac (#808): Sangam's design shows it as a "Start
-        // it?" card with its own answers (Allow, Allow … from now on, Decline), which obid takes.
-        if object["kind"] as? String == "obiRequest", (object["obi"] as? [String: Any])?["type"] as? String == "run_request" {
-            object["kind"] = Kind.start.rawValue
-            return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? Runner.decoder.decode(InboxItem.self, from: $0) }
-        }
-        // What a teammate's Oby asks (docs/obysphere.md, part 6): a question takes the owner's own
-        // words, as Engine's `question` does; a review, or an approval on GitHub, takes obid's own
-        // answers, as a `start` does. `InboxWords.obi` says what it really is.
-        if object["kind"] as? String == "obiRequest", let type = (object["obi"] as? [String: Any])?["type"] as? String,
-           type == "question" || ObiAsk.named.contains(type) {
-            object["kind"] = (type == "question" ? Kind.question : Kind.start).rawValue
-            return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? Runner.decoder.decode(InboxItem.self, from: $0) }
-        }
-        // A teammate used the share of an API account you gave them (#809): Sangam's "Sangam used
-        // the share of Deskree API", an Out of usage card with its own answers.
-        if object["kind"] as? String == "obiRequest", (object["obi"] as? [String: Any])?["type"] as? String == "share_used" {
-            object["kind"] = Kind.limit.rawValue
-            return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? Runner.decoder.decode(InboxItem.self, from: $0) }
-        }
-        guard object["kind"] as? String == RunnerConfirm.kind, object["confirm"] is [String: Any] else { return nil }
-        object["kind"] = Kind.start.rawValue
-        return (try? JSONSerialization.data(withJSONObject: object)).flatMap { try? Runner.decoder.decode(InboxItem.self, from: $0) }
-    }
-
-    /// `GET /v1/inbox`'s items, each as `runner(_:)` reads it: the ones Engine knows, and confirm items.
-    nonisolated static func runnerList(_ data: Data) throws -> [InboxItem] {
-        guard let list = try JSONSerialization.jsonObject(with: data) as? [Any] else {
-            throw RunnerError(message: "Oby's inbox couldn't be read.")
-        }
-        return list.compactMap { (try? JSONSerialization.data(withJSONObject: $0)).flatMap(runner) }
-    }
-
-    /// Whether Home asks the owner about it: a decision, or what another Oby asks, whose answers
-    /// are obid's own (Engine's kinds don't list them).
-    nonisolated func decides(_ words: InboxWords?) -> Bool { isDecision || words?.obi != nil }
-}
-#endif
 
 extension InboxItem {
-    /// Its kind as the runner names it. The Mac's `kind` is Engine's enum, the iPhone's a string:
-    /// both read the same. Engine has no `confirm` kind (obid only, #546): on the Mac, `words`
-    /// (`InboxWords.confirm`) says an item is one.
+    /// Its kind as the runner names it.
     nonisolated func shownKind(_ words: InboxWords? = nil) -> String {
         if words?.confirm != nil { return RunnerConfirm.kind }
         if let type = words?.obi?.type, ObiAsk.named.contains(type) { return type }
@@ -682,39 +622,8 @@ nonisolated struct ModelOptions: Codable, Equatable, Sendable {
     var cursor: Tool? = nil
 }
 
-#if os(iOS) || os(watchOS)
 /// The runner's accounts as the API sends them: the iPhone's own wire type.
 typealias RunnerAccount = Account
-#else
-/// On the Mac the runner's accounts are read into Engine's own AccountState (the runner keeps
-/// their `home` to itself; obid sends `payer`), so the brain can tell their usage too (Engine/Conversation.swift).
-typealias RunnerAccount = AccountState
-
-extension AccountState: Decodable {
-    private enum Keys: String, CodingKey {
-        case id, agent, name, payer, label, signedIn, fiveHour, sevenDay, fiveHourResets, sevenDayResets, running, fullUntil, tetrix, tetrixJobs, tetrixUsed, reserveLiftedUntil
-    }
-
-    init(from decoder: any Decoder) throws {
-        let keys = try decoder.container(keyedBy: Keys.self)
-        self.init(account: Account(id: try keys.decode(String.self, forKey: .id), agent: try keys.decode(String.self, forKey: .agent),
-                                   name: try keys.decode(String.self, forKey: .name),
-                                   payer: try keys.decodeIfPresent(String.self, forKey: .payer) ?? "", home: nil),
-                  label: try keys.decodeIfPresent(String.self, forKey: .label),
-                  fiveHour: try keys.decodeIfPresent(Double.self, forKey: .fiveHour),
-                  sevenDay: try keys.decodeIfPresent(Double.self, forKey: .sevenDay),
-                  fiveHourResets: try keys.decodeIfPresent(Date.self, forKey: .fiveHourResets),
-                  sevenDayResets: try keys.decodeIfPresent(Date.self, forKey: .sevenDayResets),
-                  running: try keys.decodeIfPresent(Int.self, forKey: .running) ?? 0,
-                  fullUntil: try keys.decodeIfPresent(Date.self, forKey: .fullUntil),
-                  tetrix: try keys.decodeIfPresent(Bool.self, forKey: .tetrix),
-                  tetrixJobs: try keys.decodeIfPresent(Int.self, forKey: .tetrixJobs) ?? 0,
-                  tetrixUsed: try keys.decodeIfPresent(Int.self, forKey: .tetrixUsed) ?? 0,
-                  reserveLifted: try keys.decodeIfPresent(Date.self, forKey: .reserveLiftedUntil),
-                  runnerSignedIn: try keys.decodeIfPresent(Bool.self, forKey: .signedIn))
-    }
-}
-#endif
 
 nonisolated struct RunnerStatus: Decodable, Equatable, Sendable {
     struct Runner: Codable, Equatable, Sendable {
@@ -769,7 +678,7 @@ nonisolated struct StoppedJobs: Decodable, Sendable {
 }
 
 /// One thing the runner reports while the app is open.
-#if os(iOS)
+#if !os(watchOS)
 /// A grouped owner choice for jobs stopped by one account limit (obid #1563).
 nonisolated struct RunnerLimitDecision: Decodable, Identifiable, Equatable, Sendable {
     struct Work: Decodable, Identifiable, Equatable, Sendable { let id: String; let title: String }
@@ -804,46 +713,19 @@ nonisolated enum RunnerEvent: Equatable, Sendable {
     /// The runner is following this app now: fetch what's there. Whatever changes meanwhile
     /// arrives after this, so applying it over the fetched lists loses nothing.
     case connected
-    #if os(macOS)
-    /// With what Engine's Job doesn't read yet (RunnerJobExtras), when it could be read.
-    case job(Job, RunnerJobExtras?)
-    #else
     case job(Job)
-    #endif
     /// A job was deleted, here or on another app (obid only): it leaves every list.
     case jobDeleted(String)
     case accounts([RunnerAccount])
-    #if os(iOS)
+    #if !os(watchOS)
     case limitDecision
     #endif
     /// Clear done was pressed, here or on another app: jobs that finished by then are hidden.
     case cleared(Date)
     /// An inbox item came, was answered, done or put off, here or on another app.
-    #if os(macOS)
-    /// With Oby's plain words for it (InboxWords), which Engine's InboxItem doesn't read.
-    case inbox(InboxItem, InboxWords?)
-    #else
     case inbox(InboxItem)
-    #endif
-    #if os(macOS)
-    /// A merge check was queued, taken or ended (Engine/Checks.swift): a Mac that runs them asks for one.
-    case check(MacCheck)
-    /// obid measured the job worktrees after it started answering (Settings › Runner).
-    case cleanup(RunnerStatus.Cleanup)
-    /// obid's Tetrix changed: connected, signed out, a sign-in started or ended (obid only).
-    case tetrix(TetrixStatus)
-    /// The watcher or the channel listener told the owner something (a `watch` or `listen` inbox
-    /// item, obid only): its card and a notification.
-    case watchNotice(WatchNotice)
-    /// obid's Slack changed: connected, signed out (obid only).
-    case slack(SlackStatus)
-    /// obid's Sentry changed: connected, signed out, a read's problem (obid only; no `repos`).
-    case sentry(SentryStatus)
-    /// The watcher's rules or runs changed (obid only).
-    case watch(WatchStatus)
-    #endif
     /// A turn of the conversation was added, from any app, or changed (a job dispatched from it):
-    /// the Mac window's and the iPhone's thread replace it by id, or add it by time (#11).
+    /// the iPhone's thread replaces it by id, or add it by time (#11).
     /// With what the app's Turn doesn't keep (obid only): the artifacts it made, and whether it's
     /// the turn a job adds when it ends.
     case turn(Turn, TurnExtras = TurnExtras())
@@ -864,9 +746,8 @@ nonisolated enum RunnerEvent: Equatable, Sendable {
     case transcript(TranscriptEvent)
 }
 
-#if os(iOS) || os(watchOS)
-/// One turn of the conversation with Oby, as Engine/Conversation.swift has it: the Mac compiles
-/// that one; the iPhone reads the runner's turns into this copy (apps/shared/ConversationModel.swift).
+/// One turn of the conversation with Oby: the iPhone reads the runner's turns into this
+/// (apps/shared/ConversationModel.swift).
 nonisolated struct Turn: Codable, Identifiable, Equatable, Sendable {
     enum Who: String, Codable, Sendable { case user, oby }
 
@@ -896,7 +777,6 @@ nonisolated struct Turn: Codable, Identifiable, Equatable, Sendable {
         self.conversation = conversation
     }
 }
-#endif
 
 /// One turn of the runner's conversation as `GET /v1/conversation` and the `turn` event send it
 /// (docs/runner-api.md), read into the app's Turn.
@@ -1002,25 +882,8 @@ extension Job {
     /// `Waiting.memory`, the one constant both Jobs match.
     nonisolated var waitsForMemory: Bool { status == .queued && waiting == .memory }
 
-    #if os(iOS) || os(watchOS)
     nonisolated var pullRequestState: String? { pullRequest?.state }
     nonisolated var reviewDecision: String? { pullRequest?.reviewDecision }
-    #else
-    nonisolated var pullRequestState: String? { pullRequest?.state.rawValue }
-    nonisolated var reviewDecision: String? { pullRequest?.reviewDecision?.rawValue }
-
-    /// The one line a job's row says under its title, as the iPhone's `Job.line`: the step while it
-    /// runs, else the summary's first line.
-    nonisolated var line: String {
-        if let waiting, status == .queued { return Self.waitingLine(waiting.text) }
-        return switch status {
-        case .queued, .running: step
-        case .done: summary.split(separator: "\n").first.map(String.init) ?? "Done"
-        case .interrupted: reason ?? summary.split(separator: "\n").first.map(String.init) ?? "Needs you"
-        case .failed, .stopped: summary.split(separator: "\n").first.map(String.init) ?? status.rawValue.capitalized
-        }
-    }
-    #endif
 
     /// What One more round and Try again send (docs/runner-api.md, `POST /v1/jobs/{id}/messages`):
     /// the agent's session picks up where it stopped, in the same worktree and branch.
@@ -1154,20 +1017,13 @@ nonisolated struct RunnerError: LocalizedError {
     var status: Int? = nil
     var errorDescription: String? { message }
 
-    // A person never reads "runner" (the owner, 2026-11-01), except in the frozen Swift Mac app,
-    // whose Settings still has its Runner page.
-    #if os(macOS)
-    static let unpaired = "Set the runner's address first."
-    static let notLetIn = "The runner didn't let this device in."
-    #else
+    // A person never reads "runner" (the owner, 2026-11-01).
     static let unpaired = "Pair with your Mac first."
     static let notLetIn = "Your Mac didn't let this device in."
-    #endif
 }
 
-/// The runner on the tailnet: `tailscale serve` vouches for who's asking, so there's no token. Or
-/// the runner on this Mac (#283), on 127.0.0.1, with its own `token` (Engine/LocalRunner.swift)
-/// sent as `Authorization: Bearer` on every request.
+/// obid, reached with a `token` sent as `Authorization: Bearer` on every request, or with none where
+/// the address vouches for who's asking.
 nonisolated struct Runner: Sendable {
     var base: URL
     var token: String?
@@ -1250,7 +1106,7 @@ nonisolated struct Runner: Sendable {
     /// Deletes a job that ended, for good (obid only): its record, worktree and local branch in
     /// obid's clone. Nothing pushed is touched: its branch and pull request stay on GitHub.
     func deleteJob(_ id: String) async throws { try await send("DELETE", "v1/jobs/\(id)") }
-    #if os(iOS)
+    #if !os(watchOS)
     /// The apps' Delete task (obid only, `POST /v1/jobs/{id}/delete`): gone at once, or, with
     /// commits that aren't published or work that isn't committed, obid's Confirm (`ask`) first.
     func deleteAsked(_ id: String) async throws -> DeleteAnswer { try await call("POST", "v1/jobs/\(id)/delete") }
@@ -1311,13 +1167,7 @@ nonisolated struct Runner: Sendable {
     /// `done` lets it go without one; `later` puts it off until then. Send one of them.
     func settle(_ id: String, answer: String? = nil, done: Bool? = nil, later: Date? = nil) async throws -> InboxItem {
         struct Body: Encodable { var answer: String?; var done: Bool?; var later: Date? }
-        #if os(macOS)
-        let data = try await send("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, done: done, later: later))
-        guard let item = InboxItem.runner(data) else { throw RunnerError(message: "Oby's answer couldn't be read.") }
-        return item
-        #else
         return try await call("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, done: done, later: later))
-        #endif
     }
 
     /// An inbox item's id as one path segment: an id from elsewhere (a push) can't reach another route.
@@ -1577,11 +1427,7 @@ nonisolated struct Runner: Sendable {
     }
 
     static func mode(of job: Job) -> String? {
-        #if os(macOS)
-        return nil
-        #else
         return job.mode
-        #endif
     }
 
     // MARK: Permissions (#134)
@@ -1604,7 +1450,7 @@ nonisolated struct Runner: Sendable {
         try await send("PUT", "v1/settings/permissions", body: Body(mode: mode))
     }
 
-    #if os(iOS)
+    #if !os(watchOS)
     /// Settings › Agents (obid only): an account's model, `effort` or `complexEffort`, only the keys
     /// changed (`PATCH /v1/accounts/{id}`); answers the account.
     func tuneAccount(_ id: String, _ change: [String: String]) async throws -> Account {
@@ -1633,17 +1479,11 @@ nonisolated struct Runner: Sendable {
     }
 
     // Approvals come from the iPhone's or the Mac's approval key (apps/shared/DeviceKey.swift): the owner's click.
-    #if os(iOS) || os(macOS)
+    #if !os(watchOS)
     /// The owner's Confirm of a confirm item, with the device's signature over its title (#776).
     func settle(_ id: String, answer: String, approval: Approval) async throws -> InboxItem {
         struct Body: Encodable { var answer: String; var approval: Approval }
-        #if os(macOS)
-        let data = try await send("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, approval: approval))
-        guard let item = InboxItem.runner(data) else { throw RunnerError(message: "Oby's answer couldn't be read.") }
-        return item
-        #else
         return try await call("POST", "v1/inbox/\(Self.inboxSegment(id))/answer", body: Body(answer: answer, approval: approval))
-        #endif
     }
 
     func publish(_ id: String, approval: Approval) async throws -> URL {
@@ -1685,7 +1525,7 @@ nonisolated struct Runner: Sendable {
         return answer.id
     }
 
-    #if os(iOS) || os(macOS)
+    #if !os(watchOS)
     /// Forgets device `id`'s publishing key, with a registered key's signature for it ("DELETE /v1/devices/{id}").
     func revokeDevice(_ id: String, approval: Approval) async throws {
         struct Body: Encodable { var approval: Approval }
@@ -1694,149 +1534,6 @@ nonisolated struct Runner: Sendable {
     }
     #endif
 
-    #if os(macOS)
-    /// The next check for this Mac to run, now this Mac's, or nil when none waits: merge checks,
-    /// Apple checks agents asked for (Engine/AppleChecks.swift), or both.
-    func nextCheck(mac: String, merge: Bool = true, apple: Bool = false) async throws -> MacCheck? {
-        struct Answer: Decodable { var check: MacCheck? }
-        let name = mac.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-        let kinds = [merge ? "merge" : nil, apple ? "apple" : nil].compactMap { $0 }.joined(separator: ",")
-        // Signed: what this Mac reports reaches the job's agent, so the runner binds the check to
-        // this app (docs/runner-api.md, "Words the owner typed").
-        let answer: Answer = try await call("GET", "v1/checks/next?mac=\(name)&kinds=\(kinds)", signs: true)
-        return answer.check
-    }
-
-    /// The commits of an Apple check this Mac took, as a git bundle (empty when they're on GitHub already).
-    func bundle(_ id: String) async throws -> Data {
-        var request = URLRequest(url: base.appending(path: "v1/checks/\(id)/bundle"))
-        request.timeoutInterval = 120
-        let (data, response) = try await fetch(signed(request))
-        try Self.check(response, data, refused: refused)
-        return data
-    }
-
-    /// What this Mac found running a check it took.
-    func report(_ id: String, _ report: MacCheck.Report) async throws -> MacCheck {
-        struct Answer: Decodable { var check: MacCheck }
-        let answer: Answer = try await call("POST", "v1/checks/\(id)/result", body: report)
-        return answer.check
-    }
-
-    /// The connections the runner's agents use through its broker (Settings › Connectors), or nil
-    /// from a runner that has none to list: obid doesn't serve them yet (#444).
-    func connections() async throws -> [ConnectedApp]? {
-        do {
-            return try await call("GET", "v1/connections")
-        } catch let error as RunnerError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// The runner's own sentence for removing connection `name`: asked without an approval, it
-    /// answers 403 with what to approve.
-    func disconnectAction(_ name: String) async throws -> String {
-        var request = URLRequest(url: URL(string: "v1/connections/\(name)", relativeTo: base.appending(path: "/"))!)
-        request.httpMethod = "DELETE"
-        request.timeoutInterval = 45
-        let (data, response) = try await fetch(signed(request))
-        struct Ask: Decodable { var action: String }
-        if (response as? HTTPURLResponse)?.statusCode == 403, let ask = try? JSONDecoder().decode(Ask.self, from: data) { return ask.action }
-        try Self.check(response, data, refused: refused)
-        throw RunnerError(message: "Oby didn't say what to approve.")
-    }
-
-    /// Removes connection `name` with a device's approval of `disconnectAction`'s sentence. Its
-    /// secret stays in the runner's vault.
-    func disconnect(_ name: String, approval: Approval) async throws {
-        struct Body: Encodable { var approval: Approval }
-        struct Answer: Decodable { var removed: String }
-        let _: Answer = try await call("DELETE", "v1/connections/\(name)", body: Body(approval: approval))
-    }
-
-    /// The plug-ins obid found, enabled or not (docs/runner-api.md, "obid only: plug-ins"), or nil
-    /// from the Swift runner, which has none.
-    func plugins() async throws -> [RunnerPlugin]? {
-        do {
-            return try await call("GET", "v1/obid/plugins")
-        } catch let error as RunnerError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// Turns plug-in `id` on, with its settings, or off. obid answers once it's ready (or its first
-    /// start failed), or once it and everything it started have stopped.
-    func setPlugin(_ id: String, enabled: Bool, config: [String: String]? = nil) async throws -> RunnerPlugin {
-        struct Body: Encodable { var enabled: Bool; var config: [String: String]? }
-        return try await call("PUT", "v1/obid/plugins/\(id)", body: Body(enabled: enabled, config: config))
-    }
-
-    /// Whether obid's gh is signed in to GitHub, as whom, and the sign-in under way (docs/runner-api.md,
-    /// "obid only: GitHub's sign-in"), or nil from a runner without it.
-    func gitHubLogin() async throws -> GitHubLogin? {
-        do {
-            return try await call("GET", "v1/github")
-        } catch let error as RunnerError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// gh's own sign-in on the runner, or the one under way: GitHub's device page and the code to type there.
-    func startGitHubSignIn() async throws -> GitHubSignIn {
-        try await call("POST", "v1/github/sign-in")
-    }
-
-    /// Ends the GitHub sign-in under way, if any.
-    func endGitHubSignIn() async throws {
-        _ = try await send("DELETE", "v1/github/sign-in")
-    }
-
-    /// The repositories a job may start in (docs/runner-api.md, "obid only: repositories"): the
-    /// listed ones, then every one obid's gh can push to.
-    func jobRepos() async throws -> [RunnerRepo] {
-        struct Answer: Decodable { var repos: [RunnerRepo] }
-        let answer: Answer = try await call("GET", "v1/repos")
-        return answer.repos
-    }
-
-    // MARK: obid's accounts (docs/runner-api.md, "obid only: accounts"): loopback only, so only obid on this Mac
-
-    /// Adds an account: obid makes its folder, and it's signed in with `startAccountSignIn`.
-    func addAccount(agent: String, name: String, payer: String) async throws -> RunnerAccount {
-        struct Body: Encodable { var agent: String; var name: String; var payer: String? }
-        return try await call("POST", "v1/accounts", body: Body(agent: agent, name: name, payer: payer.isEmpty ? nil : payer))
-    }
-
-    /// Lists the tool's own login (`default`, `codex`, `cursor`): after it was removed here, or
-    /// when obid found it on this Mac (`availableLogins`).
-    func restoreDefaultLogin(agent: String) async throws -> RunnerAccount {
-        struct Body: Encodable { var agent: String; var `default` = true }
-        return try await call("POST", "v1/accounts", body: Body(agent: agent))
-    }
-
-    /// Takes the account out of Oby. The tool's own login, and the account with its provider, stay.
-    func removeAccount(_ id: String) async throws {
-        _ = try await send("DELETE", "v1/accounts/\(Self.segment(id))")
-    }
-
-    /// Runs the tool's own login for the account on obid (or answers the one under way).
-    func startAccountSignIn(_ id: String) async throws -> AccountSignIn {
-        try await call("GET", "v1/accounts/\(Self.segment(id))/sign-in")
-    }
-
-    /// The code Claude Code's page showed, for its login on obid: once.
-    func sendAccountCode(_ id: String, _ code: String) async throws -> RunnerAccount {
-        struct Body: Encodable { var code: String }
-        return try await call("POST", "v1/accounts/\(Self.segment(id))/sign-in", body: Body(code: code), timeout: 75)
-    }
-
-    /// Ends the account's sign-in under way, if any.
-    func endAccountSignIn(_ id: String) async throws {
-        _ = try await send("DELETE", "v1/accounts/\(Self.segment(id))/sign-in")
-    }
-
-    private static func segment(_ id: String) -> String { id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id }
-    #endif
 
     /// Server-Sent Events until the connection drops; the caller reconnects.
     func events() -> AsyncThrowingStream<RunnerEvent, Error> {
@@ -1912,7 +1609,7 @@ nonisolated struct Runner: Sendable {
         try Self.decoder.decode(Answer.self, from: try await send(method, path, body: body, timeout: timeout, signs: signs))
     }
 
-    #if os(iOS)
+    #if !os(watchOS)
     func limitDecisions() async throws -> [RunnerLimitDecision] {
         try await call("GET", "v1/limit-decisions")
     }
@@ -1961,50 +1658,6 @@ nonisolated struct Runner: Sendable {
         return data
     }
 
-    #if os(macOS)
-    /// What waits in the inbox, as `inbox()`, with Oby's plain words for each item, by item id.
-    func inboxWithWords(state: String = "open") async throws -> ([InboxItem], [String: InboxWords]) {
-        guard let data = try await inboxAnswer(state: state) else { return ([], [:]) }
-        return try Self.inboxWithWords(data)
-    }
-
-    /// The inbox's answer as it came, or nil from a runner without an inbox (404): what the Mac
-    /// keeps to show at its next launch (RunnerFeed.Kept).
-    func inboxAnswer(state: String = "open") async throws -> Data? {
-        do {
-            return try await send("GET", state == "done" ? "v1/inbox?state=done&limit=1000" : "v1/inbox")
-        } catch let error as RunnerError where error.status == 404 {
-            return nil
-        }
-    }
-
-    /// The items and Oby's words for them in an inbox answer.
-    static func inboxWithWords(_ data: Data) throws -> ([InboxItem], [String: InboxWords]) {
-        (try InboxItem.runnerList(data), InboxWords.of(data))
-    }
-
-    /// The latest jobs, with what Engine's Job doesn't read yet, by job id.
-    func jobsWithExtras() async throws -> ([Job], [String: RunnerJobExtras]) {
-        try Self.jobsWithExtras(try await jobsAnswer())
-    }
-
-    /// The latest jobs' answer as it came (RunnerFeed.Kept).
-    func jobsAnswer() async throws -> Data {
-        try await send("GET", "v1/jobs?limit=50")
-    }
-
-    /// The jobs, and their extras by job id, in a jobs answer.
-    static func jobsWithExtras(_ data: Data) throws -> ([Job], [String: RunnerJobExtras]) {
-        (try decoder.decode([Job].self, from: data), RunnerJobExtras.of(data))
-    }
-
-    /// One job, with what Engine's Job doesn't read yet.
-    func jobWithExtras(_ id: String) async throws -> (Job, RunnerJobExtras?) {
-        let data = try await send("GET", "v1/jobs/\(id)")
-        return (try Self.decoder.decode(Job.self, from: data), try? Self.decoder.decode(RunnerJobExtras.self, from: data))
-    }
-
-    #endif
 
     /// One page of the runner's conversation, oldest first (#11): the latest `limit` turns, or the
     /// ones before the turn `before` names. A runner older than the thread has none.
@@ -2237,37 +1890,15 @@ nonisolated struct EventParser {
             defer { name = ""; data = "" }
             let json = Data(data.utf8)
             switch name {
-            #if os(macOS)
-            case "job":
-                // obid's `{"id", "deleted": true}`: the job was deleted, on any app.
-                if let gone = try? Runner.decoder.decode(DeletedJob.self, from: json), gone.deleted { return .jobDeleted(gone.id) }
-                return (try? Runner.decoder.decode(Job.self, from: json)).map { RunnerEvent.job($0, try? Runner.decoder.decode(RunnerJobExtras.self, from: json)) }
-            #else
             case "job":
                 if let gone = try? Runner.decoder.decode(DeletedJob.self, from: json), gone.deleted { return .jobDeleted(gone.id) }
                 return (try? Runner.decoder.decode(Job.self, from: json)).map(RunnerEvent.job)
-            #endif
             case "accounts": return (try? Runner.decoder.decode([RunnerAccount].self, from: json)).map(RunnerEvent.accounts)
-            #if os(iOS)
+            #if !os(watchOS)
             case "limitDecision": return .limitDecision
             #endif
             case "clear": return (try? Runner.decoder.decode(ClearedAt.self, from: json)).map { .cleared($0.clearedAt) }
-            #if os(macOS)
-            case "inbox":
-                // Engine's inbox doesn't know the watcher's kind: its item only notifies.
-                if let notice = try? Runner.decoder.decode(WatchNotice.self, from: json), WatchNotice.kinds.contains(notice.kind) { return .watchNotice(notice) }
-                return InboxItem.runner(json).map { RunnerEvent.inbox($0, try? Runner.decoder.decode(InboxWords.self, from: json)) }
-            #else
             case "inbox": return (try? Runner.decoder.decode(InboxItem.self, from: json)).map(RunnerEvent.inbox)
-            #endif
-            #if os(macOS)
-            case "check": return (try? Runner.decoder.decode(MacCheck.self, from: json)).map(RunnerEvent.check)
-            case "tetrix": return (try? Runner.decoder.decode(TetrixStatus.self, from: json)).map(RunnerEvent.tetrix)
-            case "slack": return (try? Runner.decoder.decode(SlackStatus.self, from: json)).map(RunnerEvent.slack)
-            case "sentry": return (try? Runner.decoder.decode(SentryStatus.self, from: json)).map(RunnerEvent.sentry)
-            case "watch": return (try? Runner.decoder.decode(WatchStatus.self, from: json)).map(RunnerEvent.watch)
-            case "cleanup": return (try? Runner.decoder.decode(RunnerStatus.Cleanup.self, from: json)).map(RunnerEvent.cleanup)
-            #endif
             case "turn": return (try? Runner.decoder.decode(RunnerTurn.self, from: json)).map { RunnerEvent.turn($0.turn, $0.extras) }
             case "step": return (try? Runner.decoder.decode(TurnStep.self, from: json)).map(RunnerEvent.step)
             case "conversation": return (try? Runner.decoder.decode(RunnerConversation.self, from: json)).map(RunnerEvent.conversation)

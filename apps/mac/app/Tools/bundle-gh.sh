@@ -4,8 +4,8 @@
 # notarized with the app and nobody installs gh to use Oby. obid finds it beside its own executable
 # (core/crates/obid/src/github.rs, gh). gh keeps its own login in its own Keychain item; Oby never
 # reads it. The release is pinned and checked against its SHA-256 on every build; the download is
-# cached under ~/Library/Caches, never in the repository. Run by the "Bundle gh" build phase of the Oby target
-# (apps/Oby.xcodeproj), as bundle-cloudflared.sh is.
+# cached under ~/Library/Caches, never in the repository. Run by the Electron app's packaging
+# (apps/electron/scripts/helpers.sh).
 set -euo pipefail
 
 VERSION=2.102.0
@@ -42,7 +42,7 @@ rm -f "$dest"
 lipo -create -output "$dest" "$work/gh-arm64" "$work/gh-amd64"
 
 # Signed like the app: the hardened runtime for notarization, and a secure timestamp on release
-# builds (it needs the network). Xcode seals the app, with this inside, after this phase.
+# builds (it needs the network).
 identity="${EXPANDED_CODE_SIGN_IDENTITY:--}"
 timestamp=--timestamp=none
 if [[ "$identity" != "-" && "${CONFIGURATION:-Debug}" == Release ]]; then timestamp=--timestamp; fi

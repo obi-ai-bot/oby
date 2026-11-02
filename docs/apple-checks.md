@@ -1,5 +1,7 @@
 # Apple builds for agents (#118): spike
 
+> Written while the Swift Mac app existed. It was deleted by the owner's decision of 2026-11-02 (git history has it): its screens, its `apps/mac/…`, `Engine/…` and `Runner/…` pointers below are history. What a person sees on the Mac is the Electron app, Sangam's (`apps/electron`).
+
 Oby's agents run on tetrix-lab, a Linux machine with no Xcode and no Apple SDK. On 2026-10-10 and 11 every iPhone, Watch and Mac change was written and reviewed without being compiled: reviews kept asking for "a build in Xcode", and three Mac-only breakages (a missing `OSLog` import, a duplicate `JobList`) reached review. The goal: an agent changing an Apple app sees the compiler's errors and failing tests **in its own round**, and fixes them before it publishes.
 
 GitHub Actions is out: the Deskree org is out of Actions minutes (2026-10-11), so the workflows from #97 stay disabled.

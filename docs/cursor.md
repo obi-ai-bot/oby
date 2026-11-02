@@ -1,7 +1,7 @@
 # Cursor in Oby (#406)
 
 Oby runs jobs on Cursor through `cursor-agent acp`, the Agent Client Protocol over stdio, with
-the generic client in `Engine/ACP.swift` and Cursor's launch in `Engine/Cursor.swift`. This page
+the generic client and Cursor's launch, first in the Swift engine (deleted 2026-11-02), now in obid (`core/crates/obid/src/`). This page
 is what Oby relies on, and what the probe proved. Run the probe with
 `scripts/cursor-probe.sh offline` and `scripts/cursor-probe.sh signed-in`.
 
@@ -69,7 +69,7 @@ Cursor, with `--sandbox disabled` and every permission rejected, wrote a file wi
   whether a reasoning (`thought_level`) option is among them. Its PASS, FAIL and UNKNOWN lines decide
   the edit gate, token counts, steering and the effort setting for Cursor jobs.
 
-## `CursorFacts` (Engine/Cursor.swift)
+## `CursorFacts`
 
 | Fact | Value | What it changes |
 | --- | --- | --- |

@@ -1,8 +1,8 @@
 import SwiftUI
 
-// The model these cards show is in GitHubWorkModel.swift (Foundation only: obid's mac_app test compiles it).
+// The model these cards show is in GitHubWorkModel.swift (Foundation only: obid's swift_client test compiles it).
 
-#if os(iOS) || os(macOS)
+#if os(iOS)
 /// A GitHub item waiting to start, as a card in Review PR or Issues (Sangam's TaskCard with its
 /// "Start it?" decision): GitHub's mark, who and what, the repository, then the headline and the
 /// one tap that starts Oby's job, Open on GitHub, and Later.

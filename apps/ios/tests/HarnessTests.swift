@@ -6,7 +6,7 @@ import WebKit
 /// The conversation harness on the iPhone (docs/conversation-harness.md, step 3): Oby's words as
 /// they're written (`delta`), its tool lines (`step` with `tool` and `detail`), the artifacts a
 /// turn made and their viewer, and the live card of a job a turn started. apps/shared/ is one
-/// code: apps/mac/tests/HarnessTests.swift checks the Mac's side of it.
+/// code: the Mac's side of it is the Electron app's.
 @MainActor
 struct HarnessTests {
     let now = Date(timeIntervalSince1970: 1_791_582_173)

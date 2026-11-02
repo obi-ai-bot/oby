@@ -2,7 +2,7 @@
 
 The owner's ask of 2026-10-25: Claude should be able to run Oby itself, from a clean install through every permission and every daily workflow, and check it's flawless, so Oby becomes the best dispatcher and agent orchestrator for software engineers while staying as simple as it is. This is the plan. Built so far: the owner's conversation loop on their own Mac, obid and accounts, driven through the Electron app (`npm run drive`, the `human-drive` skill; [human-drive/research.md](human-drive/research.md) says how and why, and each first report is in `docs/human-drive/`).
 
-The unit and API suites (`cargo test`, MacTests, `swift test`) say the parts work. A journey says the product works: one person's path through the real app, start to finish, with what they see, what they wait for and every time Oby makes them click.
+The unit and API suites (`cargo test`, `npm test`, iOSTests) say the parts work. A journey says the product works: one person's path through the real app, start to finish, with what they see, what they wait for and every time Oby makes them click.
 
 ## What a journey run gives
 
@@ -40,7 +40,7 @@ These are what "best dispatcher" means here, measured on every run and compared 
 | J8 | **Bad days.** obid killed mid-job, the Mac asleep and woken, the network off, a CLI signed out mid-run (Codex's 401): each said in one line, and the work picks up where it was. | All | the VM |
 | J9 | **Updating.** Install the last release, use it, update to the new one: tasks, accounts and the Obysphere kept, and only first launch's new steps shown. | First launch | the VM |
 
-J4 and J5 come first: they need no VM. They run against obid with the fake agents (`core/crates/obid/tests/agents/`) behind the real Mac app, built from the branch, in a throwaway `OBY_HOME`, as MacTests' host does.
+J4 and J5 come first: they need no VM. They run against obid with the fake agents (`core/crates/obid/tests/agents/`) behind the real Mac app (Electron), built from the branch, in a throwaway `OBY_HOME`.
 
 ## How Claude runs them
 

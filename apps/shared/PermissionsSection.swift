@@ -1,4 +1,4 @@
-#if os(iOS) || os(macOS)
+#if os(iOS)
 import SwiftUI
 
 /// Settings › Permissions, on the iPhone and in the Mac's Runner tab alike (as the sections in
@@ -38,13 +38,9 @@ struct PermissionsSection: View {
     }
 
     /// Sangam's card: the default mode with what it lets the agent do, then each rule with Remove.
-    /// Sangam's four on the iPhone (RunnerMode.offered); the frozen Mac app keeps every one.
+    /// Sangam's four (RunnerMode.offered).
     private var modes: [RunnerMode] {
-        #if os(macOS)
-        RunnerMode.allCases
-        #else
         RunnerMode.offered(defaultMode)
-        #endif
     }
 
     private var group: some View {
@@ -58,11 +54,6 @@ struct PermissionsSection: View {
                     SetSelect("Default mode", selection: mode, options: modes.map { (RunnerMode?.some($0), $0.label) })
                 }
                 // None saved: on the iPhone no row, as Electron's (its note says how one gets here)
-                #if os(macOS)
-                if let rules, rules.isEmpty {
-                    SetRow("No saved rules", quiet: true)
-                }
-                #endif
                 ForEach(rules ?? []) { rule in
                     SetRow(about: [rule.decision == "deny" ? "Denied" : "Allowed", rule.repo].compactMap(\.self).joined(separator: " · ")) {
                         SetCode(rule.rule)

@@ -38,7 +38,7 @@ Before the redesign, in three tabs (Home, Chat, Settings); all of it still works
 
 ## Signing and TestFlight
 
-The iPhone app signs with Deskree's team (`3UV9W5SV7W`) as `com.deskree.oby.ios`, an App ID of its own: the Mac app is `com.deskree.oby`, and sharing one made Xcode see a single "Oby (iOS, macOS)" product, which Xcode Cloud couldn't tie to the iOS-only App Store Connect record (2026-10-23). The Live Activity extension is `com.deskree.oby.ios.activity`, the Watch app `com.deskree.oby.ios.watchkitapp` (and `.watchkitapp.widget`), and the App Group they share `group.com.deskree.oby.ios.watch`. Builds 432 and 458 went to the earlier record, "Oby by Deskree" (`com.deskree.oby`), which gets no new ones. Both the team (`OBY_TEAM_ID`) and the bundle ID (`OBY_IPHONE_BUNDLE_ID`) are set once, in `apps/config/Signing.xcconfig` ([docs/release.md](../../../docs/release.md)).
+The iPhone app signs with Deskree's team (`3UV9W5SV7W`) as `com.deskree.oby.ios`, an App ID of its own: the Swift Mac app was `com.deskree.oby`, and sharing one made Xcode see a single "Oby (iOS, macOS)" product, which Xcode Cloud couldn't tie to the iOS-only App Store Connect record (2026-10-23). The Live Activity extension is `com.deskree.oby.ios.activity`, the Watch app `com.deskree.oby.ios.watchkitapp` (and `.watchkitapp.widget`), and the App Group they share `group.com.deskree.oby.ios.watch`. Builds 432 and 458 went to the earlier record, "Oby by Deskree" (`com.deskree.oby`), which gets no new ones. Both the team (`OBY_TEAM_ID`) and the bundle ID (`OBY_IPHONE_BUNDLE_ID`) are set once, in `apps/config/Signing.xcconfig` ([docs/release.md](../../../docs/release.md)).
 
 Until 2026-10-20 the beta signed with Wellington's personal team (`PQKAL8E36D`) as `dev.wellprado.oby`, "Oby Beta" in App Store Connect. That record stays on his account (an app record's bundle ID belongs to its account) and gets no new builds; testers install the Deskree app as a new app, and Face ID keys register again on their own.
 
@@ -53,7 +53,7 @@ The app says it uses only exempt encryption (`ITSAppUsesNonExemptEncryption` = N
 
 ## Coming next
 
-- Notifications from the Oby platform rather than obid (F11, spike #27). Pushes need an APNs key in Deskree's team (docs/release.md, step 2).
+- Notifications from the Oby platform rather than obid (F11, spike #27). Pushes need an APNs key in Deskree's team (Deskree's Apple account).
 
 ## Voice input (Part of #19)
 

@@ -166,7 +166,7 @@ nonisolated enum ThreadTaskLine {
         conversation == showing ? turn : nil
     }
 
-    /// The frozen Mac app's (the iPhone's is `cards(in:…)`, below). The jobs whose cards go under `turn`: those it lists, then, under the user's words, the
+    /// The jobs whose cards go under `turn`: those it lists, then, under the user's words, the
     /// jobs those words started (`startedBy`) that no turn of the thread lists yet,
     /// oldest first: a card shows the moment its job starts, not when Oby's answer is in. A job
     /// has one card, under the first turn that lists it, never again under its report or a later

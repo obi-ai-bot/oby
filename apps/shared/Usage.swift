@@ -259,7 +259,7 @@ nonisolated enum Usage {
         return state + " · used in \(used) of \(jobs) recent job\(jobs == 1 ? "" : "s") (\(percent(Double(used) / Double(jobs))))"
     }
 
-    // MARK: Sangam's usage rows (Settings › Accounts on the Mac, docs/mac-design.md B2)
+    // MARK: Sangam's usage rows (Settings › Accounts)
 
     /// How much of its week an account has used, 0...1: none once the week has reset; nil while
     /// unknown or signed out.

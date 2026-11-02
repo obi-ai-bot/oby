@@ -120,7 +120,7 @@ AGENTS.md already decides how it works: "the admin's Oby, or Oby Cloud, holds th
 
 ### 6. Asks on Home
 
-The design puts every ask in Home's stack, those from other Obys too. Today a review request or a question from another Oby waits only in Settings, because Engine's inbox kinds don't include them (`Engine/Inbox.swift` maps only `run_request` and `share_used`).
+The design puts every ask in Home's stack, those from other Obys too. Today a review request or a question from another Oby waits only in Settings, because the Swift engine's inbox kinds didn't include them (it mapped only `run_request` and `share_used`).
 
 - **Engine and Mac:** map `obiRequest` items (review request, question, approval on the code host) into Home's cards with their options. A question also takes your own words, through the composer, as obid already accepts.
 - **The key change from part 4** is one more kind of ask.

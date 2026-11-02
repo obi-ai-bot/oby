@@ -8,7 +8,7 @@
 #   sh install/package.sh [--bin FILE] [--out DIR] [--target NAME]
 #
 # With no --bin it builds obid (cargo build --release). Publishing the archive is a person's step
-# (docs/release.md); nothing here uploads.
+# nothing here uploads.
 set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

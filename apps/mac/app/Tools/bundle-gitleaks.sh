@@ -6,8 +6,8 @@
 # release is pinned to the version obid's canary was measured with, and checked against its
 # SHA-256 (from the release's gitleaks_<version>_checksums.txt) on every build; the download is
 # cached under ~/Library/Caches, never in the repository. Moving to another version means running
-# scan.rs's gitleaks tests against it first. Run by the "Bundle gitleaks" build phase of the Oby
-# target (apps/Oby.xcodeproj), as bundle-gh.sh is.
+# scan.rs's gitleaks tests against it first. Run by the Electron app's packaging
+# (apps/electron/scripts/helpers.sh), as bundle-gh.sh is.
 set -euo pipefail
 
 VERSION=8.30.1
@@ -50,7 +50,7 @@ mkdir -p "$licenses"
 cp "$work/arm64/LICENSE" "$licenses/gitleaks.txt"
 
 # Signed like the app: the hardened runtime for notarization, and a secure timestamp on release
-# builds (it needs the network). Xcode seals the app, with this inside, after this phase.
+# builds (it needs the network).
 # ponytail: the release is built with go1.24.11, whose runtime macOS kills under the hardened
 # runtime unless it may map unsigned executable memory (measured 2026-10-25: exit 137 without it,
 # with an Apple Development identity too; gh 2.102.0 needs nothing). Drop the entitlement once a

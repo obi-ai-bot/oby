@@ -24,7 +24,7 @@ struct RunnerAPI: Sendable {
     var base: String
     var send: Send
 
-    /// The Mac app's bundle id and its Settings › Runner key (apps/mac/app/Settings.swift).
+    /// The Swift Mac app's bundle id, whose Settings › Runner key a Mac that ran it may still hold.
     static let macApp = "com.deskree.oby"
     static let localURL = "http://127.0.0.1:7777"
 

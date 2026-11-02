@@ -152,7 +152,7 @@ struct RunnerTests {
     }
 
     /// obid sends `label: null` until a tool reports one (#626): its `signedIn` decides, so the usage
-    /// card doesn't say "Signed out" for an account obid signed in (docs/mac-design.md C1).
+    /// card doesn't say "Signed out" for an account obid signed in.
     @Test func obidsSignedInAccountWithNoLabel() throws {
         let json = #"{"id": "personal", "agent": "claude", "name": "Personal", "label": null, "signedIn": true, "fiveHour": null, "sevenDay": null, "running": 0}"#
         let account = try Runner.decoder.decode(Account.self, from: Data(json.utf8))

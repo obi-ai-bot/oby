@@ -51,9 +51,6 @@ struct AskCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                #if os(macOS)
-                if let brand { Image("Brands/\(brand)").resizable().scaledToFit().frame(width: 14, height: 14).accessibilityHidden(true) }
-                #endif
                 Text(kind).font(Tokens.font(Tokens.textSm, .medium)).foregroundStyle(failed ? Tokens.danger : Tokens.needsInk)
                 if let source, !source.isEmpty { Text(source).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).fadeOut() }
             }

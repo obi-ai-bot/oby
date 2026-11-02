@@ -65,24 +65,6 @@ struct DecisionCard: View {
             if let onWords { ownWords(onWords) }
         }
         .disabled(busy)
-        #if os(macOS)
-        .focusable().focusEffectDisabled().focused($cardFocused)
-        // Only an explicit jump/click gives a card the keyboard; arrival must never interrupt typing.
-        .onTapGesture { if keyboardEnabled && !focused { cardFocused = true } }
-        .onExitCommand { if keyboardEnabled && !busy { onLater?() } }
-        .onChange(of: focusRequest) { if keyboardEnabled { cardFocused = true } }
-        .onKeyPress(phases: .down) { press in
-            guard keyboardEnabled, cardFocused, !focused, press.modifiers.isEmpty else { return .ignored }
-            let key = press.key == .return ? "return" : press.key == .escape ? "escape" : press.characters
-            switch DecisionKey.action(key, options: options, words: words, busy: busy) {
-            case .option(let option): choose(option)
-            case .words(let text): onWords?(text)
-            case .later: onLater?()
-            case .none: return .ignored
-            }
-            return .handled
-        }
-        #endif
     }
 
     private func choose(_ option: CardOption) {
@@ -218,10 +200,6 @@ struct DecisionCard: View {
             send(text)
         }
         if let wordsNote { Text(wordsNote).font(.caption2).foregroundStyle(.secondary) }
-        #elseif os(macOS)
-        // The keyboard is right there: the line is open from the start.
-        field(send)
-        if let wordsNote { Text(wordsNote).font(Style.small).foregroundStyle(Style.secondary) }
         #else
         if typing {
             // The keyboard's mic dictates into it.
@@ -256,13 +234,6 @@ struct DecisionCard: View {
                 .focused($focused)
                 .submitLabel(.send)
                 .onSubmit(go)
-                #if os(macOS)
-                .onKeyPress(.return, phases: .down) { press in
-                    if press.modifiers.contains(.shift) { return .ignored }
-                    go()
-                    return .handled
-                }
-                #endif
             Button(action: go) {
                 Image(systemName: "arrow.up").font(Style.small.weight(.bold))
                     .foregroundStyle(Style.paper)
@@ -281,19 +252,7 @@ struct DecisionCard: View {
     /// Each app's look around the text: the Mac's window is dark, the iPhone follows the system.
     /// Long text itself takes the reading style (apps/shared/ReadingText.swift).
     private enum Style {
-        #if os(macOS)
-        static let ink = OBYStyle.primary
-        static let paper = Color.black
-        static let secondary = OBYStyle.secondary
-        static let fill = OBYStyle.surface
-        static let option = Font.system(size: 13, weight: .medium)
-        static let small = OBYStyle.caption
-        static let planHeight: CGFloat = 220
-        static let spacing: CGFloat = 8
-        static let inset: CGFloat = 10
-        static let optionPadding: CGFloat = 14
-        static let optionHeight: CGFloat = 9
-        #elseif os(watchOS)
+        #if os(watchOS)
         static let secondary = Color.secondary
         static let fill = Color.primary.opacity(0.12)
         static let small = Font.caption2
