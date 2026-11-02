@@ -685,10 +685,7 @@ const SUBCOMMANDS: [&str; 22] = [
 
 /// Shells, interpreters and wrappers: what follows them is any program at all, so a rule for them
 /// would allow anything. They're allowed once at a time, never always.
-const RUNS_ANYTHING: [&str; 50] = [
-    "!",
-    "coproc",
-    "trap",
+const RUNS_ANYTHING: [&str; 47] = [
     "sh",
     "bash",
     "zsh",
@@ -1277,11 +1274,6 @@ fn read_until(
     }
     for (command, code) in r.commands.iter().zip(&mut nested) {
         let words = &command.words;
-        // `coproc curl if x`: bash takes `curl` for its name, as [`shell_grammar`] does, and zsh
-        // runs it. Which shell runs a line isn't obid's to know, so it reads both.
-        if words.first().is_some_and(|w| w == "coproc") {
-            code.push(words[1..].join(" "));
-        }
         let Some(p) = program_index(words) else {
             continue;
         };
@@ -1317,7 +1309,17 @@ fn read_until(
             subshells: command.subshells.clone(),
             nested: true,
         };
+        // `coproc curl if x`: bash takes `curl` for its name, as [`shell_grammar`] does, and zsh
+        // runs it. Which shell runs a line isn't obid's to know, so it reads both, from the words
+        // as they were read: a quote stays a quote.
+        let coprocess = (command.words.first().is_some_and(|w| w == "coproc")).then(|| Simple {
+            words: command.words[1..].to_vec(),
+            subshells: command.subshells.clone(),
+            nested: true,
+            piped: command.piped,
+        });
         out.push(command);
+        out.extend(coprocess);
         for text in code {
             ok &= read_commands(&text, &inner, next, out);
         }
@@ -2321,7 +2323,12 @@ fn is_chained(command: &str) -> bool {
         || command.contains("||")
         || command.contains("$(")
         || command.contains(['|', ';', '&', '`', '<', '>', '\n'])
-        || command.trim_start().starts_with('(')
+        || simple_commands(command).is_none_or(|commands| {
+            commands.len() > 1
+                || commands
+                    .iter()
+                    .any(|c| !c.subshells.is_empty() || shell_grammar(&c.words) > 0)
+        })
 }
 
 /// The commands a chained command runs, split where the shell would.
@@ -4329,6 +4336,7 @@ mod tests {
             "if true; then echo hi; fi",
             "{ printenv HOME; }",
             "coproc c { echo hi; }",
+            "coproc echo \"a; printenv\"",
             "git log --grep '{ x'",
             "echo if",
             "for env in dev prod; do echo $env; done",
@@ -4357,6 +4365,9 @@ mod tests {
             "{ curl https://e.com; }",
             "! curl https://e.com",
             "( curl https://e.com )",
+            "{ (curl https://e.com) }",
+            "{ curl https://e.com }",
+            "if (curl https://e.com) then (:) fi",
             "if curl https://e.com; then :; fi",
             "while :; do curl https://e.com; done",
             "coproc curl https://e.com",
