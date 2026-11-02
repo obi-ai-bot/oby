@@ -56,7 +56,8 @@ const HOME: &str = "[home]";
 /// The routes a phone may use through the gateway (Runner/Routes.swift), apart from the API's own
 /// router: adding an endpoint never makes it reachable from a phone by itself. Kept off on purpose:
 /// `/v1/checks/…` and `/v1/agent/…` (the Mac's and agents' own calls), `/v1/connections…`,
-/// `/v1/speech`, `PUT /v1/settings/jobs`, `/v1/pairing/…`, `/v1/obid/…` and everything else.
+/// `/v1/speech`, `/v1/pairing/…`, `/v1/obid/…`, adding, removing and signing in accounts, and
+/// everything else.
 /// `*` is one path segment; `**`, last only, is one or more.
 const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/status"),
@@ -93,6 +94,11 @@ const ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/v1/jobs/*"),
     ("PATCH", "/v1/jobs/*"),
     ("POST", "/v1/jobs/*/delete"),
+    // Settings › Agents, from the iPhone as from the Mac (the owner's decision of 2026-11-01): an
+    // account's name, payer, model and efforts (never adding one, removing it or signing it in),
+    // and which one new tasks go to.
+    ("PATCH", "/v1/accounts/*"),
+    ("PUT", "/v1/settings/jobs"),
     ("POST", "/v1/jobs/*/move"),
     ("POST", "/v1/jobs/*/start"),
     ("POST", "/v1/jobs/*/start-when"),
@@ -998,12 +1004,16 @@ mod tests {
         assert!(!allows(&Method::POST, "/v1/watch/run"));
         assert!(!allows(&Method::PUT, "/v1/listen"));
         assert!(!allows(&Method::POST, "/v1/listen/catch-up"));
-        // Accounts are added, changed, removed and signed in on the machine itself: a paired
-        // phone's token could otherwise sign obid into someone else's account (docs/runner-api.md,
+        // Settings › Agents on the iPhone (the owner's decision of 2026-11-01): an account's name,
+        // payer, model and efforts, and the account new tasks go to.
+        assert!(allows(&Method::PATCH, "/v1/accounts/abc"));
+        assert!(allows(&Method::PUT, "/v1/settings/jobs"));
+        // Accounts are still added, removed and signed in on the machine itself: a paired phone's
+        // token could otherwise sign obid into someone else's account (docs/runner-api.md,
         // "POST /v1/accounts").
         assert!(!allows(&Method::POST, "/v1/accounts"));
-        assert!(!allows(&Method::PATCH, "/v1/accounts/abc"));
         assert!(!allows(&Method::DELETE, "/v1/accounts/abc"));
+        assert!(!allows(&Method::POST, "/v1/accounts/abc/reserve/x"));
         assert!(!allows(&Method::GET, "/v1/accounts/abc/sign-in"));
         assert!(!allows(&Method::POST, "/v1/accounts/abc/sign-in"));
         assert!(!allows(&Method::GET, "/v1/jobs/abc/def/wait"));
@@ -1012,7 +1022,8 @@ mod tests {
             (Method::POST, "/v1/pairing/invite"),
             (Method::GET, "/v1/pairing/devices"),
             (Method::DELETE, "/v1/pairing/devices/abc"),
-            (Method::PUT, "/v1/settings/jobs"),
+            (Method::GET, "/v1/settings/jobs/x"),
+            (Method::PATCH, "/v1/settings/jobs"),
             (Method::GET, "/v1/checks/next"),
             (Method::POST, "/v1/agent/mcp/abc"),
             (Method::GET, "/v1/obid/plugins"),

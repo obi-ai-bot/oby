@@ -257,7 +257,7 @@ extension ButtonStyle where Self == SetButtonStyle {
 
 /// A field's frame (`.set-field`, and the pop-up's): 32 tall, 8 round, `field` fill, a 1-point
 /// line that lights up hovered or focused.
-private struct FieldFrame: ViewModifier {
+struct FieldFrame: ViewModifier {
     var hot: Bool
 
     func body(content: Content) -> some View {

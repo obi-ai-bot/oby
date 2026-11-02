@@ -247,6 +247,8 @@ struct RunnerModelsSections: View {
 struct NotificationsSection: View {
     /// Runs once the user allows alerts, like the iPhone's push registration.
     var allowed: () -> Void = {}
+    /// The card's note: the iPhone's is Electron's (Settings › General); the Mac keeps its own.
+    var footer = Self.footer
     @State private var status: UNAuthorizationStatus?
     @State private var problem: String?
     @Environment(\.openURL) private var openURL
@@ -256,7 +258,7 @@ struct NotificationsSection: View {
 
     var body: some View {
         if cards {
-            SetGroup("Notifications", footer: Self.footer, problem: problem) {
+            SetGroup("Notifications", footer: footer, problem: problem) {
                 SetRow("Alerts") {
                     SetValue(Self.text(status))
                     if status == .notDetermined {
@@ -267,6 +269,12 @@ struct NotificationsSection: View {
                 }
                 .task { await refresh() }
                 .onReceive(NotificationCenter.default.publisher(for: Self.becameActive)) { _ in Task { await refresh() } }
+                #if os(iOS)
+                // Electron's second row: where the system keeps the rest (alerts off: the row above has it).
+                if status != .denied, let url = Self.settings {
+                    SetRow("Banners, sounds and Focus") { Button(Self.settingsName) { openURL(url) }.buttonStyle(.set) }
+                }
+                #endif
             }
         } else {
             form

@@ -315,6 +315,8 @@ final class Phone {
     private(set) var models: ModelSettings?
     /// The mode new jobs get by default, as the runner last said, or nil from a runner without modes.
     private(set) var defaultMode: RunnerMode?
+    /// The account new tasks go to, as obid last said (Settings › Agents).
+    private(set) var defaultAccount: String?
     /// When Clear done was last pressed, here or on the Mac (the runner's clock), or nil: Home
     /// hides the jobs that finished by then. The runner keeps them all.
     private(set) var clearedAt: Date?
@@ -626,6 +628,7 @@ final class Phone {
         models = status.models
         clearedAt = status.clearedAt
         defaultMode = RunnerMode(status.permissions?.mode)
+        defaultAccount = status.defaultAccount
         await take(try await runner.jobs())
         inbox = try await runner.inbox()
         await readLimitDecisions()
@@ -1204,6 +1207,24 @@ final class Phone {
     func setDefaultMode(_ mode: RunnerMode) async throws {
         try await runner.setDefaultMode(mode)
         defaultMode = mode
+    }
+
+    /// Settings › Agents: an account's model and efforts, as obid kept them.
+    func tune(_ id: String, _ change: [String: String]) async throws {
+        let kept = try await runner.tuneAccount(id, change)
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].model = kept.model
+        accounts[i].effort = kept.effort
+        accounts[i].complexEffort = kept.complexEffort
+    }
+
+    func readDefaultAccount() async {
+        if let status = try? await runner.status() { defaultAccount = status.defaultAccount }
+    }
+
+    func setDefaultAccount(_ id: String) async throws {
+        try await runner.setDefaultAccount(id)
+        defaultAccount = id
     }
 
     // MARK: Models

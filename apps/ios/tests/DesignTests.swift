@@ -137,6 +137,26 @@ struct DesignTests {
         #expect(RunnerMode.offered(.sandbox) == [.ask, .acceptEdits, .plan, .bypass, .sandbox])
     }
 
+    /// Settings › Agents says an account's use as Electron's accountRow and weekWords do.
+    @Test func agentUsageSaysWhatElectronsSays() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func account(_ json: String) throws -> Account { try Runner.decoder.decode(Account.self, from: Data(json.utf8)) }
+        let used = try account(#"{"id": "a", "agent": "claude", "name": "Work", "signedIn": true, "running": 0, "fiveHour": 0.34, "sevenDay": 0.62, "fiveHourResets": "2027-01-15T10:00:00Z", "sevenDayResets": "2027-01-21T10:00:00Z", "model": "claude-opus-5-5", "effort": "high"}"#)
+        let u = AgentUsage(used, now: now)
+        #expect(u.session == 34)
+        #expect(u.week.hasPrefix("This week 62% · resets "))
+        #expect(used.model == "claude-opus-5-5" && used.effort == "high" && used.complexEffort == nil)
+        // A session past its reset reads 0; no week reported: says so
+        let over = try account(#"{"id": "b", "agent": "codex", "name": "Home", "signedIn": true, "running": 0, "fiveHour": 0.9, "fiveHourResets": "2020-01-01T00:00:00Z"}"#)
+        #expect(AgentUsage(over, now: now).session == 0)
+        #expect(AgentUsage(over, now: now).week == "No weekly use reported yet")
+        let cursor = try account(#"{"id": "c", "agent": "cursor", "name": "Cursor", "signedIn": true, "running": 0}"#)
+        #expect(AgentUsage(cursor, now: now).session == nil)
+        #expect(AgentUsage(cursor, now: now).week == "Cursor doesn’t report usage")
+        let out = try account(#"{"id": "d", "agent": "claude", "name": "Old", "signedIn": false, "running": 0}"#)
+        #expect(AgentUsage(out, now: now).week == "Not signed in")
+    }
+
     /// A decision's card as the Electron app words it (live.ts itemAsk, Sangam's ASK_LABEL): a merge
     /// card by what it is, a Confirm "Confirm?", an Oby failure "Failed", a repository's check.
     @Test func cardsSayWhatElectronsSay() throws {

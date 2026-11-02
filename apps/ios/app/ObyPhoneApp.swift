@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Oby on iPhone: a client of the runner (docs/runner-api.md), so work goes on with the Mac closed.
-/// Sangam's design, light or dark as the system is (Settings › Appearance): Home, with his side
+/// Sangam's design, light or dark as the system is: Home, with his side
 /// panel for the tasks and the conversations, and no tab bar (PhoneRoot).
 @main
 struct ObyPhoneApp: App {
@@ -11,7 +11,6 @@ struct ObyPhoneApp: App {
     /// a time and, as pairing starts or ends, both screens are up for a moment (WebKit stops the app).
     @State private var home = StageCharacter()
     @State private var unpaired = StageCharacter()
-    @AppStorage(Appearance.key) private var appearance = Appearance.system
     @Environment(\.scenePhase) private var scenePhase
 
     private var phone: Phone { notifications.phone }
@@ -22,7 +21,6 @@ struct ObyPhoneApp: App {
             .tint(Tokens.ink)
             .foregroundStyle(Tokens.text)
             .background(Tokens.bg)
-            .preferredColorScheme(appearance.scheme)
             .environment(phone)
             .onChange(of: scenePhase, initial: true) { _, phase in
                 // In the background: no connection and no drawing, so no battery spent.
