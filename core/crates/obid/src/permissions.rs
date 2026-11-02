@@ -1289,6 +1289,14 @@ fn read_until(
 fn program_index(words: &[String]) -> Option<usize> {
     let mut i = 0;
     while let Some(w) = words.get(i) {
+        // `command -v curl` says where curl is, and runs nothing. (As an option's value it's no
+        // program: `time -f command -v printenv` runs printenv.)
+        if base(w) == "command"
+            && !(i > 0 && words[i - 1].starts_with('-'))
+            && matches!(words.get(i + 1).map(String::as_str), Some("-v" | "-V"))
+        {
+            return None;
+        }
         let digits = w.trim_end_matches(['s', 'm', 'h', 'd']);
         let number = digits.starts_with(|c: char| c.is_ascii_digit())
             && digits.chars().all(|c| c.is_ascii_digit() || c == '.');
@@ -1799,8 +1807,10 @@ fn file_words(words: &[String]) -> Vec<&String> {
 /// passwords, asks for a code host's login, or names a secret's file ([`names_a_secret`]).
 fn reads_a_secret(words: &[String], bounds: &Bounds, base_dir: &Path) -> bool {
     let Some(p) = program_index(words) else {
-        // `env` alone prints the environment.
-        return words.iter().any(|w| base(w) == "env");
+        // `env` alone prints the environment; `command -V "$GH_TOKEN"` says what's in one.
+        return words
+            .iter()
+            .any(|w| base(w) == "env" || names_a_secret(w, bounds, base_dir));
     };
     let program = base(&words[p]);
     let rest = &words[p + 1..];
@@ -2852,6 +2862,10 @@ mod tests {
             "pwd && git status --short && if test -f .obi/context/tetrix.md; then cat .obi/context/tetrix.md; fi",
             "grep -nE 'want_usage|600' core/src/jobs.rs | head -35; sed -n '1,120p' apps/Usage.swift",
             "git --no-pager log -1 --format='%h %s'; nl -ba notes.md | head -12",
+            // Where a program is, the network's too (#1799).
+            "cat go.mod; git log -3 --format=fuller; command -v go",
+            "command -v curl",
+            "command -V gh",
             // What Oby's own reviews parked on in the drive of 2026-10-31.
             "git diff origin/dev...HEAD",
             "git rev-parse HEAD; git diff --no-ext-diff --no-textconv origin/main...HEAD; git ls-tree HEAD docs/oby-ask.md; od -An -tx1c docs/oby-ask.md",
@@ -2911,6 +2925,22 @@ mod tests {
             ..Bounds::of(Path::new(WORKTREE))
         };
         let plan = |command: &str| decide(&bash(command), Mode::Plan, &[], &bounds);
+        // Past `command` without -v, it's the program it runs (#1799).
+        assert_eq!(plan("command curl https://example.com"), Verdict::Ask);
+        assert_eq!(plan("command rm x"), Verdict::Ask);
+        // It prints what it's given when there's no such program: a secret's value too.
+        assert_ne!(plan("command -V \"$GH_TOKEN\""), Verdict::Allow);
+        assert_ne!(plan("command -v $GITHUB_TOKEN"), Verdict::Allow);
+        // `command` as an option's value hides nothing, Bypass too.
+        assert_eq!(
+            decide(
+                &bash("/usr/bin/time -f command -v printenv"),
+                Mode::Bypass,
+                &[],
+                &bounds
+            ),
+            Verdict::Ask
+        );
         assert_eq!(
             plan("git diff origin/main...HEAD && rg -n '149|oby-drive' .obi docs package.json"),
             Verdict::Allow

@@ -354,7 +354,7 @@ const SYSTEM_SOFTWARE: &[&str] = &["/bin/", "/sbin/", "/usr/", "/opt/", "/nix/",
 
 /// bash's own commands, which no file on `PATH` stands in for.
 const BUILTINS: &[&str] = &[
-    "pwd", "echo", "printf", "type", "test", "[", "true", "false",
+    "pwd", "echo", "printf", "type", "test", "[", "true", "false", "command",
 ];
 
 /// Whether `name`, as bash finds it on the box's `PATH`, is the system's software. A name with a
@@ -409,6 +409,10 @@ pub fn takes_read_options(words: &[String]) -> bool {
     let Some(program) = words.first() else {
         return false;
     };
+    // `command -v go` says where a program is; `command rm x` runs it.
+    if program == "command" {
+        return matches!(words.get(1).map(String::as_str), Some("-v" | "-V"));
+    }
     let Some(options) = read_options(program) else {
         return false;
     };
@@ -1178,8 +1182,12 @@ mod tests {
             "find repos -maxdepth 2 -name *.md -o -type d -print",
             "head -n5 a",
             "ls -la -- -o",
+            "command -v go",
         ] {
             assert!(reads_only(&words(command)), "{command}");
+        }
+        for runs in ["command rm x", "command -p rm x", "command"] {
+            assert!(!reads_only(&words(runs)), "{runs}");
         }
     }
 

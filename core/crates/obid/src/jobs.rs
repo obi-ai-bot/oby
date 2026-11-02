@@ -8163,17 +8163,17 @@ impl Jobs {
     /// Who wrote the issue or pull request `job` works from, as it starts (crate::secretspec):
     /// what anyone else wrote there reached it then, even if it's gone by its check. `shown` is
     /// what obid quoted of its issue for this run.
-    async fn authors_as_it_starts(&self, job: &Job, shown: Option<&Value>) {
+    async fn authors_as_it_starts(&self, job: &Job, shown: Option<&Value>, when: &str) {
         let Some(gh) = crate::github::gh() else {
             self.mark_foreign(
                 &job.id,
-                "obid had no gh to ask who wrote what it works from as it started".into(),
+                format!("obid had no gh to ask who wrote what it works from {when}"),
             );
             return;
         };
         // Never asked again: a comment deleted in between would clear a job it reached.
         if let Some(why) = self.others_wrote(&gh, job, shown).await {
-            self.mark_foreign(&job.id, format!("as it started, {why}"));
+            self.mark_foreign(&job.id, format!("{when}, {why}"));
         }
     }
 
@@ -8796,7 +8796,7 @@ impl Jobs {
             && job.issue.is_none()
             && job.pr.is_some()
         {
-            Box::pin(self.authors_as_it_starts(&job, None)).await;
+            Box::pin(self.authors_as_it_starts(&job, None, "as it started")).await;
         }
         let preparing = self.preparing(&repo.repo);
         let prepared = preparing.lock().await;
@@ -9026,7 +9026,8 @@ impl Jobs {
                     })?;
                     self.update(id, |job| job.issue_unread = None);
                     if job.foreign.is_none() {
-                        Box::pin(self.authors_as_it_starts(&job, Some(&read))).await;
+                        Box::pin(self.authors_as_it_starts(&job, Some(&read), "as it started"))
+                            .await;
                     }
                 }
                 Err(why) => {
@@ -9045,7 +9046,7 @@ impl Jobs {
                     // Its agent never saw the issue, but who wrote it is read as it starts all
                     // the same: a word of someone else's there still gives its check nothing.
                     if job.foreign.is_none() {
-                        Box::pin(self.authors_as_it_starts(&job, None)).await;
+                        Box::pin(self.authors_as_it_starts(&job, None, "as it started")).await;
                     }
                 }
             }
@@ -9070,6 +9071,36 @@ impl Jobs {
             rules_quoted = !reviews && files.iter().any(|(_, text)| text.is_some());
             let mut quoted = Vec::new();
             if reviews {
+                // The issue it worked from (MERGING-18). Whoever wrote on it by now counts as they
+                // would for the author: a stranger's comment the reviewer reads means two reviews
+                // (MERGING-14), and the reviewer is told, below. The file is always obid's: one a
+                // commit brought never stands as the quote.
+                let author = job.review_of.as_deref().and_then(|of| self.get(of));
+                let issue_text = match author.as_ref().and_then(|a| Some((a, a.issue?))) {
+                    None => "This work isn't from an issue.".to_owned(),
+                    Some((author, issue)) => {
+                        match crate::github_work::quote("assigned", &job.repo, issue).await {
+                            Ok((text, read)) => {
+                                if author.foreign.is_none() {
+                                    Box::pin(self.authors_as_it_starts(
+                                        author,
+                                        Some(&read),
+                                        "as its review started",
+                                    ))
+                                    .await;
+                                }
+                                text
+                            }
+                            Err(why) => {
+                                tracing::warn!(
+                                    "job {id}: its review goes without issue #{issue}: {why}"
+                                );
+                                format!("obid couldn't read issue #{issue} on GitHub.")
+                            }
+                        }
+                    }
+                };
+                quoted.push((review::ISSUE_FILE, issue_text));
                 // Whether the author is untrusted, and why: never what it read (MERGING-13).
                 let author = job.review_of.as_deref().and_then(|of| self.get(of));
                 let untrusted = author.as_ref().and_then(Job::untrusted_why);
