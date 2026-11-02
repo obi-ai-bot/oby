@@ -73,6 +73,7 @@ case "$1 $2" in
     for a in "$@"; do [ "$prev" = --body-file ] && cp "$a" "$dir/body"; prev="$a"; done
     exit 0 ;;
   "pr view") [ -f "$dir/view.json" ] && cat "$dir/view.json" && exit 0; exit 1 ;;
+  "issue view") [ -f "$dir/issue.json" ] && cat "$dir/issue.json" && exit 0; exit 1 ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
 esac
 "#,
@@ -3191,6 +3192,30 @@ fn review_items(obid: &Obid, id: &str) -> Vec<Value> {
         .filter(|i| i["job"] == id && i["kind"] == "failed" && i["done"].is_null())
         .cloned()
         .collect()
+}
+
+/// MERGING-18: the review of work from an issue has the issue's text, quoted, so it has no reason to
+/// ask the owner for GitHub (#1799).
+#[test]
+fn merging_18_the_review_has_the_issue_its_work_is_from() {
+    let folder = Folder::new("publish-review-issue");
+    let bin = fake_gh(&folder.0);
+    std::fs::write(
+        folder.0.join("gh/issue.json"),
+        r#"{"title":"Greet properly","body":"The greeting needs a comma.","author":{"login":"octo-cat"},"labels":[],"comments":[]}"#,
+    )
+    .unwrap();
+    let (obid, _, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "issue": 7}),
+    );
+    reviewed(&obid, &id, 1);
+    let review = &reviews_of(&obid, &id)[0];
+    let worktree = Path::new(review["worktree"].as_str().unwrap());
+    let issue = std::fs::read_to_string(worktree.join(".obi/inputs/issue.md")).unwrap();
+    assert!(issue.contains("The greeting needs a comma."), "{issue}");
 }
 
 /// A review that ends before its verdict (here Codex's login refused, as codex-cli 0.162.1 says it:

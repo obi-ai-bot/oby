@@ -9061,6 +9061,16 @@ impl Jobs {
                     review::ASKED_FILE,
                     review::asked(&task, &request, &later, untrusted.as_deref()),
                 ));
+                // The issue it worked from (MERGING-17). One that can't be read leaves the review
+                // what it was asked, as it had before.
+                if let Some(issue) = author.as_ref().and_then(|a| a.issue) {
+                    match crate::github_work::quote("assigned", &job.repo, issue).await {
+                        Ok((text, _)) => quoted.push((review::ISSUE_FILE, text)),
+                        Err(why) => tracing::warn!(
+                            "job {id}: its review goes without issue #{issue}: {why}"
+                        ),
+                    }
+                }
                 // The security paths its head changes against its base, from the commit it reads
                 // (MERGING-15): none read counts as touching one.
                 let changed = match &job.start_commit {
