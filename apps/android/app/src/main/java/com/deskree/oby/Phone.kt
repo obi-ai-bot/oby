@@ -745,6 +745,18 @@ class Phone(val context: Context) {
         apply(RunnerEvent.Inbox(runner.settle(id, answer, done, later)))
     }
 
+    /**
+     * An offer answered (Electron's `answerOffer`), for each of its jobs still waiting: Dispatch is the
+     * owner's own Start, which only this tap gives; Skip cancels it; Later puts it off an hour. What
+     * starts comes as its job's event, its card under the answer.
+     */
+    suspend fun answer(offer: OfferCard, option: String) {
+        for (item in offer.items) when (option) {
+            OfferCard.LATER -> settle(item.id, later = Instant.now().plusSeconds(3600))
+            else -> settle(item.id, answer = if (option == OfferCard.DISPATCH) "Start" else "Cancel")
+        }
+    }
+
     fun showing(id: String, shown: Boolean) { if (shown) onScreen.add(id) else onScreen.remove(id) }
 
     private suspend fun take(fresh: List<Job>) {

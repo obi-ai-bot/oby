@@ -192,5 +192,19 @@ class LogicTest {
         assertEquals(1, done(""""commits":2,"pushed":1,"published":"https://github.com/o/r/pull/1"""").unpublished)
         // Never pushed: everything is to go.
         assertEquals(1, done(""""commits":1""").unpublished)
+
+    /** Oby's offers (Electron's live.ts `offersOf` and `chatOf`): one card per offer, under the answer to the words it was offered for. */
+    @Test fun offersShowUnderTheirAnswer() {
+        fun item(id: String, offer: String, conversation: String? = "c1", later: String? = null) = wire.decodeFromString(InboxItem.serializer(),
+            """{"kind":"start","id":"$id","title":"Start $id","created":"2026-11-01T10:00:00Z","conversation":${conversation?.let { "\"$it\"" } ?: "null"},
+               ${later?.let { "\"later\":\"$it\"," } ?: ""}"offer":{"id":"$offer","what":"build app ($id)","task":"Do $id","untrusted":${id == "b"}}}""")
+        val now = Instant.parse("2026-11-01T12:00:00Z")
+        val cards = OfferCard.of(listOf(item("a", "t1"), item("b", "t1"), item("c", "t2", "c2"), item("d", "t3", later = "2026-11-01T13:00:00Z")), "c1", now)
+        assertEquals(listOf("t1"), cards.map { it.id })
+        assertEquals("2 jobs", cards[0].title)
+        assertTrue(cards[0].untrusted)
+        assertEquals(listOf("Do a", "Do b"), cards[0].jobs.map { it.task })
+        val turns = listOf(Turn(id = "t1", who = Who.user, text = "x"), Turn(id = "o1", who = Who.oby, text = "y"), Turn(id = "o2", who = Who.oby, text = "z"))
+        assertEquals(mapOf("o1" to "t1"), OfferCard.under(turns))
     }
 }

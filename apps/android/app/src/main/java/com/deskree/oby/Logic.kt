@@ -958,3 +958,37 @@ object PairingCode {
 }
 
 class RunnerError(message: String, val status: Int? = null) : java.io.IOException(message)
+
+/**
+ * What Oby offers to start in a conversation (obid's `oby_offer`; Electron's live.ts `offersOf`):
+ * its `start` items still waiting, one card per offer (a turn's), in the order they came. Put off
+ * with Later, a card is gone until its time.
+ */
+data class OfferCard(val id: String, val title: String, val jobs: List<InboxItem.Offer>, val untrusted: Boolean, val items: List<InboxItem>) {
+    companion object {
+        const val DISPATCH = "Dispatch"; const val SKIP = "Skip"; const val LATER = "Later"
+
+        fun of(inbox: List<InboxItem>, conversation: String?, now: Instant = Instant.now()): List<OfferCard> {
+            val cards = LinkedHashMap<String, List<InboxItem>>()
+            for (item in inbox) {
+                val offer = item.offerValue ?: continue
+                if (item.kind == "start" && item.isOpen && item.conversation == conversation) cards[offer.id] = cards[offer.id].orEmpty() + item
+            }
+            return cards.filter { (_, items) -> items.any { it.later == null || it.later <= now } }.map { (id, items) ->
+                OfferCard(id, if (items.size == 1) items[0].title else "${items.size} jobs", items.mapNotNull { it.offerValue },
+                          items.any { it.offerValue?.untrusted == true }, items)
+            }
+        }
+
+        /** Which Oby turn each offer's card goes under: the first answer after the words it was offered for (`chatOf`). The rest go last. */
+        fun under(turns: List<Turn>): Map<String, String> {
+            val placed = mutableMapOf<String, String>()
+            var asked: String? = null
+            for (turn in turns) {
+                if (turn.who == Who.user) asked = turn.id
+                else if (asked != null) { placed[turn.id] = asked; asked = null }
+            }
+            return placed
+        }
+    }
+}
