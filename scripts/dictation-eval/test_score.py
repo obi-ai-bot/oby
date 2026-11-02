@@ -8,19 +8,19 @@ from score import edit_distance, missed_terms, score, words
 
 
 def test_dicteval_1_wer_on_normalized_words():
-    assert words("Abre o PR, por favor!") == ["abre", "o", "pr", "por", "favor"]
-    assert words("Ação") == ["acao"]
+    assert words("Open the PR, please!") == ["open", "the", "pr", "please"]
+    assert words("Café") == ["cafe"]
     assert edit_distance(words("merge it into dev"), words("Merge it in to dev.")) == 2
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         (root / "clips").mkdir()
-        (root / "results" / "apple-pt").mkdir(parents=True)
-        (root / "clips" / "pt-01.txt").write_text("abre o pull request")
-        (root / "clips" / "pt-02.txt").write_text("fecha a tarefa")
-        (root / "results" / "apple-pt" / "pt-01.json").write_text(json.dumps({"text": "Abre o pull request.", "seconds": 1.0}))
-        # pt-02 failed in this engine: all three words count as wrong
+        (root / "results" / "apple-en").mkdir(parents=True)
+        (root / "clips" / "en-01.txt").write_text("open the pull request")
+        (root / "clips" / "en-02.txt").write_text("close the task")
+        (root / "results" / "apple-en" / "en-01.json").write_text(json.dumps({"text": "Open the pull request.", "seconds": 1.0}))
+        # en-02 failed in this engine: all three words count as wrong
         [(engine, group, g)] = score(root)
-        assert (engine, group) == ("apple-pt", "pt")
+        assert (engine, group) == ("apple-en", "en")
         assert (g["errors"], g["words"]) == (3, 7)
 
 

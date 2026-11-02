@@ -4,7 +4,7 @@
     score.py <eval dir>
 
 <eval dir>/clips/<name>.txt are the references; <eval dir>/results/<engine>/<name>.json are what
-run.sh wrote. A clip's group is its name's prefix before the first "-" (pt, en, mix). An optional
+run.sh wrote. A clip's group is its name's prefix before the first "-" (en). An optional
 <eval dir>/terms.txt lists the words that matter (repos, agents, people), one per line.
 """
 import json

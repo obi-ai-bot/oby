@@ -3,12 +3,12 @@
 #
 #   scripts/dictation-eval/run.sh [eval dir]     (default ~/oby-dictation-eval)
 #
-# <eval dir>/clips/<group>-<n>.wav with <group>-<n>.txt beside it (group: pt, en or mix),
+# <eval dir>/clips/en-<n>.wav with en-<n>.txt beside it (English only, the owner's decision of 2026-11-01),
 # <eval dir>/terms.txt optional. Results go to <eval dir>/results/<engine>/. Nothing leaves the Mac.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="${1:-$HOME/oby-dictation-eval}"
-[ -d "$root/clips" ] || { echo "No clips: put <group>-<n>.wav and .txt in $root/clips (see README.md)" >&2; exit 1; }
+[ -d "$root/clips" ] || { echo "No clips: put en-<n>.wav and .txt in $root/clips (see README.md)" >&2; exit 1; }
 terms="$root/terms.txt"; [ -f "$terms" ] || terms=""
 
 bin="$root/.build/transcribe"
@@ -37,9 +37,7 @@ parakeet() {  # NVIDIA Parakeet TDT 0.6B v3 through FluidAudio; the model downlo
     || echo "parakeet failed (see errors.log)" >&2
 }
 
-apple apple-pt pt-BR
 apple apple-en en-US
-apple apple-best pt-BR,en-US
 parakeet
 
 python3 "$here/score.py" "$root"

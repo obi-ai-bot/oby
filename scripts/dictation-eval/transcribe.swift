@@ -2,10 +2,10 @@
 // app uses (apps/ios/app/PhoneSpeech.swift), and prints one JSON line: the text, its mean
 // confidence and the seconds it took. Nothing leaves the Mac.
 //
-//   transcribe <locale>[,<locale>…] <audio file> [terms file]
+//   transcribe <locale> <audio file> [terms file]
 //
-// With several locales it runs each on the same audio and keeps the most confident (DICTEVAL-3).
-// The terms file (one per line) goes in as contextual strings, as Oby's own vocabulary would.
+// Oby is English only (the owner's decision of 2026-11-01), so run.sh passes en-US. The terms file
+// (one per line) goes in as contextual strings, as Oby's own vocabulary would.
 import AVFoundation
 import Foundation
 import Speech
@@ -67,20 +67,14 @@ func transcribe(_ url: URL, locale wanted: String, terms: [String]) async throws
 }
 
 let args = CommandLine.arguments
-guard args.count >= 3 else { fail("usage: transcribe <locale>[,<locale>…] <audio file> [terms file]") }
-let locales = args[1].split(separator: ",").map(String.init)
+guard args.count >= 3 else { fail("usage: transcribe <locale> <audio file> [terms file]") }
 let url = URL(fileURLWithPath: args[2])
 let terms = args.count > 3
     ? ((try? String(contentsOfFile: args[3], encoding: .utf8)) ?? "").split(separator: "\n").map(String.init).filter { !$0.isEmpty }
     : []
 
 do {
-    var results: [Result] = []
-    for locale in locales { results.append(try await transcribe(url, locale: locale, terms: terms)) }
-    // ponytail: the most confident whole transcript wins; mixing per-segment is phase 3's question
-    let best = results.max { $0.confidence < $1.confidence }!
-    let total = results.reduce(0) { $0 + $1.seconds }
-    let out = Result(locale: best.locale, text: best.text, confidence: best.confidence, seconds: total)
+    let out = try await transcribe(url, locale: args[1], terms: terms)
     print(String(decoding: try JSONEncoder().encode(out), as: UTF8.self))
 } catch {
     fail("\(error)")
