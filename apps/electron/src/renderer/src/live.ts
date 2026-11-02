@@ -181,7 +181,9 @@ const itemOf = (s: Live, job: string) => {
 };
 
 // Sangam's failed card: another round tells its agent to try again where it left off (obid's
-// words, docs/runner-api.md), Stop here lets it go. His Open the session is the card's Open task.
+// words, docs/runner-api.md), or, for one that never started and has no session to pick up, asks
+// again what it was asked (a follow-up); Stop here lets it go. His Open the session is the card's
+// Open task. A task whose follow-up carries it on asks nothing: tell that one.
 const ANOTHER_ROUND = 'Give it another round', STOP_HERE = 'Stop here';
 const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
 
@@ -192,7 +194,7 @@ function askOf(s: Live, j: Job): Ask | undefined {
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   if ((j.accountLimit || s.limits.some((d) => d.jobs.some((job) => job.id === j.id))) && (!item || item.kind === 'limit')) return undefined;
   if (item) return itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
-  if ((j.status === 'failed' || j.status === 'interrupted') && !j.dismissed) {
+  if ((j.status === 'failed' || j.status === 'interrupted') && !j.dismissed && !Object.values(s.jobs).some((o) => o.followUpOf === j.id)) {
     return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: j.summary.split('\n')[0] || j.step, options: [ANOTHER_ROUND, STOP_HERE], recommended: 0 };
   }
 }
@@ -925,8 +927,9 @@ export async function answerJob(id: string, option: string, words?: string) {
       const next = await api.dismiss(id);
       take({ kind: 'job', job: next });
     } else if (option === ANOTHER_ROUND) {
-      // (a refusal is said, and the card comes back)
-      if (!await tellJob(id, TRY_AGAIN)) set({ answered: without(state.answered, id) });
+      // (a refusal is said; either way the card is obid's again, so a second failure shows too)
+      await tellJob(id, j.session || j.moves?.length ? TRY_AGAIN : j.request);
+      set({ answered: without(state.answered, id) });
     }
   } catch (e) {
     // not taken: it's still yours to answer

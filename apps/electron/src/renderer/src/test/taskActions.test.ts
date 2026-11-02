@@ -320,9 +320,9 @@ describe('obid\'s answers over the events that came meanwhile', () => {
   describe('a failed task\'s card', () => {
     const failed = async () => {
       const { tasks, live } = await load(true);
-      await following(live, [job({ status: 'failed', step: 'Failed', summary: 'It broke', revision: 1 })]);
+      const event = await following(live, [job({ status: 'failed', step: 'Failed', summary: 'It broke', session: 's1', revision: 1 })]);
       calls.length = 0;
-      return { tasks, live };
+      return { tasks, live, event };
     };
     const ask = (t: Awaited<ReturnType<typeof load>>['tasks']) => t.dev!.get().find((x) => x.id === 'j1')!.job.ask;
 
@@ -337,6 +337,30 @@ describe('obid\'s answers over the events that came meanwhile', () => {
       expect(calls.at(-1)).toMatchObject({ method: 'POST', path: '/v1/jobs/j1/messages' });
       expect(JSON.stringify(calls.at(-1)!.body)).toContain('Try again, picking up where you left off.');
       expect(live.liveState().jobs.j1.status).toBe('running');
+    });
+    it('a second failure asks again', async () => {
+      const { tasks, live, event } = await failed();
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: 's1', revision: 2 }) };
+      await live.answerJob('j1', 'Give it another round');
+      expect(ask(tasks)).toBeUndefined();
+      event('job', job({ status: 'failed', step: 'Failed', summary: 'It broke again', session: 's1', revision: 3 }));
+      expect(ask(tasks)).toMatchObject({ options: ['Give it another round', 'Stop here'] });
+      expect(tasks.dev!.get().find((x) => x.id === 'j1')!.status).toBe('needs');
+    });
+    it('one that never started asks again what it was asked: it has no session to pick up', async () => {
+      const { live, event } = await failed();
+      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [], request: 'Rebase it', revision: 2 }));
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }) };
+      answers['GET /v1/jobs/j1'] = { status: 200, body: job({ status: 'failed', session: null, request: 'Rebase it', revision: 2 }) };
+      await live.answerJob('j1', 'Give it another round');
+      const told = calls.find((c) => c.path === '/v1/jobs/j1/messages')!;
+      expect(JSON.stringify(told.body)).toContain('Rebase it');
+      expect(JSON.stringify(told.body)).not.toContain('Try again');
+    });
+    it('one its follow-up carries on asks nothing', async () => {
+      const { tasks, event } = await failed();
+      event('job', job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }));
+      expect(ask(tasks)).toBeUndefined();
     });
     it('a refused round says why, and leaves the choice', async () => {
       const { tasks, live } = await failed();
