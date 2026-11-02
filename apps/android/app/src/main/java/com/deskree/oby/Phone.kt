@@ -751,10 +751,13 @@ class Phone(val context: Context) {
      * starts comes as its job's event, its card under the answer.
      */
     suspend fun answer(offer: OfferCard, option: String) {
-        for (item in offer.items) when (option) {
-            OfferCard.LATER -> settle(item.id, later = Instant.now().plusSeconds(3600))
-            else -> settle(item.id, answer = if (option == OfferCard.DISPATCH) "Start" else "Cancel")
-        }
+        // Each job is answered, whatever happened to the one before; the first problem is said.
+        var problem: Exception? = null
+        for (item in offer.items) try {
+            if (option == OfferCard.LATER) settle(item.id, later = Instant.now().plusSeconds(3600))
+            else settle(item.id, answer = if (option == OfferCard.DISPATCH) "Start" else "Cancel")
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { problem = problem ?: e }
+        problem?.let { throw it }
     }
 
     fun showing(id: String, shown: Boolean) { if (shown) onScreen.add(id) else onScreen.remove(id) }

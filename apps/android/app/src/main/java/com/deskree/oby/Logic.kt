@@ -980,13 +980,16 @@ data class OfferCard(val id: String, val title: String, val jobs: List<InboxItem
             }
         }
 
-        /** Which Oby turn each offer's card goes under: the first answer after the words it was offered for (`chatOf`). The rest go last. */
-        fun under(turns: List<Turn>): Map<String, String> {
+        /**
+         * Which Oby turn each offer's card goes under: the first answer after the words it was offered
+         * for, never a task's report (`ended`), as `chatOf`. The rest go last.
+         */
+        fun under(turns: List<Turn>, ended: (Turn) -> Boolean = { false }): Map<String, String> {
             val placed = mutableMapOf<String, String>()
             var asked: String? = null
             for (turn in turns) {
                 if (turn.who == Who.user) asked = turn.id
-                else if (asked != null) { placed[turn.id] = asked; asked = null }
+                else if (asked != null && !ended(turn)) { placed[turn.id] = asked; asked = null }
             }
             return placed
         }

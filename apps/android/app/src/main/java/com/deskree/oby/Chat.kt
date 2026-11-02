@@ -211,10 +211,10 @@ private fun Thread(shown: String?, modifier: Modifier, problem: String?, edit: (
     val decisions = InboxItem.waiting(phone.inbox, now)
     // What Oby offered to start, under its answer to the words it was offered for; an event turn's last.
     val offers = OfferCard.of(phone.inbox, shown, now)
-    val under = OfferCard.under(turns)
+    val under = OfferCard.under(turns, phone.conversation::endedTurn)
     val list = rememberLazyListState()
-    val end = rows.size + 3
-    LaunchedEffect(turns.lastOrNull()?.id, phone.talk, phone.conversation.steps, phone.conversation.streamed) { if (end > 0) list.animateScrollToItem(end) }
+    val end = rows.size + offers.size + 3
+    LaunchedEffect(turns.lastOrNull()?.id, phone.talk, phone.conversation.steps, phone.conversation.streamed, offers.size) { if (end > 0) list.animateScrollToItem(end) }
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val column = maxWidth - Tokens.gutter * 2

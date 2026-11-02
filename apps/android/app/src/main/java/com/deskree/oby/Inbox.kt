@@ -112,7 +112,15 @@ fun OfferBlock(offer: OfferCard) {
     val scope = rememberCoroutineScope()
     var busy by remember(offer.id) { mutableStateOf(false) }
     var problem by remember(offer.id) { mutableStateOf<String?>(null) }
-    fun pick(option: String) { busy = true; scope.launch { problem = try { phone.answer(offer, option); null } catch (e: Exception) { e.message }; busy = false } }
+    // Answered while the Mac was away: it waits on the phone, and takes no other answer meanwhile.
+    val waits = offer.items.any { phone.waitsToSend(it.id) }
+    // A tap before its words have shown answers nothing (one tap, one answer), as Electron's.
+    val shownAt = remember(offer.id) { System.nanoTime() }
+    fun pick(option: String) {
+        if (System.nanoTime() - shownAt < 500_000_000) return
+        busy = true
+        scope.launch { problem = try { phone.answer(offer, option); null } catch (e: Exception) { e.message }; busy = false }
+    }
     AskInset(true) {
         T(AskKind.label("start"), Tokens.textSm, c.needsInk, FontWeight.Medium)
         T(offer.title, Tokens.textBase, c.ink, FontWeight.Medium, Modifier.padding(top = 4.dp).semantics { heading() })
@@ -122,10 +130,11 @@ fun OfferBlock(offer: OfferCard) {
         }
         if (offer.untrusted) T("Oby planned this after reading something it didn’t write.", Tokens.textMd, c.text, modifier = Modifier.padding(top = 6.dp))
         Flow(8.dp, centred = false, modifier = Modifier.padding(top = 14.dp)) {
-            PillButton(OfferCard.DISPATCH, primary = true, enabled = !busy) { pick(OfferCard.DISPATCH) }
-            PillButton(OfferCard.SKIP, enabled = !busy) { pick(OfferCard.SKIP) }
-            PillButton(OfferCard.LATER, quiet = true, enabled = !busy) { pick(OfferCard.LATER) }
+            PillButton(OfferCard.DISPATCH, primary = true, enabled = !busy && !waits) { pick(OfferCard.DISPATCH) }
+            PillButton(OfferCard.SKIP, enabled = !busy && !waits) { pick(OfferCard.SKIP) }
+            PillButton(OfferCard.LATER, quiet = true, enabled = !busy && !waits) { pick(OfferCard.LATER) }
         }
+        if (waits) T(ReachNotice.WAITING, Tokens.textSm, c.muted, modifier = Modifier.padding(top = 10.dp))
         problem?.let { T(it, Tokens.textSm, c.danger, modifier = Modifier.padding(top = 8.dp)) }
     }
 }

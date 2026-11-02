@@ -206,5 +206,7 @@ class LogicTest {
         assertEquals(listOf("Do a", "Do b"), cards[0].jobs.map { it.task })
         val turns = listOf(Turn(id = "t1", who = Who.user, text = "x"), Turn(id = "o1", who = Who.oby, text = "y"), Turn(id = "o2", who = Who.oby, text = "z"))
         assertEquals(mapOf("o1" to "t1"), OfferCard.under(turns))
+        // A task's report between the words and Oby's answer isn't where the card goes.
+        assertEquals(mapOf("o2" to "t1"), OfferCard.under(turns) { it.id == "o1" })
     }
 }
