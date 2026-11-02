@@ -443,15 +443,18 @@ data class Turn(
     val voice: Boolean? = null,
     val details: String? = null,
     val conversation: String? = null,
+    /** A routine's run, in obid's own words (obid's `routine`): never an answer to your words. */
+    val routine: Boolean = false,
 )
 
 /** A turn as `GET /v1/conversation` and the `turn` event send it. */
 @Serializable data class RunnerTurn(
     val id: String, val who: String, val text: String = "", val at: Date, val jobs: List<String>? = null, val details: String? = null,
-    val conversation: String? = null, val artifacts: JsonElement? = null, val ended: Boolean? = null,
+    val conversation: String? = null, val artifacts: JsonElement? = null, val ended: Boolean? = null, val routine: JsonElement? = null,
 ) {
     val extras get() = TurnExtras(artifacts.lenient<List<ArtifactRef>>().orEmpty(), ended == true)
-    val turn get() = Turn(id, at, if (who == "user") Who.user else Who.oby, text, jobs?.takeIf { it.isNotEmpty() }, details = details, conversation = conversation)
+    val turn get() = Turn(id, at, if (who == "user") Who.user else Who.oby, text, jobs?.takeIf { it.isNotEmpty() }, details = details, conversation = conversation,
+                          routine = routine is kotlinx.serialization.json.JsonObject)
 }
 
 data class TurnExtras(val artifacts: List<ArtifactRef> = emptyList(), val ended: Boolean = false)

@@ -213,4 +213,28 @@ class LogicTest {
         // A task's report between the words and Oby's answer isn't where the card goes.
         assertEquals(mapOf("o2" to "t1"), OfferCard.under(turns) { it.id == "o1" })
     }
+
+    /** A task's card sits under Oby's answer to the words that started it, and stays there (Electron's `chatOf`, #1773). */
+    @Test fun aTasksCardStaysUnderTheAnswer() {
+        val j = job("""{"id":"j","created":"2026-11-01T10:00:00Z","status":"running","turn":"u1"}""")
+        val startedBy = { job: Job -> job.turn }
+        val words = Turn(id = "u1", who = Who.user, text = "do it")
+        val answer = Turn(id = "o1", who = Who.oby, text = "On it.")
+        val report = Turn(id = "r1", who = Who.oby, text = "Done.", jobs = listOf("j"))
+        // Before Oby answers: under the words, the moment it starts.
+        assertEquals(listOf("j"), ThreadTaskLine.cards(listOf(words), listOf(j), startedBy) { false }["u1"]?.map { it.id })
+        // Answered: under the answer, and not again under its report.
+        val after = ThreadTaskLine.cards(listOf(words, answer, report), listOf(j), startedBy) { it.id == "r1" }
+        assertEquals(listOf("j"), after["o1"]?.map { it.id })
+        assertEquals(emptyList<String>(), after["u1"]?.map { it.id })
+        assertEquals(emptyList<String>(), after["r1"]?.map { it.id })
+        // New words before an answer: the job stays under the words that started it, and isn't lost.
+        val again = Turn(id = "u2", who = Who.user, text = "and this")
+        assertEquals(listOf("j"), ThreadTaskLine.cards(listOf(words, again), listOf(j), startedBy) { false }["u1"]?.map { it.id })
+        // A routine's run isn't the answer: the card waits for Oby's.
+        val run = Turn(id = "x1", who = Who.oby, text = "Routine ran.", routine = true)
+        val routed = ThreadTaskLine.cards(listOf(words, run, answer), listOf(j), startedBy) { false }
+        assertEquals(emptyList<String>(), routed["x1"]?.map { it.id })
+        assertEquals(listOf("j"), routed["o1"]?.map { it.id })
+    }
 }

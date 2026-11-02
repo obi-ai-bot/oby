@@ -409,15 +409,27 @@ object ThreadTaskLine {
     fun startedBy(turn: String?, conversation: String?, showing: String?) = if (conversation == showing) turn else null
 
     /**
-     * A job has one card, under the first turn that lists it, never again under its report or a
-     * later answer that names it (Electron's live.ts, `carded`).
+     * Each turn's task cards (Electron's live.ts `chatOf`, `carded`): a turn's own jobs, and under Oby's
+     * answer (never a task's report or a routine's run) the jobs the words it answers started; a job has
+     * one card, under the first turn that shows it, never again under its report or a later answer that
+     * names it. Words with no answer yet, or none coming, show what they started under themselves, so a
+     * card shows the moment its job starts and none goes missing.
      */
-    fun cards(under: Turn, thread: List<Turn>, jobs: List<Job>, startedBy: (Job) -> String?): List<Job> {
-        val carded = thread.takeWhile { it.id != under.id }.flatMap { it.jobs.orEmpty() }.toSet()
-        val listed = ConversationModel.jobsOf(under, jobs).filter { it.id !in carded }
-        if (under.who != Who.user) return listed
-        val answered = thread.flatMap { it.jobs.orEmpty() }.toSet()
-        return listed + jobs.filter { startedBy(it) == under.id && it.id !in answered }.sortedBy { it.created }
+    fun cards(thread: List<Turn>, jobs: List<Job>, startedBy: (Job) -> String?, ended: (Turn) -> Boolean): Map<String, List<Job>> {
+        val carded = mutableSetOf<String>()
+        val cards = mutableMapOf<String, List<Job>>()
+        fun started(turn: String) = jobs.filter { startedBy(it) == turn }.sortedBy { it.created }
+        // A job a later turn lists shows there; any other stays under the words that started it.
+        val listed = thread.flatMap { it.jobs.orEmpty() }.toSet()
+        fun unanswered(turn: String) { cards[turn] = cards[turn].orEmpty() + started(turn).filter { it.id !in listed && carded.add(it.id) } }
+        var asked: String? = null
+        for (turn in thread) {
+            val answer = if (turn.who != Who.user && !ended(turn) && !turn.routine) asked else null
+            cards[turn.id] = (ConversationModel.jobsOf(turn, jobs) + answer?.let(::started).orEmpty()).filter { carded.add(it.id) }
+            if (turn.who == Who.user) { asked?.let(::unanswered); asked = turn.id } else if (answer != null) asked = null
+        }
+        asked?.let(::unanswered)
+        return cards
     }
 
     fun shown(thread: List<Turn>, jobs: List<Job>, startedBy: (Job) -> String?, ended: (Turn) -> Boolean): Set<String> {
