@@ -40,6 +40,8 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.findByName("upload")
+            // Phones only: ML Kit's x86 libraries would double the bundle. Debug keeps them for the emulator.
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
