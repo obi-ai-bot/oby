@@ -152,3 +152,22 @@ describe('a task’s card is never lost: words more words followed keep what the
     expect(cards([words('u1', 1), oby('o1', 2), report])).toEqual({ u1: [], o1: ['j'], r1: [] });
   });
 });
+
+describe('MERGING-8: a failure says what happened', () => {
+  it('leads with obid\'s words, since the card shows the task already', () => {
+    expect(live.itemAsk(item('failed', {
+      title: 'Fix issue 347', options: ['One more round', 'Merge'],
+      text: "Oby's review still asks for changes. Take it from here.",
+    }))).toMatchObject({
+      kind: 'failed', headline: "Oby's review still asks for changes. Take it from here.", text: '',
+      options: ['One more round', 'Merge'],
+    });
+  });
+
+  it('says it once on Home, where an item with no task to show it on goes', () => {
+    const failed = item('failed', { text: "Oby's review still asks for changes. Take it from here." });
+    expect(live.homeAsk(failed)).toMatchObject({ headline: failed.text, text: '' });
+    const github = item('github', { headline: 'Review this', text: 'Its words' });
+    expect(live.homeAsk(github)).toMatchObject({ headline: 'Review this', text: 'Its words' });
+  });
+});

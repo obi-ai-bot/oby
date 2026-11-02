@@ -222,6 +222,10 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     const text = [rest.join(' '), ...holds].filter(Boolean).join('\n');
     return { kind: 'merge', label, headline, text, options: item.options, recommended: item.recommended ?? undefined };
   }
+  // A failure's title is its task's, which the card shows already: obid's words say what happened.
+  if (item.kind === 'failed' && !item.headline && item.text) {
+    return { kind: 'failed', headline: item.text, text: '', options: item.options, recommended: item.recommended ?? undefined };
+  }
   return {
     // obid's own question (Oby's escalation, a stalled task): its why and what Oby recommends are
     // its text, shown under its title (TASKS-14)
@@ -241,6 +245,11 @@ const checkOf = (item?: InboxItem) =>
 // before it's answered). Only what needs the owner (as obid sorts it: needs_you, pending with it),
 // not put off, and not while its answer is on its way.
 const ON_HOME = new Set(['github', 'confirm', 'start', 'failed', 'failure']);
+// On Home, obid's words under the headline, unless they are the headline (a failure's)
+export const homeAsk = (i: InboxItem): Ask => {
+  const ask = itemAsk(i);
+  return { ...ask, text: ask.headline === i.text ? '' : i.text };
+};
 function asksOf(s: Live): Asking[] {
   const now = Date.now();
   const open = s.inbox.filter((i) => ON_HOME.has(i.kind) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
@@ -251,7 +260,7 @@ function asksOf(s: Live): Asking[] {
       // the title till one comes (clamped: they can be long)
       const g = i.github;
       return {
-        id: i.id, ask: { ...itemAsk(i), text: i.text }, title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title,
+        id: i.id, ask: homeAsk(i), title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title,
         ...(g ? { who: g.list === 'reviews' ? g.author ?? undefined : undefined, brand: BRANDS.github, url: g.url } : {}),
       };
     }),
