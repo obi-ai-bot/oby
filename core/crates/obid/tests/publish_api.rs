@@ -3509,6 +3509,80 @@ fn merging_18_a_strangers_comment_the_review_reads_marks_the_task() {
     assert!(asked.contains("issue.md"), "{asked}");
 }
 
+/// MERGING-14 (#1812): a review that fetched from GitHub by itself counts against the task it
+/// approves: `twoReviews` says so, the second review starts and is told, and the task's check
+/// keeps what it gets (its `foreign` stays empty, MERGING-2).
+#[test]
+fn merging_14_what_a_review_reads_counts_against_the_task_it_approves() {
+    let folder = Folder::new("publish-review-reads");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt CODEX READS",
+               "check": "test -f hello.txt", "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 2);
+    let why = job["review"]["twoReviews"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("mcp__github__fetch_issue"),
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(approvals(&job), ["codex", "claude"], "{job}");
+    let reviews = reviews_of(&obid, &id);
+    assert_eq!(reviews.len(), 2, "{reviews:?}");
+    let worktree = Path::new(reviews[1]["worktree"].as_str().unwrap());
+    let asked = std::fs::read_to_string(worktree.join(".obi/inputs/asked.md")).unwrap();
+    assert!(asked.contains("mcp__github__fetch_issue"), "{asked}");
+    let file = std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&file).unwrap()["foreign"],
+        Value::Null
+    );
+}
+
+/// MERGING-14 (#1812): a review that read something and then ended with no verdict leaves no mark:
+/// the other tool's one approval is enough, and nothing lands on the owner.
+#[test]
+fn merging_14_a_review_with_no_verdict_leaves_no_mark() {
+    let folder = Folder::new("publish-review-reads-refused");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt CODEX READS CODEX REFUSED",
+               "check": "test -f hello.txt", "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 1);
+    assert_eq!(
+        job["review"]["verdict"],
+        "approved",
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(job["review"]["agent"], "claude");
+    assert_eq!(job["review"]["twoReviews"], Value::Null, "{job}");
+    assert_eq!(reviews_of(&obid, &id).len(), 2);
+}
+
+/// MERGING-14 (#1812, #1821): a review that calls Tetrix asks for nothing more of its task.
+#[test]
+fn merging_14_a_review_that_calls_tetrix_leaves_no_mark() {
+    let folder = Folder::new("publish-review-tetrix");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt CODEX READS TETRIX",
+               "check": "test -f hello.txt", "account": "stub"}),
+    );
+    let job = reviewed(&obid, &id, 1);
+    assert_eq!(job["review"]["agent"], "codex", "{job}\n{}", obid.log());
+    assert_eq!(job["review"]["verdict"], "approved", "{job}");
+    assert_eq!(job["review"]["twoReviews"], Value::Null, "{job}");
+}
+
 /// A review that ends before its verdict (here Codex's login refused, as codex-cli 0.162.1 says it:
 /// `workspace routing discovery unauthorized (401)`) goes to the next reviewer that may take it, the
 /// other tool, by itself: its verdict lands, nothing waits for the owner, and the failed review job
