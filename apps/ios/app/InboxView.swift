@@ -317,13 +317,14 @@ struct PhoneOffer: Identifiable, Equatable {
         }
     }
 
-    /// Where each card goes: under Oby's first answer after the words it was offered for (its id),
-    /// by that answer's id; one with no answer yet (still coming, or an event turn's) goes last.
-    static func placed(_ offers: [PhoneOffer], in turns: [Turn]) -> (under: [String: [PhoneOffer]], last: [PhoneOffer]) {
+    /// Where each card goes: under Oby's answer to the words it was offered for (its id), the first
+    /// of Oby's turns after them that isn't a job's report (`ended`) and comes before your next
+    /// words, by that answer's id; one with no answer yet (still coming, or an event turn's) goes last.
+    static func placed(_ offers: [PhoneOffer], in turns: [Turn], ended: (Turn) -> Bool = { _ in false }) -> (under: [String: [PhoneOffer]], last: [PhoneOffer]) {
         var under: [String: [PhoneOffer]] = [:], last: [PhoneOffer] = []
         for offer in offers {
             if let asked = turns.firstIndex(where: { $0.id == offer.id && $0.who == .user }),
-               let answer = turns[(asked + 1)...].first(where: { $0.who == .oby }) {
+               let answer = turns[(asked + 1)...].prefix(while: { $0.who == .oby }).first(where: { !ended($0) }) {
                 under[answer.id, default: []].append(offer)
             } else {
                 last.append(offer)
@@ -379,12 +380,13 @@ struct OfferCard: View {
         busy = answer ?? "Later"
         Task {
             defer { busy = nil }
-            do {
-                for item in offer.items {
-                    try await phone.settle(item, answer: answer, later: answer == nil ? .now.addingTimeInterval(3600) : nil)
-                }
-                problem = nil
-            } catch { problem = error.localizedDescription }
+            // One that fails (obid settled it already) doesn't keep the others from their answer.
+            var failed: String?
+            for item in offer.items {
+                do { try await phone.settle(item, answer: answer, later: answer == nil ? .now.addingTimeInterval(3600) : nil) }
+                catch { failed = error.localizedDescription }
+            }
+            problem = failed
         }
     }
 }

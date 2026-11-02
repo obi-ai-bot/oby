@@ -232,7 +232,7 @@ struct ConversationPage: View {
             let startedBy = { (job: Job) in ThreadTaskLine.startedBy(turn: job.turn, in: job.conversation, showing: shown) }
             let placed = ThreadTaskLine.shown(in: turns, jobs: phone.jobs, startedBy: startedBy, ended: phone.conversation.endedTurn)
             let decisions = InboxItem.waiting(phone.inbox, now: context.date)
-            let offers = PhoneOffer.placed(PhoneOffer.offers(phone.inbox, in: shown, now: context.date), in: turns)
+            let offers = PhoneOffer.placed(PhoneOffer.offers(phone.inbox, in: shown, now: context.date), in: turns, ended: phone.conversation.endedTurn)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {

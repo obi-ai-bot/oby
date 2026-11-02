@@ -137,7 +137,6 @@ struct DesignTests {
         #expect(RunnerMode.offered(.sandbox) == [.ask, .acceptEdits, .plan, .bypass, .sandbox])
     }
 
-    /// Settings › Agents says an account's use as Electron's accountRow and weekWords do.
     /// Oby's offer (obid's `oby_offer`) is a card in its conversation, as Electron's OfferCard:
     /// one per offer, under Oby's answer to the words it was offered for, gone while put off (#1762).
     @Test func offersAreCardsUnderObysAnswer() {
@@ -154,8 +153,14 @@ struct DesignTests {
         let turns = [Turn(id: "u1", date: now, who: .user, text: "fix it"), Turn(id: "o1", date: now, who: .oby, text: "Its card is on your answer")]
         #expect(PhoneOffer.placed(offers, in: turns).under["o1"] == offers)
         #expect(PhoneOffer.placed(offers, in: Array(turns.prefix(1))).last == offers, "its answer still coming: last")
+        let report = Turn(id: "r1", date: now, who: .oby, text: "Done: Fix the login")
+        #expect(PhoneOffer.placed(offers, in: [turns[0], report, turns[1]], ended: { $0.id == "r1" }).under["o1"] == offers,
+                "a job's report in between isn't the answer")
+        #expect(PhoneOffer.placed(offers, in: [turns[0], Turn(id: "u2", date: now, who: .user, text: "and?"), turns[1]]).last == offers,
+                "an answer to later words isn't this one's")
     }
 
+    /// Settings › Agents says an account's use as Electron's accountRow and weekWords do.
     @Test func agentUsageSaysWhatElectronsSays() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         func account(_ json: String) throws -> Account { try Runner.decoder.decode(Account.self, from: Data(json.utf8)) }
