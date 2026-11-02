@@ -1420,6 +1420,9 @@ impl Job {
         // Why it stopped and its one next step (#725), out of the literal above: json!'s recursion
         // limit.
         value["reason"] = json!(self.reason);
+        // Whether obid offers Publish by hand (`can_publish`): its check passed on the branch's
+        // commit (`checked_head`, kept in its file only), so the apps follow obid, never guess (#1772).
+        value["canPublish"] = json!(self.can_publish());
         // Jobs run only on this Mac now (compute sharing is gone): null, for the apps that decode it.
         value["runsOn"] = Value::Null;
         value["nextStep"] = json!(self.next_step);
@@ -2027,8 +2030,9 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-one, `supervised` and `revision`.
-        assert_eq!(object.len(), 88);
+        // The Swift runner's 65 keys, obid's twenty-two, `supervised` and `revision`.
+        assert_eq!(object.len(), 89);
+        assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);
         assert_eq!(value["approvals"], json!([]));
@@ -2167,6 +2171,20 @@ mod tests {
 
     /// Engine/Pipeline.swift for a published job, with obid's own rule: the Merged stage is done
     /// only once its pull request merged (runner-api.md, "obid only: merging").
+    /// The apps follow obid's own Publish (#1772): `canPublish` is `can_publish`, so a done job with
+    /// commits out of its pull request offers it only while its check passed on its branch's commit.
+    #[test]
+    fn can_publish_goes_to_the_apps() {
+        let mut job = job();
+        job.kind = "fix".into();
+        job.base = Some("dev".into());
+        job.status = Status::Done;
+        job.commits = Some(1);
+        assert_eq!(job.to_json()["canPublish"], false);
+        job.checked_head = Some("a".repeat(40));
+        assert_eq!(job.to_json()["canPublish"], true);
+    }
+
     #[test]
     fn a_published_pipeline_follows_github_and_never_merges() {
         let mut job = job();

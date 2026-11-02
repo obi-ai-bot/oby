@@ -56,8 +56,11 @@ class LogicTest {
     }
 
     @Test fun whatNeedsYou() {
-        val publish = job("""{"id":"p","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix"}""")
+        val publish = job("""{"id":"p","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix","canPublish":true}""")
         assertTrue(publish.canPublish)
+        // obid says it won't (its check didn't pass on the branch's commit, PUBLISHING-2): the phone shows no Publish.
+        val unchecked = job("""{"id":"q","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix","canPublish":false}""")
+        assertFalse(unchecked.canPublish); assertFalse(unchecked.needsYou)
         assertTrue(publish.needsYou)
         assertEquals(JobBadge("Ready to publish", Tone.Orange), publish.badge)
         val dismissed = job("""{"id":"p","created":"2026-10-09T21:43:30Z","status":"failed","dismissed":"2026-10-09T21:50:00Z"}""")
