@@ -146,6 +146,21 @@ fn job(obid: &Obid, answer: &Answer) -> Value {
     call(obid, "GET", &format!("/v1/jobs/{id}"), None).body
 }
 
+/// obid's usage file with each of `accounts` full for an hour, for it to read as it starts.
+fn full_from_the_start(folder: &Folder, accounts: &[&str]) {
+    let until = obi_protocol::time::now() + 3600;
+    let usage: serde_json::Map<String, Value> = accounts
+        .iter()
+        .map(|a| ((*a).to_owned(), json!({"fullUntil": until})))
+        .collect();
+    std::fs::create_dir_all(folder.0.join("home")).unwrap();
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        Value::Object(usage).to_string(),
+    )
+    .unwrap();
+}
+
 const DISPATCH: &str = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#;
 
 /// The setting (Auto, or an account) and each conversation's own choice are the owner's to change,
@@ -284,9 +299,16 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
     let first = said(&obid, json!({"said": "REMEMBER", "new": true}));
     let id = conversation(&first);
     choose(&obid, &id, json!(CODEX));
-    // Its session stays where it was, since Codex can't run: nothing moved.
+    // Its session stays where it was, since Codex can't run, and that's said, once.
     let second = said(&obid, json!({"said": "REMEMBER", "conversation": id}));
     assert_ne!(text(&second), "resume=none", "{}", second.text);
+    assert!(
+        text(&second).ends_with("\nCodex stub couldn't run, so I moved to Claude Code · Stub."),
+        "{}",
+        second.text
+    );
+    let third = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert_eq!(text(&third), "Hello there.", "{}", third.text);
 
     let fresh = said(&obid, json!({"said": "REMEMBER", "new": true}));
     let fresh = conversation(&fresh);
@@ -304,6 +326,110 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
         new.text
     );
     assert_ne!(fresh, conversation(&new));
+}
+
+/// A chosen account full before the turn starts is said once too, while the session stays elsewhere;
+/// when it's where the answer comes from again, leaving it is news again.
+#[test]
+fn conversation_agent_3_choosing_a_full_account_says_so_once() {
+    let folder = Folder::new("talk-chose-full");
+    let config = configured(&folder);
+    full_from_the_start(&folder, &[CODEX]);
+    let obid = start(&folder.0, &config, None);
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    choose(&obid, &id, json!(CODEX));
+    let first = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert_eq!(
+        text(&first),
+        "Hello there.\nCodex stub hit its limit, so I moved to Claude Code · Stub.",
+        "{}",
+        first.text
+    );
+    let second = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert_eq!(text(&second), "Hello there.", "{}", second.text);
+}
+
+/// A turn that did something stays where it is: on another account, under the same words, it would
+/// do it again. One that only read moves.
+#[test]
+fn conversation_agent_3_a_turn_that_started_a_job_stays_when_it_fills() {
+    let (_folder, obid) = obid("talk-dispatched-full");
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    let words = format!("REPEAT 1 {DISPATCH} THEN FULL ON stub");
+    let answer = said(&obid, json!({"said": words, "conversation": id}));
+    assert!(
+        text(&answer).starts_with("I couldn't answer: "),
+        "{}",
+        answer.text
+    );
+    assert!(config_turns(&obid, &id).is_empty(), "Codex never ran");
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body.as_array().unwrap().len(), 1, "{}", jobs.text);
+}
+
+#[test]
+fn conversation_agent_3_a_turn_that_acted_stays_and_one_that_read_moves() {
+    let (_folder, obid) = obid("talk-acted-full");
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    let words = r#"REPEAT 1 OBY oby_settings {} THEN FAIL"#;
+    let answer = said(&obid, json!({"said": words, "conversation": id}));
+    assert!(
+        text(&answer).starts_with("I couldn't answer: "),
+        "{}",
+        answer.text
+    );
+    assert!(config_turns(&obid, &id).is_empty(), "Codex never ran");
+
+    let words = r#"REPEAT 1 OBY oby_jobs {} THEN FULL ON stub"#;
+    let answer = said(&obid, json!({"said": words, "conversation": id}));
+    assert!(
+        text(&answer).ends_with("Stub hit its limit, so I moved to Codex · Codex stub."),
+        "{}",
+        answer.text
+    );
+    assert_eq!(config_turns(&obid, &id).len(), 1);
+}
+
+/// Auto goes where there's room, whatever the tools' order, and a turn it moves says so.
+#[test]
+fn conversation_agent_auto_goes_where_there_is_room() {
+    let folder = Folder::new("talk-room");
+    let config = configured(&folder);
+    let now = obi_protocol::time::now();
+    let window = |used: f64| {
+        json!({"fiveHour": used, "sevenDay": used, "fiveHourResets": now + 3600,
+               "sevenDayResets": now + 86_400, "fiveHourObservedAt": now, "sevenDayObservedAt": now})
+    };
+    std::fs::create_dir_all(folder.0.join("home")).unwrap();
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        json!({CLAUDE: window(0.97), CODEX: window(0.05)}).to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/status", None).body["talkNext"],
+        CODEX
+    );
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    assert_eq!(listed(&obid, &id)["talkedOn"], CODEX);
+}
+
+/// Nothing can run: the turn names what holds each signed-in account back, of every tool.
+#[test]
+fn conversation_agent_nothing_can_run_names_what_holds_each_account() {
+    let folder = Folder::new("talk-none");
+    let mut config = configured(&folder);
+    config["agents"].as_object_mut().unwrap().remove("cursor");
+    full_from_the_start(&folder, &[CLAUDE, CODEX]);
+    let obid = start(&folder.0, &config, None);
+    let answer = said(&obid, json!({"said": "HELLO", "new": true}));
+    let words = text(&answer);
+    assert!(
+        words.contains("Claude Code · Stub hit its usage limit")
+            && words.contains("Codex · Codex stub hit its usage limit"),
+        "{words}"
+    );
 }
 
 /// `accountFailover` off: one account only, across tools too; the turn says why.
@@ -414,6 +540,82 @@ fn conversation_agent_6_cursor_talks_with_obys_tools_and_keeps_its_session() {
     assert!(!streamed.contains("REPLAYED"), "{streamed}");
 }
 
+/// A Cursor that never started read nothing: the conversation keeps no mark from it, and the turn
+/// moves on. One that started, signed or not, marks it.
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_7_a_cursor_that_never_started_leaves_no_mark() {
+    let (_folder, obid) = obid("talk-cursor-no-mark");
+    let foreign = |id: &str| {
+        let file = obid.home.join("conversations").join(format!("{id}.json"));
+        serde_json::from_slice::<Value>(&std::fs::read(file).unwrap()).unwrap()["foreign"].clone()
+    };
+    let first = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": "HELLO", "new": true}),
+    );
+    assert_eq!(first.status, 200, "{}", first.text);
+    let id = conversation(&first);
+    assert_eq!(foreign(&id), Value::Null);
+    let room = obid.home.join("conversations").join(&id).join("room");
+    std::fs::write(room.join("no-session"), "").unwrap();
+    choose(&obid, &id, json!(CURSOR));
+    let words = json!({"said": "HELLO", "conversation": id});
+    let moved = call_typed(&obid, "POST", "/v1/plans", &words);
+    assert!(
+        text(&moved).ends_with("Cursor stub couldn't run, so I moved to Claude Code · Stub."),
+        "{}",
+        moved.text
+    );
+    assert_eq!(foreign(&id), Value::Null, "{}", moved.text);
+
+    std::fs::remove_file(room.join("no-session")).unwrap();
+    let on = call_typed(&obid, "POST", "/v1/plans", &words);
+    assert_eq!(listed(&obid, &id)["talkedOn"], CURSOR, "{}", on.text);
+    assert!(foreign(&id).as_str().unwrap().contains("Cursor"));
+}
+
+/// Moved onto Cursor with nobody choosing it: the line says what stays with the conversation.
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_7_reaching_cursor_unasked_says_what_it_costs() {
+    let folder = Folder::new("talk-cursor-unasked");
+    let mut config = configured(&folder);
+    config["agents"].as_object_mut().unwrap().remove("codex");
+    let obid = start(&folder.0, &config, None);
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    let moved = said(&obid, json!({"said": "FULL ON stub", "conversation": id}));
+    assert_eq!(
+        text(&moved),
+        "Nothing to do.\nStub hit its limit, so I moved to Cursor · Cursor stub.\nOn Cursor, what you ask through my tools needs your OK from now on in this conversation.",
+        "{}",
+        moved.text
+    );
+    let on = said(&obid, json!({"said": "HELLO", "conversation": id}));
+    assert_eq!(text(&on), "Hello there.", "{}", on.text);
+}
+
+/// A Cursor that can't load its session starts a new one with the earlier turns handed over, never
+/// one that knows only the owner's last words.
+#[cfg(target_os = "macos")]
+#[test]
+fn conversation_agent_6_a_cursor_with_no_session_load_gets_the_earlier_turns() {
+    let (_folder, obid) = obid("talk-cursor-no-load");
+    let id = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    let room = obid.home.join("conversations").join(&id).join("room");
+    std::fs::write(room.join("no-load-session"), "").unwrap();
+    choose(&obid, &id, json!(CURSOR));
+    said(&obid, json!({"said": "HELLO", "conversation": id}));
+    said(&obid, json!({"said": "THIRD", "conversation": id}));
+    let turns = cursor_turns(&obid);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    let later = turns[1]["prompt"].as_str().unwrap();
+    assert!(later.contains("You are Oby"), "{later}");
+    assert!(later.contains("Owner: HELLO"), "{later}");
+}
+
 /// What Cursor's own tools read obid can't see: a turn on it counts as having read something
 /// untrusted from its start, and that stays with the conversation once it leaves Cursor.
 #[cfg(target_os = "macos")]
@@ -470,6 +672,12 @@ fn conversation_agent_9_cursors_commands_are_refused_and_what_it_plants_goes() {
     choose(&obid, &id, json!(CURSOR));
     let shell = said(&obid, json!({"said": "SHELL echo hi", "conversation": id}));
     assert_eq!(text(&shell), "shell: reject-once", "{}", shell.text);
+    // A command titled as an MCP tool is a command.
+    let titled = said(
+        &obid,
+        json!({"said": "SHELL mcp.oby.anything", "conversation": id}),
+    );
+    assert_eq!(text(&titled), "shell: reject-once", "{}", titled.text);
     let plant = said(&obid, json!({"said": "PLANT", "conversation": id}));
     assert_eq!(text(&plant), "planted", "{}", plant.text);
     let look = said(&obid, json!({"said": "LOOK", "conversation": id}));
@@ -543,6 +751,7 @@ fn conversation_agent_11_a_removed_account_is_no_choice() {
         call(&obid, "DELETE", &format!("/v1/accounts/{CODEX}"), None).status,
         204
     );
+    assert_eq!(listed(&obid, &id)["talkAccount"], Value::Null);
     assert_eq!(
         call(&obid, "GET", "/v1/settings/jobs", None).body["talkAccount"],
         Value::Null

@@ -81,22 +81,32 @@ pub(super) fn accounts(
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
         .collect();
     let on = on.filter(|on| shared.jobs.has_room(on));
-    order(chosen, on, lists, shared.jobs.account_failover())
+    order(chosen, on, lists, shared.jobs.account_failover(), |id| {
+        shared.jobs.has_room(id)
+    })
 }
 
-/// The chosen account first, else the one the session is on, then the others of its tool, then the
-/// rest. A chosen account that can't run is moved past only while failover is on; with it off, a
-/// turn tries one account.
+/// The chosen account first, else the one the session is on, then whichever has room: those of its
+/// tool before others, one held back (`room`) after any with room, and Cursor, which reports no
+/// usage and whose turn marks the conversation for good, last. A chosen account that can't run is
+/// moved past only while failover is on; with it off, a turn tries one account.
 fn order(
     chosen: Option<&str>,
     on: Option<&str>,
     lists: Vec<(Tool, Vec<Account>)>,
     failover: bool,
+    room: impl Fn(&str) -> bool,
 ) -> Vec<(Tool, Account)> {
+    let rank = |tool: Tool, account: &Account| match tool {
+        Tool::Cursor => 2,
+        _ if room(&account.id) => 0,
+        _ => 1,
+    };
     let mut all: Vec<(Tool, Account)> = lists
         .into_iter()
         .flat_map(|(tool, accounts)| accounts.into_iter().map(move |a| (tool, a)))
         .collect();
+    all.sort_by_key(|(tool, account)| rank(*tool, account));
     let at = |all: &[(Tool, Account)], id: &str| all.iter().position(|(_, a)| a.id == id);
     if !failover && chosen.is_some_and(|id| at(&all, id).is_none()) {
         return Vec::new();
@@ -106,7 +116,7 @@ fn order(
         .or_else(|| on.and_then(|id| at(&all, id)));
     if let Some(first) = first {
         let first = all.remove(first);
-        all.sort_by_key(|(tool, _)| *tool != first.0);
+        all.sort_by_key(|(tool, account)| (rank(*tool, account), *tool != first.0));
         all.insert(0, first);
     }
     let mut tried: Vec<(Tool, Account)> = Vec::new();
@@ -135,10 +145,13 @@ pub fn next(shared: &Shared) -> Option<String> {
 /// Claude Code and Codex, whose own tools obid can take away. Never Cursor, whose can't be: such a
 /// turn reads only its job.
 pub(super) fn unattended(shared: &Shared) -> Option<(Tool, Account)> {
-    unwatched(tools(shared)).into_iter().find_map(|tool| {
-        let account = shared.jobs.thinking_accounts(tool).into_iter().next()?;
-        Some((tool, account))
-    })
+    let lists = unwatched(tools(shared))
+        .into_iter()
+        .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
+        .collect();
+    order(None, None, lists, true, |id| shared.jobs.has_room(id))
+        .into_iter()
+        .next()
 }
 
 fn unwatched(mut tools: Vec<Tool>) -> Vec<Tool> {
@@ -146,24 +159,71 @@ fn unwatched(mut tools: Vec<Tool>) -> Vec<Tool> {
     tools
 }
 
-/// The account the turn left behind, when it answered on `answered` rather than where it was: one
-/// that failed this turn, else the one its session was on (else the chosen one) when that can't run
-/// now. Moving to the account the owner just chose isn't leaving anything.
-pub(super) fn left(
+/// The account the turn is off, having answered on `answered`: the one that failed this turn, else
+/// the chosen one, else the one its session was on. [`crate::conversation::Conversations::moved_off`]
+/// keeps it, so the turn says so once.
+pub(super) fn off(
     failed: Option<&str>,
     chosen: Option<&str>,
     on: Option<&str>,
     answered: &str,
 ) -> Option<String> {
-    if let Some(failed) = failed {
-        return Some(failed.to_owned());
-    }
-    if chosen == Some(answered) {
-        return None;
-    }
-    on.or(chosen)
+    failed
+        .or(chosen)
+        .or(on)
         .filter(|was| *was != answered)
         .map(str::to_owned)
+}
+
+/// What a turn adds when it reached Cursor without the owner choosing it: what stays with the
+/// conversation from then on (super::harness_cursor). Words for Sangam to change
+/// (docs/contracts/conversation-agent.md, proposed).
+pub(super) const ON_CURSOR_UNASKED: &str =
+    "On Cursor, what you ask through my tools needs your OK from now on in this conversation.";
+
+/// Why a turn has no account to try, in one line: with failover off, why the chosen one can't run;
+/// else what holds each signed-in account back, every tool's; none signed in, why the first has none.
+pub(super) fn why_none(shared: &Shared, chosen: Option<&str>) -> String {
+    let now = obi_protocol::time::now();
+    let held = |tool: Tool, account: &Account| {
+        format!(
+            "{} · {} {}",
+            tool.name(),
+            account.name,
+            shared
+                .jobs
+                .usage
+                .get(&account.id)
+                .held(now)
+                .unwrap_or_else(|| "can't run now".into())
+        )
+    };
+    if !shared.jobs.account_failover()
+        && let Some((tool, account)) =
+            chosen.and_then(|id| crate::accounts::find(&shared.config.agents.get(), id))
+    {
+        let signed_in = shared.jobs.signed_in_accounts(tool);
+        return if signed_in.iter().any(|a| a.id == account.id) {
+            held(tool, &account)
+        } else {
+            format!("{} · {} isn't signed in", tool.name(), account.name)
+        };
+    }
+    let tools = tools(shared);
+    let said: Vec<String> = tools
+        .iter()
+        .flat_map(|tool| {
+            let accounts = shared.jobs.signed_in_accounts(*tool);
+            accounts
+                .into_iter()
+                .map(|a| held(*tool, &a))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if said.is_empty() {
+        return shared.jobs.none_signed_in(tools[0]);
+    }
+    said.join("; ")
 }
 
 /// The line that says the turn moved: `left` by its name, then where to. Words for Sangam to change
@@ -220,9 +280,12 @@ mod tests {
 
     #[test]
     fn conversation_agent_auto_goes_by_the_tools_order_and_keeps_its_session() {
-        assert_eq!(ids(order(None, None, lists(), true)), ["c1", "c2", "x1"]);
         assert_eq!(
-            ids(order(None, Some("c2"), lists(), true)),
+            ids(order(None, None, lists(), true, |_| true)),
+            ["c1", "c2", "x1"]
+        );
+        assert_eq!(
+            ids(order(None, Some("c2"), lists(), true, |_| true)),
             ["c2", "c1", "x1"]
         );
     }
@@ -230,11 +293,11 @@ mod tests {
     #[test]
     fn conversation_agent_the_chosen_account_comes_first_whatever_the_session_is_on() {
         assert_eq!(
-            ids(order(Some("x1"), Some("c1"), lists(), true)),
+            ids(order(Some("x1"), Some("c1"), lists(), true, |_| true)),
             ["x1", "c1", "c2"]
         );
         assert_eq!(
-            ids(order(Some("u1"), None, lists(), true)),
+            ids(order(Some("u1"), None, lists(), true, |_| true)),
             ["u1", "c1", "c2"]
         );
     }
@@ -243,7 +306,7 @@ mod tests {
     fn conversation_agent_a_turn_past_a_full_tool_reaches_another() {
         // Two of one tool at most: Claude Code's third account never keeps Codex from its turn.
         assert_eq!(
-            ids(order(Some("c3"), None, lists(), true)),
+            ids(order(Some("c3"), None, lists(), true, |_| true)),
             ["c3", "c1", "x1"]
         );
     }
@@ -251,15 +314,18 @@ mod tests {
     #[test]
     fn conversation_agent_a_chosen_account_that_cant_run_is_passed_only_with_failover_on() {
         assert_eq!(
-            ids(order(Some("gone"), None, lists(), true)),
+            ids(order(Some("gone"), None, lists(), true, |_| true)),
             ["c1", "c2", "x1"]
         );
         assert_eq!(
-            ids(order(Some("gone"), None, lists(), false)),
+            ids(order(Some("gone"), None, lists(), false, |_| true)),
             Vec::<String>::new()
         );
-        assert_eq!(ids(order(Some("x1"), None, lists(), false)), ["x1"]);
-        assert_eq!(ids(order(None, None, lists(), false)), ["c1"]);
+        assert_eq!(
+            ids(order(Some("x1"), None, lists(), false, |_| true)),
+            ["x1"]
+        );
+        assert_eq!(ids(order(None, None, lists(), false, |_| true)), ["c1"]);
     }
 
     #[test]
@@ -268,19 +334,42 @@ mod tests {
     }
 
     #[test]
-    fn conversation_agent_says_it_moved_only_when_it_left_something() {
+    fn conversation_agent_auto_goes_where_there_is_room() {
+        // Claude Code's are held back: Codex has room, whatever the tools' order.
+        let room = |id: &str| !id.starts_with('c');
+        assert_eq!(
+            ids(order(None, None, lists(), true, room)),
+            ["x1", "c1", "c2"]
+        );
+        // Held back still comes before Cursor, which reports nothing.
+        assert_eq!(
+            ids(order(None, None, lists(), true, |_| false)),
+            ["c1", "c2", "x1"]
+        );
+        // The chosen one stays first, and off it, its own tool's with room before the rest's.
+        let room = |id: &str| id != "c1";
+        assert_eq!(
+            ids(order(Some("c1"), None, lists(), true, room)),
+            ["c1", "c2", "x1"]
+        );
+    }
+
+    #[test]
+    fn conversation_agent_is_off_what_failed_else_what_was_chosen_else_its_session() {
         // Failed this turn.
-        assert_eq!(left(Some("c1"), None, None, "x1").as_deref(), Some("c1"));
+        assert_eq!(off(Some("c1"), None, None, "x1").as_deref(), Some("c1"));
         // Its session's account can't run now.
-        assert_eq!(left(None, None, Some("c1"), "x1").as_deref(), Some("c1"));
-        // The chosen one can't run, and the session hasn't begun.
-        assert_eq!(left(None, Some("c1"), None, "x1").as_deref(), Some("c1"));
-        // Moved earlier, and still there.
-        assert_eq!(left(None, Some("c1"), Some("x1"), "x1"), None);
+        assert_eq!(off(None, None, Some("c1"), "x1").as_deref(), Some("c1"));
+        // The chosen one can't run, wherever the session is.
+        assert_eq!(off(None, Some("c1"), None, "x1").as_deref(), Some("c1"));
+        assert_eq!(
+            off(None, Some("c1"), Some("x1"), "x1").as_deref(),
+            Some("c1")
+        );
         // The owner chose it.
-        assert_eq!(left(None, Some("x1"), Some("c1"), "x1"), None);
+        assert_eq!(off(None, Some("x1"), Some("c1"), "x1"), None);
         // Nothing changed.
-        assert_eq!(left(None, None, Some("c1"), "c1"), None);
-        assert_eq!(left(None, None, None, "c1"), None);
+        assert_eq!(off(None, None, Some("c1"), "c1"), None);
+        assert_eq!(off(None, None, None, "c1"), None);
     }
 }

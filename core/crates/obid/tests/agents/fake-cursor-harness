@@ -5,7 +5,8 @@
 // $CURSOR_CONFIG_DIR/sessions, so `session/load` works across processes; loading one replays its
 // words, as ACP says an agent does. Each prompt is one line of $CURSOR_CONFIG_DIR/turns.jsonl: argv,
 // cwd, HOME, the proxy it was given, the session it resumed, the MCP servers it was given and
-// the prompt. What a prompt does comes from its last line:
+// the prompt. A file `no-load-session` in its room: it doesn't offer `session/load`; `no-session`:
+// it can't start a session. What a prompt does comes from its last line:
 //   HELLO              reads a file (no request, as Cursor's reads go), streams "Hello there."
 //   REMEMBER           says "resume=<the session it resumed, or none>"
 //   TOOLS              says "tools: <the oby tools, by name>"
@@ -69,8 +70,9 @@ function say(id, text) {
   answered(id);
 }
 
-const PLANTED = [".cursor/hooks.json", ".cursor/mcp.json", ".cursorrules", "AGENTS.md"];
-const HOME_PLANTED = ["hooks.json", "mcp.json", ".cursor/hooks.json", ".cursor/rules", ".zshrc", ".cursor/cli.json"];
+const PLANTED = [".cursor/hooks.json", ".cursor/mcp.json", ".cursorrules", "AGENTS.md", ".grok/skills/x.md"];
+const HOME_PLANTED = ["hooks.json", "mcp.json", ".cursor/hooks.json", ".cursor/rules", ".zshrc", ".cursor/cli.json",
+  ".cursor/skills-cursor/x.md", ".cursor/cloud-skills/x.md", ".cursor/sandbox.json", ".cursor/settings.json", ".grok/skills/x.md"];
 function planted(root, list) {
   return list.filter((name) => existsSync(join(root, name)));
 }
@@ -156,7 +158,7 @@ async function prompt(id, text) {
   if (last.startsWith("LOOK")) {
     return say(id, `look: ${[...planted(process.cwd(), PLANTED).map((n) => `room/${n}`), ...planted(home, HOME_PLANTED).map((n) => `home/${n}`)].join(",") || "nothing"}`);
   }
-  if (last.startsWith("FULL")) return send({ id, error: { code: -32603, message: "You've hit your usage limit." } });
+  if (last === "FULL") return send({ id, error: { code: -32603, message: "You've hit your usage limit." } });
   if (last.startsWith("FAIL")) return send({ id, error: { code: -32603, message: "it broke" } });
   return say(id, "Nothing to do.");
 }
@@ -170,10 +172,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", async 
   }
   const { id, method, params } = message;
   if (method === "initialize") {
-    return send({ id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, mcpCapabilities: { http: true, sse: true } }, authMethods: [] } });
+    return send({ id, result: { protocolVersion: 1, agentCapabilities: { loadSession: !existsSync("no-load-session"), mcpCapabilities: { http: true, sse: true } }, authMethods: [] } });
   }
   if (method === "session/new" || method === "session/load") {
     if (!signedIn) return send({ id, error: { code: -32000, message: "Authentication required" } });
+    if (existsSync("no-session")) return send({ id, error: { code: -32603, message: "Failed to initialize session services" } });
     servers = params.mcpServers ?? [];
     if (method === "session/load") {
       if (!existsSync(sessionFile(params.sessionId))) return send({ id, error: { code: -32603, message: "no such session" } });

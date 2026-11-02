@@ -850,6 +850,13 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
     // in the `accounts` event.
     shared.jobs.want_usage();
     let accounts = crate::accounts::list_now(&shared).await;
+    // Off the runtime as the list is: whether an account can run can ask the macOS Keychain.
+    let talk_next = {
+        let shared = shared.clone();
+        tokio::task::spawn_blocking(move || crate::brain::talk::next(&shared))
+            .await
+            .unwrap_or(None)
+    };
     let cleaned = shared.jobs.cleaned();
     Ok(axum::Json(Status {
         runner: RunnerJson {
@@ -870,7 +877,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
         default_agent: crate::settings::load(&shared.config.home).default_agent,
         default_account: crate::settings::load(&shared.config.home).default_account,
         talk_account: crate::settings::load(&shared.config.home).talk_account,
-        talk_next: crate::brain::talk::next(&shared),
+        talk_next,
         running: shared.jobs.running() as u32,
         cleared_at: shared.cleared.at().map(obi_protocol::time::format),
         // obid has no GitHub app: its own GitHub calls, once it makes any, go as the owner.

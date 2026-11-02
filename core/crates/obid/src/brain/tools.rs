@@ -293,6 +293,22 @@ fn reads_foreign(shared: &Shared, name: &str, args: &Value) -> Option<String> {
     }
 }
 
+/// The tools that only read: anything else a turn calls, another agent given the same words would
+/// call again ([`Session::acted`]). `oby_tasks` is only its own list, written whole.
+const ONLY_READ: &[&str] = &[
+    "oby_jobs",
+    "oby_job",
+    "oby_conversations",
+    "oby_inbox",
+    "oby_github",
+    "oby_read",
+    "oby_search",
+    "oby_list",
+    "oby_tasks",
+    "oby_routines",
+    "oby_shell_output",
+];
+
 /// The tool's answer, or why it refused.
 async fn call(
     shared: &Arc<Shared>,
@@ -302,6 +318,9 @@ async fn call(
 ) -> Result<String, String> {
     if !session.control.live() {
         return Err("The turn was stopped: nothing more happens for it.".into());
+    }
+    if !ONLY_READ.contains(&name) {
+        session.acted.store(true, Ordering::SeqCst);
     }
     // A turn nobody watches reads only its own job, and archives nothing (super::supervisor).
     if let Some(why) = super::supervisor::refused(session, name, &args) {

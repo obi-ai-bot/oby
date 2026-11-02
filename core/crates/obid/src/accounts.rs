@@ -296,8 +296,9 @@ impl Live {
             .any(|a| a.id == id && a.fresh)
     }
 
-    /// What the tool said of a signed-in account: kept, and a name obid picked filled from the org
-    /// or plan, unique per tool. `signed_in_now`: a new sign-in, after which saying nothing forgets
+    /// What the tool said of a signed-in account: kept, and a name obid picked filled from the
+    /// plan, unique per tool: never the org, a name someone else chose that would reach agents
+    /// unquoted with the account's. `signed_in_now`: a new sign-in, after which saying nothing forgets
     /// who it was before; a look at a login that didn't change keeps it. Nothing for an account
     /// gone meanwhile.
     fn learn(&self, tool: Tool, id: &str, identity: Identity, signed_in_now: bool) {
@@ -307,10 +308,15 @@ impl Live {
             }
             if let Some(added) = saved.added.iter_mut().find(|a| a.id == id) {
                 added.fresh = false;
-                let base = identity.org.clone().or_else(|| {
-                    let plan = identity.plan.as_deref()?;
+                let base = identity.plan.as_deref().and_then(|plan| {
                     let mut letters = plan.chars();
-                    Some(letters.next()?.to_uppercase().chain(letters).collect())
+                    Some(
+                        letters
+                            .next()?
+                            .to_uppercase()
+                            .chain(letters)
+                            .collect::<String>(),
+                    )
                 });
                 if added.auto_name
                     && let Some(name) = base.and_then(|b| free_name(agents, tool, &b, Some(id)))
@@ -1185,6 +1191,7 @@ fn forget_account(shared: &Shared, account: &Account) -> Result<(), ApiError> {
     }) {
         tracing::warn!("account {id}: its settings stay: {e}");
     }
+    shared.conversations.forget_account(&id);
     Ok(())
 }
 
@@ -1744,8 +1751,8 @@ async fn start(
     Ok(sign_in)
 }
 
-/// A sign-in took: who the account is, from its tool. One just added whose email another signed-in
-/// account of the tool has is that account again: taken off, and said at its sign-in routes
+/// A sign-in took: who the account is, from its tool. One just added with the email, org and plan
+/// of another signed-in account of the tool is that account again: taken off, and said at its sign-in routes
 /// (ACCOUNTS-7). A tool that doesn't say keeps the account; so does signing an account in again.
 async fn settle_sign_in(shared: &Arc<Shared>, tool: Tool, account: &Account) {
     let agents = &shared.config.agents;
@@ -1753,8 +1760,8 @@ async fn settle_sign_in(shared: &Arc<Shared>, tool: Tool, account: &Account) {
         .await
         .unwrap_or_default();
     if agents.fresh(&account.id)
-        && let Some(email) = &who.email
-        && let Some(other) = same_email(shared, tool, &account.id, email).await
+        && who.email.is_some()
+        && let Some(other) = same_login(shared, tool, &account.id, &who).await
     {
         // Said before it's gone: an app that sees it gone asks at once.
         let same = || {
@@ -1776,8 +1783,10 @@ async fn settle_sign_in(shared: &Arc<Shared>, tool: Tool, account: &Account) {
     agents.learn(tool, &account.id, who, true);
 }
 
-/// Another signed-in account of `tool` with `email`, asking the tool of any that hasn't said yet.
-async fn same_email(shared: &Arc<Shared>, tool: Tool, id: &str, email: &str) -> Option<String> {
+/// Another signed-in account of `tool` that is `who`, asking the tool of any that hasn't said yet.
+/// One email can hold a personal plan and a team's seat, so its org and plan must match too: a plan
+/// that's changed since gives an extra account, never a lost one.
+async fn same_login(shared: &Arc<Shared>, tool: Tool, id: &str, who: &Identity) -> Option<String> {
     let agents = &shared.config.agents;
     let others = agent_of(&agents.get(), tool).as_ref()?.accounts.clone();
     for other in others.into_iter().filter(|a| a.id != id) {
@@ -1789,8 +1798,13 @@ async fn same_email(shared: &Arc<Shared>, tool: Tool, id: &str, email: &str) -> 
         {
             agents.learn(tool, &other.id, who, false);
         }
-        let known = agents.identity(&other.id).email;
-        if known.is_some_and(|known| known.eq_ignore_ascii_case(email)) {
+        let known = agents.identity(&other.id);
+        let same_email = known
+            .email
+            .as_deref()
+            .zip(who.email.as_deref())
+            .is_some_and(|(known, email)| known.eq_ignore_ascii_case(email));
+        if same_email && known.org == who.org && known.plan == who.plan {
             return Some(other.id);
         }
     }
@@ -1910,11 +1924,16 @@ async fn read_codex_account(bin: &Path, dir: Option<&Path>, scratch: &Path) -> O
         .ok()
 }
 
+/// A character that breaks a line or turns text around without showing: never in a tool's word.
+fn hides(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 /// One value of a tool's answer: one line of some length, or none.
 fn said(value: &Value, longest: usize) -> Option<String> {
     let text = value.as_str()?.trim();
-    let fine =
-        !text.is_empty() && text.chars().count() <= longest && !text.chars().any(char::is_control);
+    let fine = !text.is_empty() && text.chars().count() <= longest && !text.chars().any(hides);
     fine.then(|| text.to_owned())
 }
 
@@ -2216,6 +2235,21 @@ mod tests {
             identity_from(Tool::Codex, &json!({"account": {"email": "nobody"}})),
             Identity::default()
         );
+    }
+
+    #[test]
+    fn accounts_3_a_word_that_breaks_a_line_or_turns_text_around_is_no_word() {
+        for word in [
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{200B}b",
+            "a\u{202E}b",
+            "a\u{2066}b",
+            "a\nb",
+        ] {
+            assert_eq!(said(&json!(word), 60), None, "{word:?}");
+        }
+        assert_eq!(said(&json!(" Déskree "), 60).as_deref(), Some("Déskree"));
     }
 
     #[test]

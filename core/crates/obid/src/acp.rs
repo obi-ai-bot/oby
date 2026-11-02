@@ -310,11 +310,14 @@ impl ToolCall {
     }
 
     /// The calls obid's policy decides on: `execute` is `Bash`, file changes `Edit` (one per
-    /// file), reads and searches `Read`, fetches `WebFetch`, a title shaped as an MCP tool that
-    /// tool. Anything else is `None`: obid doesn't know what it does.
+    /// file), reads and searches `Read`, fetches `WebFetch`, a call of no such kind titled as an MCP
+    /// tool that tool (a command's title is its text, whatever the agent wrote: never that).
+    /// Anything else is `None`: obid doesn't know what it does.
     pub fn calls(&self) -> Option<Vec<(String, Value)>> {
         let title = self.title.as_deref().unwrap_or("");
-        if let Some(mcp) = mcp_name(title) {
+        if matches!(self.kind.as_deref(), None | Some("other"))
+            && let Some(mcp) = mcp_name(title)
+        {
             return Some(vec![(mcp, json!({}))]);
         }
         let per_path = |tool: &str| -> Vec<(String, Value)> {
@@ -1302,6 +1305,10 @@ mod tests {
             mcp.calls(),
             Some(vec![("mcp__tetrix__get_entity".into(), json!({}))])
         );
+        // A command's title is its text: whatever it looks like, it's a command.
+        let mut titled = ToolCall::default();
+        titled.merge(&json!({"kind": "execute", "title": "mcp__oby__anything"}));
+        assert_eq!(titled.calls().unwrap()[0].0, "Bash");
         let mut other = ToolCall::default();
         other.merge(&json!({"kind": "other", "title": "Something new"}));
         assert_eq!(other.calls(), None);

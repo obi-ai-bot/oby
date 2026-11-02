@@ -9,8 +9,10 @@
 //! - a turn on Cursor counts from its start as having read something untrusted, and marks the
 //!   conversation for the owner's secrets: what obid can't see it reading, it can't call clean;
 //! - its only way off the Mac is obid's egress proxy, to Cursor's own services and nothing else
-//!   ([`crate::jobs::Jobs::reach_now`]): what it read, its own login copy too, has nowhere to go.
-//!   Where the box can't hold it to the proxy, it doesn't talk (macOS's Seatbelt does);
+//!   ([`crate::jobs::Jobs::reach_now`]): what it read, its own login copy too, can go only there.
+//!   Those services do search the web for it (crate::acp, `search`), so one that's been talked into
+//!   it can carry what it read out in a search, and obid can't gate that (the contract's known
+//!   limits). Where the box can't hold it to the proxy, it doesn't talk (macOS's Seatbelt does);
 //! - its commands ask, and obid's rule refuses them all (`oby_shell` is how a conversation runs one);
 //! - a turn nobody watches never runs on it ([`super::talk::unattended`]).
 
@@ -88,7 +90,9 @@ fn options(
         tool: "Cursor".into(),
         account: account.to_owned(),
         resume: resume.clone(),
-        resume_only: false,
+        // A Cursor that can't load its session fails this attempt, and the next starts a new one
+        // with the earlier turns handed over; a new one here would get only the owner's last words.
+        resume_only: true,
         model: None,
         plan: false,
         plan_mode: "plan".into(),

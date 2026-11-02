@@ -6,11 +6,11 @@ The business behavior contract for which account a conversation talks through.
 
 - **Outcome:** The owner connects any number of accounts, sees each one's percentage in the chat window, picks which one Oby talks through with one click (or leaves it on Auto), and when that one fills Oby moves by itself, says so in a line, and the chat keeps going.
 - **Status:** **Implemented**, on obid and in the Electron app, proven against stand-in agents. **Not yet run against a real `cursor-agent`** (CONVERSATION-AGENT-6 to 9): the login on the Mac it was built on had ended (`cursor-agent models`: "Authentication failed"). The owner's decision of 2026-11-02, in his words: "Oby should use any of the connected agents to talk. Show a way for people to click and select the conversation agent, like on MausBot. Put that on the chat window so we can choose which agent we want to use for talking. What I need is to easily connect my accounts, to connect any amount of them, to choose which to use, and to easily see the percentage. Easy to see, easy to use, easy to change, proactive to act." Replaces docs/conversation-harness.md's one configured agent, and #874's failover within one tool.
-- **Scope:** A conversation's turns, and the turns nobody watches (a supervisor's, an event's). **Out of scope:** where jobs run (`defaultAccount`, routing, #1563), a Settings row for the default (the setting has its API; the menu changes one conversation), saying "talk on Codex" in words.
+- **Scope:** A conversation's turns, and the turns nobody watches (a supervisor's, an event's). **Out of scope:** where jobs run (`defaultAccount`, routing, #1563), saying "talk on Codex" in words.
 
 ## What the design shows (proposed: Sangam's to change)
 
-The chat window's header, on the right, a pill like MausBot's model pill: the agent, the account and its percentage ("Claude Code · Personal 38%"), with a dot yellow past 80% and red past 90% of its session or week, as the composer's gauge. A click opens a menu: "Auto" ("Whichever has room") first, then every connected account under its tool with its week's percentage and a meter, the chosen one checked, and "Add account" last (Settings › Agents). Cursor reports no usage, so it says "No usage reported", never a number. When the turn moved, Oby's answer ends in a line: "Personal hit its limit, so I moved to Codex · Personal." (or "Personal couldn't run, so I moved to …" when it wasn't its limit).
+The chat window's header, on the right, a pill like MausBot's model pill: the agent, the account and its percentage ("Claude Code · Personal 38%"), with a dot yellow past 80% and red past 90% of its session or week, as the composer's gauge. The percentage is the fuller of its week and its 5-hour session, the limit that hits first. A click opens a menu: "Auto" ("Whichever has room") first, then every connected account under its tool with that percentage and a meter, the chosen one checked, and "Add account" last (Settings › Agents). An account obid holds full says "Full", in red. Cursor reports no usage, so it says "No usage reported", never a number. When the turn moved, Oby's answer ends in a line: "Personal hit its limit, so I moved to Codex · Personal." (or "Personal couldn't run, so I moved to …" when it wasn't its limit). When a turn reached Cursor without the owner choosing it, another line follows: "On Cursor, what you ask through my tools needs your OK from now on in this conversation." Settings › Agents, under "New tasks go to": "New conversations talk through", the same choices, for a new conversation's first turn, whose pill isn't there until obid has named it.
 
 ## Behavior
 
@@ -23,9 +23,9 @@ The chat window's header, on the right, a pill like MausBot's model pill: the ag
 ### What a turn runs on
 
 1. The conversation's own choice (`talkAccount`: an account's id or `auto`), else the setting's (`talkAccount` on `PUT /v1/settings/jobs`), else Auto. A choice whose account has gone is Auto.
-2. The accounts it may try: signed in, not being changed, not marked full, of every tool that can talk; best first within a tool (#874). Tools in order: `conversation.agent`, then the others, Cursor last (it reports no usage).
-3. The chosen account first; else the one its session is on while that has room, so it keeps its session; then the others of the first's tool, then the rest. At most three in one turn, at most two of a tool, so a full tool can't keep another from its turn.
-4. An account whose turn hit its limit, or that couldn't run at all (its login, its box, its session failing twice), hands the turn to the next. One whose turn failed for what it was asked (too long for the model, a security rule that ended it) doesn't, and neither does one whose turn already started a job.
+2. The accounts it may try: signed in, not being changed, not marked full, of every tool that can talk; best first within a tool (#874). Those with room come first, whatever the tool; then those held back by their window or weekly reserve; Cursor last, since it reports no usage and its turn marks the conversation for good. Within each, `conversation.agent`'s tool comes before the others.
+3. The chosen account first; else the one its session is on while that has room, so it keeps its session; then the rest as above, those of the first's tool first within each. At most three in one turn, at most two of a tool, so a full tool can't keep another from its turn.
+4. An account whose turn hit its limit, or that couldn't run at all (its login, its box, its session failing twice), hands the turn to the next. One whose turn failed for what it was asked (too long for the model, a security rule that ended it) doesn't. Neither does one whose turn already did anything but read: started a job, merged, wrote on GitHub, ran a command, changed a setting, made a card. Given the same words, another agent would do it again. Reading is `oby_jobs`, `oby_job`, `oby_conversations`, `oby_inbox`, `oby_github`, `oby_read`, `oby_search`, `oby_list`, `oby_tasks`, `oby_routines` and `oby_shell_output`.
 5. `accountFailover` off: one account only. A chosen account that can't run is said, and nothing else is tried.
 
 ### A session belongs to one agent
@@ -36,16 +36,22 @@ A session can't be picked up on another tool or account, so a turn there starts 
 
 Cursor's own reads and edits never ask and no flag takes its tools away (docs/cursor.md), so Claude Code's and Codex's way of keeping a conversation's agent from reading its login and sending it out can't hold. Instead:
 
-- A turn on Cursor counts from its start as having read something untrusted, and marks the conversation for the owner's secrets. It stays marked after it leaves Cursor. What the owner asks through Oby's tools there becomes a Confirm card, as after any untrusted read.
+- A turn on Cursor counts from its start as having read something untrusted. Once its session has started, it marks the conversation for the owner's secrets, and that stays after it leaves Cursor; one that never started read nothing and leaves no mark. What the owner asks through Oby's tools there becomes a Confirm card, as after any untrusted read.
 - Its only way off the Mac is obid's egress proxy, by a door of the conversation's own, to Cursor's own services (`tools_own`) and nothing else, with no owner's card. So it has no web of its own but what Cursor's servers do for it. Where the box can't hold it to the proxy (bubblewrap's, Linux), it doesn't talk: `talk-needs-egress-box`.
-- Every command asks, and obid's rule refuses it (`oby_shell` is the conversation's shell).
-- What it plants is gone before its next start: `.cursor`, `.cursorrules` and the rest in its room; its settings, hooks, MCP servers, rules and a shell's start-up files in its `HOME`.
+- Every command asks, and obid's rule refuses it (`oby_shell` is the conversation's shell). A call is an MCP tool by its title only when it's of no other kind: a command titled like one is a command.
+- A Cursor that can't load its session (no `loadSession`) fails that attempt, and the next starts a new session with the earlier turns handed over.
+- What it plants is gone before its next start: `.cursor`, `.grok`, `.cursorrules` and the rest in its room; its settings, sandbox file, hooks, MCP servers, rules, skills (`skills`, `skills-cursor`, `cloud-skills`, `~/.grok`) and a shell's start-up files in its `HOME`. That list is what cursor-agent 2026.10.01 loads; a later version may add names.
 - A turn nobody watches never runs on it.
-- Known limits: Cursor's MCP calls time out after about a minute (docs/cursor.md), so an `oby_shell` that waits longer for the owner's OK ends for it while the card stays; a read it does isn't shown as its own step.
+- Auto or a move can reach it unasked, only behind every Claude Code and Codex account the turn could try. The line then says what that costs.
+- Known limits:
+  - **What Cursor's servers carry.** Cursor's own web search runs on its servers, and reaches obid only as a `search`. A Cursor that's been talked into it by what it read can put what it read in a search: the room's memories, and its login copy's `accessToken` and `apiKey`. obid can't gate that, and hasn't seen it against a real `cursor-agent`. The login copy holds no refresh token and goes when the turn ends, which bounds it, and doesn't stop it. So the rest of the box and proxy keep what it read from any other host, not from Cursor's.
+  - Cursor's MCP calls time out after about a minute (docs/cursor.md), so an `oby_shell` that waits longer for the owner's OK ends for it while the card stays.
+  - A read it does isn't shown as its own step.
+  - A chosen Cursor that can't run is tried first on every turn, twice, before the turn moves; the line says so once.
 
 ### Failures and recovery
 
-Nothing can run: the turn says why in one line, as before (docs/conversation-harness.md), and the owner chooses another or adds an account. A choice survives the account filling: when it has room again, turns go back to it, in a new session.
+Nothing can run: the turn says why in one line, naming what holds each signed-in account back, of every tool ("Claude Code · Personal hit its usage limit until …; Codex · Work is at 97% of its week"), or with none signed in why the first tool has none (docs/conversation-harness.md); the owner chooses another or adds an account. A choice survives the account filling: when it has room again, turns go back to it, in a new session.
 
 ### Invariants
 
@@ -56,27 +62,30 @@ Nothing can run: the turn says why in one line, as before (docs/conversation-har
 ## Interfaces and dependencies
 
 - `PUT`/`GET /v1/settings/jobs`: `talkAccount` (an id, or null for Auto; `auto` on `PUT` is null). `422` for an account there isn't, or one that can't talk here (`reason: talk-needs-egress-box`).
-- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. A conversation's JSON gains them once there's something to say: `talkAccount`, and `talkedOn`, the account its last answer came from. Each goes out in the `conversation` event, `talkedOn` with the answer's.
-- `GET /v1/status`: `talkAccount`, and `talkNext`, the account a new conversation's first turn would use now.
+- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. A conversation's JSON gains them once there's something to say: `talkAccount`, and `talkedOn`, the account its last answer came from. Each goes out in the `conversation` event, `talkedOn` with the answer's. Which account it has said it moved off is obid's own, in its file, never in the API.
+- `GET /v1/status`: `talkAccount`, and `talkNext`, the account a new conversation's first turn would use now. obid works it out off its runtime, since whether an account can run can ask the macOS Keychain.
 - Kept in `home/settings.json` and the conversation's own file, across restarts. Cursor's folder: `home/logins/talk-<12 of its id>`, short for its sockets, gone with the conversation.
 
 ## Acceptance scenarios
 
 - **CONVERSATION-AGENT-1:** The setting (Auto or an account) and a conversation's choice outlive a restart. An account there isn't is `422`. A conversation with no choice follows the setting; `auto` is Auto whatever the setting says.
 - **CONVERSATION-AGENT-2:** A choice takes effect at the next turn, on another tool in a new session with the earlier turns handed over, saying nothing of moving. Auto then stays where the session is while it has room.
-- **CONVERSATION-AGENT-3:** The chosen account fills, or can't run: the turn is answered on another account, any tool, with a line that says so, once. The choice stays. Cursor moves off the same way.
+- **CONVERSATION-AGENT-3:** The chosen account fills, can't run, or was full when chosen: the turn is answered on another account, any tool, with a line that says so, once, until it answers on that account again. The choice stays. Cursor moves off the same way. A turn that already did anything but read stays where it is: nothing runs twice.
 - **CONVERSATION-AGENT-4:** `accountFailover` off: one account only, across tools too, and the turn says why.
 - **CONVERSATION-AGENT-5:** What a conversation read goes with it to another agent: its work starts marked untrusted there.
-- **CONVERSATION-AGENT-6:** Cursor talks: in its box, one session per conversation picked up with `session/load`, its words streaming and never what a load replays, told what it is in its first prompt, with Oby's tools, and the turn's token only in `session/new`.
-- **CONVERSATION-AGENT-7:** A turn on Cursor counts as untrusted from its start, and that stays after it leaves.
+- **CONVERSATION-AGENT-6:** Cursor talks: in its box, one session per conversation picked up with `session/load`, its words streaming and never what a load replays, told what it is in its first prompt, with Oby's tools, and the turn's token only in `session/new`. One that can't load gets a new session with the earlier turns handed over.
+- **CONVERSATION-AGENT-7:** A turn on Cursor counts as untrusted from its start, and that stays after it leaves. One that never started leaves no mark. One reached without the owner choosing it says what that costs.
 - **CONVERSATION-AGENT-8:** A conversation's Cursor gets out through the proxy only, to Cursor's own services only; with no such box, choosing it is `422` with `talk-needs-egress-box`.
 - **CONVERSATION-AGENT-9:** Cursor's commands are refused, what it plants is gone before its next start, its login copy goes when the turn ends, and its folder goes with the conversation.
 - **CONVERSATION-AGENT-10:** A turn nobody watches never runs on Cursor, and runs on Claude Code or Codex, whichever has room.
-- **CONVERSATION-AGENT-11:** An account that's removed is no choice any more: the setting's cleared, and a conversation that chose it talks on Auto.
-- **CONVERSATION-AGENT-12:** The pill and the menu show each account's percentage (its week, else its session), Cursor "No usage reported", the dot yellow past 80% and red past 90%, and every connected account under its tool.
-- **CONVERSATION-AGENT-13:** The pill names the chosen account, at once; moved off it or on Auto, where it last talked, else what obid says is next.
+- **CONVERSATION-AGENT-11:** An account that's removed is no choice any more: the setting and every conversation's choice are cleared, and that conversation talks on Auto.
+- **CONVERSATION-AGENT-12:** The pill and the menu show each account's percentage (the fuller of its week and its session), one held full "Full", Cursor "No usage reported", the dot yellow past 80% and red past 90%, red when held full, and every connected account under its tool.
+- **CONVERSATION-AGENT-13:** The pill names the chosen account, at once; moved off it or on Auto, where it last talked, else what obid says is next, each only while it can run.
+- **CONVERSATION-AGENT-14:** Settings › Agents offers Auto and every connected account for new conversations, and a new conversation's first turn runs on that choice.
+- **`conversation_agent_auto_goes_where_there_is_room`:** Auto takes an account with room before a held one, whatever the tool, and either before Cursor.
+- **`conversation_agent_nothing_can_run_names_what_holds_each_account`:** with nothing to try, the turn names every signed-in account's hold, of every tool.
 
-The order of accounts and when a turn says it moved are tested in `brain/talk.rs` (`conversation_agent_*`).
+The order of accounts and what a turn counts as off are tested in `brain/talk.rs` (`conversation_agent_*`).
 
 ### Test it on a real Mac
 

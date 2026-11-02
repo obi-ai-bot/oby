@@ -608,6 +608,7 @@ mod tests {
             nonce: "n".into(),
             web: AtomicBool::new(true),
             dispatched: AtomicUsize::new(0),
+            acted: std::sync::atomic::AtomicBool::new(false),
             told: AtomicUsize::new(0),
             asked: AtomicUsize::new(0),
             kept: "/nowhere/session.json".into(),

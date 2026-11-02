@@ -94,6 +94,9 @@ pub struct Session {
     pub web: AtomicBool,
     /// How many times this turn's tools started a job, and told one something.
     pub dispatched: AtomicUsize,
+    /// This turn did something beyond reading ([`super::tools`]): another agent, given the same
+    /// words, would do it again, so the turn doesn't move.
+    pub acted: AtomicBool,
     pub told: AtomicUsize,
     /// How many times this turn's tools asked for the owner's OK, when it isn't their own word.
     pub asked: AtomicUsize,
@@ -701,38 +704,10 @@ pub async fn run(
     let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref());
     let mut full = Vec::new();
     let mut failed: Option<String> = None;
-    let tool = shared.config.conversation.agent;
-    let mut why = match chosen
-        .as_deref()
-        .and_then(|id| crate::accounts::find(&shared.config.agents.get(), id))
-    {
-        // Failover off, and the account the owner chose can't run.
-        Some((tool, account)) => format!(
-            "{} · {} {}",
-            tool.name(),
-            account.name,
-            shared
-                .jobs
-                .usage
-                .get(&account.id)
-                .held(obi_protocol::time::now())
-                .unwrap_or_else(|| "isn't signed in".into())
-        ),
-        None => match shared.jobs.signed_in_account(tool) {
-            Some(account) if accounts.is_empty() => format!(
-                "{} · {} {}",
-                tool.name(),
-                account.name,
-                shared
-                    .jobs
-                    .usage
-                    .get(&account.id)
-                    .held(obi_protocol::time::now())
-                    .unwrap_or_default()
-            ),
-            _ => shared.jobs.none_signed_in(tool),
-        },
-    };
+    let mut why = String::new();
+    if accounts.is_empty() {
+        why = super::talk::why_none(shared, chosen.as_deref());
+    }
     for (tool, account) in &accounts {
         match session(
             shared, *tool, account, said, given, asked, control, None, None,
@@ -743,16 +718,25 @@ pub async fn run(
                 shared
                     .conversations
                     .talked_on(&control.conversation, &account.id);
-                let left = super::talk::left(
+                let off = super::talk::off(
                     failed.as_deref(),
                     chosen.as_deref(),
                     on.as_deref(),
                     &account.id,
                 );
-                if let Some(line) =
-                    left.and_then(|left| super::talk::moved_line(shared, &left, *tool, account))
+                let told = shared
+                    .conversations
+                    .moved_off(&control.conversation, off.as_deref());
+                if let Some(line) = off
+                    .filter(|_| !told)
+                    .and_then(|off| super::talk::moved_line(shared, &off, *tool, account))
                 {
                     answered.talk = said_why(answered.talk, &line);
+                }
+                // The owner didn't choose it, and it marks the conversation for good.
+                let here = Some(account.id.as_str());
+                if *tool == Tool::Cursor && chosen.as_deref() != here && on.as_deref() != here {
+                    answered.talk = said_why(answered.talk, super::talk::ON_CURSOR_UNASKED);
                 }
                 return answered;
             }
@@ -760,14 +744,13 @@ pub async fn run(
                 why = unanswered.why;
                 // An account its turn found full is another's to take over, and so is one that
                 // couldn't run at all; a turn that failed for what it was asked isn't.
-                let now = obi_protocol::time::now();
-                let usage = shared.jobs.usage.get(&account.id);
-                let limit = usage.full_until_at(now).is_some();
-                if !control.live() || !(limit || unanswered.moves) {
+                if !control.live() || !unanswered.moves {
                     break;
                 }
                 failed.get_or_insert_with(|| account.id.clone());
-                if limit {
+                let now = obi_protocol::time::now();
+                let usage = shared.jobs.usage.get(&account.id);
+                if usage.full_until_at(now).is_some() {
                     full.push(format!(
                         "{} · {} {}",
                         tool.name(),
@@ -1001,8 +984,9 @@ impl Place {
             "AGENTS.override.md",
             ".codex",
             ".agents",
-            // Cursor's project settings, hooks, MCP servers and rules (docs/cursor.md).
+            // Cursor's project settings, hooks, MCP servers, rules and skills (docs/cursor.md).
             ".cursor",
+            ".grok",
             ".cursorrules",
             ".cursorignore",
             ".cursorindexingignore",
@@ -1049,6 +1033,10 @@ impl Place {
             "mcp.json",
             "rules",
             "skills",
+            "skills-cursor",
+            "cloud-skills",
+            "sandbox.json",
+            "settings.json",
             "commands",
             "agents",
             "hooks",
@@ -1063,7 +1051,7 @@ impl Place {
         }
         remove_in(&self.config, CODEX);
         remove_in(&self.temp, &[".agents", ".codex", ".cursor"]);
-        remove_in(&self.cursor, &[".agents", ".codex", ".claude"]);
+        remove_in(&self.cursor, &[".agents", ".codex", ".claude", ".grok"]);
         // A shell's start-up files in its HOME, which a shell (Codex's snapshot of one, too)
         // sources outside obid's view: zsh's, bash's (every `.bash*`), sh's, csh's and tcsh's,
         // ksh's, mksh's and fish's.
@@ -1313,6 +1301,7 @@ async fn session(
         nonce: super::briefing::nonce(),
         web: AtomicBool::new(resumed.as_ref().is_some_and(|k| k.web) || kept_taint(&place)),
         dispatched: AtomicUsize::new(0),
+        acted: AtomicBool::new(false),
         told: AtomicUsize::new(0),
         asked: AtomicUsize::new(0),
         kept: if unattended {
@@ -1336,10 +1325,6 @@ async fn session(
     // What Cursor's own tools read, obid can't see (super::harness_cursor).
     if tool == Tool::Cursor {
         session.taint();
-        shared.conversations.mark(
-            &control.conversation,
-            super::harness_cursor::MARK.to_owned(),
-        );
     }
     // Its Claude Code still running from the turn before, on the same session and account.
     let warm = (tool == Tool::Claude && !unattended)
@@ -1383,9 +1368,10 @@ async fn session(
             .jobs
             .close_door(&super::harness_cursor::door(&control.conversation));
     }
-    // A turn that started work stays where it is: on another account, it would start it again.
+    // A turn that did something stays where it is: on another account, given the same words, it
+    // would do it again.
     let ran = ran.map_err(|mut unanswered| {
-        if session.dispatched.load(Ordering::SeqCst) > 0 {
+        if session.acted.load(Ordering::SeqCst) {
             unanswered.moves = false;
         }
         unanswered
@@ -2156,7 +2142,15 @@ async fn one(
             // The session's id, kept as soon as it's named (crash safety, with the mark).
             Event::Session(id) => {
                 watch.mark("session");
-                session.keep(Some(&id))
+                session.keep(Some(&id));
+                // From here on Cursor can read what obid can't see (super::harness_cursor): one
+                // that never started read nothing.
+                if matches!(protocol, Protocol::Cursor(_)) {
+                    shared.conversations.mark(
+                        &control.conversation,
+                        super::harness_cursor::MARK.to_owned(),
+                    );
+                }
             }
             Event::Step(_)
             | Event::Denied(_)
@@ -3315,6 +3309,7 @@ mod tests {
             nonce: "n".into(),
             web: AtomicBool::new(false),
             dispatched: AtomicUsize::new(0),
+            acted: AtomicBool::new(false),
             told: AtomicUsize::new(0),
             asked: AtomicUsize::new(0),
             kept: place.session.clone(),
@@ -3355,6 +3350,7 @@ mod tests {
             nonce: "n".into(),
             web: AtomicBool::new(false),
             dispatched: AtomicUsize::new(0),
+            acted: AtomicBool::new(false),
             told: AtomicUsize::new(0),
             asked: AtomicUsize::new(0),
             kept: PathBuf::from("/nowhere/session.json"),
@@ -3672,6 +3668,7 @@ mod tests {
             nonce: "n".into(),
             web: AtomicBool::new(false),
             dispatched: AtomicUsize::new(0),
+            acted: AtomicBool::new(false),
             told: AtomicUsize::new(0),
             asked: AtomicUsize::new(0),
             kept: PathBuf::from("/nowhere/session.json"),

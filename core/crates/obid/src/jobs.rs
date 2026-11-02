@@ -2384,6 +2384,15 @@ impl Jobs {
             .find(|a| signed_in(tool, a, home.as_deref()))
     }
 
+    /// `tool`'s accounts that are [`signed_in`].
+    pub fn signed_in_accounts(&self, tool: Tool) -> Vec<crate::config::Account> {
+        let home = login_home();
+        self.accounts(tool)
+            .into_iter()
+            .filter(|a| signed_in(tool, a, home.as_deref()))
+            .collect()
+    }
+
     /// Why `tool` has no [`signed_in`] account for conversations: a login that's there but can't
     /// run says what to do about it ([`login_problem`]: Codex's, run codex once), else that none is.
     pub fn none_signed_in(&self, tool: Tool) -> String {

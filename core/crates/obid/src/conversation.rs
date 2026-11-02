@@ -111,6 +111,10 @@ struct Thread {
     /// The account its last answer came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     talked_on: Option<String>,
+    /// The account its turns have moved off and said so ([`Conversations::moved_off`]): obid's own,
+    /// never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    moved_off: Option<String>,
 }
 
 /// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
@@ -498,6 +502,7 @@ impl Conversations {
                     uploads: vec![],
                     talk_account: None,
                     talked_on: None,
+                    moved_off: None,
                 };
                 // The conversation's name in its folder must be on disk before the old file goes.
                 if let Err(e) = self.write(&thread).and_then(|()| sync_dir(&self.dir)) {
@@ -618,6 +623,7 @@ impl Conversations {
                 uploads: vec![],
                 talk_account: None,
                 talked_on: None,
+                moved_off: None,
             });
             threads.len() - 1
         });
@@ -774,6 +780,7 @@ impl Conversations {
             uploads: vec![],
             talk_account: None,
             talked_on: None,
+            moved_off: None,
         };
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", thread.summary());
@@ -1277,6 +1284,39 @@ impl Conversations {
         thread.talked_on = Some(account.to_owned());
         if let Err(e) = self.write(thread) {
             tracing::warn!("conversation {id}: which account it's on wasn't kept: {e}");
+        }
+    }
+
+    /// Conversation `id`'s answer is off `account` (none: it's where it should be). Whether that
+    /// was so already, and said.
+    pub fn moved_off(&self, id: &str, account: Option<&str>) -> bool {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return true;
+        };
+        if thread.moved_off.as_deref() == account {
+            return true;
+        }
+        thread.moved_off = account.map(str::to_owned);
+        if let Err(e) = self.write(thread) {
+            tracing::warn!("conversation {id}: what it moved off wasn't kept: {e}");
+        }
+        false
+    }
+
+    /// The account `account` is gone: no conversation chooses it any more, and each that did says
+    /// so to the owner's apps at once (docs/contracts/conversation-agent.md).
+    pub fn forget_account(&self, account: &str) {
+        let mut threads = self.lock();
+        for thread in threads
+            .iter_mut()
+            .filter(|t| t.talk_account.as_deref() == Some(account))
+        {
+            thread.talk_account = None;
+            if let Err(e) = self.write(thread) {
+                tracing::warn!("conversation {}: its choice stays: {e}", thread.id);
+            }
+            self.events.send("conversation", thread.summary());
         }
     }
 

@@ -1380,7 +1380,7 @@ fn accounts_1_an_account_needs_no_name_and_gets_its_tools_unique_to_the_tool() {
 }
 
 #[test]
-fn accounts_2_its_first_sign_in_names_it_from_the_org_else_the_plan_unique_per_tool() {
+fn accounts_2_its_first_sign_in_names_it_from_the_plan_unique_per_tool() {
     let folder = Folder::new("accounts-2");
     let obid = start(&folder.0, &accounts_config(&folder.0), None);
     let (a, _) = added_as(
@@ -1407,7 +1407,13 @@ fn accounts_2_its_first_sign_in_names_it_from_the_org_else_the_plan_unique_per_t
         json!({"email": "c@x.dev", "org": "Deskree"}),
     );
     assert!(sign_in(&obid, "cursor", &c));
-    assert_eq!(account(&obid, &c).unwrap()["name"], "Deskree");
+    // An org is a name someone else chose: it shows on the card, and never names the account.
+    let named = account(&obid, &c).unwrap();
+    assert!(
+        named["name"].as_str().unwrap().starts_with("Cursor"),
+        "{named}"
+    );
+    assert_eq!(named["org"], "Deskree");
 
     // The owner's name stays: given when it's added, or changed before it signs in.
     let (d, _) = added_as(
@@ -1560,6 +1566,37 @@ fn accounts_7_signing_a_new_account_into_a_login_already_here_takes_it_off_and_s
     assert_eq!(pasted.status, 409, "{}", pasted.text);
     assert_eq!(pasted.body["reason"], "sameAccount");
     assert_eq!(pasted.body["sameAs"], one.as_str());
+}
+
+#[test]
+fn accounts_17_one_email_on_another_plan_or_org_is_another_account() {
+    let folder = Folder::new("accounts-17");
+    let obid = start(&folder.0, &accounts_config(&folder.0), None);
+    let (personal, _) = added_as(
+        &obid,
+        "claude",
+        None,
+        json!({"email": "me@x.dev", "plan": "max"}),
+    );
+    assert!(sign_in(&obid, "claude", &personal));
+    let (team, _) = added_as(
+        &obid,
+        "claude",
+        None,
+        json!({"email": "me@x.dev", "plan": "team", "org": "Deskree"}),
+    );
+    assert!(sign_in(&obid, "claude", &team));
+    assert!(account(&obid, &personal).is_some());
+    assert_eq!(account(&obid, &team).unwrap()["org"], "Deskree");
+    // The same org and plan, on another account, is the same login.
+    let (again, dir) = added_as(
+        &obid,
+        "claude",
+        None,
+        json!({"email": "me@x.dev", "plan": "team", "org": "Deskree"}),
+    );
+    assert!(!sign_in(&obid, "claude", &again));
+    assert!(!dir.exists());
 }
 
 #[test]
