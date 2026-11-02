@@ -26,10 +26,12 @@ android {
     }
 
     // The upload key, from keystore.properties beside app/ (README.md, "Owner's steps"; never in git):
-    // storeFile, storePassword, keyAlias, keyPassword. Without it a release builds unsigned.
+    // storeFile (a relative one beside the properties), storePassword, keyAlias, keyPassword. Without
+    // it, or without its storeFile, a release builds unsigned; debug builds never read it.
     val upload = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { file -> Properties().apply { file.inputStream().use(::load) } }
-    if (upload != null) signingConfigs.create("upload") {
-        storeFile = file(upload.getProperty("storeFile"))
+    val keystore = upload?.getProperty("storeFile")?.let(rootProject::file)
+    if (upload != null && keystore != null) signingConfigs.create("upload") {
+        storeFile = keystore
         storePassword = upload.getProperty("storePassword")
         keyAlias = upload.getProperty("keyAlias")
         keyPassword = upload.getProperty("keyPassword")
