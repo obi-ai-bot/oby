@@ -2091,8 +2091,9 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
                         })
                         && system_program("git")
                 }
+                // With no file it reads a pipe: `nl -ba notes.md | sed -n '1,9p'`.
                 Some("sed") => {
-                    words.len() > 3
+                    words.len() > 2
                         && words[1] == "-n"
                         && lines.is_match(&words[2])
                         && words[3..].iter().all(|w| !w.starts_with('-'))
@@ -2866,6 +2867,9 @@ mod tests {
             "cat go.mod; git log -3 --format=fuller; command -v go",
             "command -v curl",
             "command -V gh",
+            // What a review of a Go repository parked on (#1820).
+            "sed -n '1,260p' trigger/http/http.go; grep -nE 'requestId|M[0-6] ' README.md; git log -5 --format='%h %s%n%b'",
+            "nl -ba trigger/http/http.go | sed -n '123,133p'; sed -n '310,345p' docs/decisions/0005.md; grep -n '375' docs/decisions/*.md; git status --short",
             // What Oby's own reviews parked on in the drive of 2026-10-31.
             "git diff origin/dev...HEAD",
             "git rev-parse HEAD; git diff --no-ext-diff --no-textconv origin/main...HEAD; git ls-tree HEAD docs/oby-ask.md; od -An -tx1c docs/oby-ask.md",
@@ -2883,6 +2887,11 @@ mod tests {
         for command in [
             "sed -i s/a/b/ notes.md",
             "sed -n '1w copy.md' notes.md",
+            "cat notes.md | sed -n '1w copy.md'",
+            // It runs whichever `go` is on the path, and can fetch a toolchain (#1820).
+            "go version",
+            "go env -w GOPROXY=off",
+            "go test ./...",
             "cat notes.md > copy.md",
             "git diff --output=x.patch",
             "git branch new",
