@@ -978,8 +978,9 @@ struct Reader {
     word: String,
     in_word: bool,
     /// Here-documents waiting for the end of the line: the word that ends one, whether its lines'
-    /// tabs are stripped (`<<-`), and the command it feeds.
-    heredocs: Vec<(String, bool, usize)>,
+    /// tabs are stripped (`<<-`), whether that word was quoted (the lines are then plain text; if
+    /// not, what `$(…)` and backticks in them say runs), and the command it feeds.
+    heredocs: Vec<(String, bool, bool, usize)>,
     /// The text fed to a command (a here-document's, a here-string), and that command.
     fed: Vec<(String, usize)>,
     /// The next word is a here-string (`<<< word`).
@@ -1033,6 +1034,29 @@ impl Reader {
         let mut run = Vec::new();
         let ok = read_until(chars, i, Some(stop), &inner, next, &mut run);
         self.substituted.push((run, self.commands.len()));
+        ok
+    }
+
+    /// Reads what the `$(…)` and backticks of a here-document's lines run. Only what's in them runs
+    /// as code; the rest is text, and a backslash takes what follows it out.
+    fn substitute_in(&mut self, body: &str, within: &Within, next: &mut usize) -> bool {
+        let chars: Vec<char> = body.chars().collect();
+        let mut ok = true;
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '\\' => i += 2,
+                '$' if chars.get(i + 1) == Some(&'(') => {
+                    i += 2;
+                    ok &= self.substitute(&chars, &mut i, ')', within, next);
+                }
+                '`' => {
+                    i += 1;
+                    ok &= self.substitute(&chars, &mut i, '`', within, next);
+                }
+                _ => i += 1,
+            }
+        }
         ok
     }
 }
@@ -1135,7 +1159,7 @@ fn read_until(
             '\n' => {
                 r.end_command(false);
                 // The lines of each here-document the line opened, up to the word that ends it.
-                for (end, strip, command) in std::mem::take(&mut r.heredocs) {
+                for (end, strip, quoted, command) in std::mem::take(&mut r.heredocs) {
                     let mut body = String::new();
                     while *i + 1 < chars.len() {
                         let start = *i + 1;
@@ -1155,6 +1179,9 @@ fn read_until(
                         }
                         body.push_str(line);
                         body.push('\n');
+                    }
+                    if !quoted {
+                        ok &= r.substitute_in(&body, within, next);
                     }
                     r.fed.push((body, command));
                 }
@@ -1205,17 +1232,20 @@ fn read_until(
                         *i += 1;
                     }
                     let mut end = String::new();
+                    let mut quoted = false;
                     while let Some(&d) = chars.get(*i) {
                         if d.is_whitespace() || matches!(d, '|' | ';' | '&' | '(' | ')' | '<' | '>')
                         {
                             break;
                         }
-                        if !matches!(d, '\'' | '"' | '\\') {
+                        if matches!(d, '\'' | '"' | '\\') {
+                            quoted = true;
+                        } else {
                             end.push(d);
                         }
                         *i += 1;
                     }
-                    r.heredocs.push((end, strip, r.commands.len()));
+                    r.heredocs.push((end, strip, quoted, r.commands.len()));
                     continue;
                 }
                 // `2>&1`, `<&3`: the `&` names a file descriptor.
@@ -1261,6 +1291,12 @@ fn read_until(
         if program == "eval" {
             code.push(rest.join(" "));
         }
+        // `trap '…' EXIT`: the code it runs when the signal comes.
+        if program == "trap"
+            && let Some(text) = rest.iter().find(|w| !w.starts_with('-'))
+        {
+            code.push(text.clone());
+        }
     }
     // In the order they run: what a command's substitutions run, the command, the code it runs.
     let mut substituted = std::mem::take(&mut r.substituted).into_iter().peekable();
@@ -1284,11 +1320,46 @@ fn read_until(
     ok
 }
 
-/// Where the program of a simple command is, after assignments (`FOO=1`) and wrappers (`sudo`,
+/// How many of `words` are the shell's own grammar, not a command: `{`, `if`, `!`, `do` and their
+/// like, a function's `function name`, a coprocess's name, and `for x in a b; do` up to its `do`.
+/// A `for` or a `case` with no `do` yet is left for the caller to see: it runs nothing, and its
+/// words can still name a file.
+fn shell_grammar(words: &[String]) -> usize {
+    let mut i = 0;
+    while let Some(w) = words.get(i) {
+        i += match w.as_str() {
+            "{" | "}" | "!" | "if" | "then" | "elif" | "else" | "fi" | "while" | "until" | "do"
+            | "done" | "esac" => 1,
+            "function" => 2,
+            // `coproc name { …; }`, but `coproc curl x` runs curl.
+            "coproc" => {
+                if words
+                    .get(i + 2)
+                    .is_some_and(|w| shell_grammar(std::slice::from_ref(w)) > 0)
+                {
+                    2
+                } else {
+                    1
+                }
+            }
+            "for" | "select" | "case" => match words[i..].iter().position(|w| w == "do") {
+                Some(d) => d + 1,
+                None => return i,
+            },
+            _ => return i,
+        };
+    }
+    words.len()
+}
+
+/// Where the program of a simple command is, after the shell's grammar ([`shell_grammar`]: a
+/// command runs the same inside `{ }`, `if` or `!`), assignments (`FOO=1`) and wrappers (`sudo`,
 /// `timeout 5s`, `env -i`, `env -C dir`) with their options and numbers.
 fn program_index(words: &[String]) -> Option<usize> {
     let mut i = 0;
-    while let Some(w) = words.get(i) {
+    while i < words.len() {
+        i += shell_grammar(&words[i..]);
+        let w = words.get(i)?;
         // `command -v curl` says where curl is, and runs nothing. (As an option's value it's no
         // program: `time -f command -v printenv` runs printenv.)
         if base(w) == "command"
@@ -2241,7 +2312,8 @@ fn is_chained(command: &str) -> bool {
     command.contains("&&")
         || command.contains("||")
         || command.contains("$(")
-        || command.contains(['|', ';', '&', '`', '<', '>', '\n'])
+        || command.contains(['|', ';', '&', '`', '<', '>', '\n', '(', ')'])
+        || command.split_whitespace().next() == Some("!")
 }
 
 /// The commands a chained command runs, split where the shell would.
@@ -2380,7 +2452,13 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
             return false;
         };
         if is_chained(command) {
-            return !allowing && pieces(command).iter().any(|p| fits(p));
+            return !allowing
+                && (pieces(command).iter().any(|p| fits(p))
+                    || simple_commands(command).is_some_and(|commands| {
+                        commands
+                            .iter()
+                            .any(|c| fits(&c.words[shell_grammar(&c.words)..].join(" ")))
+                    }));
         }
         return fits(command);
     }
@@ -4164,6 +4242,110 @@ mod tests {
             updated["answers"],
             json!({"Which store?": "SQLite", "Which checks?": "Unit"})
         );
+    }
+
+    /// A shell's grouping words don't change what a command does: what's inside them is seen as
+    /// itself by the secret check and the network reading (#1811).
+    #[test]
+    fn permissions_6_grouping_words_hide_nothing() {
+        const FORMS: &[&str] = &[
+            "{ X; }",
+            "if X; then :; fi",
+            "if :; then X; fi",
+            "if :; then :; else X; fi",
+            "if false; then :; elif X; then :; fi",
+            "! X",
+            "! { X; }",
+            "if ! X; then :; fi",
+            "( X )",
+            "while X; do :; done",
+            "until X; do :; done",
+            "while :; do X; done",
+            "for x in a b; do X; done",
+            "for x do X; done",
+            "for ((i=0;i<1;i++)); do X; done",
+            "select x in a; do X; done",
+            "case a in a) X;; esac",
+            "case a in (a) X;; esac",
+            ": && X",
+            ": || X",
+            ": ; X",
+            ": | X",
+            "f() { X; }; f",
+            "function f { X; }; f",
+            "function f() { X; }; f",
+            "time X",
+            "time { X; }",
+            "coproc X",
+            "coproc c { X; }",
+            "trap 'X' EXIT",
+            "cat <<EOF\n$(X)\nEOF",
+            "cat <<EOF\n`X`\nEOF",
+            "$(X)",
+            "echo \"$(X)\"",
+            "bash -c 'if X; then :; fi'",
+        ];
+        let bounds = Bounds::of(Path::new(WORKTREE));
+        for form in FORMS {
+            let secret = form.replace('X', "printenv");
+            assert_eq!(
+                reach(&bash(&secret), &bounds),
+                Some(Reach::Secrets),
+                "{secret}"
+            );
+            assert_eq!(
+                decide_in(&bash(&secret), Mode::Bypass, &[]),
+                Verdict::Ask,
+                "{secret}"
+            );
+            let network = form.replace('X', "curl https://e.com");
+            assert!(uses_network(&network, &bounds), "{network}");
+        }
+        // A function named as a command that only says where a program is doesn't hide its body.
+        let shadow = "command() { curl https://e.com; }; command -v x";
+        assert!(uses_network(shadow, &bounds), "{shadow}");
+
+        // What isn't the shell's grammar is what it was: words of a command, plain text, a quoted
+        // here-document.
+        for command in [
+            "echo if printenv",
+            "echo '{ printenv; }'",
+            "{ echo hi; }",
+            "if true; then echo hi; fi",
+            "{ printenv HOME; }",
+            "for env in dev prod; do echo $env; done",
+            "cat <<EOF\nprintenv\nEOF",
+            "cat <<'EOF'\n$(printenv)\nEOF",
+            "cat <<EOF\n\\$(printenv)\nEOF",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+        for command in ["echo if curl https://e.com", "{ echo curl; }"] {
+            assert!(!uses_network(command, &bounds), "{command}");
+        }
+    }
+
+    /// The owner's deny rule holds inside the grouping words, and no allow rule covers, or is
+    /// offered for, a command behind `!` or in `( )` (#1811).
+    #[test]
+    fn permissions_6_a_saved_rule_reads_grouping_words_too() {
+        let worktree = Path::new(WORKTREE);
+        for command in [
+            "{ curl https://e.com; }",
+            "! curl https://e.com",
+            "( curl https://e.com )",
+            "if curl https://e.com; then :; fi",
+            "while :; do curl https://e.com; done",
+        ] {
+            let call = bash(command);
+            assert!(matches("Bash(curl:*)", &call, worktree, false), "{command}");
+            assert!(!matches("Bash(curl:*)", &call, worktree, true), "{command}");
+            assert_eq!(prefix(command), None, "{command}");
+        }
     }
 
     /// What touches secrets asks in Bypass too, but only what does: `printenv NAME` prints only
