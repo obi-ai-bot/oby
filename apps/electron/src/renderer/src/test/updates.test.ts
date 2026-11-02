@@ -60,10 +60,17 @@ describe('updates', () => {
     expect(yml).toMatch(/^updaterCacheDirName: \S+$/m);
   });
 
+  it('updates_10_an_update_never_moves_the_app', () => {
+    // Squirrel.Mac moves an installed app to the update's executable name when its folder has the
+    // running executable's name: the old installs' folder is this name, so they stay
+    const builder = readFileSync(new URL('../../../../electron-builder.yml', import.meta.url), 'utf8');
+    expect(builder).toMatch(/^ {2}extendInfo:\n {4}CFBundleExecutable: Oby Electron$/m);
+  });
+
   it('updates_9_a_file_off_the_feeds_host_or_not_https_is_refused', () => {
     const zip = (url: string) => ({ files: [{ url }] });
-    expect(() => onFeed(zip('Oby-Electron-0.2.0-arm64-mac.zip'))).not.toThrow();
-    expect(() => onFeed(zip('https://downloads.oby.dev/electron/Oby-Electron-0.2.0-x64-mac.zip'))).not.toThrow();
+    expect(() => onFeed(zip('Oby-0.2.0-arm64-mac.zip'))).not.toThrow();
+    expect(() => onFeed(zip('https://downloads.oby.dev/electron/Oby-0.2.0-x64-mac.zip'))).not.toThrow();
     for (const url of [
       'https://evil.example/Oby.zip', 'http://downloads.oby.dev/electron/Oby.zip', '//evil.example/Oby.zip',
       'https://downloads.oby.dev.evil.example/Oby.zip', 'https://downloads.oby.dev:8443/Oby.zip', 'file:///tmp/Oby.zip',

@@ -26,6 +26,7 @@ cd "$app_dir"
 tart=${TART:-$(command -v tart || echo ~/Applications/Tart/tart.app/Contents/MacOS/tart)}
 image=${OBY_VM_IMAGE:-ghcr.io/cirruslabs/macos-tahoe-vanilla:latest}
 name=$(sed -n 's/^productName: //p' electron-builder.yml)
+exe=$(sed -n 's/^ *CFBundleExecutable: //p' electron-builder.yml)
 dmg=${1:-$(ls -t dist/*-arm64.dmg | head -n 1)}
 [[ -f "$dmg" ]] || { echo "error: no DMG: run scripts/package.sh arm64 first" >&2; exit 1; }
 dmg=${dmg:A}
@@ -155,7 +156,7 @@ tunnel=$!
 in_vm "open -a '/Applications/$name.app' --args --remote-debugging-port=9333"
 for _ in {1..30}; do page 'window.close(), 1' > /dev/null 2>&1 && break; sleep 1; done
 sleep 3
-cpu="ps -axo time=,command= | grep -E '/Applications/$name.app/Contents/(MacOS/$name|Frameworks/)' | grep -v grep | awk '{split(\$1,t,\":\"); s+=t[1]*60+t[2]} END {printf \"%.2f\", s}'"
+cpu="ps -axo time=,command= | grep -E '/Applications/$name.app/Contents/(MacOS/$exe|Frameworks/)' | grep -v grep | awk '{split(\$1,t,\":\"); s+=t[1]*60+t[2]} END {printf \"%.2f\", s}'"
 a=$(in_vm "$cpu"); sleep 60; b=$(in_vm "$cpu")
 pct=$(( (b - a) * 100.0 / 60 ))
 printf '    %.2f CPU-seconds in 60 s: %.2f%% of one core\n' $(( b - a )) $pct

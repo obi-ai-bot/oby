@@ -73,6 +73,7 @@ The footer "Oby downloads updates in the background and installs them when you q
 - **UPDATES-7** Turning Update automatically on looks now, or downloads what was found; off, Oby stops looking. It's kept across launches.
 - **UPDATES-8** A click or a look while Oby already looks or downloads starts nothing twice.
 - **UPDATES-9** A `latest-mac.yml` naming a file anywhere but https on `downloads.oby.dev` is refused: nothing downloads, About offers Check for Updates again.
+- **UPDATES-10** An update never moves the app. Squirrel.Mac renames an installed bundle after the update's executable (`renamedTargetIfNeededWithTargetURL`) and relaunches from where ShipIt was, so the executable in every build stays `Oby Electron`: `/Applications/Oby Electron.app` keeps its folder and Update and Restart reopens it, its obid and login item stay valid, and the menu says Oby. New installs are `Oby.app`, and stay there. Finder and Spotlight go by the file name, so updated installs may still show the old name there.
 
 ### Test it when it's done (on a real Mac)
 
@@ -80,5 +81,7 @@ The footer "Oby downloads updates in the background and installs them when you q
 2. Turn Update automatically off and relaunch: no request reaches `downloads.oby.dev` until Check for Updates.
 3. Publish a `latest-mac.yml` whose sha512 doesn't match its zip: nothing installs, About shows Check for Updates.
 4. Publish a zip signed with another identity (ad hoc): Squirrel.Mac refuses it, nothing installs.
+5. On a Mac with `/Applications/Oby Electron.app` running obid, click Update and Restart for the renamed build: Oby reopens by itself from the same folder, its menu says Oby, obid answers and its pid is restarted once idle, the Obysphere and paired phones are still there, and macOS asks for no Keychain password. After a restart of the Mac, obid starts.
+6. Install the renamed build from its DMG on a clean Mac, then update it: it stays at `/Applications/Oby.app` and reopens.
 
-Checked in this change: `updates.test.ts` (the nine scenarios), the build bundling electron-updater into main, and an unpackaged run of the app on this Mac showing About's rows on the real bridge with `updatesAuto` kept in `settings.json`. The real-Mac steps above wait for the first release on `downloads.oby.dev`.
+Checked in this change: `updates.test.ts` (the scenarios), the build bundling electron-updater into main, and an unpackaged run of the app on this Mac showing About's rows on the real bridge with `updatesAuto` kept in `settings.json`. The real-Mac steps above wait for the first release on `downloads.oby.dev`.

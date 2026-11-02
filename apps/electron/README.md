@@ -1,6 +1,6 @@
-# Oby (Electron)
+# Oby
 
-Oby's new desktop app: Electron, with a React renderer built by Vite. It starts
+Oby's desktop app: Electron, with a React renderer built by Vite. It starts
 as a copy of Sangam's design (`design/app`, 2026-10-26) and replaces the Swift
 Mac app (`apps/mac`). In the app it shows what obid, Oby's engine, has (its API,
 `docs/runner-api.md`): the obid already answering on `127.0.0.1:7777`, with the
@@ -9,18 +9,20 @@ token main reads from `~/Library/Application Support/Oby/Runner/api-token`
 own reason (`last-start-error`), else the connection's.
 
 The packaged app carries its own obid (`Contents/Helpers/obid`, with `gh` and
-`gitleaks` in `Contents/MacOS`, as the Swift app does) and starts it as a launch
+`gitleaks` in `Contents/MacOS`) and starts it as a launch
 agent (`com.deskree.oby.electron.obid`, registered with SMAppService through
 Electron), so it keeps running after Oby quits, with its jobs and the iPhone's
-relay. Until users have moved over it is `Oby Electron.app`, with its own bundle
-ID, `com.deskree.oby.electron`, and its own label, so dragged into Applications it
-never replaces the Swift `Oby.app` (`com.deskree.oby`) and never shares its login
-item. Both obids use the same configuration, home and port. While launchd has
-the Swift Oby's login item (or install.sh's agent), this app registers none of
-its own and uses that obid; it registers its own only when no other is
-registered, so two agents never fight for 7777 at login. Before it adopts an obid
-or sends it the token, it checks that what listens on 7777 is launchd's obid of
-this user's: the pid of its own agent, its session job, the Swift Oby's or
+relay. It is `Oby.app`, with its own bundle ID, `com.deskree.oby.electron`, and its
+own label, so it never shares a login item with the Swift `Oby.app`
+(`com.deskree.oby`), which it replaces when it's dragged into Applications. An
+install from before the name changed keeps its folder, `Oby Electron.app`, through
+every update, and shows Oby in its menu; so that nothing
+ever moves, the executable inside every build keeps that old name
+(`docs/contracts/updates.md`, UPDATES-10). This app's own engine is the engine: the Swift Oby's agent is taken out
+for good, and with install.sh's holding 7777 this app's own stands down
+(`docs/contracts/engine.md`), so two agents never fight for the port at login. Before
+it adopts an obid or sends it the token, it checks that what listens on 7777 is
+launchd's obid of this user's: the pid of its own agent, its session job or
 install.sh's (`lsof` lists only this user's processes). 7777 is shared by every
 user on the Mac, so another user's obid, or any other program (an agent's, from
 its sandbox, included), gets nothing, and the window says the port is taken. The
@@ -90,7 +92,7 @@ Developer ID; then, per architecture, window-style is built for it,
 electron-builder signs the app (`electron-builder.yml`: hardened runtime, V8's
 JIT as the only entitlement, Electron's fuses closed), and the script checks it,
 scans it with gitleaks, notarizes and staples it (keychain profile
-`oby-notary`), and makes `dist/Oby-Electron-<version>-<arch>.dmg`, signed, notarized and
+`oby-notary`), and makes `dist/Oby-<version>-<arch>.dmg`, signed, notarized and
 stapled too. It needs the Developer ID Application identity of team
 `3UV9W5SV7W` (another team's: set `OBY_TEAM_ID` and `OBY_SIGN_IDENTITY`, its
 name as in `"Name (TEAMID)"`) and both Rust targets (`rustup target add aarch64-apple-darwin
