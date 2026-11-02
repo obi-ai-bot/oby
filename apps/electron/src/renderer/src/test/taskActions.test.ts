@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TRY_AGAIN, owners } from '../../../shared/words';
 
 // The task's menu wired to obid (docs/contracts/tasks.md, TASKS-1 to TASKS-3, TASKS-10): what the
 // app sends obid through main's bridge (window.app.obid), and what the task does with the answer.
@@ -463,6 +464,106 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     };
     const ask = (t: Awaited<ReturnType<typeof load>>['tasks']) => t.dev!.get().find((x) => x.id === 'j1')!.job.ask;
 
+    describe('TASKS-14, #1795: Oby\'s own question about it, whose lone Done only settles it', () => {
+      const question = {
+        id: 'orchestrator-1', kind: 'question', job: 'j1', title: 'Fix it needs your decision', text: 'Oby looked at it. Oby recommends: Rebase it.', options: ['Done'], details: null,
+        created: '2026-10-30T11:00:00Z', state: 'open', later: null, headline: null, recommended: null,
+      };
+      const stalled = { ...question, id: 'supervisor-1', title: 'Fix it stalled' };
+      const asked = async (item: Record<string, unknown> = question) => {
+        const it = await failed();
+        it.event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', reason: 'Stopped at a limit', revision: 2 }));
+        it.event('inbox', item);
+        answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: 's1', revision: 3 }) };
+        answers['POST /v1/inbox/orchestrator-1/answer'] = { status: 200, body: { ...question, state: 'done', answer: 'Done' } };
+        answers['POST /v1/jobs/j1/dismiss'] = { status: 200, body: job({ status: 'interrupted', step: 'Stopped', session: 's1', dismissed: '2026-10-30T12:00:00Z', revision: 3 }) };
+        calls.length = 0;
+        return it;
+      };
+      const sent = () => calls.map((c) => [c.path, c.body]);
+      const WAYS = ['Give it another round', 'Tell it something', 'Stop here'];
+
+      it('offers the way on, with no button looking recommended, and no Done that only settles it', async () => {
+        const { tasks } = await asked();
+        expect(ask(tasks)).toMatchObject({ kind: 'question', options: WAYS, recommended: -1 });
+      });
+      it('stays as obid asked on a task that didn\'t stop, or one its follow-up carries on', async () => {
+        const { tasks, event } = await asked();
+        event('job', job({ status: 'running', step: 'Working', session: 's1', revision: 3 }));
+        expect(ask(tasks)!.options).toEqual(['Done']);
+        event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', revision: 4 }));
+        event('job', job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }));
+        expect(ask(tasks)!.options).toEqual(['Done']);
+      });
+      it('Give it another round tells its agent, in words a click on it signs, then settles the question', async () => {
+        const { tasks, live } = await asked();
+        await live.answerJob('j1', 'Give it another round');
+        expect(sent()).toEqual([
+          ['/v1/jobs/j1/messages', { text: TRY_AGAIN }],
+          ['/v1/inbox/orchestrator-1/answer', { answer: 'Done' }],
+        ]);
+        expect(owners('POST', calls[0].path, calls[0].body, ['Give it another round'], [])).toEqual([0]);
+        expect(ask(tasks)).toBeUndefined();
+      });
+      it('Tell it something sends the owner\'s words to the task, never as the question\'s answer', async () => {
+        const { live } = await asked();
+        await live.answerJob('j1', 'Tell it something', 'Rebase it first');
+        expect(sent()).toEqual([
+          ['/v1/jobs/j1/messages', { text: 'Rebase it first' }],
+          ['/v1/inbox/orchestrator-1/answer', { answer: 'Done' }],
+        ]);
+        expect(owners('POST', calls[0].path, calls[0].body, ['Rebase it first'], [])).toEqual([0]);
+      });
+      it('Stop here lets the task go and sends no Done, which obid would refuse: it settled the question itself', async () => {
+        const { tasks, live } = await asked();
+        answers['POST /v1/inbox/orchestrator-1/answer'] = { status: 409, body: { error: 'That item is done already.' } };
+        await live.answerJob('j1', 'Stop here');
+        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/dismiss']);
+        expect(live.liveState().problem).toBeNull();
+        expect(ask(tasks)).toBeUndefined();
+      });
+      it('a task its limit stopped: its limit card decides, so no round is offered, nor sent by a card drawn before it (#1563)', async () => {
+        const { tasks, live, event } = await asked();
+        expect(ask(tasks)!.options).toEqual(WAYS);
+        event('job', job({ status: 'interrupted', step: 'Stopped', session: 's1', accountLimit: { decision: 'd1', state: 'pending', resetAt: null }, revision: 3 }));
+        expect(ask(tasks)!.options).toEqual(['Done']);
+        await live.answerJob('j1', 'Give it another round');
+        expect(sent()).toEqual([]);
+      });
+      it('refused, it says why and is still asked', async () => {
+        const { tasks, live } = await asked();
+        answers['POST /v1/jobs/j1/messages'] = { status: 409, body: { error: 'It can\'t go on from here.' } };
+        await live.answerJob('j1', 'Give it another round');
+        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/messages']);
+        expect(live.liveState().problem).toBe('It can\'t go on from here.');
+        expect(ask(tasks)!.options).toEqual(WAYS);
+      });
+      it('a stalled task\'s question refuses an answer: none is sent, and it means nothing once the task goes on', async () => {
+        const { tasks, live, event } = await asked(stalled);
+        expect(ask(tasks)!.options).toEqual(WAYS);
+        await live.answerJob('j1', 'Give it another round');
+        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/messages']);
+        expect(live.liveState().problem).toBeNull();
+        expect(ask(tasks)).toBeUndefined();
+        event('job', job({ status: 'done', step: 'Done', session: 's1', revision: 4 }));
+        expect(ask(tasks)).toBeUndefined();
+      });
+      it('past a safety limit: the Confirm obid makes shows over the question, and going on settles it', async () => {
+        const { tasks, live, event } = await asked();
+        answers['POST /v1/jobs/j1/messages'] = { status: 422, body: { error: 'It ran past its safety limit: Confirm to go on.' } };
+        const confirm = { ...question, id: 'confirm-1', kind: 'confirm', title: 'Carry on Fix it', text: 'Past its limit', options: ['Confirm', 'Cancel'], confirm: { action: 'retry_job', target: 'j1', payload: null } };
+        await live.answerJob('j1', 'Give it another round');
+        event('inbox', confirm);
+        expect(ask(tasks)!.options).toEqual(['Confirm', 'Cancel']);
+        expect(sent().map(([path]) => path)).toEqual(['/v1/jobs/j1/messages']);
+
+        calls.length = 0;
+        answers['CONFIRM confirm-1'] = { status: 200, body: { ...confirm, state: 'done', answer: 'Confirm' } };
+        await live.answerJob('j1', 'Confirm');
+        expect(sent().map(([path]) => path)).toEqual(['confirm-1', '/v1/inbox/orchestrator-1/answer']);
+      });
+    });
+
     it('offers another round and stopping, with another round first', async () => {
       const { tasks } = await failed();
       expect(ask(tasks)).toMatchObject({ kind: 'failed', options: ['Give it another round', 'Stop here'], recommended: 0 });
@@ -473,6 +574,8 @@ describe('obid\'s answers over the events that came meanwhile', () => {
       await live.answerJob('j1', 'Give it another round');
       expect(calls.at(-1)).toMatchObject({ method: 'POST', path: '/v1/jobs/j1/messages' });
       expect(JSON.stringify(calls.at(-1)!.body)).toContain('Try again, picking up where you left off.');
+      // a click on it signs them: the job stays the owner's own, not "words no app of the owner's signed"
+      expect(owners('POST', calls.at(-1)!.path, calls.at(-1)!.body, ['Give it another round'], [])).toEqual([0]);
       expect(live.liveState().jobs.j1.status).toBe('running');
     });
     it('a second failure asks again', async () => {
