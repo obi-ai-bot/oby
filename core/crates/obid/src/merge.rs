@@ -742,6 +742,16 @@ fn check_words(command: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     (scripts, runs_from)
 }
 
+/// `why` as a card says it: what read what ([`Job::someone_elses`]) is the job's own record, full of
+/// job ids and tools' names, and a person reads this (MERGING-26).
+fn plain_why(job: &Job, why: &str) -> String {
+    if job.obi.is_none() && job.someone_elses().as_deref() == Some(why) {
+        "its task read something Oby didn't write".into()
+    } else {
+        why.into()
+    }
+}
+
 /// Why the job's own check, passed with `command`, can't stand for the Mac's checks at merge
 /// (`Job::checked`), in the owner's words, or none when it can. `changed`: the files its pull
 /// request changes against its base, as obid's git read them (none when they couldn't be read,
@@ -751,11 +761,7 @@ fn check_words(command: &str) -> (BTreeSet<String>, BTreeSet<String>) {
 /// the owner's Merge is asked.
 pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
     if let Some(why) = job.check_refuses_secrets() {
-        // The chain of what read what is the job's own record: a person reads this.
-        let why = match job.foreign {
-            Some(_) => "its task read something Oby didn't write".to_owned(),
-            None => why,
-        };
+        let why = plain_why(job, &why);
         return Some(format!(
             "Its check passed, but {why}, so it's yours to merge."
         ));
@@ -840,7 +846,8 @@ fn oby_approval(job: &Job, head: &str) -> Result<(), Blocked> {
     match job.two_reviews_why() {
         Some(why) if job.approving_tools().len() < 2 => Err(match &job.no_reviewer {
             Some(_) => yours(format!(
-                "Oby's review approved it, but it needs a second approving review by another tool ({why}), and no other tool is signed in with room. It's yours to merge."
+                "Oby's review approved it, but it needs a second approving review by another tool ({}), and no other tool is signed in with room. It's yours to merge.",
+                plain_why(job, &why)
             )),
             None => wait("Not merged yet: it waits for a second review, by another tool."),
         }),
@@ -2498,9 +2505,9 @@ mod tests {
         let blocked = ready_now(&alone).unwrap_err();
         assert_eq!(
             blocked,
-            yours(format!(
-                "Oby's review approved it, but it needs a second approving review by another tool ({why}), and no other tool is signed in with room. It's yours to merge."
-            ))
+            yours(
+                "Oby's review approved it, but it needs a second approving review by another tool (its task read something Oby didn't write), and no other tool is signed in with room. It's yours to merge."
+            )
         );
         assert_eq!(on_owners_word(true, Err(blocked.clone())), Ok(()));
         let card = blocked_card(&alone, &head(), &blocked, &oby, "dev");
@@ -3478,10 +3485,11 @@ mod tests {
         );
         let mut untrusted = own.clone();
         untrusted.untrusted = true;
-        assert!(
-            check_apart(&untrusted, command, Some(&files(&["a.rs"])))
-                .unwrap()
-                .contains("read something Oby didn't write")
+        assert_eq!(
+            check_apart(&untrusted, command, Some(&files(&["a.rs"]))).as_deref(),
+            Some(
+                "Its check passed, but its task read something Oby didn't write, so it's yours to merge."
+            )
         );
         // The check's own files: what its command runs, never what it only reads.
         assert_eq!(

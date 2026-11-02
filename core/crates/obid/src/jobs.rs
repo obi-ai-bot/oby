@@ -11715,9 +11715,15 @@ impl Jobs {
         };
         let stop =
             stop.or_else(|| crate::merge::owner_must_settle(pr, &merging).map(str::to_owned));
-        let card = if job.reviewing.is_some() {
+        let at_work = job
+            .reviewing
+            .as_deref()
+            .and_then(|review| self.get(review))
+            .is_some_and(|review| review.status.is_active());
+        let card = if at_work {
             // Oby's own review is at work on it: it's no one's to merge yet, and "nobody has
-            // approved" would say something untrue of that review (MERGING-26).
+            // approved" would say something untrue of that review (MERGING-26). One stopped, at
+            // its account's limit say, stays named until the owner decides: the card shows then.
             None
         } else if let Some(why) = stop {
             // A change request, red checks and a reviewer account signed out are holds the
