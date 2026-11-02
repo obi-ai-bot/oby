@@ -164,15 +164,12 @@ pub async fn merge(
     merged
 }
 
-/// What Oby says of a task's pull request it merged on the owner's word: what was still open is
-/// said, since it's no reason to refuse (MERGING-27).
-fn merged_line(name: &str, title: &str, reviewing: bool) -> String {
-    let open = if reviewing {
-        " Oby's review of it hadn't finished."
-    } else {
-        ""
-    };
-    format!("Merged {name}, {title}'s pull request.{open}")
+/// What Oby says of a task's pull request it merged on the owner's word (MERGING-27).
+fn merged_line(name: &str, title: &str, open: Option<&str>) -> String {
+    match open {
+        Some(open) => format!("Merged {name}, {title}'s pull request. {open}"),
+        None => format!("Merged {name}, {title}'s pull request."),
+    }
 }
 
 async fn merge_at(
@@ -191,14 +188,10 @@ async fn merge_at(
         }
         // Their own word lifts every hold of Oby's: what's still open is said, never a refusal
         // (MERGING-27). Only GitHub's own rules can stop it.
-        let reviewing = job.reviewing.is_some();
-        return match jobs
+        let open = jobs
             .merge_by_owner(&job.id, head, false, crate::merge::Lift::Word)
-            .await?
-        {
-            Some(note) => Ok(note),
-            None => Ok(merged_line(&name, &job.short_title(), reviewing)),
-        };
+            .await?;
+        return Ok(merged_line(&name, &job.short_title(), open.as_deref()));
     }
     let gh = github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
     let method = asked.method.as_deref().unwrap_or("squash");
@@ -566,11 +559,11 @@ mod tests {
     #[test]
     fn merging_27_oby_says_what_was_still_open() {
         assert_eq!(
-            super::merged_line("o/r#3", "Fix it", true),
-            "Merged o/r#3, Fix it's pull request. Oby's review of it hadn't finished."
+            super::merged_line("o/r#3", "Fix it", Some("Still open: Its checks failed.")),
+            "Merged o/r#3, Fix it's pull request. Still open: Its checks failed."
         );
         assert_eq!(
-            super::merged_line("o/r#3", "Fix it", false),
+            super::merged_line("o/r#3", "Fix it", None),
             "Merged o/r#3, Fix it's pull request."
         );
     }

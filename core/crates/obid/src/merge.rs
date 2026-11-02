@@ -115,6 +115,26 @@ impl Lift<'_> {
     }
 }
 
+/// What the owner's own word would go over on `job`'s pull request, in a person's words, or none
+/// (MERGING-27). A base Oby merges into only on their word isn't one: their word is what it asks.
+pub fn still_open(
+    job: &Job,
+    workflow: &Workflow,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: &Reviewers,
+) -> Option<String> {
+    let blocked = ready(job, Some(workflow), pr, merging, Some(reviewers)).err()?;
+    let theirs = on_their_word(&pr.base);
+    let holds: Vec<String> = blocked
+        .why
+        .lines()
+        .filter(|line| theirs.as_deref() != Some(*line))
+        .map(hold_line)
+        .collect();
+    (!holds.is_empty()).then(|| format!("Still open: {}", holds.join(" ")))
+}
+
 /// A hold as a card lists it, one a line under its headline (MERGING-21): without the "Not merged
 /// (yet): " it starts with, or the "so it's yours to merge" the headline already says.
 pub fn hold_line(why: &str) -> String {
@@ -1261,7 +1281,8 @@ async fn merging(
     if pull.conflicted {
         return Err(conflicts(&pr.base));
     }
-    if workflow.rebase_first {
+    // Rebasing first is Oby's own way of working, and their word goes over it (MERGING-27).
+    if workflow.rebase_first && !matches!(lift, Some(Lift::Word)) {
         let compare = format!("repos/{repo}/compare/{}...{head}", pr.base);
         let behind = github::run(gh, &["api", &compare])
             .await
@@ -2349,6 +2370,12 @@ mod tests {
             v["mergeStateStatus"] = json!("DIRTY");
         });
         assert!(word(&reading, &conflict, &Lift::Word).is_err());
+        // What it goes over is said, in a person's words.
+        let (pr, merging) = read(&text, &approved());
+        let open = still_open(&reading, &obis(), &pr, &merging, &signed_in()).unwrap();
+        assert!(open.starts_with("Still open: "), "{open}");
+        assert!(open.contains("Its checks failed on GitHub."), "{open}");
+        assert!(!open.contains("Not merged"), "{open}");
     }
 
     /// MERGING-20: the owner's signed Merge on the card Oby shows names every hold, so answering

@@ -646,11 +646,16 @@ async fn merge(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<S
     };
     if owners_word(session).is_none() {
         let title = asked.title(&open, job.is_some());
+        // The click goes over whatever's still open, so the card says what is (MERGING-27).
+        let still_open = match &job {
+            Some(job) => shared.jobs.merge_still_open(&job.id, &open.head).await,
+            None => None,
+        };
         return confirm_card(
             shared,
             session,
             title,
-            None,
+            still_open.as_deref(),
             crate::sphere::inbox::Confirmed {
                 action: crate::sphere::inbox::action::MERGE_PR.into(),
                 target: format!("{}#{}", asked.repo, asked.pr),

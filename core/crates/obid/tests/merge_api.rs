@@ -113,6 +113,7 @@ case "$*" in
   "api repos/{REPO}/pulls/7")
     if [ -f "$dir/named" ]; then sed 's#oby/fix-7#codex/7-x#' "$dir/pull.json"; else cat "$dir/pull.json"; fi ;;
   "api -X PUT repos/{REPO}/pulls/7/merge "*) touch "$dir/merged"; echo '{{"merged": true}}' ;;
+  "api repos/{REPO}/compare/"*) echo '{{"behind_by": 3}}' ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/oby/fix-7") touch "$dir/deleted"; exit 0 ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/codex/7-x") touch "$dir/deleted-named"; exit 0 ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
@@ -847,7 +848,10 @@ fn merging_27_the_owners_word_merges_while_obys_review_is_at_work() {
             "payload": {"merge": {"repo": REPO, "pr": 7}, "base": "dev", "head": head(),
                 "conversation": ""}}});
     std::fs::write(inbox.join("c1a2b3c4-confirm.json"), item.to_string()).unwrap();
-    let obid = started_with_jobs(&folder, true, None, &[author, review], &[]);
+    // It's behind its base too, under a workflow that rebases first: Oby's way, not GitHub's rule.
+    let rebases =
+        r#"{"base":"dev","method":"squash","rebaseFirst":true,"review":"oby","checks":"github"}"#;
+    let obid = started_with_jobs(&folder, true, Some(rebases), &[author, review], &[]);
     assert!(!calls(&folder.0).contains("-X PUT"));
     let answer = confirm(&obid, "c1a2b3c4-confirm");
     assert_eq!(answer.status, 200, "{}", answer.text);
