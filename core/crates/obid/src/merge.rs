@@ -98,13 +98,41 @@ pub enum Lift<'a> {
     Before,
     /// A signed answer to a card saying this.
     Named(&'a str),
+    /// The owner's own word, not a card's answer: their signed words on a turn, or their click on
+    /// the Confirm those words made. Every hold of Oby's goes; GitHub's rules stay GitHub's
+    /// (MERGING-27, AGENTS.md "Oby forbids nothing").
+    Word,
 }
 
 impl Lift<'_> {
     /// Whether the card said `why`: as the hold is written, or as the card lists it ([`hold_line`]).
     fn names(&self, why: &str) -> bool {
-        matches!(self, Lift::Named(said) if said.contains(why) || said.contains(&hold_line(why)))
+        match self {
+            Lift::Before => false,
+            Lift::Named(said) => said.contains(why) || said.contains(&hold_line(why)),
+            Lift::Word => true,
+        }
     }
+}
+
+/// What the owner's own word would go over on `job`'s pull request, in a person's words, or none
+/// (MERGING-27). A base Oby merges into only on their word isn't one: their word is what it asks.
+pub fn still_open(
+    job: &Job,
+    workflow: &Workflow,
+    pr: &PullRequest,
+    merging: &Merging,
+    reviewers: &Reviewers,
+) -> Option<String> {
+    let blocked = ready(job, Some(workflow), pr, merging, Some(reviewers)).err()?;
+    let theirs = on_their_word(&pr.base);
+    let holds: Vec<String> = blocked
+        .why
+        .lines()
+        .filter(|line| theirs.as_deref() != Some(*line))
+        .map(hold_line)
+        .collect();
+    (!holds.is_empty()).then(|| format!("Still open: {}", holds.join(" ")))
 }
 
 /// A hold as a card lists it, one a line under its headline (MERGING-21): without the "Not merged
@@ -1253,7 +1281,8 @@ async fn merging(
     if pull.conflicted {
         return Err(conflicts(&pr.base));
     }
-    if workflow.rebase_first {
+    // Rebasing first is Oby's own way of working, and their word goes over it (MERGING-27).
+    if workflow.rebase_first && !matches!(lift, Some(Lift::Word)) {
         let compare = format!("repos/{repo}/compare/{}...{head}", pr.base);
         let behind = github::run(gh, &["api", &compare])
             .await
@@ -2309,6 +2338,47 @@ mod tests {
 
     /// MERGING-20: by itself, each of Oby's own holds stops it (a card with Merge where it asks
     /// the owner, silence where it may still go by itself); on the owner's own Merge every one of
+    /// them lifts at once, and only what's left is GitHub's, the secret scan's, or another Obi's.
+    #[test]
+    fn merging_27_the_owners_word_lifts_what_a_card_never_named() {
+        let word = |job: &Job, text: &str, lift: &Lift| {
+            let (pr, merging) = read(text, &approved());
+            on_owners_word(
+                true,
+                ready_as(
+                    Some(lift),
+                    job,
+                    Some(&obis()),
+                    &pr,
+                    &merging,
+                    Some(&signed_in()),
+                ),
+            )
+        };
+        // A review still reading it, with GitHub's checks red: no card named either.
+        let mut reading = reviewed("approved", &"c".repeat(40));
+        reading.reviewing = Some("r2".into());
+        let text = view(|v| {
+            v["statusCheckRollup"][0]["conclusion"] = json!("FAILURE");
+            v["mergeStateStatus"] = json!("UNSTABLE");
+        });
+        assert!(word(&reading, &text, &Lift::Before).is_err());
+        assert_eq!(word(&reading, &text, &Lift::Word), Ok(()));
+        // GitHub's own rules stay GitHub's: a conflict is still a conflict.
+        let conflict = view(|v| {
+            v["mergeable"] = json!("CONFLICTING");
+            v["mergeStateStatus"] = json!("DIRTY");
+        });
+        assert!(word(&reading, &conflict, &Lift::Word).is_err());
+        // What it goes over is said, in a person's words.
+        let (pr, merging) = read(&text, &approved());
+        let open = still_open(&reading, &obis(), &pr, &merging, &signed_in()).unwrap();
+        assert!(open.starts_with("Still open: "), "{open}");
+        assert!(open.contains("Its checks failed on GitHub."), "{open}");
+        assert!(!open.contains("Not merged"), "{open}");
+    }
+
+    /// MERGING-20: the owner's signed Merge on the card Oby shows names every hold, so answering
     /// them lifts at once, and only what's left is GitHub's, the secret scan's, or another Obi's.
     #[test]
     fn merging_20_the_owners_merge_lifts_obys_own_holds_never_githubs() {

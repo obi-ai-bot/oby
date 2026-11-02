@@ -12066,39 +12066,23 @@ impl Jobs {
         remember: bool,
         lift: crate::merge::Lift<'_>,
     ) -> Result<Option<String>, String> {
-        let signed = matches!(lift, crate::merge::Lift::Named(_));
-        let job = self.get(id).ok_or("There's no such job.")?;
-        // A follow-up that pushed to its pull request since carries it, its push Oby's own: the
-        // merge goes on that job's record (MERGING-23).
-        let mut job = self.carrier(&job);
-        job.unfollowed = self.unfollowed(&job);
+        let signed = !matches!(lift, crate::merge::Lift::Before);
+        let OwnersMerge {
+            job,
+            gh,
+            home,
+            pr,
+            merging,
+            reviewers,
+            learned,
+            workflow,
+            number,
+        } = self.owners_merge(id, head).await?;
         let id = job.id.as_str();
-        let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
-        let number = job
-            .published
-            .as_deref()
-            .and_then(|url| crate::github::pull_request_number(url, &job.repo))
-            .ok_or("The job has no pull request of its own.")?;
-        let home = self.config.home.clone();
-        let (pr, merging) =
-            crate::github::view_merging(&gh, &job.repo, number, obi_protocol::time::now()).await?;
-        let merging = merging?;
-        if pr.head.as_deref() != Some(head) {
-            return Err("Its head moved since: a new card comes when it's ready again.".into());
-        }
-        let owner = crate::github_login::read_status(&gh)
-            .await
-            .user
-            .ok_or("obid's gh isn't signed in to GitHub.")?;
-        let reviewer = crate::github_login::reviewer(&gh, &home, &owner).await;
-        let learned = crate::memory::workflow(&home, &job.repo).and_then(|m| m.workflow);
-        let reviewers = crate::merge::accounts(&home, &owner, &reviewer, learned.as_ref())
-            .ok_or("Oby couldn't tell who its reviewer accounts are.")?;
-        let workflow = learned
-            .clone()
-            .filter(|w| w.base == pr.base)
-            .or_else(|| crate::merge::proposed(&job, &pr, &merging, &reviewers))
-            .ok_or("It isn't one Oby may merge.")?;
+        // What their word goes over is said, never a reason to refuse (MERGING-27).
+        let open = matches!(lift, crate::merge::Lift::Word)
+            .then(|| crate::merge::still_open(&job, &workflow, &pr, &merging, &reviewers))
+            .flatten();
         crate::merge::on_owners_word(
             true,
             crate::merge::ready_as(
@@ -12143,8 +12127,81 @@ impl Jobs {
                 ));
             }
         }
-        Ok(None)
+        Ok(open)
     }
+
+    /// What's still open on the job `id`'s pull request at `head`, for the Confirm their words
+    /// make to show before their click goes over it (MERGING-27); none when it can't be read, and
+    /// the merge reads it all again.
+    pub async fn merge_still_open(&self, id: &str, head: &str) -> Option<String> {
+        let read = self.owners_merge(id, head).await.ok()?;
+        crate::merge::still_open(
+            &read.job,
+            &read.workflow,
+            &read.pr,
+            &read.merging,
+            &read.reviewers,
+        )
+    }
+
+    /// What the owner's own Merge of the job `id`'s pull request at `head` goes on, read fresh.
+    async fn owners_merge(&self, id: &str, head: &str) -> Result<OwnersMerge, String> {
+        let job = self.get(id).ok_or("There's no such job.")?;
+        // A follow-up that pushed to its pull request since carries it, its push Oby's own: the
+        // merge goes on that job's record (MERGING-23).
+        let mut job = self.carrier(&job);
+        job.unfollowed = self.unfollowed(&job);
+        let gh = crate::github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
+        let number = job
+            .published
+            .as_deref()
+            .and_then(|url| crate::github::pull_request_number(url, &job.repo))
+            .ok_or("The job has no pull request of its own.")?;
+        let home = self.config.home.clone();
+        let (pr, merging) =
+            crate::github::view_merging(&gh, &job.repo, number, obi_protocol::time::now()).await?;
+        let merging = merging?;
+        if pr.head.as_deref() != Some(head) {
+            return Err("Its head moved since: a new card comes when it's ready again.".into());
+        }
+        let owner = crate::github_login::read_status(&gh)
+            .await
+            .user
+            .ok_or("obid's gh isn't signed in to GitHub.")?;
+        let reviewer = crate::github_login::reviewer(&gh, &home, &owner).await;
+        let learned = crate::memory::workflow(&home, &job.repo).and_then(|m| m.workflow);
+        let reviewers = crate::merge::accounts(&home, &owner, &reviewer, learned.as_ref())
+            .ok_or("Oby couldn't tell who its reviewer accounts are.")?;
+        let workflow = learned
+            .clone()
+            .filter(|w| w.base == pr.base)
+            .or_else(|| crate::merge::proposed(&job, &pr, &merging, &reviewers))
+            .ok_or("It isn't one Oby may merge.")?;
+        Ok(OwnersMerge {
+            job,
+            gh,
+            home,
+            pr,
+            merging,
+            reviewers,
+            learned,
+            workflow,
+            number,
+        })
+    }
+}
+
+/// [`Jobs::owners_merge`]'s reading.
+struct OwnersMerge {
+    job: Job,
+    gh: std::path::PathBuf,
+    home: std::path::PathBuf,
+    pr: crate::github::PullRequest,
+    merging: crate::github::Merging,
+    reviewers: crate::merge::Reviewers,
+    learned: Option<crate::memory::Workflow>,
+    workflow: crate::memory::Workflow,
+    number: u64,
 }
 
 /// Whether the follower carries `job`'s pull request on (crate::merge): done, published, the

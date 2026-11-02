@@ -989,6 +989,27 @@ pub(super) async fn answer_inbox(
         }
     }
 
+    // Merge in the owner's own words goes over every hold of Oby's, named on this card or not
+    // (MERGING-27); their click answers the card, and lifts what it names.
+    if merges_on_their_word(&item, &words, owner)
+        && let Some(head) = crate::merge::item_head(&item.id)
+    {
+        // The head this card is about: one pushed since is refused, and gets its own card.
+        return match shared
+            .jobs
+            .merge_by_owner(&item.job, head, false, crate::merge::Lift::Word)
+            .await
+        {
+            Ok(open) => {
+                shared.link.merge_items(&item.job, None);
+                Outcome::Done(match open {
+                    Some(open) => format!("Merged {}. {open}", item.title),
+                    None => format!("Merged {}.", item.title),
+                })
+            }
+            Err(why) => Outcome::Failed(format!("Couldn't merge {}: {why}", item.title)),
+        };
+    }
     let body = serde_json::json!({"answer": words}).to_string();
     match shared.link.answer(id, body.as_bytes()).await {
         Ok(_) => Outcome::Done(format!("Answered {}'s item{said}.", item.title)),
@@ -997,6 +1018,12 @@ pub(super) async fn answer_inbox(
             item.title, e.message
         )),
     }
+}
+
+/// Whether these words on a merge card are the owner's own Merge (MERGING-27). "Merge, and
+/// remember" stays the card's, which keeps what it remembers.
+fn merges_on_their_word(item: &Item, words: &str, owner: bool) -> bool {
+    owner && item.kind == "merge" && words == crate::merge::MERGE
 }
 
 /// Whether answering `item` with `words` is the user's alone (the owner's decision of
@@ -1585,6 +1612,25 @@ mod tests {
             words(Some("claude"), Some("Personal")),
             "build app (Greeting), on Claude Code · Personal"
         );
+    }
+
+    /// MERGING-27
+    #[test]
+    fn merging_27_merge_in_their_words_on_a_card_is_their_word() {
+        let card: Item = serde_json::from_value(json!({"id": "m", "kind": "merge", "job": "j",
+            "title": "Ready to merge: x", "text": "t", "options": ["Merge", "Leave it open"],
+            "details": null, "recommended": null, "created": 1, "done": null, "later": null,
+            "answer": null, "obi": null}))
+        .unwrap();
+        assert!(merges_on_their_word(&card, "Merge", true));
+        assert!(!merges_on_their_word(&card, "Merge", false));
+        assert!(!merges_on_their_word(&card, "Leave it open", true));
+        assert!(!merges_on_their_word(&card, "Merge, and remember", true));
+        let other = Item {
+            kind: "failed".into(),
+            ..card
+        };
+        assert!(!merges_on_their_word(&other, "Merge", true));
     }
 
     /// PUBLISHING-13
