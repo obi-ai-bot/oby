@@ -237,6 +237,9 @@ pub struct Dispatch {
     pub repo: String,
     #[serde(default, alias = "baseBranch")]
     pub base_branch: Option<String>,
+    /// The branch the work goes on, when the owner or the repository's instructions named one.
+    #[serde(default)]
+    pub branch: Option<String>,
     #[serde(default)]
     pub pr: Option<i64>,
     /// The issue the work is about. obid reads it for the agent, who has no GitHub login.
@@ -1320,6 +1323,11 @@ fn dispatch_problems(dispatch: &Dispatch, context: &Context) -> Vec<String> {
         && !is_branch_name(base)
     {
         problems.push("base_branch isn't a branch name".into());
+    }
+    if let Some(branch) = &dispatch.branch
+        && !is_branch_name(branch)
+    {
+        problems.push("branch isn't a branch name".into());
     }
     if dispatch.kind == Kind::Research {
         if let Some(reads) = &dispatch.reads {

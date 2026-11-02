@@ -14,7 +14,7 @@
 //!   one it names: `main`, `master` or `trunk` only on the owner's own Merge, never by itself
 //!   whatever a workflow says ([`on_their_word`], the owner's decision of 2026-10-31), and the
 //!   default branch only when it names it;
-//! - it's the job's own: its `oby/` branch in the repository itself, published by obid, its head
+//! - it's the job's own: a branch obid made for it ([`Job::own_branch`]) in the repository itself, published by obid, its head
 //!   the commit obid pushed last, nothing unpublished, and the secret scan of that push clean; the
 //!   job is done, the owner's own (never another Obi's), and not dismissed;
 //! - the one the workflow's `review` names approved that very head: for `oby` (the default, and
@@ -219,10 +219,10 @@ pub struct Merged {
     pub outgoing: Vec<Outgoing>,
 }
 
-/// Whether `branch` is the one obid created for `job`: its own `oby/` branch. The only branch a
+/// Whether `branch` is the one obid created for `job` ([`Job::own_branch`]). The only branch a
 /// merge deletes.
 pub fn own_branch(job: &Job, branch: &str) -> bool {
-    branch == job.branch && branch.starts_with("oby/") && crate::git::is_branch_name(branch)
+    branch == job.branch && job.own_branch() && crate::git::is_branch_name(branch)
 }
 
 /// `obi` of `obi-ai-bot/obi`.
@@ -1102,7 +1102,7 @@ fn owned<'a>(
     }
     if !own_branch(job, &job.branch) || job.kind == "research" || job.kind == "review" {
         lifted.push(yours(
-            "Not merged: Oby merges only its own oby/ branches by itself.",
+            "Not merged: Oby merges only the branches it made by itself.",
         ));
     }
     if job.obi.is_some() {
@@ -1378,7 +1378,7 @@ async fn merging(
     })
 }
 
-/// Deletes the job's own `oby/` branch, merged (`DELETE …/git/refs/heads/<branch>`), never
+/// Deletes the branch obid made for the job, merged (`DELETE …/git/refs/heads/<branch>`), never
 /// another: what went out. One gone already counts as deleted.
 pub async fn delete_branch(gh: &Path, job: &Job) -> Result<Outgoing, String> {
     if !own_branch(job, &job.branch) || !github::is_repo(&job.repo) {
@@ -2049,6 +2049,17 @@ mod tests {
             ..Default::default()
         });
         job
+    }
+
+    /// PUBLISHING-13: what merging, its rebase and its branch's deletion count as the job's own.
+    #[test]
+    fn publishing_13_a_branch_obid_made_is_the_jobs_own() {
+        let mut job = job();
+        job.branch = "codex/7-x".into();
+        assert!(!own_branch(&job, "codex/7-x"));
+        job.made_branch = true;
+        assert!(own_branch(&job, "codex/7-x"));
+        assert!(!own_branch(&job, "codex/8-y"));
     }
 
     /// What `gh pr view --json <the follower's fields>` prints for an approved, green, clean pull

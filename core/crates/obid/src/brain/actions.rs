@@ -130,6 +130,13 @@ fn names_agent(words: &str) -> bool {
     })
 }
 
+/// The branch `d` names, unless its turn read something untrusted: words Oby read don't pick a
+/// branch for it to push to and delete (an open pull request's, one a deploy watches); the job
+/// gets an `oby/` one (PUBLISHING-13).
+fn named_branch(d: &super::plan::Dispatch, researched: bool) -> Option<String> {
+    d.branch.clone().filter(|_| !researched)
+}
+
 /// The job `d` plans, as obid keeps it, linked to the conversation.
 fn planned_job(
     shared: &Shared,
@@ -176,6 +183,7 @@ fn planned_job(
         attachments: (!asked.attachments.is_empty()).then(|| asked.attachments.to_vec()),
         conversation: Some(asked.conversation.to_owned()),
         base: d.base_branch.clone(),
+        branch: named_branch(d, researched),
         // Bypass named where it's the owner's own default is the default, not a wider choice:
         // the job gets it as any job does, with no Confirm (`Jobs::bypass_widens`).
         mode: d
@@ -1552,6 +1560,17 @@ mod tests {
             words(Some("claude"), Some("Personal")),
             "build app (Greeting), on Claude Code · Personal"
         );
+    }
+
+    /// PUBLISHING-13
+    #[test]
+    fn publishing_13_a_turn_that_read_something_untrusted_names_no_branch() {
+        let d: super::super::plan::Dispatch = serde_json::from_value(
+            json!({"repo": "o/r", "kind": "build", "task": "x", "branch": "gh-pages"}),
+        )
+        .unwrap();
+        assert_eq!(named_branch(&d, false).as_deref(), Some("gh-pages"));
+        assert_eq!(named_branch(&d, true), None);
     }
 
     #[test]

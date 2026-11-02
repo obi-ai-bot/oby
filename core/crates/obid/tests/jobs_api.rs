@@ -369,6 +369,16 @@ fn dispatch_takes_only_whole_jobs() {
         (json!({"account": "nobody"}), "There's no account nobody"),
         (json!({"branch": "--upload-pack=sh"}), "isn't a branch name"),
         (json!({"branch": "oby/review 33"}), "isn't a branch name"),
+        // PUBLISHING-13: they'd read as another ref in a review's diff
+        (json!({"branch": "origin/dev"}), "isn't a branch name"),
+        (json!({"branch": "refs/heads/main"}), "isn't a branch name"),
+        (json!({"branch": "heads/main"}), "isn't a branch name"),
+        (
+            json!({"branch": "remotes/origin/dev"}),
+            "isn't a branch name",
+        ),
+        (json!({"branch": "tags/v1"}), "isn't a branch name"),
+        (json!({"branch": "HEAD"}), "isn't a branch name"),
         (json!({"rounds": 11}), "rounds is 1 to 10"),
         (json!({"check": "a\nb"}), "check is one line"),
         (json!({"mode": "yolo"}), "mode is ask"),

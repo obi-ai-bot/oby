@@ -110,9 +110,11 @@ case "$*" in
     if [ -f "$dir/protection-sso" ]; then echo '{{"message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.", "status": "403"}}'; echo 'gh: Resource protected by organization SAML enforcement. (HTTP 403)' >&2; exit 1; fi
     echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
-  "api repos/{REPO}/pulls/7") cat "$dir/pull.json" ;;
+  "api repos/{REPO}/pulls/7")
+    if [ -f "$dir/named" ]; then sed 's#oby/fix-7#codex/7-x#' "$dir/pull.json"; else cat "$dir/pull.json"; fi ;;
   "api -X PUT repos/{REPO}/pulls/7/merge "*) touch "$dir/merged"; echo '{{"merged": true}}' ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/oby/fix-7") touch "$dir/deleted"; exit 0 ;;
+  "api -X DELETE repos/{REPO}/git/refs/heads/codex/7-x") touch "$dir/deleted-named"; exit 0 ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
 esac
 "#,
@@ -288,6 +290,38 @@ fn merge_cards(obid: &Obid) -> Vec<Value> {
 
 const OBIS: &str =
     r#"{"base":"dev","method":"squash","rebaseFirst":false,"review":"reviewer","checks":"github"}"#;
+
+/// PUBLISHING-13: a new branch the owner named is the job's own: it merges by itself, as an `oby/`
+/// one does, and is deleted after.
+#[test]
+fn publishing_13_a_branch_obid_made_merges_by_itself_and_is_deleted() {
+    let folder = Folder::new("merge-made-branch");
+    let mut made = published();
+    made.branch = "codex/7-x".into();
+    made.made_branch = true;
+    made.outgoing = vec![obid::publish::Outgoing::new(
+        "push",
+        REPO,
+        &head(),
+        Some("codex/7-x"),
+    )];
+    let obid = started_with(&folder, true, Some(OBIS), made, &["named"]);
+    let merged = within(30, "the job to be merged", || {
+        let job = job(&obid);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    let actions: Vec<&str> = merged["outgoing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|o| o["action"].as_str())
+        .collect();
+    assert_eq!(
+        actions,
+        ["push", "pullRequestApproval", "merge", "branchDelete"]
+    );
+    assert!(folder.0.join("gh/deleted-named").exists());
+}
 
 /// With a workflow the owner taught Oby, an approved job's pull request merges by itself: the
 /// reviewer account approves the head Oby's review approved, then it squash-merges into dev, says
