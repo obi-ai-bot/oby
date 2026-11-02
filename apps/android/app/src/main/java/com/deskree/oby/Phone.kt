@@ -13,11 +13,13 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job as Work
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 
 /**
@@ -752,12 +754,15 @@ class Phone(val context: Context) {
      */
     suspend fun answer(offer: OfferCard, option: String) {
         // Each job is answered, whatever happened to the one before; the first problem is said.
-        var problem: Exception? = null
-        for (item in offer.items) try {
-            if (option == OfferCard.LATER) settle(item.id, later = Instant.now().plusSeconds(3600))
-            else settle(item.id, answer = if (option == OfferCard.DISPATCH) "Start" else "Cancel")
-        } catch (e: CancellationException) { throw e } catch (e: Exception) { problem = problem ?: e }
-        problem?.let { throw it }
+        // The owner's one answer goes to all of them, even if the card leaves the screen meanwhile.
+        withContext(NonCancellable) {
+            var problem: Exception? = null
+            for (item in offer.items) try {
+                if (option == OfferCard.LATER) settle(item.id, later = Instant.now().plusSeconds(3600))
+                else settle(item.id, answer = if (option == OfferCard.DISPATCH) "Start" else "Cancel")
+            } catch (e: Exception) { problem = problem ?: e }
+            problem?.let { throw it }
+        }
     }
 
     fun showing(id: String, shown: Boolean) { if (shown) onScreen.add(id) else onScreen.remove(id) }

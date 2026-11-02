@@ -378,9 +378,20 @@ fun InboxPage() {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Tokens.gutter).padding(top = 8.dp, bottom = 32.dp),
                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 T("Inbox", 28.sp, c.ink, FontWeight.SemiBold, Modifier.padding(bottom = 8.dp).semantics { heading() })
-                for (item in items) Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    T(item.line(now), Tokens.textSm, c.muted, lines = 1)
-                    InboxDecision(item, openTask = true)
+                // Work Oby offers is the same card as in its conversation: one per offer, Dispatch, Skip and
+                // Later, and what Oby read before it planned it.
+                val offers = OfferCard.all(items, now)
+                val placed = mutableSetOf<String>()
+                for (item in items) {
+                    val offer = item.offerValue?.id?.let { id -> offers.firstOrNull { it.id == id } }
+                    if (offer != null && !placed.add(offer.id)) continue
+                    // Keyed: a card's state (its answer under way, words half typed) stays its own as others go.
+                    androidx.compose.runtime.key(offer?.id ?: item.id) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            T((if (offer != null) item.copy(title = offer.title) else item).line(now), Tokens.textSm, c.muted, lines = 1)
+                            if (offer != null) OfferBlock(offer, opensConversation = true) else InboxDecision(item, openTask = true)
+                        }
+                    }
                 }
                 if (items.isEmpty()) T("Nothing needs you", Tokens.textBase, c.muted)
             }

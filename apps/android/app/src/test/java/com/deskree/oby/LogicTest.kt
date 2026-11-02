@@ -208,6 +208,8 @@ class LogicTest {
         assertEquals("2 jobs", cards[0].title)
         assertTrue(cards[0].untrusted)
         assertEquals(listOf("Do a", "Do b"), cards[0].jobs.map { it.task })
+        // Outside a conversation (the Inbox), each conversation's offer is its own card.
+        assertEquals(listOf("t1", "t2"), OfferCard.all(listOf(item("a", "t1"), item("c", "t2", "c2")), now).map { it.id })
         val turns = listOf(Turn(id = "t1", who = Who.user, text = "x"), Turn(id = "o1", who = Who.oby, text = "y"), Turn(id = "o2", who = Who.oby, text = "z"))
         assertEquals(mapOf("o1" to "t1"), OfferCard.under(turns))
         // A task's report between the words and Oby's answer isn't where the card goes.

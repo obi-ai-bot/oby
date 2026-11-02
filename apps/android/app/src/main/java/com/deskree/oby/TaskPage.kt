@@ -120,7 +120,7 @@ fun TaskCard(item: WorkItem) {
                     val decision = phone.decision(job)
                     val next = job.nextStepOffered
                     when {
-                        decision != null -> InboxDecision(decision, inset = false)
+                        decision != null -> androidx.compose.runtime.key(decision.id) { InboxDecision(decision, inset = false) }
                         (job.permissionValue != null && job.isActive) || job.waitsForAnswer -> JobDecision(job, inset = false)
                         next != null -> AskCard(job.needsYouKind, job.line, CardOption.of(listOf(next), 0), happened = job.resumesLine, busy = busy, onChoose = {
                             busy = true
@@ -257,7 +257,7 @@ fun TaskPage(id: String) {
                         JobPageBody(job, phone.decision(job), phone.accounts.firstOrNull { it.id == job.account }?.usage,
                             onSession = { session = true }, onDismiss = { run { phone.dismiss(job.id) } },
                             onAnotherRound = { run { phone.tell(job.id, Job.TRY_AGAIN) } },
-                            decision = { phone.decision(job)?.let { InboxDecision(it) } ?: JobDecision(job) },
+                            decision = { phone.decision(job)?.let { androidx.compose.runtime.key(it.id) { InboxDecision(it) } } ?: JobDecision(job) },
                             result = {
                                 TaskResult(job, action, busy, problem, onPublish = { run { action = phone.publishAction(job.id) } },
                                            onConfirm = { sentence -> run { publish(job, sentence) } }, onNotNow = { action = null; problem = null },

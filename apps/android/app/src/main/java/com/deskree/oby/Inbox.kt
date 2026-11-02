@@ -106,7 +106,7 @@ fun InboxDecision(item: InboxItem, openTask: Boolean = false, inset: Boolean = t
  * under the answer as its tasks.
  */
 @Composable
-fun OfferBlock(offer: OfferCard) {
+fun OfferBlock(offer: OfferCard, opensConversation: Boolean = false) {
     val phone = LocalPhone.current
     val c = Tokens.c
     val scope = rememberCoroutineScope()
@@ -135,6 +135,10 @@ fun OfferBlock(offer: OfferCard) {
             PillButton(OfferCard.LATER, quiet = true, enabled = !busy && !waits) { pick(OfferCard.LATER) }
         }
         if (waits) T(ReachNotice.WAITING, Tokens.textSm, c.muted, modifier = Modifier.padding(top = 10.dp))
+        // Outside its conversation, the way to it is one tap away, as on Electron's stack.
+        if (opensConversation) offer.items.firstNotNullOfOrNull { it.conversation }?.let { id ->
+            T("Open conversation", Tokens.textSm, c.muted, modifier = Modifier.padding(top = 10.dp).clickable { phone.push(Route.Conversation(id)) })
+        }
         problem?.let { T(it, Tokens.textSm, c.danger, modifier = Modifier.padding(top = 8.dp)) }
     }
 }
