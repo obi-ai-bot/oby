@@ -471,11 +471,6 @@ fn checks_run_one_at_a_time() {
     );
 }
 
-/// A build job: its own branch from the base, the agent commits in the sandbox, the check passes,
-/// the job ends done with its commit counted, and publishes it: its branch pushed to the remote and
-/// its pull request opened with the owner's `gh` (a stand-in here), which gets no token from
-/// obid's environment. The base on the remote never moves: obid never merges. (A job whose scan
-/// finds a possible secret, or can't run, publishes nothing: tests/publish_api.rs.)
 /// #1789: a repository's check that looks at processes passes in the real box, on macOS too,
 /// where the system's own `ps` is setuid and refused.
 #[test]
@@ -495,6 +490,11 @@ fn a_check_runs_ps_in_the_box() {
     assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
 }
 
+/// A build job: its own branch from the base, the agent commits in the sandbox, the check passes,
+/// the job ends done with its commit counted, and publishes it: its branch pushed to the remote and
+/// its pull request opened with the owner's `gh` (a stand-in here), which gets no token from
+/// obid's environment. The base on the remote never moves: obid never merges. (A job whose scan
+/// finds a possible secret, or can't run, publishes nothing: tests/publish_api.rs.)
 #[test]
 fn a_build_job_commits_and_ends_done() {
     let folder = Folder::new("build");

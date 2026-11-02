@@ -985,7 +985,7 @@ fn write_resolver(folder: &Path, uid: u32) -> Result<PathBuf, String> {
 }
 
 /// Whether `path` is a folder (not a link to one) of `uid`'s that nobody else can open.
-fn private_folder(path: &Path, uid: u32) -> bool {
+pub(crate) fn private_folder(path: &Path, uid: u32) -> bool {
     use std::os::unix::fs::MetadataExt;
     std::fs::symlink_metadata(path)
         .is_ok_and(|m| m.is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)

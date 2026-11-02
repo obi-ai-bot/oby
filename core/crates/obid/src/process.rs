@@ -84,15 +84,27 @@ fn with_own_ps(path: &OsStr) -> OsString {
 
 /// The folder of [`with_own_ps`]'s copy, in the person's own temporary folder: no box writes
 /// there and every box reads it, so no job can swap it, and nothing is written in a job's folders.
-/// macOS clears unused files there after some days: it's made again when it's gone.
+/// Only a private folder of theirs on an absolute path is first on anyone's `PATH` (a `TMPDIR` of
+/// `/tmp`, where another person could have made it first, or an empty one, gets none). macOS clears
+/// unused files there after some days: it's made again when it's gone.
 fn own_ps_folder() -> Option<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    let dir = std::env::temp_dir().join(format!("oby-tools-{}", nix::unistd::getuid()));
+    // One at a time: two threads' copies under one name would rename a half-signed one into place.
+    static MAKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let uid = nix::unistd::getuid();
+    let dir = std::env::temp_dir().join(format!("oby-tools-{uid}"));
+    if !dir.is_absolute() {
+        return None;
+    }
+    let _making = MAKING.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    if !crate::sandbox::private_folder(&dir, uid.as_raw()) {
+        return None;
+    }
     let ps = dir.join("ps");
     if ps.is_file() {
         return Some(dir);
     }
-    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
     let making = dir.join(format!("ps.{}", std::process::id()));
     std::fs::copy("/bin/ps", &making).ok()?;
     std::fs::set_permissions(&making, std::fs::Permissions::from_mode(0o755)).ok()?;
@@ -583,6 +595,13 @@ mod claude_tmpdir_tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_box_runs_ps() {
+        // Inside a sandbox already (a job's own check of this repository), none can be applied.
+        let boxed = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+            .status();
+        if !boxed.is_ok_and(|s| s.success()) {
+            return;
+        }
         let env = sandbox_env(OsStr::new("/usr/bin:/bin"), Path::new("/tmp/job-temp"), &[]);
         let ran = |path: Option<&OsString>| {
             let mut command = std::process::Command::new("/usr/bin/sandbox-exec");
