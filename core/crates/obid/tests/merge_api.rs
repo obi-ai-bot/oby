@@ -808,6 +808,57 @@ fn merging_26_a_review_stopped_at_its_limit_leaves_the_card() {
     assert_eq!(job(&obid)["reviewing"], "r7c6b5a4", "{}", job(&obid));
 }
 
+/// MERGING-27: the owner's own word merges while Oby's review is at work, with no card naming the
+/// hold: here their click on the Confirm their words made. Oby holds back by itself, never against
+/// them.
+#[test]
+fn merging_27_the_owners_word_merges_while_obys_review_is_at_work() {
+    let folder = Folder::new("word-over-review");
+    let mut review = obid::job::Job::new(
+        "r7c6b5a4".into(),
+        REPO.into(),
+        "review".into(),
+        "Fix the thing".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    review.status = obid::job::Status::Running;
+    review.review_of = Some(ID.into());
+    review.step = "Waiting for your OK".into();
+    let command = json!({"command": "git diff origin/dev...HEAD"});
+    review.permission = Some(
+        serde_json::from_value(json!({"id": "p1a2b3c", "tool": "Bash",
+            "title": "Run git diff origin/dev...HEAD", "detail": "git diff origin/dev...HEAD",
+            "rule": null, "always": null}))
+        .unwrap(),
+    );
+    review.parked =
+        Some(serde_json::from_value(json!({"tool": "Bash", "input": command})).unwrap());
+    let mut author = published();
+    author.review = None;
+    author.reviewing = Some(review.id.clone());
+    let inbox = folder.0.join("home/inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let item = json!({"id": "c1a2b3c4-confirm", "kind": "confirm", "job": "",
+        "title": "Merge fixture-app #7", "text": "Merge fixture-app #7 into dev?",
+        "options": ["Confirm", "Cancel"], "details": null, "recommended": null, "created": 1,
+        "done": null, "later": null, "answer": null, "obi": null,
+        "confirm": {"action": "merge_pr", "target": format!("{REPO}#7"),
+            "payload": {"merge": {"repo": REPO, "pr": 7}, "base": "dev", "head": head(),
+                "conversation": ""}}});
+    std::fs::write(inbox.join("c1a2b3c4-confirm.json"), item.to_string()).unwrap();
+    let obid = started_with_jobs(&folder, true, None, &[author, review], &[]);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    let answer = confirm(&obid, "c1a2b3c4-confirm");
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    // A Confirm's work runs on its own: the answer only says it was confirmed.
+    within(30, "the merge", || {
+        job(&obid)["mergedBy"]["by"].as_str().map(str::to_owned)
+    });
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+    assert_eq!(job(&obid)["mergedBy"]["by"], "owner", "{}", job(&obid));
+}
+
 /// TASKS-13: an Oby review parked on the owner's OK (its agent waited 10 minutes for a permission,
 /// so obid ended it) is still running, so its card stayed on Home after the pull request it
 /// reviewed closed (the drive of 2026-10-31). While that pull request is open the review and its

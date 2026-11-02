@@ -164,6 +164,17 @@ pub async fn merge(
     merged
 }
 
+/// What Oby says of a task's pull request it merged on the owner's word: what was still open is
+/// said, since it's no reason to refuse (MERGING-27).
+fn merged_line(name: &str, title: &str, reviewing: bool) -> String {
+    let open = if reviewing {
+        " Oby's review of it hadn't finished."
+    } else {
+        ""
+    };
+    format!("Merged {name}, {title}'s pull request.{open}")
+}
+
 async fn merge_at(
     jobs: &Arc<Jobs>,
     home: &Path,
@@ -178,17 +189,15 @@ async fn merge_at(
                 "{name} is the pull request of a review another Oby asked for: it isn't yours to merge from here."
             ));
         }
-        // As an answer no app of the owner's signed on a card: the holds of before 2026-10-31,
-        // never one only their signed answer to a card naming it lifts (MERGING-20).
+        // Their own word lifts every hold of Oby's: what's still open is said, never a refusal
+        // (MERGING-27). Only GitHub's own rules can stop it.
+        let reviewing = job.reviewing.is_some();
         return match jobs
-            .merge_by_owner(&job.id, head, false, crate::merge::Lift::Before)
+            .merge_by_owner(&job.id, head, false, crate::merge::Lift::Word)
             .await?
         {
             Some(note) => Ok(note),
-            None => Ok(format!(
-                "Merged {name}, {}'s pull request.",
-                job.short_title()
-            )),
+            None => Ok(merged_line(&name, &job.short_title(), reviewing)),
         };
     }
     let gh = github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
@@ -554,6 +563,18 @@ impl Now {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn merging_27_oby_says_what_was_still_open() {
+        assert_eq!(
+            super::merged_line("o/r#3", "Fix it", true),
+            "Merged o/r#3, Fix it's pull request. Oby's review of it hadn't finished."
+        );
+        assert_eq!(
+            super::merged_line("o/r#3", "Fix it", false),
+            "Merged o/r#3, Fix it's pull request."
+        );
+    }
+
     use super::*;
 
     fn write(action: &str, number: Option<u64>, body: Option<&str>) -> Write {

@@ -12066,7 +12066,7 @@ impl Jobs {
         remember: bool,
         lift: crate::merge::Lift<'_>,
     ) -> Result<Option<String>, String> {
-        let signed = matches!(lift, crate::merge::Lift::Named(_));
+        let signed = !matches!(lift, crate::merge::Lift::Before);
         let job = self.get(id).ok_or("There's no such job.")?;
         // A follow-up that pushed to its pull request since carries it, its push Oby's own: the
         // merge goes on that job's record (MERGING-23).
