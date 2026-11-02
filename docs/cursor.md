@@ -14,6 +14,7 @@ What a Cursor job does in the launch build, on obid:
 - It shows no usage meter: Cursor reports no usage, so routing gives it work last
   (docs/runner-api.md, "Routing").
 - It doesn't review: Oby's review of a finished job never runs on Cursor.
+- A conversation can talk on it too, under stricter rules, since none of this gates its reads or edits (docs/contracts/conversation-agent.md).
 - Its questions reach the owner and wait for the answer (#1456), its Plan mode waits for the
   owner's OK (#1452), and a repository's hooks ask before Cursor starts (#1454, "A repository's
   hooks", below).

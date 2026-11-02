@@ -45,6 +45,9 @@ pub struct Options {
     /// The MCP servers `session/new` (or `session/load`) gives it, when it takes HTTP ones: Oby's
     /// Tetrix server only (crate::tetrix).
     pub mcp: Vec<Value>,
+    /// What a loaded session replays isn't reported: a conversation's agent, whose words stream
+    /// to the owner, who has them already.
+    pub quiet_load: bool,
 }
 
 /// Runs one turn: starts the agent, sends `prompt`, answers its requests with `decide`, reports with
@@ -77,6 +80,7 @@ pub async fn run_turn(
         plan_approved: false,
         owners_words: None,
         tokens: crate::usage::Tokens::default(),
+        loading: false,
     };
     let mut turn = Turn::default();
     let ended = match run.turn(prompt).await {
@@ -558,6 +562,8 @@ struct Run<D, E> {
     owners_words: Option<String>,
     /// What this turn's prompts used, when the agent reports it (crate::usage::acp_tokens).
     tokens: crate::usage::Tokens,
+    /// `session/load` is under way, and what it replays goes unreported ([`Options::quiet_load`]).
+    loading: bool,
 }
 
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
@@ -621,7 +627,10 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             }
             _ => ("session/new", json!({"cwd": cwd, "mcpServers": servers})),
         };
-        let answer = match self.call(method, params).await? {
+        self.loading = self.options.quiet_load && method == "session/load";
+        let answer = self.call(method, params).await?;
+        self.loading = false;
+        let answer = match answer {
             Ok(answer) => answer,
             Err(e) if is_auth(&e) => return Err(Stop::Failed(self.signed_out())),
             Err(e) => {
@@ -792,6 +801,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         }
         let params = &message["params"];
         match message["method"].as_str() {
+            Some("session/update") if self.loading => {}
             Some("session/update") => {
                 let update = &params["update"];
                 if update["sessionUpdate"] != "agent_thought_chunk" {

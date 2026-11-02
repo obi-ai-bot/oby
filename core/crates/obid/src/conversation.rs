@@ -104,6 +104,25 @@ struct Thread {
     /// they go when it does ([`Conversations::delete`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     uploads: Vec<String>,
+    /// The account this conversation talks through, as the owner chose it here: an account's id or
+    /// `auto`; none follows the setting (docs/contracts/conversation-agent.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    talk_account: Option<String>,
+    /// The account its last answer came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    talked_on: Option<String>,
+}
+
+/// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
+/// job's is, since Cursor's sockets go in that folder and a socket's path has room for
+/// [`crate::acp::cursor::SOCKET_ROOM`] characters of it.
+pub(crate) fn cursor_folder(home: &Path, id: &str) -> PathBuf {
+    let short: String = id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(12)
+        .collect();
+    home.join("logins").join(format!("talk-{short}"))
 }
 
 /// A conversation kept before obid marked what each one read: its turns' words may be anyone's.
@@ -222,6 +241,8 @@ impl Thread {
             "cursor": self.key().to_string(),
             "tasks": self.tasks,
             "folders": self.folders,
+            "talkAccount": self.talk_account,
+            "talkedOn": self.talked_on,
         })
     }
 }
@@ -469,6 +490,8 @@ impl Conversations {
                     foreign: kept_before_marks(),
                     folders: vec![],
                     uploads: vec![],
+                    talk_account: None,
+                    talked_on: None,
                 };
                 // The conversation's name in its folder must be on disk before the old file goes.
                 if let Err(e) = self.write(&thread).and_then(|()| sync_dir(&self.dir)) {
@@ -587,6 +610,8 @@ impl Conversations {
                 foreign: None,
                 folders: vec![],
                 uploads: vec![],
+                talk_account: None,
+                talked_on: None,
             });
             threads.len() - 1
         });
@@ -741,6 +766,8 @@ impl Conversations {
             foreign: None,
             folders: vec![],
             uploads: vec![],
+            talk_account: None,
+            talked_on: None,
         };
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", thread.summary());
@@ -1093,6 +1120,7 @@ impl Conversations {
         title: Option<String>,
         pinned: Option<bool>,
         folders: Option<FolderChange>,
+        talk_account: Option<Option<String>>,
     ) -> Result<Value, Error> {
         let mut threads = self.lock();
         let thread = threads
@@ -1109,6 +1137,9 @@ impl Conversations {
         }
         if let Some(folders) = folders {
             thread.folders = folders;
+        }
+        if let Some(talk_account) = talk_account {
+            thread.talk_account = talk_account;
         }
         if let Err(e) = self.write(thread) {
             *thread = kept;
@@ -1211,9 +1242,36 @@ impl Conversations {
         let gone = threads.remove(index);
         // Its agent session's room, checkouts and login go with it (crate::brain::harness).
         let _ = std::fs::remove_dir_all(self.dir.join(&id));
+        if let Some(home) = self.dir.parent() {
+            let _ = std::fs::remove_dir_all(cursor_folder(home, &id));
+        }
         self.events
             .send("conversation", json!({"id": id, "deleted": true}));
         Ok(gone.uploads)
+    }
+
+    /// The account the owner chose for conversation `id`, or `auto`; none: it follows the setting.
+    pub fn talk_account(&self, id: &str) -> Option<String> {
+        self.lock()
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.talk_account.clone())
+    }
+
+    /// Conversation `id`'s answer came from `account`: kept, and told when that's a change.
+    pub fn talked_on(&self, id: &str, account: &str) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if thread.talked_on.as_deref() == Some(account) {
+            return;
+        }
+        thread.talked_on = Some(account.to_owned());
+        if let Err(e) = self.write(thread) {
+            tracing::warn!("conversation {id}: which account it's on wasn't kept: {e}");
+        }
+        self.events.send("conversation", thread.summary());
     }
 
     /// Whether a conversation still holds the file `path` among its words' files.
@@ -1555,10 +1613,19 @@ struct Change {
     title: Option<String>,
     pinned: Option<bool>,
     folders: Option<Vec<String>>,
+    /// An account's id, `auto`, or null to follow the setting again.
+    #[serde(default, rename = "talkAccount", deserialize_with = "present")]
+    talk_account: Option<Option<String>>,
 }
 
-/// `PATCH /v1/conversations/{id}`: a new title, pinned or not, or the folders it works in from now
-/// on (an empty list clears them). Through the gateway or the phone relay, `folders` may only leave
+/// A key that's there, null too, as `Some`.
+fn present<'de, D: serde::Deserializer<'de>>(to: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(to).map(Some)
+}
+
+/// `PATCH /v1/conversations/{id}`: a new title, pinned or not, the account it talks through from its
+/// next turn (`talkAccount`: an id, `auto`, or null to follow the setting), or the folders it works
+/// in from now on (an empty list clears them). Through the gateway or the phone relay, `folders` may only leave
 /// out folders the conversation has: only the owner's Mac app adds one (crate::folders).
 pub async fn update(
     State(shared): State<std::sync::Arc<Shared>>,
@@ -1570,14 +1637,21 @@ pub async fn update(
     let change: Change = serde_json::from_slice(&body).map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"]}.",
+            "The body is {\"title\": \"…\", \"pinned\": true or false, \"folders\": [\"/path\"], \"talkAccount\": an account's id, \"auto\" or null}.",
         )
     })?;
-    if change.title.is_none() && change.pinned.is_none() && change.folders.is_none() {
+    if change.title.is_none()
+        && change.pinned.is_none()
+        && change.folders.is_none()
+        && change.talk_account.is_none()
+    {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "Send a title, pinned, folders, or more than one.",
+            "Send a title, pinned, folders, talkAccount, or more than one.",
         ));
+    }
+    if let Some(Some(account)) = &change.talk_account {
+        crate::brain::talk::check(&shared, account)?;
     }
     // Checked here, outside the conversations' lock; merged with those it has under it.
     let remote = paired.is_some() || relayed.is_some();
@@ -1608,9 +1682,10 @@ pub async fn update(
             "title is one line of 1 to 100 characters.",
         ));
     }
-    let summary = shared
-        .conversations
-        .change(&id, title, change.pinned, folders)?;
+    let summary =
+        shared
+            .conversations
+            .change(&id, title, change.pinned, folders, change.talk_account)?;
     Ok((StatusCode::OK, axum::Json(summary)).into_response())
 }
 

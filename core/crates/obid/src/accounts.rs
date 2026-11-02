@@ -1056,6 +1056,7 @@ pub async fn remove(
     if let Err(e) = crate::settings::update(&shared.config.home, |s| {
         s.tuning.remove(&id);
         s.default_account.take_if(|d| *d == id);
+        s.talk_account.take_if(|d| *d == id);
     }) {
         tracing::warn!("account {id}: its settings stay: {e}");
     }

@@ -427,8 +427,8 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         );
         return true;
     }
-    let tool = shared.config.conversation.agent;
-    let Some(account) = shared.jobs.thinking_accounts(tool).into_iter().next() else {
+    let Some((tool, account)) = super::talk::unattended(shared) else {
+        let tool = shared.config.conversation.agent;
         ask_owner(
             shared,
             job,
@@ -462,7 +462,8 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         turn: "",
         signed: false,
     };
-    let ran = super::harness::supervise(shared, &account, &asked, &control, watch.clone()).await;
+    let ran =
+        super::harness::supervise(shared, tool, &account, &asked, &control, watch.clone()).await;
     shared.turns.end(&control);
     let made = shared.harness.take_made(&turn);
     let decided = watch.decided();

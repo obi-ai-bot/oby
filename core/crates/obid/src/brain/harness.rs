@@ -473,9 +473,7 @@ fn may_wait(shared: &Shared, warm: &Warm) -> bool {
 /// `OBID_PRESTART=off` (obid's tests set it, but in the tests of this) starts none.
 fn prestart(shared: &Arc<Shared>) {
     static STARTING: AtomicBool = AtomicBool::new(false);
-    let config = &shared.config.conversation;
-    if config.agent != Tool::Claude || std::env::var_os("OBID_PRESTART").is_some_and(|v| v == "off")
-    {
+    if std::env::var_os("OBID_PRESTART").is_some_and(|v| v == "off") {
         return;
     }
     let id = shared.conversations.next_id();
@@ -493,12 +491,17 @@ fn prestart(shared: &Arc<Shared>) {
 }
 
 async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
-    let account = shared
-        .jobs
-        .thinking_accounts(Tool::Claude)
+    // Only when its first turn would talk on Claude Code: another agent has none to wait.
+    let chosen = crate::settings::load(&shared.config.home)
+        .talk_account
+        .filter(|id| id != super::talk::AUTO);
+    let account = match super::talk::accounts(shared, chosen.as_deref(), None)
         .into_iter()
         .next()
-        .ok_or("no Claude Code account is signed in with room")?;
+    {
+        Some((Tool::Claude, account)) => account,
+        _ => return Ok(()),
+    };
     let busy = shared.harness.busy(id);
     let _held = busy.lock().await;
     // Taken by a new conversation whose turn ran first, or started already.
@@ -616,7 +619,7 @@ fn claude_flags(shared: &Shared, tetrix: bool) -> Vec<OsString> {
         "--max-turns",
         MAX_TURNS,
         "--model",
-        shared.config.conversation.model.as_str(),
+        shared.config.conversation.model_for(Tool::Claude),
         "--append-system-prompt",
         orientation(shared, tetrix).as_str(),
     ]
@@ -689,22 +692,22 @@ pub async fn run(
     asked: &Asked<'_>,
     control: &Arc<Control>,
 ) -> Answered {
-    // The agent the configuration names: Claude Code, or Codex (super::harness_codex), on the
-    // accounts it thinks with, best first (#874); the one its session is on first while that one
-    // has room, so it keeps its session. Another is tried only when a turn's account filled: at
-    // most three in one turn.
-    let tool = shared.config.conversation.agent;
-    let mut accounts = shared.jobs.thinking_accounts(tool);
+    // The account the owner chose (super::talk), else whichever has room; the one its session is
+    // on first while that one has room, so it keeps its session. Another, of any tool, is tried
+    // only when a turn's account can't run: at most three in one turn.
     let place = Place::of(&shared.config.home, &control.conversation);
-    if let Some(on) = kept_on(&place).filter(|on| shared.jobs.has_room(on))
-        && let Some(at) = accounts.iter().position(|a| a.id == on)
-    {
-        let account = accounts.remove(at);
-        accounts.insert(0, account);
-    }
+    let chosen = super::talk::chosen(shared, &control.conversation);
+    let on = kept_on(&place);
+    let accounts = super::talk::accounts(shared, chosen.as_deref(), on.as_deref());
     let mut full = Vec::new();
-    let mut why = match shared.jobs.signed_in_account(tool) {
-        Some(account) if accounts.is_empty() => format!(
+    let mut failed: Option<String> = None;
+    let tool = shared.config.conversation.agent;
+    let mut why = match chosen
+        .as_deref()
+        .and_then(|id| crate::accounts::find(&shared.config.agents.get(), id))
+    {
+        // Failover off, and the account the owner chose can't run.
+        Some((tool, account)) => format!(
             "{} · {} {}",
             tool.name(),
             account.name,
@@ -713,35 +716,65 @@ pub async fn run(
                 .usage
                 .get(&account.id)
                 .held(obi_protocol::time::now())
-                .unwrap_or_default()
+                .unwrap_or_else(|| "isn't signed in".into())
         ),
-        _ => shared.jobs.none_signed_in(tool),
+        None => match shared.jobs.signed_in_account(tool) {
+            Some(account) if accounts.is_empty() => format!(
+                "{} · {} {}",
+                tool.name(),
+                account.name,
+                shared
+                    .jobs
+                    .usage
+                    .get(&account.id)
+                    .held(obi_protocol::time::now())
+                    .unwrap_or_default()
+            ),
+            _ => shared.jobs.none_signed_in(tool),
+        },
     };
-    // One account only while the owner keeps failover off (`accountFailover`, #871).
-    let most = if shared.jobs.account_failover() { 3 } else { 1 };
-    for account in accounts.iter().take(most) {
-        match session(shared, account, said, given, asked, control, None, None).await {
+    for (tool, account) in &accounts {
+        match session(
+            shared, *tool, account, said, given, asked, control, None, None,
+        )
+        .await
+        {
             Ok(mut answered) => {
-                if !full.is_empty() {
-                    let on = format!("Oby answered on {} · {}", tool.name(), account.name);
-                    answered.talk = said_why(answered.talk, &on, &full.join("; "));
+                shared
+                    .conversations
+                    .talked_on(&control.conversation, &account.id);
+                let left = super::talk::left(
+                    failed.as_deref(),
+                    chosen.as_deref(),
+                    on.as_deref(),
+                    &account.id,
+                );
+                if let Some(line) =
+                    left.and_then(|left| super::talk::moved_line(shared, &left, *tool, account))
+                {
+                    answered.talk = said_why(answered.talk, &line);
                 }
                 return answered;
             }
-            Err(failed) => {
-                why = failed;
-                // Only an account its turn found full is another's to take over.
+            Err(unanswered) => {
+                why = unanswered.why;
+                // An account its turn found full is another's to take over, and so is one that
+                // couldn't run at all; a turn that failed for what it was asked isn't.
                 let now = obi_protocol::time::now();
                 let usage = shared.jobs.usage.get(&account.id);
-                if !control.live() || usage.full_until_at(now).is_none() {
+                let limit = usage.full_until_at(now).is_some();
+                if !control.live() || !(limit || unanswered.moves) {
                     break;
                 }
-                full.push(format!(
-                    "{} · {} {}",
-                    tool.name(),
-                    account.name,
-                    usage.held(now).unwrap_or_default()
-                ));
+                failed.get_or_insert_with(|| account.id.clone());
+                if limit {
+                    full.push(format!(
+                        "{} · {} {}",
+                        tool.name(),
+                        account.name,
+                        usage.held(now).unwrap_or_default()
+                    ));
+                }
             }
         }
     }
@@ -775,6 +808,7 @@ pub async fn run(
 /// `account`. `Err` says why it couldn't run.
 pub(super) async fn supervise(
     shared: &Arc<Shared>,
+    tool: Tool,
     account: &crate::config::Account,
     asked: &Asked<'_>,
     control: &Arc<Control>,
@@ -782,6 +816,7 @@ pub(super) async fn supervise(
 ) -> Result<Answered, String> {
     session(
         shared,
+        tool,
         account,
         asked.said,
         &[],
@@ -791,12 +826,14 @@ pub(super) async fn supervise(
         None,
     )
     .await
+    .map_err(|unanswered| unanswered.why)
 }
 
 /// An event turn (super::orchestrator) in a session of its own, in the orchestrator's place, on
 /// `account`. `Err` says why it couldn't run.
 pub(super) async fn event(
     shared: &Arc<Shared>,
+    tool: Tool,
     account: &crate::config::Account,
     asked: &Asked<'_>,
     control: &Arc<Control>,
@@ -804,6 +841,7 @@ pub(super) async fn event(
 ) -> Result<Answered, String> {
     session(
         shared,
+        tool,
         account,
         asked.said,
         &[],
@@ -813,14 +851,16 @@ pub(super) async fn event(
         Some(watch),
     )
     .await
+    .map_err(|unanswered| unanswered.why)
 }
 
-/// Another account's answer (#874), with the line that says who answered and why:
-/// `(<who>: <why>.)`.
-fn said_why(talk: Talk, who: &str, why: &str) -> Talk {
-    let line = format!("({who}: {}.)", why.trim_end_matches('.'));
+/// Another account's answer (#874), with the line that says it moved.
+fn said_why(talk: Talk, line: &str) -> Talk {
     match talk {
-        Talk::Reply { text, jobs } if text.is_empty() => Talk::Reply { text: line, jobs },
+        Talk::Reply { text, jobs } if text.is_empty() => Talk::Reply {
+            text: line.to_owned(),
+            jobs,
+        },
         Talk::Reply { text, jobs } => Talk::Reply {
             text: format!("{text}\n{line}"),
             jobs,
@@ -830,6 +870,34 @@ fn said_why(talk: Talk, who: &str, why: &str) -> Talk {
             Talk::Question { said, question }
         }
         Talk::None => Talk::None,
+    }
+}
+
+/// Why a turn got no answer from an account, and whether another account may try it: one that
+/// couldn't run at all, never one the turn's own words or a security rule ended.
+pub(super) struct Unanswered {
+    pub(super) why: String,
+    moves: bool,
+}
+
+impl Unanswered {
+    fn moves(why: impl Into<String>) -> Unanswered {
+        Unanswered {
+            why: why.into(),
+            moves: true,
+        }
+    }
+}
+
+impl From<String> for Unanswered {
+    fn from(why: String) -> Unanswered {
+        Unanswered { why, moves: false }
+    }
+}
+
+impl From<&str> for Unanswered {
+    fn from(why: &str) -> Unanswered {
+        why.to_owned().into()
     }
 }
 
@@ -849,6 +917,9 @@ pub(super) struct Place {
     /// or its Codex's `CODEX_HOME` for any account, holding a copy of the account's login, its own
     /// sessions and nothing of the account's.
     pub(super) config: PathBuf,
+    /// Its Cursor's `HOME`, with a copy of the account's login and its sessions: short, for
+    /// Cursor's sockets ([`crate::conversation::cursor_folder`]).
+    pub(super) cursor: PathBuf,
     /// Its session id and account, never shown to it.
     session: PathBuf,
 }
@@ -862,6 +933,7 @@ impl Place {
             temp: folder.join("home"),
             login: folder.join("login"),
             config: folder.join("config"),
+            cursor: crate::conversation::cursor_folder(home, conversation),
             session: folder.join("session.json"),
             room,
             folder,
@@ -888,6 +960,7 @@ impl Place {
             logins: vec![
                 self.login.clone(),
                 self.config.clone(),
+                self.cursor.clone(),
                 self.temp.join(".claude"),
                 self.temp.join(".claude.json"),
             ],
@@ -911,6 +984,7 @@ impl Place {
     fn forget_login(&self) {
         crate::jobs::forget_login_secrets(&self.login);
         crate::jobs::forget_login_secrets(&self.config);
+        crate::jobs::forget_login_secrets(&self.cursor);
     }
 
     /// Before every run: what the agent could have left for the next Claude Code or Codex to load
@@ -927,6 +1001,11 @@ impl Place {
             "AGENTS.override.md",
             ".codex",
             ".agents",
+            // Cursor's project settings, hooks, MCP servers and rules (docs/cursor.md).
+            ".cursor",
+            ".cursorrules",
+            ".cursorignore",
+            ".cursorindexingignore",
         ];
         // Codex's: its `CODEX_HOME` is the conversation's `config`.
         const CODEX: &[&str] = &[
@@ -961,44 +1040,66 @@ impl Place {
         ] {
             remove_in(&dir, CLAUDE);
         }
+        // Cursor's, in its config folder under its HOME (`cli-config.json`, copied again and
+        // rewritten before each start; its login and sessions stay).
+        const CURSOR: &[&str] = &[
+            "cli-config.json",
+            "cli.json",
+            "hooks.json",
+            "mcp.json",
+            "rules",
+            "skills",
+            "commands",
+            "agents",
+            "hooks",
+            "plugins",
+        ];
+        for dir in [
+            self.cursor.clone(),
+            self.cursor.join(".cursor"),
+            self.cursor.join(".config/cursor"),
+        ] {
+            remove_in(&dir, CURSOR);
+        }
         remove_in(&self.config, CODEX);
-        remove_in(&self.temp, &[".agents", ".codex"]);
+        remove_in(&self.temp, &[".agents", ".codex", ".cursor"]);
+        remove_in(&self.cursor, &[".agents", ".codex", ".claude"]);
         // A shell's start-up files in its HOME, which a shell (Codex's snapshot of one, too)
         // sources outside obid's view: zsh's, bash's (every `.bash*`), sh's, csh's and tcsh's,
         // ksh's, mksh's and fish's.
-        remove_in(
-            &self.temp,
-            &[
-                ".zshenv",
-                ".zprofile",
-                ".zshrc",
-                ".zlogin",
-                ".zlogout",
-                ".profile",
-                ".cshrc",
-                ".tcshrc",
-                ".login",
-                ".logout",
-                ".kshrc",
-                ".mkshrc",
-            ],
-        );
-        let bash: Vec<String> = std::fs::read_dir(&self.temp)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| name.starts_with(".bash"))
-            .collect();
-        remove_in(
-            &self.temp,
-            &bash.iter().map(String::as_str).collect::<Vec<_>>(),
-        );
-        // A `.config` that is a link (to fish's config elsewhere) goes; a real one loses fish's.
-        if !std::fs::symlink_metadata(self.temp.join(".config")).is_ok_and(|m| m.is_dir()) {
-            remove_in(&self.temp, &[".config"]);
+        // Cursor's HOME is its own folder.
+        for home in [&self.temp, &self.cursor] {
+            remove_in(
+                home,
+                &[
+                    ".zshenv",
+                    ".zprofile",
+                    ".zshrc",
+                    ".zlogin",
+                    ".zlogout",
+                    ".profile",
+                    ".cshrc",
+                    ".tcshrc",
+                    ".login",
+                    ".logout",
+                    ".kshrc",
+                    ".mkshrc",
+                ],
+            );
+            let bash: Vec<String> = std::fs::read_dir(home)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .filter(|name| name.starts_with(".bash"))
+                .collect();
+            remove_in(home, &bash.iter().map(String::as_str).collect::<Vec<_>>());
+            // A `.config` that is a link (to fish's config elsewhere) goes; a real one loses fish's.
+            if std::fs::symlink_metadata(home.join(".config")).is_ok_and(|m| !m.is_dir()) {
+                remove_in(home, &[".config"]);
+            }
+            remove_in(&home.join(".config"), &["fish"]);
         }
-        remove_in(&self.temp.join(".config"), &["fish"]);
     }
 }
 
@@ -1162,6 +1263,7 @@ impl Stopwatch {
 #[allow(clippy::too_many_arguments)]
 async fn session(
     shared: &Arc<Shared>,
+    tool: Tool,
     account: &crate::config::Account,
     said: &str,
     given: &[Turn],
@@ -1169,7 +1271,7 @@ async fn session(
     control: &Arc<Control>,
     supervising: Option<Arc<super::supervisor::Watch>>,
     event: Option<Arc<super::orchestrator::Watch>>,
-) -> Result<Answered, String> {
+) -> Result<Answered, Unanswered> {
     let watch = Stopwatch::new();
     let place = Place::of(&shared.config.home, &control.conversation);
     place.make()?;
@@ -1180,6 +1282,12 @@ async fn session(
     // Cancelled or stopped while it waited for the one before: nothing more for it.
     if !control.live() {
         return Err("the turn was cancelled before it started".into());
+    }
+    // A session belongs to one agent and one account: on another, the turn starts a new one with
+    // the earlier turns handed over (`first_prompt`), as after a lost session. A Claude Code left
+    // waiting from a turn before goes, with its login copy and token.
+    if tool != Tool::Claude {
+        shared.harness.end_warm(&control.conversation);
     }
     watch.mark("its turn");
     checkouts(shared, &place, &|| control.live()).await;
@@ -1225,8 +1333,16 @@ async fn session(
     if session.unwatched() {
         session.taint();
     }
+    // What Cursor's own tools read, obid can't see (super::harness_cursor).
+    if tool == Tool::Cursor {
+        session.taint();
+        shared.conversations.mark(
+            &control.conversation,
+            super::harness_cursor::MARK.to_owned(),
+        );
+    }
     // Its Claude Code still running from the turn before, on the same session and account.
-    let warm = (shared.config.conversation.agent == Tool::Claude && !unattended)
+    let warm = (tool == Tool::Claude && !unattended)
         .then(|| {
             shared.harness.take_warm(
                 &control.conversation,
@@ -1249,6 +1365,7 @@ async fn session(
     };
     let ran = attempts(
         shared,
+        tool,
         account,
         &place,
         &session,
@@ -1261,6 +1378,18 @@ async fn session(
     )
     .await;
     watch.mark("ended");
+    if tool == Tool::Cursor {
+        shared
+            .jobs
+            .close_door(&super::harness_cursor::door(&control.conversation));
+    }
+    // A turn that started work stays where it is: on another account, it would start it again.
+    let ran = ran.map_err(|mut unanswered| {
+        if session.dispatched.load(Ordering::SeqCst) > 0 {
+            unanswered.moves = false;
+        }
+        unanswered
+    });
     // The owner is talking to Oby: the next new conversation's Claude Code starts meanwhile.
     prestart(shared);
     let state = if ran.is_ok() && control.live() {
@@ -1321,6 +1450,7 @@ async fn session(
 #[allow(clippy::too_many_arguments)]
 async fn attempts(
     shared: &Arc<Shared>,
+    tool: Tool,
     account: &crate::config::Account,
     place: &Place,
     session: &Arc<Session>,
@@ -1330,9 +1460,8 @@ async fn attempts(
     given: &[Turn],
     control: &Arc<Control>,
     watch: &Stopwatch,
-) -> Result<(String, End), String> {
+) -> Result<(String, End), Unanswered> {
     let config = &shared.config.conversation;
-    let tool = config.agent;
     let said = &session.said;
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
@@ -1437,6 +1566,11 @@ async fn attempts(
     };
     let words = crate::vault::for_agent(&with(said.trim().to_owned()))?;
     let first = crate::vault::for_agent(&with(first_prompt(said.trim(), given)))?;
+    let first = if tool == Tool::Cursor {
+        super::harness_cursor::first_prompt(shared, tetrix.is_some(), &first)?
+    } else {
+        first
+    };
     let mut failures = vec![];
     for attempt in 1..=2 {
         let limit = deadline.saturating_duration_since(Instant::now());
@@ -1461,7 +1595,11 @@ async fn attempts(
         // As before a job's run (#651): the Keychain's default login refreshed when it's due and
         // kept fresh while the turn runs; an account with a folder of its own refused near its end.
         if tool == Tool::Claude {
-            shared.jobs.claude_login_ready(Some(account)).await?;
+            shared
+                .jobs
+                .claude_login_ready(Some(account))
+                .await
+                .map_err(Unanswered::moves)?;
         }
         // What the agent planted for the next Claude Code goes before every turn, a waiting one's
         // too (it loads nothing again, but the rule is the turn's).
@@ -1487,10 +1625,10 @@ async fn attempts(
             }
             None => None,
         };
-        let (run, codex) = match warm {
+        let (run, protocol) = match warm {
             Some(warm) => {
                 watch.mark("its Claude Code was running");
-                (Run::Warm(Box::new(warm.conn)), None)
+                (Run::Warm(Box::new(warm.conn)), Protocol::Claude)
             }
             None => match tool {
                 Tool::Codex => {
@@ -1504,35 +1642,49 @@ async fn attempts(
                         &resume,
                         !session.unwatched(),
                     )
-                    .await?;
-                    (Run::Cold(launch), codex)
+                    .await
+                    .map_err(Unanswered::moves)?;
+                    (
+                        Run::Cold(launch),
+                        codex.map_or(Protocol::Claude, Protocol::Codex),
+                    )
                 }
-                _ => {
-                    let launch = shared.jobs.conversation_launch(
-                        Tool::Claude,
+                Tool::Cursor => {
+                    let (launch, options) = super::harness_cursor::launch(
+                        shared,
                         account,
-                        &place.room,
-                        &place.temp,
-                        place.login_for(account),
-                        vec![place.repos.clone()],
-                        flags,
-                        place.folder.join("agent.log"),
-                    )?;
-                    (Run::Cold(launch), None)
+                        place,
+                        &control.conversation,
+                        &url,
+                        tetrix.as_deref(),
+                        token,
+                        &resume,
+                    )
+                    .map_err(Unanswered::moves)?;
+                    (Run::Cold(launch), Protocol::Cursor(options))
+                }
+                Tool::Claude => {
+                    let launch = shared
+                        .jobs
+                        .conversation_launch(
+                            Tool::Claude,
+                            account,
+                            &place.room,
+                            &place.temp,
+                            place.login_for(account),
+                            vec![place.repos.clone()],
+                            flags,
+                            place.folder.join("agent.log"),
+                        )
+                        .map_err(Unanswered::moves)?;
+                    (Run::Cold(launch), Protocol::Claude)
                 }
             },
         };
         watch.mark("starting");
         let began = Instant::now();
         let turn = one(
-            shared,
-            place,
-            session,
-            run,
-            &prompt,
-            limit,
-            codex.as_ref(),
-            watch,
+            shared, place, session, run, &prompt, limit, &protocol, watch,
         )
         .await;
         let turn = match turn {
@@ -1549,7 +1701,7 @@ async fn attempts(
         // What the run spent, as its CLI reported it (super::calls).
         let mut call = super::calls::Call::read(
             tool.id(),
-            Some(config.model.as_str()),
+            Some(config.model_for(tool)).filter(|model| !model.is_empty()),
             turn.result.as_ref(),
             began,
         )
@@ -1584,7 +1736,7 @@ async fn attempts(
                 &session.kept,
                 &serde_json::to_vec(&kept).unwrap_or_default(),
             );
-            return Err(why);
+            return Err(why.into());
         }
         if let Some(id) = &turn.session {
             let kept = Kept {
@@ -1653,7 +1805,10 @@ async fn attempts(
             let now = obi_protocol::time::now();
             let reset = turn.resets.or_else(|| crate::limits::reset_in(&why, now));
             shared.jobs.mark_full(&account.id, reset, now);
-            return Err(format!("{} hit its usage limit ({why})", account.name));
+            return Err(Unanswered::moves(format!(
+                "{} hit its usage limit ({why})",
+                account.name
+            )));
         }
         failures.push(format!("attempt {attempt}: {} ({why})", turn.exit));
         // A session that can't be picked up (another account's, or gone): a new one. A waiting
@@ -1667,7 +1822,7 @@ async fn attempts(
         control.conversation,
         crate::secrets::known().redact(&failures.join("; "))
     );
-    Err(FAILED_TWICE.into())
+    Err(Unanswered::moves(FAILED_TWICE))
 }
 
 /// Copies the turn's attachments (already checked to be in obid's attachments folder) into the
@@ -1887,8 +2042,8 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
     orientation
 }
 
-/// One run of the agent for the turn (Codex's `app-server` with `codex`'s options, else Claude
-/// Code), for at most `limit`, its events sent as they come. The turn, and the words it streamed.
+/// One run of the agent for the turn, by its `protocol`, for at most `limit`, its events sent as
+/// they come. The turn, and the words it streamed.
 #[allow(clippy::too_many_arguments)]
 async fn one(
     shared: &Arc<Shared>,
@@ -1897,7 +2052,7 @@ async fn one(
     run: Run,
     prompt: &str,
     limit: Duration,
-    codex: Option<&crate::codex::Options>,
+    protocol: &Protocol,
     watch: &Stopwatch,
 ) -> std::io::Result<(
     agent::Turn,
@@ -2024,13 +2179,18 @@ async fn one(
             session.taint()
         }))
     };
-    let ran = match (run, codex) {
-        (Run::Cold(launch), Some(options)) => {
+    let ran = match (run, protocol) {
+        (Run::Cold(launch), Protocol::Codex(options)) => {
             crate::codex::run_turn(launch, prompt, options, limit, stop, decide, on_event)
                 .await
                 .map(|turn| (turn, None))
         }
-        (Run::Cold(launch), None) => {
+        (Run::Cold(launch), Protocol::Cursor(options)) => {
+            crate::acp::run_turn(launch, prompt, options, limit, stop, decide, on_event)
+                .await
+                .map(|turn| (turn, None))
+        }
+        (Run::Cold(launch), Protocol::Claude) => {
             match crate::conn::Conn::spawn(&launch, limit, stop, false).await {
                 Ok(conn) => Ok(agent::turn_on(conn, prompt, decide, on_event, true).await),
                 Err(e) => Err(e),
@@ -2044,6 +2204,14 @@ async fn one(
     watching.abort();
     delta(streamed.finish(&secrets));
     ran.map(|(turn, running)| (turn, streamed.raw, running, tokens))
+}
+
+/// How a run of a conversation's agent is spoken to: Claude Code's stream-json, Codex's app-server
+/// or Cursor's ACP, with what its thread or session starts with.
+enum Protocol {
+    Claude,
+    Codex(crate::codex::Options),
+    Cursor(crate::acp::Options),
 }
 
 /// What a turn's attempt runs on: an agent it starts, or its conversation's waiting Claude Code.
@@ -3481,18 +3649,12 @@ mod tests {
 
     #[test]
     fn another_account_says_why_it_answered() {
-        let full = "Claude Code · Deskree 100%";
+        let line = "Personal hit its limit, so I moved to Codex · Personal.";
         assert_eq!(
-            said_why(
-                Talk::reply("Fine."),
-                "Oby answered on Claude Code · Personal",
-                full
-            ),
-            Talk::reply(format!(
-                "Fine.\n(Oby answered on Claude Code · Personal: {full}.)"
-            ))
+            said_why(Talk::reply("Fine."), line),
+            Talk::reply(format!("Fine.\n{line}"))
         );
-        assert_eq!(said_why(Talk::None, "Oby answered", full), Talk::None);
+        assert_eq!(said_why(Talk::None, line), Talk::None);
     }
 
     #[test]

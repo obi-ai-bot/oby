@@ -105,10 +105,10 @@ pub(super) async fn launch(
     )?;
     features_off(&launch).await?;
     launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
-    let model = &shared.config.conversation.model;
+    let model = shared.config.conversation.model_for(Tool::Codex);
     let options = crate::codex::Options {
         resume: resume.clone(),
-        model: (!model.is_empty()).then(|| model.clone()),
+        model: (!model.is_empty()).then(|| model.to_owned()),
         effort: None,
         plan: false,
         instructions: Some(orientation(shared, tetrix.is_some())),

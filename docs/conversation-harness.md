@@ -1,6 +1,6 @@
 # Talking to Oby: the conversation harness
 
-The owner's decision (2026-10-17): talking to Oby works like talking to Claude Code, ChatGPT or Codex. A conversation is a real agent session with the agent's own harness (reading and searching code, the web, running things, sub-agents) plus Oby's own tools, and what it makes to be looked at is an artifact the apps show. Sangam's design stays as it is: this is the logic under it. Whichever agent runs the conversation (Claude Code first, then Codex, then anything over ACP), it gets the same Oby tools, so it works the same.
+The owner's decision (2026-10-17): talking to Oby works like talking to Claude Code, ChatGPT or Codex. A conversation is a real agent session with the agent's own harness (reading and searching code, the web, running things, sub-agents) plus Oby's own tools, and what it makes to be looked at is an artifact the apps show. Sangam's design stays as it is: this is the logic under it. Whichever agent runs the conversation (Claude Code, Codex or Cursor over ACP, the owner's choice at runtime: docs/contracts/conversation-agent.md), it gets the same Oby tools, so it works the same.
 
 This replaces obid's plan loop. Conversation turns and event orchestration both use the harness; side calls still use a short, separate model call.
 
@@ -13,7 +13,7 @@ As in Sangam's design (design/app `chats.ts`, `tasks.ts`):
 
 ## 2. A conversation is an agent session
 
-- **One session per conversation.** obid starts the conversation's agent on its first turn and resumes the same session on every later turn (`claude -p --resume <session>` with stream-json in and out, as jobs run Claude Code; Codex: `thread/start`, then `turn/start` on the same thread). A conversation remembers what was said because the agent's session does; obid also keeps every turn (`GET /v1/conversation`), as today.
+- **One session per conversation, on one agent.** obid starts the conversation's agent on its first turn and resumes the same session on every later turn (`claude -p --resume <session>` with stream-json in and out, as jobs run Claude Code; Codex: `thread/start`, then `turn/start` on the same thread; Cursor: `session/new`, then `session/load` and `session/prompt`). On another agent or account a turn starts a new session with the earlier turns handed over, quoted, as after a lost one; what the conversation read stays with it. A conversation remembers what was said because the agent's session does; obid also keeps every turn (`GET /v1/conversation`), as today.
 - **Its room.** `home/conversations/<id>/room/`, the agent's working folder and `HOME`-like temp, in the same sandbox as a job (bubblewrap on Linux, Seatbelt on macOS) with:
   - writes: only its room;
   - reads: its room, and a read-only checkout of each configured repository at its default branch (`home/conversations/<id>/room/repos/<owner>/<name>`, made from obid's clones; refreshed at the start of a turn when the default branch moved);
@@ -23,7 +23,7 @@ As in Sangam's design (design/app `chats.ts`, `tasks.ts`):
 - **Oby's tools** (section 3), from obid's MCP endpoint for the conversation, `POST /v1/agent/mcp/conversation-<id>` with a token of the session's own, like a job's connected-app broker.
 - **Tetrix**, while Oby is signed in to it: obid's Tetrix server, `POST /v1/agent/tetrix/conversation-<id>` with the same token, as every job's agent has it, but the reads only (no `save_session`: a conversation keeps no outgoing list). Each call's arguments pass the secret scan, each answer is scrubbed and quoted as data, and a call makes the turn count as having read something untrusted. Oby's Tetrix login never reaches the session, and a turn nobody watches has no Tetrix. The orientation says to ask Tetrix first (code, ownership, impact, earlier sessions) and `oby_github` for live GitHub state, which Tetrix doesn't track (the owner's rule of 2026-10-27: Tetrix first, GitHub only for what it doesn't have).
 - **The model.** The account's Claude Code default (Sonnet for talking unless the owner picks another in Settings › Models › Conversations); Opus when the owner asks for it in words for that conversation.
-- **When it can't run** (no agent account signed in, the agent fails twice), the turn says why in one line.
+- **When it can't run** (no agent account signed in, the agent fails twice), it moves to another signed-in account of any tool and says so in a line, unless the owner keeps failover off (`accountFailover`); with nothing left, the turn says why in one line.
 
 ## 3. Oby's tools (MCP server `oby`)
 
@@ -84,4 +84,4 @@ Besides `step`, `thinking`, `reply` and `turn` (unchanged):
 1. **Core**: the conversation session (Claude Code), its room and sandbox, `delta` and tool `step` events, Oby's tools for conversations, the fallback. API in docs/runner-api.md, "obid only: the conversation harness".
 2. **Artifacts**: the store, the API and the `artifact` event, `oby_artifact`, jobs' `.obi/artifacts/`, CSP.
 3. **Apps**: streamed words, tool lines, artifact cards and the viewer, on the iPhone and the Mac (web after).
-4. **Codex** (and Cursor over ACP) as the conversation's agent, with the same Oby tools.
+4. **Codex and Cursor over ACP** as the conversation's agent, with the same Oby tools, chosen at runtime (docs/contracts/conversation-agent.md). Cursor's can't be held as the others' are, so it runs under stricter rules there; proven against a stand-in, not yet against a real `cursor-agent`.

@@ -135,12 +135,25 @@ pub const CONVERSATION_MODEL: &str = "claude-sonnet-5-5";
 /// How conversations run (docs/runner-api.md, "obid only: the conversation harness").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conversation {
-    /// The session's agent: Claude Code (the default) or Codex.
+    /// The agent a conversation talks on first when the owner chose none (Auto), and the fallback
+    /// when they chose an account that's gone: Claude Code (the default) or Codex.
     pub agent: crate::agent::Tool,
     /// Its model; empty for Codex's own.
     pub model: String,
     /// One turn's budget: 10 minutes unless `budget` says otherwise. Stop ends it sooner.
     pub budget: std::time::Duration,
+}
+
+impl Conversation {
+    /// The model `tool` talks with: the configured one for the configured agent, else Claude
+    /// Code's default and the others' own (empty).
+    pub fn model_for(&self, tool: crate::agent::Tool) -> &str {
+        match tool {
+            tool if tool == self.agent => &self.model,
+            crate::agent::Tool::Claude => CONVERSATION_MODEL,
+            _ => "",
+        }
+    }
 }
 
 /// `vault` as written.

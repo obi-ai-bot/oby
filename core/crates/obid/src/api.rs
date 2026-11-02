@@ -594,6 +594,10 @@ pub struct Status {
     pub default_agent: String,
     /// The account new tasks go to (#1573), or null for routing's own order.
     pub default_account: Option<String>,
+    /// The account conversations talk through unless one chose another, or null for Auto.
+    pub talk_account: Option<String>,
+    /// The account a new conversation's first turn would talk through now, or null when none can.
+    pub talk_next: Option<String>,
     pub running: u32,
     pub cleared_at: Option<String>,
     pub github: &'static str,
@@ -861,6 +865,8 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
         max_running: shared.jobs.max_running() as u32,
         default_agent: crate::settings::load(&shared.config.home).default_agent,
         default_account: crate::settings::load(&shared.config.home).default_account,
+        talk_account: crate::settings::load(&shared.config.home).talk_account,
+        talk_next: crate::brain::talk::next(&shared),
         running: shared.jobs.running() as u32,
         cleared_at: shared.cleared.at().map(obi_protocol::time::format),
         // obid has no GitHub app: its own GitHub calls, once it makes any, go as the owner.

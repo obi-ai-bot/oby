@@ -100,12 +100,16 @@ fn same_server(state: &State, client: &Client) -> bool {
 /// it sends another member. A review, and a question it answers by itself, run on Claude Code; an
 /// answer the owner confirms may be drafted by the conversation's agent.
 fn vendors(config: &Config) -> Vec<&'static str> {
-    // The conversation's agent is Claude Code or Codex (configuration refuses Cursor there).
-    if config.conversation.agent == crate::agent::Tool::Codex {
-        vec!["anthropic", "openai"]
-    } else {
-        vec!["anthropic"]
+    // A conversation talks on any connected agent (docs/contracts/conversation-agent.md).
+    let agents = config.agents.get();
+    let mut vendors = vec!["anthropic"];
+    if agents.codex.is_some() || config.conversation.agent == crate::agent::Tool::Codex {
+        vendors.push("openai");
     }
+    if agents.cursor.is_some() {
+        vendors.push("cursor");
+    }
+    vendors
 }
 
 /// Whether a card's `version` is an obid's that reads a card with a seal key: 0.2.0 or later.

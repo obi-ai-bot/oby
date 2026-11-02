@@ -1849,6 +1849,31 @@ pub(super) fn own_cursor_login(home: &Path) -> Option<Vec<u8>> {
     cursor_keychain_login()
 }
 
+/// Cursor's own login (`~/.cursor`, an account with no `configDir`) copied into `login`, a job's or
+/// a conversation's: refused, saying why, when macOS didn't give its Keychain item or it has ended.
+pub(super) fn copy_own_cursor(login: &Path) -> Result<(), String> {
+    let home = login_home()
+        .ok_or_else(|| "obid can't find the home Cursor's own login is in.".to_owned())?;
+    let own = own_cursor_login(&home);
+    // A Keychain login macOS didn't give: say why, not that it's signed out (#1679).
+    if own.is_none()
+        && let Some(why) = CURSOR_ITEMS
+            .iter()
+            .find_map(|(_, service)| keychain_unread(Tool::Cursor, service))
+    {
+        return Err(why);
+    }
+    // A copy can't refresh it: only the Mac's own cursor-agent does.
+    if own
+        .as_deref()
+        .is_some_and(|login| !cursor_login_live(login))
+    {
+        return Err(CURSOR_ENDED.into());
+    }
+    copy_cursor(own, &home.join(".cursor/cli-config.json"), &home, login)
+        .map_err(|e| format!("obid can't copy Cursor's login: {e}"))
+}
+
 /// A Cursor job's own folder (`login`, its `HOME`) from the login file's bytes `from` and the
 /// settings `settings` (`cli-config.json`), an account's or Cursor's own (`~/.cursor`, its login
 /// file or Keychain item, [`own_cursor_login`]): the login as only its access token and API key

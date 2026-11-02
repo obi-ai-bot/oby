@@ -18,6 +18,7 @@ pub mod calls;
 pub mod find;
 pub mod harness;
 pub mod harness_codex;
+pub mod harness_cursor;
 pub mod orchestrator;
 pub mod owners_word;
 pub mod plan;
@@ -25,6 +26,7 @@ pub mod read;
 pub mod recap;
 pub mod shell;
 pub mod supervisor;
+pub mod talk;
 pub mod tools;
 pub mod turn;
 

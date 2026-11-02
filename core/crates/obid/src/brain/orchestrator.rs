@@ -886,8 +886,8 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
         ),
         reply: "",
     };
-    let tool = shared.config.conversation.agent;
-    let Some(account) = shared.jobs.thinking_accounts(tool).into_iter().next() else {
+    let Some((tool, account)) = super::talk::unattended(shared) else {
+        let tool = shared.config.conversation.agent;
         watch.leave(shared, &failed(&shared.jobs.none_signed_in(tool)));
         return true;
     };
@@ -901,7 +901,7 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
         turn: "",
         signed: false,
     };
-    let ran = super::harness::event(shared, &account, &asked, &control, watch.clone()).await;
+    let ran = super::harness::event(shared, tool, &account, &asked, &control, watch.clone()).await;
     shared.turns.end(&control);
     let cut = !control.live();
     let reply = match ran {
