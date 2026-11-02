@@ -3229,6 +3229,67 @@ fn merging_19_a_review_finds_the_pushed_head_in_a_clone_made_again() {
     assert!(!asked.contains("UNSIGNED"), "{asked}");
 }
 
+/// PUBLISHING-15: words to a task whose clone is marked start a follow-up whose own start makes that
+/// clone again (a new clone holds only the default branch): it carries on in the old one, with its
+/// task's branch, instead of failing in Prepare.
+#[test]
+fn publishing_15_a_follow_up_finds_its_branch_in_a_clone_made_again() {
+    let folder = Folder::new("publish-follow-up-remade");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let one = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 1})),
+    );
+    assert_eq!(one.status, 200, "{}", one.text);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "SLOW: hello.txt",
+               "check": "test -f hello.txt"}),
+    );
+    within(30, "the task runs", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "running").then_some(())
+    });
+    // Words no app signed mark its clone, which the next job makes again.
+    let path = format!("/v1/jobs/{id}/messages");
+    let told = call(
+        &obid,
+        "POST",
+        &path,
+        Some(&json!({"text": "UNSIGNED words"})),
+    );
+    assert_eq!(told.status, 200, "{}", told.text);
+    let job = reviewed(&obid, &id, 1);
+    // The follow-up's own start makes the marked clone again, so it can't take the branch from the
+    // old one, as a job started after that does.
+    assert!(
+        !obid.log().contains("its clone is made again"),
+        "{}",
+        obid.log()
+    );
+    let told = call_typed(&obid, "POST", &path, &json!({"text": "One more thing"}));
+    assert_eq!(told.status, 201, "{}", told.text);
+    let follow_up = within(60, "its follow-up got past Prepare", || {
+        call(&obid, "GET", "/v1/jobs", None)
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["followUpOf"] == id.as_str() && j["worktree"].is_string())
+            .cloned()
+    });
+    assert_eq!(follow_up["branch"], job["branch"], "{follow_up}");
+    assert_ne!(follow_up["status"], "failed", "{follow_up}");
+    assert!(
+        obid.log().contains("its clone is made again"),
+        "{}",
+        obid.log()
+    );
+}
+
 /// MERGING-18 (#1659): the owner's answer to its agent's question from their inbox (Home, a
 /// notification) is kept as their own words for Oby's review when their app signed it, with the
 /// question; an answer no app signed isn't.
