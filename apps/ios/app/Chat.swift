@@ -232,6 +232,7 @@ struct ConversationPage: View {
             let startedBy = { (job: Job) in ThreadTaskLine.startedBy(turn: job.turn, in: job.conversation, showing: shown) }
             let placed = ThreadTaskLine.shown(in: turns, jobs: phone.jobs, startedBy: startedBy, ended: phone.conversation.endedTurn)
             let decisions = InboxItem.waiting(phone.inbox, now: context.date)
+            let offers = PhoneOffer.placed(PhoneOffer.offers(phone.inbox, in: shown, now: context.date), in: turns, ended: phone.conversation.endedTurn)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -274,10 +275,12 @@ struct ConversationPage: View {
                                     // A job older than the runner's list: fetched, so its card shows.
                                     for id in ConversationModel.missing(of: row.turn, among: phone.jobs) { await phone.fetch(id) }
                                 }
-                            ForEach(decisions.filter { row.turn.jobs?.contains($0.job) ?? false }) { item in
+                            ForEach(decisions.filter { $0.offer == nil && (row.turn.jobs?.contains($0.job) ?? false) }) { item in
                                 InboxDecision(item: item).padding(.top, 12)
                             }
+                            ForEach(offers.under[row.turn.id] ?? []) { OfferCard(offer: $0).padding(.top, 12) }
                         }
+                        ForEach(offers.last) { OfferCard(offer: $0).padding(.top, 12) }
                         // Until its words come: they show it at work from then.
                         if thinking || working, phone.conversation.streamed.isEmpty {
                             ObyAtWork(line: working ? "Working" : "Thinking", problem: phone.stopProblem, waiting: thinking,
