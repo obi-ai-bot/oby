@@ -26,6 +26,15 @@ struct InboxDecision: View {
     private var takesWords: Bool { !item.job.isEmpty && !confirming }
 
     var body: some View {
+        // Work Oby offers to start is the same card wherever it shows: Home's stack, the Inbox (#1791).
+        if let offer = PhoneOffer.card(of: item, in: phone.inbox) {
+            OfferCard(offer: offer, head: head, opensConversation: openTask)
+        } else {
+            decision
+        }
+    }
+
+    private var decision: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let head {
                 head
@@ -283,6 +292,11 @@ nonisolated enum PhoneAsk {
     }
 }
 
+extension InboxItem {
+    /// What a list knows its card by: an offer's stays one card while its jobs are answered one by one.
+    var cardID: String { offer?.id ?? id }
+}
+
 /// Work Oby offers to start in a conversation (obid's `oby_offer`), as Electron's OfferCard: one
 /// card per offer (a turn's), its start items still waiting, in the order they came. Put off with
 /// Later, a card is gone until its time.
@@ -293,10 +307,32 @@ struct PhoneOffer: Identifiable, Equatable {
     var untrusted: Bool
     /// Its inbox items, each answered when the card is.
     var items: [String]
+    /// The conversation it was offered in, or nil.
+    var conversation: String? = nil
 
     static func == (a: PhoneOffer, b: PhoneOffer) -> Bool {
-        a.id == b.id && a.title == b.title && a.untrusted == b.untrusted && a.items == b.items
+        a.id == b.id && a.title == b.title && a.untrusted == b.untrusted && a.items == b.items && a.conversation == b.conversation
             && a.jobs.map(\.what) == b.jobs.map(\.what) && a.jobs.map(\.task) == b.jobs.map(\.task)
+    }
+
+    /// The card `item` is on, with the rest of its offer's jobs still open, or nil when it's no offer.
+    static func card(of item: InboxItem, in inbox: [InboxItem]) -> PhoneOffer? {
+        guard let id = item.offer?.id else { return nil }
+        return made(id, inbox.filter { $0.offer?.id == id && $0.isOpen }.sorted { $0.created < $1.created })
+    }
+
+    /// `items` with one entry per offer, its first: a list shows one card for all of an offer's jobs.
+    static func once(_ items: [InboxItem]) -> [InboxItem] {
+        var seen = Set<String>()
+        return items.filter { $0.offer.map { seen.insert($0.id).inserted } ?? true }
+    }
+
+    private static func made(_ id: String, _ items: [InboxItem]) -> PhoneOffer? {
+        guard let first = items.first else { return nil }
+        return PhoneOffer(id: id, title: items.count == 1 ? first.title : "\(items.count) jobs",
+                          jobs: items.compactMap { $0.offer.map { ($0.what, $0.task) } },
+                          untrusted: items.contains { $0.offer?.untrusted == true }, items: items.map(\.id),
+                          conversation: first.conversation)
     }
 
     static func offers(_ inbox: [InboxItem], in conversation: String?, now: Date = .now) -> [PhoneOffer] {
@@ -311,9 +347,7 @@ struct PhoneOffer: Identifiable, Equatable {
         }
         return ids.compactMap { id in
             guard let items = cards[id], items.contains(where: { $0.waiting(at: now) }) else { return nil }
-            return PhoneOffer(id: id, title: items.count == 1 ? items[0].title : "\(items.count) jobs",
-                              jobs: items.map { ($0.offer!.what, $0.offer!.task) },
-                              untrusted: items.contains { $0.offer!.untrusted }, items: items.map(\.id))
+            return made(id, items)
         }
     }
 
@@ -340,11 +374,24 @@ struct PhoneOffer: Identifiable, Equatable {
 struct OfferCard: View {
     @Environment(Phone.self) private var phone
     let offer: PhoneOffer
+    /// Over it, above a line (Home's stack: its conversation and where it is in the stack).
+    var head: AnyView? = nil
+    /// The way to its conversation, when it isn't what's around the card already.
+    var opensConversation = false
     @State private var busy: String?
     @State private var problem: String?
+    /// A tap before its words have shown answers nothing (one tap, one answer), as Electron's.
+    @State private var shownAt = Date.now
+
+    /// An answer given while the Mac was out of reach waits on this iPhone: it isn't given twice.
+    private var waitsToSend: Bool { offer.items.contains(where: phone.waitsToSend(answer:)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if let head {
+                head
+                Rectangle().fill(Tokens.divider).frame(height: 1).padding(.vertical, 12)
+            }
             Text(AskKind.label("start")).font(Tokens.font(Tokens.textSm, .medium)).foregroundStyle(Tokens.needsInk)
             Text(offer.title).font(Tokens.font(Tokens.textBase, .medium)).foregroundStyle(Tokens.ink).lineSpacing(6)
                 .fixedSize(horizontal: false, vertical: true).padding(.top, 4)
@@ -365,11 +412,20 @@ struct OfferCard: View {
             }
             CenteredFlow(spacing: 8, centred: false) {
                 OptionPill(option: CardOption(label: "Dispatch", answer: "Start", recommended: true), index: 0, primary: true,
-                           pending: busy == "Start", disabled: busy != nil) { answer("Start") }
-                OptionPill(option: CardOption(label: "Skip", answer: "Cancel"), index: 1, pending: busy == "Cancel", disabled: busy != nil) { answer("Cancel") }
-                OptionPill(option: CardOption(label: "Later", answer: "Later"), index: nil, quiet: true, disabled: busy != nil) { answer(nil) }
+                           pending: busy == "Start", disabled: busy != nil || waitsToSend) { answer("Start") }
+                OptionPill(option: CardOption(label: "Skip", answer: "Cancel"), index: 1, pending: busy == "Cancel", disabled: busy != nil || waitsToSend) { answer("Cancel") }
+                OptionPill(option: CardOption(label: "Later", answer: "Later"), index: nil, quiet: true, disabled: busy != nil || waitsToSend) { answer(nil) }
             }
             .padding(.top, 14)
+            if waitsToSend {
+                Text(ReachNotice.waiting).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.top, 10)
+            }
+            if opensConversation, let conversation = offer.conversation {
+                NavigationLink(value: Route.conversation(conversation)) {
+                    Text("Open conversation").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
+                }
+                .padding(.top, 10)
+            }
             if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8) }
         }
         .modifier(AskInset(on: true))
@@ -377,6 +433,7 @@ struct OfferCard: View {
 
     /// Each of its jobs still waiting gets the answer: Start, Cancel, or put off an hour (nil).
     private func answer(_ answer: String?) {
+        guard Date.now.timeIntervalSince(shownAt) >= 0.5 else { return }
         busy = answer ?? "Later"
         Task {
             defer { busy = nil }

@@ -151,6 +151,11 @@ struct DesignTests {
         #expect(offers.map(\.id) == ["u1"], "another conversation's, and one put off, aren't here")
         #expect(offers[0].title == "2 jobs" && offers[0].untrusted && offers[0].items == ["a", "bb"])
         let turns = [Turn(id: "u1", date: now, who: .user, text: "fix it"), Turn(id: "o1", date: now, who: .oby, text: "Its card is on your answer")]
+        // The same card on Home's stack and in the Inbox: all its jobs, its untrusted line, and once (#1791).
+        #expect(PhoneOffer.card(of: inbox[0], in: inbox) == offers[0])
+        #expect(PhoneOffer.card(of: InboxItem(kind: "start", id: "plain", job: "j", title: "t", text: "", options: [], created: now), in: inbox) == nil)
+        #expect(PhoneOffer.once(inbox).map(\.id) == ["a", "c", "dd"])
+        #expect(inbox[0].cardID == "u1" && inbox[1].cardID == "u1", "one card, while its jobs are answered one by one")
         #expect(PhoneOffer.placed(offers, in: turns).under["o1"] == offers)
         #expect(PhoneOffer.placed(offers, in: Array(turns.prefix(1))).last == offers, "its answer still coming: last")
         let report = Turn(id: "r1", date: now, who: .oby, text: "Done: Fix the login")
