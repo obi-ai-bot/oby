@@ -1762,8 +1762,9 @@ fn research_then_dispatch_starts_marked_untrusted() {
     assert_eq!(answer["jobs"][0]["id"], jobs[0]["id"]);
 }
 
-/// PUBLISHING-13: the owner's own turn names a task's branch; after something untrusted the name is
-/// dropped, and the job gets one of Oby's.
+/// PUBLISHING-13: the owner's own turn names a task's branch; after something untrusted a name only
+/// the model has is dropped, and the job gets one of Oby's, which the turn hears (#1813). The name
+/// stands when the owner's own words say it.
 #[test]
 fn publishing_13_words_read_name_no_branch() {
     let plan = r#"OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","title":"Greeting fix","task":"Fix the greeting","branch":"codex/7-greeting"}"#;
@@ -1774,13 +1775,24 @@ fn publishing_13_words_read_name_no_branch() {
     assert_eq!(jobs[0]["branch"], "codex/7-greeting", "{jobs}");
     let folder = Folder::new("brain-named-branch-web");
     let obid = started_harness_jobs(&folder);
-    said(&obid, &format!("WEB {plan}"));
+    let answer = said(&obid, &format!("WEB {plan}"));
     let jobs = call(&obid, "GET", "/v1/jobs", None).body;
     assert_eq!(jobs[0]["untrusted"], true, "{jobs}");
-    assert!(
-        jobs[0]["branch"].as_str().unwrap().starts_with("oby/"),
-        "{jobs}"
+    let branch = jobs[0]["branch"].as_str().unwrap();
+    assert!(branch.starts_with("oby/"), "{jobs}");
+    let heard = answer["text"].as_str().unwrap();
+    assert!(heard.contains(branch), "{heard}");
+    assert!(!heard.contains("codex/7-greeting"), "{heard}");
+    // Here the words themselves say the name, whole, as "fix it on codex/8-greeting" does.
+    let folder = Folder::new("brain-named-branch-said");
+    let obid = started_harness_jobs(&folder);
+    said(
+        &obid,
+        r#"WEB OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","title":"Greeting fix","task":"Fix the greeting","branch": "codex/8-greeting" }"#,
     );
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(jobs[0]["untrusted"], true, "{jobs}");
+    assert_eq!(jobs[0]["branch"], "codex/8-greeting", "{jobs}");
 }
 
 /// `oby_continue_job` takes a job that was stopped too.

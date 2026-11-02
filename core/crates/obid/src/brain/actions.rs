@@ -130,11 +130,18 @@ fn names_agent(words: &str) -> bool {
     })
 }
 
-/// The branch `d` names, unless its turn read something untrusted: words Oby read don't pick a
-/// branch for it to push to and delete (an open pull request's, one a deploy watches); the job
-/// gets an `oby/` one (PUBLISHING-13).
-fn named_branch(d: &super::plan::Dispatch, researched: bool) -> Option<String> {
-    d.branch.clone().filter(|_| !researched)
+/// The branch `d` names. On a turn that read something untrusted, only one the owner's own words
+/// on this turn say, whole: words Oby read don't pick a branch for it to push to and delete (an
+/// open pull request's, one a deploy watches); the job gets an `oby/` one (PUBLISHING-13). A turn
+/// that isn't the owner's (`turn` empty) says nothing of theirs.
+fn named_branch(d: &super::plan::Dispatch, researched: bool, asked: &Asked<'_>) -> Option<String> {
+    d.branch.clone().filter(|branch| {
+        !researched
+            || (!asked.turn.is_empty()
+                && asked.said.split_whitespace().any(|word| {
+                    word.trim_matches(|c: char| "`'\"“”‘’,;:.!?()[]<>".contains(c)) == branch
+                }))
+    })
 }
 
 /// The job `d` plans, as obid keeps it, linked to the conversation.
@@ -183,7 +190,7 @@ fn planned_job(
         attachments: (!asked.attachments.is_empty()).then(|| asked.attachments.to_vec()),
         conversation: Some(asked.conversation.to_owned()),
         base: d.base_branch.clone(),
-        branch: named_branch(d, researched),
+        branch: named_branch(d, researched, asked),
         // Bypass named where it's the owner's own default is the default, not a wider choice:
         // the job gets it as any job does, with no Confirm (`Jobs::bypass_widens`).
         mode: d
@@ -1569,8 +1576,34 @@ mod tests {
             json!({"repo": "o/r", "kind": "build", "task": "x", "branch": "gh-pages"}),
         )
         .unwrap();
-        assert_eq!(named_branch(&d, false).as_deref(), Some("gh-pages"));
-        assert_eq!(named_branch(&d, true), None);
+        let asked = |said, turn| Asked {
+            said,
+            attachments: &[],
+            jobs: &[],
+            conversation: "c",
+            turn,
+        };
+        let other = asked("Fix the docs", "t");
+        assert_eq!(named_branch(&d, false, &other).as_deref(), Some("gh-pages"));
+        assert_eq!(named_branch(&d, true, &other), None);
+        // The owner's own words on the turn name it, read or not: as a whole word, however quoted.
+        for said in [
+            "Fix the docs on gh-pages",
+            "Use `gh-pages`.",
+            "branch \"gh-pages\", please",
+        ] {
+            assert_eq!(
+                named_branch(&d, true, &asked(said, "t")).as_deref(),
+                Some("gh-pages"),
+                "{said}"
+            );
+        }
+        // Part of another word isn't naming it, nor is another case another branch's name.
+        for said in ["Fix old-gh-pages", "Fix gh-pages-2", "Fix GH-PAGES"] {
+            assert_eq!(named_branch(&d, true, &asked(said, "t")), None, "{said}");
+        }
+        // A turn that isn't the owner's (an event's, a supervisor's) says nothing of theirs.
+        assert_eq!(named_branch(&d, true, &asked("on gh-pages", "")), None);
     }
 
     #[test]
