@@ -349,13 +349,21 @@ describe('obid\'s answers over the events that came meanwhile', () => {
     });
     it('one that never started asks again what it was asked: it has no session to pick up', async () => {
       const { live, event } = await failed();
-      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [], request: 'Rebase it', revision: 2 }));
+      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [], title: 'Rebase 391', request: 'yes, do that', revision: 2 }));
       answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }) };
-      answers['GET /v1/jobs/j1'] = { status: 200, body: job({ status: 'failed', session: null, request: 'Rebase it', revision: 2 }) };
+      answers['GET /v1/jobs/j1'] = { status: 200, body: job({ status: 'failed', session: null, revision: 2 }) };
       await live.answerJob('j1', 'Give it another round');
       const told = calls.find((c) => c.path === '/v1/jobs/j1/messages')!;
-      expect(JSON.stringify(told.body)).toContain('Rebase it');
+      expect(JSON.stringify(told.body)).toContain('Rebase 391');
+      expect(JSON.stringify(told.body)).toContain('yes, do that');
       expect(JSON.stringify(told.body)).not.toContain('Try again');
+    });
+    it('one moved to another account picks up with the Try-again words', async () => {
+      const { live, event } = await failed();
+      event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [{ from: 'a' }], revision: 2 }));
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', revision: 3 }) };
+      await live.answerJob('j1', 'Give it another round');
+      expect(JSON.stringify(calls.find((c) => c.path === '/v1/jobs/j1/messages')!.body)).toContain('Try again');
     });
     it('one its follow-up carries on asks nothing', async () => {
       const { tasks, event } = await failed();

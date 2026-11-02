@@ -928,7 +928,9 @@ export async function answerJob(id: string, option: string, words?: string) {
       take({ kind: 'job', job: next });
     } else if (option === ANOTHER_ROUND) {
       // (a refusal is said; either way the card is obid's again, so a second failure shows too)
-      await tellJob(id, j.session || j.moves?.length ? TRY_AGAIN : j.request);
+      // ponytail: a conversation's job has its turn as its request, so the title goes too; its brief
+      // and files don't reach the follow-up until obid can run a job that never started again (#1836)
+      await tellJob(id, j.session || j.moves?.length ? TRY_AGAIN : `${j.title}\n\n${j.request}`);
       set({ answered: without(state.answered, id) });
     }
   } catch (e) {
