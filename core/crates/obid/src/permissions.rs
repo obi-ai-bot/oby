@@ -685,7 +685,10 @@ const SUBCOMMANDS: [&str; 22] = [
 
 /// Shells, interpreters and wrappers: what follows them is any program at all, so a rule for them
 /// would allow anything. They're allowed once at a time, never always.
-const RUNS_ANYTHING: [&str; 47] = [
+const RUNS_ANYTHING: [&str; 50] = [
+    "noglob",
+    "nocorrect",
+    "repeat",
     "sh",
     "bash",
     "zsh",
@@ -852,6 +855,47 @@ const WRAPPERS: &[&str] = &[
     "watch",
     "setsid",
     "caffeinate",
+    // zsh's: `noglob curl x`, `repeat 2 curl x`.
+    "noglob",
+    "nocorrect",
+    "repeat",
+];
+
+/// The options of [`WRAPPERS`] whose value is the next word, so it's never taken for the program.
+const WRAPPER_VALUES: &[(&str, &[&str])] = &[
+    ("env", &["-u", "--unset", "-C", "--chdir"]),
+    ("exec", &["-a"]),
+    ("xargs", &["-I", "-J", "-n", "-P", "-L", "-E", "-s", "-d"]),
+    (
+        "sudo",
+        &[
+            "-u",
+            "-g",
+            "-h",
+            "-p",
+            "-C",
+            "-T",
+            "-r",
+            "-t",
+            "-U",
+            "--user",
+            "--group",
+            "--host",
+            "--prompt",
+            "--close-from",
+            "--command-timeout",
+            "--role",
+            "--type",
+            "--other-user",
+        ],
+    ),
+    ("doas", &["-u", "-C"]),
+    ("timeout", &["-k", "-s"]),
+    ("nice", &["-n"]),
+    ("ionice", &["-c", "-n", "-p"]),
+    ("time", &["-f", "-o"]),
+    ("watch", &["-n"]),
+    ("caffeinate", &["-t", "-w"]),
 ];
 
 /// Shells: `-c` runs the code after it, and a here-document fed to one is code too.
@@ -943,7 +987,12 @@ pub fn covers(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool 
 /// A simple command of a line, as [`simple_commands`] reads it.
 #[derive(Debug, Default)]
 struct Simple {
+    /// Every word, where each redirect goes included: a file it names is a file it touches.
     words: Vec<String>,
+    /// The words the program is given: without where its redirects go.
+    args: Vec<String>,
+    /// It has a redirect or a here-document, outside quotes.
+    redirected: bool,
     /// The subshells it runs in (`( … )`, `$(…)`, backticks), outermost first: where a `cd` in
     /// one leads ends with it.
     subshells: Vec<usize>,
@@ -975,8 +1024,15 @@ struct Reader {
     /// The command being read follows a `|`.
     piped: bool,
     words: Vec<String>,
+    args: Vec<String>,
     word: String,
     in_word: bool,
+    /// The word being read is where a redirect goes.
+    redirect: bool,
+    /// The command being read has a redirect or a here-document.
+    redirected: bool,
+    /// Inside `(( … ))`, where `<<` shifts: over at its `))`, or at the end of the line.
+    arithmetic: bool,
     /// Here-documents waiting for the end of the line: the word that ends one, whether its lines'
     /// tabs are stripped (`<<-`), whether that word was quoted (the lines are then plain text; if
     /// not, what `$(…)` and backticks in them say runs), and the command it feeds.
@@ -994,8 +1050,12 @@ impl Reader {
             if std::mem::take(&mut self.here_string) {
                 self.fed.push((word, self.commands.len()));
             } else {
+                if !self.redirect {
+                    self.args.push(word.clone());
+                }
                 self.words.push(word);
             }
+            self.redirect = false;
             self.in_word = false;
         }
     }
@@ -1006,12 +1066,16 @@ impl Reader {
         if !self.words.is_empty() {
             self.commands.push(Simple {
                 words: std::mem::take(&mut self.words),
+                args: std::mem::take(&mut self.args),
+                redirected: self.redirected,
                 subshells: self.subshells.clone(),
                 nested: self.nested,
                 piped: self.piped || piped,
             });
         }
         self.piped = false;
+        self.redirect = false;
+        self.redirected = false;
     }
 
     /// Reads a `$(…)` or a backtick, a subshell of its own, from `*i` up to `stop`.
@@ -1032,7 +1096,26 @@ impl Reader {
             nested: self.nested,
         };
         let mut run = Vec::new();
-        let ok = read_until(chars, i, Some(stop), &inner, next, &mut run);
+        let ok = if stop == '`' {
+            let mut code = String::new();
+            while let Some(&c) = chars.get(*i) {
+                *i += 1;
+                match c {
+                    '`' => break,
+                    '\\' => match chars.get(*i) {
+                        Some(&next @ ('`' | '\\' | '$')) => {
+                            code.push(next);
+                            *i += 1;
+                        }
+                        _ => code.push(c),
+                    },
+                    _ => code.push(c),
+                }
+            }
+            read_commands(&code, &inner, next, &mut run)
+        } else {
+            read_until(chars, i, Some(stop), &inner, next, &mut run)
+        };
         self.substituted.push((run, self.commands.len()));
         ok
     }
@@ -1144,6 +1227,25 @@ fn read_until(
                 r.in_word = true;
                 continue;
             }
+            // `$'…'`, where a backslash keeps a quote in. What escapes spell isn't worked out: the
+            // word stays one that starts with `$`, a program obid can't read ([`downloads`]).
+            '$' if chars.get(*i + 1) == Some(&'\'') => {
+                r.in_word = true;
+                *i += 2;
+                let mut text = String::new();
+                while let Some(&c) = chars.get(*i).filter(|c| **c != '\'') {
+                    text.push(c);
+                    if c == '\\' {
+                        *i += 1;
+                        text.extend(chars.get(*i));
+                    }
+                    *i += 1;
+                }
+                if text.contains('\\') {
+                    r.word.push('$');
+                }
+                r.word.push_str(&text);
+            }
             '`' => {
                 *i += 1;
                 ok &= r.substitute(chars, i, '`', within, next);
@@ -1158,6 +1260,7 @@ fn read_until(
             ' ' | '\t' => r.end_word(),
             '\n' => {
                 r.end_command(false);
+                r.arithmetic = false;
                 // The lines of each here-document the line opened, up to the word that ends it.
                 for (end, strip, quoted, command) in std::mem::take(&mut r.heredocs) {
                     let mut body = String::new();
@@ -1187,6 +1290,7 @@ fn read_until(
                 }
             }
             '(' => {
+                r.arithmetic |= chars.get(*i + 1) == Some(&'(');
                 parens += 1;
                 r.end_command(false);
                 *next += 1;
@@ -1194,6 +1298,7 @@ fn read_until(
             }
             ')' => {
                 r.end_command(false);
+                r.arithmetic &= chars.get(*i + 1) != Some(&')');
                 if parens > 0 {
                     parens -= 1;
                     r.subshells.pop();
@@ -1216,8 +1321,14 @@ fn read_until(
             }
             ';' => r.end_command(false),
             '<' | '>' => {
+                // `2>`: the digits against it name a file descriptor, and are no word.
+                if r.in_word && !r.word.is_empty() && r.word.chars().all(|d| d.is_ascii_digit()) {
+                    r.word.clear();
+                    r.in_word = false;
+                }
                 r.end_word();
-                if c == '<' && chars.get(*i + 1) == Some(&'<') {
+                r.redirected = true;
+                if c == '<' && chars.get(*i + 1) == Some(&'<') && !r.arithmetic {
                     if chars.get(*i + 2) == Some(&'<') {
                         r.here_string = true;
                         *i += 3;
@@ -1248,6 +1359,7 @@ fn read_until(
                     r.heredocs.push((end, strip, quoted, r.commands.len()));
                     continue;
                 }
+                r.redirect = true;
                 // `2>&1`, `<&3`: the `&` names a file descriptor.
                 if chars.get(*i + 1) == Some(&'&') {
                     *i += 1;
@@ -1284,12 +1396,33 @@ fn read_until(
             && let Some(flag) = rest
                 .iter()
                 .position(|w| w.starts_with('-') && !w.starts_with("--") && w.contains('c'))
-            && let Some(text) = rest.get(flag + 1)
         {
-            code.push(text.clone());
+            // Its options may come after it too: `bash -c -o errexit x`, `bash -c +x x`.
+            let mut after = rest[flag + 1..].iter();
+            while let Some(w) = after.next() {
+                if matches!(w.as_str(), "-o" | "+o") {
+                    after.next();
+                } else if !w.starts_with(['-', '+']) {
+                    code.push(w.clone());
+                    break;
+                }
+            }
         }
         if program == "eval" {
             code.push(rest.join(" "));
+        }
+        // `find … -exec <program> … ;`: what it runs.
+        if program == "find" {
+            for (i, _) in rest
+                .iter()
+                .enumerate()
+                .filter(|(_, w)| matches!(w.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
+            {
+                let run = rest[i + 1..]
+                    .iter()
+                    .take_while(|w| !matches!(w.as_str(), ";" | "+"));
+                code.push(run.cloned().collect::<Vec<_>>().join(" "));
+            }
         }
         // `trap '…' EXIT`: the code it runs when the signal comes.
         if program == "trap"
@@ -1312,12 +1445,21 @@ fn read_until(
         // `coproc curl if x`: bash takes `curl` for its name, as [`shell_grammar`] does, and zsh
         // runs it. Which shell runs a line isn't obid's to know, so it reads both, from the words
         // as they were read: a quote stays a quote.
-        let coprocess = (command.words.first().is_some_and(|w| w == "coproc")).then(|| Simple {
-            words: command.words[1..].to_vec(),
-            subshells: command.subshells.clone(),
-            nested: true,
-            piped: command.piped,
-        });
+        let after_coproc = |words: &[String]| {
+            let rest = words.iter().skip_while(|w| *w != "coproc").skip(1);
+            rest.cloned().collect::<Vec<_>>()
+        };
+        let in_grammar = shell_grammar(&command.words);
+        let coprocess = command.words[..in_grammar.min(command.words.len())]
+            .contains(&"coproc".to_owned())
+            .then(|| Simple {
+                words: after_coproc(&command.words),
+                args: after_coproc(&command.args),
+                redirected: command.redirected,
+                subshells: command.subshells.clone(),
+                nested: true,
+                piped: command.piped,
+            });
         out.push(command);
         out.extend(coprocess);
         for text in code {
@@ -1384,10 +1526,17 @@ fn program_index(words: &[String]) -> Option<usize> {
         if !(is_assignment(w) || w.starts_with('-') || number || WRAPPERS.contains(&base(w))) {
             return Some(i);
         }
-        // `env -C dir`: the folder isn't the program.
-        let env_folder =
-            matches!(w.as_str(), "-C" | "--chdir") && words[..i].iter().any(|w| base(w) == "env");
-        i += if env_folder { 2 } else { 1 };
+        // `env -C dir`, `sudo -u root`: the value isn't the program.
+        // (`sudo -nu root`: the last of a cluster of short options takes it.)
+        let takes_a_value = WRAPPER_VALUES.iter().any(|(wrapper, options)| {
+            let last = (w.starts_with('-') && !w.starts_with("--"))
+                .then(|| w.chars().last().map(|c| format!("-{c}")))
+                .flatten();
+            (options.contains(&w.as_str())
+                || last.is_some_and(|last| options.contains(&last.as_str())))
+                && words[..i].iter().any(|w| base(w) == *wrapper)
+        });
+        i += if takes_a_value { 2 } else { 1 };
     }
     None
 }
@@ -1884,26 +2033,37 @@ fn file_words(words: &[String]) -> Vec<&String> {
         .collect()
 }
 
-/// Whether a simple command touches secrets or a login: it prints the environment or a keychain's
-/// passwords, asks for a code host's login, or names a secret's file ([`names_a_secret`]).
+/// Whether a simple command, given only `args` (where its redirects go aren't among them: `set >
+/// o.txt` writes every variable down), prints the environment.
+fn prints_the_environment(args: &[String]) -> bool {
+    let Some(p) = program_index(args) else {
+        // `env` alone prints the environment.
+        return args.iter().any(|w| base(w) == "env");
+    };
+    let rest = &args[p + 1..];
+    let given = |ok: fn(&String) -> bool| rest.iter().all(|w| ok(w) || w == "}"); // zsh's `{ set }`
+    match base(&args[p]) {
+        // `printenv` alone prints every variable; `printenv NAME` only those named, as `echo
+        // $NAME` does (a secret's name is caught by [`names_a_secret`]). `export -p` prints the
+        // exported ones.
+        "printenv" | "export" | "declare" | "typeset" => given(|w| w.starts_with('-')),
+        // Alone it prints every variable; `set -e` turns an option on.
+        "set" => given(|_| false),
+        _ => false,
+    }
+}
+
+/// Whether a simple command touches secrets or a login: it prints a keychain's passwords, asks for
+/// a code host's login, or names a secret's file ([`names_a_secret`]).
 fn reads_a_secret(words: &[String], bounds: &Bounds, base_dir: &Path) -> bool {
     let Some(p) = program_index(words) else {
-        // `env` alone prints the environment; `command -V "$GH_TOKEN"` says what's in one.
-        return words
-            .iter()
-            .any(|w| base(w) == "env" || names_a_secret(w, bounds, base_dir));
+        // `command -V "$GH_TOKEN"` says what's in one.
+        return words.iter().any(|w| names_a_secret(w, bounds, base_dir));
     };
     let program = base(&words[p]);
     let rest = &words[p + 1..];
     let sub = subcommand(program, rest).map(|(_, s)| s);
     match program {
-        // `printenv` alone prints every variable; `printenv NAME` only those named, as `echo $NAME`
-        // does (a secret's name is caught below, [`names_a_secret`]).
-        "printenv" if rest.iter().all(|w| w.starts_with('-')) => return true,
-        // `set` alone prints every variable, `export -p` the exported ones.
-        "set" | "export" | "declare" | "typeset" if rest.iter().all(|w| w.starts_with('-')) => {
-            return true;
-        }
         "security" if sub.is_some_and(|s| s.starts_with("find-") || s.starts_with("dump-")) => {
             return true;
         }
@@ -1986,9 +2146,10 @@ fn with_folders<'a>(
 fn command_touches_a_secret(command: &str, bounds: &Bounds) -> bool {
     holds_a_vault_value(command)
         || simple_commands(command).is_none_or(|commands| {
-            with_folders(&commands, bounds).iter().any(|(words, at)| {
-                reads_a_secret(words, bounds, at.as_deref().unwrap_or(&bounds.worktree))
-            })
+            commands.iter().any(|c| prints_the_environment(&c.args))
+                || with_folders(&commands, bounds).iter().any(|(words, at)| {
+                    reads_a_secret(words, bounds, at.as_deref().unwrap_or(&bounds.worktree))
+                })
         })
 }
 
@@ -2319,43 +2480,12 @@ fn family(tool: &str) -> &str {
 /// Shell syntax that runs more than one command, or sends output somewhere: such a command never
 /// matches an allow rule, and gets none suggested.
 fn is_chained(command: &str) -> bool {
-    command.contains("&&")
-        || command.contains("||")
-        || command.contains("$(")
-        || command.contains(['|', ';', '&', '`', '<', '>', '\n'])
-        || simple_commands(command).is_none_or(|commands| {
-            commands.len() > 1
-                || commands
-                    .iter()
-                    .any(|c| !c.subshells.is_empty() || shell_grammar(&c.words) > 0)
-        })
-}
-
-/// The commands a chained command runs, split where the shell would.
-fn pieces(command: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut chars = command.chars().peekable();
-    while let Some(c) = chars.next() {
-        let split = match c {
-            '|' | ';' | '&' | '`' | '<' | '>' | '\n' => true,
-            '$' if chars.peek() == Some(&'(') => {
-                chars.next();
-                true
-            }
-            _ => false,
-        };
-        if split {
-            out.push(std::mem::take(&mut current));
-        } else {
-            current.push(c);
-        }
-    }
-    out.push(current);
-    out.into_iter()
-        .map(|p| p.trim().to_owned())
-        .filter(|p| !p.is_empty())
-        .collect()
+    simple_commands(command).is_none_or(|commands| {
+        commands.len() > 1
+            || commands.iter().any(|c| {
+                c.piped || c.redirected || !c.subshells.is_empty() || shell_grammar(&c.words) > 0
+            })
+    })
 }
 
 /// `Bash(swift test:*)` is (`Bash`, `swift test:*`); `Edit` is (`Edit`, none).
@@ -2466,20 +2596,19 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
         let Some(command) = call.command.as_deref().map(str::trim) else {
             return false;
         };
-        // What a command runs, however it's written: inside `{ }`, behind `!`, a `trap`'s code.
+        // What a command runs, however it's written: inside `{ }`, behind `!`, a `trap`'s code. A
+        // rule may name a wrapper (`sudo`) or what it runs (`curl`).
         if !allowing
             && simple_commands(command).is_some_and(|commands| {
-                commands
-                    .iter()
-                    .any(|c| fits(&c.words[shell_grammar(&c.words)..].join(" ")))
+                commands.iter().any(|c| {
+                    fits(&c.args[shell_grammar(&c.args)..].join(" "))
+                        || program_index(&c.args).is_some_and(|p| fits(&c.args[p..].join(" ")))
+                })
             })
         {
             return true;
         }
-        if is_chained(command) {
-            return !allowing && pieces(command).iter().any(|p| fits(p));
-        }
-        return fits(command);
+        return !is_chained(command) && fits(command);
     }
     if family(&call.tool) == "Edit" {
         let files: Vec<String> = call.paths.iter().map(|p| relative(p, worktree)).collect();
@@ -4393,6 +4522,178 @@ mod tests {
                 !matches("Bash(curl:*)", &call, worktree, false),
                 "{command}"
             );
+        }
+    }
+
+    /// The rest of what a shell's words can hide, as far as a reader of words goes (#1811, its
+    /// limits in docs/contracts/permissions.md): each is seen as itself, and a harmless line asks
+    /// nothing.
+    #[test]
+    fn permissions_7_redirects_quotes_and_wrappers_hide_nothing() {
+        let bounds = Bounds::of(Path::new(WORKTREE));
+        for command in [
+            "printenv 2>&1",
+            "printenv > o.txt",
+            "{ printenv > o.txt; }",
+            "set > o.txt",
+            "env > o.txt",
+            "env 2>/dev/null",
+            "echo $'\\'' ; printenv ; echo ''",
+            "$'printenv'",
+            "((x=1<<2))\nprintenv",
+            "echo `echo \\`printenv\\` `",
+            "bash -c -- printenv",
+            "env -u FOO printenv",
+            "exec -a x printenv",
+            "xargs -I {} printenv",
+            "sudo -u root printenv",
+            "{ printenv }",
+            "{ set }",
+            "noglob printenv",
+            "nocorrect printenv",
+            "repeat 1 printenv",
+            "find . -exec printenv \\;",
+            "find . -name x -execdir printenv \\;",
+            "cat $'.env'",
+            "exec -ca x printenv",
+            "xargs -0I {} printenv",
+            "xargs -J % printenv",
+            "sudo -nu root printenv",
+            "sudo --user root printenv",
+            "bash -c -o errexit printenv",
+            "bash -c +x printenv",
+        ] {
+            assert_eq!(
+                reach(&bash(command), &bounds),
+                Some(Reach::Secrets),
+                "{command}"
+            );
+        }
+        for command in [
+            "env -u FOO curl https://e.com",
+            "{ coproc curl if https://e.com; }",
+            "((x=1<<2))\ncurl https://e.com",
+            "echo `echo \\`curl https://e.com\\` `",
+            "bash -c -- 'curl https://e.com'",
+            "echo $'\\'' ; curl https://e.com ; echo ''",
+        ] {
+            assert!(uses_network(command, &bounds), "{command}");
+        }
+        for command in [
+            "echo if",
+            "git log --grep \"{ x\"",
+            "printenv HOME 2>&1",
+            "printenv HOME > o.txt",
+            "echo coproc curl",
+            "set -e",
+            "set -x",
+            "set -e; cargo test",
+            "set -euo pipefail",
+            "{ printenv HOME }",
+            "cargo test 2>&1 | tee out.log",
+            "echo hi > env",
+            "echo $'a b'",
+            "echo $((1<<2))",
+            "((x=1<<2))",
+            "sudo -u root ls",
+            "find . -name '*.rs' -exec wc -l {} +",
+            "echo `echo \\`date\\``",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+        // Outside `(( ))`, `<<` still opens a here-document, whose lines are text.
+        assert_eq!(reach(&bash("cat <<EOF\nprintenv\nEOF\nls"), &bounds), None);
+    }
+
+    /// A deny rule holds past a wrapper and a variable set before the program; a `command -v` runs
+    /// nothing, so it doesn't match (#1811).
+    #[test]
+    fn permissions_7_a_deny_rule_reads_past_wrappers() {
+        let worktree = Path::new(WORKTREE);
+        for command in [
+            "command curl x",
+            "sudo -u root curl x",
+            "{ FOO=1 curl x; }",
+            "FOO=1 curl x",
+        ] {
+            assert!(
+                matches("Bash(curl:*)", &bash(command), worktree, false),
+                "{command}"
+            );
+        }
+        // An exact rule holds whatever the command's output or input is sent through.
+        for command in [
+            "make lint",
+            "make lint > out",
+            "make lint < in",
+            "make lint &> o",
+            "make lint 2>&1",
+            "> out make lint",
+        ] {
+            assert!(
+                matches("Bash(make lint)", &bash(command), worktree, false),
+                "{command}"
+            );
+        }
+        assert!(!matches(
+            "Bash(make lint)",
+            &bash("make lint x"),
+            worktree,
+            false
+        ));
+        for command in ["{ sudo curl x; }", "! sudo curl x", "sudo curl x"] {
+            assert!(
+                matches("Bash(sudo:*)", &bash(command), worktree, false),
+                "{command}"
+            );
+        }
+        for command in [
+            "command -v curl",
+            "echo curl x",
+            "git commit -m \"$(cat <<'EOF'\nuse `curl`\nEOF\n)\"",
+            "git commit -m \"use curl; curl x\"",
+        ] {
+            assert!(
+                !matches("Bash(curl:*)", &bash(command), worktree, false),
+                "{command}"
+            );
+        }
+    }
+
+    /// A `>` in quotes is a word: the command keeps its allow rule and its Always. What isn't
+    /// plainly one command, and a wrapper that runs anything, keeps neither (#1811).
+    #[test]
+    fn permissions_7_only_what_runs_chains_a_command() {
+        let worktree = Path::new(WORKTREE);
+        for (command, rule, offered) in [
+            ("git log --format='%h > x'", "Bash(git log:*)", "git log"),
+            ("grep -r \"a > b\" src", "Bash(grep:*)", "grep"),
+            ("echo \"a; b\"", "Bash(echo:*)", "echo"),
+        ] {
+            assert!(matches(rule, &bash(command), worktree, true), "{command}");
+            assert_eq!(prefix(command).as_deref(), Some(offered), "{command}");
+        }
+        for (command, rule) in [
+            ("echo a > b", "Bash(echo:*)"),
+            ("cat < f", "Bash(cat:*)"),
+            ("cat <<EOF\nx\nEOF", "Bash(cat:*)"),
+            ("cat <<< x", "Bash(cat:*)"),
+            ("echo a &", "Bash(echo:*)"),
+            ("echo a | cat", "Bash(echo:*)"),
+            ("echo a; ls", "Bash(echo:*)"),
+            ("echo a && ls", "Bash(echo:*)"),
+            ("echo $(ls)", "Bash(echo:*)"),
+            ("echo `ls`", "Bash(echo:*)"),
+            ("noglob curl x", "Bash(noglob:*)"),
+            ("nocorrect curl x", "Bash(nocorrect:*)"),
+            ("repeat 2 curl x", "Bash(repeat:*)"),
+        ] {
+            assert!(!matches(rule, &bash(command), worktree, true), "{command}");
+            assert_eq!(prefix(command), None, "{command}");
         }
     }
 
