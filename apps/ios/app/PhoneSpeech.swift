@@ -32,8 +32,7 @@ final class PhoneSpeech {
         self.input = input
     }
 
-    /// Explicit English/Portuguese settings override the system language. Keep the Watch's
-    /// existing system-language behavior for every locale SpeechTranscriber supports.
+    /// English only, for the iPhone and the Watch alike (the owner's decision of 2026-11-01).
     static var locale: Locale { VoiceSettings.locale }
 
     static func context(repos: [String]) -> [String] {

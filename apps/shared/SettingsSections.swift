@@ -11,21 +11,17 @@ import AppKit
 // puts them in its form, apps/mac/app/Settings.swift on its pages as Sangam's cards (`settingsCards`,
 // apps/shared/SettingsComponents.swift), next to what only that device has.
 
-/// Voice: the language Oby writes down what you say in (`VoiceSettings`). Oby answers in writing,
-/// never aloud (the owner's decision of 2026-10-23).
+/// Voice: Oby writes down what you say in English, the only language it speaks (`VoiceSettings`, the
+/// owner's decision of 2026-11-01), and answers in writing, never aloud (2026-10-23).
 struct VoiceSection: View {
     /// What only this device says about it, like the Mac's talk key.
     var footer: String? = nil
-    @AppStorage(VoiceSettings.language) private var language = "system"
     @Environment(\.settingsCards) private var cards
 
     var body: some View {
         if cards {
             SetGroup("Voice", footer: footer) {
-                SetRow("Speech language") {
-                    SetSelect("Speech language", selection: $language,
-                              options: [("system", VoiceSettings.systemName)] + VoiceSettings.languages.map { ($0.id, $0.name) })
-                }
+                SetRow("Speech language") { Text("English").font(Tokens.font(13)).foregroundStyle(Tokens.muted) }
             }
         } else {
             form
@@ -34,10 +30,7 @@ struct VoiceSection: View {
 
     private var form: some View {
         Section {
-            Picker("Speech language", selection: $language) {
-                Text(VoiceSettings.systemName).tag("system")
-                ForEach(VoiceSettings.languages, id: \.id) { Text($0.name).tag($0.id) }
-            }
+            LabeledContent("Speech language", value: "English")
         } header: {
             Text("Voice")
         } footer: {

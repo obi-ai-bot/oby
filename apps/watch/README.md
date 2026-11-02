@@ -45,7 +45,7 @@ The watch can't reach the tailnet, so the iPhone stands in between (WatchConnect
 - `apps/watch/Watch.swift` is the watch's side: the jobs, and the requests.
 - `apps/shared/WatchWire.swift` is what they say to each other. Fast requests (refresh, dispatch, a message to a job, stop, the publish sentence) are answered in the reply. Planning and publishing take longer than a reply may wait for, so they're acknowledged, and the outcome comes back as a message of its own, queued if the watch app isn't up.
 - **Publish needs the phone's signature.** The runner accepts a publish by hand only with a fresh signature from the iPhone's Secure Enclave key (`apps/shared/DeviceKey.swift`), which signs with no Face ID: the owner's turn of the crown is the approval (the owner's decision of 2026-10-24). The watch asks, and the phone signs, in the foreground or the background.
-- Spoken requests are transcribed on the iPhone (watchOS has no SpeechAnalyzer). The first time, the phone downloads the speech model for its language and asks the watch to try again in a minute.
+- Spoken requests are transcribed on the iPhone (watchOS has no SpeechAnalyzer). The first time, the phone downloads the English speech model and asks the watch to try again in a minute.
 
 The watch keeps the last application context and the id of the ask it waits for. Live audio is buffered only in memory while listening; no recording file is kept.
 
@@ -99,7 +99,7 @@ The Linux runner can parse Swift syntax and exercise the Watch model with a mock
 - Layout on 41–49 mm watches, including Series 10, clock safe area, all poses, the dot, Dynamic Type and Reduce Motion.
 - Live SpeechAnalyzer results, corrections without duplicate words, finalization on Stop with no plan until Send, language/model availability, PCM conversion and first-use download.
 - Reachable but locked/backgrounded iPhone, disconnection while listening, slow transport, mic denial, system dictation fallback, and queued request dismissal.
-- The microphone reason in `apps/watch/en.lproj` and `apps/watch/pt.lproj` (`InfoPlist.strings`) replaces the project's old hold-to-talk wording, as on the iPhone: check that Xcode bundles it (the widget picks the files up too, harmlessly) and that a fresh install shows it.
+- The microphone reason in `apps/watch/en.lproj` (`InfoPlist.strings`) replaces the project's old hold-to-talk wording, as on the iPhone: check that Xcode bundles it (the widget picks the files up too, harmlessly) and that a fresh install shows it.
 - Tap to listen and tap Stop: start/stop haptics, the red Stop, the meter, and the microphone indicator only while listening. Stop, the 60-second limit, the screen turning off, paging to the jobs and a notification all close the mic and keep the words; none sends anything.
 - Live words under Oby through the phone and through the runner, the draft after Stop, Send with one tap, the mic adding more words to a draft, Clear, and a quick tap-stop or silence leaving the draft as it was.
 - Crown scrolling for long drafts/replies/plans (Send scrolls into view), one-tap dispatch, and tapping the mic while planning/dispatch is pending.

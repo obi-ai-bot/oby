@@ -2,19 +2,11 @@ import Foundation
 import Testing
 @testable import ObyShared
 
-/// Settings › Voice, the same on the iPhone and the Mac: what dictation listens for.
+/// What dictation listens for, the same on the iPhone, the Watch and the Mac: English only (the
+/// owner's decision of 2026-11-01).
 struct VoiceSettingsTests {
-    @Test func theDevicesLanguageUntilOneIsPicked() {
-        #expect(VoiceSettings.locale(nil) == .current)
-        #expect(VoiceSettings.locale("system") == .current)
-        #expect(VoiceSettings.locale("pt-BR").identifier(.bcp47) == "pt-BR")
-    }
-
-    @Test func everyChoiceIsALocaleWithItsOwnName() {
-        for language in VoiceSettings.languages {
-            #expect(VoiceSettings.locale(language.id).identifier(.bcp47) == language.id)
-            #expect(VoiceSettings.name(VoiceSettings.locale(language.id)) == language.name)
-        }
-        #expect(VoiceSettings.name(Locale(identifier: "fr-FR")) == "Français")
+    @Test func dictationListensInUSEnglish() {
+        #expect(VoiceSettings.locale.identifier(.bcp47) == "en-US")
+        #expect(VoiceSettings.name(VoiceSettings.locale) == "English")
     }
 }
