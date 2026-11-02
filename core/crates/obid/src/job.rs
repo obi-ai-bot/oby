@@ -511,6 +511,10 @@ pub struct Job {
     /// What the job it follows up did, for its first prompt, quoted there. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub earlier: Option<String>,
+    /// obid made its branch, which the owner named (not `oby/…`), when no remote had it: it's
+    /// the job's own, as an `oby/` one is ([`Job::own_branch`]). Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub made_branch: bool,
     /// The branch in obid's clone its worktree starts from instead of its base: the first job's,
     /// for a follow-up of work that isn't merged. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -765,6 +769,12 @@ pub struct OwnersWords {
 }
 
 impl Job {
+    /// Its branch is one obid made for it, so it may publish it by itself and delete it once
+    /// merged: an `oby/` one, or a new one the owner named ([`Job::made_branch`], PUBLISHING-13).
+    pub fn own_branch(&self) -> bool {
+        self.made_branch || self.branch.starts_with("oby/")
+    }
+
     /// Whether it ended with nothing done (docs/contracts/tasks.md, TASKS-12): a job whose work is
     /// commits ended done with none, nothing published or pushed. Its card and its conversation's
     /// report say so, never plain "Done".
@@ -952,6 +962,7 @@ impl Job {
             account_limit_reset: None,
             account_limit_choice: None,
             earlier: None,
+            made_branch: false,
             start_from: None,
             supervised: Vec::new(),
             revision: 0,

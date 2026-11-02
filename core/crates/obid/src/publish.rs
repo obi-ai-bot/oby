@@ -1,6 +1,6 @@
 //! Publishing the owner's work (docs/runner-api.md, "Job" and `GET`/`POST /v1/jobs/{id}/publish`),
 //! ported from Engine/Publish.swift: the publish gate, then one pinned commit pushed to the job's
-//! own `oby/` branch, then its pull request, ready for review. Publishing never merges: obid merges only by its own rules (crate::merge), for anyone
+//! own branch ([`Job::own_branch`]), then its pull request, ready for review. Publishing never merges: obid merges only by its own rules (crate::merge), for anyone
 //! (docs/ARCHITECTURE.md, "Trust boundaries").
 //!
 //! Nothing leaves before the gate passed over everything that goes out: every line every commit
@@ -357,8 +357,8 @@ pub fn action_with(job: &Job, base: &str, by_hand: &ByHand) -> String {
 /// Why a review that made commits published nothing, and why obid won't publish one.
 pub const REVIEW_COMMITTED: &str = "A review made commits; nothing was published.";
 
-/// Why obid won't publish this job, or none to go ahead: never a review; by itself, only its own
-/// `oby/` branches, never onto `main`, `master` or the repository's default branch. The owner's
+/// Why obid won't publish this job, or none to go ahead: never a review; by itself, only the
+/// branches it made ([`Job::own_branch`]), never onto `main`, `master` or the repository's default branch. The owner's
 /// own signed Publish (`by_hand` asking more) goes to any branch they named (PUBLISHING-10).
 pub fn refusal(job: &Job, base: &str, default_branch: &str, by_hand: &ByHand) -> Option<String> {
     if job.kind == "review" {
@@ -379,18 +379,21 @@ pub fn refusal(job: &Job, base: &str, default_branch: &str, by_hand: &ByHand) ->
             });
     }
     let branch = job.branch.as_str();
-    if !branch.starts_with("oby/") || !git::is_branch_name(branch) {
+    if !job.own_branch() || !git::is_branch_name(branch) {
         return Some(format!(
-            "obid publishes only its own oby/ branches by itself, not {branch}."
+            "obid publishes only the branches it made by itself (oby/ ones, or a new one the owner named), not {branch}."
         ));
     }
     if !git::is_branch_name(base) {
         return Some(format!("{base} isn't a branch name."));
     }
-    if branch == base {
+    if branch.eq_ignore_ascii_case(base) {
         return Some(format!("{branch} can't be its own base."));
     }
-    if ["main", "master", default_branch].contains(&branch) {
+    if ["main", "master", default_branch]
+        .iter()
+        .any(|b| b.eq_ignore_ascii_case(branch))
+    {
         return Some(format!("obid doesn't push to {branch} by itself."));
     }
     if !github::is_repo(&job.repo) {
@@ -1574,6 +1577,36 @@ fn commit_texts(commit: &str, object: &[u8]) -> (Vec<(String, String)>, Option<S
     )
 }
 
+/// Whether the remote has `branch`, in any letter case: to a Mac's disk, where obid's clone is,
+/// `Dev` is `dev`, so it isn't a new one (PUBLISHING-13).
+pub(crate) async fn branch_taken(branch: &str, target: &Target) -> Result<bool, Failure> {
+    let mut args = credentials(&target.remote, target.gh.as_deref(), &forbidden_names());
+    args.extend([
+        "ls-remote".into(),
+        "--heads".into(),
+        "--".into(),
+        target.remote.clone(),
+    ]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let listed = git::git(&target.clone, &args).await.map_err(|e| {
+        Failure::Remote(format!(
+            "Couldn't read the remote's branches: {}",
+            git_said(&e, &target.remote)
+        ))
+    })?;
+    Ok(listed.lines().any(|line| {
+        line.split_once('\t')
+            .and_then(|(_, name)| name.strip_prefix("refs/heads/"))
+            .is_some_and(|name| name.eq_ignore_ascii_case(branch))
+    }))
+}
+
+/// Whether what [`branch_taken`] found makes a named branch the job's own: only a remote that
+/// answered, and has none. Anything else stays the owner's, published by hand.
+pub(crate) fn free_to_make(taken: &Result<bool, Failure>) -> bool {
+    matches!(taken, Ok(false))
+}
+
 /// The commit `branch` has on the remote, or none when it has no such branch yet.
 pub(crate) async fn remote_head(branch: &str, target: &Target) -> Result<Option<String>, Failure> {
     let mut args = credentials(&target.remote, target.gh.as_deref(), &forbidden_names());
@@ -1627,6 +1660,18 @@ async fn lease(
     if there == head {
         return Ok((Some(there), None));
     }
+    // By itself, from this same read: it may have come since [`stopped_being_own`] looked (its next
+    // publish clears the mark).
+    if !by_hand.asks()
+        && job.made_branch
+        && job.follow_up_of.is_none()
+        && job.pushed_head().is_none()
+    {
+        return Err(Failure::Failed(format!(
+            "Not published: someone made {} on GitHub after this task started, so Oby leaves it to you.",
+            job.branch
+        )));
+    }
     // Fails too when the clone doesn't have that commit: then it isn't one obid pushed from here.
     if git_in(
         &target.clone,
@@ -1647,6 +1692,30 @@ async fn lease(
     Ok((Some(there.clone()), Some(there)))
 }
 
+/// Whether a branch [`Job::made_branch`] stopped being the job's own, as this publish goes out
+/// (PUBLISHING-13): the owner sends its work elsewhere, or it never pushed the branch and the remote
+/// has one of that name now: someone made it since the job started (a Try again can come days
+/// later), at whatever commit. From then on it's theirs: never merged, force-pushed, carried on or
+/// deleted by itself, though the owner's signed Publish may still send to it.
+pub(crate) async fn stopped_being_own(job: &Job, target: &Target, by_hand: &ByHand) -> bool {
+    job.made_branch
+        && (sent_elsewhere(job, by_hand)
+            || (job.follow_up_of.is_none()
+                && job.pushed_head().is_none()
+                && matches!(remote_head(&job.branch, target).await, Ok(Some(_)))))
+}
+
+fn sent_elsewhere(job: &Job, by_hand: &ByHand) -> bool {
+    by_hand.branch(job) != job.branch
+}
+
+/// Whether a push to `to` may replace what's there: the owner's signed force, else only a branch
+/// obid made (PUBLISHING-13).
+fn may_force(to: &str, job: &Job, by_hand: &ByHand) -> bool {
+    git::is_branch_name(to)
+        && (by_hand.force || to.starts_with("oby/") || (to == job.branch && job.own_branch()))
+}
+
 /// Pushes one commit to the job's own branch: no tags, submodules or signing. With `lease`, the
 /// commit a rebase replaces, it pushes with `--force-with-lease` on that commit, so it fails when
 /// the branch moved since; never to a branch obid didn't make.
@@ -1658,10 +1727,9 @@ async fn push(
     by_hand: &ByHand,
 ) -> Result<(), Failure> {
     let to = by_hand.branch(job);
-    if lease.is_some() && (!git::is_branch_name(to) || (!by_hand.force && !to.starts_with("oby/")))
-    {
+    if lease.is_some() && !may_force(to, job, by_hand) {
         return Err(Failure::Failed(format!(
-            "obid doesn't force-push {to} by itself: only the oby/ branches it made."
+            "obid doesn't force-push {to} by itself: only the branches it made."
         )));
     }
     let mut args = credentials(&target.remote, target.gh.as_deref(), &forbidden_names());
@@ -1772,6 +1840,117 @@ mod tests {
         );
     }
 
+    /// PUBLISHING-13: `lease`'s own read, for a branch made after [`stopped_being_own`] looked: by
+    /// itself, a made branch it never pushed that's on the remote now goes no further, even at a
+    /// commit its head builds on. A branch it did push, or a follow-up's, is its own to push on.
+    #[tokio::test]
+    async fn publishing_13_lease_refuses_a_branch_someone_made_at_the_last_moment() {
+        let root = std::env::temp_dir().join(format!("obid-lease-{}", uuid::Uuid::new_v4()));
+        let (bare, clone) = (root.join("remote.git"), root.join("clone"));
+        std::fs::create_dir_all(&clone).unwrap();
+        let run = |at: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(at)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        run(&root, &["init", "-q", "--bare", bare.to_str().unwrap()]);
+        run(&clone, &["init", "-q"]);
+        run(&clone, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let base = run(&clone, &["rev-parse", "HEAD"]);
+        let url = format!("file://{}", bare.display());
+        run(&clone, &["push", "-q", &url, "HEAD:refs/heads/codex/7-x"]);
+        run(
+            &clone,
+            &["commit", "-q", "--allow-empty", "-m", "the job's"],
+        );
+        let head = run(&clone, &["rev-parse", "HEAD"]);
+        let target = Target {
+            clone: clone.clone(),
+            remote: url,
+            default_branch: "main".into(),
+            scratch: root.join("scratch"),
+            gh: None,
+            pull_requests: false,
+            fetching: Default::default(),
+            workflow: None,
+        };
+        let mut job = job();
+        job.branch = "codex/7-x".into();
+        job.made_branch = true;
+        let plain = ByHand::default();
+        match lease(&head, &job, &target, &plain).await {
+            Err(Failure::Failed(why)) => assert!(why.contains("someone made"), "{why}"),
+            other => panic!("not refused: {:?}", other.map(|_| ())),
+        }
+        let mut pushed = job.clone();
+        pushed
+            .outgoing
+            .push(Outgoing::new("push", "o/r", &base, Some("codex/7-x")));
+        assert!(lease(&head, &pushed, &target, &plain).await.is_ok());
+        let mut follow = job.clone();
+        follow.follow_up_of = Some("first".into());
+        assert!(lease(&head, &follow, &target, &plain).await.is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// PUBLISHING-13: the owner's Publish to another branch leaves the job's made one no one's.
+    #[test]
+    fn publishing_13_work_sent_elsewhere_leaves_the_branch() {
+        let mut job = job();
+        job.branch = "codex/7-x".into();
+        assert!(!sent_elsewhere(&job, &ByHand::default()));
+        let elsewhere = ByHand {
+            to: Some("codex/7-mine".into()),
+            ..ByHand::default()
+        };
+        assert!(sent_elsewhere(&job, &elsewhere));
+    }
+
+    /// PUBLISHING-13: a rebase force-pushes a branch obid made, never one the owner named that was
+    /// already there, or any other, without their signed force.
+    #[test]
+    fn publishing_13_a_rebase_force_pushes_only_a_branch_obid_made() {
+        let mut job = job();
+        job.branch = "codex/7-x".into();
+        let plain = ByHand::default();
+        assert!(!may_force("codex/7-x", &job, &plain));
+        job.made_branch = true;
+        assert!(may_force("codex/7-x", &job, &plain));
+        assert!(!may_force("dev", &job, &plain));
+        assert!(may_force("oby/fix-7", &job, &plain));
+        let force = ByHand {
+            force: true,
+            ..ByHand::default()
+        };
+        assert!(may_force("dev", &job, &force));
+        assert!(!may_force("--upload-pack=sh", &job, &force));
+    }
+
+    /// PUBLISHING-13: a remote that didn't answer leaves the branch the owner's.
+    #[test]
+    fn publishing_13_only_a_remote_that_answered_makes_a_branch_its_own() {
+        assert!(free_to_make(&Ok(false)));
+        assert!(!free_to_make(&Ok(true)));
+        assert!(!free_to_make(&Err(Failure::Remote("offline".into()))));
+    }
+
     #[test]
     fn only_its_own_branches_and_never_main() {
         let mut job = job();
@@ -1782,6 +1961,24 @@ mod tests {
                 .unwrap()
                 .contains("oby/")
         );
+        // PUBLISHING-13: one obid made because the owner named it is its own, a name it didn't isn't
+        job.made_branch = true;
+        assert_eq!(refusal(&job, "dev", "main", &ByHand::default()), None);
+        // A Mac's disk takes these for the base and the default branch, whatever made them.
+        for (branch, base) in [
+            ("Main", "dev"),
+            ("MASTER", "dev"),
+            ("Trunk", "dev"),
+            ("Dev", "dev"),
+        ] {
+            job.branch = branch.into();
+            assert!(
+                refusal(&job, base, "trunk", &ByHand::default()).is_some(),
+                "{branch}"
+            );
+        }
+        job.branch = "feature/x".into();
+        job.made_branch = false;
         job.branch = "oby/fix-75".into();
         assert!(
             refusal(&job, "oby/fix-75", "main", &ByHand::default())
@@ -1804,8 +2001,8 @@ mod tests {
     }
 
     /// PUBLISHING-10: the owner's signed Publish goes to any branch they name, the default branch
-    /// and the base included, and its sentence names each choice; by itself, only its own oby/
-    /// branch, never main or the default branch.
+    /// and the base included, and its sentence names each choice; by itself, only a branch it made
+    /// ([`Job::own_branch`]), never main or the default branch.
     #[test]
     fn publishing_10_the_owners_publish_takes_any_branch_and_says_so() {
         let mut job = job();

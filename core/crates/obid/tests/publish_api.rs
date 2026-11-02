@@ -181,6 +181,139 @@ fn leaked_key() -> String {
     ["AK", "IA", "QWERTYUIOPASDFGH"].concat()
 }
 
+/// PUBLISHING-13: a new branch the owner named goes out by itself, as an `oby/` one does; one the
+/// remote already has is theirs, and stays where it was.
+#[test]
+fn publishing_13_a_new_branch_the_owner_named_publishes_by_itself() {
+    let folder = Folder::new("publish-named");
+    let bin = fake_gh(&folder.0);
+    std::fs::write(
+        folder.0.join("gh/view.json"),
+        r#"{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergedAt":null,"baseRefName":"main","headRefOid":""}"#,
+    )
+    .unwrap();
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let first = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "branch": "codex/7-hello"}),
+    );
+    let job = ended(&obid, &first);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["published"], PULL, "{job}");
+    assert_eq!(job["branch"], "codex/7-hello");
+    let kept = std::fs::read_to_string(obid.home.join(format!("jobs/{first}.json"))).unwrap();
+    assert!(
+        kept.contains(r#""madeBranch": true"#) || kept.contains(r#""madeBranch":true"#),
+        "{kept}"
+    );
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    assert_eq!(
+        remote_branch(&remote, "codex/7-hello"),
+        Some(git(&clone, &["rev-parse", "refs/heads/codex/7-hello"]))
+    );
+
+    let main = remote_branch(&remote, "main").unwrap();
+    git(&remote, &["branch", "codex/8-theirs", &main]);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: other.txt",
+               "check": "test -f other.txt", "branch": "codex/8-theirs"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["published"], Value::Null, "{job}");
+    assert!(
+        job["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("codex/8-theirs")
+            || job["publishError"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("codex/8-theirs"),
+        "{job}"
+    );
+    assert_eq!(remote_branch(&remote, "codex/8-theirs"), Some(main.clone()));
+
+    // Its follow-up carries the branch on and publishes by itself too.
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{first}/messages"),
+        Some(&json!({"text": "COMMIT: second.txt"})),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    assert_eq!(told.body["branch"], "codex/7-hello");
+    let follow = ended(&obid, told.body["id"].as_str().unwrap());
+    assert_eq!(follow["status"], "done", "{follow}\n{}", obid.log());
+    assert_eq!(follow["published"], PULL, "{follow}");
+    assert_eq!(
+        remote_branch(&remote, "codex/7-hello"),
+        Some(git(&clone, &["rev-parse", "refs/heads/codex/7-hello"]))
+    );
+
+    // A name that's the remote's in another letter case isn't new: to a Mac's disk it's that branch.
+    git(&remote, &["branch", "dev", &main]);
+    for name in ["Dev", "Main"] {
+        let id = dispatch(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+                   "task": format!("COMMIT: {name}.txt"), "branch": name}),
+        );
+        let job = ended(&obid, &id);
+        assert_eq!(job["published"], Value::Null, "{job}\n{}", obid.log());
+        // Refused as not the job's own, in its own words: not for some other reason.
+        assert!(
+            job["publishError"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("not {name}.")),
+            "{job}"
+        );
+        assert_eq!(remote_branch(&remote, "dev"), Some(main.clone()));
+        assert_eq!(remote_branch(&remote, "main"), Some(main.clone()));
+        let listed = git(
+            &remote,
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        );
+        assert!(!listed.lines().any(|b| b == name), "{listed}");
+    }
+}
+
+/// PUBLISHING-13: a branch made on the remote after the job started is someone's, even at a commit
+/// the job's history has, which a plain push would fast-forward.
+#[test]
+fn publishing_13_a_branch_someone_made_since_is_left_alone() {
+    let folder = Folder::new("publish-made-since");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let main = remote_branch(&remote, "main").unwrap();
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "sleep 8", "branch": "codex/9-hello"}),
+    );
+    within(30, "its check to start", || {
+        (call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body["checks"][0]["steps"][0]["running"] == true).then_some(())
+    });
+    git(&remote, &["branch", "codex/9-hello", &main]);
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["published"], Value::Null, "{job}");
+    assert!(
+        job["publishError"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not codex/9-hello"),
+        "{job}"
+    );
+    // From now on it's theirs: nothing merges it, carries it on or deletes it by itself.
+    let kept = std::fs::read_to_string(obid.home.join(format!("jobs/{id}.json"))).unwrap();
+    assert!(!kept.contains("madeBranch"), "{kept}");
+    assert_eq!(remote_branch(&remote, "codex/9-hello"), Some(main));
+}
+
 /// A job that ends done with a commit publishes by itself: the scan, one push of its branch to the
 /// remote, its pull request opened into the base with a scanned title and description, every
 /// outgoing action listed, and the pull request followed. Telling it more, its new commit goes to

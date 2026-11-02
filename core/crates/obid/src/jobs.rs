@@ -508,6 +508,10 @@ pub struct NewJob {
     pub earlier: Option<String>,
     #[serde(default)]
     pub start_from: Option<String>,
+    /// A follow-up that carries on a branch obid made for the first job ([`Job::made_branch`]).
+    /// Never from the API.
+    #[serde(skip)]
+    pub made_branch: bool,
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
@@ -2861,6 +2865,7 @@ impl Jobs {
         job.start_from = new
             .start_from
             .filter(|b| new.follow_up_of.is_some() && git::is_branch_name(b));
+        job.made_branch = new.made_branch;
         job.follow_up_of = new.follow_up_of;
         job.routine = new.routine;
         // A follow-up of a rule's job is the rule's too (#1314). A Start item's job never carries
@@ -2918,7 +2923,7 @@ impl Jobs {
             .map(|b| b.trim().to_owned())
             .filter(|b| !b.is_empty())
         {
-            Some(branch) if git::is_branch_name(&branch) => branch,
+            Some(branch) if git::is_branch_name(&branch) && !git::is_ref_shaped(&branch) => branch,
             Some(_) => return Err(Refused("That isn't a branch name obid can create.".into())),
             // A follow-up gets a branch of its own unless it carries the first job's on ([`follow_up`]).
             None => match new.pr.or(new.issue).filter(|_| job.follow_up_of.is_none()) {
@@ -5910,8 +5915,8 @@ impl Jobs {
     /// Puts the job's own commits on its base as the remote has it now: the base fetched into
     /// obid's clone, and when it moved (or was force-pushed) since the job's commits started at
     /// `start`, those commits (`start..HEAD`) rebased onto it in the job's sandbox, HEAD detached at
-    /// the result as before; `start_commit` is the new base from then on. Only a job's own `oby/`
-    /// branch that started from the base (never a pull request's or another job's, whose commits
+    /// the result as before; `start_commit` is the new base from then on. Only a branch obid made for the job
+    /// ([`Job::own_branch`]) that started from the base (never a pull request's or another job's, whose commits
     /// aren't all its own), with nothing left uncommitted. A conflict aborts the rebase and says
     /// which files: its agent gets one round to rebase it ([`rebase_prompt`]). A base that can't
     /// be fetched leaves it as it is.
@@ -7928,7 +7933,7 @@ impl Jobs {
     /// values only on macOS, when the job's agent had no network of its own; when the clone holds
     /// nothing but what obid knows is the owner's ([`crate::git::foreign_in`]); when the base is a
     /// branch the repository lets in only through a reviewed pull request, as GitHub says (never an
-    /// `oby/` branch or the job's own); and when every commit between that base and `head` is in
+    /// `oby/` branch, one a job made, or the job's own); and when every commit between that base and `head` is in
     /// obid's own record of what this job, and the follow-ups it continues, made
     /// ([`Jobs::record_of`]). What can't be told is a no.
     #[allow(clippy::too_many_arguments)]
@@ -7950,6 +7955,11 @@ impl Jobs {
         }
         if let Some(why) = crate::secretspec::agent_written_base(base, &job.branch) {
             return Some(why);
+        }
+        if base_a_job_made(&self.lock().jobs, &job.repo, base) {
+            return Some(format!(
+                "its base, {base}, is a branch an agent may have written"
+            ));
         }
         if let Some(why) = git::foreign_in(&self.clone_for(job)).await {
             return Some(why);
@@ -8896,6 +8906,17 @@ impl Jobs {
                 )
                 .await
                 .map_err(|e| format!("obid couldn't make the job's branch: {e}"))?;
+                // A branch the owner named that no remote has is this job's own, as an `oby/` one
+                // is (PUBLISHING-13); one that's there, or a remote that didn't say, stays theirs.
+                if !job.branch.starts_with("oby/")
+                    && let Ok(target) = self.publish_target(&job)
+                {
+                    let taken = crate::publish::branch_taken(&job.branch, &target).await;
+                    let _ = std::fs::remove_dir_all(&target.scratch);
+                    if crate::publish::free_to_make(&taken) {
+                        self.update(id, |job| job.made_branch = true);
+                    }
+                }
             }
             // Detached at the branch: the sandbox never writes the clone's refs, so obid moves the
             // branch to the job's commits itself (git::keep_commits).
@@ -11107,7 +11128,7 @@ impl Jobs {
     ) -> Result<Option<String>, crate::publish::Failure> {
         use crate::publish::Failure;
         // `may` and the claim under one lock: nothing changes the job between them.
-        let job = {
+        let mut job = {
             let mut state = self.lock();
             let job = state
                 .jobs
@@ -11142,6 +11163,10 @@ impl Jobs {
                     signal,
                     stages: Stages::new(self.log_path(id, "stages.log")),
                 };
+                if crate::publish::stopped_being_own(&job, &target, by_hand).await {
+                    self.update(id, |job| job.made_branch = false);
+                    job.made_branch = false;
+                }
                 let outcome = crate::publish::publish(&job, &base, &target, &hooks, by_hand).await;
                 let _ = std::fs::remove_dir_all(&target.scratch);
                 outcome
@@ -12856,6 +12881,13 @@ fn hear(job: &mut Job, text: &str) {
     job.step = format!("You: {}", crate::sphere::inbox::owners_part(text));
 }
 
+/// Whether a job made `base` for itself (PUBLISHING-13): its agent wrote what's on it, as on an
+/// `oby/` branch ([`crate::secretspec::agent_written_base`]).
+fn base_a_job_made(jobs: &HashMap<String, Job>, repo: &str, base: &str) -> bool {
+    jobs.values()
+        .any(|j| j.made_branch && j.repo == repo && same_branch(&j.branch, base))
+}
+
 /// Two branch names that are one ref in obid's clone: a Mac's disk ignores letter case, so
 /// `oby/Fix-34` is `oby/fix-34` there.
 fn same_branch(a: &str, b: &str) -> bool {
@@ -12892,10 +12924,11 @@ fn undeletable_in(jobs: &HashMap<String, Job>, publishing: bool, id: &str) -> Op
         Some("obid is publishing it: delete it once that's done.")
     } else if pull_request_open(job) {
         Some("Its pull request is open: merge or close it first, or archive the job.")
-    } else if jobs
-        .values()
-        .any(|j| j.id != job.id && j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch)
-    {
+    } else if jobs.values().any(|j| {
+        j.id != job.id
+            && j.follow_up_of.as_deref() == Some(id)
+            && same_branch(&j.branch, &job.branch)
+    }) {
         Some("Its follow-up carries its branch on: delete that one first.")
     } else {
         None
@@ -13160,17 +13193,17 @@ async fn remove_worktree(clone: &Path, worktree: &Path) {
     let _ = git::git(clone, &["worktree", "prune"]).await;
 }
 
-/// Whether `job`'s branch must stay when it's deleted: obid didn't make it (only `oby/…` are
-/// obid's; a pull request's head a review fetched is someone else's), another job of any status
+/// Whether `job`'s branch must stay when it's deleted: obid didn't make it ([`Job::own_branch`]; a
+/// pull request's head a review fetched is someone else's), another job of any status
 /// on its repository names it (a follow-up on its parent's branch, repeat jobs on one issue or
 /// pull request), or it's the base or the default branch.
 fn branch_shared(jobs: &HashMap<String, Job>, job: &Job, default: Option<&str>) -> bool {
-    !job.branch.starts_with("oby/")
+    !job.own_branch()
         || job.base.as_deref() == Some(job.branch.as_str())
         || default == Some(job.branch.as_str())
         || jobs
             .values()
-            .any(|j| j.id != job.id && j.repo == job.repo && j.branch == job.branch)
+            .any(|j| j.id != job.id && j.repo == job.repo && same_branch(&j.branch, &job.branch))
 }
 
 /// Why `job` can't be continued in its session, when it can't: only one that failed, was
@@ -13228,6 +13261,7 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
     if let Some(url) = &job.published {
         did.push(format!("Pull request: {url}"));
     }
+    let carries = unmerged && job.published.is_some() && job.pull_request_open();
     NewJob {
         repo: job.repo.clone(),
         kind: job.kind.clone(),
@@ -13244,8 +13278,8 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         complex: job.complex,
         mode: job.mode.clone().filter(|m| m != "bypass"),
         conversation: job.conversation.clone(),
-        branch: (unmerged && job.published.is_some() && job.pull_request_open())
-            .then(|| job.branch.clone()),
+        branch: carries.then(|| job.branch.clone()),
+        made_branch: carries && job.made_branch,
         start_from: unmerged.then(|| job.branch.clone()),
         follow_up_of: Some(job.id.clone()),
         earlier: Some(crate::secrets::known().redact(&did.join("\n"))),
@@ -14419,6 +14453,13 @@ mod tests {
         let mut follow = job_on("b", "acme/app", "oby/fix-a");
         follow.follow_up_of = Some("a".into());
         assert!(
+            undeletable_in(&map(&[alone.clone(), follow.clone()]), false, "a")
+                .unwrap()
+                .contains("follow-up carries")
+        );
+        // In another letter case it's the same branch to a Mac's disk (PUBLISHING-13).
+        follow.branch = "Oby/Fix-A".into();
+        assert!(
             undeletable_in(&map(&[alone, follow]), false, "a")
                 .unwrap()
                 .contains("follow-up carries")
@@ -14427,6 +14468,48 @@ mod tests {
 
     /// A deleted job's branch stays when another job on its repository names it, whatever its
     /// status, or it's the base or default branch; another repository's same name doesn't count.
+    /// PUBLISHING-13: a check on a branch another job made gets no secrets, as on an `oby/` one.
+    #[test]
+    fn publishing_13_a_base_a_job_made_is_agent_written() {
+        let mut made = job_on("a", "acme/app", "codex/7-x");
+        assert!(!base_a_job_made(
+            &map(std::slice::from_ref(&made)),
+            "acme/app",
+            "codex/7-x"
+        ));
+        made.made_branch = true;
+        let jobs = map(std::slice::from_ref(&made));
+        assert!(base_a_job_made(&jobs, "acme/app", "codex/7-x"));
+        assert!(base_a_job_made(&jobs, "acme/app", "Codex/7-X"));
+        assert!(!base_a_job_made(&jobs, "acme/other", "codex/7-x"));
+        assert!(!base_a_job_made(&jobs, "acme/app", "main"));
+    }
+
+    /// PUBLISHING-13: a named branch goes with its job only when obid made it.
+    #[test]
+    fn publishing_13_a_branch_obid_made_goes_with_its_job() {
+        let mut job = job_on("a", "acme/app", "codex/7-x");
+        assert!(branch_shared(
+            &map(std::slice::from_ref(&job)),
+            &job,
+            Some("main")
+        ));
+        job.made_branch = true;
+        assert!(!branch_shared(
+            &map(std::slice::from_ref(&job)),
+            &job,
+            Some("main")
+        ));
+        // Another job's in another letter case is one ref on a Mac's disk: it stays.
+        let mut other = job_on("b", "acme/app", "Codex/7-X");
+        other.status = Status::Done;
+        assert!(branch_shared(
+            &map(&[job.clone(), other]),
+            &job,
+            Some("main")
+        ));
+    }
+
     #[test]
     fn a_shared_branch_stays() {
         let job = job_on("a", "acme/app", "oby/fix-7");
@@ -15395,7 +15478,10 @@ mod tests {
             (None, Some("oby/fix-j".into()))
         );
         job.published = Some("https://github.com/o/r/pull/7".into());
+        // PUBLISHING-13: a branch obid made for the first job stays its own only where it's carried
+        job.made_branch = true;
         let next = follow_up(&job, "and the docs");
+        assert!(next.made_branch);
         assert_eq!(
             (next.branch, next.start_from),
             (Some("oby/fix-j".into()), Some("oby/fix-j".into()))
@@ -15409,6 +15495,7 @@ mod tests {
             head: None,
         });
         let next = follow_up(&job, "and the docs");
+        assert!(!next.made_branch);
         assert_eq!(
             (next.branch, next.start_from),
             (None, Some("oby/fix-j".into()))

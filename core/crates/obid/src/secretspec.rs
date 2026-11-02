@@ -333,7 +333,8 @@ pub async fn at_base(clone: &Path, base: &str) -> Result<(String, Option<String>
 }
 
 /// Why `base` may hold what an agent wrote, so a check on it gets no values, or none: a branch
-/// obid's jobs push (`oby/…`, a stacked pull request's base), or the job's own `branch`.
+/// obid's jobs push (`oby/…`, a stacked pull request's base), or the job's own `branch`. A branch
+/// another job made under a name the owner gave it is the caller's to tell (`base_a_job_made`).
 pub fn agent_written_base(base: &str, branch: &str) -> Option<String> {
     (base.starts_with("oby/") || base == branch)
         .then(|| format!("its base, {base}, is a branch an agent may have written"))

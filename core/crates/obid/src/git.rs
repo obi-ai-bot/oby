@@ -431,6 +431,16 @@ pub async fn worktree_dirs(worktree: &Path) -> Result<(PathBuf, PathBuf), GitErr
     Ok((PathBuf::from(admin), PathBuf::from(common)))
 }
 
+/// Whether a branch this name would read as another ref in a job's or a review's `git diff
+/// origin/dev...HEAD`: a local `origin/dev` hides the remote's, and blinds the review.
+pub fn is_ref_shaped(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "head"
+        || ["refs/", "heads/", "remotes/", "tags/", "origin/"]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+}
+
 /// A valid branch name, as git and the spec allow it (no option-like or odd names).
 pub fn is_branch_name(name: &str) -> bool {
     let ok_chars = name

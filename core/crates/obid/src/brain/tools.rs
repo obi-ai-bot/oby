@@ -40,6 +40,7 @@ pub(super) fn list() -> Value {
         "check": {"type": "string", "maxLength": 200, "description": "Only when the owner named one (\"Check: …\", \"run … to check\"): that one-line shell command, exactly as they said it, which must pass before Oby publishes. Left out, the repository's own check applies."},
         "complexity": {"type": "string", "enum": ["routine", "complex"], "description": "complex for large or tricky work, which runs at the account's effort for complex tasks. Left out, routine."},
         "base_branch": {"type": "string", "description": "Only when the owner named one: the branch the work starts from and its pull request goes into. Left out, the repository's default."},
+        "branch": {"type": "string", "description": "Only when the owner named one or the repository's own instructions set a rule for branch names: the branch the work goes on. A new one publishes by itself as Oby's own do. Left out, or on a turn that read something untrusted, Oby names one."},
         "rounds": {"type": "integer", "minimum": 1, "maximum": 10, "description": "How many rounds the agent may take: more than 1 only when the owner asked it to keep going until done."}},
         "required": ["repo", "task"]});
     json!([
@@ -1588,6 +1589,7 @@ struct Start {
     check: Option<String>,
     complexity: Option<super::plan::Complexity>,
     base_branch: Option<String>,
+    branch: Option<String>,
     rounds: Option<i64>,
 }
 
@@ -1969,6 +1971,10 @@ fn planned(start: Start) -> Result<Dispatch, String> {
         repo: start.repo,
         base_branch: start
             .base_branch
+            .map(|b| b.trim().to_owned())
+            .filter(|b| !b.is_empty()),
+        branch: start
+            .branch
             .map(|b| b.trim().to_owned())
             .filter(|b| !b.is_empty()),
         pr: start.pr,
@@ -3040,20 +3046,29 @@ mod tests {
         assert_eq!(owners_only("failed", "One more round"), None);
     }
 
-    /// TASKCONV-13: oby_dispatch carries the owner's base branch and rounds into its plan; an epic
-    /// isn't offered, since obid can't make one job per sub-issue yet.
+    /// TASKCONV-13: oby_dispatch carries the owner's base branch, branch and rounds into its plan;
+    /// an epic isn't offered, since obid can't make one job per sub-issue yet.
     #[test]
     fn taskconv_13_dispatch_takes_a_base_and_rounds() {
-        let start: Start =
-            parse(json!({"repo": "o/r", "task": "x", "base_branch": " release ", "rounds": 3}))
-                .unwrap();
+        let start: Start = parse(
+            json!({"repo": "o/r", "task": "x", "base_branch": " release ",
+            "branch": " codex/7-x ", "rounds": 3}),
+        )
+        .unwrap();
         let named = planned(start).unwrap();
         assert_eq!(
-            (named.base_branch.as_deref(), named.rounds),
-            (Some("release"), 3)
+            (
+                named.base_branch.as_deref(),
+                named.branch.as_deref(),
+                named.rounds
+            ),
+            (Some("release"), Some("codex/7-x"), 3)
         );
         let plain = planned(parse(json!({"repo": "o/r", "task": "x"})).unwrap()).unwrap();
-        assert_eq!((plain.base_branch, plain.rounds), (None, 1));
+        assert_eq!(
+            (plain.base_branch, plain.branch, plain.rounds),
+            (None, None, 1)
+        );
         assert!(parse::<Start>(json!({"repo": "o/r", "task": "x", "epic": 12})).is_err());
     }
 

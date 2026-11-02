@@ -736,6 +736,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         follow_up_of: None,
         earlier: None,
         start_from: None,
+        made_branch: false,
         routine: None,
         untrusted: false,
         // Set by `dispatch` only for words an app of the owner's signed (crate::secretspec).
