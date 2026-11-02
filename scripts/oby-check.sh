@@ -21,7 +21,7 @@
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   Engine/, Runner/, RunnerTests/, mcp/, Package.*
 #                         swift test (only the touched RunnerTests suites when only they changed)
-#   apps/electron/        npm run typecheck and npm run build there (its node_modules from npm install)
+#   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
@@ -177,6 +177,7 @@ fi
 if [[ -n "$electron" ]]; then
     [[ -d apps/electron/node_modules ]] || echo "oby-check: apps/electron has no node_modules: run npm install there first" >&2
     step npm --prefix apps/electron run --silent typecheck
+    step npm --prefix apps/electron run --silent test
     step npm --prefix apps/electron run --silent build
 fi
 
