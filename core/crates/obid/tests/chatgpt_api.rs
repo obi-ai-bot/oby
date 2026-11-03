@@ -268,7 +268,8 @@ fn chatgpt_4_a_bad_callback_keeps_no_tokens_and_the_row_says_why() {
         let (status, _, _) = http("GET", &world.openai.consent(&url), &[], None);
         assert_eq!(status, 400, "{name}");
         let a = within(5, "the row said why", || {
-            account(&world.obid, &id).filter(|a| !a["label"].is_null())
+            account(&world.obid, &id)
+                .filter(|a| !a["label"].is_null() && a.get("signingIn").is_none())
         });
         assert_eq!(a["signedIn"], false, "{name}");
         assert!(a.get("login").is_none(), "{name}: {a}");
@@ -300,7 +301,7 @@ fn chatgpt_4_a_bad_callback_keeps_no_tokens_and_the_row_says_why() {
     let (status, _, _) = http("GET", &world.openai.consent(&url), &[], None);
     assert_eq!(status, 400);
     let a = within(5, "the row said why", || {
-        account(&world.obid, &id).filter(|a| !a["label"].is_null())
+        account(&world.obid, &id).filter(|a| !a["label"].is_null() && a.get("signingIn").is_none())
     });
     assert!(
         a["label"].as_str().unwrap().contains("wasn't allowed"),
@@ -318,7 +319,7 @@ fn chatgpt_4_a_bad_callback_keeps_no_tokens_and_the_row_says_why() {
     let (status, _, _) = http("GET", &world.openai.consent(&url), &[], None);
     assert_eq!(status, 400);
     let a = within(5, "the row said why", || {
-        account(&world.obid, &id).filter(|a| !a["label"].is_null())
+        account(&world.obid, &id).filter(|a| !a["label"].is_null() && a.get("signingIn").is_none())
     });
     assert!(a.get("login").is_none(), "{a}");
     world.openai.with(|s| s.callback_client = None);
@@ -353,7 +354,8 @@ fn chatgpt_5_a_different_person_or_a_taken_client_replaces_nothing() {
     assert_eq!(again["ext_agent_host_id"], saved["ext_agent_host_id"]);
     assert_eq!(again["login_hint"], "person@example.com");
     let a = within(5, "the row said why", || {
-        account(&world.obid, &first).filter(|a| !a["label"].is_null())
+        account(&world.obid, &first)
+            .filter(|a| !a["label"].is_null() && a.get("signingIn").is_none())
     });
     assert!(
         a["label"]
@@ -377,7 +379,8 @@ fn chatgpt_5_a_different_person_or_a_taken_client_replaces_nothing() {
     let (status, _, _) = http("GET", &world.openai.consent(&url), &[], None);
     assert_eq!(status, 400);
     let a = within(5, "the row said why", || {
-        account(&world.obid, &second).filter(|a| !a["label"].is_null())
+        account(&world.obid, &second)
+            .filter(|a| !a["label"].is_null() && a.get("signingIn").is_none())
     });
     assert!(a["label"].as_str().unwrap().contains("already on"), "{a}");
     assert!(a.get("login").is_none(), "{a}");
@@ -614,7 +617,7 @@ fn chatgpt_16_switching_kinds_removes_the_old_login_only_after_success() {
     let (status, _, _) = http("GET", &world.openai.consent(&url), &[], None);
     assert_eq!(status, 400);
     within(5, "the row said why", || {
-        account(&world.obid, &id).filter(|a| !a["label"].is_null())
+        account(&world.obid, &id).filter(|a| !a["label"].is_null() && a.get("signingIn").is_none())
     });
     assert!(auth.exists(), "a failed sign-in removes nothing");
     assert!(account(&world.obid, &id).unwrap().get("login").is_none());
@@ -788,6 +791,10 @@ fn chatgpt_10_no_process_and_no_file_of_a_running_job_holds_a_token() {
     let env = within(30, "the run is under way", || std::fs::read(&seen).ok());
     let running = every_environment();
     assert!(
+        running.contains(r#"shell_environment_policy.exclude=["OBY_MCP_TOKEN"]"#),
+        "commands don't get the broker token"
+    );
+    assert!(
         running.contains("model_providers.openai_chatgpt_plan.base_url"),
         "its own arguments show"
     );
@@ -863,7 +870,7 @@ fn chatgpt_11_a_token_in_a_models_words_is_taken_out_on_the_way_through() {
 }
 
 /// CHATGPT-12: a job outlives its token and finishes on the same thread: the relay refreshes on the
-/// 401 and sends the same request again, with no `RETRY_WAITS` spent and Codex none the wiser.
+/// 401 and sends the same request again, with none of its tries spent and Codex none the wiser.
 #[test]
 fn chatgpt_12_a_job_outlives_its_token_with_no_retry_spent() {
     let world = world("chatgpt-12");
@@ -880,10 +887,7 @@ fn chatgpt_12_a_job_outlives_its_token_with_no_retry_spent() {
     let done = ended(&world, &job(&world, &id, "RELAY"));
     assert_eq!(done["status"], "done", "{done}");
     assert!(summary_of(&done).contains("From the stand-in."), "{done}");
-    assert!(
-        started.elapsed() < Duration::from_secs(25),
-        "no retry's 30-second wait"
-    );
+    assert!(started.elapsed() < Duration::from_secs(25), "no try's wait");
     let (refreshes, seen) = world
         .openai
         .with(|s| (s.refreshes.len(), s.bearers.clone()));
@@ -1049,7 +1053,7 @@ fn chatgpt_14_a_503_backs_off_a_403_stops_and_a_repeated_401_ends_the_job() {
         let j = call(&world.obid, "GET", &format!("/v1/jobs/{id503}"), None).body;
         j["step"]
             .as_str()
-            .is_some_and(|s| s.starts_with("Retrying after"))
+            .is_some_and(|s| s.starts_with("Trying again in"))
             .then_some(j)
     });
     assert_eq!(retrying["status"], "running", "{retrying}");
@@ -1348,6 +1352,39 @@ fn chatgpt_real_codex_runs_through_the_relay() {
     let done = ended(&world, &job(&world, &id, "Say hello."));
     assert_eq!(done["status"], "done", "{done}");
     assert!(summary_of(&done).contains("through the relay"), "{done}");
+    // A command of real Codex's has the rest of its environment, and not the broker token.
+    world.openai.with(|s| {
+        s.responses.push_back(Reply::Sse(vec![
+            json!({"type": "response.created", "response": {"id": "r2"}}),
+            json!({"type": "response.output_item.done", "item": {"type": "function_call", "id": "fc",
+                "call_id": "c1", "name": "exec_command", "arguments": json!({"cmd": "env"}).to_string()}}),
+            json!({"type": "response.completed", "response": {"id": "r2", "usage": {
+                "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens_details": {"reasoning_tokens": 0}}}}),
+        ]));
+        s.responses.push_back(Reply::Sse(said("Ran it.")));
+    });
+    let running = job(&world, &id, "Run env.");
+    // (obid asks the owner before `env` in every mode: it's the owner here)
+    let waiting = within(60, "its approval", || {
+        let job = call(&world.obid, "GET", &format!("/v1/jobs/{running}"), None).body;
+        job["permission"]["id"].is_string().then_some(job)
+    });
+    let allowed = call(
+        &world.obid,
+        "POST",
+        &format!("/v1/jobs/{running}/permission"),
+        Some(&json!({"id": waiting["permission"]["id"], "decision": "allow"})),
+    );
+    assert_eq!(allowed.status, 200, "{}", allowed.text);
+    let ran = ended(&world, &running);
+    let sent = world.openai.with(|s| s.bodies.join("\n"));
+    assert!(sent.contains("PATH="), "the command ran: {ran}");
+    assert!(
+        !sent.contains("OBY_MCP_TOKEN"),
+        "the broker token reached a command"
+    );
     let access = world.openai.with(|s| s.tokens[0].clone());
     let seen = world.openai.with(|s| s.bearers.clone());
     assert!(
@@ -1400,6 +1437,568 @@ fn summary_of(job: &Value) -> &str {
     job["summary"].as_str().unwrap_or("")
 }
 
+/// A job of `account` waiting before it uses the relay: its address and broker token, for calling the
+/// relay as Codex does, as often as a test needs. `.obi/go` lets it finish.
+fn held_job(world: &World, account: &str) -> (String, String, String) {
+    let id = job(world, account, "RELAY HOLD");
+    let seen = world
+        .obid
+        .home
+        .join("worktrees")
+        .join(&id)
+        .join(".obi/env-seen.json");
+    let env = within(30, "the run is under way", || std::fs::read(&seen).ok());
+    let env: Value = serde_json::from_slice(&env).unwrap();
+    let base = format!("http://127.0.0.1:{}/v1/agent/chatgpt/{id}", world.obid.port);
+    (id, base, env["OBY_MCP_TOKEN"].as_str().unwrap().to_owned())
+}
+
+fn post_as_codex(base: &str, broker: &str) -> (u16, Vec<(String, String)>, String) {
+    let auth = format!("Bearer {broker}");
+    http(
+        "POST",
+        &format!("{base}/responses"),
+        &[("Authorization", &auth)],
+        Some("{}"),
+    )
+}
+
+/// One request's answer through the relay, then whether the next one reaches OpenAI: what a run that
+/// wasn't stopped does.
+fn then_goes_on(world: &World, base: &str, broker: &str, what: &str) {
+    let before = posts(world);
+    let (status, _, text) = post_as_codex(base, broker);
+    assert_eq!(status, 200, "{what}: the next request: {text}");
+    assert_eq!(
+        posts(world),
+        before + 1,
+        "{what}: the next request reached OpenAI"
+    );
+}
+
+/// CHATGPT-14: a model's words naming a failure are words. Only an event that is one is one: a job
+/// editing the relay's own file writes `response.failed` all the time.
+#[test]
+fn chatgpt_14_a_models_words_naming_a_failure_fail_nothing() {
+    let world = world("chatgpt-14-words");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let (job, base, broker) = held_job(&world, &id);
+    let words = r#"the event {"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}} and {"type":"error"} and "error""#;
+    let mut completed = said("fine");
+    completed[2]["response"]["instructions"] = json!(words);
+    for events in [said(words), completed] {
+        world
+            .openai
+            .with(|s| s.responses.push_back(Reply::Sse(events)));
+        let (status, _, text) = post_as_codex(&base, &broker);
+        assert_eq!(status, 200);
+        assert!(text.contains("response.completed"), "{text}");
+        then_goes_on(&world, &base, &broker, words);
+    }
+    std::fs::write(
+        world.obid.home.join("worktrees").join(&job).join(".obi/go"),
+        "",
+    )
+    .unwrap();
+    assert_eq!(ended(&world, &job)["status"], "done");
+}
+
+/// CHATGPT-14: only what OpenAI's page says is final stops a run. A stream that fails with a code it
+/// doesn't list, or a status it doesn't, goes on to Codex as it came, and the next request goes out.
+#[test]
+fn chatgpt_14_what_openai_doesnt_call_final_never_stops_a_run() {
+    let world = world("chatgpt-14-unknown");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let (job, base, broker) = held_job(&world, &id);
+    for code in [
+        "server_error",
+        "rate_limit_exceeded",
+        "brand_new_code",
+        "context_length_exceeded",
+    ] {
+        world
+            .openai
+            .with(|s| s.responses.push_back(Reply::Sse(failed(code, "Hm."))));
+        let (status, _, text) = post_as_codex(&base, &broker);
+        assert_eq!(status, 200, "{code}");
+        assert!(text.contains(code), "{code}: as it came: {text}");
+        then_goes_on(&world, &base, &broker, code);
+    }
+    let context = json!({"error": {"code": "context_length_exceeded", "message": "Too long.",
+        "type": "invalid_request_error", "param": null}});
+    for (status, body) in [
+        (408, json!({"detail": "Timed out"})),
+        (
+            409,
+            json!({"error": {"code": "conflict", "message": "Busy."}}),
+        ),
+        (
+            404,
+            json!({"error": {"code": "brand_new_code", "message": "Hm."}}),
+        ),
+        (400, context),
+    ] {
+        world
+            .openai
+            .with(|s| s.responses.push_back(Reply::Json(status, body.clone())));
+        let (got, headers, text) = post_as_codex(&base, &broker);
+        assert_eq!(got, status, "{body}");
+        let said: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        assert_eq!(said, body, "as it came");
+        assert!(
+            headers
+                .iter()
+                .any(|(n, v)| n.eq_ignore_ascii_case("content-type") && v.contains("json")),
+            "{headers:?}"
+        );
+        then_goes_on(&world, &base, &broker, &body.to_string());
+    }
+    // A 403 that isn't OpenAI's admission saying so: an edge's page, not a policy of the plan's.
+    world.openai.with(|s| {
+        s.responses
+            .push_back(Reply::Text(403, "<html>blocked</html>".into()))
+    });
+    let (got, _, text) = post_as_codex(&base, &broker);
+    assert_eq!((got, text.as_str()), (403, "<html>blocked</html>"));
+    then_goes_on(&world, &base, &broker, "a 403 with no word of OpenAI's");
+    std::fs::write(
+        world.obid.home.join("worktrees").join(&job).join(".obi/go"),
+        "",
+    )
+    .unwrap();
+    assert_eq!(ended(&world, &job)["status"], "done");
+}
+
+/// CHATGPT-13: a usage limit can also come as a plain stream `error` event, in either shape, which
+/// real Codex ignores (spike, 2026-11-03): the relay reads it, and what Codex tries next stays here.
+#[test]
+fn chatgpt_13_a_limit_in_a_plain_error_event_stops_the_run() {
+    let world = world("chatgpt-13-error-event");
+    let limit = "subscription_sharing_usage_limit_exceeded";
+    for event in [
+        json!({"type": "error", "code": limit, "message": "Over.", "param": null}),
+        json!({"type": "error", "error": {"code": limit, "message": "Over."}}),
+    ] {
+        // (an account each: the first is held after its limit)
+        let id = new_account(&world.obid);
+        signed_in(&world, &id);
+        let (job, base, broker) = held_job(&world, &id);
+        world.openai.with(|s| {
+            s.responses.push_back(Reply::Sse(vec![
+                json!({"type": "response.created", "response": {"id": "r"}}),
+                event.clone(),
+            ]))
+        });
+        assert_eq!(post_as_codex(&base, &broker).0, 200);
+        let before = posts(&world);
+        let (status, _, _) = post_as_codex(&base, &broker);
+        assert_eq!(status, 429, "{event}");
+        assert_eq!(posts(&world), before, "{event}: it stayed here");
+        std::fs::write(
+            world.obid.home.join("worktrees").join(&job).join(".obi/go"),
+            "",
+        )
+        .unwrap();
+        let stopped = ended(&world, &job);
+        assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    }
+}
+
+/// The hold obid inferred from a limit with no time gives way to a run that went through: a limit
+/// that passed needn't be waited out.
+#[test]
+fn chatgpt_13_a_success_through_the_relay_lifts_the_hour_obid_inferred() {
+    let world = world("chatgpt-13-lift");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let (job_on, base, broker) = held_job(&world, &id);
+    let body =
+        json!({"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "Over."}});
+    world
+        .openai
+        .with(|s| s.responses.push_back(Reply::Json(429, body)));
+    let stopped = ended(&world, &job(&world, &id, "RELAY"));
+    assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    assert!(!account(&world.obid, &id).unwrap()["fullUntil"].is_null());
+    // A job that was under way still gets through.
+    let (status, _, _) = post_as_codex(&base, &broker);
+    assert_eq!(status, 200);
+    within(5, "the hold is lifted", || {
+        account(&world.obid, &id).filter(|a| a["fullUntil"].is_null())
+    });
+    std::fs::write(
+        world
+            .obid
+            .home
+            .join("worktrees")
+            .join(&job_on)
+            .join(".obi/go"),
+        "",
+    )
+    .unwrap();
+    ended(&world, &job_on);
+}
+
+/// An empty model list is no list: the owner's model stays, as when the list can't be had.
+#[test]
+fn chatgpt_1_an_empty_model_list_keeps_the_owners_model() {
+    let world = world("chatgpt-1-no-models");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let options = call(&world.obid, "GET", "/v1/settings/models/options", None).body;
+    let chosen = options["codex"]["models"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let tuned = call(
+        &world.obid,
+        "PATCH",
+        &format!("/v1/accounts/{id}"),
+        Some(&json!({"model": chosen})),
+    );
+    assert_eq!(tuned.status, 200, "{}", tuned.text);
+    world.openai.with(|s| s.models = json!({"models": []}));
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["model"], chosen.as_str(), "{done}");
+}
+
+/// A configuration with a device login beside what's asked for, conversations on Codex first.
+fn talk_world(name: &str, device_full: bool, claude: bool) -> World {
+    let folder = Folder::new(name);
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    config["agents"]["codex"]["bin"] = json!(agent("fake-codex-harness"));
+    config["conversation"] = json!({"agent": "codex"});
+    let device = folder.0.join("home/accounts/device");
+    std::fs::create_dir_all(&device).unwrap();
+    std::fs::write(
+        device.join("auth.json"),
+        json!({"OPENAI_API_KEY": "fake"}).to_string(),
+    )
+    .unwrap();
+    config["agents"]["codex"]["accounts"] =
+        json!([{"id": "device", "name": "Device", "configDir": device}]);
+    if claude {
+        let stub = folder.0.join("home/accounts/stub");
+        std::fs::create_dir_all(&stub).unwrap();
+        std::fs::write(stub.join(".credentials.json"), "{}").unwrap();
+    }
+    if device_full {
+        let now = obi_protocol::time::now();
+        std::fs::write(
+            folder.0.join("home/usage.json"),
+            json!({"device": {"fullUntil": now + 3600}}).to_string(),
+        )
+        .unwrap();
+    }
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    World {
+        _folder: folder,
+        openai,
+        obid,
+    }
+}
+
+fn talk_next(world: &World) -> Value {
+    call(&world.obid, "GET", "/v1/status", None).body["talkNext"].clone()
+}
+
+/// Nobody moves on to a ChatGPT login without the owner's click: with a full device login, Auto
+/// doesn't land there, for a new conversation or one already on the device login, and no words reach
+/// OpenAI.
+#[test]
+fn chatgpt_talk_a_full_device_login_doesnt_land_on_chatgpt() {
+    let world = talk_world("chatgpt-talk-full", false, false);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    assert_eq!(
+        talk_next(&world),
+        "device",
+        "it sorts first only by chance otherwise"
+    );
+    let first = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "REMEMBER", "new": true})),
+    );
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    assert_eq!(posts(&world), 0, "{}", first.text);
+    // Its limit: it's full, and ChatGPT is what's left.
+    let until = obi_protocol::time::now() + 3600;
+    std::fs::write(
+        world.obid.home.join("usage.json"),
+        json!({"device": {"fullUntil": until}}).to_string(),
+    )
+    .unwrap();
+    let world = restarted(world);
+    assert_ne!(talk_next(&world), json!(id), "a new conversation");
+    let next = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "RELAY", "conversation": conversation})),
+    );
+    assert_eq!(next.status, 200, "{}", next.text);
+    assert_eq!(posts(&world), 0, "{}", next.text);
+    assert!(!next.text.contains("From the stand-in."), "{}", next.text);
+}
+
+/// [`World`] again on the same home, as a restart would.
+fn restarted(world: World) -> World {
+    let World {
+        _folder,
+        openai,
+        mut obid,
+    } = world;
+    assert!(obid.stop().success());
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(_folder.0.join("config.json")).unwrap()).unwrap();
+    let obid = start_with(
+        &_folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    World {
+        _folder,
+        openai,
+        obid,
+    }
+}
+
+/// Auto chooses ChatGPT only on a Mac with nothing else: not because it sorts first.
+#[test]
+fn chatgpt_talk_auto_is_chatgpt_only_with_nothing_else() {
+    // Codex is the tool Auto looks at first, and the ChatGPT account has more room than the other.
+    let world = talk_world("chatgpt-talk-auto", false, true);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let removed = call(&world.obid, "DELETE", "/v1/accounts/device", None);
+    assert!(removed.status < 300, "{}", removed.text);
+    assert_eq!(talk_next(&world), "stub", "Claude Code is there");
+    // Nothing else signed in.
+    let removed = call(&world.obid, "DELETE", "/v1/accounts/stub", None);
+    assert!(removed.status < 300, "{}", removed.text);
+    assert_eq!(talk_next(&world), json!(id));
+}
+
+/// A conversation the owner put on ChatGPT stays there: at its limit it says so, and nothing moves to
+/// another tool by itself, on the turn or on the next.
+#[test]
+fn chatgpt_talk_a_chatgpt_limit_moves_nothing_to_another_account() {
+    let world = talk_world("chatgpt-talk-limit", false, false);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let put = call(
+        &world.obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"talkAccount": id})),
+    );
+    assert_eq!(put.status, 200, "{}", put.text);
+    assert_eq!(talk_next(&world), json!(id));
+    let first = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "RELAY", "new": true})),
+    );
+    assert!(first.text.contains("From the stand-in."), "{}", first.text);
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    world.openai.with(|s| {
+        s.responses.push_back(Reply::Json(
+            429,
+            json!({"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "Over."}}),
+        ))
+    });
+    let limit = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "RELAY", "conversation": conversation})),
+    );
+    assert!(limit.text.contains("Usage limit reached"), "{}", limit.text);
+    assert!(
+        !limit.text.contains("resume="),
+        "not on the device login: {}",
+        limit.text
+    );
+    let turns = world
+        .obid
+        .home
+        .join("conversations")
+        .join(&conversation)
+        .join("config/turns.jsonl");
+    let before = std::fs::read_to_string(&turns)
+        .unwrap_or_default()
+        .lines()
+        .count();
+    // The next turn, held: no move, and no time it can't know.
+    let next = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "REMEMBER", "conversation": conversation})),
+    );
+    assert!(next.text.contains("Usage limit reached"), "{}", next.text);
+    assert!(
+        !next.text.contains("until"),
+        "no inferred time: {}",
+        next.text
+    );
+    assert_eq!(
+        std::fs::read_to_string(&turns)
+            .unwrap_or_default()
+            .lines()
+            .count(),
+        before
+    );
+    // The owner's click moves it.
+    let moved = call(
+        &world.obid,
+        "PATCH",
+        &format!("/v1/conversations/{conversation}"),
+        Some(&json!({"talkAccount": "device"})),
+    );
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    let there = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "REMEMBER", "conversation": conversation})),
+    );
+    assert!(there.text.contains("resume="), "{}", there.text);
+}
+
+/// A conversation on ChatGPT under Auto (it was all there was) stays on it when something else comes:
+/// that's no click either.
+#[test]
+fn chatgpt_talk_a_conversation_on_chatgpt_stays_when_another_account_comes() {
+    let folder = Folder::new("chatgpt-talk-stays");
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    config["agents"]["codex"]["bin"] = json!(agent("fake-codex-harness"));
+    config["conversation"] = json!({"agent": "codex"});
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let first = within(10, "the account is free", || {
+        let first = call(
+            &world.obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": "RELAY", "new": true})),
+        );
+        first.text.contains("From the stand-in.").then_some(first)
+    });
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    // Claude Code's stand-in signs in: Auto would look at it first for a new conversation.
+    let stub = world._folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&stub).unwrap();
+    std::fs::write(stub.join(".credentials.json"), "{}").unwrap();
+    assert_eq!(talk_next(&world), "stub");
+    let before = posts(&world);
+    let next = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "RELAY", "conversation": conversation})),
+    );
+    assert!(next.text.contains("From the stand-in."), "{}", next.text);
+    assert_eq!(posts(&world), before + 1, "still on ChatGPT");
+}
+
+/// A turn nobody watches keeps off a ChatGPT login too, while anything else can take it.
+#[test]
+fn chatgpt_talk_a_turn_nobody_watches_keeps_off_chatgpt() {
+    let folder = Folder::new("chatgpt-talk-unattended");
+    let openai = OpenAi::start();
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = agent("fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["orchestratorDelay"] = json!(1);
+    config["conversation"] = json!({"agent": "codex"});
+    config["agents"]["codex"] = json!({"bin": agent("fake-codex-harness"), "accounts": []});
+    let stub = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&stub).unwrap();
+    std::fs::write(stub.join(".credentials.json"), "{}").unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let room = world.obid.home.join("conversations/orchestrator/room");
+    std::fs::create_dir_all(&room).unwrap();
+    std::fs::write(room.join("supervise.txt"), "FAIL\n").unwrap();
+    let posted = within(10, "the job was taken", || {
+        let posted = call(
+            &world.obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "JOB-FAILS",
+                "title": "Flaky thing", "rounds": 1, "agent": "claude", "account": "stub"}}),
+            ),
+        );
+        (posted.status == 201).then_some(posted)
+    });
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    within(60, "the event turn ended", || {
+        let inbox = call(&world.obid, "GET", "/v1/inbox", None).body;
+        inbox
+            .as_array()?
+            .iter()
+            .find(|i| {
+                i["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Oby couldn't work out"))
+            })
+            .cloned()
+    });
+    // (fake-harness, Claude Code's stand-in, keeps the same file: Codex's has `app-server` in it)
+    let turns = world
+        .obid
+        .home
+        .join("conversations/orchestrator/config/turns.jsonl");
+    let turns = std::fs::read_to_string(&turns).unwrap_or_default();
+    assert!(
+        !turns.contains("app-server"),
+        "the event turn ran on Codex, the ChatGPT login: {turns}"
+    );
+    assert!(
+        turns.contains("--input-format"),
+        "it ran on Claude Code: {turns}"
+    );
+    assert_eq!(posts(&world), 0);
+}
+
 #[allow(dead_code)]
 mod stand_in_openai {
     //! A stand-in OpenAI on loopback for the ChatGPT tests (docs/contracts/chatgpt-sign-in.md):
@@ -1432,6 +2031,8 @@ mod stand_in_openai {
         Json(u16, Value),
         /// A stream that ends with these events.
         Sse(Vec<Value>),
+        /// A page that isn't JSON.
+        Text(u16, String),
     }
 
     /// How the stand-in behaves next, and what it saw.
@@ -1467,6 +2068,8 @@ mod stand_in_openai {
         pub refused: HashSet<String>,
         /// Answers 401 for every token.
         pub refuse_all: bool,
+        /// Saw: each `/v1/responses` body.
+        pub bodies: Vec<String>,
         issued_clients: u32,
         minted: u32,
         codes: HashMap<String, Grant>,
@@ -1520,6 +2123,7 @@ mod stand_in_openai {
                 bearers: Vec::new(),
                 refused: HashSet::new(),
                 refuse_all: false,
+                bodies: Vec::new(),
                 issued_clients: 0,
                 minted: 0,
                 codes: HashMap::new(),
@@ -1850,8 +2454,9 @@ mod stand_in_openai {
         axum::Json(script.models.clone()).into_response()
     }
 
-    async fn responses(State(shared): State<Shared>, headers: HeaderMap) -> Response {
+    async fn responses(State(shared): State<Shared>, headers: HeaderMap, body: String) -> Response {
         let mut script = shared.script.lock().unwrap();
+        script.bodies.push(body);
         let token = bearer(&headers);
         script
             .bearers
@@ -1872,6 +2477,12 @@ mod stand_in_openai {
             )
                 .into_response(),
             Some(Reply::Sse(events)) => sse(&events),
+            Some(Reply::Text(status, text)) => (
+                StatusCode::from_u16(status).unwrap(),
+                [(header::CONTENT_TYPE, "text/html")],
+                text,
+            )
+                .into_response(),
             None => sse(&said("From the stand-in.")),
         }
     }

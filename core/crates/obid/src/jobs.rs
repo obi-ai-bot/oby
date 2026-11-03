@@ -1275,6 +1275,13 @@ impl Jobs {
         let _ = self.chatgpt.set(chatgpt);
     }
 
+    /// A response on a ChatGPT login completed: an hour obid inferred from its limit is over.
+    pub(crate) fn limit_passed(&self, account: &str) {
+        if self.usage.clear_inferred(account) {
+            self.usage_changed.notify_one();
+        }
+    }
+
     /// What OpenAI refused run `id`, once, when it ran on a ChatGPT login (crate::chatgpt_relay).
     fn chatgpt_refusal(&self, id: &str) -> Option<crate::chatgpt_relay::Refusal> {
         self.chatgpt.get().and_then(|chatgpt| chatgpt.runs.take(id))
@@ -7129,6 +7136,17 @@ impl Jobs {
                 // github.com, which the egress proxy would ask the owner about (#616), and a job's
                 // `CODEX_HOME` has no plug-in in it anyway.
                 argv.splice(1..1, ["-c".into(), "features.plugins=false".into()]);
+                // Codex itself needs it (its MCP servers, the relay); its commands don't, and real
+                // Codex hands them all of its environment, this included (measured 2026-11-03).
+                if extra.iter().any(|(name, _)| *name == "OBY_MCP_TOKEN") {
+                    argv.splice(
+                        1..1,
+                        [
+                            "-c".into(),
+                            r#"shell_environment_policy.exclude=["OBY_MCP_TOKEN"]"#.into(),
+                        ],
+                    );
+                }
                 if let Some((base, _)) = &relay {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
                 }

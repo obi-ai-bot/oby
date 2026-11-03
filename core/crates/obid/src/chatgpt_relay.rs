@@ -10,10 +10,11 @@
 //!
 //! And it's where obid learns what went wrong: Codex's own error for a usage limit is only
 //! `exceeded retry limit, last status: 429 Too Many Requests` (spike S5), so what OpenAI said is
-//! read here, kept for the run ([`Refusal`]), and taken by whoever ran it. What must not be tried
-//! again goes to Codex as a 400 with obid's own sentence: Codex retries a 401 or a 403 five times,
-//! and takes a 400's body as the turn's error, word for word. After a refusal that must stop the
-//! run, what Codex tries anyway is answered here, without reaching OpenAI.
+//! read here, kept for the run ([`Refusal`]), and taken by whoever ran it. Only what OpenAI's page
+//! says is final stops a run ([`refusal_of`]): that goes to Codex as a 400 with obid's own sentence,
+//! since Codex retries a 401 or a 403 five times and takes a 400's body as the turn's error, word for
+//! word, and what it tries anyway is answered here, without reaching OpenAI. Anything else goes to
+//! Codex as it came, and tries again: Codex's own retries, then the job's bounded ones.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -318,15 +319,17 @@ async fn relay(
         let status = response.status();
         if status.is_success() {
             runs.lock().remove(run);
-            return streamed(shared.chatgpt.clone(), run.to_owned(), response);
+            return streamed(shared.clone(), account.to_owned(), run.to_owned(), response);
         }
         let request_id = response
             .headers()
             .get("x-request-id")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
+        let kind = response.headers().get(header::CONTENT_TYPE).cloned();
         let retry_after = response.headers().get(header::RETRY_AFTER).cloned();
-        let said = crate::tetrix::small_json_or_text(response).await;
+        let body_said = response.bytes().await.unwrap_or_default();
+        let said = said_in(&body_said);
         if status == StatusCode::UNAUTHORIZED && !renewed && me.ends_within(account, NEAR_ITS_END) {
             renewed = true;
             match me.replacing(account, &access).await {
@@ -337,36 +340,44 @@ async fn relay(
                 Err(refused) => return token_refused(shared, run, &refused).await,
             }
         }
+        // As it came, for Codex to read: a body it can tell apart, or a status it backs off from.
+        let as_it_came = || {
+            let mut passed = (status, body_said.clone()).into_response();
+            let headers = passed.headers_mut();
+            headers.remove(header::CONTENT_TYPE);
+            if let Some(kind) = kind {
+                headers.insert(header::CONTENT_TYPE, kind);
+            }
+            if let Some(value) = retry_after {
+                headers.insert(header::RETRY_AFTER, value);
+            }
+            passed
+        };
         // The model list isn't the work: a refusal of it stops nothing.
         if method == Method::GET {
-            return (status, said.to_string()).into_response();
+            return as_it_came();
         }
-        let refusal = refusal_of(status.as_u16(), &said, request_id.as_deref());
+        let refusal = refusal_of(Some(status.as_u16()), &said, request_id.as_deref());
         tracing::warn!(
             "run {run}: ChatGPT answered {status} {}",
             code_of(&said).unwrap_or_default()
         );
-        return match refusal.after {
-            // As it came: Codex stops at a 429 by itself (spike S5), and its code is why here.
-            After::Limit => {
-                runs.refused(run, refusal.clone());
-                answer_to_codex(&refusal)
-            }
-            // As it came, and Codex backs off by itself.
-            After::TryAgain => {
-                runs.refused(run, refusal);
-                let mut passed = (status, said.to_string()).into_response();
-                if let Some(value) = retry_after {
-                    passed.headers_mut().insert(header::RETRY_AFTER, value);
-                }
-                passed
-            }
-            After::Stop | After::SignIn => {
-                runs.refused(run, refusal.clone());
-                answer_to_codex(&refusal)
-            }
+        let after = refusal.after;
+        runs.refused(run, refusal.clone());
+        return match after {
+            After::TryAgain => as_it_came(),
+            // A limit's 429 stops Codex by itself (spike S5), and its code is why here.
+            After::Limit | After::Stop | After::SignIn => answer_to_codex(&refusal),
         };
     }
+}
+
+/// An answer's body as JSON, or as the text it is.
+fn said_in(body: &[u8]) -> Value {
+    let body = &body[..body.len().min(1 << 20)];
+    serde_json::from_slice(body).unwrap_or_else(|_| {
+        Value::String(String::from_utf8_lossy(body).chars().take(4096).collect())
+    })
 }
 
 fn try_again(runs: &Runs, run: &str, status: StatusCode, words: String) -> Response {
@@ -449,36 +460,29 @@ fn words_of(said: &Value) -> String {
     crate::secrets::known().redact(&one)
 }
 
-/// What a non-success answer comes to (OpenAI's Errors and recovery page).
-fn refusal_of(status: u16, said: &Value, request: Option<&str>) -> Refusal {
+/// What an answer that isn't a success comes to, or (`status` none) a stream's failure after it
+/// began. Only what OpenAI's Errors and recovery page calls final stops a run. Its list "is not
+/// exhaustive", and what it doesn't name may pass: the unknown tries again, bounded by Codex's own
+/// retries and the job's.
+fn refusal_of(status: Option<u16>, said: &Value, request: Option<&str>) -> Refusal {
     let code = code_of(said);
     let request = request.map_or_else(String::new, |id| format!(" (request {id})"));
     let stop = |words: String| Refusal {
         after: After::Stop,
         words: format!("{words}{request}"),
     };
-    match (status, code.as_deref()) {
-        (_, Some(LIMIT_CODE)) => Refusal {
+    match code.as_deref() {
+        Some(LIMIT_CODE) => Refusal {
             after: After::Limit,
             words: LIMIT_WORDS.into(),
         },
-        (
-            _,
-            Some(
-                "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable",
-            ),
-        )
-        | (429 | 500..=599, _) => Refusal {
-            after: After::TryAgain,
-            words: format!("ChatGPT is unavailable for now ({status}).{request}"),
-        },
-        (_, Some("subscription_sharing_user_not_eligible")) => {
+        Some("subscription_sharing_user_not_eligible") => {
             stop("ChatGPT plan use isn't available for this account or workspace.".into())
         }
-        (_, Some("subscription_sharing_route_not_supported")) => stop(
+        Some("subscription_sharing_route_not_supported") => stop(
             "ChatGPT refused the way Oby asked: that's Oby's configuration, not your login.".into(),
         ),
-        (_, Some("subscription_sharing_unsupported_capability")) => stop(format!(
+        Some("subscription_sharing_unsupported_capability") => stop(format!(
             "ChatGPT plan use doesn't support something this run asked for{}.",
             said["error"]["param"]
                 .as_str()
@@ -487,24 +491,56 @@ fn refusal_of(status: u16, said: &Value, request: Option<&str>) -> Refusal {
                     crate::secrets::known().redact(param)
                 ))
         )),
-        (_, Some(chatpass)) if chatpass.starts_with("chatpass_v2_") => {
-            stop("ChatGPT's permission for this account doesn't cover this request.".into())
-        }
-        (401, _) => stop(format!(
+        Some("subscription_sharing_invalid_user") => stop(format!(
             "ChatGPT didn't accept this account's login: {}",
             words_of(said)
         )),
-        _ => stop(format!(
-            "ChatGPT refused this request ({status}): {}",
-            words_of(said)
-        )),
+        Some(chatpass) if chatpass.starts_with("chatpass_v2_") => {
+            stop("ChatGPT's permission for this account doesn't cover this request.".into())
+        }
+        _ => match status {
+            // Direct admission's own, before a stream opens: the identity or permission wasn't
+            // accepted. A 401 comes here only after a refresh couldn't help (`relay`).
+            Some(401) => stop(format!(
+                "ChatGPT didn't accept this account's login: {}",
+                words_of(said)
+            )),
+            // A policy or a permission, in admission's own `{"detail": …}`. A 403 with no word of
+            // OpenAI's is an edge's page, and says nothing of the plan.
+            Some(403) if said["detail"].is_string() => {
+                stop(format!("ChatGPT refused this request: {}", words_of(said)))
+            }
+            Some(status) if !(500..=599).contains(&status) && status != 429 => Refusal {
+                after: After::TryAgain,
+                words: format!(
+                    "ChatGPT didn't take this request ({status}): {}{request}",
+                    words_of(said)
+                ),
+            },
+            Some(status) => Refusal {
+                after: After::TryAgain,
+                words: format!("ChatGPT is unavailable for now ({status}).{request}"),
+            },
+            None => Refusal {
+                after: After::TryAgain,
+                words: format!(
+                    "ChatGPT's answer failed part way: {}{request}",
+                    words_of(said)
+                ),
+            },
+        },
     }
 }
 
 /// A success, as it comes: event by whole event, so the scrub of answers (crate::vault) sees each
 /// one whole, and a stream that fails after it began is noticed. Its answer's `response.failed`
 /// goes on to Codex; what Codex tries after it stays here.
-fn streamed(me: Arc<ChatGpt>, run: String, response: reqwest::Response) -> Response {
+fn streamed(
+    shared: Arc<Shared>,
+    account: String,
+    run: String,
+    response: reqwest::Response,
+) -> Response {
     // What Codex reads off a direct answer (the model served, its limits' headers); never a cookie.
     let passed: Vec<_> = response
         .headers()
@@ -524,7 +560,8 @@ fn streamed(me: Arc<ChatGpt>, run: String, response: reqwest::Response) -> Respo
         response: reqwest::Response,
         held: Vec<u8>,
         ended: bool,
-        me: Arc<ChatGpt>,
+        shared: Arc<Shared>,
+        account: String,
         run: String,
         request: Option<String>,
     }
@@ -533,16 +570,18 @@ fn streamed(me: Arc<ChatGpt>, run: String, response: reqwest::Response) -> Respo
             response,
             held: Vec::new(),
             ended: false,
-            me,
+            shared,
+            account,
             run,
             request,
         },
         |mut reading| async move {
             loop {
-                if let Some(at) = reading.held.windows(2).position(|w| w == b"\n\n") {
-                    let frame: Vec<u8> = reading.held.drain(..at + 2).collect();
+                if let Some(end) = frame_end(&reading.held) {
+                    let frame: Vec<u8> = reading.held.drain(..end).collect();
                     notice(
-                        &reading.me,
+                        &reading.shared,
+                        &reading.account,
                         &reading.run,
                         &frame,
                         reading.request.as_deref(),
@@ -573,10 +612,24 @@ fn streamed(me: Arc<ChatGpt>, run: String, response: reqwest::Response) -> Respo
     answer
 }
 
-/// A stream's event that fails it: what it means is kept for the run.
-fn notice(me: &ChatGpt, run: &str, frame: &[u8], request: Option<&str>) {
-    let needle = b"response.failed";
-    if !frame.windows(needle.len()).any(|w| w == needle) {
+/// Where a stream's first whole event ends, past its blank line.
+fn frame_end(held: &[u8]) -> Option<usize> {
+    let lf = held.windows(2).position(|w| w == b"\n\n").map(|at| at + 2);
+    let crlf = held
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|at| at + 4);
+    lf.into_iter().chain(crlf).min()
+}
+
+/// What a stream's event means, going by its own `type`: a model's words may name any of them. A
+/// failure's meaning is kept for the run; a plain `error` event says the same as a `response.failed`,
+/// though real Codex ignores it (spike, 2026-11-03), so a usage limit that comes that way is caught
+/// only here. A response that completed lifts the hour obid inferred from a limit.
+fn notice(shared: &Shared, account: &str, run: &str, frame: &[u8], request: Option<&str>) {
+    let contains = |needle: &[u8]| frame.windows(needle.len()).any(|w| w == needle);
+    if !contains(b"response.failed") && !contains(b"response.completed") && !contains(b"\"error\"")
+    {
         return;
     }
     let Some(event) = String::from_utf8_lossy(frame)
@@ -585,14 +638,23 @@ fn notice(me: &ChatGpt, run: &str, frame: &[u8], request: Option<&str>) {
     else {
         return;
     };
-    let error = &event["response"]["error"];
+    let error = match event["type"].as_str() {
+        Some("response.failed") => event["response"]["error"].clone(),
+        Some("error") if event["error"].is_object() => event["error"].clone(),
+        Some("error") => event.clone(),
+        Some("response.completed") => {
+            shared.jobs.limit_passed(account);
+            return;
+        }
+        _ => return,
+    };
     let said = json!({"error": error});
-    let refusal = refusal_of(200, &said, request);
+    let refusal = refusal_of(None, &said, request);
     tracing::warn!(
         "run {run}: ChatGPT's stream failed: {}",
         code_of(&said).unwrap_or_default()
     );
-    me.runs.refused(run, refusal);
+    shared.chatgpt.runs.refused(run, refusal);
 }
 
 impl ChatGpt {
@@ -614,6 +676,10 @@ impl ChatGpt {
             return None;
         }
         let list = listed_models(&crate::tetrix::small_json(response).await);
+        // An empty list is no list: it says nothing of the model the owner chose.
+        if list.is_empty() {
+            return None;
+        }
         self.runs.keep_models(account, list.clone());
         Some(list)
     }
@@ -631,7 +697,7 @@ impl ChatGpt {
         };
         match chosen {
             Some(model) if list.iter().any(|m| m == model) => (Some(model.to_owned()), false),
-            _ => (list.first().cloned(), chosen.is_some() && !list.is_empty()),
+            _ => (list.first().cloned(), chosen.is_some()),
         }
     }
 }
@@ -675,14 +741,48 @@ mod tests {
     fn chatgpt_14_each_of_openais_answers_comes_to_what_its_page_says() {
         let error =
             |code: &str| json!({"error": {"code": code, "message": "said", "param": "tools[0]"}});
-        let after = |status, said: &Value| refusal_of(status, said, Some("req_1")).after;
+        let after = |status, said: &Value| refusal_of(Some(status), said, Some("req_1")).after;
         assert_eq!(after(429, &error(LIMIT_CODE)), After::Limit);
         assert_eq!(
-            after(200, &error(LIMIT_CODE)),
+            refusal_of(None, &error(LIMIT_CODE), None).after,
             After::Limit,
             "after the stream began"
         );
-        assert_eq!(refusal_of(429, &error(LIMIT_CODE), None).words, LIMIT_WORDS);
+        assert_eq!(
+            refusal_of(Some(429), &error(LIMIT_CODE), None).words,
+            LIMIT_WORDS
+        );
+        // After the stream began, only what's listed is final.
+        for code in [
+            "server_error",
+            "rate_limit_exceeded",
+            "context_length_exceeded",
+            "brand_new",
+        ] {
+            assert_eq!(
+                refusal_of(None, &error(code), None).after,
+                After::TryAgain,
+                "{code}"
+            );
+        }
+        assert_eq!(
+            refusal_of(None, &json!({"error": null}), None).after,
+            After::TryAgain
+        );
+        assert_eq!(
+            refusal_of(None, &error("subscription_sharing_user_not_eligible"), None).after,
+            After::Stop
+        );
+        // Statuses and shapes the page doesn't call final.
+        for status in [400, 404, 408, 409, 422] {
+            assert_eq!(
+                after(status, &error("brand_new")),
+                After::TryAgain,
+                "{status}"
+            );
+        }
+        assert_eq!(after(403, &json!("<html>blocked</html>")), After::TryAgain);
+        assert_eq!(after(403, &error("brand_new")), After::TryAgain);
         for code in [
             "subscription_sharing_usage_unavailable",
             "subscription_sharing_user_unavailable",
@@ -713,13 +813,13 @@ mod tests {
         let looks = json!({"detail": LIMIT_CODE});
         assert_eq!(after(403, &looks), After::Stop);
         // The request id and OpenAI's words are in what the job says.
-        let said = refusal_of(401, &json!({"detail": "Nope\nreally"}), Some("req_9")).words;
+        let said = refusal_of(Some(401), &json!({"detail": "Nope\nreally"}), Some("req_9")).words;
         assert!(
             said.contains("Nope really") && said.contains("req_9"),
             "{said}"
         );
         let said = refusal_of(
-            400,
+            Some(400),
             &error("subscription_sharing_unsupported_capability"),
             None,
         )

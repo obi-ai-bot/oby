@@ -36,7 +36,9 @@ OpenAI's words below were re-read from the pages themselves on 2026-11-03 (https
 `connected → sign in needed` on a terminal refresh error, or once the refresh token is 30 days old.
 
 - `signedIn` depends on the refresh token and a marker, never on the access token's expiry.
-- Switching kinds removes the old login only after the new one succeeds. Nobody moves without the owner's click: a ChatGPT account is never a conversation's automatic failover, and a turn it took doesn't fail over off it either. Offered at a limit (#1563), it moves only on the owner's click.
+- Switching kinds removes the old login only after the new one succeeds.
+- Nobody moves without the owner's click. A conversation the owner put on a ChatGPT account, or whose session is on one, stays on it: at its limit the turn says so and goes nowhere else, on that turn or the next. One on anything else never lands on one, however full it is. Auto picks one only on a Mac with nothing else signed in, full or not. A turn nobody watches follows the same rule. Offered at a limit (#1563), it moves only on the owner's click.
+- New jobs on Auto do route to a ChatGPT account, as unknown (`Jobs::pick`): it's in the owner's list.
 
 ### Words
 
@@ -61,13 +63,13 @@ The page names no address for "ChatGPT usage settings"; `https://chatgpt.com/set
 | Returning sign-in with a different `sub`, or an issued `client_id` already on another account | Nothing replaced. The same `sub` under a new client is a separate account: one person with Personal and Team is two valid registrations. |
 | Scope `chatgpt.tokens.use.direct` missing | Sign-in kept, plan use off, no run starts on it. Choosing again repeats OAuth with `prompt=consent`, which OpenAI's page still supports; never on an ordinary sign-in. |
 | `invalid_grant` on the code's exchange | The code is discarded; the next try reuses the issued client. |
-| 401, token near its end (within 10 minutes) | The relay refreshes and sends the same request again. Codex never sees it, no process restarts, no `RETRY_WAITS` spent. |
+| 401, token near its end (within 10 minutes) | The relay refreshes and sends the same request again. Codex never sees it, no process restarts, none of its tries spent. |
 | 401 on a token at least 10 minutes from expiry, or a second 401 straight after a refresh | The job ends with the request id. No sign-in prompt unless a refresh failed terminally. |
 | `invalid_grant`, `invalid_refresh_token`, `token_expired`, `refresh_token_expired`, `refresh_token_invalidated`, `refresh_token_reused` | Tokens cleared, record kept so the client id survives. Sign in again. On `refresh_token_reused`, the vault is read again first and cleared only if it still holds that token. |
 | `invalid_client` | Reported as Oby's configuration, no sign-in prompt. |
-| 429 `subscription_sharing_usage_limit_exceeded`, before or after the stream began | #1563's flow unchanged, with no reset time. Resume follows LIMITS-1 and says no time. An inferred hold is never a decision's `resetAt`. |
-| 403 `subscription_sharing_user_not_eligible`, `chatpass_v2_*`, `subscription_sharing_route_not_supported`, `{"detail":…}`; 400 `subscription_sharing_unsupported_capability`; 401 `subscription_sharing_invalid_user` | Stated with the request id, no retry, no OAuth loop, no billing switch. |
-| 503, `subscription_sharing_usage_unavailable`, `subscription_sharing_user_unavailable`, or a network failure | Credentials kept. Codex's own retries (30 requests in about 24 seconds), then the job's bounded `RETRY_WAITS`. |
+| 429 `subscription_sharing_usage_limit_exceeded`, before or after the stream began, in a `response.failed` or a plain `error` event | #1563's flow unchanged, with no reset time. Resume follows LIMITS-1 and says no time. An inferred hold is never a decision's `resetAt`. A response that completes through the relay afterwards lifts the hold. |
+| `subscription_sharing_user_not_eligible`, `chatpass_v2_*`, `subscription_sharing_route_not_supported`, `subscription_sharing_unsupported_capability`, `subscription_sharing_invalid_user`, wherever they come; a 403 with admission's `{"detail":…}` | Stated with the request id, no retry, no OAuth loop, no billing switch. These are what OpenAI's page calls final. |
+| 503, `subscription_sharing_usage_unavailable`, `subscription_sharing_user_unavailable`, a network failure, and **anything the page doesn't call final**: another status (408, 409, a 403 with no word of OpenAI's), another code, a stream's `server_error` | Credentials kept. It goes to Codex as it came, for Codex's own retries, then the job's bounded tries (RECOVERY-1). The page says its list isn't exhaustive. |
 | Revoke | Only a 200 counts. A network failure or 5xx gets at most three tries within 10 seconds, then removal completes with `revoked:false`. |
 | A token set obid won't keep (mismatch, account removed mid-exchange or mid-refresh) | Revoked best effort, then dropped. |
 | A refresh that fails for now (a network failure, a 5xx, a 429, anything unlisted) | No other POST until its wait ends: `Retry-After` when it says, else 30 seconds doubling to 5 minutes. A token that still works goes on being used. |
@@ -81,7 +83,7 @@ The page names no address for "ChatGPT usage settings"; `https://chatgpt.com/set
 
 - **The access, refresh and id tokens never leave obid's process, except to OpenAI.** Codex's `base_url` is obid's loopback relay and its `env_key` holds the job's broker token, which dies with the job. The relay takes only `POST …/responses` and `GET …/models`, adds the current access token and forwards to `https://api.openai.com/v1`.
   - Why (spike S0, measured 2026-11-03 under obid's real profile with real `codex` 0.162.1): a process in another job's box read a marker from Codex's environment with `KERN_PROCARGS2`, by pid. So a token in Codex's environment could be read by any box.
-  - The broker token itself can be read that way, like `OBY_MCP_TOKEN` today, and calls the relay while the job lives. What that reaches is model calls on the plan, never a token, and it dies with the job.
+  - The broker token itself can be read that way, like `OBY_MCP_TOKEN` today, and calls the relay while the job lives. What that reaches is model calls on the plan, never a token, and it dies with the job. A job's commands don't inherit it (`shell_environment_policy.exclude`): without that, real Codex hands them all of its environment.
   - This differs from OpenAI's setup, which passes the token in the child's environment. What reaches OpenAI is the same request. Its pages don't address a relay.
 - Every OAuth call uses `redirect::Policy::none()` and fixed OpenAI endpoints. Only a debug build's tests can name another origin, on 127.0.0.1, from the environment, never from `config.json`.
 - The id token isn't kept after verification. OpenAI suggests keeping it for `id_token_hint`, which only skips the account selector; `login_hint` carries the email instead.
@@ -99,7 +101,7 @@ All add-only.
 - `GET` and `PUT /v1/settings/chatgpt` `{"welcomed": bool}`, off the gateway, for the welcome shown once.
 - `POST /v1/agent/chatgpt/{job}/responses`, `GET /v1/agent/chatgpt/{job}/models`: the relay, with the job's broker or a conversation turn's token only.
 - **Storage:** one vault entry per account, `oby.chatgpt.<id>`, holding access and refresh tokens, scopes, expiry, `earliest_refresh_at`, client id, `sub`, email, host id and replaced access tokens. A non-secret marker in the account's folder (`chatgpt.json`) holds email, whether it's signed in, plan use, expiry and refresh age; `has_login`, `signed_in`, `login_problem` and `login_note` branch on it. One `ext_agent_host_id`, `urn:uuid:<v4>`, per Mac (`home/chatgpt-host`). Removal: revoke, delete the entry, `retire`. At start, obid revokes and deletes an entry with no account only when the owner removed that account; absence alone proves nothing.
-- **Models:** the picker stays static. At launch obid checks the chosen model against the account's cached `/v1/models`. A null, absent or unlisted model takes the first `visibility=="list"` slug, and the job's own `model` and its transcript say so.
+- **Models:** the picker stays static. At launch obid checks the chosen model against the account's cached `/v1/models`. A null, absent or unlisted model takes the first `visibility=="list"` slug, and the job's own `model` and its transcript say so. A list that can't be had, or an empty one, changes nothing.
 - **Usage:** none exists. Accounts show "No use reported yet" and route as unknown. obid skips the periodic read and runs with `usage:false`, `priced:"plan"`.
 - **Codex:** `-c model_provider="openai_chatgpt_plan"` with `base_url` the relay, `env_key="OBY_MCP_TOKEN"`, `wire_api="responses"`, `requires_openai_auth=false`, `supports_websockets=false`, `cli_auth_credentials_store="ephemeral"`, and `features.tool_search=false`, since OpenAI's page says configurations that emit Responses `tool_search` fail. `clientInfo.name` is `Oby`, matching `agent_name_hint`.
 
@@ -116,7 +118,7 @@ All add-only.
 - **CHATGPT-9:** A terminal refresh error clears tokens, asks for sign-in, and keeps the client id.
 - **CHATGPT-10:** While a job runs, no process of the owner's user finds an OpenAI token in any pid's environment, or in `CODEX_HOME`. (Measured from outside the boxes: S0 showed a box reads what an unboxed reader does.)
 - **CHATGPT-11:** Every token generation is scrubbed from a `/v1` answer, `for_agent` and the scan, each checked again after a restart.
-- **CHATGPT-12:** A job outlives its token and finishes on the same thread, `RETRY_WAITS` unspent.
+- **CHATGPT-12:** A job outlives its token and finishes on the same thread, none of its tries spent.
 - **CHATGPT-13:** A usage limit shows the #1563 card with no reset time, Manage usage first, and an inferred hold is never `resetAt`.
 - **CHATGPT-14:** A 503 keeps credentials and backs off; a 403 not-eligible doesn't retry; a repeated 401 ends the job.
 - **CHATGPT-15:** Removal revokes; a failed revoke completes with `revoked:false`; an exchange or refresh in flight writes nothing afterwards and revokes.
@@ -131,6 +133,8 @@ Measured on 2026-11-03 with `codex` 0.162.1 and no account:
 
 - **S0: passed.** Real `codex` in obid's real box, with a broker token in `env_key`, reached a loopback relay, which added the real token for a fake upstream: a whole turn completed. The relay saw only the broker token, the upstream only the real one. Codex asked only `POST /responses`. Inside another job's box under the full profile, `sysctl(KERN_PROCARGS2, pid)` read a marker from Codex's environment, and `/bin/ps -E` was refused.
 - **S5: Codex drops the code; the relay doesn't need it.** Codex's error for a 429 is only `exceeded retry limit, last status: 429 Too Many Requests`, so `limits.rs` couldn't tell a usage limit from a rate limit. The relay reads the status and body before Codex does, so the code decides, and Codex's words don't. Requests per failing turn: 401, 403 and a mid-stream failure, 6 in about 6 seconds; 503 or 500, 30 in about 24 seconds; 400 or 429, 1. A 400's body becomes the turn's error word for word, so the relay answers 400 with its own sentence for what must not be retried.
+- **S5, asked again:** what a stream's plain `error` event says, Codex ignores: it reports `stream closed before response.completed` and tries 5 more times. A `context_length_exceeded` in a 400 ends the turn with no trimming, whether the body is OpenAI's or a sentence of obid's; in a `response.failed` it's `contextWindowExceeded`, and Codex compacts at the next turn. Both go through as they came.
+- **Commands:** a job's shell commands hold `OBY_MCP_TOKEN` unless `shell_environment_policy.exclude` names it; with it, they don't.
 - **S6: passed.** `danger-full-access` with `approvalPolicy: "untrusted"`: a shell command came as `item/commandExecution/requestApproval`, accepted, and ran in the box.
 
 ## One real sign-in
