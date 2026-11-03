@@ -85,6 +85,30 @@ pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
     pub(crate) const TOKEN: &str = "cursor-test-access-token-0123456789";
+    /// Set in a run of this test binary made by [`rerun`].
+    pub(crate) const RERUN: &str = "OBID_TEST_RERUN";
+    /// One test at a time points [`STAND_IN`] at its own stand-in.
+    pub(crate) static STAND_IN_TAKEN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Runs the test named `test` again in a process of its own, with `env` (what a test can't set
+    /// in this process, where others run), and requires that it ran and passed.
+    pub(crate) async fn rerun(test: &str, env: &[(&str, &str)]) {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--nocapture"])
+            .env(RERUN, "1")
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .envs(env.iter().copied())
+            .output()
+            .await
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && said.contains("test result: ok. 1 passed"),
+            "{said}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     /// What a stand-in was asked: each request's path, headers and body.
     pub(crate) type Asks = Arc<Mutex<Vec<(String, HeaderMap, String)>>>;
     /// What a stand-in answers: a status, a redirect's `Location`, a body.
@@ -257,6 +281,26 @@ pub(crate) mod tests {
             assert_eq!(headers["connect-protocol-version"], "1");
             assert_eq!(sent, "{}");
         }
+    }
+
+    /// A proxy in obid's environment sees nothing: in a run of its own with `HTTP_PROXY` at a
+    /// second stand-in (the proxy for this stand-in's `http`; `HTTPS_PROXY` is the same switch for
+    /// Cursor's host), the request reaches the host itself.
+    #[tokio::test]
+    async fn keychain_9_a_proxy_in_obids_environment_is_asked_nothing() {
+        if std::env::var_os(RERUN).is_some() {
+            let (host, asks) = stand_in(|_| body(200, CURRENT_ANSWER)).await;
+            read_from(&host, TOKEN, LIMIT).await.unwrap();
+            assert_eq!(asks.lock().unwrap().len(), 2);
+            return;
+        }
+        let (proxy, proxied) = stand_in(|_| body(200, CURRENT_ANSWER)).await;
+        rerun(
+            "cursor_usage::tests::keychain_9_a_proxy_in_obids_environment_is_asked_nothing",
+            &[("HTTP_PROXY", &proxy), ("http_proxy", &proxy)],
+        )
+        .await;
+        assert!(proxied.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -2015,7 +2015,15 @@ impl Jobs {
                 if !due || self.being_changed(&id) {
                     continue;
                 }
-                if !signed_in(tool, &account, home.as_deref()) {
+                // Off the runtime, as `GET /v1/status`'s: for Cursor's own login this reads the
+                // Keychain, which can wait on macOS's prompt.
+                let signed = {
+                    let (account, home) = (account.clone(), home.clone());
+                    tokio::task::spawn_blocking(move || signed_in(tool, &account, home.as_deref()))
+                        .await
+                        .unwrap_or(false)
+                };
+                if !signed {
                     self.forget_advisory_usage(&id);
                     continue;
                 }
@@ -16501,7 +16509,8 @@ mod tests {
     #[tokio::test]
     async fn usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept() {
         use crate::cursor_usage::STAND_IN;
-        use crate::cursor_usage::tests::{Answer, TOKEN, body, stand_in};
+        use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
+        let _only = STAND_IN_TAKEN.lock().await;
         #[derive(Clone, Default)]
         struct Logged(Arc<Mutex<Vec<u8>>>);
         impl std::io::Write for Logged {
@@ -16595,6 +16604,146 @@ mod tests {
         assert!(!kept.contains(TOKEN), "{kept}");
         assert!(!kept.contains("ANSWER-WORDS"), "{kept}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// USAGE-9: a Cursor figure that rises while a job runs on the account isn't charged to the
+    /// job: its window share is the 5-hour window's and the week's, and this may be neither.
+    #[tokio::test]
+    async fn usage_9_a_cursor_figure_gives_a_running_job_no_window_share() {
+        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
+        let _only = STAND_IN_TAKEN.lock().await;
+        let root = std::env::temp_dir().join(format!("obid-share-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("running");
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        std::fs::write(
+            dir.join(".cursor/auth.json"),
+            json!({ "accessToken": TOKEN }).to_string(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"cursor": {"bin": "/usr/bin/true", "accounts": [
+                    {"id": "running", "name": "running", "configDir": dir}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "cccc0001".into(),
+            "o/r".into(),
+            "fix".into(),
+            "x".into(),
+            "cursor".into(),
+            "running".into(),
+        );
+        job.status = Status::Running;
+        jobs.lock().jobs.insert("cccc0001".into(), job);
+        let (sender, _worker) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("cccc0001".into(), sender);
+
+        let answering: Arc<Mutex<Answer>> = Arc::default();
+        let answer = answering.clone();
+        let (host, _) = stand_in(move |_| answer.lock().unwrap().clone()).await;
+        *STAND_IN.lock().unwrap() = Some(host);
+        for used in [10, 40] {
+            *answering.lock().unwrap() = body(
+                200,
+                &json!({"planUsage": {"totalPercentUsed": used}}).to_string(),
+            );
+            jobs.usage_reads().asked.clear();
+            jobs.read_due_usages().await;
+            assert_eq!(
+                jobs.usage.get("running").seven_day,
+                Some(f64::from(used) / 100.0)
+            );
+        }
+        *STAND_IN.lock().unwrap() = None;
+        assert_eq!(jobs.get("cccc0001").unwrap().window_share, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// KEYCHAIN-8, in a run of this test binary of its own, with a stand-in `security` that takes a
+    /// second to give a value, as macOS's prompt can take a minute: the runtime goes on meanwhile,
+    /// and Cursor's own login reaches the read. An account with its own folder and no file in it
+    /// never takes that login.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn keychain_8_a_slow_keychain_read_leaves_the_runtime_free() {
+        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::{RERUN, TOKEN, body, rerun, stand_in};
+        if std::env::var_os(RERUN).is_none() {
+            let root = std::env::temp_dir().join(format!("obid-slow-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let bin = root.join("security");
+            let script = format!(
+                "#!/bin/sh\ncase \" $* \" in *\" -s cursor-access-token \"*) ;; *) exit 44 ;; esac\n\
+                 case \" $* \" in *\" -w \"*) /bin/sleep 1; echo {TOKEN} ;; \
+                 *) printf '    \"mdat\"<timedate>=\"1\"\\n' ;; esac\n"
+            );
+            std::fs::write(&bin, script).unwrap();
+            std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            rerun(
+                "jobs::tests::keychain_8_a_slow_keychain_read_leaves_the_runtime_free",
+                &[
+                    ("OBID_SECURITY_BIN", bin.to_str().unwrap()),
+                    ("HOME", root.to_str().unwrap()),
+                ],
+            )
+            .await;
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let root = PathBuf::from(std::env::var_os("HOME").unwrap());
+        use_cursor_keychain(true, false);
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"cursor": {"bin": "/usr/bin/true", "accounts": []}}})
+            .to_string(),
+        )
+        .unwrap();
+        crate::accounts::adopt_own_logins(&config.agents, &config.home);
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let (host, asks) =
+            stand_in(|_| body(200, r#"{"planUsage":{"totalPercentUsed":30}}"#)).await;
+        *STAND_IN.lock().unwrap() = Some(host);
+        let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                counted.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        jobs.read_due_usages().await;
+        ticker.abort();
+        assert_eq!(jobs.usage.get("cursor").seven_day, Some(0.3));
+        assert!(ticks.load(Ordering::Relaxed) >= 30, "{ticks:?}");
+        assert_eq!(
+            asks.lock().unwrap()[0].1["authorization"].to_str().unwrap(),
+            format!("Bearer {TOKEN}")
+        );
+        // An account with a folder of its own, its file gone: not Cursor's own login.
+        let own_folder = crate::config::Account {
+            id: "folder".into(),
+            name: "folder".into(),
+            config_dir: Some(root.join("folder")),
+            payer: None,
+        };
+        assert_eq!(cursor_access_token(&own_folder, Some(&root)), None);
     }
 
     /// USAGE-9: among Cursor's accounts the emptier comes first, full figure or not, and neither is

@@ -2196,8 +2196,8 @@ mod tests {
         let file = dir.join(cursor_login_file());
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         let account = crate::config::Account {
-            id: "own".into(),
-            name: "own".into(),
+            id: "login-file".into(),
+            name: "login-file".into(),
             config_dir: Some(dir.clone()),
             payer: None,
         };

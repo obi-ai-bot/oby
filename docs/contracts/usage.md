@@ -6,7 +6,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 
 - **Outcome:** From the first launch, before any task has run, the owner sees how much of each signed-in account's 5-hour session and week is used, and when each starts over. Oby routes work by the same figures.
 - **Status:** **Implemented.** Cursor's read is the owner's decision of 2026-11-03 (USAGE-6 to 9). obid read Claude Code's own `/usage` and Codex's `account/rateLimits/read` whenever an app looked (#1529). But a Mac whose own `claude` hadn't run for a while had an ended Keychain login, which no read refreshed, so Claude Code showed "No use reported yet" until a task ran. #1626 has the read ready the login first, as a job's run does, and the refresh is now Claude Code's own `/usage`, which asks no model.
-- **Scope:** Claude Code, Codex and Cursor accounts on this Mac's obid. **Out of scope:** the iPhone and Android apps' Settings, which still say Cursor doesn't report usage; Anthropic's OAuth usage endpoint called by obid itself (obid would hold the token: the owner's decision, and not needed).
+- **Scope:** Claude Code, Codex and Cursor accounts on this Mac's obid. **Out of scope:** the iPhone and Android apps, which still say Cursor doesn't report usage in Settings and call its figure a week ([#1885](https://github.com/obi-ai-bot/oby/issues/1885)); Anthropic's OAuth usage endpoint called by obid itself (obid would hold the token: the owner's decision, and not needed).
 
 ## What Sangam's design assumes (each one kept)
 
@@ -59,7 +59,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 | USAGE-6 | `apps/electron/src/renderer/src/test/usage.test.ts` (`USAGE-6:`), `test/talk.test.ts` (`CONVERSATION-AGENT-12:`), `jobs::tests::usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept` |
 | USAGE-7 | `cursor_usage::tests::usage_7_a_monthly_plan_reads_its_total_and_its_cycles_end`, `cursor_usage::tests::usage_7_a_weekly_plan_reads_its_weeks_reset`, `cursor_usage::tests::usage_7_a_limit_above_zero_is_included_spend_over_it`, `usage::tests::usage_7_a_cursor_read_takes_the_place_of_the_last_whole` |
 | USAGE-8 | `cursor_usage::tests::usage_8_no_plan_usage_is_no_number_and_no_second_request`, `cursor_usage::tests::usage_8_a_401_and_a_500_are_no_number_saying_only_the_status`, `cursor_usage::tests::usage_8_garbage_is_no_number`, `cursor_usage::tests::usage_8_a_plan_read_that_fails_keeps_the_figure`, `usage::tests::usage_8_a_cursor_read_with_no_figure_forgets_the_last`, `jobs::tests::usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept` |
-| USAGE-9 | `usage::tests::usage_9_a_cursor_figure_holds_nothing_whatever_it_reads`, `jobs::tests::usage_9_the_emptier_cursor_account_comes_first`, `jobs::tests::usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept` |
+| USAGE-9 | `usage::tests::usage_9_a_cursor_figure_holds_nothing_whatever_it_reads`, `jobs::tests::usage_9_a_cursor_figure_gives_a_running_job_no_window_share`, `jobs::tests::usage_9_the_emptier_cursor_account_comes_first`, `jobs::tests::usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept` |
 
 ## Test it when it's done (on a real Mac)
 
