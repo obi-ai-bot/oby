@@ -2891,3 +2891,357 @@ mod stand_in_openai {
         ]
     }
 }
+
+/// What every alert builder of crate::push is handed, and where each puts it: a text for each row.
+fn alert_rows(text: &str) -> Vec<(&'static str, obid::job::Job, Option<Value>)> {
+    use obid::job::{Job, Status};
+    let blank = |id: &str| {
+        let mut job = Job::new(
+            id.into(),
+            "deskree-inc/oby".into(),
+            "fix".into(),
+            "Fix the push".into(),
+            "codex".into(),
+            "plan".into(),
+        );
+        job.title = Some("Android push".into());
+        job
+    };
+    let ended = |id: &str, status: Status| {
+        let mut job = blank(id);
+        job.status = status;
+        job.finished = Some(100);
+        job
+    };
+    let asks = |id: &str, title: &str, detail: &str| {
+        let mut job = blank(id);
+        job.status = Status::Running;
+        job.permission = Some(obid::permissions::Permission {
+            id: format!("{id}-p"),
+            tool: "Bash".into(),
+            title: title.into(),
+            detail: detail.into(),
+            rule: None,
+            always: None,
+            why: None,
+            question: None,
+        });
+        job
+    };
+    let mut rows = Vec::new();
+    type Made = (Job, Option<Value>);
+    let mut row = |what: &'static str, make: &dyn Fn(&str, &str) -> Made| {
+        let (job, item) = make(&format!("{what}-{}", uuid::Uuid::new_v4().simple()), text);
+        rows.push((what, job, item));
+    };
+    row("failed-title", &|id, text| {
+        let mut job = ended(id, Status::Failed);
+        job.title = Some(text.into());
+        (job, None)
+    });
+    row("failed-request", &|id, text| {
+        let mut job = ended(id, Status::Failed);
+        job.title = None;
+        job.task = text.into();
+        (job, None)
+    });
+    row("failed-reason", &|id, text| {
+        let mut job = ended(id, Status::Failed);
+        job.reason = Some(text.into());
+        (job, None)
+    });
+    row("failed-summary", &|id, text| {
+        let mut job = ended(id, Status::Failed);
+        job.summary = text.into();
+        (job, None)
+    });
+    row("interrupted-reason", &|id, text| {
+        let mut job = ended(id, Status::Interrupted);
+        job.reason = Some(text.into());
+        (job, None)
+    });
+    row("ready-publish-error", &|id, text| {
+        let mut job = ended(id, Status::Done);
+        job.base = Some("dev".into());
+        job.commits = Some(1);
+        job.publish_error = None;
+        job.pushed = Some(0);
+        job.checked_head = Some("abc".into());
+        job.summary = text.into();
+        (job, None)
+    });
+    row("permission-title", &|id, text| {
+        (asks(id, text, "swift test"), None)
+    });
+    row("permission-detail", &|id, text| {
+        (asks(id, "Run swift test", text), None)
+    });
+    row("review-error", &|id, text| {
+        let mut job = ended(id, Status::Done);
+        job.published = Some("https://github.com/deskree-inc/oby/pull/7".into());
+        job.branch = "oby/fix".into();
+        job.outgoing.push(obid::publish::Outgoing::new(
+            "push",
+            &job.repo,
+            "abc",
+            Some("oby/fix"),
+        ));
+        job.review_error = Some(text.into());
+        job.review_failed = Some(obid::job::ReviewFailed {
+            commit: "abc".into(),
+            reviews: vec![],
+            needs_you: true,
+        });
+        (job, None)
+    });
+    row("inbox-title", &|id, text| {
+        let item = json!({"id": id, "kind": "confirm", "job": "", "state": "open", "title": text,
+                          "text": "Merge it?", "conversation": "conv"});
+        (blank(id), Some(item))
+    });
+    row("inbox-text", &|id, text| {
+        let item = json!({"id": id, "kind": "watch", "job": "", "state": "open", "title": "Listen",
+                          "text": text, "triage": "needs_you", "conversation": null});
+        (blank(id), Some(item))
+    });
+    rows
+}
+
+/// Whether `said` holds any 16 characters running of `form`, as they were written or in any case.
+fn holds_piece(said: &str, form: &str) -> bool {
+    let (said, form) = (said.to_ascii_lowercase(), form.to_ascii_lowercase());
+    form.as_bytes()
+        .windows(16)
+        .filter_map(|piece| std::str::from_utf8(piece).ok())
+        .any(|piece| said.contains(piece))
+}
+
+/// `token` in each form a redaction takes out (crate::secrets), the name of each, and base64 at
+/// each offset into a longer run.
+fn forms_of(token: &str) -> Vec<(&'static str, String)> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    let wrapped = STANDARD
+        .encode(token)
+        .as_bytes()
+        .chunks(76)
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+        .collect::<Vec<_>>()
+        .join("\n");
+    vec![
+        ("plain", token.to_owned()),
+        ("base64", STANDARD.encode(token)),
+        ("base64url", URL_SAFE_NO_PAD.encode(token)),
+        ("base64 from 1", STANDARD.encode(format!("x{token}"))),
+        ("base64 from 2", STANDARD.encode(format!("xy{token}"))),
+        ("hex", hex::encode(token)),
+        ("hex, upper", hex::encode_upper(token)),
+        ("url", token.replace('/', "%2F")),
+        ("base64, wrapped", wrapped),
+    ]
+}
+
+/// CHATGPT-17 (alerts; docs/contracts/chatgpt-sign-in.md): a plan token in anything an alert is built
+/// from, plain or encoded, whole or longer than the alert's cut, never reaches a phone, not a piece
+/// of it, from any of crate::push's builders: and the alert still goes, saying it was taken out.
+/// In this process rather than on the binary: every builder's input is the test's, and only this
+/// test here installs a vault. Stand-in tokens in a scratch vault; no token is real.
+#[tokio::test(flavor = "multi_thread")]
+async fn chatgpt_17_no_token_in_an_alert() {
+    use hpke::{Deserializable as _, Serializable as _};
+    type Kem = hpke::kem::X25519HkdfSha256;
+    type Kdf = hpke::kdf::HkdfSha256;
+    type Aead = hpke::aead::ChaCha20Poly1305;
+
+    let folder = Folder::new("chatgpt-17-alerts");
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // A short token an alert has room for whole, and long ones it cuts.
+    let piece = || uuid::Uuid::new_v4().simple().to_string();
+    let long = || (0..20).map(|_| piece()).collect::<Vec<_>>().join("/");
+    let (access, refresh, old) = (piece(), long(), long());
+    let record = obid::chatgpt::Record {
+        client_id: "stand-in".into(),
+        sub: "stand-in".into(),
+        host_id: "stand-in".into(),
+        email: None,
+        tokens: Some(obid::chatgpt::Tokens {
+            access: access.clone(),
+            refresh: refresh.clone(),
+            scopes: vec![],
+            expires_at: 0,
+            earliest_refresh_at: None,
+            refreshed_at: 0,
+        }),
+        previous: vec![obid::chatgpt::OldToken {
+            access: old.clone(),
+            expires_at: 0,
+        }],
+    };
+    let vault = obid::vault::install(&home, &obid::vault::Location::default_for(&home));
+    vault
+        .add(
+            &serde_json::to_string(&record).unwrap(),
+            "oby.chatgpt.stand-in",
+        )
+        .unwrap();
+
+    // A relay of the test's own, and an iPhone that opens what it's sent.
+    let heard: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = Default::default();
+    let kept = heard.clone();
+    let app = axum::Router::new().route(
+        "/v1/push",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let kept = kept.clone();
+            async move {
+                kept.lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&body).unwrap());
+                axum::http::StatusCode::ACCEPTED
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (secret, public) = <Kem as hpke::Kem>::gen_keypair();
+    let push = obid::push::Push::open(&home, &relay);
+    push.keep_relayed(obid::push::Relayed {
+        push_id: "phone".into(),
+        push_key: b64.encode([7_u8; 32]),
+        seal_key: b64.encode(public.to_bytes()),
+        relay: relay.clone(),
+        device: None,
+    })
+    .unwrap();
+    let opened = |given: &Value| -> Value {
+        let raw = b64.decode(given["sealed"].as_str().unwrap()).unwrap();
+        let enc = <Kem as hpke::Kem>::EncappedKey::from_bytes(&raw[..32]).unwrap();
+        let plain = hpke::single_shot_open::<Aead, Kdf, Kem>(
+            &hpke::OpModeR::Base,
+            &secret,
+            &enc,
+            obid::push::INFO,
+            &raw[32..],
+            b"",
+        )
+        .unwrap();
+        let mut alert: Value = serde_json::from_slice(&plain).unwrap();
+        alert["collapse"] = given["collapse"].clone();
+        alert
+    };
+    let sent = |heard: &std::sync::Mutex<Vec<Value>>| -> Vec<Value> {
+        heard
+            .lock()
+            .unwrap()
+            .drain(..)
+            .map(|g| opened(&g))
+            .collect()
+    };
+    let scratch = home.join("tmp");
+    let paired = std::collections::HashSet::new();
+    // The first look isn't news.
+    push.look(&[], &[], &paired, &scratch).await;
+
+    let tokens = [("access", &access), ("refresh", &refresh), ("old", &old)];
+    let leaked = |said: &str| {
+        tokens.iter().any(|(_, token)| {
+            forms_of(token)
+                .iter()
+                .any(|(_, form)| form.split('\n').any(|line| holds_piece(said, line)))
+        })
+    };
+    let (mut leaks, mut lost, mut unmarked) = (Vec::new(), Vec::new(), Vec::new());
+    for (name, token) in tokens {
+        // The encodings on two tokens, and a replaced one plain: each alert is a run of gitleaks.
+        let forms = forms_of(token);
+        for (form, text) in forms
+            .into_iter()
+            .filter(|(f, _)| name != "old" || *f == "plain")
+        {
+            // Base64 wrapped over lines holds nothing else on them, as `base64` writes it.
+            let text = match form.contains("wrapped") {
+                true => text,
+                false => format!("Use {text} now"),
+            };
+            let rows = alert_rows(&text);
+            let jobs: Vec<_> = rows
+                .iter()
+                .filter(|(_, _, item)| item.is_none())
+                .map(|(_, job, _)| job.clone())
+                .collect();
+            let inbox: Vec<Value> = rows.iter().filter_map(|(_, _, i)| i.clone()).collect();
+            push.look(&jobs, &inbox, &paired, &scratch).await;
+            let alerts = sent(&heard);
+            for (what, job, item) in &rows {
+                let id = item
+                    .as_ref()
+                    .map_or(job.id.as_str(), |i| i["id"].as_str().unwrap());
+                let place = format!("{name} {form} in {what}");
+                let Some(alert) = alerts.iter().find(|a| a["job"] == id || a["item"] == id) else {
+                    lost.push(place);
+                    continue;
+                };
+                let said = alert.to_string();
+                if leaked(&said) {
+                    leaks.push(place);
+                } else if !said.contains("[vault: oby.chatgpt.") {
+                    unmarked.push(place);
+                }
+            }
+            // FCM's address is Google's, so what it says is read here: `alert` on what `look`
+            // hands its FCM part.
+            let (clean, _) = obid::push::for_alerts(&jobs, &inbox).unwrap();
+            for job in &clean {
+                let Some(notice) = obid::push::notice(job) else {
+                    continue;
+                };
+                let (title, body, _) = obid::push::alert(job, notice);
+                let said = format!("{title} {body}");
+                let place = format!("{name} {form} in FCM's {}", job.id);
+                if leaked(&said) {
+                    leaks.push(place);
+                } else if !said.contains("[vault: oby.chatgpt.") {
+                    unmarked.push(place);
+                }
+            }
+        }
+    }
+    assert!(
+        lost.is_empty() && leaks.is_empty() && unmarked.is_empty(),
+        "lost {}: {lost:#?}\nleaked {}: {leaks:#?}\nunmarked {}: {unmarked:#?}",
+        lost.len(),
+        leaks.len(),
+        unmarked.len()
+    );
+
+    // Every ask is gone: each says "Settled" with the title it had, and what's kept holds none.
+    push.look(&[], &[], &paired, &scratch).await;
+    let settled = sent(&heard);
+    assert!(settled.iter().any(|a| a["category"] == "settled"));
+    for alert in &settled {
+        assert!(!leaked(&alert.to_string()), "{alert}");
+    }
+    let kept = std::fs::read_to_string(home.join("push/said.json")).unwrap();
+    assert!(!leaked(&kept), "{kept}");
+
+    // A vault that can't be read says nothing and forgets nothing: the next look says it.
+    use std::os::unix::fs::PermissionsExt;
+    let file = home.join("vault/secrets.json");
+    let mode = |bits| std::fs::set_permissions(&file, std::fs::Permissions::from_mode(bits));
+    let (_, job, _) = alert_rows(&format!("Use {refresh} now")).swap_remove(0);
+    mode(0o644).unwrap();
+    assert!(obid::push::for_alerts(&[], &[]).is_err());
+    push.look(std::slice::from_ref(&job), &[], &paired, &scratch)
+        .await;
+    assert_eq!(sent(&heard), Vec::<Value>::new());
+    mode(0o600).unwrap();
+    push.look(std::slice::from_ref(&job), &[], &paired, &scratch)
+        .await;
+    let again = sent(&heard);
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert_eq!(again[0]["job"], job.id.as_str());
+    assert!(!leaked(&again[0].to_string()), "{}", again[0]);
+}

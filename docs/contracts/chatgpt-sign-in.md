@@ -87,7 +87,7 @@ The page names no address for "ChatGPT usage settings"; `https://chatgpt.com/set
   - This differs from OpenAI's setup, which passes the token in the child's environment. What reaches OpenAI is the same request. Its pages don't address a relay.
 - Every OAuth call uses `redirect::Policy::none()` and fixed OpenAI endpoints. Only a debug build's tests can name another origin, on 127.0.0.1, from the environment, never from `config.json`.
 - The id token isn't kept after verification. OpenAI suggests keeping it for `id_token_hint`, which only skips the account selector; `login_hint` carries the email instead.
-- Every token is scrubbed from every answer, log line and push, by `Vault` learning the record's tokens as forms of one name (`Secrets::learn_forms`), including replaced access tokens until they expire, and again after a restart.
+- Every token is scrubbed from every answer, log line and push, by `Vault` learning the record's tokens as forms of one name (`Secrets::learn_forms`), including replaced access tokens until they expire, and again after a restart. An alert is built from text already scrubbed, since it keeps only a first line and 100 or 200 characters and a token cut there is no value the scan knows; while the vault can't be read no alert goes, and the next look says it.
 - `agent` stays `"codex"`; no new enum value. Billing never switches silently. Nothing leaves the Mac except to OpenAI and, sealed, to the owner's paired devices.
 
 ## Interfaces and dependencies
@@ -124,6 +124,7 @@ All add-only.
 - **CHATGPT-15:** Removal revokes; a failed revoke completes with `revoked:false`; an exchange or refresh in flight writes nothing afterwards and revokes.
 - **CHATGPT-16:** Switching kinds removes the old login only after success.
 - **CHATGPT-17:** The welcome shows once, even with `localStorage` emptied.
+- **CHATGPT-17, alerts:** A plan token of any generation in anything an alert is built from, plain or encoded, whole or longer than the alert's cut, reaches no phone, not a piece of it, from any builder. The alert still goes, saying `[vault: oby.chatgpt.<id>]`. With the vault unreadable no alert goes, and the next look after it's fixed says it.
 - **CHATGPT-18:** Older phones decode the new keys, with no new enum value.
 - **CHATGPT-19:** Stopping a job mid-refresh and a failed vault write leave the account signed in. So does a lost answer OpenAI hadn't acted on; one it had comes back `refresh_token_reused` and ends in sign in needed.
 
