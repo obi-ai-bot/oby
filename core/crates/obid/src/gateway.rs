@@ -56,11 +56,16 @@ const HOME: &str = "[home]";
 /// The routes a phone may use through the gateway (Runner/Routes.swift), apart from the API's own
 /// router: adding an endpoint never makes it reachable from a phone by itself. Kept off on purpose:
 /// `/v1/checks/…` and `/v1/agent/…` (the Mac's and agents' own calls), `/v1/connections…`,
-/// `/v1/speech`, `/v1/pairing/…`, `/v1/obid/…`, adding, removing and signing in accounts, and
-/// everything else.
+/// `/v1/speech`, `/v1/pairing/…`, `/v1/obid/…` but the two reads of the Sphere below, adding,
+/// removing and signing in accounts, and everything else.
 /// `*` is one path segment; `**`, last only, is one or more.
 const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/status"),
+    // The iPhone's side panel lists the Obysphere and teammates' Obys (docs/contracts/ios-new-oby.md,
+    // IOSNEW-4): who's in it and the membership's public facts, read only. Joining, leaving, the
+    // keys and the pins stay on the machine.
+    ("GET", "/v1/obid/sphere"),
+    ("GET", "/v1/obid/sphere/members"),
     ("GET", "/v1/events"),
     ("GET", "/v1/conversation"),
     ("GET", "/v1/conversations"),
@@ -1036,6 +1041,24 @@ mod tests {
             (Method::POST, "/v1/agent/mcp/abc"),
             (Method::GET, "/v1/obid/plugins"),
             (Method::GET, "/app/"),
+        ] {
+            assert!(!allows(&method, path), "{method} {path}");
+        }
+    }
+
+    /// IOSNEW-4: a phone reads who's in the Obysphere and changes nothing about it.
+    #[test]
+    fn iosnew_4_a_phone_reads_the_sphere_and_changes_nothing() {
+        assert!(allows(&Method::GET, "/v1/obid/sphere"));
+        assert!(allows(&Method::GET, "/v1/obid/sphere/members"));
+        for (method, path) in [
+            (Method::DELETE, "/v1/obid/sphere"),
+            (Method::POST, "/v1/obid/sphere/join"),
+            (Method::POST, "/v1/obid/sphere/key"),
+            (Method::POST, "/v1/obid/sphere/card"),
+            (Method::GET, "/v1/obid/sphere/pins"),
+            (Method::POST, "/v1/obid/sphere/pins/ernesto"),
+            (Method::POST, "/v1/obid/sphere/council"),
         ] {
             assert!(!allows(&method, path), "{method} {path}");
         }

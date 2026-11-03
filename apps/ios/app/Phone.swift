@@ -51,31 +51,37 @@ nonisolated enum PhoneWork {
         return WorkList.ranked(items).first { $0.status == .needs }.map { .task($0.id) }
     }
 
-    /// Home's Running (docs/ios-design.md: Sangam has these in his side panel): up to three open
-    /// tasks, in the side panel's order.
-    static func running(_ items: [WorkList.Item<Job>]) -> [WorkList.Item<Job>] {
-        Array(WorkList.ranked(items.filter { $0.status != .done }).prefix(3))
+    /// Where the app comes to rest (docs/contracts/ios-new-oby.md, IOSNEW-1): the conversation that
+    /// moved last, or the empty chat with none; a runner that lists none has its one thread.
+    static func resting(_ conversations: [RunnerConversation]?) -> Resting {
+        guard let conversations else { return .conversation(nil) }
+        return conversations.filter { !$0.deleted }.max { $0.latest < $1.latest }.map { .conversation($0.id) } ?? .empty
     }
 
-    /// What a Running row says it's on: the decision that waits ("Needs you · Question"), else
-    /// "Queued" and what for, else its live step.
-    static func step(_ item: WorkList.Item<Job>, decision: InboxItem?) -> String {
-        let job = item.job
-        if item.status == .needs {
-            let kind = decision.map { PhoneAsk.label($0, plan: job.question?.plan != nil) }
-                ?? (job.waitsForPermission ? "Permission" : job.waitsForAnswer ? AskKind.label("question", plan: job.question?.plan != nil)
-                    : job.reviewNeedsYou ? AskKind.label("review") : job.mergeNeedsYou ? AskKind.label("merge")
-                    : job.canPublish ? "Ready to publish" : AskKind.label("failed"))
-            return "Needs you · \(kind)"
-        }
-        if item.queued { return job.waiting.map { "Queued · \($0.text)" } ?? "Queued" }
-        return job.step.isEmpty ? "Working" : job.step
+    /// The panel's Chats under Oby (IOSNEW-3): pinned ones first, then the latest, `recent` of them
+    /// unless all are asked for or it's a search's answer, the one you're in always among them.
+    static func chats(_ conversations: [RunnerConversation], resting: String?, all: Bool, recent: Int = 5) -> (rows: [RunnerConversation], hidden: Int) {
+        let order = conversations.sorted { ($0.pinned ? 1 : 0, $0.latest) > ($1.pinned ? 1 : 0, $1.latest) }
+        if all || order.count <= recent { return (order, 0) }
+        let rows = order.enumerated().filter { $0.offset < recent || $0.element.id == resting }.map(\.element)
+        return (rows, order.count - rows.count)
     }
+}
 
-    /// Home's Recent: the three latest conversations.
-    static func recent(_ conversations: [RunnerConversation]) -> [RunnerConversation] {
-        Array(conversations.sorted { $0.latest > $1.latest }.prefix(3))
-    }
+/// Where the app rests, under whatever page is open over it (docs/contracts/ios-new-oby.md).
+enum Resting: Equatable {
+    /// Decided once, as the app opens, when obid's list of conversations is in.
+    case deciding
+    /// No conversation open: Oby, its line and the box.
+    case empty
+    /// Words sent from the empty chat, until obid names their conversation.
+    case starting
+    /// obid's conversation by id, or nil for a runner's one thread.
+    case conversation(String?)
+
+    var conversation: String? { if case .conversation(let id) = self { id } else { nil } }
+    /// Oby's stage shows: nothing else to rest on (yet).
+    var showsStage: Bool { self == .empty || self == .deciding }
 }
 
 /// The phone's view of the runner: its jobs and accounts, kept live while the app is open, and
@@ -95,8 +101,21 @@ final class Phone {
     let voice = PhoneVoice()
     /// The side panel, open on one of its sections, or nil while it's closed (PhoneRoot).
     var panel: PanelSection?
-    /// Home's box takes the keyboard (the panel's New conversation and New task, as Sangam's do).
+    /// The empty chat's box takes the keyboard (the panel's New conversation and New task, as Sangam's do).
     var focusHome = false
+    /// Where the app rests, and a count of the owner's moves between rests: a new one draws anew,
+    /// while a new conversation being named by obid stays the same page.
+    private(set) var resting = Resting.deciding
+    private(set) var restMoves = 0
+    /// Who new conversations talk through, as obid last said (an account's id, nil for Auto), and
+    /// the account a new conversation's first turn would use now.
+    private(set) var talkSetting: String?
+    private(set) var talkNext: String?
+    /// Why the last choice of who Oby talks through didn't go, under the message box.
+    var talkProblem: String?
+    /// The Obysphere obid is in and the other Obys in it, for the side panel.
+    private(set) var sphere: RunnerSphere?
+    private(set) var sphereMembers: [RunnerSphereMember] = []
     /// The panel's groups folded away with their chevron (Sangam's Sidebar.tsx), kept while Oby runs.
     var panelFolded: Set<String> = []
     /// The runner's conversation, read in pages and followed over `turn` events, for the Chat
@@ -281,9 +300,10 @@ final class Phone {
     var gitHubLater: Set<String> = []
     /// Bumped by every change of runner, so an answer from the last one is dropped.
     @ObservationIgnored private var gitHubChanges = 0
-    /// The session the phone shows (#785): its job's `transcript` events go to it, and it reads
-    /// what it missed when the connection comes back.
-    @ObservationIgnored var liveSession: LiveSession?
+    /// The sessions something on screen shows (#785, LIVETASK-3): each job's `transcript` events go
+    /// to its own, it reads what it missed when the connection comes back, and it's let go with the
+    /// last thing showing it.
+    @ObservationIgnored private var sessions: [String: (session: LiveSession, holders: Int)] = [:]
     private(set) var jobs: [Job] = [] {
         didSet {
             // Published, dismissed or running again, here or on the Mac: its alert goes.
@@ -397,9 +417,10 @@ final class Phone {
         restoreQueuedMessages(for: offlineQueueTarget)
         #if DEBUG
         if let sample = GitHubWork.sample { gitHubWork = sample }
-        if SampleTasks.on { jobs = SampleTasks.jobs; self.inbox = SampleTasks.inbox; conversations = SampleTasks.conversations; accounts = SampleTasks.accounts; loaded = true; SampleTasks.talk(self) }
+        if SampleTasks.on { jobs = SampleTasks.jobs; self.inbox = SampleTasks.inbox; conversations = SampleTasks.conversations; accounts = SampleTasks.accounts; loaded = true; sphere = SampleTasks.sphere; sphereMembers = SampleTasks.members; decideRest(); SampleTasks.talk(self) }
         // `-ObySampleUnreachable YES`: the Mac out of reach since 40 minutes ago, for the notice's screenshots.
         if UserDefaults.standard.bool(forKey: "ObySampleUnreachable") { self.connection = .offline(""); self.lastSeen = .now.addingTimeInterval(-2400) }
+        SampleTasks.launch(self)
         #endif
     }
 
@@ -407,6 +428,29 @@ final class Phone {
     var thread: [Turn] {
         let here = echoes.filter { (requests[$0.id]?.conversation ?? nil) == current }
         return conversation.thread(with: ChatThread.pending(here, runner: conversation.runnerTurns))
+    }
+
+    /// The app comes to rest somewhere else, and whatever was open over it goes.
+    func rest(on place: Resting) {
+        resting = place
+        restMoves += 1
+        panel = nil
+        homePath = []
+    }
+
+    /// New conversation: the empty chat, its box taking the keyboard. No conversation is made until
+    /// words are sent (IOSNEW-2).
+    func newConversation() {
+        current = nil
+        startingNew = false
+        rest(on: .empty)
+        focusHome = true
+    }
+
+    /// Decided once, as the app opens: a conversation that arrives later never moves you.
+    private func decideRest() {
+        guard resting == .deciding else { return }
+        resting = PhoneWork.resting(conversations)
     }
 
     /// Opens a conversation's thread: obid's `id`, or nil for the latest (one thread).
@@ -445,6 +489,10 @@ final class Phone {
         current = nil
         startingNew = false
         previews = [:]
+        resting = .deciding
+        restMoves += 1
+        sphere = nil
+        sphereMembers = []
     }
 
     /// A conversation's last line, for its row, when this phone hasn't seen one yet.
@@ -456,6 +504,87 @@ final class Phone {
     /// Renames or pins a conversation; obid's answer puts it in place.
     func update(_ id: String, title: String? = nil, pinned: Bool? = nil) async throws {
         take(try await runner.updateConversation(id, title: title, pinned: pinned))
+    }
+
+    /// The picker in the message box: who a conversation talks through at its next turn, or, with no
+    /// conversation, who new ones do. It names the choice at once; refused, it goes back and says why.
+    func chooseTalk(_ account: String, in id: String?) {
+        talkProblem = nil
+        let chosen = account == TalkChoice.auto ? nil : account
+        if let id, let at = conversations?.firstIndex(where: { $0.id == id }) {
+            let was = conversations?[at]
+            conversations?[at].talkAccount = account
+            conversations?[at].movedOff = nil
+            Task {
+                do { take(try await runner.updateConversation(id, talkAccount: account)) } catch {
+                    if let was { take(was) }
+                    talkProblem = error.localizedDescription
+                }
+            }
+        } else if id == nil {
+            let was = talkSetting
+            talkSetting = chosen
+            Task {
+                do {
+                    try await runner.setTalkAccount(account)
+                    await lookAtUsage()
+                } catch {
+                    talkSetting = was
+                    talkProblem = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// `GET /v1/status` again, as the picker opens: the use it shows, and who talks next.
+    func lookAtUsage() async {
+        guard connection == .live, let status = try? await runner.status() else { return }
+        accounts = status.accounts
+        talkSetting = status.talkAccount
+        talkNext = status.talkNext
+    }
+
+    /// The Obysphere and who's in it: as the app connects and as the side panel opens, since obid has
+    /// no event for the directory. A runner that doesn't serve them has none; a failed read keeps what
+    /// was read.
+    func readSphere() async {
+        guard let joined = try? await runner.sphere() else { return }
+        sphere = joined.state == "joined" ? joined : nil
+        guard sphere != nil, let members = try? await runner.sphereMembers() else {
+            if sphere == nil { sphereMembers = [] }
+            return
+        }
+        sphereMembers = members
+    }
+
+    // MARK: Sessions on screen
+
+    /// A job's session, for something that shows it: `letGo` when it stops showing it.
+    func hold(session id: String) -> LiveSession {
+        if let held = sessions[id] {
+            sessions[id]?.holders = held.holders + 1
+            return held.session
+        }
+        let session = LiveSession(job: id, load: { [weak self] after in
+            #if DEBUG
+            if SampleTasks.on { return TranscriptPage(entries: after == nil ? SampleTasks.transcript(id) : []) }
+            #endif
+            guard let self else { return TranscriptPage(entries: []) }
+            return try await runner.transcript(id, after: after)
+        }, loadDetail: { [weak self] n in
+            #if DEBUG
+            if SampleTasks.on { return SessionFixture.detail }
+            #endif
+            guard let self else { return TranscriptDetail() }
+            return try await runner.transcriptDetail(id, n)
+        })
+        sessions[id] = (session, 1)
+        return session
+    }
+
+    func letGo(session id: String) {
+        guard let held = sessions[id] else { return }
+        if held.holders > 1 { sessions[id]?.holders = held.holders - 1 } else { sessions[id] = nil }
     }
 
     /// Forgets a conversation; the jobs it started stay.
@@ -473,7 +602,11 @@ final class Phone {
             adopt(changed.id, echo: pending)
         }
         if let list = conversations { conversations = ConversationOrder.placed(changed, in: list) }
-        if changed.deleted, changed.id == current { show(nil) }
+        // The one you're in went: your latest, or the empty chat (IOSNEW-2); a page over it stays.
+        if changed.deleted, resting == .conversation(changed.id) {
+            resting = PhoneWork.resting(conversations ?? [])
+            restMoves += 1
+        }
         if changed.deleted { Drafts.keep("", as: Drafts.conversation(changed.id)) }
     }
 
@@ -630,6 +763,8 @@ final class Phone {
         clearedAt = status.clearedAt
         defaultMode = RunnerMode(status.permissions?.mode)
         defaultAccount = status.defaultAccount
+        talkSetting = status.talkAccount
+        talkNext = status.talkNext
         await take(try await runner.jobs())
         inbox = try await runner.inbox()
         await readLimitDecisions()
@@ -638,12 +773,16 @@ final class Phone {
         do { conversations = try await runner.conversations() } catch {
             Logger.phone.error("listing conversations failed: \(error.localizedDescription, privacy: .public)")
         }
+        decideRest()
+        await readSphere()
         // The thread's latest page every time: what was said on the Mac while the connection was
         // down is in it.
         await conversation.reload()
         loaded = true
-        // Alerts whose job needs nothing any more, if their clearing push didn't arrive.
-        await Notifications.clear(Set(jobs.filter { !$0.needsYou && !$0.waitsForAnswer }.map(\.id)))
+        // Alerts whose job needs nothing any more, if their clearing push didn't arrive. Apart: the
+        // events wait behind this, and a system call that doesn't answer must not hold them.
+        let settled = Set(jobs.filter { !$0.needsYou && !$0.waitsForAnswer }.map(\.id))
+        Task { await Notifications.clear(settled) }
         connection = .live
         refusal = nil
         lastSeen = .now
@@ -717,6 +856,12 @@ final class Phone {
 
     /// The sample screens' made-up events (SampleTasks), through the same path as obid's.
     func sample(_ event: RunnerEvent) { apply(event) }
+
+    /// obid's list of conversations as `connected` takes it, for the tests.
+    func sample(conversations list: [RunnerConversation]) {
+        conversations = list
+        decideRest()
+    }
     #endif
 
     private func apply(_ event: RunnerEvent) {
@@ -727,12 +872,14 @@ final class Phone {
             jobs.removeAll { $0.id == id }
         case .accounts(let accounts):
             self.accounts = accounts
+            // The account a first turn would use can't run any more: obid says which now.
+            if let next = accounts.first(where: { $0.id == talkNext }), !TalkChoice.canRun(next) { Task { await lookAtUsage() } }
         case .limitDecision:
             Task { await readLimitDecisions() }
         case .cleared(let date):
             clearedAt = date
         case .connected:
-            if let liveSession { Task { await liveSession.catchUp() } }
+            for (session, _) in sessions.values { Task { await session.catchUp() } }
         case .inbox(let item):
             // One that's done leaves the list.
             inbox.removeAll { $0.id == item.id }
@@ -757,7 +904,7 @@ final class Phone {
             routineChanges += 1
             Task { await readRoutines() }
         case .transcript(let event):
-            liveSession?.apply(event)
+            sessions[event.job]?.session.apply(event)
         }
     }
 
@@ -779,8 +926,8 @@ final class Phone {
 
     // MARK: Planning
 
-    /// `new`: Home's box, which starts a conversation of its own on obid (#493); the thread then
-    /// holds just these words until obid names it.
+    /// `new`: the empty chat's box, which starts a conversation of its own on obid (#493); the thread
+    /// then holds just these words until obid names it.
     func ask(_ words: String, spoken: Bool = false, new: Bool = false) {
         guard let said = ChatThread.words(words) else { return }
         cancelVoice()
@@ -790,6 +937,9 @@ final class Phone {
             startingNew = true
             heldDeltas = []
             conversation.forget()
+            rest(on: .starting)
+        } else if resting == .empty || resting == .deciding {
+            rest(on: .conversation(current))
         }
         plan(said, answer: nil, voice: spoken, new: starts)
     }
@@ -971,6 +1121,7 @@ final class Phone {
         guard startingNew else { return }
         startingNew = false
         current = id
+        if resting == .starting { resting = .conversation(id) }
         for delta in heldDeltas where delta.conversation == id { conversation.apply(delta) }
         heldDeltas = []
         Task { await conversation.reload(arriving: true) }
@@ -995,10 +1146,9 @@ final class Phone {
         publishing = publish ? id : nil
     }
 
-    /// A notification about a conversation was tapped: its thread opens on Home.
+    /// A notification about a conversation was tapped: the app comes to rest on its thread.
     func open(conversation id: String) {
-        panel = nil
-        homePath = [.conversation(id)]
+        rest(on: .conversation(id))
     }
 
     func stop(_ id: String) async throws {
@@ -1159,11 +1309,14 @@ final class Phone {
     /// Tells the job's agent something; the runner answers with the job, running again.
     /// `conversation`: said on the task's page, the words and Oby's answer join the task's
     /// conversation, made then if it has none (docs/contracts/task-conversations.md, TASKCONV-4)
-    func tell(_ id: String, _ text: String, conversation: Bool = false) async throws {
+    /// Answers with the job the words went to: a follow-up's, when it had finished.
+    @discardableResult
+    func tell(_ id: String, _ text: String, conversation: Bool = false) async throws -> String {
         let answer = try await runner.tell(id, text, conversation: conversation)
         apply(.job(answer))
         // a follow-up it started: the task itself may be in a conversation made just now
         if answer.id != id, conversation, let told = try? await runner.job(id) { apply(.job(told)) }
+        return answer.id
     }
 
     /// The exact sentence publishing this job would carry out.
@@ -1220,7 +1373,11 @@ final class Phone {
     }
 
     func readDefaultAccount() async {
-        if let status = try? await runner.status() { defaultAccount = status.defaultAccount }
+        if let status = try? await runner.status() {
+            defaultAccount = status.defaultAccount
+            talkSetting = status.talkAccount
+            talkNext = status.talkNext
+        }
     }
 
     func setDefaultAccount(_ id: String) async throws {

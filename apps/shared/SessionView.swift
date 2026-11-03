@@ -19,18 +19,35 @@ struct SessionView: View {
     var compact = false
     /// The Mac's page shows the title; the iPhone's sheet has it in its bar.
     var title = true
+    /// The agent's own conversation (LIVETASK-5): no filters or meta over it, and no to-do list in
+    /// it, since its page holds that on top.
+    var conversation = false
     @State private var filter = TranscriptEntry.Filter.all
     @State private var atEnd = true
+    /// How many earlier lines of a long session were asked for, past its last `tail`.
+    @State private var earlier = 0
+
+    /// A long session shows its last lines, with earlier ones on asking.
+    private static let tail = 300
 
     var body: some View {
         let entries = session.entries
         let counts = session.counts
-        let shown = filter == .all ? entries : entries.filter { $0.kind == "start" || filter.takes($0) }
+        let filtered = filter == .all ? entries : entries.filter { $0.kind == "start" || filter.takes($0) }
+        // One to-do list, the newest: each version replaces the one before (LIVETASK-13).
+        let lists = filtered.last { $0.kind == "plan" }?.n
+        let all = filtered.filter { $0.kind != "plan" || (!conversation && $0.n == lists) }
+        let hidden = max(0, all.count - Self.tail - earlier)
+        let shown = hidden > 0 ? Array(all.suffix(Self.tail + earlier)) : all
         ScrollViewReader { reader in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    head(counts)
+                    if !conversation { head(counts) }
                     LazyVStack(alignment: .leading, spacing: 6) {
+                        if hidden > 0 {
+                            Button("Show \(hidden) earlier") { earlier += Self.tail }
+                                .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).frame(minHeight: 44)
+                        }
                         if session.trimmed {
                             Text("Older entries aren't shown: these are the latest \(LiveSession.most.formatted()).")
                                 .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
@@ -190,14 +207,13 @@ private struct SessionRow: View {
         .padding(.top, 8).padding(.bottom, 4)
     }
 
-    /// Its thinking, folded: "Thought for 9s".
-    /// Its thinking: "Thinking…" with the working dot while it goes on (Claude Code says it thinks
+    /// Its thinking: "Thinking" with the working dot while it goes on (Claude Code says it thinks
     /// but not what, #1328's follow-up), then "Thought for 12s", which opens only when it has words.
     @ViewBuilder private var thought: some View {
         if entry.running {
             HStack(spacing: 6) {
                 WorkMarkView(mark: .working, dot: 6)
-                Text("Thinking…").font(Tokens.font(Tokens.textMd)).italic().foregroundStyle(Tokens.muted)
+                Text("Thinking").font(Tokens.font(Tokens.textMd)).italic().foregroundStyle(Tokens.muted)
             }
             .frame(minHeight: compact ? 44 : 20)
             .padding(.leading, 32)
@@ -289,9 +305,9 @@ private struct SessionRow: View {
     }
 
     /// A tool call: a quiet line, its verb sweeping while it runs, that opens into its detail once
-    /// obid serves detail. One that can't open is plain content, not a button.
+    /// it ended. One that can't open is plain content, not a button.
     @ViewBuilder private var tool: some View {
-        let opens = session.detailServed == true && !entry.running
+        let opens = !entry.running && entry.state != "declined"
         VStack(alignment: .leading, spacing: 0) {
             if opens {
                 Button { toggle() } label: { toolLine(opens: true) }
@@ -314,7 +330,8 @@ private struct SessionRow: View {
         return HStack(spacing: 8) {
             // A quiet check once done (Sangam's `.ss-tool-mark`), the working dot, red when it failed.
             Group {
-                if entry.failed { Circle().fill(Tokens.danger).frame(width: 8, height: 8).accessibilityElement().accessibilityLabel("Failed") }
+                if entry.state == "declined" { Circle().strokeBorder(Tokens.check, lineWidth: 1.5).frame(width: 8, height: 8).accessibilityElement().accessibilityLabel("Declined") }
+                else if entry.failed { Circle().fill(Tokens.danger).frame(width: 8, height: 8).accessibilityElement().accessibilityLabel("Failed") }
                 else { WorkMarkView(mark: entry.running ? .working : .done, dot: 8) }
             }
             .frame(width: 12, height: 12)
@@ -327,7 +344,7 @@ private struct SessionRow: View {
             .fadeOut()
             .frame(maxWidth: .infinity, alignment: .leading)
             if let meta = entry.meta {
-                Text(meta).font(Tokens.font(Tokens.textSm)).monospacedDigit().foregroundStyle(entry.failed ? Tokens.danger : Tokens.muted)
+                Text(meta).font(Tokens.font(Tokens.textSm)).monospacedDigit().foregroundStyle(entry.state == "failed" ? Tokens.danger : Tokens.muted)
             }
             took
             if opens {

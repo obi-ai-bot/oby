@@ -325,7 +325,7 @@ nonisolated struct TranscriptEntry: Codable, Equatable, Identifiable, Sendable {
     /// `Engine/Inbox.swift`, "Running" `cargo test`): the file when obid names one, a command's
     /// words after its verb; else all of its words, plain.
     var verbAndTarget: (verb: String, target: String?) {
-        let words = summary ?? ""
+        let words = said
         if let file, !file.isEmpty {
             for target in [file, (file as NSString).lastPathComponent] where words.count > target.count && words.hasSuffix(target) {
                 return (String(words.dropLast(target.count)).trimmingCharacters(in: .whitespaces), file)
@@ -337,10 +337,22 @@ nonisolated struct TranscriptEntry: Codable, Equatable, Identifiable, Sendable {
         return (words, nil)
     }
 
+    /// obid names a call as it starts ("Reading scan.rs"); ended, it says what it did. Refused, it
+    /// never ran (Electron's jobPage.ts, LIVETASK-10).
+    private var said: String {
+        let words = summary ?? ""
+        guard !running, state != "declined", let space = words.firstIndex(of: " "),
+              let past = Self.past[String(words[..<space])] else { return Self.past[words] ?? words }
+        return past + words[space...]
+    }
+
+    private static let past = ["Reading": "Read", "Running": "Ran", "Editing": "Edited", "Searching": "Searched", "Looking": "Looked",
+                               "Planning": "Planned", "Using": "Used", "Fetching": "Fetched", "Writing": "Wrote"]
+
     /// What the tool row says at its right: how a command ended, what an edit changed.
     var meta: String? {
         if let exit, exit != 0 { return "exit \(exit)" }
-        if state == "declined" { return "declined" }
+        if state == "declined" { return "Declined" }
         if added != nil || removed != nil { return "+\(added ?? 0) −\(removed ?? 0)" }
         return nil
     }

@@ -98,6 +98,8 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var tetrix: TetrixJobReport?
     /// Why it stopped without ending done, apart from its agent's summary (obid only), or nil.
     var reason: String?
+    /// A `done` job that ended with nothing to show (obid only, docs/contracts/tasks.md TASKS-12).
+    var nothingDone: Bool?
     /// A grouped account decision owns this interruption; older runners omit it.
     struct AccountLimit: Codable, Equatable, Sendable {
         let decision: String?
@@ -183,7 +185,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
              started, finished, commits, published, pushed, publishError, issue, rounds, round, check, model, notes, pipeline,
              pullRequest, pullRequestError, dismissed, archived, reviewing, review, reviewError, reviewOf, outgoing, question, mode, permission, moves, waiting, report,
              conversation, turn, artifacts, followUpOf, routine, tetrix, activity, usage, windowShare, estimate, checks, scan, diff, context,
-             reason, nextStep, resumesAt, stalled, accountLimit
+             reason, nothingDone, nextStep, resumesAt, stalled, accountLimit
         case stoppedMerge = "mergeNeedsYou"
         case stoppedReview = "reviewNeedsYou"
         case stoppedCloud = "cloudNeedsYou"
@@ -380,6 +382,10 @@ nonisolated struct Account: Codable, Identifiable, Equatable, Sendable {
     var model: String?
     var effort: String?
     var complexEffort: String?
+    /// Who it is, as its tool says (docs/contracts/accounts.md); newer runners only.
+    var email: String?
+    var org: String?
+    var plan: String?
 
     /// "Personal · Claude Code"
     var title: String { "\(name) · \(Usage.tool(agent))" }
@@ -535,11 +541,17 @@ nonisolated struct RunnerConversation: Decodable, Identifiable, Equatable, Senda
     var lastActivity: Date?
     var deleted: Bool
     var turn: Match?
+    /// Who it talks through (docs/contracts/conversation-agent.md): the owner's choice (an account's
+    /// id, `auto`, or nil to follow the setting), the account its last answer came from, and the one
+    /// its turns moved off. obid sends each only once there's something to say.
+    var talkAccount: String?
+    var talkedOn: String?
+    var movedOff: String?
 
-    private enum Keys: String, CodingKey { case id, title, pinned, created, lastActivity, deleted, turn }
+    private enum Keys: String, CodingKey { case id, title, pinned, created, lastActivity, deleted, turn, talkAccount, talkedOn, movedOff }
 
     init(id: String, title: String, pinned: Bool = false, created: Date? = nil, lastActivity: Date? = nil,
-         deleted: Bool = false, turn: Match? = nil) {
+         deleted: Bool = false, turn: Match? = nil, talkAccount: String? = nil, talkedOn: String? = nil, movedOff: String? = nil) {
         self.id = id
         self.title = title
         self.pinned = pinned
@@ -547,11 +559,17 @@ nonisolated struct RunnerConversation: Decodable, Identifiable, Equatable, Senda
         self.lastActivity = lastActivity
         self.deleted = deleted
         self.turn = turn
+        self.talkAccount = talkAccount
+        self.talkedOn = talkedOn
+        self.movedOff = movedOff
     }
 
     init(from decoder: any Decoder) throws {
         let keys = try decoder.container(keyedBy: Keys.self)
         id = try keys.decode(String.self, forKey: .id)
+        talkAccount = (try? keys.decodeIfPresent(String.self, forKey: .talkAccount)) ?? nil
+        talkedOn = (try? keys.decodeIfPresent(String.self, forKey: .talkedOn)) ?? nil
+        movedOff = (try? keys.decodeIfPresent(String.self, forKey: .movedOff)) ?? nil
         title = (try? keys.decodeIfPresent(String.self, forKey: .title)) ?? ""
         pinned = (try? keys.decodeIfPresent(Bool.self, forKey: .pinned)) ?? false
         created = try? keys.decodeIfPresent(Date.self, forKey: .created)
@@ -649,6 +667,10 @@ nonisolated struct RunnerStatus: Decodable, Equatable, Sendable {
     var availableLogins: [AvailableLogin]?
     /// The account new tasks go to (Settings › Agents), or nil for routing's own order (obid only).
     var defaultAccount: String?
+    /// Who new conversations talk through (an account's id, nil for Auto), and the account a new
+    /// conversation's first turn would use now (obid only, docs/contracts/conversation-agent.md).
+    var talkAccount: String?
+    var talkNext: String?
 
     struct AvailableLogin: Codable, Equatable, Sendable {
         var agent: String
@@ -664,6 +686,19 @@ nonisolated struct RunnerStatus: Decodable, Equatable, Sendable {
     struct Permissions: Codable, Equatable, Sendable {
         var mode: String?
     }
+}
+
+/// The Obysphere obid is in, as `GET /v1/obid/sphere` says: only what the side panel shows.
+nonisolated struct RunnerSphere: Decodable, Equatable, Sendable {
+    /// `none`, `joined` or `revoked`.
+    var state: String
+    /// Its id: obid knows no other name for it (the invite link's stays with the app that joined).
+    var sphere: String?
+}
+
+/// Another Oby in that Obysphere (`GET /v1/obid/sphere/members`): the owner it speaks for.
+nonisolated struct RunnerSphereMember: Decodable, Equatable, Sendable {
+    var owner: String
 }
 
 /// What `POST /v1/clear` answers, and what the `clear` event carries.
@@ -1396,11 +1431,18 @@ nonisolated struct Runner: Sendable {
         try decoder.decode([RunnerConversation].self, from: data)
     }
 
-    /// Renames or pins a conversation (nil keeps either); obid answers with it.
-    func updateConversation(_ id: String, title: String? = nil, pinned: Bool? = nil) async throws -> RunnerConversation {
-        struct Body: Encodable { var title: String?; var pinned: Bool? }
-        return try await call("PATCH", "v1/conversations/\(id)", body: Body(title: title, pinned: pinned))
+    /// Renames or pins a conversation, or chooses who it talks through (an account's id, or `auto`);
+    /// nil keeps each. obid answers with it.
+    func updateConversation(_ id: String, title: String? = nil, pinned: Bool? = nil, talkAccount: String? = nil) async throws -> RunnerConversation {
+        struct Body: Encodable { var title: String?; var pinned: Bool?; var talkAccount: String? }
+        return try await call("PATCH", "v1/conversations/\(id)", body: Body(title: title, pinned: pinned, talkAccount: talkAccount))
     }
+
+    /// The Obysphere obid is in (obid only).
+    func sphere() async throws -> RunnerSphere { try await call("GET", "v1/obid/sphere") }
+
+    /// The other Obys in it (obid only).
+    func sphereMembers() async throws -> [RunnerSphereMember] { try await call("GET", "v1/obid/sphere/members") }
 
     /// Forgets a conversation and its turns; the jobs it started stay.
     func deleteConversation(_ id: String) async throws {
@@ -1461,6 +1503,13 @@ nonisolated struct Runner: Sendable {
     func setDefaultAccount(_ id: String) async throws {
         struct Body: Encodable { var defaultAccount: String }
         try await send("PUT", "v1/settings/jobs", body: Body(defaultAccount: id))
+    }
+
+    /// Who new conversations talk through (`PUT /v1/settings/jobs` with only `talkAccount`): an
+    /// account's id, or `auto`.
+    func setTalkAccount(_ id: String) async throws {
+        struct Body: Encodable { var talkAccount: String }
+        try await send("PUT", "v1/settings/jobs", body: Body(talkAccount: id))
     }
     #endif
 

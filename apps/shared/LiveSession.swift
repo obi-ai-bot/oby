@@ -4,8 +4,7 @@ import Observation
 /// One job's session as its view shows it, live (#785): every page of it from obid, then each
 /// `transcript` event as it comes (an entry put in place by its `n`, more words added to the one
 /// the agent is writing), and a slow check every 5 seconds while the job runs for anything an event
-/// missed. It keeps the latest `most` entries. An entry's detail is fetched only when its row opens,
-/// and only once obid is known to serve detail: until then no row opens, so nothing is made up.
+/// missed. It keeps the latest `most` entries. An entry's detail is fetched only when its row opens.
 @MainActor @Observable
 final class LiveSession {
     let job: String
@@ -31,8 +30,6 @@ final class LiveSession {
     private(set) var unavailable = false
     /// Why the last read failed, while there's nothing to show.
     private(set) var failure: String?
-    /// Whether obid serves an entry's detail (#784): nil until it has been asked once.
-    private(set) var detailServed: Bool?
     private(set) var details: [Int: TranscriptDetail] = [:]
 
     /// The most entries kept.
@@ -53,12 +50,13 @@ final class LiveSession {
         } while !Task.isCancelled
     }
 
-    /// What came or changed since the last entry, every page of it, merged into the entries as
-    /// they are once it's all here (an event may have come meanwhile); then whether detail is served.
+    /// What came or changed since the last entry known with none missing before it, so a lost event
+    /// comes too, every page of it, merged into the entries as they are once it's all here (an event
+    /// may have come meanwhile).
     func catchUp() async {
         guard !unavailable else { return }
         do {
-            let fresh = try await Self.pages(after: entries.last?.n, load: load)
+            let fresh = try await Self.pages(after: Self.knownUpTo(entries, trimmed: trimmed), load: load)
             (entries, trimmed) = Self.kept(entries, trimmed: trimmed, adding: fresh)
             failure = nil
         } catch let error as RunnerError where error.status == 404 {
@@ -67,7 +65,6 @@ final class LiveSession {
             if entries.isEmpty { failure = error.localizedDescription }
         }
         loaded = true
-        await askDetailServed()
     }
 
     /// An event from the runner's stream: another job's is left alone.
@@ -97,20 +94,20 @@ final class LiveSession {
     /// An entry's detail, fetched the first time its row opens; nil when it can't be read.
     func detail(_ n: Int) async -> TranscriptDetail? {
         if let known = details[n] { return known }
-        guard detailServed == true, let detail = try? await loadDetail(n) else { return nil }
+        guard let detail = try? await loadDetail(n) else { return nil }
         details[n] = detail
         return detail
     }
 
-    /// Asks once, with a call that has ended, whether obid serves detail: a 404 says it doesn't.
-    private func askDetailServed() async {
-        guard detailServed == nil, let call = entries.first(where: { $0.kind == "tool" && !$0.running }) else { return }
-        do {
-            details[call.n] = try await loadDetail(call.n)
-            detailServed = true
-        } catch let error as RunnerError where error.status == 404 {
-            detailServed = false
-        } catch {}
+    /// The last `n` with none missing before it: what to ask `after` for. Trimmed, the first kept is
+    /// where it starts; nothing yet, from the start.
+    nonisolated static func knownUpTo(_ entries: [TranscriptEntry], trimmed: Bool = false) -> Int? {
+        guard var known = entries.first?.n, trimmed || known == 1 else { return nil }
+        for entry in entries.dropFirst() {
+            guard entry.n == known + 1 else { break }
+            known = entry.n
+        }
+        return known
     }
 
     /// What came or changed after entry `after`, following `next` page by page until there's no
@@ -134,6 +131,8 @@ final class LiveSession {
         var at = Dictionary(kept.enumerated().map { ($1.n, $0) }, uniquingKeysWith: { $1 })
         for entry in new {
             if let index = at[entry.n] {
+                // A fetch answered late never undoes an event: an ended call stays ended.
+                if all[index].state != nil, !all[index].running, entry.running { continue }
                 // Words that came as `append` after this copy was read stay.
                 var entry = entry
                 if let mine = all[index].text, mine.count > entry.words.count, mine.hasPrefix(entry.words) { entry.text = mine }

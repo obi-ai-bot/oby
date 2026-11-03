@@ -121,6 +121,12 @@ private struct AgentsPage: View {
                         Task { do { try await phone.setDefaultAccount(id); problem = nil } catch { problem = error.localizedDescription } }
                     }, options: ready.map { ($0.id, "\($0.name) · \(Usage.tool($0.agent))") })
                 }
+                // Who a new conversation talks through, as the message box's picker on the empty chat.
+                SetRow("New conversations talk through") {
+                    SetSelect("New conversations talk through", selection: Binding { phone.talkSetting ?? TalkChoice.auto } set: { id in
+                        phone.chooseTalk(id, in: nil)
+                    }, options: [(TalkChoice.auto, "Auto · Whichever has room")] + ready.map { ($0.id, "\($0.name) · \(Usage.tool($0.agent))") })
+                }
             } else {
                 SetRow("No agents yet", quiet: true)
             }

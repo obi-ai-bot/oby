@@ -669,32 +669,6 @@ struct ToolSteps: View {
     }
 }
 
-/// Under a job card's meta line (docs/ios-design.md): while it runs, its stage and latest step on
-/// one line with the sheen, and the stage bar; once it ended, its result: the pull request it
-/// opened, or why it failed. Each `job` event brings the latest.
-struct JobCardLines: View {
-    let job: Job
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        if let outcome = job.outcome {
-            if let link = outcome.link {
-                Button { openURL(link) } label: {
-                    Text(outcome.text).font(Tokens.font(Tokens.textSm, .medium)).foregroundStyle(Tokens.text).underline()
-                }
-                .buttonStyle(.plain)
-            } else {
-                Text(outcome.text).font(Tokens.font(Tokens.textSm)).foregroundStyle(outcome.failed ? Tokens.danger : Tokens.text).fadeOut()
-            }
-        } else if let line = job.liveLine {
-            VStack(alignment: .leading, spacing: 6) {
-                Sheen(text: line, size: Tokens.textSm).lineLimit(1)
-                StageBar(job: job, needs: false)
-            }
-        }
-    }
-}
-
 #if DEBUG
 /// A made-up artifact page (a page, its stylesheet, a classic and a module script), served as
 /// obid serves it: for the tests and the sample screens (`-ObySampleTalk`).

@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import OSLog
 
 /// Debug builds only: launched with `-ObySampleTasks YES`, Home shows three made-up tasks (one
 /// running, one that needs you, one done) and two decisions in its stack, so a simulator with no runner jobs can show Sangam's
@@ -12,8 +13,8 @@ enum SampleTasks {
         let now = Date.now
         func at(_ minutes: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutes * 60)) }
         let stages = { (states: [String]) in
-            zip(["Plan", "Work", "Check", "Review", "Merge"], states).enumerated().map { index, pair in
-                #"{"id": "s\#(index)", "title": "\#(pair.0)", "state": "\#(pair.1)"}"#
+            zip(["Plan", "Work", "Check", "Review", "Merge"], states).map { pair in
+                #"{"id": "\#(pair.0.lowercased())", "title": "\#(pair.0)", "state": "\#(pair.1)"}"#
             }.joined(separator: ", ")
         }
         let list = [
@@ -43,7 +44,25 @@ enum SampleTasks {
     /// What the finished sample job's agent did with Tetrix.
     static let tetrixReport = #"{"connected": true, "calls": {"search_entities": 2, "get_entity": 1, "save_session": 1}, "context": true, "saved": ["ses_8f2a"], "gaps": {"noResults": ["deskree-inc/oby#412"], "missing": [], "unknownFiles": ["apps/ios/app/SettingsScreen.swift"], "failed": [], "sent": "2026-10-18T14:40:02Z", "session": "ses_c41d", "notSent": null}}"#
 
-    /// Two made-up conversations, for Home's Recent.
+    /// A made-up Obysphere, for the side panel.
+    static let sphere = RunnerSphere(state: "joined", sphere: "deskree")
+    static let members = ["Ernesto", "Dima", "Sangam"].map(RunnerSphereMember.init)
+
+    /// What the running sample's agent did, for its live card and its own conversation.
+    static func transcript(_ job: String) -> [TranscriptEntry] {
+        guard job == "sample-run" else { return [] }
+        let at = Date.now.addingTimeInterval(-300)
+        return [TranscriptEntry(n: 1, at: at, kind: "start", summary: "Started on Claude Code"),
+                TranscriptEntry(n: 2, at: at, kind: "you", text: "Make the login screen's empty state say what to do next"),
+                TranscriptEntry(n: 3, at: at, kind: "tool", tool: "Read", summary: "Reading LoginView.swift", state: "done", seconds: 0.2, activity: "read", file: "apps/ios/app/LoginView.swift"),
+                TranscriptEntry(n: 4, at: at, kind: "thought", state: "done", seconds: 8),
+                TranscriptEntry(n: 5, at: at, kind: "said", text: "The empty state says nothing about what to do. I'll give it one line and one button."),
+                TranscriptEntry(n: 6, at: at, kind: "plan", todos: [.init(text: "Read how the login screen is built", state: "done"), .init(text: "Write the empty state", state: "running"), .init(text: "Run the tests", state: "pending")]),
+                TranscriptEntry(n: 7, at: at, kind: "tool", tool: "Edit", summary: "Editing LoginView.swift", state: "done", seconds: 0.1, added: 12, removed: 2, activity: "edit", file: "apps/ios/app/LoginView.swift"),
+                TranscriptEntry(n: 8, at: at, kind: "tool", tool: "Bash", summary: "Running swift test", state: "running", activity: "test")]
+    }
+
+    /// Two made-up conversations, for the side panel.
     static var conversations: [RunnerConversation] {
         [RunnerConversation(id: "sample-c1", title: "Why does the login screen look empty?", lastActivity: .now.addingTimeInterval(-120),
                             turn: .init(text: "On it. Claude is making the empty state say what to do next.")),
@@ -51,19 +70,43 @@ enum SampleTasks {
                             turn: .init(text: "It went out on Tuesday; the About row came after."))]
     }
 
+    /// `-ObySampleRoute new`, `settings`, `task:<id>`, `agent:<id>`, `kind:<review|issues|tasks|routines>`,
+    /// `panel:chats` or `panel:tasks`: opens that, for its screenshots. `-ObySamplePair '<QR code's
+    /// JSON>'`: pairs as scanning it does, for a Simulator with no camera, on any debug launch.
+    @MainActor static func launch(_ phone: Phone) {
+        let defaults = UserDefaults.standard
+        if let code = defaults.string(forKey: "ObySamplePair"), phone.link == nil {
+            Task {
+                do { try await phone.pair(scanned: code); Logger.phone.notice("paired") }
+                catch { Logger.phone.error("pairing failed: \(error.localizedDescription, privacy: .public)") }
+            }
+        }
+        // `-ObySampleChoose <account>`: the picker's choice, once the app has come to rest, for a Simulator nobody taps on.
+        if let account = defaults.string(forKey: "ObySampleChoose") {
+            Task {
+                while phone.resting == .deciding { try? await Task.sleep(for: .milliseconds(200)) }
+                phone.chooseTalk(account, in: phone.resting.conversation)
+            }
+        }
+        guard let route = defaults.string(forKey: "ObySampleRoute") else { return }
+        let kind = [WorkType.review, .issues, .tasks, .routines].first { "kind:\($0.id)" == route }
+        if route == "new" { phone.newConversation() }
+        else if route == "panel:chats" { phone.panel = .chats }
+        else if route == "panel:tasks" { phone.panel = .tasks }
+        else if route == "settings" { phone.homePath = [.settings] }
+        else if route.hasPrefix("task:") { phone.homePath = [.task(String(route.dropFirst(5)))] }
+        else if route.hasPrefix("agent:") { phone.homePath = [.agent(String(route.dropFirst(6)))] }
+        else if let kind { phone.homePath = [.kind(kind)] }
+    }
+
     /// With `-ObySampleTalk <seconds>` too: the Oby thread opens with a question of yours, and that
     /// many seconds after launch Oby's answer comes, a word at a time, for a screenshot of it coming in.
     @MainActor static func talk(_ phone: Phone) {
         harness(phone)
-        // `-ObySampleRoute settings`, `task:<id>` or `kind:<review|issues|tasks|routines>`: opens that page, for its screenshots.
-        if let route = UserDefaults.standard.string(forKey: "ObySampleRoute") {
-            let kind = [WorkType.review, .issues, .tasks, .routines].first { "kind:\($0.id)" == route }
-            phone.homePath = route == "settings" ? [.settings] : route.hasPrefix("task:") ? [.task(String(route.dropFirst(5)))] : kind.map { [.kind($0)] } ?? []
-        }
         let delay = UserDefaults.standard.double(forKey: "ObySampleTalk")
         guard delay > 0 else { return }
         let model = phone.conversation
-        phone.homePath = [.conversation(nil)]
+        phone.rest(on: .conversation(nil))
         model.apply(Turn(id: "sample-ask", who: .user, text: "Where's the login screen task at?"))
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
@@ -83,7 +126,7 @@ enum SampleTasks {
     @MainActor static func harness(_ phone: Phone) {
         let delay = UserDefaults.standard.double(forKey: "ObySampleHarness")
         guard delay > 0 else { return }
-        phone.homePath = [.conversation(nil)]
+        phone.rest(on: .conversation(nil))
         let asked = "Make me a page for the login screen's empty state, then fix it in the app."
         phone.sample(.turn(Turn(id: "sample-harness", who: .user, text: asked)))
         func step(_ index: Int, _ tool: String, _ text: String, _ detail: String, _ state: TurnStep.State) {

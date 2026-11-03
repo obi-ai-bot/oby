@@ -33,6 +33,8 @@ Long text fades out over its last 24pt instead of ending in "…". The step bein
 
 ## Screens
 
+**Since 2026-11-03 the iPhone is chat first, as the desktop app is ([contracts/ios-new-oby.md](contracts/ios-new-oby.md)): it opens on your conversation, Home's chips moved under the side panel's Tasks, and its Running and Recent are gone. "Home" below is what's left as the empty chat, without its chips and lists; the contract wins where they differ.**
+
 Each screen below is one frame on the canvas, in dark and light. "From obid" names what fills each element.
 
 ### Home

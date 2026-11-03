@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The message box (Sangam's Composer.tsx): a 46-point pill with a thin edge, the words growing to
 /// five lines, and at its end the mic, which turns into Send ↑ once there's text. The same box on
-/// Home, in a conversation and on a task's page. Tap the mic and what you say goes into the field
+/// the empty chat, in a conversation and on a task's page. Tap the mic and what you say goes into the field
 /// as it's heard; tap Stop and the words stay there to edit and send (apps/ios/app/README.md,
 /// "Voice input"). Before them, the usage gauge whenever there's an account. There's no + : the
 /// iPhone sends no attachments yet.
@@ -16,6 +16,9 @@ struct Composer: View {
     let onSend: (_ spoken: Bool) -> Void
     /// While Oby works on a turn: Stop takes the end slot until there's something to send.
     var onStop: (() -> Void)? = nil
+    /// Words to Oby show who it talks through: `.some(id)` a conversation's, `.some(nil)` the setting
+    /// for new ones (TalkPicker). Nil on a task's box, and while a new conversation has no id yet.
+    var talkIn: String?? = nil
     @State private var selection: TextSelection?
     /// The field has dictated words in it: cleared, it's typed again.
     @State private var dictated = false
@@ -35,6 +38,9 @@ struct Composer: View {
             if let problem = phone.voice.problem {
                 Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.horizontal, 16)
             }
+            if talkIn != nil, let problem = phone.talkProblem {
+                Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.horizontal, 16)
+            }
             HStack(alignment: .bottom, spacing: 2) {
                 TextField("", text: $text, selection: $selection, prompt: Text(prompt).foregroundStyle(Tokens.muted), axis: .vertical)
                     .lineLimit(1...5)
@@ -45,6 +51,7 @@ struct Composer: View {
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .frame(minHeight: 32)
                     .accessibilityAddTraits(phone.voice.listening ? .updatesFrequently : [])
+                if let talkIn, !phone.accounts.isEmpty { TalkPicker(conversation: talkIn) }
                 if !phone.accounts.isEmpty { UsageGauge() }
                 end
             }

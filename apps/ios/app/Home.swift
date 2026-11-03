@@ -1,15 +1,12 @@
 import SwiftUI
 import WebKit
 
-/// Where a tab's stack can go: a kind of work's page, a task's page, a conversation (obid's by
-/// id, nil for the latest or the one thread), the one Home's box just started, every task,
-/// Archived, and the Inbox (what needs you with no task on Home).
+/// What opens over where the app rests: a kind of work's page, a task's page, a task's agent's own
+/// conversation, Archived, the Inbox (what needs you with no task to show it on) and Settings.
 enum Route: Hashable {
     case kind(WorkType)
     case task(String)
-    case conversation(String?)
-    case newConversation
-    case all
+    case agent(String)
     case archived
     case inbox
     case settings
@@ -32,9 +29,7 @@ extension View {
             switch route {
             case .kind(let kind): KindPage(kind: kind)
             case .task(let id): TaskPage(id: id)
-            case .conversation(let id): ConversationPage(id: id)
-            case .newConversation: ConversationPage(id: nil, isNew: true)
-            case .all: AllTasksPage()
+            case .agent(let id): AgentPage(id: id)
             case .archived: ArchivedPage()
             case .inbox: InboxPage()
             case .settings: SettingsScreen()
@@ -50,67 +45,95 @@ extension View {
     }
 }
 
-/// Home (Sangam's Home.tsx, docs/ios-design.md "Home"): Oby on its stage, what's running and what
-/// needs you under it, a chip for every kind of work, then, as the iPhone has no side panel, the
-/// running tasks and the latest conversations, and the message box. What you send there starts a
-/// conversation and opens it. A chip opens its kind's page; "needs you", the decision that has
-/// waited longest, with its task (docs/oby-ux.md rows 9-10); See all, every task.
-struct HomeView: View {
+/// What the app shows (docs/contracts/ios-new-oby.md; the owner's decision of 2026-11-02, "I interact
+/// with my Oby on my conversation"): your conversation, or the empty chat with none, and everything
+/// else opened over it in one stack. Sangam's panel button at the top left, New conversation one tap
+/// away at the top right. Why the Mac can't be reached shows as one line over every screen.
+struct ChatRoot: View {
     @Environment(Phone.self) private var phone
     @Environment(\.scenePhase) private var scenePhase
     let character: ObyCharacter
-    @State private var text = ""
-    @FocusState private var typing: Bool
 
     var body: some View {
         @Bindable var phone = phone
-        // Why the Mac can't be reached: one line over every screen, the bars under it.
         VStack(spacing: 0) {
-        if let notice = phone.notice { ReachLine(notice: notice) }
-        NavigationStack(path: $phone.homePath) {
-            ScrollView {
-                VStack(spacing: 0) {
-                    stage
-                    lists.padding(.top, 22).padding(.horizontal, -10)
-                }
-                .padding(.horizontal, Tokens.gutter).padding(.top, 6).padding(.bottom, 16)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollDismissesKeyboard(.interactively)
-            .obyPage()
-            .safeAreaInset(edge: .bottom) {
-                Composer(text: $text, prompt: HomeLine.placeholder(fullName: HomeLine.owner(ofMac: phone.link?.name) ?? ""),
-                         typing: $typing, onSend: send)
-                    .keepsDraft($text, as: Drafts.home)
-            }
-            .toolbar {
-                // One panel button, as Sangam's: while the panel is open, its own puts it away.
-                if phone.panel == nil {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { typing = false; phone.panel = .home } label: { Image(systemName: "sidebar.left") }
-                            .accessibilityLabel("Show sidebar")
+            if let notice = phone.notice { ReachLine(notice: notice) }
+            NavigationStack(path: $phone.homePath) {
+                rest
+                    .id(phone.restMoves)
+                    .toolbar {
+                        // One panel button, as Sangam's: while the panel is open, its own puts it away.
+                        if phone.panel == nil {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button { phone.panel = .chats } label: { Image(systemName: "sidebar.left") }
+                                    .accessibilityLabel("Show sidebar")
+                            }
+                        }
+                        if !phone.resting.showsStage {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button { phone.newConversation() } label: { Image(systemName: "square.and.pencil") }
+                                    .accessibilityLabel("New conversation")
+                            }
+                        }
                     }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { phone.homePath.append(.settings) } label: { OwnerPicture(name: HomeLine.owner(ofMac: phone.link?.name)) }
-                        .accessibilityLabel("Settings")
-                }
+                    .routes()
             }
-            .routes()
-        }
-        .pushes(onto: $phone.homePath)
+            .pushes(onto: $phone.homePath)
         }
         .animation(Tokens.warm, value: phone.notice)
         .onDisappear { phone.cancelVoice() }
         .onChange(of: scenePhase) { if scenePhase != .active { phone.leftForeground(background: scenePhase == .background) } }
-        .onChange(of: phone.homePath) { if !phone.homePath.isEmpty { phone.cancelVoice(); typing = false } }
+        .onChange(of: phone.homePath) { if !phone.homePath.isEmpty { phone.cancelVoice() } }
+    }
+
+    @ViewBuilder private var rest: some View {
+        // One page from the words that start a conversation on, as obid names it.
+        if phone.resting.showsStage {
+            EmptyChat(character: character)
+        } else {
+            ConversationPage(id: phone.resting.conversation, isNew: phone.resting == .starting)
+        }
+    }
+}
+
+/// The empty chat (Home's stage, without the chips): Oby, its line and the box, and what Oby is asking
+/// you, where it was. Words sent here start a conversation, which opens. While obid's list of
+/// conversations is on its way, a thread's bones instead of Oby, so the app doesn't flash it.
+private struct EmptyChat: View {
+    @Environment(Phone.self) private var phone
+    let character: ObyCharacter
+    @State private var text = ""
+    @FocusState private var typing: Bool
+
+    private var loading: Bool { phone.resting == .deciding && !phone.connection.isOffline }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                if loading {
+                    ThreadBones().frame(maxWidth: .infinity)
+                } else {
+                    stage
+                    asks.padding(.top, 22)
+                }
+            }
+            .padding(.horizontal, Tokens.gutter).padding(.top, 6).padding(.bottom, 16)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollDismissesKeyboard(.interactively)
+        .obyPage()
+        .safeAreaInset(edge: .bottom) {
+            Composer(text: $text, prompt: HomeLine.placeholder(fullName: HomeLine.owner(ofMac: phone.link?.name) ?? ""),
+                     typing: $typing, onSend: send, talkIn: .some(nil))
+                .keepsDraft($text, as: Drafts.home)
+        }
         // Once the panel has slid away (Tokens.warm): focused while it's still out, the box doesn't take it.
-        .onChange(of: phone.focusHome) {
+        .onChange(of: phone.focusHome, initial: true) {
             guard phone.focusHome else { return }
             phone.focusHome = false
             Task {
                 try? await Task.sleep(for: .milliseconds(350))
-                // Home still showing: a page pushed or the panel opened since keeps the keyboard down.
+                // Still showing: a page pushed or the panel opened since keeps the keyboard down.
                 if phone.homePath.isEmpty, phone.panel == nil { typing = true }
             }
         }
@@ -122,11 +145,7 @@ struct HomeView: View {
         return phone.active.contains(where: \.isWorking) ? "working" : "idle"
     }
 
-    /// The kinds that wait on the owner's own answer: a permission, a Confirm, a question (Oby's or
-    /// the agent's, #858), a plan, a Start.
-    private static let asks: Set<String> = ["permission", RunnerConfirm.kind, "question", "agentQuestion", "plan", "start"]
-
-    /// Oby, the line under it, and the chips.
+    /// Oby and the line under it.
     private var stage: some View {
         let work = phone.work
         // A task waiting for memory is active, but not running: the line says it apart.
@@ -148,57 +167,16 @@ struct HomeView: View {
             .disabled(needs == 0)
             .accessibilityHint(needs > 0 ? "Opens what needs you" : "")
             .padding(.top, 14)
-            CenteredFlow(spacing: 8) {
-                ForEach(WorkList.kinds(work, routines: Launch.everything)) { group in
-                    HomeChip(label: group.label, fresh: group.fresh, needs: group.needs > 0) {
-                        if let kind = group.type { phone.homePath.append(.kind(kind)) }
-                    }
-                }
-            }
-            .frame(maxWidth: 362)
-            .padding(.top, 16)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Your tasks")
         }
         .frame(maxWidth: .infinity)
     }
 
-    /// What waits on you, as one stack of cards (the owner's decision of 2026-10-24: answered here
-    /// with a tap, without opening its task; AskStack), then Running and Recent (the iPhone's side
-    /// panel, cut short).
-    @ViewBuilder private var lists: some View {
-        let asks = PhoneOffer.once(phone.answering.filter { Self.asks.contains($0.kind) })
-        let rows = PhoneWork.running(phone.work)
-        let recent = phone.conversations.map(PhoneWork.recent) ?? []
-        VStack(alignment: .leading, spacing: 0) {
-            if !asks.isEmpty || !phone.limitDecisions.isEmpty {
-                ListLabel(title: "Needs you", more: "Inbox") { phone.homePath.append(.inbox) }
-                ForEach(phone.limitDecisions) { decision in
-                    AccountLimitDecision(decision: decision).padding(.horizontal, 10).padding(.bottom, 12)
-                }
-                if !asks.isEmpty { AskStack(items: asks).padding(.horizontal, 10).padding(.bottom, 12) }
-            }
-            if !rows.isEmpty {
-                ListLabel(title: "Running", more: "See all") { phone.homePath.append(.all) }
-                    .padding(.top, asks.isEmpty ? 0 : 2)
-                ForEach(rows) { item in
-                    Button { phone.homePath.append(.task(item.id)) } label: {
-                        HomeTaskRow(item: item, step: PhoneWork.step(item, decision: phone.decision(for: item.job)))
-                    }
-                    .buttonStyle(RowPress())
-                }
-            }
-            if !recent.isEmpty {
-                ListLabel(title: "Recent", more: "All conversations") { phone.panel = .conversations }
-                    .padding(.top, rows.isEmpty && asks.isEmpty ? 0 : 14)
-                ForEach(recent) { conversation in
-                    Button { phone.homePath.append(.conversation(conversation.id)) } label: {
-                        HomeConversationRow(conversation: conversation, last: conversation.turn?.text ?? phone.previews[conversation.id])
-                    }
-                    .buttonStyle(RowPress())
-                    .task { await phone.preview(conversation.id) }
-                }
-            }
+    /// What waits on you, as one stack of cards, answered here with a tap (the owner's decision of 2026-10-24).
+    @ViewBuilder private var asks: some View {
+        let asks = PhoneAsks.over(phone.answering, in: nil)
+        VStack(spacing: 12) {
+            ForEach(phone.limitDecisions) { AccountLimitDecision(decision: $0) }
+            if !asks.isEmpty { AskStack(items: asks) }
         }
     }
 
@@ -207,11 +185,46 @@ struct HomeView: View {
         phone.ask(text, spoken: spoken, new: true)
         text = ""
         typing = false
-        phone.homePath.append(.newConversation)
     }
 }
 
-/// Oby on its stage (`.oby-frame`), the same face on Home and on the unpaired screen.
+/// What Oby asks that the stack shows: the kinds that wait on the owner's own answer, once each. An
+/// offer made in the conversation on screen is in its thread, where it was made.
+nonisolated enum PhoneAsks {
+    /// A permission, a Confirm, a question (Oby's or the agent's, #858), a plan, a Start.
+    static let kinds: Set<String> = ["permission", RunnerConfirm.kind, "question", "agentQuestion", "plan", "start"]
+
+    static func over(_ answering: [InboxItem], in conversation: String?) -> [InboxItem] {
+        PhoneOffer.once(answering.filter { kinds.contains($0.kind) && !($0.offer != nil && conversation != nil && $0.conversation == conversation) })
+    }
+}
+
+/// What Oby is asking, over your conversation, answered there in one click (CHATFIRST-8). Taller than
+/// there's room for, it scrolls, so its choices stay reachable.
+struct AsksOver: View {
+    @Environment(Phone.self) private var phone
+    let asks: [InboxItem]
+    let typing: Bool
+
+    var body: some View {
+        if !asks.isEmpty || !phone.limitDecisions.isEmpty {
+            let stack = VStack(spacing: 12) {
+                ForEach(phone.limitDecisions) { AccountLimitDecision(decision: $0) }
+                if !asks.isEmpty { AskStack(items: asks) }
+            }
+            .padding(.horizontal, Tokens.gutter).padding(.vertical, 8)
+            ViewThatFits(in: .vertical) {
+                stack
+                ScrollView { stack }.scrollIndicators(.never)
+            }
+            // ponytail: fixed heights; a measured share of the screen if these ever crowd a small iPhone
+            .frame(maxHeight: typing ? 220 : 420)
+            .background(Tokens.bg)
+        }
+    }
+}
+
+/// Oby on its stage (`.oby-frame`), the same face on the empty chat and on the unpaired screen.
 struct StageOby: View {
     @Environment(\.colorScheme) private var colorScheme
     let character: ObyCharacter
@@ -229,29 +242,12 @@ struct StageOby: View {
     }
 }
 
-/// A list's label with its way to the rest (`.list-label`): 26 tall, 12pt `label`.
-private struct ListLabel: View {
-    let title: String
-    let more: String
-    let action: () -> Void
-
-    var body: some View {
-        HStack {
-            Text(title).accessibilityAddTraits(.isHeader)
-            Spacer()
-            Button(more, action: action).buttonStyle(.plain)
-        }
-        .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.label)
-        .padding(.horizontal, 10).frame(height: 26)
-    }
-}
-
 /// Everything waiting on you, as the Mac's Home has it (its HomeDecisions, Sangam's AskStack, #1442):
 /// a stack of cards, the oldest on top. The top card is the whole decision, answered right here,
 /// under a head with its task and where it is in the stack ("2/5") between the arrows that go round
 /// it; the next two peek out under it. Answered (once the runner confirms), it lifts away and the
 /// one after takes its place; put off with Later, it leaves until it's due again.
-private struct AskStack: View {
+struct AskStack: View {
     @Environment(Phone.self) private var phone
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let items: [InboxItem]
@@ -336,88 +332,6 @@ private struct AskStack: View {
             at = HomeStack.Place(id: items[next].cardID, index: next)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { exit = .lift }
         }
-    }
-}
-
-/// A row pressed: `hover`, 6 round.
-private struct RowPress: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(configuration.isPressed ? Tokens.hover : .clear, in: RoundedRectangle(cornerRadius: Tokens.rowRadius, style: .continuous))
-            .contentShape(Rectangle())
-    }
-}
-
-/// A running task on Home (`.task-row`): its agent's mark, its title, what it's on, its mark.
-private struct HomeTaskRow: View {
-    let item: WorkList.Item<Job>
-    let step: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            AgentMark(agent: item.job.agent).font(Tokens.font(12, .semibold)).frame(width: 16).foregroundStyle(Tokens.ink.opacity(0.7))
-            VStack(alignment: .leading, spacing: 0) {
-                Text(item.job.heading).font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item).fadeOut()
-                Text(step).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).lineLimit(1)
-            }
-            WorkMarkView(mark: item.mark).frame(width: 12, height: 12)
-        }
-        .padding(.horizontal, 10).frame(height: 44)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(item.mark.rawValue)
-    }
-}
-
-/// A conversation on Home (`.convo-row`): its name, the last thing said, when.
-private struct HomeConversationRow: View {
-    let conversation: RunnerConversation
-    let last: String?
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(conversation.title.isEmpty ? "Conversation" : conversation.title)
-                    .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item).fadeOut()
-                if let last, !last.isEmpty {
-                    Text(last).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).fadeOut()
-                }
-            }
-            if conversation.latest > .distantPast {
-                Text(ConversationOrder.ago(conversation.latest)).font(Tokens.font(Tokens.textSm)).monospacedDigit()
-                    .foregroundStyle(Tokens.muted).padding(.top, 6)
-            }
-        }
-        .padding(.horizontal, 10).padding(.vertical, 6).frame(minHeight: 52)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-/// A kind of work's chip on Home: a blue dot ahead of its name while it holds a new task, an
-/// orange one when something in it needs you; both can show.
-struct HomeChip: View {
-    let label: String
-    let fresh: Bool
-    let needs: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                if fresh || needs {
-                    HStack(spacing: 4) {
-                        if fresh { Circle().fill(Tokens.unread).frame(width: 6, height: 6).accessibilityLabel("New") }
-                        if needs { Circle().fill(Tokens.needs).frame(width: 6, height: 6).accessibilityLabel("Needs you") }
-                    }
-                }
-                Text(label).font(Tokens.font(Tokens.textBase)).lineLimit(1)
-            }
-            .foregroundStyle(Tokens.text)
-            .padding(.horizontal, 16).frame(height: 34)
-            .background(Tokens.pill, in: Capsule())
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -513,96 +427,6 @@ struct KindPage: View {
         case .review: review
         default: .constant("")
         }
-    }
-}
-
-/// Every task Home lists (Sangam's side panel): by kind of work or by status, each group's done
-/// ones capped behind Show more; Clear done, and the way to Archived.
-struct AllTasksPage: View {
-    @Environment(Phone.self) private var phone
-    @Environment(\.push) private var push
-    @AppStorage(GroupBy.key) private var groupBy = GroupBy.type
-    @State private var more: Set<String> = []
-    @State private var problem: String?
-
-    var body: some View {
-        let groups = WorkList.groups(phone.work, by: groupBy)
-        List {
-            if groups.isEmpty {
-                if !phone.loaded && phone.connection == .connecting {
-                    RowBones().listRowBackground(Color.clear)
-                } else {
-                    Text(phone.loaded ? "Nothing yet. Ask Oby for something on Home." : "Reaching your Mac…")
-                        .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
-                        .listRowBackground(Color.clear)
-                }
-            }
-            ForEach(groups) { group in
-                let shown = WorkList.shown(group, more: more.contains(group.id))
-                Section {
-                    ForEach(shown.rows) { item in
-                        Button { push(.task(item.id)) } label: { TaskRow(item: item) }
-                            .listRowBackground(Tokens.surface)
-                    }
-                    if shown.hidden > 0 {
-                        Button(more.contains(group.id) ? "Show less" : "Show \(shown.hidden) more") {
-                            if more.contains(group.id) { more.remove(group.id) } else { more.insert(group.id) }
-                        }
-                        .font(Tokens.font(Tokens.textMd)).foregroundStyle(Tokens.muted)
-                        .listRowBackground(Tokens.surface)
-                    }
-                } header: {
-                    Text("\(group.label) · \(group.count) \(group.countLabel)").font(Tokens.font(Tokens.textMd, .medium)).foregroundStyle(Tokens.item)
-                        .textCase(nil)
-                }
-            }
-            Section {
-                Button("Archived") { push(.archived) }.foregroundStyle(Tokens.ink).listRowBackground(Tokens.surface)
-            } footer: {
-                if let problem { Text(problem).foregroundStyle(Tokens.danger) }
-            }
-        }
-        .obyPage()
-        .navigationTitle("Tasks")
-        .navigationBarTitleDisplayMode(.inline)
-        .refreshable { await phone.reload() }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Picker("Group by", selection: $groupBy) {
-                        ForEach(GroupBy.allCases, id: \.self) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.inline)
-                    Divider()
-                    // Through the runner (it keeps the time), so the Mac's window clears too.
-                    Button("Clear done") {
-                        Task { do { try await phone.clear(); problem = nil } catch { problem = error.localizedDescription } }
-                    }
-                    .disabled(!phone.visibleJobs.contains { $0.clearable(among: phone.jobs) })
-                } label: { Image(systemName: "ellipsis") }
-                    .accessibilityLabel("Group by")
-            }
-        }
-    }
-}
-
-/// A task in a list: its mark, its agent's mark, its title, and how long ago.
-private struct TaskRow: View {
-    let item: WorkList.Item<Job>
-
-    var body: some View {
-        HStack(spacing: 10) {
-            AgentMark(agent: item.job.agent).font(Tokens.font(12, .semibold)).frame(width: 16).foregroundStyle(Tokens.muted)
-            Text(item.job.heading).font(Tokens.font(Tokens.textBase))
-                .foregroundStyle(item.status == .done ? Tokens.doneTitle : Tokens.openTitle).lineLimit(1)
-            Spacer(minLength: 8)
-            Text(TaskFacts.ago(item.job)).font(Tokens.font(Tokens.textSm)).monospacedDigit().foregroundStyle(Tokens.muted)
-            WorkMarkView(mark: item.mark)
-        }
-        .frame(minHeight: 32)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(item.mark.rawValue)
     }
 }
 
