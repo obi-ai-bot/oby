@@ -62,6 +62,9 @@ impl Link {
         if stale {
             self.read_directory().await?;
         }
+        // The room, before the long poll: a post reads within a poll's wait at most. Whatever comes
+        // of it, deliveries go on.
+        Box::pin(self.follow_room()).await;
         let token = self.token().await?;
         let client = self.client()?;
         let deliveries = match client.deliveries(&token, 50, POLL_WAIT).await {
@@ -571,29 +574,38 @@ impl Link {
             self.decline_busy(state, exchange);
             return Decided::Settled { decisions: false };
         }
-        if let Some(rule) = state.sharing.covering(&owner, repos).cloned() {
-            let limits = state.sharing.limits;
-            state.all_self_answers.retain(|t| *t > now - 3600);
-            let all = state.all_self_answers.len();
-            let started = state.self_answers.entry(owner.clone()).or_default();
-            started.retain(|t| *t > now - 3600);
-            if started.len() < limits.self_answers_per_hour as usize
-                && all < limits.self_answers_per_hour_total as usize
-            {
-                // It counts when obid takes it on, whatever the run ends in.
-                started.push(now);
-                state.all_self_answers.push(now);
-                exchange.self_answered = Some(now);
-                exchange.state = "answering".into();
-                exchange.decided_by = Some("sharing".into());
-                exchange.rule = Some(rule.id.clone());
-                return Decided::ByItself(rule);
-            }
+        if let Some(rule) = state.sharing.covering(&owner, repos).cloned()
+            && Link::take_self_answer(state, &owner, now)
+        {
+            exchange.self_answered = Some(now);
+            exchange.state = "answering".into();
+            exchange.decided_by = Some("sharing".into());
+            exchange.rule = Some(rule.id.clone());
+            return Decided::ByItself(rule);
         }
         match self.question_to_inbox(state, exchange, repos, referenced, now) {
             Some(item) => Decided::Inbox(Box::new(item)),
             None => Decided::Settled { decisions: false },
         }
+    }
+
+    /// Whether `owner`'s Obi may make this Obi answer one more by itself, by the self-answer limits
+    /// (protocol.md section 11, "Rate limits"), and if so counted: when obid takes it on, whatever
+    /// the run ends in.
+    pub(super) fn take_self_answer(state: &mut State, owner: &str, now: i64) -> bool {
+        let limits = state.sharing.limits;
+        state.all_self_answers.retain(|t| *t > now - 3600);
+        let all = state.all_self_answers.len();
+        let started = state.self_answers.entry(owner.to_owned()).or_default();
+        started.retain(|t| *t > now - 3600);
+        if started.len() >= limits.self_answers_per_hour as usize
+            || all >= limits.self_answers_per_hour_total as usize
+        {
+            return false;
+        }
+        started.push(now);
+        state.all_self_answers.push(now);
+        true
     }
 
     /// Declines the question with reason `owner_declined` when a remembered decline covers it,

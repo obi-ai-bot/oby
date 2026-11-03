@@ -1122,6 +1122,14 @@ pub struct SphereState {
     /// The next send of this type is neither recorded nor delivered, and its answer breaks off
     /// mid-body: to obid, a post that didn't answer (`FakeSphere::break_next_send`).
     pub break_send: Option<String>,
+    /// The room (sphere-api.md section 6.5): its posts as stored, `(seq, recorded_at, post)`.
+    pub room: Vec<(u64, String, Value)>,
+    /// Every post's body as it arrived, whatever was answered.
+    pub room_tries: Vec<Value>,
+    /// A Sphere with no room: `404` on its paths.
+    pub room_off: bool,
+    /// A Sphere that doesn't answer for now: `503` on the room's paths.
+    pub room_down: bool,
 }
 
 pub type RelaySender = tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>;
@@ -1161,6 +1169,10 @@ impl FakeSphere {
             .route("/v0.1/spheres/{sphere}/messages", post(send))
             .route("/v0.1/spheres/{sphere}/deliveries", get(deliveries))
             .route("/v0.1/spheres/{sphere}/deliveries/ack", post(ack))
+            .route(
+                "/v0.1/spheres/{sphere}/room/posts",
+                get(room_posts).post(room_post),
+            )
             .route("/v0.1/spheres/{sphere}/channels/{cid}", get(channel))
             .route("/v0.1/spheres/{sphere}/audit", get(audit))
             .route(
@@ -2202,6 +2214,62 @@ async fn deliveries(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// `POST room/posts`: a dumb store, as the Sphere is: a retry of the same post is its first answer.
+async fn room_post(
+    State(state): State<Arc<Mutex<SphereState>>>,
+    axum::Json(post): axum::Json<Value>,
+) -> Response {
+    let mut state = state.lock().unwrap();
+    if state.room_off {
+        return sphere_error(StatusCode::NOT_FOUND, "not_found", "no room here");
+    }
+    state.room_tries.push(post.clone());
+    if state.room_down {
+        return sphere_error(StatusCode::SERVICE_UNAVAILABLE, "internal", "down for now");
+    }
+    let answer = |seq: u64, at: &str| json!({"id": post["id"], "seq": seq, "recorded_at": at});
+    if let Some((seq, at, stored)) = state.room.iter().find(|p| p.2["id"] == post["id"]) {
+        if *stored != post {
+            return sphere_error(
+                StatusCode::CONFLICT,
+                "duplicate",
+                "another post has that id",
+            );
+        }
+        return axum::Json(answer(*seq, at)).into_response();
+    }
+    let seq = state.room.last().map_or(0, |p| p.0) + 1;
+    let at = time::format(time::now());
+    state.room.push((seq, at.clone(), post.clone()));
+    (StatusCode::ACCEPTED, axum::Json(answer(seq, &at))).into_response()
+}
+
+async fn room_posts(
+    State(state): State<Arc<Mutex<SphereState>>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let state = state.lock().unwrap();
+    if state.room_off {
+        return sphere_error(StatusCode::NOT_FOUND, "not_found", "no room here");
+    }
+    if state.room_down {
+        return sphere_error(StatusCode::SERVICE_UNAVAILABLE, "internal", "down for now");
+    }
+    let after: u64 = query.get("after").and_then(|a| a.parse().ok()).unwrap_or(0);
+    let limit: usize = query
+        .get("limit")
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(50);
+    let posts: Vec<Value> = state
+        .room
+        .iter()
+        .filter(|p| p.0 > after)
+        .take(limit)
+        .map(|p| json!({"seq": p.0, "recorded_at": p.1, "post": p.2}))
+        .collect();
+    axum::Json(json!({"posts": posts})).into_response()
 }
 
 async fn ack(

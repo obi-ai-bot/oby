@@ -24,6 +24,7 @@ pub mod owners_word;
 pub mod plan;
 pub mod read;
 pub mod recap;
+pub mod room;
 pub mod shell;
 pub mod supervisor;
 pub mod talk;

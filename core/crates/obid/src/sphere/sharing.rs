@@ -164,6 +164,22 @@ impl Sharing {
     pub fn covering(&self, owner: &str, repos: &[String]) -> Option<&Rule> {
         self.rules.iter().find(|rule| rule.covers(owner, repos))
     }
+
+    /// The oldest rule that lets the Obi tell `owner` the status of its jobs in `repos`.
+    pub fn job_status_rule(&self, owner: &str, repos: &[String]) -> Option<&Rule> {
+        self.rules
+            .iter()
+            .find(|rule| rule.covers(owner, repos) && rule.tells.iter().any(|t| t == JOB_STATUS))
+    }
+
+    /// Whether the room may hear it: a rule lets the Obi tell each of `owners` (at least one) the
+    /// status of its jobs in `repos`, since a post goes to every member.
+    pub fn job_status_for_all(&self, owners: &[String], repos: &[String]) -> bool {
+        !owners.is_empty()
+            && owners
+                .iter()
+                .all(|owner| self.job_status_rule(owner, repos).is_some())
+    }
 }
 
 /// A new rule id: `s-` and 12 lower-case hex.
@@ -347,6 +363,32 @@ mod tests {
         };
         assert!(narrow.covering("ernesto", &[]).is_none());
         assert!(narrow.covering("giulia", &repos(&["acme/app"])).is_none());
+    }
+
+    #[test]
+    fn the_room_hears_job_status_only_under_a_rule_for_every_member() {
+        let repo = vec!["acme/app".to_owned()];
+        let owners = |list: &[&str]| list.iter().map(|o| (*o).to_owned()).collect::<Vec<_>>();
+        let of = |rules: Vec<Rule>| Sharing {
+            rules,
+            limits: Limits::default(),
+        };
+        let everyone = of(vec![rule(
+            json!({"for": "*", "repos": ["acme/app"], "tells": ["jobStatus"]}),
+        )]);
+        assert!(everyone.job_status_for_all(&owners(&["ernesto", "giulia"]), &repo));
+        assert!(!everyone.job_status_for_all(&owners(&["ernesto"]), &["acme/web".to_owned()]));
+        assert!(!everyone.job_status_for_all(&[], &repo), "nobody to tell");
+        let one = of(vec![rule(
+            json!({"for": ["ernesto"], "repos": "*", "tells": ["jobStatus"]}),
+        )]);
+        assert!(one.job_status_for_all(&owners(&["ernesto"]), &repo));
+        assert!(!one.job_status_for_all(&owners(&["ernesto", "giulia"]), &repo));
+        // Another thing to tell isn't job status, even for everyone.
+        let results = of(vec![rule(
+            json!({"for": "*", "repos": "*", "tells": ["sharedResults"]}),
+        )]);
+        assert!(!results.job_status_for_all(&owners(&["ernesto"]), &repo));
     }
 
     #[test]

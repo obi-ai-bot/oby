@@ -624,6 +624,14 @@ impl Link {
                 .map(|_| ())
                 .map_err(|why| api(StatusCode::CONFLICT, why))
             }
+            inbox::action::ROOM_POST => {
+                let asked: Asked = serde_json::from_value(confirmed.payload["post"].clone())
+                    .map_err(|_| api(StatusCode::CONFLICT, "That post was lost."))?;
+                Box::pin(self.post_asked(&asked))
+                    .await
+                    .map(|_| ())
+                    .map_err(|why| api(StatusCode::CONFLICT, why))
+            }
             inbox::action::SET_SETTINGS => {
                 let asked: crate::brain::owners_word::Settings =
                     serde_json::from_value(confirmed.payload["settings"].clone())
