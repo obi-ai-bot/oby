@@ -17,6 +17,8 @@ import { leave, useGlide } from './glide';
 import { folderName, folderPlace, foldersOf, pickFolders, setFolders, useFolders, usedFolders, useRecentFolders } from './folders';
 import { everything } from './lean';
 import { keeper } from './drafts';
+import TalkPill from './TalkPill';
+import type { Chat } from './chats';
 
 // What a message carries besides its words: files or photos (a photo with a
 // small preview of itself), tasks attached. (Other Obys are brought in by name,
@@ -55,7 +57,7 @@ export function numbered(name: string, taken: Set<string>) {
 // there's something to send), as does Enter; Shift+Enter starts a new line.
 // Words typed and not sent stay (drafts.ts): back in the box, the cursor at
 // their end, when it shows again, after a relaunch too.
-export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, draft }: {
+export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft }: {
   placeholder?: string;
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
@@ -66,6 +68,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   // conversation's last one until another is picked or it's taken out (+ › Choose a repository)
   repos?: boolean;
   conversation?: string;
+  talk?: Chat | true;  // who Oby talks through, by send: this conversation's, or (true, Home's) a new one's
   draft?: string;    // the box its unsent words are kept as (drafts.ts, box); none: not kept
   hidden?: boolean;
   autoFocus?: boolean;  // focused on opening (a conversation's is; Home's and a task page's aren't)
@@ -371,6 +374,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onHeight={(h) => setStacked((was) => was || h > 33)}
             onPasteFiles={(list) => addFiles(list, true)}
           />
+          {talk && <div className="composer-talk"><TalkPill chat={talk === true ? undefined : talk} /></div>}
           {/* how much of the agents' accounts is used, session and week (UsagePanel on a click) */}
           <UsageGauge ref={gauge} open={view === 'usage'} onClick={() => (view === 'usage' ? closePanel() : setView('usage'))} />
           {/* at the end: talk instead of typing while the box is empty; once there's

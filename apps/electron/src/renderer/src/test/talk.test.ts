@@ -28,7 +28,7 @@ describe('talking on any agent', () => {
     const heldCursor = accountRow(wire('hc', 'cursor', 'Held', { fullUntil: '2026-11-02T21:00:00Z' }), now);
     expect([usageWords(heldCursor), dot(heldCursor)]).toEqual(['Full', 'is-over']);
     const cursor = accountRow(wire('u', 'cursor', 'Personal', { fiveHour: 0.5, sevenDay: 0.5 }), now);
-    expect([percent(cursor), usageWords(cursor), dot(cursor)]).toEqual([null, 'No usage reported', '']);
+    expect([percent(cursor), usageWords(cursor), dot(cursor)]).toEqual([null, 'No usage', '']);
     // yellow past 80%, red past 90%, of the session or the week, as the message box's gauge
     expect(dot(accountRow(wire('a', 'claude', 'A', { fiveHour: 0.85, sevenDay: 0.1 }), now))).toBe('is-high');
     expect(dot(accountRow(wire('b', 'codex', 'B', { fiveHour: 0.1, sevenDay: 0.95 }), now))).toBe('is-over');
@@ -51,6 +51,11 @@ describe('talking on any agent', () => {
     // The chosen one filled, or can't run: where it moved to.
     expect(shownAccount(all, 'f', 'x', 'p')?.id).toBe('x');
     expect(shownAccount(all, 'o', 'x', 'p')?.id).toBe('x');
+    // By its tool; by its name too once the tool has more than one.
+    const { rowTitle, list } = await load();
+    expect(rowTitle(x, all)).toBe('Codex');
+    expect(rowTitle(p, [p, accountRow(wire('q', 'claude', 'Work'), now)])).toBe('Claude · Personal');
+    expect(list(all).every((a) => a.signedIn !== false)).toBe(true);
     // Moved off a chosen one that looks fine (it couldn't run): where it moved to, as the answer says.
     expect(shownAccount(all, 'p', 'x', 'p', 'p')?.id).toBe('x');
     // Auto: where it talked, else what obid says a first turn would use.
