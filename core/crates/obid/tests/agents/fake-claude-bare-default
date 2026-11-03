@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+// Claude Code the day `--bare` is the default for `claude -p` (#1867), for a stream-json run on a
+// plan login with no API key: bare mode never reads OAuth or the Keychain, so every turn ends "not
+// logged in" before reaching a model. The lines are what Claude Code 2.1.302 printed on 2026-11-03
+// for `claude --bare -p --input-format stream-json --output-format stream-json --verbose`, on a Mac
+// signed in with a plan, its environment scrubbed. Note the result's `subtype` is "success" with
+// `is_error` true, there's no `api_error_status`, and it exits 1 only once its stdin closes.
+
+import { createInterface } from "node:readline";
+
+const session = "00000000-0000-4000-8000-000000001867";
+const words = "Not logged in · Please run /login";
+const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
+const usage = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+
+emit({ type: "system", subtype: "ui_invalidate", event: "ui.render", session_id: session });
+const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+let told = false;
+lines.on("line", (line) => {
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (message.type !== "user") return;
+  told = true;
+  emit({ type: "system", subtype: "init", session_id: session, apiKeySource: "none", tools: [], mcp_servers: [] });
+  emit({
+    type: "assistant", session_id: session, error: "authentication_failed", is_api_error_message: true,
+    message: { role: "assistant", model: "<synthetic>", stop_reason: "stop_sequence", usage, content: [{ type: "text", text: words }] },
+  });
+  emit({
+    type: "result", subtype: "success", is_error: true, api_error_status: null, terminal_reason: "api_error", stop_reason: "stop_sequence",
+    num_turns: 1, result: words, session_id: session, total_cost_usd: 0, usage, modelUsage: {}, permission_denials: [],
+  });
+});
+lines.on("close", () => process.exit(told ? 1 : 0));
