@@ -871,6 +871,8 @@ impl Conversations {
             tasks: vec![],
             tasks_tainted: false,
             foreign: None,
+            // Every turn there hears another Oby's words.
+            read_untrusted: true,
             from_obys: true,
             folders: vec![],
             uploads: vec![],
@@ -2073,7 +2075,11 @@ mod tests {
         assert!(conversations.is_from_obys(&asks));
         assert!(!conversations.is_from_obys(&mine[0]));
         conversations
-            .append_relayed(&asks, "> Words.".into(), Some("what x's Oby said".into()))
+            .append_relayed(
+                &asks,
+                "> Words.".into(),
+                Some("what another Oby said".into()),
+            )
             .unwrap();
         assert!(
             mine.iter().all(|id| conversations.has(id)),

@@ -30,7 +30,7 @@ The asker's side. Each line is one turn of Oby's in the conversation, after the 
 
 | What happened | What the owner reads | Marks the conversation |
 |---|---|---|
-| The other Oby answered by itself (`answer`, `by: obi`) | `> <its words>` and "Asked Dima's Oby. Dima wasn't bothered." | yes |
+| The other Oby answered by itself (`answer`, `by: obi`) | `> <its words>` and "Asked Dima's Oby. Dima wasn't bothered." (the name the owner knew when they asked, whatever the card says by then) | yes |
 | The person answered (`answer`, `by: owner`) | `> <their words>` and "Dima answered this one, not its Oby." | yes |
 | Only the person can answer (`status`, `waiting_on_owner`) | "Dima's Oby hasn't answered. It's waiting on Dima." | no |
 | 2 minutes with no word (a Mac that's off, a slow model) | "Dima's Oby hasn't answered yet." | no |
@@ -42,16 +42,19 @@ The question wasn't sent, which the brain says in the turn itself:
 
 | Why | What the owner reads |
 |---|---|
-| The Sphere's rules (`policy_denied`) | "I can't ask dima's Oby. This Obysphere's rules don't allow questions yet. An admin can change that." |
-| The Sphere refused otherwise | "I can't ask dima's Oby: the Obysphere refused it (`<its code>`)." (the owner id: these reach the brain) |
-| The Sphere can't be reached | "I can't ask dima's Oby right now: the Obysphere can't be reached." |
+| The Sphere's rules (`policy_denied`) | "I can't ask Dima's Oby. This Obysphere's rules don't allow questions yet. An admin can change that." |
+| The Sphere refused otherwise | "I can't ask Dima's Oby: the Obysphere refused it (`<its code>`)." |
+| The Sphere can't be reached | "I can't ask Dima's Oby right now: the Obysphere can't be reached." |
 | A possible secret, or a scan that can't run | What the scan said: nothing was sent. |
-| Not a member, or not in an Obysphere | Who the members are, or that joining takes a private link from its admin. |
+| Any other reason obid won't send it (a card that dropped its seal key) | "I can't ask Dima's Oby: nothing was sent." |
+| No member goes by that name, or not in an Obysphere | That none does and `oby_members` lists who is there, or that joining takes a private link from its admin. |
+
+These name what the brain gave in `to`, never who that turned out to be, since they reach the brain. A question refused only once the owner clicked its Confirm answers the click with these words, naming the owner id, and says them as Oby's turn in the conversation too, after any turn under way, so it never ends on "waits for the owner's OK" with no card (marked `relayed`, like every turn about another Oby).
 
 The answerer's side:
 
 - **By itself.** An obid's first join to a Sphere makes one sharing rule (below), so a member's question is answered from the status of its owner's jobs, through the model run docs/runner-api.md describes. A membership from before this has no such rule: its questions go to its owner until they add one.
-- **Only the person can answer.** When the run says the material doesn't answer it, or no rule covers it, obid sends `status` `waiting_on_owner`, keeps the question in the inbox as an `obiRequest`, and says it in the one conversation for every member's questions, "Questions from other Obys": "Dima's Oby asks something only you can answer:", the question quoted, "Tell me what to say back, or say no." One conversation, so it marks none of their other work, and however many members ask, it takes no room of theirs and pushes nothing out of the 200 obid keeps. The app never opens on it, and words that name no conversation never go to it (`fromObys`); it stays in their list. Every turn there starts untrusted, whatever it does, so their words reach `oby_answer` on a Confirm card, labelled `by: owner`. Decline says no. A question its sender calls off or that runs out says so there, quoted.
+- **Only the person can answer.** When the run says the material doesn't answer it, or no rule covers it, obid sends `status` `waiting_on_owner`, keeps the question in the inbox as an `obiRequest`, and says it in the one conversation for every member's questions, "Questions from other Obys": "Dima's Oby (dmytro) asks something only you can answer:" (the owner id when the card goes by another name: a name can look like someone else's), the question quoted, "Tell me what to say back, or say no." One conversation, so it marks none of their other work, and however many members ask, it takes no room of theirs and pushes nothing out of the 200 obid keeps. The app never opens on it, and words that name no conversation never go to it (`fromObys`); it stays in their list. Every turn there starts untrusted, whatever it does, so their words reach `oby_answer` on a Confirm card, labelled `by: owner`. Decline says no. A question its sender calls off or that runs out says so there, quoted.
 
 ### Failures and recovery
 
@@ -62,9 +65,9 @@ The answerer's side:
 
 ### Invariants and boundaries
 
-- **What comes back is data.** It only ever becomes text inside a quote: every line prefixed, so it can't step out and read as obid's words. It starts, changes and approves nothing. It never reaches a prompt (below). A later turn reads it only quoted, from `oby_asks`, which makes that turn untrusted.
+- **What comes back is data.** It only ever becomes text inside a quote: every line prefixed, so it can't step out and read as obid's words. It starts, changes and approves nothing. It never reaches a prompt (below). A later turn reads it only quoted, from `oby_asks`, which makes that turn untrusted whatever came back: each entry's owner id is what a member chose. A conversation's mark says "what another Oby said", never who, since a job it starts carries the mark into a reviewer's input.
 - **It always marks the conversation** as having read something untrusted, whoever sent it: another Oby's text is always data (AGENTS.md). The organization exemption covers issues, pull requests and comments, never Obys.
-- **The owner's own word is kept through marks that carry no other Oby's words:** an unsigned turn, or a tool that read nothing, leaves their next signed words theirs, in a new session too. A file attached, or a session that read another Oby's words itself (`oby_asks`), taints the session, and that stays with its kept session.
+- **The owner's own word is kept through marks that carry no other Oby's words:** an unsigned turn, or a tool that read nothing, leaves their next signed words theirs, in a new session too. A file attached, or a session that read another Oby's words itself (`oby_asks`), taints the session, and that stays with the conversation (`read_untrusted`), also if the session's own file is lost.
 - **Your Oby only sends what you asked.** On any turn but the owner's own word (signed by their app, having read nothing untrusted, and watched), the question waits on a Confirm card showing who it goes to and every word. Every question passes the secret scan first, and a finding sends nothing. Questions are sealed for cards with a seal key.
 - **The answerer tells status only.** Its model gets only a question file and a material file: each of its owner's jobs' title ("An Oby task" when it has none, never its prompt), repository name, job id, stage, state and pull request. Private repositories' names are told too: that's what the rule shares. Never logs, diffs, prompts, files, secrets or logins. Its answer passes the secret scan before it goes. Nothing in a question can make it run, change or publish anything, and approvals never come from another Oby.
 - **Ids and names are what a member says of itself.** Whoever redeems an open invitation picks their Obi id, owner id and card. So `to` means an exact owner id, else a name one member goes by, never an Obi id. Only an exact owner id that no other card claims goes on the owner's word. A name waits for a Confirm that shows it with the owner id ("Ask Dima's Oby (dmytro)"), and so does an owner id another card also claims, naming both ("Ask sam's Oby, not copycat, whose card goes by that name too"); that is a Confirm and not a refusal, or anyone could stop questions to a colleague by copying their name. A name comes from a card only when it reads `<name>'s Oby`, is at most 3 words of one writing system with no `.`, and shows only when it couldn't be mistaken for another member's name or owner id, or the owner's own; else the owner id shows.
@@ -75,7 +78,7 @@ The answerer's side:
 
 - **Brain tools:** `oby_members`, `oby_ask`, `oby_asks` (never for a turn nobody watches).
 - **obid:** `home/sharing.json` now starts with one rule; `Exchange` keeps `asked_in` and `told`, neither in the API's answer. docs/runner-api.md, "obid only: questions from other Obis" and "obid only: sharing rules".
-- **The default, decided here.** An obid's first join, with no `home/sharing.json` yet, keeps one rule: `{"for": "*", "repos": "*", "tells": ["jobStatus"]}`. Joining is the owner's own act, so nothing starts sharing on an upgrade: an obid already in a Sphere with no file gets `{"rules": []}` at its next start. The limits hold (30 an hour per sender, 60 in all). The owner removes the rule like any, after which it stays removed; a file that doesn't read, or can't be read, shares nothing and is never replaced.
+- **The default, decided here.** An obid's first join, with no `home/sharing.json` yet, keeps one rule: `{"for": "*", "repos": "*", "tells": ["jobStatus"]}`. Joining is the owner's own act, so nothing starts sharing on an upgrade: an obid already in a Sphere with no file gets `{"rules": []}` at its next start. The limits hold (30 an hour per sender, 60 in all). The rule answers who asks, and only that: the room (docs/contracts/rooms.md) doesn't go by it, since a post goes to every member unasked, which joining doesn't agree to. The owner removes the rule like any, after which it stays removed; a file that doesn't read, or can't be read, shares nothing and is never replaced.
 - **The Obysphere's policy (obi-ai-bot/obi-sphere, Dmytro's), not changed here.** A new Sphere's policy is `[]` (`spec/sphere-api.md` section 3, `server/src/routes/spheres.ts`), so every question is `policy_denied`, and only an owner token with `admin` can write it (`PUT /v0.1/spheres/{sphere}/policy`): obid holds neither. So until the Sphere starts with a rule, or its admin writes one, the owner reads the honest refusal above. What's missing, for Dmytro: a starter rule at creation, `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "actions": ["question"], "repos": ["*"]}`.
 - **No screen for it:** obi-sphere has no page for the policy in this version: an admin writes it with that call.
 
@@ -85,20 +88,20 @@ The answerer's side:
 - **ASK-2** On the owner's word, `oby_ask` sends exactly the question as a typed `question` and says it asked, marking nothing; someone who isn't a member sends nothing, and points at `oby_members`.
 - **ASK-3** A question with a possible secret sends nothing, says so, doesn't repeat it, and makes no Confirm card.
 - **ASK-4** Words no app signed make a Confirm card with who and every word; nothing goes before the owner's click, and the click sends it.
-- **ASK-5** An answer by the other Oby posts once, after the turn's own words: its words quoted and "Asked Dima's Oby. Dima wasn't bothered."
+- **ASK-5** An answer by the other Oby posts once, after the turn's own words: its words quoted and "Asked Dima's Oby. Dima wasn't bothered." It goes by the name the owner knew when they asked, on their word or their Confirm, though the card changed since.
 - **ASK-6** An answer by the person says "Dima answered this one, not its Oby."
 - **ASK-7** `waiting_on_owner` says it's waiting on the person, once, marking nothing; 2 minutes with no word says it hasn't answered yet, once; an answer or expiry still comes after.
-- **ASK-8** A Sphere whose rules refuse says an admin can change them, keeps no exchange, and shows nothing of what the Sphere wrote but its code.
+- **ASK-8** A Sphere whose rules refuse says an admin can change them, keeps no exchange, and shows nothing of what the Sphere wrote but its code. A refusal hands the brain nothing a member chose, whatever the reason. Refused only after the click, it says so in the conversation, once.
 - **ASK-9** Each decline says who said no, and marks nothing unless it carries a note.
 - **ASK-10** Whatever another Oby writes stays in its quote, every line; it starts no job and adds no inbox item; the conversation is marked as having read something untrusted.
-- **ASK-11** After its first join an obid answers a member's question about its owner's work by itself, with its owner's inbox empty; the rule is status only, keeps its id, and stays removed once removed; a file that doesn't read shares nothing and isn't replaced; a membership from before gets no rule; a job with no title tells nothing of its prompt.
-- **ASK-12** A question only the person can answer sends `waiting_on_owner`, waits in the inbox, and is said quoted in the one conversation for every member's questions, which it marks; however many members ask, that pushes out no conversation of the owner's; the person's words go back labelled as theirs; called off or run out, it says so there. `oby_inbox` shows its words, so the brain can tell two questions apart, and it wakes no event turn and makes no second item.
-- **ASK-13** A later turn reads what was asked and answered with `oby_asks`, quoted; that marks the conversation, and what the same session asks next waits for the owner's Confirm.
+- **ASK-11** After its first join an obid answers a member's question about its owner's work by itself, with its owner's inbox empty; the rule is status only, keeps its id, and stays removed once removed; a file that doesn't read shares nothing and isn't replaced; a membership from before gets no rule; a job with no title tells nothing of its prompt; the rule puts nothing in the room.
+- **ASK-12** A question only the person can answer sends `waiting_on_owner`, waits in the inbox, and is said quoted, naming the owner id when the card goes by another name, in the one conversation for every member's questions, which it marks; however many members ask, that pushes out no conversation of the owner's; the person's words go back labelled as theirs; called off or run out, it says so there. `oby_inbox` shows its words, so the brain can tell two questions apart, and it wakes no event turn and makes no second item.
+- **ASK-13** A later turn reads what was asked and answered with `oby_asks`, quoted; that marks the conversation with words that name no one, also with no answer yet, and what the same session, or a new one, asks next waits for the owner's Confirm.
 - **ASK-14** A turn nobody watches asks no one, lists no one, and isn't told who is there.
 - **ASK-15** On a Mac whose Claude Code login is only in the Keychain, the answering run still runs, on a copy of what calls the API (real-Mac step: no automated test reaches the Keychain).
 - **ASK-16** A new session hears nothing a member chose, words or name, and every turn in the conversation of their questions waits for the owner's Confirm; an unsigned turn leaves the owner's next signed words theirs, in a new session too.
 - **ASK-17** Only an exact owner id no other card claims goes without the owner seeing who: an Obi id reaches no one; a name, or an owner id another card claims, makes a Confirm showing who and tells the model nothing of it; a card gives a name, never a sentence or a look-alike.
-- **ASK-18** A question from another Oby never decides where the app opens, or where words that name no conversation go.
+- **ASK-18** A question from another Oby never decides where the app opens, on the Mac or the iPhone, or where words that name no conversation go.
 
 ### Test it when it's done
 

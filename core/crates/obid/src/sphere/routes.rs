@@ -296,13 +296,14 @@ pub async fn answer(
     ) {
         return Ok(refuse(&why));
     }
-    Ok(json(
-        StatusCode::OK,
-        shared
-            .link
-            .answer_confirmed(&id, &rest, &item.title, signed_at)
-            .await?,
-    ))
+    let answered = shared
+        .link
+        .answer_confirmed(&id, &rest, &item.title, signed_at)
+        .await;
+    if let Err(why) = &answered {
+        crate::brain::ask::refused_after_the_click(&shared, &item, why);
+    }
+    Ok(json(StatusCode::OK, answered?))
 }
 
 #[derive(serde::Deserialize)]

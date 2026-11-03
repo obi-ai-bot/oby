@@ -66,6 +66,10 @@ pub struct Exchange {
     /// what comes back posts there. Never in the API's answer.
     #[serde(default)]
     pub asked_in: Option<String>,
+    /// What the owner knew the person as when they asked: what comes back goes by it, whatever
+    /// their card says by then. Never in the API's answer.
+    #[serde(default)]
+    pub asked_name: Option<String>,
     /// What obid already told its owner about this exchange (crate::brain::ask), so a restart or a
     /// later event never says it twice. Never in the API's answer.
     #[serde(default)]
@@ -104,6 +108,7 @@ impl Exchange {
             tried: None,
             host_approval: None,
             asked_in: None,
+            asked_name: None,
             told: Vec::new(),
         }
     }

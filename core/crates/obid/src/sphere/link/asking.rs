@@ -147,12 +147,14 @@ impl Link {
             .map_or_else(|| obi.to_owned(), |m| m.owner.clone())
     }
 
-    /// Sends `question` to the Oby `obi`, for the conversation `conversation`: its exchange's id.
+    /// Sends `question` to the Oby `obi`, for the conversation `conversation`, and `name`, what the
+    /// owner knows them as now: its exchange's id.
     pub async fn ask(
         &self,
         obi: &str,
         question: &str,
         conversation: &str,
+        name: &str,
     ) -> Result<String, ApiError> {
         let body = json!({"to": obi, "type": "question", "body": {"text": question},
                           "expiresIn": ASK_LIFETIME});
@@ -165,6 +167,7 @@ impl Link {
             let mut state = self.lock();
             state.exchanges.get_mut(&cid).map(|exchange| {
                 exchange.asked_in = Some(conversation.to_owned());
+                exchange.asked_name = Some(name.to_owned());
                 exchange.clone()
             })
         };

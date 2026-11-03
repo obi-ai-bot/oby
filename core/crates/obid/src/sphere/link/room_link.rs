@@ -437,7 +437,7 @@ impl Link {
     fn need_rule(&self, state: &State, owner: &str, repos: &[String]) -> Option<Rule> {
         let others = self.other_owners(state);
         (others.iter().any(|o| o == owner) && state.sharing.job_status_for_all(&others, repos))
-            .then(|| state.sharing.job_status_rule(owner, repos).cloned())
+            .then(|| state.sharing.room_rule(owner, repos).cloned())
             .flatten()
     }
 
@@ -529,6 +529,7 @@ impl Link {
             &self.sandbox,
             &dir,
             &need.owner,
+            &self.own_name(),
             &question,
             &material,
         )

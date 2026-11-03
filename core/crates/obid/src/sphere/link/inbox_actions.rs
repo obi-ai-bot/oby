@@ -614,6 +614,8 @@ impl Link {
                     confirmed.payload["conversation"]
                         .as_str()
                         .unwrap_or_default(),
+                    // The name its card showed.
+                    confirmed.payload["name"].as_str().unwrap_or_default(),
                 )
                 .await
                 .map(|_| ())

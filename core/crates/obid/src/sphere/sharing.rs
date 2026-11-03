@@ -81,6 +81,10 @@ pub struct Rule {
     /// Answers the Obi sent under it.
     pub uses: u64,
     pub last_used: Option<i64>,
+    /// The rule obid made at the first join ([`starter`]), not the owner: it answers who asks, and
+    /// opens no room. Never in the API's answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub starter: bool,
 }
 
 impl Rule {
@@ -172,13 +176,21 @@ impl Sharing {
             .find(|rule| rule.covers(owner, repos) && rule.tells.iter().any(|t| t == JOB_STATUS))
     }
 
+    /// The oldest rule the room goes by for `owner`, as [`Self::job_status_rule`]: one the owner made.
+    /// A post goes to every member unasked, which joining a Sphere doesn't agree to.
+    pub fn room_rule(&self, owner: &str, repos: &[String]) -> Option<&Rule> {
+        self.rules.iter().find(|rule| {
+            !rule.starter && rule.covers(owner, repos) && rule.tells.iter().any(|t| t == JOB_STATUS)
+        })
+    }
+
     /// Whether the room may hear it: a rule lets the Obi tell each of `owners` (at least one) the
     /// status of its jobs in `repos`, since a post goes to every member.
     pub fn job_status_for_all(&self, owners: &[String], repos: &[String]) -> bool {
         !owners.is_empty()
             && owners
                 .iter()
-                .all(|owner| self.job_status_rule(owner, repos).is_some())
+                .all(|owner| self.room_rule(owner, repos).is_some())
     }
 }
 
@@ -196,6 +208,7 @@ fn starter(now: i64) -> Sharing {
             created: now,
             uses: 0,
             last_used: None,
+            starter: true,
         }],
         limits: Limits::default(),
     }
@@ -275,6 +288,7 @@ pub fn rule_from(body: &Value, now: i64) -> Result<Rule, String> {
         created: now,
         uses: 0,
         last_used: None,
+        starter: false,
     })
 }
 
@@ -494,6 +508,24 @@ mod tests {
         let shown = made.to_json();
         assert_eq!(shown["repos"], "*");
         assert_eq!(shown["for"], json!(["ernesto"]));
+    }
+
+    #[test]
+    fn ask_11_the_rule_obid_starts_with_answers_who_asks_and_opens_no_room() {
+        let owners = ["ernesto".to_owned()];
+        let repos = ["acme/app".to_owned()];
+        let sharing = starter(0);
+        assert!(sharing.job_status_rule("ernesto", &repos).is_some());
+        assert!(sharing.room_rule("ernesto", &repos).is_none());
+        assert!(!sharing.job_status_for_all(&owners, &repos));
+        // A rule the owner made does, and it's kept that way.
+        let mut sharing = starter(0);
+        sharing.rules.push(rule(
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
+        ));
+        assert!(sharing.job_status_for_all(&owners, &repos));
+        let kept: Sharing = serde_json::from_slice(&serde_json::to_vec(&sharing).unwrap()).unwrap();
+        assert!(kept.rules[0].starter && !kept.rules[1].starter);
     }
 
     #[test]

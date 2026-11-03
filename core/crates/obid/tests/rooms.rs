@@ -493,7 +493,7 @@ async fn rooms_10_the_self_answer_limit_holds() {
         assert_eq!(found, 1);
         // It says so where a question's would, on the sharing rule that made it.
         let sharing = call(&obid, "GET", "/v1/obid/sharing", None).body;
-        assert_eq!(sharing["rules"][0]["uses"], 1, "{sharing}");
+        assert_eq!(sharing["rules"][1]["uses"], 1, "{sharing}");
     });
     // A restart keeps counting.
     let status = obid.stop();

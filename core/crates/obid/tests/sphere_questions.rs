@@ -766,7 +766,7 @@ async fn ask_12_a_question_only_the_person_can_answer_says_it_waits_and_reaches_
         std::fs::read_to_string(obid.home.join(format!("conversations/{asks}.json"))).unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&kept).unwrap()["foreign"],
-        "what ernesto's Oby said",
+        "what another Oby said",
         "it marks that conversation"
     );
     assert_eq!(

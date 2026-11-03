@@ -39,6 +39,11 @@ struct NewObyTests {
         #expect(PhoneWork.resting([conversation("pinned", minutesAgo: 90, pinned: true), conversation("new", minutesAgo: 1)]) == .conversation("new"))
         #expect(PhoneWork.resting([]) == .empty)
         #expect(PhoneWork.resting(nil) == .conversation(nil))
+        // ASK-18: a question from another Oby never decides it, however new.
+        let asks = try! Runner.decoder.decode(RunnerConversation.self, from: Data(#"{"id": "asks", "title": "Questions from other Obys", "fromObys": true}"#.utf8))
+        #expect(asks.fromObys)
+        #expect(PhoneWork.resting([asks, conversation("mine", minutesAgo: 90)]) == .conversation("mine"))
+        #expect(PhoneWork.resting([asks]) == .empty)
         // Its stage shows only with nothing to rest on.
         #expect(Resting.empty.showsStage && Resting.deciding.showsStage)
         #expect(!Resting.starting.showsStage && !Resting.conversation("a").showsStage)

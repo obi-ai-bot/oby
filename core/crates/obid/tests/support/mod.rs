@@ -892,7 +892,7 @@ impl TestObi {
         TestObi::join_as(sphere, id, owner, accepts, seal, version, "A test Obi").await
     }
 
-    async fn join_as(
+    pub async fn join_as(
         sphere: &FakeSphere,
         id: &str,
         owner: &str,
@@ -956,6 +956,55 @@ impl TestObi {
             client,
             token,
         }
+    }
+
+    /// What a member can do whenever it likes: a new card, named `name`, with no seal key if `seal`
+    /// is false, in the Sphere's directory from now on.
+    pub fn new_card(&self, sphere: &FakeSphere, name: &str, seal: bool) {
+        let (owner_key, key_id, public_key) = (
+            self.owner.key.public_key(),
+            self.key.key_id(),
+            self.key.public_key(),
+        );
+        let seal_key = self
+            .seal
+            .as_ref()
+            .filter(|_| seal)
+            .map(|s| (s.key_id(), s.public_key()));
+        let issued_at = time::format(time::now());
+        let mut state = sphere.lock();
+        let member = state
+            .members
+            .iter_mut()
+            .find(|m| m["obi"] == self.id.as_str())
+            .unwrap();
+        let old = card::params(&member["card"]).unwrap().clone();
+        let accepts: Vec<String> = old["accepts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a.as_str().map(str::to_owned))
+            .collect();
+        let unsigned = obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
+            sphere_url: &sphere.url,
+            sphere: SPHERE,
+            obi_id: &self.id,
+            owner: &self.owner.id,
+            owner_key: &owner_key,
+            name,
+            description: obi_protocol::identity::DEFAULT_DESCRIPTION,
+            version: "0.2.0",
+            key_id: &key_id,
+            public_key: &public_key,
+            accepts: &accepts,
+            card_seq: old["card_seq"].as_u64().unwrap_or(1) + 1,
+            issued_at: &issued_at,
+            seal: seal_key
+                .as_ref()
+                .map(|(id, public)| (id.as_str(), public.as_str())),
+            runtime: None,
+        });
+        member["card"] = card::sign(&unsigned, &self.owner.key).unwrap();
     }
 
     /// A request to `to` sealed for `seal_key` (`to`'s, from its card), then signed.
