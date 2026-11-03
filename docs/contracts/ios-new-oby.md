@@ -28,7 +28,7 @@ The business behavior contract for bringing the iPhone app (`apps/ios/app`) in l
 
 Its strip has **Oby** (its title **Chats**) and **Tasks**, with your picture for Settings at its foot.
 
-- **Chats:** Oby first, with its latest words, when, and an orange dot while something needs you; New conversation; the latest five conversations, the one you're in always among them, pinned first, then Show more; Search on the title's row, by obid's own search; then the Obysphere with its number of members and each teammate's Oby. No usage: that's in the message box. A teammate's row opens nothing yet, as on the desktop (SPHERE-7).
+- **Chats:** Oby first, with its latest words, when, and an orange dot while something needs you; New conversation; the latest five conversations, the one you're in always among them, pinned first, then Show more; Search on the title's row, by obid's own search; then the Obysphere with its number of members and each teammate's Oby. No usage: that's in the message box. A teammate's row opens nothing yet on the iPhone (SPH-13).
 - **Tasks:** New task; Review PR, Issues and Tasks (Home's chips) with their dots; the tasks by kind or status; the ⋮ with Group by and Clear done; Archived. The icon's orange dot shows while anything needs you, GitHub's work waiting on you included.
 
 ### Who Oby talks through

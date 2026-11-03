@@ -1,12 +1,12 @@
 # A member's thread
 
-The business behavior contract for one thread per member of your Obysphere, from [the template](../business-contract-template.md): a view over every exchange with that member's Oby, in the shape of the room ([rooms.md](rooms.md)). Scenarios are numbered `PEER-n`, and the tests that prove them are named after them (`peer_n_…` in `core/crates/obid/tests/peer_flow.rs`, `core/crates/obid/tests/sphere_questions.rs`, `core/crates/obid/src/sphere/exchange.rs`, `core/crates/obid/src/sphere/sharing.rs`, `core/crates/obid/src/sphere/link/asking.rs` and `apps/electron/src/renderer/src/test/`). The drives on the plan's Sphere tab are numbered `PEER-n` too and are a different list: human-drive steps, not these.
+The business behavior contract for one thread per member of your Obysphere, from [the template](../business-contract-template.md): a view over every exchange with that member's Oby, in the shape of the room ([rooms.md](rooms.md)). Scenarios are numbered `PEER-n`, and the tests that prove them are named after them (`peer_n_…` in `core/crates/obid/tests/peer_flow.rs`, `core/crates/obid/tests/sphere_questions.rs`, `core/crates/obid/src/sphere/exchange.rs`, `core/crates/obid/src/sphere/sharing.rs`, `core/crates/obid/src/sphere/link/asking.rs` and `apps/electron/src/renderer/src/test/`, and the app's in `apps/electron/src/renderer/src/test/peerThread.test.tsx`). The drives on the plan's Sphere tab are numbered `PEER-n` too and are a different list: human-drive steps, not these.
 
 ## Feature and status
 
 - **Outcome:** Clicking a person's Oby shows everything your Oby and theirs have said to each other, in one place. The owner's words: an Oby is your digital representation, so "if I am working on something my Oby would be able to answer what is the progress of what I'm doing".
-- **Status:** obid's side **implemented** (SPH-2), and asking from the thread (SPH-3). **Proposed:** the row that opens it and what it shows (SPH-4, SPH-5), and the person's card (SPH-6). The look is the canvas's Peer board; its words stay Sangam's to change.
-- **Scope:** reading a member's thread, hearing that it changed, and asking from it. **Out of scope:** any screen, a phone asking from a thread (SPH-13, SPH-14), a follow-up that knows the last exchange (SPH-11).
+- **Status:** obid's side **implemented** (SPH-2), asking from the thread (SPH-3), and in the Electron app the row that opens it and its box (SPH-4). **Proposed:** the words for each state (SPH-5), and the person's card (SPH-6). The look is the canvas's Peer board; its words stay Sangam's to change.
+- **Scope:** reading a member's thread, hearing that it changed, and asking from it. **Out of scope:** a phone asking from a thread (SPH-13, SPH-14), a follow-up that knows the last exchange (SPH-11).
 
 ## Behavior
 
@@ -58,6 +58,16 @@ obid reads the directory again as the question goes, and a Sphere's operator cou
 | The Sphere's rules (`policy_denied`) | "I can't ask Dima's Oby. This Obysphere's rules don't allow questions yet. An admin can change that." No exchange is kept |
 | The Sphere refused otherwise, or can't be reached | The words ask-an-oby.md gives: of what the Sphere wrote, only its code |
 
+### In the Electron app
+
+A member's row in a live Obysphere is a button that opens their thread, by exact owner id; the row goes by that id, which is all the directory gives. The tour's sample and the mock's Obyspheres keep Sangam's made-up conversations, and a live row never shows them, whatever the member's name (SPHERE-7).
+
+- **Who.** With no Confirm, the app is where the owner sees whom they're asking. The title and the box say `<name>’s Oby (<owner id>)` when obid's `name` differs from the owner id, else `<owner id>’s Oby`, as `whose_oby` does. A post's byline is its `owner`, never a name. An owner id with anything but plain ASCII shows those characters as their codes (`d\u{456}ma`), so it can't pass for another's.
+- **Who speaks.** It's in the room's parts ([room-app.md](room-app.md)). Yours is only what came from this Mac's Oby: your bubble when its `by` is `owner`, under `Your Oby` otherwise. Everything else is under their Oby's byline, whatever its `by` says, as a text node, `Not verified` until the owner compared their key.
+- **Words and where it stands.** A post with `text` null has no bubble. Under each exchange's last post with words is a plain line: `Asking…` until `quietAt`, then `Hasn’t answered yet` by the clock, with no event; `Waiting on <owner>`, `Declined`, `No answer came`, `Called off`. SPH-5 owns these words.
+- **The box** takes words alone, signed by main (WORDS-12), and keeps them until obid takes them: any refusal leaves them there with obid's words over it. It stays while `member` and `takesQuestions` are null, since that's obid not knowing. Only `false` shuts it, saying so.
+- **Reading.** Each `peerThread` event for a thread it has opened, and the stream coming back, read it again, and an older answer never replaces a newer one. obid away leaves what shows. A `404` or `409` closes it, and what was typed stays the box's draft.
+
 ### Failures and recovery
 
 - The Sphere can't be reached: the thread still reads, from what obid keeps. It asks the Sphere nothing, and goes by the directory as last read. Before obid has read it since it started, it doesn't know who is a member: `member` and `takesQuestions` are null, `name` is the owner id, and no one is `404`. It's read in the next poll that reaches the Sphere.
@@ -103,6 +113,12 @@ The other side of a thread: for a member's Oby to answer by itself, its owner mu
 - **PEER-4** The owner's signed words go as a typed `question` with only those words, sealed for a card with a seal key, and read in the thread `by: owner` from the first event on, while what the other Oby says stays its own. Unsigned, another shape, a signature for another owner or used before, anyone but an exact member, someone revoked, a card that takes no questions, blank or over-long words, or a Sphere that serves the Oby as someone else's between two reads: nothing goes. Of several Obys it goes to one that takes questions and seals; one that dropped its seal key is last and refuses, sending nothing in the clear. A directory that can't be read says so, also for someone who joined since the last read.
 - **PEER-5** A possible secret, or a scan that can't run, sends nothing, keeps nothing and doesn't repeat it. A Sphere whose rules refuse says an admin can change them, and keeps no exchange.
 - **PEER-6** No model runs for it, and no conversation hears what comes back, its words or that it happened: none starts, moves or is marked, nothing starts, the inbox stays empty, the owner's next turn hears none of it, also while a question from a conversation is told there.
+- **PEER-7** A live member's row opens their thread by exact owner id, read from obid, and read again on each `peerThread`, with an older answer never replacing a newer one. obid away changes nothing; a thread obid no longer has closes.
+- **PEER-8** A live member has none of the mock's conversations or dots, whatever their name; the mock's Obyspheres and the tour's sample keep theirs.
+- **PEER-9** The box sends words alone, and they read in the thread as it empties; a refusal, or obid away, leaves them there with obid's words.
+- **PEER-10** The owner id shows beside any other name, and a look-alike id shows its codes: a card saying `Dima’s Oby` from `aaron` reads `Dima’s Oby (aaron)`, and a post goes by its owner id.
+- **PEER-11** The owner's words are theirs only from this Mac's Oby. Every other word is a text node under their Oby's byline, whatever its `by`: no HTML, link or bubble of yours. A post with no words has no bubble, and one of another shape isn't shown.
+- **PEER-12** `member` and `takesQuestions` null call nobody gone and keep the box; an open question reads `Hasn’t answered yet` once `quietAt` passes, with no event.
 - **PEER-16** A member from before is asked once, by the first question that waits on them: not by a second, not again after a restart, not again after a no. The card holds none of a member's words, and a file that doesn't read gets no card.
 - **PEER-17** Nothing is shared silently: not by the question, its words, the card, the API token alone or Settings opening the card. (The first-join seed is the stated exception until SPH-8, above.) `POST /v1/obid/sharing/rules` with the token alone is `403`. A Confirm with the device's signature makes one status rule that answers who asks and opens no room, and in the Electron app main signs it only on a press of Confirm and an input it saw itself. The questions that waited go by it: answered by the Oby and off the owner's list, or back with the owner when the material can't answer; said to the owner when the scan stops the answer. One the owner is already answering stays theirs, and a member removed meanwhile gets nothing. A file that stopped reading is refused, not replaced. Settings lists the rule in plain words, opens the card whole, and shows why a change failed.
 - **PEER-18** A rule the owner removed stays removed, across a restart and later questions, and nothing asks for it again; only their own click brings it back.
@@ -110,7 +126,11 @@ The other side of a thread: for a member's Oby to answer by itself, its owner mu
 
 ### Test it when it's done
 
-The thread itself has no real-Mac step yet: SPH-4 brings the first, on the box in the thread.
+On the rig (`node e2e/rig.mjs start`, then `app`, [test-rig.md](test-rig.md)), or two Macs in one Obysphere:
+
+1. Click a member's row in the side panel: their thread opens, the box ready, its title naming them with their owner id.
+2. Ask "What are you working on?": your words show on the right as the box empties, and their Oby's answer comes under them, with nothing added to your conversations and their inbox empty.
+3. Paste something the secret scan catches: nothing goes, the words stay and the scan's words show.
 
 On a real Mac that is already in an Obysphere from before the starter rule (or with `home/sharing.json` holding `{"rules": []}`), with a teammate's Oby:
 

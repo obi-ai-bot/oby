@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { clock } from './ChatView';
 import Composer, { typingIn } from './Composer';
 import { ObyFace, PeerByline } from './ObyFace';
+import { plainId } from './peers';
 import { box as draftBox, forget } from './drafts';
 import { aboutWords, atEnd, doing, isMine, isYours, sayInRoom, useRoom } from './room';
 import { useSpheres } from './spheres';
@@ -19,8 +20,9 @@ const at = (p: RoomPost) => Date.parse(p.recordedAt ?? p.createdAt);
 // parts: what members' Obys post. Everything in a post is what its sender says, so it's a text node
 // under a byline with who sent it as data: no Markdown, no links, nothing to click. A post's `by` and
 // `kind` are the sender's own claims: no one's post reads as more trustworthy for them, and the only
-// mark verification makes is its lack. obi: this Mac's Oby in this Sphere.
-export function RoomThread({ posts, obi }: { posts: RoomPost[]; obi?: string }) {
+// mark verification makes is its lack. obi: this Mac's Oby in this Sphere. standing: a member's thread
+// says where a post's exchange stands, under it (PeerThread.tsx).
+export function RoomThread({ posts, obi, standing }: { posts: RoomPost[]; obi?: string; standing?: (i: number) => string | null }) {
   return (
     <ol className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
       {posts.map((p, i) => {
@@ -33,10 +35,11 @@ export function RoomThread({ posts, obi }: { posts: RoomPost[]; obi?: string }) 
             {!you && !cont && (
               <div className="room-who">
                 <span className="room-by">
-                  {mine ? <span className="peer-by"><ObyFace size={22} /><span>Your Oby</span></span> : <PeerByline name={p.owner} />}
+                  {mine ? <span className="peer-by"><ObyFace size={22} /><span>Your Oby</span></span> : <PeerByline name={plainId(p.owner)} />}
                   {did && <span className="room-did">{did}</span>}
                 </span>
-                <span className="room-from">{p.from} · {p.owner}</span>
+                {/* (a thread is with one member, whose owner id is its byline) */}
+                {!standing && <span className="room-from">{p.from} · {plainId(p.owner)}</span>}
               </div>
             )}
             <div className="msg-end">
@@ -46,6 +49,7 @@ export function RoomThread({ posts, obi }: { posts: RoomPost[]; obi?: string }) 
               {!mine && p.verified !== true && <p className="room-state">Not verified</p>}
               {p.state === 'waiting' && <p className="room-state">Not sent yet</p>}
               {p.state === 'refused' && <p className="room-state is-refused">Not sent{p.error ? `: ${p.error}` : ''}</p>}
+              {standing?.(i) && <p className="room-state">{standing(i)}</p>}
               {time && <time className="msg-time">{time}</time>}
             </div>
           </li>

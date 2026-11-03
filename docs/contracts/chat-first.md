@@ -24,7 +24,7 @@
 
 ## Interfaces and dependencies
 
-None in obid. A member of a live Obysphere shows in the panel but opens nothing yet (`canChat`, SPHERE-7): obid has no conversation with another Oby for it to open. A teammate's chat is reachable where the app has one to show.
+None in obid. A member of a live Obysphere shows in the panel and opens their thread (docs/contracts/peer-thread.md).
 
 Proposed words, Sangam's to change: "Chats" (the panel's title, from the canvas), "Back" (the arrow's label). The rest are his or the canvas's: Oby, New conversation, No conversations yet, Tasks, "Ernesto's Oby", "Accounts and how much of each is used". The canvas's "Bring your team in" row isn't here: it asks for a field to paste an invite, which the app doesn't have yet.
 
