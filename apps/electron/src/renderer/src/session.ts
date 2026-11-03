@@ -24,7 +24,7 @@ export type Entry = { n?: number } & (
   | { kind: 'plan'; todos: { text: string; state: 'done' | 'running' | 'pending' }[] }
   | { kind: 'asked'; text: string; answer: string }
   // its detail is fetched by n when it opens on obid; the mock's come with theirs
-  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; state: 'done' | 'running' | 'failed' | 'declined'; seconds: number; meta?: string; detail?: Detail }
+  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; summary?: string; state: 'done' | 'running' | 'failed' | 'declined'; seconds: number; meta?: string; detail?: Detail }
 );
 
 export const SESSIONS: Record<string, Entry[]> = {

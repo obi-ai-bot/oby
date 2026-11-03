@@ -51,7 +51,7 @@ function StepLine({ step: e }: { step: Step }) {
 
 // A task's work under its card while it goes on (Sangam's board "Oby at work"): its to-dos if the
 // agent made a list, the last things it did either way. Nothing from its agent yet: what obid says
-// it's on. Past its agent's work (the check, publishing): the stage it's in.
+// it's on. Past its agent's work (the check, publishing): the stage it's in. A wait of obid's: that too.
 export function WorkNow({ task, onClick }: { task: Task; onClick?: () => void }) {
   const entries = useEntries(task.id);
   const j = task.job, list = todosOf(entries), steps = lastSteps(entries);
@@ -60,8 +60,11 @@ export function WorkNow({ task, onClick }: { task: Task; onClick?: () => void })
   const shown = list && around(list);
   // a list with none in hand now: the last things it did go under the whole list
   const under = !list?.some((t) => t.state === 'running');
+  // a step its session doesn't hold is obid's own ("Trying again in 5 minutes (2 of 3)", RECOVERY-5)
+  const own = j.step && j.step !== 'Working' && j.step !== 'Thinking' && !entries.some((e) => e.kind === 'tool' && e.summary === j.step);
+  const says = !steps.length && !list ? j.waiting?.text || j.step : own && j.step;
   const now = stage && task.status === 'running' ? <p className="lt-thought"><span className="sheen">{stage.title}</span></p>
-    : !steps.length && !list && task.status === 'running' && (j.waiting?.text || j.step) ? <p className="lt-thought"><span className="sheen">{j.waiting?.text || j.step}</span></p>
+    : task.status === 'running' && says ? <p className="lt-thought"><span className="sheen">{says}</span></p>
     : null;
   if (!shown && !lines && !now && task.status !== 'needs') return null;
   return (
