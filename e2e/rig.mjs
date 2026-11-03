@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Two Obys and a Sphere on this Mac, for testing what talking to a person's Oby does on the real
-// thing (docs/contracts/test-rig.md): a local Sphere from a scratch clone of obi-sphere's dev, two
-// scratch obids, you (owner alex) and Dana (a test teammate, owner dana), and Dana's long job. The
+// thing (docs/contracts/test-rig.md): a local Sphere from a scratch clone of obi-sphere at the commit
+// in e2e/rig-sphere.ref, two scratch obids, you (owner alex) and Dana (a test teammate, owner dana), and Dana's long job. The
 // owner's real Oby, their logins, GitHub and the live Sphere are never used.
 //
 //   node e2e/rig.mjs start [--stand-in | --real]   everything up, joined, the rule written, Dana's job running
@@ -11,8 +11,8 @@
 //   node e2e/rig.mjs job [task]                    one more job for Dana
 //   node e2e/rig.mjs policy on|off                 the Sphere's rule written, or none (PEER-8)
 //   node e2e/rig.mjs dana stop|start               Dana's obid only (a Mac that's off, PEER-7)
-//   node e2e/rig.mjs stop                          nothing left running; the folder stays
-//   node e2e/rig.mjs reset                         stop, and start over (Dana's sign-in and the clone stay)
+//   node e2e/rig.mjs stop [--force]                nothing left running; the folder stays
+//   node e2e/rig.mjs reset [--force]               stop, and start over (Dana's sign-in and the clone stay)
 //
 // Environment: OBY_RIG_DIR, the folder (default ~/Library/Application Support/oby-rig); OBID_BIN,
 // obid (default: this checkout's, built first).
@@ -23,15 +23,17 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { buildFixture } from "./lib/fixture.mjs";
-import { groupRunning, stopGroups } from "./lib/processes.mjs";
-import { folderRefusal, portRefusal, rigRefusal } from "./lib/rig-guard.mjs";
+import { requireNodeVersion } from "./lib/node-version.mjs";
+import { stopGroups } from "./lib/processes.mjs";
+import { rigRefusal } from "./lib/rig-guard.mjs";
+import { family, newExchange, orphans, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RIG = resolve(process.env.OBY_RIG_DIR || join(homedir(), "Library/Application Support/oby-rig"));
@@ -51,8 +53,20 @@ if (refused) {
 }
 
 const STATE = join(RIG, "rig.json");
-const load = () => (existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {});
-const save = (state) => writeFileSync(STATE, JSON.stringify(state, null, 2), { mode: 0o600 });
+const LOCK = join(RIG, "rig.lock");
+// `anyway`: for what must work without it (stop, reset): what it held is lost, and they say so.
+function load({ anyway = false } = {}) {
+  if (!existsSync(STATE)) return {};
+  try { return JSON.parse(readFileSync(STATE, "utf8")); }
+  catch {
+    if (anyway) { say(`${STATE} doesn't read, so what's running from it isn't known.`); return {}; }
+    return fail(`${STATE} doesn't read: node e2e/rig.mjs reset starts over.`);
+  }
+}
+function save(state) {
+  writeFileSync(`${STATE}.new`, JSON.stringify(state, null, 2), { mode: 0o600 });
+  renameSync(`${STATE}.new`, STATE);
+}
 const dirOf = (who) => join(RIG, who);
 const homeOf = (who) => join(dirOf(who), "home");
 const say = (line) => console.log(line);
@@ -74,15 +88,22 @@ const free = (port) => new Promise((done) => {
   server.listen(port, "127.0.0.1", () => server.close(() => done(true)));
 });
 
-// A process of the rig's: its own group, its output in a log, outliving this command.
-function launch(name, cmd, args, opts) {
-  const log = openSync(join(RIG, `${name}.log`), "a");
-  const child = spawn(cmd, args, { ...opts, detached: true, stdio: ["ignore", log, log] });
+// What a tool the rig runs for itself gets of the person's environment, and no more.
+const plain = () => Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG"].filter((k) => process.env[k]).map((k) => [k, process.env[k]]));
+
+// A process of the rig's: its own group, its output in a log, outliving this command. Remembered
+// with when it started, so a pid that's someone else's by now is never signalled.
+function launch(state, name, log, cmd, args, opts) {
+  const out = openSync(join(RIG, `${log}.log`), "a");
+  const child = spawn(cmd, args, { ...opts, detached: true, stdio: ["ignore", out, out] });
+  child.on("error", () => {});
+  closeSync(out);
+  if (!child.pid) fail(`${cmd} didn't start: is it there? Its log: ${join(RIG, `${log}.log`)}`);
   child.unref();
-  closeSync(log);
-  return child.pid;
+  state.running = { ...state.running, [name]: record(child.pid) ?? fail(`${cmd} ended at once. Its log: ${join(RIG, `${log}.log`)}`) };
+  save(state);
 }
-const alive = (pid) => Boolean(pid) && groupRunning(pid);
+const alive = (state, name) => ours(state.running?.[name], RIG);
 
 // ---- obid
 
@@ -103,14 +124,14 @@ function api(who) {
   return { call, get };
 }
 
+// By the login shell the password database names (AGENTS.md, "PATH"): $SHELL can differ.
 const claude = () => {
-  const found = spawnSync(process.env.SHELL || "/bin/sh", ["-lc", "command -v claude"], { encoding: "utf8" }).stdout?.trim().split("\n").pop();
+  const found = spawnSync(userInfo().shell, ["-l", "-c", "command -v claude"], { encoding: "utf8", env: plain(), timeout: 15_000 }).stdout?.trim().split("\n").pop();
   return found && existsSync(found) ? found : null;
 };
 // The tool itself says whether the account's folder has a login: Keychain or file, its own business.
 function signedIn(bin, folder) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/.test(k)));
-  const out = spawnSync(bin, ["auth", "status", "--json"], { encoding: "utf8", env: { ...env, CLAUDE_CONFIG_DIR: folder }, timeout: 15_000 });
+  const out = spawnSync(bin, ["auth", "status", "--json"], { encoding: "utf8", env: { ...plain(), CLAUDE_CONFIG_DIR: folder }, timeout: 15_000 });
   try { return JSON.parse(out.stdout).loggedIn === true; } catch { return false; }
 }
 
@@ -132,19 +153,19 @@ function writeConfig(who, { bin, real }) {
   }, null, 2), { mode: 0o600 });
 }
 
-function startObid(who, { real }) {
+function startObid(state, who, { real }) {
   const dir = dirOf(who);
   for (const d of ["env-home", "tmp", "gh"]) mkdirSync(join(dir, d), { recursive: true, mode: 0o700 });
   // A scratch HOME and a stand-in Keychain, unless Dana's real login is what's being run: macOS
   // finds the login Keychain by HOME. Either way no GitHub login: an empty gh folder.
-  return launch(`${who}-obid`, OBID, ["serve", "--config", join(dir, "config.json")], { env: {
+  launch(state, who, `${who}-obid`, state.obid, ["serve", "--config", join(dir, "config.json")], { env: {
     PATH: `${AGENTS}:${dirname(process.execPath)}:${process.env.PATH}`, USER: process.env.USER, LOGNAME: process.env.LOGNAME,
     HOME: real ? homedir() : join(dir, "env-home"), TMPDIR: join(dir, "tmp"), GH_CONFIG_DIR: join(dir, "gh"),
     ...(real ? {} : { OBID_SECURITY_BIN: join(AGENTS, "fake-security") }),
     OBID_PRESTART: "off", OBID_USAGE_READS: "off", OBID_LOAD: "0", OBID_MEMORY_AVAILABLE: "1099511627776", // other sessions' load doesn't hold a job back
   } });
 }
-const answering = (who) => until(`${who}'s obid`, async () => (await api(who).call("GET", "/v1/status")).status === 200);
+const answering = (who) => until(`${who}'s obid (its log: ${join(RIG, `${who}-obid.log`)})`, async () => (await api(who).call("GET", "/v1/status")).status === 200);
 
 // A device of the rig's, as the app registers its own (main/device.ts): what signs the owner's words.
 async function deviceOf(who, state) {
@@ -173,24 +194,30 @@ function sphereCall(state) {
   };
 }
 
+// The clone at the commit e2e/rig-sphere.ref names, so a result says what it ran on. Its marker is
+// written last: whatever was cut short is done again.
 function cloneSphere() {
-  const clone = join(RIG, "obi-sphere");
-  if (!existsSync(join(clone, "server/package.json"))) {
+  const pin = readFileSync(join(ROOT, "e2e/rig-sphere.ref"), "utf8").trim();
+  const clone = join(RIG, "obi-sphere"), ready = join(RIG, "obi-sphere.ready");
+  if (!existsSync(ready) || readFileSync(ready, "utf8").trim() !== pin) {
+    rmSync(ready, { force: true });
     rmSync(clone, { recursive: true, force: true });
-    say("Cloning obi-sphere's dev…");
-    execFileSync("git", ["clone", "-q", "--depth", "1", "--branch", "dev", SPHERE_REMOTE, clone], { stdio: "inherit" });
+    mkdirSync(clone, { recursive: true });
+    say(`Cloning obi-sphere at ${pin.slice(0, 7)} and installing its dependencies…`);
+    const git = (...args) => execFileSync("git", ["-C", clone, ...args], { stdio: "inherit", env: plain() });
+    git("init", "-q");
+    git("fetch", "-q", "--depth", "1", SPHERE_REMOTE, pin);
+    git("-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD");
+    execFileSync("pnpm", ["install", "--frozen-lockfile", "--silent"], { cwd: join(clone, "server"), stdio: "inherit", env: plain() });
+    writeFileSync(ready, `${pin}\n`);
   }
-  if (!existsSync(join(clone, "server/node_modules"))) {
-    say("Installing the Sphere's dependencies…");
-    execFileSync("pnpm", ["install", "--frozen-lockfile", "--silent"], { cwd: join(clone, "server"), stdio: "inherit" });
-  }
-  return execFileSync("git", ["-C", clone, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+  return pin.slice(0, 7);
 }
 
 function startSphere(state) {
   const dir = join(RIG, "sphere");
   for (const d of ["state", "home", "tmp"]) mkdirSync(join(dir, d), { recursive: true, mode: 0o700 });
-  return launch("sphere", process.execPath, ["scripts/local.mjs", "--port", String(state.spherePort), "--persist-to", join(dir, "state")], {
+  launch(state, "sphere", "sphere", process.execPath, ["scripts/local.mjs", "--port", String(state.spherePort), "--persist-to", join(dir, "state")], {
     cwd: join(RIG, "obi-sphere/server"),
     env: { SPHERE_OPERATOR_TOKEN: state.operator, HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"), PATH: process.env.PATH, WRANGLER_SEND_METRICS: "false" },
   });
@@ -264,50 +291,70 @@ const running = (job) => job.status === "running";
 
 // ---- commands
 
+// Dana's job, kept going: the job from before a stop takes a moment to go on, and a second beside
+// it would be a lie. The real Claude Code with no login runs none: answers go to Dana.
+async function keepDanaWorking(state) {
+  if (state.real && !state.signed) return;
+  const goesOn = state.danaJob && (await until("Dana's job going on", async () => running(await api("dana").get(`/v1/jobs/${state.danaJob}`)), 15).catch(() => false));
+  if (goesOn) return;
+  const job = await startJob(state);
+  state.danaJob = job.id;
+  save(state);
+  await until("Dana's job running", async () => {
+    const seen = await api("dana").get(`/v1/jobs/${job.id}`);
+    if (["failed", "interrupted", "done"].includes(seen.status)) fail(`Dana's job ended ${seen.status}: ${seen.reason ?? seen.summary ?? ""}`);
+    return running(seen);
+  });
+}
+
+const ASKED_MODE = { "--stand-in": false, "--real": true };
+
 async function start(flags) {
-  mkdirSync(RIG, { recursive: true, mode: 0o700 });
-  for (const who of Object.keys(PEOPLE)) {
-    const refusal = folderRefusal(homeOf(who)) ?? portRefusal(PEOPLE[who].port);
-    if (refusal) { console.error(`Refused: ${refusal}`); process.exit(2); }
-    mkdirSync(homeOf(who), { recursive: true, mode: 0o700 });
-  }
+  for (const flag of flags) if (!(flag in ASKED_MODE)) fail(`What's ${flag}? node e2e/rig.mjs start [--stand-in | --real]`);
+  if (flags.size > 1) fail("--stand-in or --real, not both.");
+  const asked = flags.has("--stand-in") ? false : flags.has("--real") ? true : undefined;
   const state = load();
-  const up = ["spherePid", "youPid", "danaPid"].filter((k) => alive(state[k]));
-  if (up.length) {
-    if (up.length === 3) { say("The rig is running already."); return status(); }
-    fail(`Only part of the rig is running (${up.join(", ")}): node e2e/rig.mjs stop, then start again.`);
+  const up = ["sphere", "you", "dana"].filter((name) => alive(state, name));
+  if (up.length === 3 && state.ready) {
+    if (asked !== undefined && asked !== Boolean(state.real)) fail(`The rig is up with Dana on ${state.real ? "the real Claude Code" : "stand-ins"}: stop it first.`);
+    await keepDanaWorking(state);
+    say("The rig is running already.");
+    return status();
   }
+  if (up.length) fail(`${state.ready ? "Only part of the rig is running" : "A start was cut short"} (${up.join(", ")} up): node e2e/rig.mjs stop, then start again.`);
+  state.ready = false;
+  state.checkout = ROOT;
+  save(state);
+  state.obid = theObid();
   for (const who of Object.keys(PEOPLE)) if (!(await free(PEOPLE[who].port))) fail(`Port ${PEOPLE[who].port}, ${who}'s obid's, is taken by something else.`);
   if (!state.spherePort) {
     for (const port of SPHERE_PORTS) if (!state.spherePort && (await free(port))) state.spherePort = port;
-    state.operator = randomBytes(32).toString("base64url");
     if (!state.spherePort) fail(`Ports ${SPHERE_PORTS.join(", ")} are all taken: another session's Sphere?`);
+    state.operator = randomBytes(32).toString("base64url");
     save(state);
   } else if (!(await free(state.spherePort))) fail(`Port ${state.spherePort}, the Sphere's, is taken by something else, and both Obys' memberships name it. node e2e/rig.mjs reset picks another.`);
 
-  OBID = process.env.OBID_BIN ? resolve(process.env.OBID_BIN) : buildObid();
   const spec = await import(join(ROOT, "apps/electron/src/shared/sphere.ts"));
   if (!existsSync(join(RIG, "fixture/remote.git"))) buildFixture(join(RIG, "fixture"));
-  const sphereCommit = cloneSphere();
+  state.sphereCommit = cloneSphere();
+  save(state);
 
-  let signed = false;
   try {
-    state.spherePid = startSphere(state);
-    save(state);
-    await until("the Sphere", async () => (await sphereCall(state)("/health")).status === 200, 120);
+    startSphere(state);
+    await until(`the Sphere (its log: ${join(RIG, "sphere.log")})`, async () => (await sphereCall(state)("/health")).status === 200, 120);
     await makeSphere(state, spec);
-    say(`Sphere: http://127.0.0.1:${state.spherePort} (obi-sphere dev ${sphereCommit})`);
+    say(`Sphere: http://127.0.0.1:${state.spherePort} (obi-sphere ${state.sphereCommit})`);
 
     const standIn = join(ROOT, "e2e/rig-agent");
     writeConfig("you", { bin: standIn, real: false });
-    state.youPid = startObid("you", { real: false });
-    save(state);
+    startObid(state, "you", { real: false });
 
-    const real = claude();
+    // Stand-ins asked for: no need to run the real tool at all.
+    const real = asked === false ? null : claude();
     const accountKnown = state.danaAccount ? join(homeOf("dana"), "accounts", state.danaAccount) : null;
-    signed = Boolean(real && accountKnown && signedIn(real, accountKnown));
+    state.signed = Boolean(real && accountKnown && signedIn(real, accountKnown));
     const wasReal = Boolean(state.real);
-    state.real = !flags.has("--stand-in") && (flags.has("--real") || signed);
+    state.real = asked ?? state.signed;
     if (state.real && !real) fail("--real needs Claude Code, and `claude` isn't on the login shell's PATH.");
     // A job from the other kind of run would go on there, a stand-in's words to the real model, so
     // it's gone before Dana's obid starts: asking it to stop after would be too late.
@@ -316,11 +363,9 @@ async function start(flags) {
       delete state.danaJob;
     }
     writeConfig("dana", { bin: state.real ? real : standIn, real: state.real });
-    state.danaPid = startObid("dana", { real: state.real });
-    save(state);
+    startObid(state, "dana", { real: state.real });
     await answering("you");
     await answering("dana");
-    // A job from the other kind of run would go on there: a stand-in's words to the real model.
     await danaAccount(state);
     await deviceOf("you", state);
     await deviceOf("dana", state);
@@ -333,29 +378,16 @@ async function start(flags) {
     }
     say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other.");
     say(`Dana's sharing: ${JSON.stringify((await api("dana").get("/v1/obid/sharing")).rules?.map((r) => ({ for: r.for, tells: r.tells, starter: r.starter })))}`);
-
-    // The real Claude Code with no login runs no job: answers go to Dana, and the step below is why.
-    if (!state.real || signed) {
-      // The job from before a stop takes a moment to go on: a second beside it would be a lie.
-      const goesOn = state.danaJob && (await until("Dana's job going on", async () => running(await api("dana").get(`/v1/jobs/${state.danaJob}`)), 15).catch(() => false));
-      if (!goesOn) {
-        const job = await startJob(state);
-        state.danaJob = job.id;
-        save(state);
-        await until("Dana's job running", async () => {
-          const seen = await api("dana").get(`/v1/jobs/${job.id}`);
-          if (["failed", "interrupted", "done"].includes(seen.status)) fail(`Dana's job ended ${seen.status}: ${seen.reason ?? seen.summary ?? ""}`);
-          return running(seen);
-        });
-      }
-    }
+    await keepDanaWorking(state);
+    state.ready = true;
+    save(state);
   } catch (e) {
     await stop();
     throw e;
   }
   await status();
-  say(!state.real ? "Dana is on stand-ins: exact states, no model." : signed ? "Dana is on the real Claude Code: its job and answers cost real usage on the account signed in." : "Dana is on the real Claude Code with no login: no job, and every question waits on Dana.");
-  if (!state.real || !signed) {
+  say(!state.real ? "Dana is on stand-ins: exact states, no model." : state.signed ? "Dana is on the real Claude Code: its job and answers cost real usage on the account signed in." : "Dana is on the real Claude Code with no login: no job, and every question waits on Dana.");
+  if (asked !== false && !state.signed) {
     say("");
     say("THE OWNER'S STEP: Dana's account, signed in once, makes Dana's job and answers real. In a terminal:");
     say("");
@@ -365,30 +397,37 @@ async function start(flags) {
   }
 }
 
-let OBID;
-function buildObid() {
+// OBID_BIN, or this checkout's, built.
+function theObid() {
+  if (process.env.OBID_BIN) {
+    const bin = resolve(process.env.OBID_BIN);
+    return existsSync(bin) ? bin : fail(`OBID_BIN names ${bin}, and nothing is there.`);
+  }
   execFileSync("cargo", ["build", "-q", "-p", "obid"], { cwd: join(ROOT, "core"), stdio: "inherit" });
   const target = process.env.CARGO_TARGET_DIR ? resolve(ROOT, "core", process.env.CARGO_TARGET_DIR) : join(ROOT, "core/target");
-  return join(target, "debug/obid");
+  const bin = join(target, "debug/obid");
+  return existsSync(bin) ? bin : fail(`cargo built, and obid isn't at ${bin}.`);
 }
 
 async function status() {
   const state = load();
   say(`The rig's folder: ${RIG}`);
-  say(`Sphere: ${alive(state.spherePid) ? `up, http://127.0.0.1:${state.spherePort}` : "down"}`);
+  if (state.checkout) say(`From: ${state.checkout}; obid ${state.obid}; obi-sphere ${state.sphereCommit}`);
+  if (state.ready === false && ["sphere", "you", "dana"].some((name) => alive(state, name))) say("A start was cut short: node e2e/rig.mjs stop, then start again.");
+  say(`Sphere: ${alive(state, "sphere") ? `up, http://127.0.0.1:${state.spherePort}` : "down"}`);
   for (const who of Object.keys(PEOPLE)) {
-    if (!alive(state[`${who}Pid`])) { say(`${who}: down`); continue; }
+    if (!alive(state, who)) { say(`${who}: down`); continue; }
     const { get } = api(who);
     const [membership, jobs, inbox] = await Promise.all([get("/v1/obid/sphere"), get("/v1/jobs"), get("/v1/inbox")]);
     say(`${who} (owner ${PEOPLE[who].owner}): up on ${PEOPLE[who].port}, ${membership.state}, sealing ${membership.sealing}, ${jobs.filter(running).length} job(s) running, inbox ${inbox.length}, OBID_HOME="${homeOf(who)}" OBID_PORT=${PEOPLE[who].port}`);
   }
-  if (alive(state.danaPid)) {
+  if (alive(state, "dana")) {
     const jobs = (await api("dana").get("/v1/jobs")).filter(running);
     for (const job of jobs) say(`Dana's job: "${job.title}", ${job.status}, ${job.id}`);
     const accounts = (await api("dana").get("/v1/status")).accounts ?? [];
     say(`Dana's account: ${accounts.filter((a) => a.id === state.danaAccount).map((a) => (a.signedIn ? "signed in" : "not signed in")).join() || "none yet"}; ${state.real ? "real Claude Code" : "stand-ins"}`);
   }
-  if (alive(state.appPid)) say(`The dev app: up, pid ${state.appPid}`);
+  if (alive(state, "app")) say(`The dev app: up, pid ${state.running.app.pid}`);
 }
 
 // You ask Dana's Oby. Your words go signed, as the app's do, and your stand-in calls oby_ask with
@@ -396,8 +435,10 @@ async function status() {
 async function ask(words) {
   if (!words) fail('What to ask: node e2e/rig.mjs ask "What are you working on?"');
   const state = load();
-  if (!alive(state.youPid)) fail("You aren't up: node e2e/rig.mjs start");
+  if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
   const { get } = api("you");
+  const exchanges = () => get("/v1/obid/sphere/exchanges?limit=50");
+  const before = await exchanges();
   const body = JSON.stringify({ said: `OBY oby_ask ${JSON.stringify({ to: "dana", question: words })}`, new: true });
   const signedAt = new Date().toISOString();
   const digest = createHash("sha256").update(body).digest("hex");
@@ -408,7 +449,7 @@ async function ask(words) {
   const reply = await res.json();
   if (!res.ok) fail(`Asking: ${res.status} ${JSON.stringify(reply)}`);
   say(`You asked. Your stand-in said: ${reply.text}`);
-  const exchange = async () => (await get("/v1/obid/sphere/exchanges?limit=50")).find((e) => e.messages?.[0]?.envelope?.body?.text === words);
+  const exchange = async () => newExchange(before, await exchanges(), words);
   // What obid tells you comes as a turn after the one that asked: an answer, a wait, a no, by 2
   // minutes at most. A question that wasn't sent keeps no exchange, and that turn was all (ASK-8).
   const conversation = () => get(`/v1/conversation?id=${reply.conversation}`);
@@ -417,7 +458,7 @@ async function ask(words) {
   for (const turn of await conversation()) say(`${turn.who}: ${turn.text}`);
   const sent = await exchange();
   say(`--- the exchange: ${sent ? JSON.stringify({ state: sent.state, messages: sent.messages.map((m) => m.envelope?.type) }) : "none: it wasn't sent"}`);
-  if (alive(state.danaPid)) {
+  if (alive(state, "dana")) {
     const inbox = await api("dana").get("/v1/inbox");
     say(`--- Dana's inbox: ${inbox.length ? JSON.stringify(inbox.map((i) => [i.kind, i.title])) : "empty"}`);
   }
@@ -425,7 +466,7 @@ async function ask(words) {
 
 async function job(task) {
   const state = load();
-  if (!alive(state.danaPid)) fail("Dana isn't up: node e2e/rig.mjs start");
+  if (!alive(state, "dana")) fail("Dana isn't up: node e2e/rig.mjs start");
   const made = await startJob(state, task);
   say(`Dana's job: ${made.id}`);
 }
@@ -433,7 +474,7 @@ async function job(task) {
 async function policy(word) {
   if (!["on", "off"].includes(word)) fail("node e2e/rig.mjs policy on|off");
   const state = load();
-  if (!alive(state.spherePid)) fail("The Sphere isn't up: node e2e/rig.mjs start");
+  if (!alive(state, "sphere")) fail("The Sphere isn't up: node e2e/rig.mjs start");
   const spec = await import(join(ROOT, "apps/electron/src/shared/sphere.ts"));
   const now = await setPolicy(state, spec, word === "on" ? RULES : []);
   say(`The Sphere's policy, version ${now.version}: ${now.rules?.length ?? 0} rule(s)`);
@@ -442,13 +483,13 @@ async function policy(word) {
 async function dana(word) {
   const state = load();
   if (word === "stop") {
-    await stopGroups([{ pid: state.danaPid }].filter((c) => alive(c.pid)));
+    await stopThese(state, ["dana"]);
+    save(state);
     say("Dana's obid is stopped: its Mac is off.");
   } else if (word === "start") {
-    if (alive(state.danaPid)) return say("Dana's obid is up already.");
-    OBID = process.env.OBID_BIN ? resolve(process.env.OBID_BIN) : buildObid();
-    state.danaPid = startObid("dana", { real: state.real });
-    save(state);
+    if (alive(state, "dana")) return say("Dana's obid is up already.");
+    state.obid = theObid();
+    startObid(state, "dana", { real: state.real });
     await answering("dana");
     say("Dana's obid is up.");
   } else fail("node e2e/rig.mjs dana stop|start");
@@ -456,11 +497,11 @@ async function dana(word) {
 
 async function app() {
   const state = load();
-  if (!alive(state.youPid)) fail("You aren't up: node e2e/rig.mjs start");
-  if (alive(state.appPid)) return say(`The dev app is up already, pid ${state.appPid}.`);
+  if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
+  if (alive(state, "app")) return say(`The dev app is up already, pid ${state.running.app.pid}.`);
   const dir = join(ROOT, "apps/electron");
-  if (!existsSync(join(dir, "node_modules"))) execFileSync("npm", ["ci"], { cwd: dir, stdio: "inherit" });
-  execFileSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit" });
+  if (!existsSync(join(dir, "node_modules"))) execFileSync("npm", ["ci"], { cwd: dir, stdio: "inherit", env: plain() });
+  execFileSync("npm", ["run", "build"], { cwd: dir, stdio: "inherit", env: plain() });
   const data = join(dirOf("you"), "electron-data");
   mkdirSync(data, { recursive: true, mode: 0o700 });
   // Its own app folder, so a device key and settings of the rig's, and Home, not the first run.
@@ -473,46 +514,81 @@ app.on('web-contents-created', (_e, page) => page.once('did-finish-load', async 
 }));
 import(${JSON.stringify(`file://${join(dir, "out/main/index.js")}`)});
 `);
-  const { OBID_HOME: _home, OBID_PORT: _port, ...env } = process.env;
-  const binary = execFileSync(process.execPath, ["-e", "console.log(require('electron'))"], { cwd: dir, encoding: "utf8" }).trim();
-  state.appPid = launch("app", binary, [launcher], { cwd: dir, env: { ...env, OBID_HOME: homeOf("you"), OBID_PORT: String(PEOPLE.you.port) } });
-  save(state);
-  say(`The dev app, on you: pid ${state.appPid}. Its log: ${join(RIG, "app.log")}. node e2e/rig.mjs stop closes it.`);
+  const binary = execFileSync(process.execPath, ["-e", "console.log(require('electron'))"], { cwd: dir, encoding: "utf8", env: plain() }).trim();
+  // The real HOME: Electron's safeStorage, which keeps the rig's keys sealed, is in the login Keychain.
+  launch(state, "app", "app", binary, [launcher], { cwd: dir, env: { ...plain(), OBID_HOME: homeOf("you"), OBID_PORT: String(PEOPLE.you.port) } });
+  say(`The dev app, on you: pid ${state.running.app.pid}. Its log: ${join(RIG, "app.log")}. node e2e/rig.mjs stop closes it.`);
 }
 
-// Whatever still has the rig's folder on its command line: a job's agent in a group of its own.
-function strays() {
-  const rows = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8", maxBuffer: 1 << 26 }).split("\n");
-  return rows.filter((row) => row.includes(RIG)).map((row) => Number(row.trim().split(/\s+/)[0])).filter((pid) => pid && pid !== process.pid);
+// These of the rig's processes, and what they started: nothing else, whatever its command line says.
+async function stopThese(state, names) {
+  const roots = names.filter((name) => alive(state, name)).map((name) => state.running[name].pid);
+  const started = family(roots);
+  await stopGroups(roots.map((pid) => ({ pid })));
+  for (const { pid } of stillUp(started)) { try { process.kill(pid, "SIGTERM"); } catch {} }
+  await until("what they started gone", async () => !stillUp(started).length, 5).catch(() => {
+    for (const { pid } of stillUp(started)) { try { process.kill(pid, "SIGKILL"); } catch {} }
+  });
+  for (const name of names) if (state.running) delete state.running[name];
 }
 
 async function stop() {
-  const state = load();
-  await stopGroups(["appPid", "youPid", "danaPid", "spherePid"].map((k) => ({ pid: state[k] })).filter((c) => c.pid));
-  for (const pid of strays()) { try { process.kill(pid, "SIGTERM"); } catch {} }
-  await until("everything stopped", async () => !strays().length, 15).catch(() => {
-    for (const pid of strays()) { try { process.kill(pid, "SIGKILL"); } catch {} }
-  });
-  for (const k of ["appPid", "youPid", "danaPid", "spherePid"]) delete state[k];
-  if (existsSync(RIG)) save(state);
-  const left = strays();
-  say(left.length ? `Still running: ${left.join(", ")}` : "The rig is stopped. Nothing is left running.");
+  const state = load({ anyway: true });
+  await stopThese(state, ["app", "you", "dana", "sphere"]);
+  if (existsSync(STATE)) save(state);
+  const left = orphans(RIG);
+  say(left.length ? `The rig is stopped. Not its own to stop, with no parent left (an obid that was killed?): ${left.join(", ")}. Look, and kill them by pid.` : "The rig is stopped. Nothing is left running.");
 }
 
 // Everything but what costs to get back: the clone, and Dana's signed-in account (its Keychain item
 // goes by the folder's path, and obid knows it by accounts.json).
 async function reset() {
-  if (!existsSync(RIG)) return say("Nothing to reset.");
   await stop();
-  const { danaAccount } = load();
-  for (const name of ["you", "sphere", "fixture", "rig.json", "sphere.log", "you-obid.log", "dana-obid.log", "app.log"]) rmSync(join(RIG, name), { recursive: true, force: true });
+  const { danaAccount } = load({ anyway: true });
+  for (const name of ["you", "sphere", "fixture", "sphere.log", "you-obid.log", "dana-obid.log", "app.log"]) rmSync(join(RIG, name), { recursive: true, force: true });
   if (existsSync(homeOf("dana"))) for (const name of readdirSync(homeOf("dana"))) if (name !== "accounts" && name !== "accounts.json") rmSync(join(homeOf("dana"), name), { recursive: true, force: true });
-  if (danaAccount) save({ danaAccount });
+  save(danaAccount ? { danaAccount } : {});
   say("The rig starts over at its next start.");
 }
 
+// One command at a time changes the rig. A lock whose process has gone is nobody's.
+function takeLock() {
+  const mine = JSON.stringify(record(process.pid));
+  try { writeFileSync(LOCK, mine, { flag: "wx", mode: 0o600 }); }
+  catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    let holder = null;
+    try { holder = JSON.parse(readFileSync(LOCK, "utf8")); } catch {}
+    if (holder && stillUp([holder], table()).length) fail(`Another rig command is running (pid ${holder.pid}).`);
+    writeFileSync(LOCK, mine, { mode: 0o600 });
+  }
+  process.on("exit", () => rmSync(LOCK, { force: true }));
+}
+
+// A rig up from another checkout runs that one's obid: a test from here wouldn't test this code,
+// and stopping it pulls it from under whoever is using it. A checkout that's gone asks nothing.
+function fromThisCheckout(force) {
+  const state = load({ anyway: true });
+  if (force || !state.checkout || state.checkout === ROOT || !existsSync(state.checkout)) return;
+  if (["sphere", "you", "dana", "app"].some((name) => alive(state, name))) fail(`The rig is up from ${state.checkout}, with that checkout's obid. Run this there; or node e2e/rig.mjs stop --force.`);
+}
+
 const [command, ...args] = process.argv.slice(2);
+const CHANGES = new Set(["start", "stop", "reset", "job", "policy", "dana", "app"]);
 try {
+  requireNodeVersion(process.versions.node);
+  if (command === "start") {
+    mkdirSync(RIG, { recursive: true, mode: 0o700 });
+    if (!existsSync(STATE)) save({});
+  } else if (!existsSync(RIG) && (command === "stop" || command === "reset")) {
+    say("Nothing's here.");
+    process.exit(0);
+  }
+  if (CHANGES.has(command) || command === "ask") {
+    if (!existsSync(RIG)) fail("Nothing's here: node e2e/rig.mjs start");
+    if (CHANGES.has(command)) takeLock();
+    fromThisCheckout((command === "stop" || command === "reset") && args.includes("--force"));
+  }
   if (command === "start") await start(new Set(args));
   else if (command === "stop") await stop();
   else if (command === "status") await status();
