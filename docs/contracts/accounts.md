@@ -24,7 +24,7 @@ The business behavior contract for connecting any number of accounts of any tool
 | Signed in | `Signed in as me@x.dev · Deskree · Team`; a field with the name obid gave it, `Name (optional)`; `Done` | A changed name is kept; anything else keeps obid's |
 | The same login | `That’s Personal again`; `Done` | Nothing was added |
 
-Settings › Agents has `Add account` above the cards, with `Found on this Mac: Codex` under it while there's one. Each card shows who the account is under its tool, and its percentage as a bar: its 5-hour session, else its week (Cursor reports neither and says so).
+Settings › Agents has `Add account` above the cards, with `Found on this Mac: Codex` under it while there's one. Each card shows who the account is under its tool, and its percentage as a bar: its 5-hour session, else its week (Cursor's: its plan's included usage, or "No usage" with none, docs/contracts/usage.md, USAGE-6).
 
 ### Who an account is
 

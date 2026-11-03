@@ -40,7 +40,7 @@ pub fn check(shared: &Shared, account: &str) -> Result<(), ApiError> {
 }
 
 /// The tools that can talk here, in the order Auto looks at them: the configured one, then the
-/// others. Cursor reports no usage, so it comes last, and only where the box holds it to obid's
+/// others. Cursor comes last, whatever its usage reads, and only where the box holds it to obid's
 /// egress proxy (crate::brain::harness_cursor).
 fn tools(shared: &Shared) -> Vec<Tool> {
     let first = shared.config.conversation.agent;
@@ -87,8 +87,8 @@ pub(super) fn accounts(
 }
 
 /// The chosen account first, else the one the session is on, then whichever has room: those of its
-/// tool before others, one held back (`room`) after any with room, and Cursor, which reports no
-/// usage and whose turn marks the conversation for good, last. A chosen account that can't run is
+/// tool before others, one held back (`room`) after any with room, and Cursor, whose turn marks
+/// the conversation for good, last, whatever its usage reads. A chosen account that can't run is
 /// moved past only while failover is on; with it off, a turn tries one account.
 fn order(
     chosen: Option<&str>,
@@ -329,6 +329,28 @@ mod tests {
     }
 
     #[test]
+    fn conversation_agent_15_cursor_with_room_and_a_figure_stays_last_on_auto() {
+        let lists = || {
+            vec![
+                (Tool::Cursor, vec![account("u1")]),
+                (Tool::Codex, vec![account("x1")]),
+            ]
+        };
+        assert_eq!(
+            ids(order(None, None, lists(), true, |_| true)),
+            ["x1", "u1"]
+        );
+        // Only Cursor has room: the one held back still comes first.
+        let room = |id: &str| id == "u1";
+        assert_eq!(ids(order(None, None, lists(), true, room)), ["x1", "u1"]);
+        // The owner's choice still stands.
+        assert_eq!(
+            ids(order(Some("u1"), None, lists(), true, |_| true)),
+            ["u1", "x1"]
+        );
+    }
+
+    #[test]
     fn conversation_agent_10_a_turn_nobody_watches_never_runs_on_cursor() {
         assert_eq!(unwatched(Tool::ALL.to_vec()), [Tool::Claude, Tool::Codex]);
     }
@@ -341,7 +363,7 @@ mod tests {
             ids(order(None, None, lists(), true, room)),
             ["x1", "c1", "c2"]
         );
-        // Held back still comes before Cursor, which reports nothing.
+        // Held back still comes before Cursor, whatever Cursor's usage reads.
         assert_eq!(
             ids(order(None, None, lists(), true, |_| false)),
             ["c1", "c2", "x1"]

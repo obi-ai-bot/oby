@@ -26,9 +26,21 @@ describe('usage rows', () => {
     expect(accountRow(account({ fiveHour: 0.5, fiveHourResets: '2026-10-30T19:00:00Z', sevenDay: 0.1 }), now).session).toBe(0);
   });
 
-  it('USAGE-6: Cursor says it reports none', async () => {
-    const { accountRow } = await load();
-    const row = accountRow(account({ agent: 'cursor', fiveHour: 0.5, sevenDay: 0.5 }), now);
-    expect([row.used, row.session, row.resets]).toEqual([null, null, 'Cursor doesn’t report usage']);
+  it('USAGE-6: Cursor shows the figure obid gives, naming no week, and "No usage" with none', async () => {
+    const { accountRow, weekWords, barOf } = await load();
+    // a weekly plan: its reset by its day
+    const soon = '2026-11-04T21:59:59Z';
+    const week = accountRow(account({ agent: 'cursor', sevenDay: 0.31, sevenDayResets: soon }), now);
+    expect([week.used, week.session, barOf(week)]).toEqual([31, null, 31]);
+    expect(weekWords(week)).toBe(`31% used · resets ${new Date(soon).toLocaleDateString([], { weekday: 'long' })}`);
+    // a monthly plan: its reset by its date
+    const later = '2026-11-20T12:00:00Z';
+    const month = accountRow(account({ agent: 'cursor', sevenDay: 0.5, sevenDayResets: later }), now);
+    expect(weekWords(month)).toBe(`50% used · resets ${new Date(later).toLocaleDateString([], { month: 'short', day: 'numeric' })}`);
+    // none: a read that failed, a plan with no figure
+    const none = accountRow(account({ agent: 'cursor' }), now);
+    expect([none.used, none.session, weekWords(none)]).toEqual([null, null, 'No usage']);
+    // signed out: what obid says of the login
+    expect(weekWords(accountRow(account({ agent: 'cursor', signedIn: false, label: 'Sign in again' }), now))).toBe('Sign in again');
   });
 });

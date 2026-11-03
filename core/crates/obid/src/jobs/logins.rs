@@ -546,6 +546,21 @@ pub(super) fn ask_security(
             .unwrap_or_else(|e| e.into_inner())
             .remove(service);
     };
+    // One read of an item at a time: two at once would be two prompts for one change of it. The
+    // one that waits finds the first's answer (other items don't wait on it).
+    let asking = {
+        static ASKING: Mutex<Vec<(String, Arc<Mutex<()>>)>> = Mutex::new(Vec::new());
+        let mut items = ASKING.lock().unwrap_or_else(|e| e.into_inner());
+        match items.iter().find(|(name, _)| name == service) {
+            Some((_, item)) => item.clone(),
+            None => {
+                let item = Arc::default();
+                items.push((service.to_owned(), Arc::clone(&item)));
+                item
+            }
+        }
+    };
+    let _one_at_a_time = asking.lock().unwrap_or_else(|e| e.into_inner());
     let Some(stamp) = item_stamp(&args) else {
         forget();
         locked(service, false);
@@ -844,6 +859,32 @@ pub(super) fn cursor_keychain_login() -> Option<Vec<u8>> {
         return None;
     }
     cursor_login_json(|service| cursor_keychain_item(service, true))
+}
+
+/// The access token obid reads `account`'s usage with (KEYCHAIN-8, crate::cursor_usage): from its
+/// login file, a regular file as a run's copy takes it, else, for Cursor's own login, from the
+/// Keychain by the same read as a run's copy ([`cursor_keychain_login`], so no value is asked for
+/// again while its item is unchanged). Never the API key or the refresh token, and not a token that
+/// has ended (only the Mac's own cursor-agent refreshes it). Learned, so no log can carry it.
+pub(super) fn cursor_access_token(
+    account: &crate::config::Account,
+    home: Option<&Path>,
+) -> Option<String> {
+    let file = login_file(Tool::Cursor, account, home)?;
+    let login = if is_regular_file(&file) {
+        std::fs::read(file).ok()?
+    } else if account.config_dir.is_none() {
+        cursor_keychain_login()?
+    } else {
+        return None;
+    };
+    let login: Value = serde_json::from_slice(&login).ok()?;
+    let token = login["accessToken"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+        .filter(|token| jwt_ends(token).is_none_or(|ends| ends > now_ms() / 1000))?;
+    crate::secrets::known().learn(&format!("Cursor {} access token", account.id), token);
+    Some(token.to_owned())
 }
 
 /// The login file `{accessToken, apiKey}` from Cursor's Keychain items, as `read` answers each
@@ -2146,6 +2187,83 @@ pub fn person_homes() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KEYCHAIN-8: what a usage read takes of a login file: its access token and only that, not one
+    /// that has ended, not an API key, and not through a link.
+    #[test]
+    fn keychain_8_a_usage_read_takes_only_a_live_access_token() {
+        let dir = std::env::temp_dir().join(format!("obid-usage-token-{}", uuid::Uuid::new_v4()));
+        let file = dir.join(cursor_login_file());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let account = crate::config::Account {
+            id: "login-file".into(),
+            name: "login-file".into(),
+            config_dir: Some(dir.clone()),
+            payer: None,
+        };
+        let write = |login: Value| std::fs::write(&file, login.to_string()).unwrap();
+        let token = || cursor_access_token(&account, None);
+        let jwt = |exp: u64| {
+            use base64::Engine;
+            let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(json!({ "exp": exp }).to_string());
+            format!("head.{claims}.signature")
+        };
+
+        assert_eq!(token(), None);
+        let live = jwt(now_ms() / 1000 + 3600);
+        write(json!({"accessToken": live, "refreshToken": "kept-refresh", "apiKey": "kept-key"}));
+        assert_eq!(token().as_deref(), Some(live.as_str()));
+        assert!(!crate::secrets::known().redact(&live).contains(&live));
+        // With no end said, as an opaque token: Cursor says what it's worth.
+        write(json!({"accessToken": "opaque-access-token"}));
+        assert_eq!(token().as_deref(), Some("opaque-access-token"));
+        // An ended one goes nowhere, whatever else the file holds.
+        write(json!({"accessToken": jwt(now_ms() / 1000 - 60), "apiKey": "kept-key"}));
+        assert_eq!(token(), None);
+        write(json!({"apiKey": "kept-key", "refreshToken": "kept-refresh"}));
+        assert_eq!(token(), None);
+        write(json!({"accessToken": ""}));
+        assert_eq!(token(), None);
+        // A link isn't the account's own file.
+        let elsewhere = dir.join("elsewhere.json");
+        std::fs::write(&elsewhere, json!({"accessToken": live}).to_string()).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &file).unwrap();
+        assert_eq!(token(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KEYCHAIN-3: two reads of one item at once (a look at the accounts and its usage read) ask
+    /// once: two would be two prompts for the one change.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_3_two_reads_at_once_ask_once() {
+        let dir = std::env::temp_dir().join(format!("obid-at-once-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let asked = dir.join("asked");
+        let script = format!(
+            "#!/bin/sh\ncase \" $* \" in *\" -w \"*) echo x >> {asked:?}; /bin/sleep 0.3; echo value;; \
+             *) printf '    \"mdat\"<timedate>=\"1\"\\n';; esac\n"
+        );
+        let bin = dir.join("security");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let service = format!("obid-at-once-{}", uuid::Uuid::new_v4());
+        let ask = || {
+            let mut command = std::process::Command::new(&bin);
+            command.args(["find-generic-password", "-s", &service]);
+            ask_security(&service, command, true)
+        };
+        let answers: Vec<_> = std::thread::scope(|scope| {
+            let reads: Vec<_> = (0..3).map(|_| scope.spawn(ask)).collect();
+            reads.into_iter().map(|read| read.join().unwrap()).collect()
+        });
+        assert_eq!(answers, vec![Some(b"value\n".to_vec()); 3]);
+        assert_eq!(std::fs::read_to_string(&asked).unwrap().lines().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// KEYCHAIN-3: a Keychain login's value is asked for once per change of the item: a value
     /// macOS gave is kept while the item stays the same (an "Allow" isn't asked again every

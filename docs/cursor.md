@@ -11,8 +11,11 @@ What a Cursor job does in the launch build, on obid:
 
 - Its file edits can't be gated yet ("Edits are not gated", below), so Ask mode behaves as Accept
   edits on Cursor.
-- It shows no usage meter: Cursor reports no usage, so routing gives it work last
-  (docs/runner-api.md, "Routing").
+- Its CLI reports no usage, so obid reads it from Cursor's own dashboard service with the account's
+  access token (the owner's decision of 2026-11-03; docs/contracts/usage.md, USAGE-6 to 9;
+  docs/contracts/keychain.md, KEYCHAIN-8 and 9). These endpoints are undocumented and can change:
+  a failure just means no number, "No usage". A plan can go on past its included usage, so the
+  figure holds nothing, and routing still gives Cursor work last (docs/runner-api.md, "Routing").
 - It doesn't review: Oby's review of a finished job never runs on Cursor.
 - A conversation can talk on it too, under stricter rules, since none of this gates its reads or edits (docs/contracts/conversation-agent.md).
 - Its questions reach the owner and wait for the answer (#1456), its Plan mode waits for the
@@ -27,7 +30,7 @@ showed, and what Oby does about each.
 
 | Fact | Result | What Oby does |
 | --- | --- | --- |
-| Where the login lives | A plain file, `~/.config/cursor/auth.json` (0600): the runner has no keyring. | Oby never reads it. |
+| Where the login lives | A plain file, `~/.config/cursor/auth.json` (0600): the runner has no keyring. | Oby reads it for a run's copy and a usage read: only its access token and API key (never the refresh token). |
 | Who it is | `cursor-agent status --format json` (2026.10.01's own code): `userInfo` `{email, userId, firstName, lastName, teamId, teamName, createdAt}` when it reaches Cursor, none with `message` `Logged in (unable to fetch user details)` otherwise. | obid keeps `userInfo.email` and `.teamName` (docs/contracts/accounts.md). Not yet seen in a live answer: this Mac's login has ended. |
 | Login isolation | With `CURSOR_CONFIG_DIR` alone, both throwaway homes showed the user's real login. With `HOME`, `XDG_CONFIG_HOME` **and** `CURSOR_CONFIG_DIR` each of its own, account A was signed in and B stayed signed out (the user has one Cursor account, which shows per-folder isolation). | `separateLogins = true`. Every Cursor start, status, models and sign-in sets all three to the account's home (`CursorStatus.environment`). |
 | Commands | `session/request_permission` arrives, kind `execute`. | Commands ask Oby. |

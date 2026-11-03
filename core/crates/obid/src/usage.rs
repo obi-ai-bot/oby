@@ -1,10 +1,11 @@
 //! Each account's subscription usage and the owner's weekly reserve, kept privately across
 //! restarts in `home/usage.json` (0600) (Engine/Accounts.swift is the behaviour it follows).
 //!
-//! All of it comes from the tools' own reports: Claude Code's `rate_limit_event` during a job and
-//! its `/usage` (crate::jobs, `read_usages`), and Codex's `account/rateLimits/read` and
-//! `account/rateLimits/updated`. obid never reads a login to find any of it out. Cursor's CLI
-//! reports none.
+//! It comes from the tools' own reports: Claude Code's `rate_limit_event` during a job and its
+//! `/usage` (crate::jobs, `read_usages`), and Codex's `account/rateLimits/read` and
+//! `account/rateLimits/updated`. Cursor's CLI reports none, so obid asks Cursor's own dashboard
+//! with the account's access token, the one read that uses a login (crate::cursor_usage, the
+//! owner's decision of 2026-11-03): a figure that's shown and holds nothing ([`Usage::advisory`]).
 use obi_protocol::time;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -50,6 +51,9 @@ pub struct Usage {
     pub reserve_lifted_until: Option<i64>,
     /// How the account pays, as its tool said (`api` or `plan`, crate::usage::Tokens): asked once.
     pub priced: Option<String>,
+    /// `seven_day` is a plan's included usage that the plan can go on past (Cursor's, USAGE-9): it
+    /// is shown, and holds nothing back whatever it reads. A refusal's `full_until` still does.
+    pub advisory: bool,
 }
 
 /// A window's share now: one whose reset has passed starts again from nothing.
@@ -84,7 +88,9 @@ impl Usage {
     /// At 80% of its week and not lifted by the owner. Claude Code reports usage only during a
     /// job, so the share stays until its week resets.
     pub fn reserved(&self, now: i64) -> bool {
-        self.seven_day_at(now).unwrap_or(0.0) >= RESERVE && self.lifted_until(now).is_none()
+        !self.advisory
+            && self.seven_day_at(now).unwrap_or(0.0) >= RESERVE
+            && self.lifted_until(now).is_none()
     }
     /// Held back by its weekly reserve alone, which the owner may lift (#872): not full, under 95%
     /// of both windows.
@@ -113,9 +119,10 @@ impl Usage {
         let five = (self.five_hour_at(now).unwrap_or(0.0) >= NEARLY_FULL)
             .then_some(self.five_hour_resets)
             .flatten();
-        let week = (self.seven_day_at(now).unwrap_or(0.0) >= NEARLY_FULL || self.reserved(now))
-            .then(|| self.week_resets(now))
-            .flatten();
+        let week = (!self.advisory
+            && (self.seven_day_at(now).unwrap_or(0.0) >= NEARLY_FULL || self.reserved(now)))
+        .then(|| self.week_resets(now))
+        .flatten();
         [self.full_until_at(now), five, week]
             .into_iter()
             .flatten()
@@ -129,6 +136,9 @@ impl Usage {
             |at: Option<i64>| at.map_or(String::new(), |at| format!(" until {}", time::format(at)));
         if let Some(at) = self.full_until_at(now) {
             return Some(format!("hit its usage limit{}", until(Some(at))));
+        }
+        if self.advisory {
+            return None;
         }
         let five = self.five_hour_at(now).unwrap_or(0.0);
         if five >= NEARLY_FULL {
@@ -153,6 +163,15 @@ impl Usage {
                 until(self.week_resets(now))
             )
         })
+    }
+
+    /// Whether a window reads 100%, so its tool refuses work. Never an advisory figure's.
+    pub fn window_full(&self, now: i64) -> bool {
+        !self.advisory
+            && [self.five_hour_at(now), self.seven_day_at(now)]
+                .into_iter()
+                .flatten()
+                .any(|share| share >= 1.0)
     }
 }
 
@@ -232,6 +251,14 @@ impl Usages {
     /// read under one lock, so a report another job makes meanwhile can't fall between them.
     pub fn record(&self, id: &str, usage: &Usage) -> (Usage, Usage) {
         let (was, now, saved) = self.change(id, false, |kept| {
+            // What's read now, whole: no last reset kept, and no `seven_day_observed_at`, which
+            // says a window is evidence of room (crate::jobs::account_limits).
+            if usage.advisory {
+                kept.advisory = true;
+                kept.seven_day = usage.seven_day;
+                kept.seven_day_resets = usage.seven_day_resets;
+                return;
+            }
             if let Some(used) = usage.five_hour {
                 kept.five_hour = Some(used);
                 kept.five_hour_observed_at = Some(obi_protocol::time::now());
@@ -274,6 +301,23 @@ impl Usages {
         }
         let bytes = serde_json::to_vec_pretty(&*state).map_err(std::io::Error::other)?;
         crate::store::write_private(&self.file, &bytes)
+    }
+
+    /// Forgets an advisory figure its read no longer gives (USAGE-8), and says whether there was
+    /// one. A hold or a lift stays.
+    pub fn forget_advisory(&self, id: &str) -> bool {
+        if !self.get(id).advisory {
+            return false;
+        }
+        let (_, _, saved) = self.change(id, false, |usage| {
+            usage.advisory = false;
+            usage.seven_day = None;
+            usage.seven_day_resets = None;
+        });
+        if let Err(error) = saved {
+            tracing::warn!("account {id}: could not keep that its usage is unknown: {error}");
+        }
+        true
     }
 
     /// Forgets how an account pays: a new sign-in may be another kind of login (an API key where a
@@ -471,6 +515,26 @@ pub fn codex_read(result: &Value) -> Option<Usage> {
         own @ Value::Object(_) => codex(own),
         _ => codex(&result["rateLimits"]),
     }
+}
+
+/// Cursor's `GetCurrentPeriodUsage` answer, with its `GetPlanInfo` answer (null when that failed):
+/// a figure only when `planUsage` says one, as Cursor's own code reads it: its included spend over
+/// a `limit` above 0, else `totalPercentUsed`. The reset is the included usage's (a weekly plan's
+/// week), else the billing cycle's end. A number and a time are all that's taken from either.
+pub fn cursor(current: &Value, plan: &Value) -> Option<Usage> {
+    let used = current.get("planUsage").filter(|used| used.is_object())?;
+    let seven_day = match number(&used["limit"]).filter(|limit| *limit > 0.0) {
+        Some(limit) => share(&used["includedSpend"], limit).unwrap_or(0.0),
+        None => share(&used["totalPercentUsed"], 100.0)?,
+    };
+    let at = |value: &Value| epoch(value).or_else(|| utc(value));
+    Some(Usage {
+        seven_day: Some(seven_day),
+        seven_day_resets: at(&plan["planInfo"]["includedUsageResetsAt"])
+            .or_else(|| at(&current["billingCycleEnd"])),
+        advisory: true,
+        ..Usage::default()
+    })
 }
 
 /// What a job's turns used, summed as the tools reported them (#731). A count no tool reported
@@ -1196,5 +1260,95 @@ mod tests {
         );
         share.add(0, 2.0, Some(19000));
         assert_eq!(share.five_hour, Some(2.0));
+    }
+
+    /// Cursor's figure at any number holds nothing, and says nothing of room to a Resume.
+    #[test]
+    fn usage_9_a_cursor_figure_holds_nothing_whatever_it_reads() {
+        let home = Home::new("cursor-figure");
+        let usages = Usages::open(&home.0);
+        let now = time::now();
+        for used in [0.5, 0.85, 0.96, 1.0] {
+            let (_, kept) = usages.record(
+                "cursor",
+                &Usage {
+                    seven_day: Some(used),
+                    seven_day_resets: Some(now + 86_400),
+                    advisory: true,
+                    ..Usage::default()
+                },
+            );
+            assert_eq!(kept.seven_day_at(now), Some(used));
+            assert!(!kept.reserved(now), "{used}");
+            assert!(!kept.only_reserved(now), "{used}");
+            assert_eq!(kept.held(now), None, "{used}");
+            assert_eq!(kept.free_at(now), None, "{used}");
+            assert!(!kept.window_full(now), "{used}");
+            assert_eq!(kept.full_until, None, "{used}");
+            assert_eq!(kept.seven_day_observed_at, None, "{used}");
+        }
+        // A real refusal still holds it, until its own reset and not the figure's.
+        let refused = Usage {
+            full_until: Some(now + 60),
+            ..usages.get("cursor")
+        };
+        assert!(refused.held(now).is_some());
+        assert_eq!(refused.free_at(now), Some(now + 60));
+        // Another tool's 100% still reads full.
+        let claude = Usage {
+            seven_day: Some(1.0),
+            ..Usage::default()
+        };
+        assert!(claude.window_full(now));
+    }
+
+    /// A read with no figure takes the last one away, and nothing else.
+    #[test]
+    fn usage_8_a_cursor_read_with_no_figure_forgets_the_last() {
+        let home = Home::new("cursor-forget");
+        let usages = Usages::open(&home.0);
+        let now = time::now();
+        assert!(!usages.forget_advisory("cursor"));
+        usages.record(
+            "cursor",
+            &Usage {
+                seven_day: Some(0.4),
+                seven_day_resets: Some(now + 86_400),
+                advisory: true,
+                ..Usage::default()
+            },
+        );
+        usages.lift("cursor", true).unwrap();
+        assert!(usages.forget_advisory("cursor"));
+        let kept = Usages::open(&home.0).get("cursor");
+        assert_eq!((kept.seven_day, kept.seven_day_resets), (None, None));
+        assert!(!kept.advisory);
+        assert!(kept.lifted_until(now).is_some());
+        // Another tool's figures are no read of this kind.
+        usages.record(
+            "claude",
+            &Usage {
+                seven_day: Some(0.4),
+                ..Usage::default()
+            },
+        );
+        assert!(!usages.forget_advisory("claude"));
+        assert_eq!(usages.get("claude").seven_day, Some(0.4));
+    }
+
+    /// A figure without a reset doesn't keep an old one, which would read as 0%.
+    #[test]
+    fn usage_7_a_cursor_read_takes_the_place_of_the_last_whole() {
+        let home = Home::new("cursor-whole");
+        let usages = Usages::open(&home.0);
+        let figure = |used, resets| Usage {
+            seven_day: Some(used),
+            seven_day_resets: resets,
+            advisory: true,
+            ..Usage::default()
+        };
+        usages.record("cursor", &figure(0.4, Some(time::now() - 60)));
+        let (_, kept) = usages.record("cursor", &figure(0.2, None));
+        assert_eq!(kept.seven_day_at(time::now()), Some(0.2));
     }
 }

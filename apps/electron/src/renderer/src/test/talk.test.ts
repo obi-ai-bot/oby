@@ -15,7 +15,7 @@ const wire = (id: string, agent: string, name: string, more: Record<string, unkn
   ({ id, agent, name, signedIn: true, fiveHour: null, sevenDay: null, sevenDayResets: null, running: 0, ...more }) as never;
 
 describe('talking on any agent', () => {
-  it('CONVERSATION-AGENT-12: the pill and the menu show each account’s percentage, and Cursor none', async () => {
+  it('CONVERSATION-AGENT-12: the pill and the menu show each account’s percentage, Cursor’s too, and “No usage” with none', async () => {
     const { accountRow, usageWords, percent, dot, groups } = await load();
     const personal = accountRow(wire('p', 'claude', 'Personal', { fiveHour: 0.2, sevenDay: 0.38 }), now);
     expect([percent(personal), usageWords(personal), dot(personal)]).toEqual([38, '38%', '']);
@@ -27,8 +27,12 @@ describe('talking on any agent', () => {
     expect([usageWords(held), dot(held)]).toEqual(['Full', 'is-over']);
     const heldCursor = accountRow(wire('hc', 'cursor', 'Held', { fullUntil: '2026-11-02T21:00:00Z' }), now);
     expect([usageWords(heldCursor), dot(heldCursor)]).toEqual(['Full', 'is-over']);
-    const cursor = accountRow(wire('u', 'cursor', 'Personal', { fiveHour: 0.5, sevenDay: 0.5 }), now);
-    expect([percent(cursor), usageWords(cursor), dot(cursor)]).toEqual([null, 'No usage', '']);
+    const cursor = accountRow(wire('u', 'cursor', 'Personal', { sevenDay: 0.5 }), now);
+    expect([percent(cursor), usageWords(cursor), dot(cursor)]).toEqual([50, '50%', '']);
+    const fullerCursor = accountRow(wire('uf', 'cursor', 'Fuller', { sevenDay: 0.85 }), now);
+    expect([usageWords(fullerCursor), dot(fullerCursor)]).toEqual(['85%', 'is-high']);
+    const quiet = accountRow(wire('uq', 'cursor', 'Quiet'), now);
+    expect([percent(quiet), usageWords(quiet), dot(quiet)]).toEqual([null, 'No usage', '']);
     // yellow past 80%, red past 90%, of the session or the week, as the message box's gauge
     expect(dot(accountRow(wire('a', 'claude', 'A', { fiveHour: 0.85, sevenDay: 0.1 }), now))).toBe('is-high');
     expect(dot(accountRow(wire('b', 'codex', 'B', { fiveHour: 0.1, sevenDay: 0.95 }), now))).toBe('is-over');

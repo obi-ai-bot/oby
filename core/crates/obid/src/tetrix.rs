@@ -279,7 +279,7 @@ fn resource_fits(resource: &str, mcp: &reqwest::Url) -> bool {
 }
 
 /// The JSON a sign-in server answered, read up to 256 KB; null past that or when it isn't JSON.
-async fn small_json(mut response: reqwest::Response) -> Value {
+pub(crate) async fn small_json(mut response: reqwest::Response) -> Value {
     let mut bytes = Vec::new();
     while let Ok(Some(chunk)) = response.chunk().await {
         bytes.extend_from_slice(&chunk);
