@@ -11,6 +11,23 @@ use serde_json::{Value, json};
 
 use super::*;
 
+/// Whether `peer` is an active member, by the directory as last read: a removed one gets nothing
+/// more from obid, and a directory obid hasn't read yet says no.
+pub(super) fn active_member(state: &State, peer: &str) -> bool {
+    state.directory.members.get(peer).is_some_and(|m| m.active)
+}
+
+/// Whether the owner's own answer to this `obiRequest` item waits on a Confirm: their words, which a
+/// model's mustn't replace.
+fn owner_is_answering(state: &State, item: Option<&str>) -> bool {
+    item.is_some_and(|item| {
+        state
+            .inbox
+            .values()
+            .any(|i| i.done.is_none() && i.confirm.as_ref().is_some_and(|c| c.target == item))
+    })
+}
+
 impl Link {
     // -----------------------------------------------------------------------------------------
     // Following: deliveries
@@ -501,25 +518,23 @@ impl Link {
     /// obid may answer by itself (PEER-16). It shares nothing until their Confirm. A file that doesn't
     /// read says nothing of what they chose, and stays as it is.
     fn offer_to_share(&self) {
-        let item = {
+        let now = time::now();
+        {
             let mut state = self.lock();
             if !state.sharing.to_offer() || !self.sharing.reads() {
                 return;
             }
-            let now = time::now();
             state.sharing.offered = Some(now);
             // Kept under the lock, so an older copy never overwrites a newer one.
             self.save_sharing(&state.sharing);
-            let item = inbox::share_item(now);
-            state.inbox.insert(item.id.clone(), item.clone());
-            item
-        };
-        self.save_item(&item);
+        }
+        self.add_confirm_once(inbox::share_item(now));
     }
 
     /// `POST /v1/obid/sharing/offer`: the same card, from Settings, for an owner who said no or
     /// removed the rule and changed their mind. Only their Confirm makes the rule.
     pub fn offer_again(&self) -> Result<Value, ApiError> {
+        self.sharing_reads()?;
         let now = time::now();
         {
             let mut state = self.lock();
@@ -531,8 +546,10 @@ impl Link {
     }
 
     /// The owner's Confirm (PEER-17): the rule, and the questions waiting on them go by it, as one
-    /// that came now would. One the run can't answer comes back to them.
-    pub(super) fn share_status(self: &Arc<Self>) {
+    /// that came now would. One the run can't answer comes back to them. One they're already answering
+    /// stays theirs, and one from someone who has left the Sphere gets nothing.
+    pub(super) fn share_status(self: &Arc<Self>) -> Result<(), ApiError> {
+        self.sharing_reads()?;
         let now = time::now();
         let (rule, waiting) = {
             let mut state = self.lock();
@@ -561,6 +578,8 @@ impl Link {
                 let owner = exchange.peer_owner.clone().unwrap_or_default();
                 if exchange.state != "inbox"
                     || !rule.covers(&owner, &repos)
+                    || !active_member(&state, &exchange.peer)
+                    || owner_is_answering(&state, exchange.inbox_item.as_deref())
                     || !Link::take_self_answer(&mut state, &owner, now)
                 {
                     continue;
@@ -590,6 +609,39 @@ impl Link {
             tokio::spawn(async move {
                 link.answer_by_itself(cid, rule, repos, referenced).await;
             });
+        }
+        Ok(())
+    }
+
+    /// Leaving a Sphere (PEER-19): a rule obid made, by a first join or by the owner's yes, names no
+    /// Sphere, and what they agreed to was this one's. It goes, with the card and that they were
+    /// asked, so the next Sphere asks again. Rules they wrote themselves stay.
+    pub(super) fn forget_the_offer(&self) {
+        let closed: Vec<Item> = {
+            let mut state = self.lock();
+            if self.sharing.reads() {
+                state.sharing.rules.retain(|r| !r.starter);
+                state.sharing.offered = None;
+                self.save_sharing(&state.sharing);
+            }
+            let now = time::now();
+            state
+                .inbox
+                .values_mut()
+                .filter(|i| {
+                    i.done.is_none()
+                        && i.confirm
+                            .as_ref()
+                            .is_some_and(|c| c.action == inbox::action::SHARE_STATUS)
+                })
+                .map(|i| {
+                    i.done = Some(now);
+                    i.clone()
+                })
+                .collect()
+        };
+        for item in closed {
+            self.save_item(&item);
         }
     }
 

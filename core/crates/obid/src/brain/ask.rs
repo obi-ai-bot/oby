@@ -439,6 +439,13 @@ fn ask_the_owner(shared: &Shared, exchange: &Exchange, owner: &str) {
             "over",
             format!("I answered this question from {oby} by myself:\n\n{quoted}"),
         ),
+        // The same, and what obid wrote didn't pass the secret scan: it said no, with no words.
+        "declined" => (
+            "over",
+            format!(
+                "I said no to this question from {oby}: what I wrote back didn't pass the secret scan.\n\n{quoted}"
+            ),
+        ),
         _ => (
             "owner",
             format!(

@@ -1743,6 +1743,7 @@ impl Link {
         }
         *self.chain.lock().unwrap_or_else(|e| e.into_inner()) = ChainKept::default();
         self.pins.forget_all();
+        self.forget_the_offer();
         // Its file went with `home/sphere`, and what waits was for this Sphere.
         {
             let _sending = self.room_sending.lock().await;
@@ -2508,8 +2509,20 @@ impl Link {
         self.lock().sharing.to_json()
     }
 
+    /// Refused while what's kept doesn't read: writing would lose whatever rules it holds.
+    pub(super) fn sharing_reads(&self) -> Result<(), ApiError> {
+        if self.sharing.reads() {
+            return Ok(());
+        }
+        Err(api(
+            StatusCode::CONFLICT,
+            "home/sharing.json doesn't read, so nothing is shared and nothing was changed: fix or remove it.",
+        ))
+    }
+
     /// `POST /v1/obid/sharing/rules`: a new rule, kept after the others.
     pub fn add_rule(&self, body: &[u8]) -> Result<Value, ApiError> {
+        self.sharing_reads()?;
         let value: Value = serde_json::from_slice(body)
             .map_err(|e| api(StatusCode::BAD_REQUEST, format!("The body isn't JSON: {e}")))?;
         let rule = sharing::rule_from(&value, time::now())
@@ -2549,6 +2562,7 @@ impl Link {
             .map_err(|e| api(StatusCode::BAD_REQUEST, format!("The body isn't JSON: {e}")))?;
         let limits = sharing::limits_from(&value)
             .map_err(|why| api(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+        self.sharing_reads()?;
         let mut state = self.lock();
         state.sharing.limits = limits;
         self.save_sharing(&state.sharing);

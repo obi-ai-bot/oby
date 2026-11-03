@@ -135,11 +135,13 @@ impl Link {
                 return;
             };
             let owner = e.peer_owner.clone().unwrap_or_default();
+            // A member removed while it waited gets nothing: it goes to the owner.
+            let member = super::follower::active_member(&state, &e.peer);
             state
                 .sharing
                 .rules
                 .iter()
-                .find(|r| r.id == rule.id && r.covers(&owner, &repos))
+                .find(|r| member && r.id == rule.id && r.covers(&owner, &repos))
                 .cloned()
                 .map(|rule| {
                     let shared: Vec<Exchange> = state
@@ -249,11 +251,12 @@ impl Link {
                 return;
             }
             // The rule may have gone while the model ran: then nothing it wrote goes.
-            let still = state
-                .sharing
-                .rules
-                .iter()
-                .any(|r| r.id == rule.id && r.covers(&owner, &repos));
+            let still = super::follower::active_member(&state, &exchange.peer)
+                && state
+                    .sharing
+                    .rules
+                    .iter()
+                    .any(|r| r.id == rule.id && r.covers(&owner, &repos));
             let reply = match &failure {
                 _ if !still => None,
                 None => self.reply_locked(&state, &exchange, "answer", body.clone()),

@@ -106,7 +106,7 @@ fn answer_item(obid: &Obid, item: &Value, body: Value) -> Answer {
 
 /// Adds a sharing rule: its id.
 fn share(obid: &Obid, rule: Value) -> String {
-    let made = post(obid, "/v1/obid/sharing/rules", &rule);
+    let made = call_signed(obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
     assert_eq!(made.status, 201, "{}", made.text);
     made.body["id"].as_str().unwrap().to_owned()
 }
@@ -979,8 +979,8 @@ async fn peer_17_no_silent_share() {
     });
 }
 
-/// A rule the owner removed stays removed: no start, no question and no join brings it or the offer
-/// back. Only their own click does, from Settings.
+/// A rule the owner removed stays removed: no start and no question brings it or the offer back. Only
+/// their own click does, from Settings.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_18_remove_stays_removed() {
     let folder = Folder::new("peer-18");
@@ -1008,5 +1008,171 @@ async fn peer_18_remove_stays_removed() {
         let yes = confirm(&obid, opened.body["id"].as_str().unwrap());
         assert_eq!(yes.status, 200, "{}", yes.text);
         assert_eq!(rules(&obid).len(), 1, "their own click brings it back");
+    });
+}
+
+/// A file that doesn't read shares nothing and stays as it is: a question brings no card, and nothing
+/// the owner clicks writes over it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_16_a_file_that_doesnt_read_gets_no_card_and_isnt_replaced() {
+    let folder = Folder::new("peer-16-bad");
+    let (_sphere, mut obid, ernesto) = old_member(&folder).await;
+    let file = obid.home.join("sharing.json");
+    assert!(obid.stop().success());
+    std::fs::write(&file, "{\"rules\": [").unwrap();
+    let obid = restarted(&folder);
+    waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    tokio::task::block_in_place(|| {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert!(
+            offers(&obid).is_empty(),
+            "no card, which would write over it"
+        );
+        let share = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(share.status, 409, "{}", share.text);
+        let rule = json!({"for": "*", "repos": "*", "tells": ["jobStatus"]});
+        let made = call_signed(&obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
+        assert_eq!(made.status, 409, "{}", made.text);
+    });
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"rules\": [");
+}
+
+/// A card made while the file read, and a Confirm after it stopped: refused, with the file as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_17_a_yes_doesnt_replace_a_file_that_stopped_reading() {
+    let folder = Folder::new("peer-17-bad");
+    let (_sphere, obid, ernesto) = old_member(&folder).await;
+    waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    let file = obid.home.join("sharing.json");
+    tokio::task::block_in_place(|| {
+        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        std::fs::write(&file, "not json").unwrap();
+        let yes = confirm(&obid, card["id"].as_str().unwrap());
+        assert_eq!(yes.status, 409, "{}", yes.text);
+    });
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
+}
+
+/// A member removed while their question waited gets nothing from the owner's yes: it stays with the
+/// owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_17_a_removed_member_gets_nothing_from_a_yes() {
+    let folder = Folder::new("peer-17-gone");
+    let (sphere, obid, ernesto) = old_member(&folder).await;
+    let cid = waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    for member in &mut sphere.lock().members {
+        if member["obi"] == "obi-ernesto" {
+            member["status"] = json!("revoked");
+        }
+    }
+    tokio::task::block_in_place(|| {
+        let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
+        assert_eq!(members.status, 200, "{}", members.text);
+        assert_eq!(members.body, json!([]), "the directory says they left");
+        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        let yes = confirm(&obid, card["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let e = exchange(&obid, &cid);
+        assert_eq!(e["state"], "inbox", "still the owner's");
+        let sent = e["messages"].as_array().unwrap().iter();
+        let more: Vec<_> = sent
+            .filter(|m| m["direction"] == "sent")
+            .map(|m| m["envelope"]["type"].clone())
+            .collect();
+        assert_eq!(
+            more,
+            vec![json!("status")],
+            "and no run was taken on for them"
+        );
+    });
+}
+
+/// Leaving a Sphere: the rule obid made and the open card go, and the next Sphere asks again rather
+/// than sharing with no click, a first join's seed included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_19_leaving_takes_the_offers_rule_and_the_next_sphere_asks_again() {
+    let folder = Folder::new("peer-19");
+    let (_sphere, obid, _ernesto) = setup_with_starter(&folder).await;
+    tokio::task::block_in_place(|| {
+        assert_eq!(rules(&obid)[0]["starter"], true, "a first join's seed");
+        let opened = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(opened.status, 201, "{}", opened.text);
+        let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
+        assert_eq!(left.status, 200, "{}", left.text);
+        assert!(rules(&obid).is_empty(), "it was for that Sphere");
+        assert!(offers(&obid).is_empty(), "and so was the card");
+    });
+    let next = FakeSphere::start().await;
+    let joined = tokio::task::block_in_place(|| {
+        join_a_accepting(&obid, &next, &Owner::new("wellington"), &["question"])
+    });
+    assert_eq!(joined["state"], "joined");
+    let ernesto = TestObi::join_accepting(&next, "obi-ernesto", "ernesto", &["question"]).await;
+    tokio::task::block_in_place(|| {
+        assert!(
+            rules(&obid).is_empty(),
+            "no seed: nothing shared with no click"
+        );
+        call(&obid, "GET", "/v1/obid/sphere/members", None);
+    });
+    waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    tokio::task::block_in_place(|| {
+        within(20, "the card", || offers(&obid).into_iter().next());
+        assert!(rules(&obid).is_empty());
+    });
+}
+
+/// Leaving keeps the rules the owner wrote themselves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_19_leaving_keeps_the_rules_the_owner_wrote() {
+    let folder = Folder::new("peer-19-own");
+    let (_sphere, obid, _ernesto) = setup_with_starter(&folder).await;
+    tokio::task::block_in_place(|| {
+        share(
+            &obid,
+            json!({"for": ["ernesto"], "repos": "*", "tells": ["sharedResults"]}),
+        );
+        let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
+        assert_eq!(left.status, 200, "{}", left.text);
+        let kept = rules(&obid);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0]["tells"], json!(["sharedResults"]));
+    });
+}
+
+/// A scan that stops what the Oby wrote, on a question that waited on the owner: they're told, once,
+/// rather than left with "only you can answer".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_17_a_waiting_question_the_scan_stops_is_said_to_the_owner() {
+    let folder = Folder::new("peer-17-scan");
+    let (_sphere, obid, ernesto) = old_member(&folder).await;
+    waiting_question(&obid, &ernesto, "leak-case: what is the key?").await;
+    let said_in = |obid: &Obid, words: &str| {
+        let list = get(obid, "/v1/conversations");
+        let asks = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["title"] == "Questions from other Obys")?["id"]
+            .as_str()?
+            .to_owned();
+        let thread = get(obid, &format!("/v1/conversation?id={asks}"));
+        thread
+            .as_array()?
+            .iter()
+            .find(|t| t["text"].as_str().is_some_and(|x| x.contains(words)))
+            .map(|_| ())
+    };
+    tokio::task::block_in_place(|| {
+        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        within(20, "the owner told", || {
+            said_in(&obid, "only you can answer")
+        });
+        let yes = confirm(&obid, card["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        within(60, "the no said", || {
+            said_in(&obid, "didn't pass the secret scan")
+        });
     });
 }

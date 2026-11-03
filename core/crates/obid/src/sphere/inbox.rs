@@ -186,11 +186,12 @@ pub fn confirm_item(
 /// Oby's one ask whether it may answer members' questions by itself (PEER-16): obid's own fixed words
 /// and nothing a member chose, so nothing another Oby wrote shapes what the owner's device signs.
 pub fn share_item(now: i64) -> Item {
-    let title = "Can I tell people in your Obysphere how your tasks are going?".to_owned();
+    let title =
+        "Can I tell people in your Obysphere how your tasks are going, in every repository?"
+            .to_owned();
     // Short enough that Home's card, which shows three lines, shows all of it.
-    let text = "I'd answer when someone asks, with each task's title, repository, stage, state and \
-                pull request, in every repository. Never logs, diffs, prompts or files. Until then, \
-                every question waits for you."
+    let text = "I'd answer whoever asks, starting with the questions waiting now, with each task's \
+                title, repository, stage, state and pull request. Never logs, diffs, prompts or files."
         .to_owned();
     let mut item = confirm_item(
         "",
@@ -204,7 +205,7 @@ pub fn share_item(now: i64) -> Item {
         now,
     );
     item.details = Some(vec![
-        "I answer members' questions about your tasks by myself, until you remove it in the Obysphere's settings.".into(),
+        "I answer members' questions about your tasks by myself, the ones waiting now first, until you remove it in the Obysphere's settings.".into(),
         "Every question keeps waiting for you, and I don't ask again. You can still share from the Obysphere's settings.".into(),
     ]);
     item

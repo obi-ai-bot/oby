@@ -133,7 +133,7 @@ fn shown(obid: &Obid, text: &str) -> Value {
 
 /// Adds a sharing rule.
 fn share(obid: &Obid, rule: Value) -> String {
-    let made = call(obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
+    let made = call_signed(obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
     assert_eq!(made.status, 201, "{}", made.text);
     made.body["id"].as_str().unwrap().to_owned()
 }

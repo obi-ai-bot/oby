@@ -34,7 +34,20 @@ export function takeInput(at = Date.now()): boolean {
   return inputs.shift() !== undefined;
 }
 
-// A Confirm that lets this Oby answer other people by itself (PEER-17) takes a click main saw
-// itself, so a script in the page can't grant it. Other Confirms sign on the page's say, as they did.
-export const mayConfirm = (item: { confirm?: { action?: string } }, at = Date.now()) =>
-  item.confirm?.action !== 'share_status' || takeInput(at);
+// Space on a focused button, which clicks it, is the owner's too, but only for the Confirm below:
+// a Space while typing signs no words.
+let spaces: number[] = [];
+export function space(at = Date.now()) {
+  spaces = [...spaces.filter((t) => at - t < WITHIN_MS), at];
+}
+const takeSpace = (at: number) => {
+  spaces = spaces.filter((t) => at - t < WITHIN_MS);
+  return spaces.shift() !== undefined;
+};
+
+// A Confirm that lets this Oby answer other people by itself (PEER-17) takes the owner's own press of
+// that button: the preload saw a button labelled Confirm held by a real event (`clicked`), and main
+// saw a real click or key itself. Other Confirms sign on the page's say, as they did. The ceiling is
+// the words' (docs/contracts/signed-words.md): a script that took the whole page can pass the preload.
+export const mayConfirm = (item: { confirm?: { action?: string } }, clicked: boolean, at = Date.now()) =>
+  item.confirm?.action !== 'share_status' || (clicked && (takeInput(at) || takeSpace(at)));

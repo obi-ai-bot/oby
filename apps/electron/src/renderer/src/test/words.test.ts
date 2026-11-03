@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { ANOTHER_ROUND, TRY_AGAIN, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
-import { input, mayConfirm, picked, takeInput, wordsHeader } from '../../../main/words';
+import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
 describe('signed words', () => {
@@ -142,22 +142,32 @@ describe('signed words', () => {
   });
 });
 
-describe('sharing takes the owner\'s own click (docs/contracts/peer-thread.md)', () => {
+describe('sharing takes the owner\'s own press of Confirm (docs/contracts/signed-words.md)', () => {
   const share = { confirm: { action: 'share_status' } };
-  it('peer_17_no_silent_share: a Confirm that shares needs a click main saw, one each', () => {
+  const drain = (at: number) => { while (takeInput(at)) { /* inputs from other tests */ } while (mayConfirm(share, true, at)) { /* and spaces */ } };
+  it('peer_17_no_silent_share: it needs a press the preload held and an input main saw, one each', () => {
     const at = 5_000_000;
-    while (takeInput(at)) { /* clicks from other tests */ }
-    expect(mayConfirm(share, at)).toBe(false);
+    drain(at);
+    expect(mayConfirm(share, true, at)).toBe(false);
     input(at);
-    expect(mayConfirm(share, at + 10)).toBe(true);
-    expect(mayConfirm(share, at + 20)).toBe(false);
+    expect(mayConfirm(share, false, at + 5)).toBe(false);
+    expect(mayConfirm(share, true, at + 10)).toBe(true);
+    expect(mayConfirm(share, true, at + 20)).toBe(false);
     input(at);
-    expect(mayConfirm(share, at + WITHIN_MS + 1)).toBe(false);
+    expect(mayConfirm(share, true, at + WITHIN_MS + 1)).toBe(false);
   });
-  it('leaves other Confirms and the click for them alone', () => {
+  it('takes Space on the button, and a Space signs no words', () => {
+    const at = 5_100_000;
+    drain(at);
+    space(at);
+    expect(takeInput(at + 1)).toBe(false);
+    expect(mayConfirm(share, true, at + 2)).toBe(true);
+    expect(mayConfirm(share, true, at + 3)).toBe(false);
+  });
+  it('leaves other Confirms and the input for them alone', () => {
     const at = 6_000_000;
     input(at);
-    expect(mayConfirm({ confirm: { action: 'delete_job' } }, at)).toBe(true);
+    expect(mayConfirm({ confirm: { action: 'delete_job' } }, false, at)).toBe(true);
     expect(takeInput(at)).toBe(true);
   });
 });

@@ -529,8 +529,12 @@ async fn peer_3_the_same_sphere_id_on_another_server_starts_empty() {
     other.send(&question).await;
     let thread = tokio::task::block_in_place(|| thread_with(&obid, "sam", "question"));
     let list = posts(&thread);
-    assert_eq!(list.len(), 1, "{list:?}");
-    assert_eq!(list[0]["text"], "The second sam's words");
+    // Leaving took the rule with it (PEER-19), so a `waiting_on_owner` may follow the question.
+    assert_eq!(list[0]["text"], "The second sam's words", "{list:?}");
+    assert!(
+        list.iter().all(|p| p["text"] != "The first sam's words"),
+        "{list:?}"
+    );
 }
 
 /// The owner's own words from a member's thread.

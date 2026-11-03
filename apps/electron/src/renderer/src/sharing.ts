@@ -4,12 +4,14 @@ const TELLS: Record<string, { label: string; what: string }> = {
   jobStatus: { label: 'How your tasks are going', what: 'Each task’s title, repository, stage, state and pull request' },
   sharedResults: { label: 'What it already sent them', what: 'The results of reviews they asked for' },
 };
-export function whatItTells(rule: SharingRule) {
+// members: the others in the Obysphere, since the room goes to all of them or not at all
+export function whatItTells(rule: SharingRule, members: string[]) {
   const known = rule.tells.map((t) => TELLS[t]).filter(Boolean);
   const who = rule.for === '*' ? 'everyone in this Obysphere who asks' : rule.for.join(', ');
   const where = rule.repos === '*' ? 'every repository' : rule.repos.join(', ');
-  // only a rule the owner made themselves opens the room (docs/contracts/rooms.md)
-  const room = !rule.starter && rule.tells.includes('jobStatus') ? ' It can post them in the room too.' : '';
+  // only a rule the owner made themselves, covering everyone, opens the room (docs/contracts/rooms.md)
+  const everyone = rule.for === '*' || (members.length > 0 && members.every((m) => rule.for.includes(m)));
+  const room = !rule.starter && everyone && rule.tells.includes('jobStatus') ? ' It can post them in the room too.' : '';
   const told = rule.uses > 0 ? ` Answered ${rule.uses === 1 ? 'once' : `${rule.uses} times`}.` : '';
   return {
     label: known.map((k) => k.label).join(', and ') || 'Something this version doesn’t know',
