@@ -1293,7 +1293,10 @@ fn codex_asks_the_owner_only_what_its_mode_keeps() {
         let job = call(&obid, "GET", &format!("/v1/jobs/{network}"), None).body;
         job["permission"].is_object().then_some(job)
     });
-    assert_eq!(job["permission"]["title"], "Run curl");
+    assert_eq!(
+        job["permission"]["title"],
+        "Run curl -s https://example.com"
+    );
     let answered = call(
         &obid,
         "POST",

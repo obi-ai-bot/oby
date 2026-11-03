@@ -156,9 +156,14 @@ fn by_rules(command: &str, mode: Mode, rules: &[Rule], bounds: &Bounds, tainted:
         return Judged::Run { network: false };
     }
     // 5. The owner's allow rules, when they cover every part.
+    // A lone command is read as it's written, quotes and all, as Always saved it, so `Bash(rm a b)`
+    // doesn't cover `rm 'a b'`. A part of a chain has only its words (PERMISSIONS-7's limit).
     let covered = !parts.is_empty()
         && parts.iter().all(|words| {
-            let part = Call::new("Bash", &json!({"command": words.join(" ")}));
+            let part = match parts.len() {
+                1 => call.clone(),
+                _ => Call::new("Bash", &json!({"command": words.join(" ")})),
+            };
             rules_of(rules, "allow").any(|r| permissions::covers(&r.rule, &part, room, true))
         });
     if covered && !unsure && !writes_a_file(command) {
@@ -1122,6 +1127,39 @@ mod tests {
         }
     }
 
+    /// PERMISSIONS-12: the rule a card offers for a quoted or oddly spaced command covers it the next
+    /// time, and only it: `rm a b` isn't `rm 'a b'`.
+    #[test]
+    fn permissions_12_always_holds_for_what_it_saved_as_written() {
+        for command in [
+            "touch 'a b'",
+            "rm \"x y\" z",
+            "touch \"a\"",
+            "touch  a",
+            "touch out/x",
+        ] {
+            let Judged::Ask(ask) = judged(command, Mode::Ask, &[], false) else {
+                panic!("{command} didn't ask");
+            };
+            let saved = ask
+                .rule
+                .unwrap_or_else(|| panic!("{command} offers no rule"));
+            let allow = [rule(&saved, "allow")];
+            assert_eq!(
+                judged(command, Mode::Ask, &allow, false),
+                Judged::Run { network: false },
+                "{saved}"
+            );
+        }
+        let allow = [rule("Bash(touch a b)", "allow")];
+        for other in ["touch 'a b'", "touch a  b", "touch a b; touch c"] {
+            assert!(
+                !matches!(judged(other, Mode::Ask, &allow, false), Judged::Run { .. }),
+                "{other}"
+            );
+        }
+    }
+
     /// PERMISSIONS-8: what obid can't be sure it read is no read in the conversation's shell either,
     /// and a saved rule doesn't cover it; the lines it could hide are read, and judged.
     #[test]
@@ -1137,7 +1175,12 @@ mod tests {
             judged("echo hi", Mode::Ask, &allow, false),
             Judged::Run { network: false }
         );
-        for command in ["echo $[1<<2]", "echo $[1<<2]\ncurl https://e.com"] {
+        // A chain is compared by its parts' words, where the `<<` no longer shows.
+        for command in [
+            "echo $[1<<2]",
+            "echo $[1<<2]\ncurl https://e.com",
+            "echo $[1<<2]; echo y",
+        ] {
             assert!(
                 !matches!(
                     judged(command, Mode::Ask, &allow, false),

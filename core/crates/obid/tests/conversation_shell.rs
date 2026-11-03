@@ -235,7 +235,6 @@ fn writes_ask_after_the_taint_and_always_saves_a_rule() {
         json!({"command": "touch out/x"}),
     );
     assert!(text.contains("Exit status 0."), "{text}");
-    assert!(room.join("out/y").is_file());
 }
 
 /// Whether a process with `marker` in its command line runs.

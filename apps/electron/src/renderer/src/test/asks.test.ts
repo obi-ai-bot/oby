@@ -1,4 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { InboxItem, Job } from '../obid';
 
 // live.ts reads the page's window, address and storage as it loads; obid answers through the
@@ -35,6 +37,14 @@ describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
     s.inbox = [item('permission', { text: 'Run rm -rf build', options: ['Allow', 'Always allow', 'Deny'] })];
     expect(live.askOf(s, s.jobs.j1)?.always).toBe("Yes, and don't ask again for rm -rf build in o/r");
     s.inbox = [];
+  });
+
+  it('permissions_12_always_allow_says_on_hover_what_it_saves', async () => {
+    const { AskBlock } = await import('../TaskCard');
+    const options = ['Allow', 'Always allow', 'Deny'];
+    const html = renderToStaticMarkup(createElement(AskBlock, { task: { id: 'j1', job: { ask: { kind: 'permission', headline: 'Run rm -rf build', text: '', options, always: 'Saves rm -rf build for o/r' } } } }));
+    expect(html).toMatch(/title="Saves rm -rf build for o\/r"[^>]*>Always allow</);
+    expect(html.match(/title="/g)).toHaveLength(1);
   });
 
   it('bypass_5_leaves_a_permission_a_permission', () => {

@@ -3755,7 +3755,7 @@ impl Jobs {
         }
         if let Some(Permission { id: permission, .. }) = waiting {
             let denied = self
-                .answer_permission(id, &permission, Decision::Deny, Some(text))
+                .answer_permission_from(id, &permission, Decision::Deny, Some(text), source)
                 .map_err(|e| match e {
                     PermissionRefused::NoJob => Refused("There's no such job.".into()),
                     PermissionRefused::NotWaiting(why) | PermissionRefused::Refused(why) => {
@@ -4897,6 +4897,19 @@ impl Jobs {
         decision: Decision,
         message: Option<&str>,
     ) -> Result<Job, PermissionRefused> {
+        self.answer_permission_from(id, permission, decision, message, Source::Owner)
+    }
+
+    /// [`Jobs::answer_permission`], with whose words `message` is: a no in anyone's but the owner's
+    /// is never told to the agent as theirs (PERMISSIONS-11).
+    pub fn answer_permission_from(
+        self: &Arc<Self>,
+        id: &str,
+        permission: &str,
+        decision: Decision,
+        message: Option<&str>,
+        source: Source,
+    ) -> Result<Job, PermissionRefused> {
         let job = self.get(id).ok_or(PermissionRefused::NoJob)?;
         let words = message.map(str::trim).filter(|w| !w.is_empty());
         if words.is_some_and(|w| w.chars().count() > 2000) {
@@ -4904,7 +4917,7 @@ impl Jobs {
                 "Tell the agent something of up to 2,000 characters.".into(),
             ));
         }
-        if let Some(answered) = self.answer_parked(id, permission, decision, words) {
+        if let Some(answered) = self.answer_parked(id, permission, decision, words, source) {
             return answered;
         }
         let asked = self.lock().asks.get(id).is_some_and(|asks| {
@@ -4959,7 +4972,7 @@ impl Jobs {
             asks.pop_front().expect("one waits")
         };
         let plan = ask.permission.is_plan();
-        let (said, answer) = owners_answer(&ask.permission, decision, words);
+        let (said, answer) = owners_answer(&ask.permission, decision, words, source);
         // An approved plan goes on in the owner's default mode ([`Jobs::approved_mode`]), before
         // the agent's next call is judged.
         if plan && matches!(answer, Answer::Allow) {
@@ -5011,6 +5024,7 @@ impl Jobs {
         permission: &str,
         decision: Decision,
         words: Option<&str>,
+        source: Source,
     ) -> Option<Result<Job, PermissionRefused>> {
         let approved = self.approved_mode();
         let (card, said) = {
@@ -5026,7 +5040,7 @@ impl Jobs {
                     "This one has no rule to save: allow it once instead.".into(),
                 )));
             }
-            let (said, answer) = owners_answer(&card, decision, words);
+            let (said, answer) = owners_answer(&card, decision, words, source);
             job.heard.push(permissions::after_park(parked, &answer));
             // Kept until its run ends: that run must pick its session up (`acp::Options`), and
             // an allow lets the same call through once.
@@ -13301,12 +13315,13 @@ pub fn asks_through_oby(job: &Job) -> bool {
     job.obi.is_none() && matches!(Tool::from_id(&job.agent), Some(Tool::Codex | Tool::Cursor))
 }
 
-/// The owner's `decision` on `permission`, with their `words`: what its inbox item says they
+/// The owner's `decision` on `permission`, with `words` from `source`: what its inbox item says they
 /// answered, and what the agent hears.
 fn owners_answer(
     permission: &Permission,
     decision: Decision,
     words: Option<&str>,
+    source: Source,
 ) -> (String, Answer) {
     let plan = permission.is_plan();
     let said = match decision {
@@ -13323,7 +13338,10 @@ fn owners_answer(
         Decision::Deny if permission.is_question() => {
             Answer::Deny(words.unwrap_or(permissions::QUESTION_DECLINED).to_owned())
         }
-        Decision::Deny => Answer::Deny(permissions::said_no(words)),
+        Decision::Deny => Answer::Deny(match words {
+            Some(words) if !source.direct() => permissions::oby_said_no(words),
+            words => permissions::said_no(words),
+        }),
         _ => Answer::Allow,
     };
     (said, answer)
@@ -19162,6 +19180,61 @@ mod tests {
             panic!("the agent heard no answer");
         };
         assert_eq!(updated["answers"], json!({"Which store?": "SQLite"}));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A no in words reaches the agent as the owner's only when it is: a turn that read something
+    /// untrusted and an event's words are quoted as Oby's. Live and parked calls go through the same
+    /// answer.
+    #[tokio::test]
+    async fn permissions_11_words_that_arent_the_owners_never_speak_for_them() {
+        let root = std::env::temp_dir().join(format!("obid-no-words-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.mode = Some("ask".into());
+        jobs.lock().jobs.insert("j".into(), job);
+        let worktree = root.join("worktree");
+        let input = json!({"command": "make lint"});
+        let words = "use scripts/x.sh instead";
+        for (source, owners) in [
+            (Source::Untrusted, false),
+            (Source::Event, false),
+            (Source::Api, true),
+            (Source::Owner, true),
+            (Source::Confirmed, true),
+        ] {
+            let Ruling::Ask(answered) = jobs.rule_on("j", "Bash", &input, &worktree) else {
+                panic!("nothing asked");
+            };
+            assert!(jobs.relay("j", words, source, None).unwrap().is_ok());
+            let Answer::Deny(heard) = answered.await.unwrap() else {
+                panic!("the agent heard no refusal");
+            };
+            assert_eq!(heard.contains("The owner said no"), owners, "{heard}");
+            assert_eq!(heard.contains("Go on as they say"), owners, "{heard}");
+            assert_eq!(heard.contains("not the owner's order"), !owners, "{heard}");
+            assert!(heard.contains(words), "{heard}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

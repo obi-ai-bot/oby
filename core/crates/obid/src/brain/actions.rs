@@ -1475,10 +1475,13 @@ fn answer_permission(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> O
     {
         shared.jobs.mark_foreign(id, why);
     }
-    match shared
-        .jobs
-        .answer_permission(id, &permission.id, decision.to_permissions(), message)
-    {
+    match shared.jobs.answer_permission_from(
+        id,
+        &permission.id,
+        decision.to_permissions(),
+        message,
+        Source::Untrusted,
+    ) {
         Ok(_) => Outcome::Done(match decision {
             super::plan::Decision::Allow => format!("Allowed it for {name}."),
             super::plan::Decision::Always => format!(
