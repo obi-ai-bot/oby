@@ -1041,6 +1041,8 @@ mod tests {
             (Method::POST, "/v1/agent/mcp/abc"),
             (Method::POST, "/v1/agent/chatgpt/abc/responses"),
             (Method::GET, "/v1/agent/chatgpt/abc/models"),
+            (Method::GET, "/v1/settings/chatgpt"),
+            (Method::PUT, "/v1/settings/chatgpt"),
             (Method::GET, "/v1/obid/plugins"),
             (Method::GET, "/app/"),
         ] {

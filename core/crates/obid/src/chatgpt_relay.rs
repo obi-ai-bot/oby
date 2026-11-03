@@ -138,8 +138,35 @@ pub fn codex_settings(base: &str) -> Vec<std::ffi::OsString> {
 
 pub fn router() -> Router<Arc<Shared>> {
     Router::new()
+        .route("/v1/settings/chatgpt", get(welcome).put(welcomed))
         .route("/v1/agent/chatgpt/{run}/responses", post(responses))
         .route("/v1/agent/chatgpt/{run}/models", get(models))
+}
+
+/// `GET /v1/settings/chatgpt`: whether OpenAI's welcome for a first sign-in was shown. obid keeps
+/// it, so emptied browser storage doesn't show it again. Off the gateway, like signing in.
+async fn welcome(State(shared): State<Arc<Shared>>) -> Json<Value> {
+    Json(json!({"welcomed": crate::settings::load(&shared.config.home).chatgpt_welcomed}))
+}
+
+/// `PUT /v1/settings/chatgpt` with `{"welcomed": true}`.
+async fn welcomed(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Json<Value>, ApiError> {
+    let said: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let Some(welcomed) = said["welcomed"].as_bool() else {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "The body is {\"welcomed\": true | false}.",
+        ));
+    };
+    crate::settings::update(&shared.config.home, |s| s.chatgpt_welcomed = welcomed).map_err(
+        |e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("obid can't keep that: {e}"),
+            )
+        },
+    )?;
+    Ok(Json(json!({"welcomed": welcomed})))
 }
 
 /// The `{run}` of one of the relay's routes.
@@ -310,6 +337,10 @@ async fn relay(
                 Err(refused) => return token_refused(shared, run, &refused).await,
             }
         }
+        // The model list isn't the work: a refusal of it stops nothing.
+        if method == Method::GET {
+            return (status, said.to_string()).into_response();
+        }
         let refusal = refusal_of(status.as_u16(), &said, request_id.as_deref());
         tracing::warn!(
             "run {run}: ChatGPT answered {status} {}",
@@ -474,7 +505,16 @@ fn refusal_of(status: u16, said: &Value, request: Option<&str>) -> Refusal {
 /// one whole, and a stream that fails after it began is noticed. Its answer's `response.failed`
 /// goes on to Codex; what Codex tries after it stays here.
 fn streamed(me: Arc<ChatGpt>, run: String, response: reqwest::Response) -> Response {
-    let kind = response.headers().get(header::CONTENT_TYPE).cloned();
+    // What Codex reads off a direct answer (the model served, its limits' headers); never a cookie.
+    let passed: Vec<_> = response
+        .headers()
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.as_str();
+            name == "content-type" || name.starts_with("x-") || name.starts_with("openai-")
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     let request = response
         .headers()
         .get("x-request-id")
@@ -529,9 +569,7 @@ fn streamed(me: Arc<ChatGpt>, run: String, response: reqwest::Response) -> Respo
         },
     );
     let mut answer = Body::from_stream(frames).into_response();
-    if let Some(kind) = kind {
-        answer.headers_mut().insert(header::CONTENT_TYPE, kind);
-    }
+    answer.headers_mut().extend(passed);
     answer
 }
 

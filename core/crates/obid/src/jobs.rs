@@ -10264,7 +10264,7 @@ impl Jobs {
                         // Else when the account's own usage says it's full until (#745). OpenAI's
                         // limit names no time, and an hour obid inferred never reaches the card.
                         .or_else(|| limited.then(|| usage.full_until_at(now)).flatten())
-                        .filter(|_| refusal.is_none());
+                        .filter(|_| crate::chatgpt::marker_of(&account).is_none());
                     // The account is full whatever the tool said, so nothing else is routed there
                     // until it resets; and while another of the tool has room, the job goes on there.
                     if limited {

@@ -940,46 +940,43 @@ fn chatgpt_13_a_usage_limit_is_the_question_with_no_reset_time() {
     let options = decision["options"].as_array().unwrap();
     assert!(options.iter().any(|o| o["kind"] == "resume"), "{decision}");
 
-    // The hold obid inferred stays obid's: a job after it isn't told it as a time either.
+    // The hold obid inferred stays obid's: the row says it's held, and no card says when.
     let held = account(&world.obid, &id).unwrap();
     assert!(!held["fullUntil"].is_null(), "{held}");
+
+    // After the stream began, on a second account: the same, and Codex's retries stay here.
+    let second = new_account(&world.obid);
+    signed_in(&world, &second);
     world.openai.with(|s| {
         s.responses.push_back(Reply::Sse(failed(
             "subscription_sharing_usage_limit_exceeded",
             "Over.",
         )))
     });
-    let posted = call(
-        &world.obid,
-        "POST",
-        "/v1/jobs",
-        Some(
-            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "check": "true",
-            "agent": "codex", "account": id, "task": "RELAY", "startNow": true}}),
-        ),
+    let before = posts(&world);
+    let stopped = ended(&world, &job(&world, &second, "RELAY"));
+    assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    assert!(
+        stopped["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Usage limit reached"),
+        "{stopped}"
     );
-    if posted.status == 201 {
-        let second = posted.body["id"].as_str().unwrap();
-        let before = posts(&world);
-        let stopped = within(40, "the second job stopped or waits", || {
-            let j = call(&world.obid, "GET", &format!("/v1/jobs/{second}"), None).body;
-            (j["status"] == "interrupted" || j["status"] == "queued").then_some(j)
-        });
-        if stopped["status"] == "interrupted" {
-            assert_eq!(
-                posts(&world),
-                before + 1,
-                "a stream's failure stops Codex's retries here"
-            );
-            for decision in call(&world.obid, "GET", "/v1/limit-decisions", None)
-                .body
-                .as_array()
-                .unwrap()
-            {
+    assert_eq!(
+        posts(&world),
+        before + 1,
+        "what Codex tried after it stayed here"
+    );
+    within(20, "its question too", || {
+        let all = call(&world.obid, "GET", "/v1/limit-decisions", None).body;
+        let all = all.as_array()?;
+        (all.len() >= 2).then(|| {
+            for decision in all {
                 assert!(decision["resetAt"].is_null(), "{decision}");
             }
-        }
-    }
+        })
+    });
 }
 
 /// CHATGPT-14: a 503 keeps the credentials and backs off; a 403 not-eligible goes to OpenAI once and
@@ -1167,6 +1164,36 @@ fn chatgpt_a_conversations_turn_goes_through_the_relay() {
     assert!(!account(&world.obid, &id).unwrap()["fullUntil"].is_null());
 }
 
+/// CHATGPT-17: obid keeps that the welcome was shown, across a restart, whatever the app's storage.
+#[test]
+fn chatgpt_17_obid_keeps_that_the_welcome_was_shown() {
+    let folder = Folder::new("chatgpt-17");
+    let config = configured(&folder.0);
+    let mut obid = start(&folder.0, &config, None);
+    let read = call(&obid, "GET", "/v1/settings/chatgpt", None);
+    assert_eq!(read.body["welcomed"], false, "{}", read.text);
+    let bad = call(
+        &obid,
+        "PUT",
+        "/v1/settings/chatgpt",
+        Some(&json!({"welcomed": "yes"})),
+    );
+    assert_eq!(bad.status, 422, "{}", bad.text);
+    let put = call(
+        &obid,
+        "PUT",
+        "/v1/settings/chatgpt",
+        Some(&json!({"welcomed": true})),
+    );
+    assert_eq!(put.body["welcomed"], true, "{}", put.text);
+    assert!(obid.stop().success());
+    let obid = start(&folder.0, &config, None);
+    assert_eq!(
+        call(&obid, "GET", "/v1/settings/chatgpt", None).body["welcomed"],
+        true
+    );
+}
+
 /// The owner's decision of 2026-11-02: ChatGPT accounts are offered at a limit, though they report
 /// no usage. Offered, never moved to without the owner's click.
 #[test]
@@ -1273,6 +1300,18 @@ fn chatgpt_real_codex_talks_through_the_relay() {
         "{}",
         answer.text
     );
+    // Its next turn picks the thread up, a new process with the provider's settings.
+    let conversation = answer.body["conversation"].as_str().unwrap();
+    world
+        .openai
+        .with(|s| s.responses.push_back(Reply::Sse(said("Still here."))));
+    let again = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "again", "conversation": conversation})),
+    );
+    assert!(again.text.contains("Still here."), "{}", again.text);
     let access = world.openai.with(|s| s.tokens[0].clone());
     let seen = world.openai.with(|s| s.bearers.clone());
     assert!(
