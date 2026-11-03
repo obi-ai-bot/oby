@@ -3110,7 +3110,9 @@ impl Jobs {
             let jobs = self.clone();
             let work = {
                 let (jobs, id) = (jobs.clone(), id.clone());
-                async move { jobs.work(&id, signal).await }
+                // Boxed once its task runs: `schedule` is called deep in a request's stack (a
+                // signed Confirm's), where a job's whole future by value overflowed a debug build.
+                async move { Box::pin(jobs.work(&id, signal)).await }
             };
             jobs.spawn_worker(id, work);
         }

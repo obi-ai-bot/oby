@@ -1213,8 +1213,7 @@ impl Link {
                     true => crate::merge::Lift::Named(&item.text),
                     false => crate::merge::Lift::Before,
                 };
-                self.jobs
-                    .merge_by_owner(&item.job, &head, remember, lift)
+                Box::pin(self.jobs.merge_by_owner(&item.job, &head, remember, lift))
                     .await
                     .map_err(|why| format!("Not merged: {why}"))
             };

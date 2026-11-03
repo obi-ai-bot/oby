@@ -188,9 +188,8 @@ async fn merge_at(
         }
         // Their own word lifts every hold of Oby's: what's still open is said, never a refusal
         // (MERGING-27). Only GitHub's own rules can stop it.
-        let open = jobs
-            .merge_by_owner(&job.id, head, false, crate::merge::Lift::Word)
-            .await?;
+        let open =
+            Box::pin(jobs.merge_by_owner(&job.id, head, false, crate::merge::Lift::Word)).await?;
         return Ok(merged_line(&name, &job.short_title(), open.as_deref()));
     }
     let gh = github::gh().ok_or("GitHub's CLI (gh) isn't installed.")?;
