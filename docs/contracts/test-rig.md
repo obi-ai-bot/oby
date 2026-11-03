@@ -49,8 +49,8 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`. It stay
 
 - A start that fails stops what it started and says why; the next goes on from what it kept. A start while everything is up says so; while only part is, it says to stop first.
 - A port taken by something else is named. The Sphere's port is kept in the memberships: when it's taken, `reset` picks another.
-- A stop and start keeps the Sphere, the memberships, the conversations and Dana's job, which goes on.
-- Moving between real and stand-ins stops Dana's jobs first, so a stand-in's words never reach the real model.
+- A stop and start keeps the Sphere, the memberships, the conversations and Dana's job, which goes on. obid leaves a job `interrupted` once it went down 4 times (docs/contracts/recovery.md): then the rig starts another, and the old one stays in what Dana's Oby tells until a `reset`.
+- Moving between real and stand-ins removes Dana's jobs before its obid starts, so a stand-in's words never reach the real model.
 
 ### Invariants and boundaries
 
@@ -79,6 +79,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`. It stay
 - **RIG-9** `stop`: no process of the rig's, no agent and no port left. `start` again: still joined, the job goes on, and an ask answers.
 - **RIG-10** `app`: the dev app shows you, with the Sphere's tile and Dana's row, and its device key and settings are in the rig's folder.
 - **RIG-11** `reset` then `start`: a new Sphere, with Dana's account the same folder and still known to Dana's obid.
+- **RIG-12** Moving between stand-ins and real: the other kind's job never runs, and a new one starts where it can.
 
 ### Test it when it's done
 

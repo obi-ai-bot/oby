@@ -309,16 +309,18 @@ async function start(flags) {
     const wasReal = Boolean(state.real);
     state.real = !flags.has("--stand-in") && (flags.has("--real") || signed);
     if (state.real && !real) fail("--real needs Claude Code, and `claude` isn't on the login shell's PATH.");
+    // A job from the other kind of run would go on there, a stand-in's words to the real model, so
+    // it's gone before Dana's obid starts: asking it to stop after would be too late.
+    if (wasReal !== state.real) {
+      for (const name of ["jobs", "worktrees", "clones"]) rmSync(join(homeOf("dana"), name), { recursive: true, force: true });
+      delete state.danaJob;
+    }
     writeConfig("dana", { bin: state.real ? real : standIn, real: state.real });
     state.danaPid = startObid("dana", { real: state.real });
     save(state);
     await answering("you");
     await answering("dana");
     // A job from the other kind of run would go on there: a stand-in's words to the real model.
-    if (wasReal !== state.real) {
-      await api("dana").call("POST", "/v1/stop-all", {});
-      delete state.danaJob;
-    }
     await danaAccount(state);
     await deviceOf("you", state);
     await deviceOf("dana", state);
