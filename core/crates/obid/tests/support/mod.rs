@@ -519,8 +519,20 @@ pub fn call_typed(obid: &Obid, method: &str, target: &str, body: &Value) -> Answ
 }
 
 /// [`call_typed`] with no body when `body` is none (a GET that takes something, as a Mac's check).
-/// Signed to the millisecond, as the apps sign.
 pub fn call_signed(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> Answer {
+    let header = words_header(obid, method, target, body);
+    call_with_headers(
+        obid,
+        TOKEN,
+        method,
+        target,
+        body,
+        &[("X-Oby-Words", &header)],
+    )
+}
+
+/// `X-Oby-Words` for that request, signed to the millisecond, as the apps sign.
+pub fn words_header(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> String {
     let text = body.map(Value::to_string).unwrap_or_default();
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -535,18 +547,10 @@ pub fn call_signed(obid: &Obid, method: &str, target: &str, body: Option<&Value>
         &format!("oby-words\n{method}\n{path}\n{digest}\n{signed_at}"),
         &signed_at,
     );
-    let header = format!(
+    format!(
         "{} {signed_at} {}",
         signed["device"].as_str().unwrap(),
         signed["signature"].as_str().unwrap()
-    );
-    call_with_headers(
-        obid,
-        TOKEN,
-        method,
-        target,
-        body,
-        &[("X-Oby-Words", &header)],
     )
 }
 
@@ -872,6 +876,12 @@ impl TestObi {
         TestObi::join_with(sphere, id, owner, &["review_request"], None, "0.1.0").await
     }
 
+    /// [`TestObi::join_sealing`], taking questions.
+    pub async fn join_sealing_question(sphere: &FakeSphere, id: &str, owner: &str) -> TestObi {
+        let seal = SealKey::from_private(obi_protocol::keys::sha256(id)).unwrap();
+        TestObi::join_with(sphere, id, owner, &["question"], Some(seal), "0.2.0").await
+    }
+
     /// [`TestObi::join`], an Obi whose card has a seal key: what's sent to it is sealed for it.
     pub async fn join_sealing(sphere: &FakeSphere, id: &str, owner: &str) -> TestObi {
         let seal = SealKey::from_private(obi_protocol::keys::sha256(format!(
@@ -961,8 +971,43 @@ impl TestObi {
     /// What a member can do whenever it likes: a new card, named `name`, with no seal key if `seal`
     /// is false, in the Sphere's directory from now on.
     pub fn new_card(&self, sphere: &FakeSphere, name: &str, seal: bool) {
+        let mut state = sphere.lock();
+        let member = state
+            .members
+            .iter_mut()
+            .find(|m| m["obi"] == self.id.as_str())
+            .unwrap();
+        member["card"] = self.next_card(sphere, &self.owner, &member["card"], name, seal);
+    }
+
+    /// What a Sphere's operator can serve: this Obi's directory entry as `owner`'s, under that
+    /// owner's own key, a higher `card_seq` and this Obi's seal key.
+    pub fn entry_as(&self, sphere: &FakeSphere, owner: &str) -> Value {
+        let owner = Owner::new(owner);
+        let mut member = sphere
+            .lock()
+            .members
+            .iter()
+            .find(|m| m["obi"] == self.id.as_str())
+            .unwrap()
+            .clone();
+        member["card"] = self.next_card(sphere, &owner, &member["card"], "An Oby", true);
+        member["owner"] = json!(owner.id);
+        member["owner_key"] = json!(owner.key.public_key());
+        member
+    }
+
+    /// The card after `old`, signed by `owner`.
+    fn next_card(
+        &self,
+        sphere: &FakeSphere,
+        owner: &Owner,
+        old: &Value,
+        name: &str,
+        seal: bool,
+    ) -> Value {
         let (owner_key, key_id, public_key) = (
-            self.owner.key.public_key(),
+            owner.key.public_key(),
             self.key.key_id(),
             self.key.public_key(),
         );
@@ -972,13 +1017,7 @@ impl TestObi {
             .filter(|_| seal)
             .map(|s| (s.key_id(), s.public_key()));
         let issued_at = time::format(time::now());
-        let mut state = sphere.lock();
-        let member = state
-            .members
-            .iter_mut()
-            .find(|m| m["obi"] == self.id.as_str())
-            .unwrap();
-        let old = card::params(&member["card"]).unwrap().clone();
+        let old = card::params(old).unwrap().clone();
         let accepts: Vec<String> = old["accepts"]
             .as_array()
             .unwrap()
@@ -989,7 +1028,7 @@ impl TestObi {
             sphere_url: &sphere.url,
             sphere: SPHERE,
             obi_id: &self.id,
-            owner: &self.owner.id,
+            owner: &owner.id,
             owner_key: &owner_key,
             name,
             description: obi_protocol::identity::DEFAULT_DESCRIPTION,
@@ -1004,7 +1043,7 @@ impl TestObi {
                 .map(|(id, public)| (id.as_str(), public.as_str())),
             runtime: None,
         });
-        member["card"] = card::sign(&unsigned, &self.owner.key).unwrap();
+        card::sign(&unsigned, &owner.key).unwrap()
     }
 
     /// A request to `to` sealed for `seal_key` (`to`'s, from its card), then signed.
@@ -1133,6 +1172,11 @@ pub struct SphereState {
     pub rate_limit: HashMap<String, u32>,
     /// Requests refused with `403 policy_denied`.
     pub deny_requests: bool,
+    /// After this many more reads of the directory, this entry replaces the one with its `obi`: a
+    /// Sphere that serves something else between two reads ([`TestObi::entry_as`]).
+    pub swap_member: Option<(u32, Value)>,
+    /// Reads of the directory answer `503`.
+    pub members_down: bool,
     /// Every send's body as it arrived, with its sender and the status answered.
     pub sends: Vec<(String, String, u16)>,
     /// The next send of this type is recorded and delivered, and its answer waits until the test
@@ -1557,9 +1601,20 @@ async fn features(State(state): State<Arc<Mutex<SphereState>>>) -> Response {
 }
 
 async fn members(State(state): State<Arc<Mutex<SphereState>>>, headers: HeaderMap) -> Response {
-    let state = state.lock().unwrap();
+    let mut state = state.lock().unwrap();
     if bearer(&state, &headers).is_none() {
         return sphere_error(StatusCode::UNAUTHORIZED, "unauthorized", "no token");
+    }
+    if state.members_down {
+        return sphere_error(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "not now");
+    }
+    match state.swap_member.take() {
+        Some((0, entry)) => {
+            let kept = state.members.iter_mut().find(|m| m["obi"] == entry["obi"]);
+            *kept.unwrap() = entry;
+        }
+        Some((left, entry)) => state.swap_member = Some((left - 1, entry)),
+        None => {}
     }
     let members: Vec<Value> = state
         .members

@@ -798,15 +798,14 @@ impl Link {
 
     /// `POST /v1/obid/sphere/requests`: the owner's Obi asks another Obi.
     pub async fn request(&self, body: &[u8]) -> Result<Value, ApiError> {
-        self.request_from(body, false).await
+        self.request_for(body, None).await
     }
 
-    /// [`Link::request`]; `by_owner` when these are the owner's own signed words, sent as they are
-    /// ([`Link::ask_peer`]).
-    pub(super) async fn request_from(
+    /// [`Link::request`], for someone obid picked by their owner id ([`Meant`]).
+    pub(super) async fn request_for(
         &self,
         body: &[u8],
-        by_owner: bool,
+        meant: Option<Meant<'_>>,
     ) -> Result<Value, ApiError> {
         let map = object(body, &["to", "type", "body", "expiresIn"])?;
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
@@ -847,7 +846,7 @@ impl Link {
             return Err(invalid("An Obi doesn't ask itself.".into()));
         }
         self.scan_outgoing(&action).await?;
-        self.send_scanned(&joined, to, kind, action, Expiry::In(expires_in), by_owner)
+        self.send_scanned(&joined, to, kind, action, Expiry::In(expires_in), meant)
             .await
     }
 
@@ -1058,7 +1057,7 @@ impl Link {
         kind: String,
         action: Value,
         expiry: Expiry,
-        by_owner: bool,
+        meant: Option<Meant<'_>>,
     ) -> Result<Value, ApiError> {
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
         // Built, sealed and sent; once more after a seal refusal, with the directory read again.
@@ -1077,6 +1076,15 @@ impl Link {
                     })?;
                 if !member.active {
                     return Err(invalid(format!("{to} has been revoked.")));
+                }
+                // The directory is read again above: a Sphere can serve this Obi as someone else's
+                // by now, under an owner key pinned at first sight and a seal key of its own.
+                if meant.is_some_and(|m| m.owner != member.owner) {
+                    tracing::warn!("sphere: {to} now says it acts for {}", member.owner);
+                    return Err(api(
+                        StatusCode::CONFLICT,
+                        "That Oby now says it acts for someone else: nothing was sent.",
+                    ));
                 }
                 if !member.accepts.contains(&kind) {
                     return Err(invalid(format!("{to}'s card doesn't accept {kind}.")));
@@ -1173,7 +1181,7 @@ impl Link {
                 Some(peer_owner),
             );
             exchange.state = "sent".into();
-            exchange.asked_by_owner = by_owner;
+            exchange.asked_by_owner = meant.is_some_and(|m| m.by_owner);
             // Kept before it goes, so a reply that comes back at once finds it.
             self.lock().exchanges.insert(cid.clone(), exchange.clone());
             let sent = match self.token().await {

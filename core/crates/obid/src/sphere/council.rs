@@ -158,7 +158,7 @@ pub async fn convene(link: &Link, body: &[u8]) -> Result<Value, ApiError> {
                 "review_request".into(),
                 review.clone(),
                 Expiry::At(expires_at),
-                false,
+                None,
             )
             .await;
         match result {

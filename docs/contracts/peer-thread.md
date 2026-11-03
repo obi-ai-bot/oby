@@ -37,14 +37,16 @@ Every exchange with that owner's Obis since obid joined this Sphere, whichever w
 | They called their request off | `kind: cancel`, `exchange.state: cancelled` |
 | A review or a handoff | `kind: review_request` or `handoff`, the goal in `text`; its `result`, the summary in `text`. The findings stay on the exchange |
 | A request being sent | No post yet: a refusal removes it with no event, so it shows once the Sphere has it |
-| Not confirmed by the Sphere | The request's post, `state: waiting`, `seq` and `recordedAt` null, and `error` in obid's words |
+| A Council's request not confirmed by the Sphere | The request's post, `state: waiting`, `seq` and `recordedAt` null, and `error` in obid's words. Only a Council's: a question whose send got no answer isn't kept, so it has no post |
 | The Sphere refused a question | No exchange is kept, so no post (docs/runner-api.md, "obid only: Obi-to-Obi exchanges"). The refusal answers whoever asked |
 
 ### Asking from it
 
 The owner's words go straight to that member's Oby as a typed `question`, as `oby_ask`'s do: through the same secret scan, sealed for a card with a seal key, signed, and open for a day. It differs from asking in a conversation in what's left out: no model of the owner's runs, and no conversation is in it. So they speak as themselves, and the thread marks it as theirs (`by: owner`, kept with the exchange: a question's body has no `by` in the protocol, so the other Oby isn't told). Everything comes back in the thread, and only there.
 
-It's the owner's own act, signed, so it needs no Confirm, and none of what a turn's trust decides applies. It goes by the exact owner id of the thread, and a request to anyone else is `404`, never a guess at who was meant: nothing here reads a name or an Obi id. When an owner has more than one Oby, it goes to the first that takes questions.
+It's the owner's own act, signed, so it needs no Confirm, and none of what a turn's trust decides applies. The signature protects that mark: it doesn't stop what holds obid's token sending a question, which `POST /v1/obid/sphere/requests` still does, unsigned and marked `obi`. It goes by the exact owner id of the thread, and a request to anyone else is `404`, never a guess at who was meant: nothing here reads a name or an Obi id. With no Confirm, the app is the only place the owner sees who: **SPH-4 must show the owner id beside a name that differs from it, as `whose_oby` does.** When an owner has more than one Oby, it goes to one that takes questions, one whose words go sealed first.
+
+obid reads the directory again as the question goes, and a Sphere's operator could serve that Oby by then as someone else's, under an owner key pinned at first sight and a seal key of its own. So it goes only while the Oby still says it acts for that owner id, and otherwise nothing goes. `oby_ask` holds to the same, on the owner's word and on their Confirm.
 
 | What stops it | What the owner reads (the route's answer) |
 |---|---|
@@ -52,6 +54,7 @@ It's the owner's own act, signed, so it needs no Confirm, and none of what a tur
 | A possible secret, or a scan that can't run | What the scan said, without the words: nothing was sent |
 | Not a member, or before joining | `404`; `409` |
 | The card doesn't take questions | "Dima's Oby doesn't take questions." |
+| The Oby now says it acts for someone else, or dropped its seal key | "I can't ask Dima's Oby: nothing was sent." `409` |
 | The Sphere's rules (`policy_denied`) | "I can't ask Dima's Oby. This Obysphere's rules don't allow questions yet. An admin can change that." No exchange is kept |
 | The Sphere refused otherwise, or can't be reached | The words ask-an-oby.md gives: of what the Sphere wrote, only its code |
 
@@ -81,7 +84,7 @@ It's the owner's own act, signed, so it needs no Confirm, and none of what a tur
 - **PEER-1** Every exchange with a member, in either direction and of any type, reads as one list in the room's shape, oldest first, with what each message said, opened if it came sealed, and where the exchange stands; a member with none reads empty; `limit` keeps the newest; each change sends a `peerThread` event with that exchange's posts. After a restart with the Sphere away the thread still reads, and says it doesn't know who is a member.
 - **PEER-2** A member's words and card name show in the thread as sent; reading it runs no model, starts nothing and marks no conversation, and the owner's next turn hears none of it.
 - **PEER-3** A thread holds that member's exchanges only, by the exact owner id: not another member's, not a look-alike card's, not an earlier membership's, also with the same Sphere id on another server. Someone with no membership and no exchange is `404`, and before joining it's `409`.
-- **PEER-4** The owner's signed words go as a typed `question` with only those words, sealed for a card with a seal key, and read in the thread `by: owner` from the first event on, while what the other Oby says stays its own. Unsigned, another shape, anyone but an exact member, a card that takes no questions, blank or over-long words: nothing goes.
+- **PEER-4** The owner's signed words go as a typed `question` with only those words, sealed for a card with a seal key, and read in the thread `by: owner` from the first event on, while what the other Oby says stays its own. Unsigned, another shape, a signature for another owner or used before, anyone but an exact member, someone revoked, a card that takes no questions, blank or over-long words, or a Sphere that serves the Oby as someone else's between two reads: nothing goes. Of several Obys it goes to one that takes questions and seals; one that dropped its seal key is last and refuses, sending nothing in the clear. A directory that can't be read says so, also for someone who joined since the last read.
 - **PEER-5** A possible secret, or a scan that can't run, sends nothing, keeps nothing and doesn't repeat it. A Sphere whose rules refuse says an admin can change them, and keeps no exchange.
 - **PEER-6** No model runs for it, and no conversation hears what comes back, its words or that it happened: none starts, moves or is marked, nothing starts, the inbox stays empty, the owner's next turn hears none of it, also while a question from a conversation is told there.
 

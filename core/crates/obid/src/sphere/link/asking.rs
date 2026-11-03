@@ -157,17 +157,23 @@ impl Link {
     }
 
     /// Sends `question` to the Oby `obi`, for the conversation `conversation`, and `name`, what the
-    /// owner knows them as now: its exchange's id.
+    /// owner knows them as now: its exchange's id. Only while it still acts for `owner` (none on a
+    /// Confirm made before obid kept who it showed).
     pub async fn ask(
         &self,
         obi: &str,
         question: &str,
         conversation: &str,
         name: &str,
+        owner: Option<&str>,
     ) -> Result<String, ApiError> {
         let body = json!({"to": obi, "type": "question", "body": {"text": question},
                           "expiresIn": ASK_LIFETIME});
-        let sent = self.request(body.to_string().as_bytes()).await?;
+        let meant = owner.map(|owner| Meant {
+            owner,
+            by_owner: false,
+        });
+        let sent = self.request_for(body.to_string().as_bytes(), meant).await?;
         let cid = sent["correlationId"]
             .as_str()
             .unwrap_or_default()
@@ -204,13 +210,11 @@ impl Link {
                 "A question is 1 to 2,000 characters of plain text.",
             ));
         }
-        self.refresh_members().await;
-        // Never read since obid started: it can't say who is a member, and the Sphere is away.
-        if self.lock().directory_read == 0 {
-            return Err(api(
-                StatusCode::GATEWAY_TIMEOUT,
-                "I can't ask them right now: the Obysphere can't be reached.",
-            ));
+        // Not the last read: someone who joined since isn't "no such member" with the Sphere away.
+        if let Err(e) = self.read_directory().await {
+            self.note_error(&e);
+            let e = from_client(&e);
+            return Err(api(e.status, crate::brain::ask::refusal(owner, &e)));
         }
         let members: Vec<AskMember> = self
             .ask_members()
@@ -220,7 +224,7 @@ impl Link {
         let Some(first) = members.first() else {
             return Err(api(StatusCode::NOT_FOUND, "There's no such member."));
         };
-        let Some(member) = members.iter().find(|m| m.takes_questions) else {
+        let Some(member) = self.oby_to_ask(&members) else {
             return Err(api(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!("{}'s Oby doesn't take questions.", first.name),
@@ -228,8 +232,12 @@ impl Link {
         };
         let body = json!({"to": member.obi, "type": "question", "body": action,
                           "expiresIn": ASK_LIFETIME});
+        let meant = Meant {
+            owner,
+            by_owner: true,
+        };
         let sent = self
-            .request_from(body.to_string().as_bytes(), true)
+            .request_for(body.to_string().as_bytes(), Some(meant))
             .await
             .map_err(|e| api(e.status, crate::brain::ask::refusal(&member.name, &e)))?;
         let cid = sent["correlationId"].as_str().unwrap_or_default();
@@ -237,6 +245,28 @@ impl Link {
         let verified = self.pins.verified(owner);
         let post = exchange.and_then(|e| e.posts(&self.owner(), verified).into_iter().next());
         Ok(post.unwrap_or(Value::Null))
+    }
+
+    /// Which of one owner's Obys a question goes to: one that takes questions, first one whose words
+    /// go sealed, then one with no seal key that never had one, and last one that dropped its key,
+    /// which refuses.
+    fn oby_to_ask<'a>(&self, members: &'a [AskMember]) -> Option<&'a AskMember> {
+        let state = self.lock();
+        members
+            .iter()
+            .filter(|m| m.takes_questions)
+            .min_by_key(|m| {
+                let card_seals = state
+                    .directory
+                    .members
+                    .get(&m.obi)
+                    .is_some_and(|d| d.seal.is_some());
+                match (card_seals, self.pins.seals(&m.obi)) {
+                    (true, _) => 0,
+                    (false, false) => 1,
+                    (false, true) => 2,
+                }
+            })
     }
 
     /// What the conversation `conversation` asked other Obys, oldest first.

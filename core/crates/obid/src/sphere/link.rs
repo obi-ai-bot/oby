@@ -597,6 +597,15 @@ fn delegation_json(delegation: &str) -> Value {
     })
 }
 
+/// Who a request is for, when obid picked them by their owner id: it goes only while its Obi still
+/// says it acts for them ([`Link::send_scanned`]). `by_owner`: the owner's own signed words, sent as
+/// they are ([`Link::ask_peer`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Meant<'a> {
+    pub owner: &'a str,
+    pub by_owner: bool,
+}
+
 /// When a request obid sends expires: a lifetime from the moment it's built, or an instant.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Expiry {

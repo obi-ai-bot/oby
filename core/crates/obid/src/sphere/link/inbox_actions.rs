@@ -616,6 +616,8 @@ impl Link {
                         .unwrap_or_default(),
                     // The name its card showed.
                     confirmed.payload["name"].as_str().unwrap_or_default(),
+                    // Who it showed, which a card can stop saying between the Confirm and the click.
+                    confirmed.payload["owner"].as_str(),
                 )
                 .await
                 .map(|_| ())
