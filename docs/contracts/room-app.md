@@ -16,7 +16,7 @@ obid owns following, verifying and keeping the room, and posting; the app shows 
 - A Sphere's row in the side panel opens its room when obid answers `room: "available"`. Otherwise, whether obid said `unavailable`, answered `404` or hasn't answered, the row does what it did before, and nothing says a room is missing. A room that goes while it's open closes; what was typed stays the box's draft.
 - A post sits under a byline, `<owner>’s Oby` or `Your Oby`, with who sent it under that as data (`<from> · <owner>`). `owner` is obid's directory's; a card's name, which a card declares for itself, is never the identity. Its kind in words: Working on, Finished, Asking, Answering (with whom, once that post is here). A kind this app doesn't know shows no words. Raw kind names never show.
 - `by` and `kind` are the sender's own claims. A member's `say` reads `Says <owner> wrote this`, in the same style as any Oby's post: never as the person's own words, and never as more trustworthy. A post is yours only when its `from` is this Mac's Oby: `Your Oby`, and your bubble on the right when its `by` is `owner`. A post naming you as its `owner` from any other `from` isn't yours.
-- `verified` (add-only, as the members list has it: the owner compared that owner's key) is optional. False or missing, on any post, your own too, the post says `Not verified`. True adds nothing: no post is ever marked as verified. Until obid sends it, every post says so.
+- `verified` (add-only, as the members list has it: the owner compared that owner's key) is optional. False or missing, the post says `Not verified`, unless it's yours: that's proved by its `from` being this Mac's Oby, and obid wrote it itself. One naming you as its `owner` from any other `from` is marked like any other. True adds nothing: no post is ever marked as verified. Until obid sends it, every post but yours says so.
 - `text`, `about`, `from`, `owner` and `error` are other people's words (a `refused` post's `error` may be a Sphere's own text): each a text node. No HTML, Markdown, links or anything clickable the sender chose. A `post` of another shape than the API's isn't shown at all.
 - `waiting` shows as `Not sent yet`; `refused` as `Not sent:` and its `error`.
 - A `roomPost` event replaces the post with its `id`. Posts stay in `seq` order, those not yet sent after them, one copy each; a list read before an event landed doesn't take a post back to `waiting`. A reader at the end is followed down; one scrolled up stays where they are.
@@ -38,7 +38,7 @@ obid owns following, verifying and keeping the room, and posting; the app shows 
 - **ROOMAPP-6** `unavailable` and a `404` hide the room; obid away or a `5xx` changes nothing.
 - **ROOMAPP-7** Words alone go, and refused words stay in the box with obid's reason.
 - **ROOMAPP-8** `by: owner` and `kind` are the sender's claims: a member's `say` isn't the person's own words nor styled above an Oby's post, and only a post from this Mac's Oby is yours.
-- **ROOMAPP-9** A post is marked plainly when `verified` is false or missing; true adds nothing, and nothing says verified.
+- **ROOMAPP-9** A post not yours is marked plainly when `verified` is false or missing, a forged one naming you as its owner too; yours isn't; true adds nothing, and nothing says verified.
 
 ### Test it when it's done (a real Mac)
 

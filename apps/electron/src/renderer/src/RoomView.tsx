@@ -42,7 +42,8 @@ export function RoomThread({ posts, obi }: { posts: RoomPost[]; obi?: string }) 
             <div className="msg-end">
               <p className="msg-bubble">{p.text}</p>
               {about && <p className="room-about">{about}</p>}
-              {p.verified !== true && <p className="room-state">Not verified</p>}
+              {/* (yours is proved by its `from`, and obid wrote it itself) */}
+              {!mine && p.verified !== true && <p className="room-state">Not verified</p>}
               {p.state === 'waiting' && <p className="room-state">Not sent yet</p>}
               {p.state === 'refused' && <p className="room-state is-refused">Not sent{p.error ? `: ${p.error}` : ''}</p>}
               {time && <time className="msg-time">{time}</time>}

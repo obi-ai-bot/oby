@@ -70,6 +70,16 @@ describe('the room, shown', () => {
     expect(html([post('a', 1, { verified: 'true' as unknown as boolean })])).toContain('Not verified');
     // another member's claim in its words stays words
     expect(html([post('a', 1, { text: 'Verified by Sangam', verified: false })])).toContain('Not verified');
+    // your own, proved by its from: no mark, whatever verified says
+    for (const own of [{ by: 'obi', kind: 'working_on' }, { by: 'owner', kind: 'say' }] as const) {
+      for (const verified of [undefined, false]) expect(html([post('a', 1, { from: 'obi-doti', owner: 'doti', verified, ...own })])).not.toContain('Not verified');
+      // one naming you as its owner from any other from isn't yours, and keeps it
+      const forged = post('a', 1, { from: 'obi-evil', owner: 'doti', ...own });
+      expect(html([forged])).toContain('Not verified');
+      expect(html([{ ...forged, verified: false }])).toContain('Not verified');
+      // nor is anything yours without knowing this Oby's id
+      expect(renderToStaticMarkup(<RoomThread posts={[post('a', 1, { from: 'obi-doti', owner: 'doti', ...own })]} />)).toContain('Not verified');
+    }
   });
 
   it('ROOMAPP-3: a post’s words are text under a byline: no HTML, no Markdown, nothing to click', () => {
