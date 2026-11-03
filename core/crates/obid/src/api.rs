@@ -351,6 +351,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             post(crate::sphere::routes::add_rule),
         )
         .route(
+            "/v1/obid/sharing/offer",
+            post(crate::sphere::routes::offer_to_share),
+        )
+        .route(
             "/v1/obid/sharing/rules/{id}",
             axum::routing::delete(crate::sphere::routes::forget_rule),
         )

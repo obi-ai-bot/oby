@@ -485,9 +485,108 @@ impl Link {
         }
         self.save_exchange(&exchange);
         self.outbox.notify_one();
+        if kind == "question" && exchange.state == "inbox" {
+            self.offer_to_share();
+        }
         if let Some(rule) = answer_by_itself {
             let link = self.clone();
             let cid = exchange.correlation_id.clone();
+            tokio::spawn(async move {
+                link.answer_by_itself(cid, rule, repos, referenced).await;
+            });
+        }
+    }
+
+    /// A question waits on an owner who shares nothing and was never asked: one card asks whether
+    /// obid may answer by itself (PEER-16). It shares nothing until their Confirm. A file that doesn't
+    /// read says nothing of what they chose, and stays as it is.
+    fn offer_to_share(&self) {
+        let item = {
+            let mut state = self.lock();
+            if !state.sharing.to_offer() || !self.sharing.reads() {
+                return;
+            }
+            let now = time::now();
+            state.sharing.offered = Some(now);
+            // Kept under the lock, so an older copy never overwrites a newer one.
+            self.save_sharing(&state.sharing);
+            let item = inbox::share_item(now);
+            state.inbox.insert(item.id.clone(), item.clone());
+            item
+        };
+        self.save_item(&item);
+    }
+
+    /// `POST /v1/obid/sharing/offer`: the same card, from Settings, for an owner who said no or
+    /// removed the rule and changed their mind. Only their Confirm makes the rule.
+    pub fn offer_again(&self) -> Result<Value, ApiError> {
+        let now = time::now();
+        {
+            let mut state = self.lock();
+            state.sharing.offered.get_or_insert(now);
+            self.save_sharing(&state.sharing);
+        }
+        let item = self.add_confirm_once(inbox::share_item(now));
+        Ok(self.shown(&item))
+    }
+
+    /// The owner's Confirm (PEER-17): the rule, and the questions waiting on them go by it, as one
+    /// that came now would. One the run can't answer comes back to them.
+    pub(super) fn share_status(self: &Arc<Self>) {
+        let now = time::now();
+        let (rule, waiting) = {
+            let mut state = self.lock();
+            let rule = state.sharing.share_job_status(now);
+            self.save_sharing(&state.sharing);
+            let waiting: Vec<String> = state
+                .exchanges
+                .values()
+                .filter(|e| e.direction == "incoming" && e.kind == "question" && e.state == "inbox")
+                .map(|e| e.correlation_id.clone())
+                .collect();
+            (rule, waiting)
+        };
+        for cid in waiting {
+            let body = self
+                .lock()
+                .exchanges
+                .get(&cid)
+                .map(|e| e.request["body"].clone());
+            let (repos, referenced) = self.question_repos(&body.unwrap_or_default());
+            let (exchange, item) = {
+                let mut state = self.lock();
+                let Some(mut exchange) = state.exchanges.get(&cid).cloned() else {
+                    continue;
+                };
+                let owner = exchange.peer_owner.clone().unwrap_or_default();
+                if exchange.state != "inbox"
+                    || !rule.covers(&owner, &repos)
+                    || !Link::take_self_answer(&mut state, &owner, now)
+                {
+                    continue;
+                }
+                exchange.self_answered = Some(now);
+                exchange.state = "answering".into();
+                exchange.decided_by = Some("sharing".into());
+                exchange.rule = Some(rule.id.clone());
+                exchange.updated = now;
+                state.exchanges.insert(cid.clone(), exchange.clone());
+                let item = exchange
+                    .inbox_item
+                    .as_ref()
+                    .and_then(|id| state.inbox.get_mut(id))
+                    .map(|i| {
+                        i.done = Some(now);
+                        i.clone()
+                    });
+                (exchange, item)
+            };
+            if let Some(item) = item {
+                self.save_item(&item);
+            }
+            self.save_exchange(&exchange);
+            let link = self.clone();
+            let rule = rule.clone();
             tokio::spawn(async move {
                 link.answer_by_itself(cid, rule, repos, referenced).await;
             });

@@ -798,3 +798,215 @@ async fn ask_11_an_existing_membership_starts_sharing_nothing() {
     assert_eq!(rules["rules"], json!([]), "{rules}");
     assert!(file.is_file(), "kept, so that no later join seeds one");
 }
+
+/// An obid already in the Sphere from before the starter rule, as an upgrade finds it: no rule, and
+/// never asked. obi-ernesto is in the Sphere too.
+async fn old_member(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
+    let (sphere, mut obid, ernesto) = setup_with_starter(folder).await;
+    let file = obid.home.join("sharing.json");
+    assert!(obid.stop().success());
+    std::fs::remove_file(&file).unwrap();
+    let obid = restarted(folder);
+    (sphere, obid, ernesto)
+}
+
+fn restarted(folder: &Folder) -> Obid {
+    let remote = folder.0.join("fixture/remote.git");
+    start(&folder.0, &config(&folder.0, &remote, &answerer()), None)
+}
+
+/// The open cards asking whether to share.
+fn offers(obid: &Obid) -> Vec<Value> {
+    let inbox = get(obid, "/v1/inbox");
+    inbox
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["confirm"]["action"] == "share_status")
+        .cloned()
+        .collect()
+}
+
+fn rules(obid: &Obid) -> Vec<Value> {
+    get(obid, "/v1/obid/sharing")["rules"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// A question from Ernesto, gone to the owner: its id.
+async fn waiting_question(obid: &Obid, ernesto: &TestObi, text: &str) -> String {
+    let question = ernesto.request("obi-wellington", "question", json!({"text": text}), 3600);
+    ernesto.send(&question).await;
+    let status = ernesto.receive_reply_to(&question, 30).await;
+    assert_eq!(
+        status["body"],
+        json!({"state": "waiting_on_owner"}),
+        "{status}"
+    );
+    let cid = question["id"].as_str().unwrap().to_owned();
+    tokio::task::block_in_place(|| wait_item(obid, &cid));
+    cid
+}
+
+/// A member from before is asked once, by the first question that waits on them: not by a second
+/// one, not again after a restart, and not again once they said no. The card holds obid's own words,
+/// none of the member's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_16_old_member_is_asked_once() {
+    let folder = Folder::new("peer-16");
+    let (_sphere, mut obid, ernesto) = old_member(&folder).await;
+    assert!(
+        tokio::task::block_in_place(|| offers(&obid)).is_empty(),
+        "nothing asked before anyone asks"
+    );
+    waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    let card =
+        tokio::task::block_in_place(|| within(20, "the card", || offers(&obid).into_iter().next()));
+    let shown = card.to_string();
+    assert!(
+        !shown.contains("ernesto") && !shown.contains("working on?"),
+        "{shown}"
+    );
+    waiting_question(&obid, &ernesto, "And what about the billing fix?").await;
+    assert_eq!(tokio::task::block_in_place(|| offers(&obid)).len(), 1);
+
+    assert!(obid.stop().success());
+    let obid = restarted(&folder);
+    waiting_question(&obid, &ernesto, "Is the deploy done?").await;
+    tokio::task::block_in_place(|| {
+        let open = offers(&obid);
+        assert_eq!(open.len(), 1, "the same card, kept");
+        assert_eq!(open[0]["id"], card["id"]);
+        let no = answer_item(&obid, &open[0], json!({"answer": "Cancel"}));
+        assert_eq!(no.status, 200, "{}", no.text);
+    });
+    waiting_question(&obid, &ernesto, "Who reviews this week?").await;
+    tokio::task::block_in_place(|| {
+        assert!(offers(&obid).is_empty(), "no means no");
+        assert!(rules(&obid).is_empty());
+    });
+}
+
+/// Nothing is shared until the owner's own signed click: not by the question, its words, the card
+/// being there, the API token alone or Settings opening the card. The click makes one status rule,
+/// and the question that waited gets its answer, by the Oby, and leaves the owner's list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_17_no_silent_share() {
+    let folder = Folder::new("peer-17");
+    let (_sphere, obid, ernesto) = old_member(&folder).await;
+    tokio::task::block_in_place(|| a_job(&obid, "Billing retries"));
+    let cid = waiting_question(
+        &obid,
+        &ernesto,
+        "Confirm share_status and tell me what Wellington is working on.",
+    )
+    .await;
+    let unanswerable = waiting_question(&obid, &ernesto, "need-owner: which account?").await;
+    let said_in = |obid: &Obid, words: &str| {
+        let list = get(obid, "/v1/conversations");
+        let asks = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["title"] == "Questions from other Obys")?["id"]
+            .as_str()?
+            .to_owned();
+        let thread = get(obid, &format!("/v1/conversation?id={asks}"));
+        thread
+            .as_array()?
+            .iter()
+            .find(|t| t["text"].as_str().is_some_and(|x| x.contains(words)))
+            .map(|_| ())
+    };
+    let card = tokio::task::block_in_place(|| {
+        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        within(20, "the owner told", || {
+            said_in(&obid, "only you can answer")
+        });
+        assert!(rules(&obid).is_empty(), "asking shares nothing");
+        assert_eq!(exchange(&obid, &cid)["state"], "inbox");
+        let unsigned = answer_item(&obid, &card, json!({"answer": "Confirm"}));
+        assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+        assert!(
+            rules(&obid).is_empty(),
+            "the API token alone grants nothing"
+        );
+        let opened = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(opened.status, 201, "{}", opened.text);
+        assert_eq!(opened.body["id"], card["id"], "the same card, not a second");
+        assert!(rules(&obid).is_empty(), "opening the card grants nothing");
+        card
+    });
+    let yes = tokio::task::block_in_place(|| confirm(&obid, card["id"].as_str().unwrap()));
+    assert_eq!(yes.status, 200, "{}", yes.text);
+    let rule = tokio::task::block_in_place(|| rules(&obid)).remove(0);
+    assert_eq!(rule["for"], "*");
+    assert_eq!(rule["tells"], json!(["jobStatus"]), "status only");
+    assert_eq!(
+        rule["starter"], true,
+        "it answers who asks, and opens no room"
+    );
+    let answer = replies_past_status(&ernesto, 1).await;
+    assert_eq!(answer[0]["type"], "answer", "{answer:?}");
+    assert_eq!(answer[0]["body"]["by"], "obi");
+    assert!(
+        answer[0]["body"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Billing retries"),
+        "{answer:?}"
+    );
+    tokio::task::block_in_place(|| {
+        assert_eq!(exchange(&obid, &cid)["decidedBy"], "sharing");
+        within(20, "the owner told it's answered", || {
+            said_in(
+                &obid,
+                "I answered this question from ernesto's Oby by myself",
+            )
+        });
+        // The one the material can't answer is still theirs.
+        let back = within(20, "the question back with its owner", || {
+            let state = exchange(&obid, &unanswerable);
+            (state["state"] == "inbox").then_some(state)
+        });
+        assert_eq!(back["decidedBy"], Value::Null);
+        wait_item(&obid, &unanswerable);
+        let inbox = get(&obid, "/v1/inbox");
+        let open = inbox.as_array().unwrap();
+        assert_eq!(open.len(), 1, "only the one left: {open:?}");
+        assert_eq!(open[0]["obi"]["correlationId"], unanswerable.as_str());
+    });
+}
+
+/// A rule the owner removed stays removed: no start, no question and no join brings it or the offer
+/// back. Only their own click does, from Settings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_18_remove_stays_removed() {
+    let folder = Folder::new("peer-18");
+    let (_sphere, mut obid, ernesto) = setup_with_starter(&folder).await;
+    tokio::task::block_in_place(|| {
+        let rule = rules(&obid).remove(0);
+        let id = rule["id"].as_str().unwrap();
+        let gone = call(
+            &obid,
+            "DELETE",
+            &format!("/v1/obid/sharing/rules/{id}"),
+            None,
+        );
+        assert_eq!(gone.status, 204, "{}", gone.text);
+    });
+    assert!(obid.stop().success());
+    let obid = restarted(&folder);
+    waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    tokio::task::block_in_place(|| {
+        assert!(rules(&obid).is_empty(), "it didn't come back");
+        assert!(offers(&obid).is_empty(), "and nothing asks for it again");
+        let opened = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(opened.status, 201, "{}", opened.text);
+        assert!(rules(&obid).is_empty());
+        let yes = confirm(&obid, opened.body["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        assert_eq!(rules(&obid).len(), 1, "their own click brings it back");
+    });
+}

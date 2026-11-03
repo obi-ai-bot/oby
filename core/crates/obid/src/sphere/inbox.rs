@@ -139,6 +139,9 @@ pub mod action {
     /// Turn check-ins on or change them (`oby_check_in`, TASKCONV-11): `target` the conversation they
     /// post in, `payload` `{"checkIn": <settings' checkIn>}`.
     pub const SET_CHECK_IN: &str = "set_check_in";
+    /// Answer members' questions about how the owner's work goes, by itself (PEER-16,
+    /// docs/contracts/peer-thread.md): `target` empty, `payload` null.
+    pub const SHARE_STATUS: &str = "share_status";
 }
 
 /// A `confirm` item: `title` says exactly what `Confirm` does, `confirmed` is what obid carries
@@ -178,6 +181,33 @@ pub fn confirm_item(
         github: None,
         watch: None,
     }
+}
+
+/// Oby's one ask whether it may answer members' questions by itself (PEER-16): obid's own fixed words
+/// and nothing a member chose, so nothing another Oby wrote shapes what the owner's device signs.
+pub fn share_item(now: i64) -> Item {
+    let title = "Can I tell people in your Obysphere how your tasks are going?".to_owned();
+    // Short enough that Home's card, which shows three lines, shows all of it.
+    let text = "I'd answer when someone asks, with each task's title, repository, stage, state and \
+                pull request, in every repository. Never logs, diffs, prompts or files. Until then, \
+                every question waits for you."
+        .to_owned();
+    let mut item = confirm_item(
+        "",
+        title,
+        text,
+        Confirmed {
+            action: action::SHARE_STATUS.into(),
+            target: String::new(),
+            payload: Value::Null,
+        },
+        now,
+    );
+    item.details = Some(vec![
+        "I answer members' questions about your tasks by myself, until you remove it in the Obysphere's settings.".into(),
+        "Every question keeps waiting for you, and I don't ask again. You can still share from the Obysphere's settings.".into(),
+    ]);
+    item
 }
 
 /// Oby's ask about `repo`'s check (#1062), on job `job` (empty for one the owner opened,

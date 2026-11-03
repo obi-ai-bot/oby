@@ -81,8 +81,8 @@ pub struct Rule {
     /// Answers the Obi sent under it.
     pub uses: u64,
     pub last_used: Option<i64>,
-    /// The rule obid made at the first join ([`starter`]), not the owner: it answers who asks, and
-    /// opens no room. Never in the API's answer.
+    /// The rule of a first join or of the owner's yes to the offer ([`answers_who_asks`]): it answers
+    /// who asks, and opens no room, which neither agreed to.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starter: bool,
 }
@@ -108,6 +108,7 @@ impl Rule {
             "created": time::format(self.created),
             "uses": self.uses,
             "lastUsed": self.last_used.map(time::format),
+            "starter": self.starter,
         })
     }
 }
@@ -151,6 +152,10 @@ pub struct Sharing {
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub limits: Limits,
+    /// When the owner's say on sharing was asked for, or made needless by their removing a rule
+    /// (PEER-16, PEER-18): obid asks at most once. A file from before has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offered: Option<i64>,
 }
 
 impl Sharing {
@@ -167,6 +172,28 @@ impl Sharing {
     /// repository covers.
     pub fn covering(&self, owner: &str, repos: &[String]) -> Option<&Rule> {
         self.rules.iter().find(|rule| rule.covers(owner, repos))
+    }
+
+    /// Whether a question no rule covers should ask the owner about sharing: they share nothing, and
+    /// were never asked and never removed a rule.
+    pub fn to_offer(&self) -> bool {
+        self.rules.is_empty() && self.offered.is_none()
+    }
+
+    /// The one rule the owner's yes to the offer means: the one they have, or a new one.
+    pub fn share_job_status(&mut self, now: i64) -> Rule {
+        self.offered.get_or_insert(now);
+        let every = |rule: &&Rule| {
+            rule.for_owners.is_every()
+                && rule.repos.is_every()
+                && rule.tells.iter().any(|t| t == JOB_STATUS)
+        };
+        if let Some(rule) = self.rules.iter().find(every) {
+            return rule.clone();
+        }
+        let rule = answers_who_asks(now);
+        self.rules.push(rule.clone());
+        rule
     }
 
     /// The oldest rule that lets the Obi tell `owner` the status of its jobs in `repos`.
@@ -194,23 +221,27 @@ impl Sharing {
     }
 }
 
-/// What an obid shares once it first joins a Sphere (ASK-11, docs/contracts/ask-an-oby.md): with every
-/// member, the title, stage and state of its owner's jobs, the repository each is in and the pull
-/// request it opened, so their Obys can ask how the work goes without bothering them. Never logs,
-/// diffs, prompts or files. The owner removes it like any rule, and it doesn't come back.
+/// With every member, the title, stage and state of its owner's jobs, the repository each is in and
+/// the pull request it opened, so their Obys can ask how the work goes without bothering them. Never
+/// logs, diffs, prompts or files. The owner removes it like any rule, and it doesn't come back.
+fn answers_who_asks(now: i64) -> Rule {
+    Rule {
+        id: new_id(),
+        for_owners: Scope::every(),
+        repos: Scope::every(),
+        tells: vec![JOB_STATUS.to_owned()],
+        created: now,
+        uses: 0,
+        last_used: None,
+        starter: true,
+    }
+}
+
+/// What an obid shares once it first joins a Sphere (ASK-11, docs/contracts/ask-an-oby.md).
 fn starter(now: i64) -> Sharing {
     Sharing {
-        rules: vec![Rule {
-            id: new_id(),
-            for_owners: Scope::every(),
-            repos: Scope::every(),
-            tells: vec![JOB_STATUS.to_owned()],
-            created: now,
-            uses: 0,
-            last_used: None,
-            starter: true,
-        }],
-        limits: Limits::default(),
+        rules: vec![answers_who_asks(now)],
+        ..Sharing::default()
     }
 }
 
@@ -353,6 +384,15 @@ impl Kept {
         matches!(std::fs::symlink_metadata(&self.path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
     }
 
+    /// Whether what's kept reads, or there's nothing kept: obid writes nothing of its own over a file
+    /// that doesn't, which shares nothing and stays as it is.
+    pub fn reads(&self) -> bool {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice::<Sharing>(&bytes).is_ok(),
+            Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        }
+    }
+
     /// The owner's first Sphere: the starter rule, kept, when they have no file yet (ASK-11).
     pub fn seed_at_joining(&self) -> Option<Sharing> {
         if !self.missing() {
@@ -399,7 +439,7 @@ mod tests {
                 rule(json!({"for": ["ernesto"], "repos": ["Acme/App"], "tells": ["jobStatus"]})),
                 rule(json!({"for": "*", "repos": "*", "tells": ["sharedResults"]})),
             ],
-            limits: Limits::default(),
+            ..Sharing::default()
         };
         let repos = |list: &[&str]| list.iter().map(|r| (*r).to_owned()).collect::<Vec<_>>();
         let first = &sharing.rules[0].id;
@@ -430,7 +470,7 @@ mod tests {
         );
         let narrow = Sharing {
             rules: vec![sharing.rules[0].clone()],
-            limits: Limits::default(),
+            ..Sharing::default()
         };
         assert!(narrow.covering("ernesto", &[]).is_none());
         assert!(narrow.covering("giulia", &repos(&["acme/app"])).is_none());
@@ -442,7 +482,7 @@ mod tests {
         let owners = |list: &[&str]| list.iter().map(|o| (*o).to_owned()).collect::<Vec<_>>();
         let of = |rules: Vec<Rule>| Sharing {
             rules,
-            limits: Limits::default(),
+            ..Sharing::default()
         };
         let everyone = of(vec![rule(
             json!({"for": "*", "repos": ["acme/app"], "tells": ["jobStatus"]}),
@@ -565,6 +605,43 @@ mod tests {
         assert!(kept.load().rules.is_empty());
         assert_eq!(kept.seed_at_joining(), None);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn peer_16_a_file_from_before_is_asked_once_and_an_unreadable_one_is_left_alone() {
+        let old: Sharing = serde_json::from_value(json!({"rules": []})).unwrap();
+        assert!(old.to_offer(), "an existing member's file: never asked");
+        let mut asked = old;
+        asked.offered = Some(1);
+        assert!(!asked.to_offer());
+        let kept: Sharing = serde_json::from_slice(&serde_json::to_vec(&asked).unwrap()).unwrap();
+        assert!(!kept.to_offer(), "across a restart");
+        assert!(!starter(0).to_offer(), "a rule to go by: nothing to ask");
+
+        let home = std::env::temp_dir().join(format!("obid-peer-16-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let kept = Kept::open(&home);
+        assert!(kept.reads(), "nothing kept yet");
+        std::fs::write(home.join("sharing.json"), "not json").unwrap();
+        assert!(!kept.reads(), "obid writes nothing of its own over it");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn peer_17_the_owners_yes_is_one_rule_that_answers_who_asks_and_opens_no_room() {
+        let owners = ["ernesto".to_owned()];
+        let repos = ["acme/app".to_owned()];
+        let mut sharing = Sharing::default();
+        let rule = sharing.share_job_status(5);
+        assert_eq!(sharing.offered, Some(5));
+        assert_eq!(rule.tells, vec![JOB_STATUS.to_owned()], "status only");
+        assert!(sharing.job_status_rule("ernesto", &repos).is_some());
+        assert!(!sharing.job_status_for_all(&owners, &repos), "not the room");
+        assert_eq!(rule.to_json()["starter"], true);
+        // Twice is still one, and the first time asked stays.
+        assert_eq!(sharing.share_job_status(9).id, rule.id);
+        assert_eq!((sharing.rules.len(), sharing.offered), (1, Some(5)));
     }
 
     #[test]

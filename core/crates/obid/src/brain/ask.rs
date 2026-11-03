@@ -434,6 +434,11 @@ fn ask_the_owner(shared: &Shared, exchange: &Exchange, owner: &str) {
             "over",
             format!("This question from {oby} ran out:\n\n{quoted}"),
         ),
+        // It waited on them, and their yes to sharing let obid answer it (PEER-17).
+        "done" => (
+            "over",
+            format!("I answered this question from {oby} by myself:\n\n{quoted}"),
+        ),
         _ => (
             "owner",
             format!(

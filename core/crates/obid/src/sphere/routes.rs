@@ -413,6 +413,11 @@ pub async fn add_rule(
     Ok(json(StatusCode::CREATED, shared.link.add_rule(&body)?))
 }
 
+/// `POST /v1/obid/sharing/offer`.
+pub async fn offer_to_share(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    Ok(json(StatusCode::CREATED, shared.link.offer_again()?))
+}
+
 /// `DELETE /v1/obid/sharing/rules/{id}`.
 pub async fn forget_rule(
     State(shared): State<Arc<Shared>>,

@@ -2537,6 +2537,8 @@ impl Link {
         if state.sharing.rules.len() == before {
             return false;
         }
+        // Removed stays removed: nothing asks them again (PEER-18).
+        state.sharing.offered.get_or_insert(time::now());
         self.save_sharing(&state.sharing);
         true
     }

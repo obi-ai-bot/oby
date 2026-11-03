@@ -1,6 +1,6 @@
 # A member's thread
 
-The business behavior contract for one thread per member of your Obysphere, from [the template](../business-contract-template.md): a view over every exchange with that member's Oby, in the shape of the room ([rooms.md](rooms.md)). Scenarios are numbered `PEER-n`, and the tests that prove them are named after them (`peer_n_…` in `core/crates/obid/tests/peer_flow.rs`, `core/crates/obid/src/sphere/exchange.rs` and `core/crates/obid/src/sphere/link/asking.rs`). The drives on the plan's Sphere tab are numbered `PEER-n` too and are a different list: human-drive steps, not these.
+The business behavior contract for one thread per member of your Obysphere, from [the template](../business-contract-template.md): a view over every exchange with that member's Oby, in the shape of the room ([rooms.md](rooms.md)). Scenarios are numbered `PEER-n`, and the tests that prove them are named after them (`peer_n_…` in `core/crates/obid/tests/peer_flow.rs`, `core/crates/obid/tests/sphere_questions.rs`, `core/crates/obid/src/sphere/exchange.rs`, `core/crates/obid/src/sphere/sharing.rs`, `core/crates/obid/src/sphere/link/asking.rs` and `apps/electron/src/renderer/src/test/`). The drives on the plan's Sphere tab are numbered `PEER-n` too and are a different list: human-drive steps, not these.
 
 ## Feature and status
 
@@ -74,9 +74,24 @@ obid reads the directory again as the question goes, and a Sphere's operator cou
 - **A question from the thread reaches no prompt:** it adds no turn, marks no conversation, starts nothing, and `oby_asks` and the telling of what came back (crate::brain::ask) never read it: they go by the conversation that asked, and none did.
 - **The API stays add-only.** Two new routes and one new event, which every app ignores until it knows it (`default` in apps/shared/Runner.swift's and Runner.kt's event parsers, and in obid-wire.ts's). `kind` is the protocol's message type, an open string, on a list no existing app decodes. No enum is touched.
 
+## Being asked to share, and what your Oby tells
+
+The other side of a thread: for a member's Oby to answer by itself, its owner must have said it may. A membership from before the starter rule (docs/contracts/ask-an-oby.md, "The default") has no rule, so every question waits on its owner and the asker reads "It's waiting on Dana". The words below are proposals: this design leads for now, by the owner's decision, and Sangam can change them.
+
+- **Asked once, where the owner already is.** The first question that waits on an owner who has no rule, and was never asked, brings one Confirm card on Home (and on the phones, and as a Mac notification, like any Confirm): "Can I tell people in your Obysphere how your tasks are going?", then what it tells, that it's every repository, and what it never tells, all of it in the three lines Home's card shows. obid marks it asked when it makes the card, so no other question, member or restart asks again. Nothing else asks: not obid's start, not a join.
+- **The card holds obid's own words only.** Neither who asked nor their words are in it: nothing a member chose shapes what the owner's device signs. The question itself is on its own card, as ever.
+- **Yes.** One rule, `{"for": "*", "repos": "*", "tells": ["jobStatus"]}`, answering who asks and opening no room, since the card promises nothing about the room. Every question waiting on the owner then goes by it, as if it had come now: so the asker who read "It's waiting on Dana" gets their answer, and a member isn't stuck behind a question they already asked (`busy`). One the material can't answer comes back to the owner. "Questions from other Obys" says it was answered: "I answered this question from Dana's Oby by myself:", quoted.
+- **No (Cancel).** Nothing changes, and it doesn't ask again. Questions keep waiting on the owner.
+- **Listed.** The Obysphere's settings list "What your Oby tells": each rule's what, to whom, in which repositories and how many times it answered, with Remove. With nothing shared, "Nothing yet" and a button that shares, so no and Remove aren't one-way.
+- **Removed stays removed.** Removing any rule also marks the owner asked: no start, question or join brings the rule or the card back. Only their own click does. A `sharing.json` from before this that a person emptied by hand through the API can't be told from an upgrade's, so it gets the one card; a card only asks. A file that doesn't read shares nothing and stays as it is: no card, which would write over it.
+- **How the click is signed.** It's a Confirm (docs/runner-api.md, "Confirm takes the owner's tap"): the device signs `oby-confirm\n<item id>\n<title>\n<signedAt>`, within two minutes, once, and obid refuses `Confirm` without it (`403`, the item open, no rule). In the Electron app, main signs it, and for this action only after a real click it saw itself (`mayConfirm`, `takeInput`: `docs/contracts/signed-words.md`), so a script in the page can't either; a phone signs on the owner's tap. Settings' button is one such click: it opens the card and confirms it. **No agent, other Oby or job can grant it:** agents can't reach these routes, another Oby sends only typed actions and a question's words are data, and inside obid nothing confirms without a device.
+
+**How this and "only the repositories I choose" fit (SPH-8): one question, not two.** There is one latch (`offered`) and one card, and SPH-8 changes what the card asks instead of adding a second question: it lists the repositories to tell about, and a Confirm signs a title that names them. SPH-8 also stops the first join from making a rule, so a new member and an old one reach the same card at their first question. Until it lands the card says "in every repository", plainly.
+
 ## Interfaces and dependencies
 
 - `GET /v1/obid/sphere/peers/{owner}?limit=50`, `POST /v1/obid/sphere/peers/{owner}/ask` and the `peerThread` event: [runner-api.md](../runner-api.md), "obid only: a member's thread". On the gateway's allowlist, the read and the event only: the room's `POST` isn't on it either, and no phone asks from a thread until SPH-13 and SPH-14 add the route with their signing.
+- `GET /v1/obid/sharing`, `POST /v1/obid/sharing/offer`, `DELETE /v1/obid/sharing/rules/{id}` and the `share_status` Confirm: [runner-api.md](../runner-api.md), "obid only: sharing rules".
 - `Exchange::posts` builds a post, and `QUIET` and `waiting_on_them` are the same rule `oby_ask`'s report goes by (docs/contracts/ask-an-oby.md), imported rather than copied.
 
 ## Acceptance scenarios
@@ -87,7 +102,17 @@ obid reads the directory again as the question goes, and a Sphere's operator cou
 - **PEER-4** The owner's signed words go as a typed `question` with only those words, sealed for a card with a seal key, and read in the thread `by: owner` from the first event on, while what the other Oby says stays its own. Unsigned, another shape, a signature for another owner or used before, anyone but an exact member, someone revoked, a card that takes no questions, blank or over-long words, or a Sphere that serves the Oby as someone else's between two reads: nothing goes. Of several Obys it goes to one that takes questions and seals; one that dropped its seal key is last and refuses, sending nothing in the clear. A directory that can't be read says so, also for someone who joined since the last read.
 - **PEER-5** A possible secret, or a scan that can't run, sends nothing, keeps nothing and doesn't repeat it. A Sphere whose rules refuse says an admin can change them, and keeps no exchange.
 - **PEER-6** No model runs for it, and no conversation hears what comes back, its words or that it happened: none starts, moves or is marked, nothing starts, the inbox stays empty, the owner's next turn hears none of it, also while a question from a conversation is told there.
+- **PEER-16** A member from before is asked once, by the first question that waits on them: not by a second, not again after a restart, not again after a no. The card holds none of a member's words, and a file that doesn't read gets no card.
+- **PEER-17** Nothing is shared silently: not by the question, its words, the card, the API token alone or Settings opening the card. A Confirm with the device's signature makes one status rule that answers who asks and opens no room, and in the Electron app main signs it only on a click it saw itself. The questions that waited go by it: answered by the Oby and off the owner's list, or back with the owner when the material can't answer. Settings lists the rule in plain words.
+- **PEER-18** A rule the owner removed stays removed, across a restart and later questions, and nothing asks for it again; only their own click brings it back.
 
 ### Test it when it's done
 
-Nothing a person sees yet: no real-Mac step. SPH-4 brings the first, on the box in the thread.
+The thread itself has no real-Mac step yet: SPH-4 brings the first, on the box in the thread.
+
+On a real Mac that is already in an Obysphere from before the starter rule (or with `home/sharing.json` holding `{"rules": []}`), with a teammate's Oby:
+
+1. The teammate asks how your work is going: they read "It's waiting on" you, and Home shows the one card.
+2. They ask something else: no second card. Confirm: they get an answer from your Oby, and your list is clear.
+3. The Obysphere's settings list what your Oby tells. Remove it: the next question waits on you, and nothing asks again.
+4. Share from the settings: the next question is answered by itself.

@@ -1,7 +1,7 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { ANOTHER_ROUND, TRY_AGAIN, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
-import { input, picked, takeInput, wordsHeader } from '../../../main/words';
+import { input, mayConfirm, picked, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
 describe('signed words', () => {
@@ -139,5 +139,25 @@ describe('signed words', () => {
     // too late
     input(3_000);
     expect(takeInput(3_000 + WITHIN_MS)).toBe(false);
+  });
+});
+
+describe('sharing takes the owner\'s own click (docs/contracts/peer-thread.md)', () => {
+  const share = { confirm: { action: 'share_status' } };
+  it('peer_17_no_silent_share: a Confirm that shares needs a click main saw, one each', () => {
+    const at = 5_000_000;
+    while (takeInput(at)) { /* clicks from other tests */ }
+    expect(mayConfirm(share, at)).toBe(false);
+    input(at);
+    expect(mayConfirm(share, at + 10)).toBe(true);
+    expect(mayConfirm(share, at + 20)).toBe(false);
+    input(at);
+    expect(mayConfirm(share, at + WITHIN_MS + 1)).toBe(false);
+  });
+  it('leaves other Confirms and the click for them alone', () => {
+    const at = 6_000_000;
+    input(at);
+    expect(mayConfirm({ confirm: { action: 'delete_job' } }, at)).toBe(true);
+    expect(takeInput(at)).toBe(true);
   });
 });

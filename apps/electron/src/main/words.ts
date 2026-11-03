@@ -33,3 +33,8 @@ export function takeInput(at = Date.now()): boolean {
   inputs = inputs.filter((t) => at - t < WITHIN_MS);
   return inputs.shift() !== undefined;
 }
+
+// A Confirm that lets this Oby answer other people by itself (PEER-17) takes a click main saw
+// itself, so a script in the page can't grant it. Other Confirms sign on the page's say, as they did.
+export const mayConfirm = (item: { confirm?: { action?: string } }, at = Date.now()) =>
+  item.confirm?.action !== 'share_status' || takeInput(at);

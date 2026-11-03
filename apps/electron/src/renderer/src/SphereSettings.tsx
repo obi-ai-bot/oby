@@ -4,6 +4,8 @@ import { Check, Mail, X } from 'lucide-react';
 import { Group, Row, SettingsPage, Value } from './SettingsView';
 import SphereTile from './SphereTile';
 import { OwnerAvatar } from './ObyFace';
+import { api } from './obid';
+import { whatItTells, type SharingRule } from './sharing';
 import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
@@ -142,8 +144,9 @@ function Settings({ sphere }: { sphere: Sphere }) {
         </div>
       ))}
     </Group>
+    {sphere.live && <WhatItTells />}
     {/* last, set apart: what it does, then its button under it at the left */}
-    <Group i={3}>
+    <Group i={4}>
       <div className="set-row set-danger">
         <span className="set-label">
           {admin ? 'Delete Obysphere' : `Leave ${sphere.name}`}
@@ -154,6 +157,38 @@ function Settings({ sphere }: { sphere: Sphere }) {
     </Group>
     {confirming && <ConfirmModal sphere={sphere} onClose={() => setConfirming(false)} />}
   </>;
+}
+
+// What your Oby tells the others by itself, from obid's rules, each with Remove. With nothing shared,
+// Share is the same card a first question brings: this one click opens and confirms it, and main signs
+// the Confirm only on a click it saw itself (main/words.ts, mayConfirm).
+function WhatItTells() {
+  const [rules, setRules] = useState<SharingRule[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const change = (what?: () => Promise<unknown>) => void (what?.() ?? Promise.resolve())
+    .then(() => api.sharing())
+    .then((s) => { setRules(s.rules); setProblem(null); })
+    .catch((e: Error) => setProblem(e.message));
+  useEffect(() => change(), []);
+  const share = () => change(async () => { await api.confirm((await api.offerSharing()).id); });
+  if (!rules) return problem ? <Group i={3} title="What your Oby tells"><Row label={<span className="set-problem">{problem}</span>} /></Group> : null;
+  return (
+    <Group i={3} title="What your Oby tells" footer={rules.length ? 'It answers by itself only from this. Never logs, diffs, prompts or files.' : undefined}>
+      {rules.map((rule) => {
+        const { label, about } = whatItTells(rule);
+        return (
+          <Row key={rule.id} label={label} about={about}>
+            <button className="set-button set-member-action" onClick={() => change(() => api.removeSharingRule(rule.id))} aria-label={`Remove ${label}`}>Remove</button>
+          </Row>
+        );
+      })}
+      {!rules.length && (
+        <Row label="Nothing yet" about={problem ? <span className="set-problem">{problem}</span> : 'Every question waits for you.'}>
+          <button className="set-button set-member-action" onClick={share}>Share how my tasks are going</button>
+        </Row>
+      )}
+    </Group>
+  );
 }
 
 // Before it's deleted (or left): what goes with it, and, to delete, its name
