@@ -143,6 +143,27 @@ pub async fn peer_thread(
     ))
 }
 
+/// `POST /v1/obid/sphere/peers/{owner}/ask`: the owner's own words to that member's Oby, signed by an
+/// app of theirs (docs/contracts/peer-thread.md).
+pub async fn peer_ask(
+    State(shared): State<Arc<Shared>>,
+    Path(owner): Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    if crate::routes::signed_by(&shared, "POST", &uri, &headers, &body).is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Only your own words go from their thread as yours: an app of yours signs them.",
+        ));
+    }
+    Ok(json(
+        StatusCode::ACCEPTED,
+        Box::pin(shared.link.ask_peer(&owner, &body)).await?,
+    ))
+}
+
 /// `GET /v1/obid/decisions`.
 pub async fn decisions(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.decisions_json())

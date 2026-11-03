@@ -20,6 +20,7 @@ export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with 
 
 const MESSAGES = /^\/v1\/jobs\/[^/]+\/messages$/;
 const ROOM = /^\/v1\/spheres\/[^/]+\/room$/;
+const PEER_ASK = /^\/v1\/obid\/sphere\/peers\/[^/]+\/ask$/;
 
 // The words a request carries, for the requests the app sends obid with the owner's words in
 // them; null for any other request, or any other shape (main never signs it). A key the app
@@ -42,6 +43,8 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   }
   // the owner's `say` in the Sphere's room: its words alone (the app sends no about or replyTo)
   if (method === 'POST' && ROOM.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;
+  // the owner's question from a member's thread: its words alone (the path says to whom)
+  if (method === 'POST' && PEER_ASK.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;
   if (method === 'POST' && /^\/v1\/inbox\/[^/]+\/answer$/.test(p)) return text(body.answer) && shaped(body, { answer: text }) ? [body.answer] : null;
   if (method === 'POST' && /^\/v1\/jobs\/[^/]+\/permission$/.test(p)) {

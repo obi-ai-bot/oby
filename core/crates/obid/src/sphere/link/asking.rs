@@ -186,6 +186,59 @@ impl Link {
         Ok(cid)
     }
 
+    /// `POST /v1/obid/sphere/peers/{owner}/ask`: the owner's own words, which their app signed (the
+    /// route checks), as a typed question to that member's Oby. No model of theirs runs and no
+    /// conversation is in it (no `asked_in`), so nothing that comes back reaches a prompt or marks
+    /// anything: [`Link::asks_to_tell`] never picks it. By the exact owner id, as the thread reads.
+    /// The question's post; a refusal is in [`crate::brain::ask::refusal`]'s words, with nothing of
+    /// what the Sphere wrote but its code.
+    pub async fn ask_peer(&self, owner: &str, body: &[u8]) -> Result<Value, ApiError> {
+        let map = object(body, &["text"])?;
+        let action = json!({"text": text_field(&map, "text")?});
+        self.joined()?;
+        if action["text"].as_str().is_none_or(|t| t.trim().is_empty())
+            || !obi_protocol::schema::errors("actions/question", &action, 1).is_empty()
+        {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "A question is 1 to 2,000 characters of plain text.",
+            ));
+        }
+        self.refresh_members().await;
+        // Never read since obid started: it can't say who is a member, and the Sphere is away.
+        if self.lock().directory_read == 0 {
+            return Err(api(
+                StatusCode::GATEWAY_TIMEOUT,
+                "I can't ask them right now: the Obysphere can't be reached.",
+            ));
+        }
+        let members: Vec<AskMember> = self
+            .ask_members()
+            .into_iter()
+            .filter(|m| m.owner == owner)
+            .collect();
+        let Some(first) = members.first() else {
+            return Err(api(StatusCode::NOT_FOUND, "There's no such member."));
+        };
+        let Some(member) = members.iter().find(|m| m.takes_questions) else {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("{}'s Oby doesn't take questions.", first.name),
+            ));
+        };
+        let body = json!({"to": member.obi, "type": "question", "body": action,
+                          "expiresIn": ASK_LIFETIME});
+        let sent = self
+            .request_from(body.to_string().as_bytes(), true)
+            .await
+            .map_err(|e| api(e.status, crate::brain::ask::refusal(&member.name, &e)))?;
+        let cid = sent["correlationId"].as_str().unwrap_or_default();
+        let exchange = self.lock().exchanges.get(cid).cloned();
+        let verified = self.pins.verified(owner);
+        let post = exchange.and_then(|e| e.posts(&self.owner(), verified).into_iter().next());
+        Ok(post.unwrap_or(Value::Null))
+    }
+
     /// What the conversation `conversation` asked other Obys, oldest first.
     pub fn asks_in(&self, conversation: &str) -> Vec<Exchange> {
         let mut asks: Vec<Exchange> = self

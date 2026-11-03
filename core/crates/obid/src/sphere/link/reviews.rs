@@ -798,6 +798,16 @@ impl Link {
 
     /// `POST /v1/obid/sphere/requests`: the owner's Obi asks another Obi.
     pub async fn request(&self, body: &[u8]) -> Result<Value, ApiError> {
+        self.request_from(body, false).await
+    }
+
+    /// [`Link::request`]; `by_owner` when these are the owner's own signed words, sent as they are
+    /// ([`Link::ask_peer`]).
+    pub(super) async fn request_from(
+        &self,
+        body: &[u8],
+        by_owner: bool,
+    ) -> Result<Value, ApiError> {
         let map = object(body, &["to", "type", "body", "expiresIn"])?;
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
         let joined = self.joined()?;
@@ -837,7 +847,7 @@ impl Link {
             return Err(invalid("An Obi doesn't ask itself.".into()));
         }
         self.scan_outgoing(&action).await?;
-        self.send_scanned(&joined, to, kind, action, Expiry::In(expires_in))
+        self.send_scanned(&joined, to, kind, action, Expiry::In(expires_in), by_owner)
             .await
     }
 
@@ -1048,6 +1058,7 @@ impl Link {
         kind: String,
         action: Value,
         expiry: Expiry,
+        by_owner: bool,
     ) -> Result<Value, ApiError> {
         let invalid = |m: String| api(StatusCode::UNPROCESSABLE_ENTITY, m);
         // Built, sealed and sent; once more after a seal refusal, with the directory read again.
@@ -1162,6 +1173,7 @@ impl Link {
                 Some(peer_owner),
             );
             exchange.state = "sent".into();
+            exchange.asked_by_owner = by_owner;
             // Kept before it goes, so a reply that comes back at once finds it.
             self.lock().exchanges.insert(cid.clone(), exchange.clone());
             let sent = match self.token().await {
