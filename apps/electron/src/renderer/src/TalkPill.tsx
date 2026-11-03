@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown, Plus, Sparkles } from 'lucide-react';
+import { Check, ChevronDown, Plus, Shuffle } from 'lucide-react';
 import { BRANDS, BrandMark, type Brand } from './brands';
 import { Menu } from './Menu';
 import { everything } from './lean';
-import { useAccounts, useTalkDefault, fullness } from './SettingsView';
+import { useAccounts, useTalkDefault } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
 import { AUTO, TOOL_NAME, chosenOf, dot, list, percent, rowTitle, shownAccount, usageWords } from './talk';
 import type { Agent } from './mock';
@@ -12,7 +12,7 @@ const MARKS: Record<Agent, Brand> = { claude: BRANDS.claude, codex: BRANDS.opena
 // Claude's mark in its own colour; OpenAI's and Cursor's are one colour, drawn in the text's
 const Mark = ({ agent, size }: { agent: Agent; size: number }) => <BrandMark brand={MARKS[agent]} size={size} mono={agent !== 'claude'} />;
 
-// In the message box, by send: who Oby talks through, and how full it is; a click opens the list:
+// In the message box, by send: only the icon of who Oby talks through and an arrow; a click opens the list:
 // Auto, then every connected account, the chosen one checked, then Add account. In a conversation
 // (chat) a choice is that conversation's and takes effect at its next turn; on Home it's the
 // setting a new conversation follows (docs/contracts/conversation-agent.md). The words are
@@ -40,22 +40,22 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
         className={`talk-pick${at ? ' is-on' : ''}`}
         aria-haspopup="menu"
         aria-expanded={!!at}
+        title={on ? `${rowTitle(on, accounts)}${on.full ? ' · Full' : used == null ? '' : ` · ${used}%`}` : 'Add an account'}
         aria-label={on ? `Talking through ${rowTitle(on, accounts)}${on.full ? ', full' : used == null ? '' : `, ${used}% used`}. Change` : 'Choose who Oby talks through'}
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => setAt(at ? null : e.currentTarget.getBoundingClientRect())}
       >
         {on ? <>
-          <Mark agent={on.agent} size={15} />
-          <span className="talk-pick-name">{rowTitle(on, accounts)}</span>
-          {on.full ? <span className={`talk-pick-used ${full}`}>Full</span> : used != null && <span className={`talk-pick-used ${fullness(used)}`.trim()}>{used}%</span>}
-        </> : <span className="talk-pick-name">Add an account</span>}
+          <Mark agent={on.agent} size={16} />
+          {full && <span className={`usage-dot ${full}`} aria-hidden="true" />}
+        </> : <Plus size={16} strokeWidth={1.6} />}
         <ChevronDown size={13} strokeWidth={1.8} />
       </button>
       {at && (
         <Menu at={at} onClose={() => setAt(null)} width={300} height={100 + rows.length * 52}>
           <div className="talk-menu">
             <button role="menuitemradio" aria-checked={!chosen} className="talk-choice" onClick={() => pick(AUTO)}>
-              <span className="talk-choice-mark"><Sparkles size={17} strokeWidth={1.6} /></span>
+              <span className="talk-choice-mark"><Shuffle size={16} strokeWidth={1.6} /></span>
               <span className="talk-choice-text">
                 <span className="talk-choice-name">Auto</span>
                 <span className="talk-choice-about">Whichever has room</span>

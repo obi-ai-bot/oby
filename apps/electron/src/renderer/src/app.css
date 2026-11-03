@@ -990,15 +990,10 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .composer-usage { position: relative; }
 /* who Oby talks through, by send */
 .composer-talk { grid-area: talk; min-width: 0; align-self: end; }
-.talk-pick { display: flex; align-items: center; gap: 6px; height: 32px; max-width: 200px; padding: 0 8px; border: 0; border-radius: 16px; background: transparent; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; transition: background-color var(--fade), color var(--fade); }
+.talk-pick { position: relative; display: flex; align-items: center; gap: 2px; height: 32px; padding: 0 6px 0 8px; border: 0; border-radius: 16px; background: transparent; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; transition: background-color var(--fade), color var(--fade); }
 .talk-pick:hover, .talk-pick.is-on { background: var(--chip-hover); color: var(--ink); }
 .talk-pick > svg { flex: none; }
 .talk-pick > svg:last-child { color: var(--muted); }
-.talk-pick-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.talk-pick-used { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
-.talk-pick-used.is-high { color: var(--full); }
-.talk-pick-used.is-over { color: var(--over); }
-@media (max-width: 560px) { .talk-pick-name { display: none; } }
 .row-menu .talk-menu hr { margin: 4px 8px; }
 .row-menu button.talk-choice { display: flex; align-items: center; gap: 10px; width: 100%; height: auto; min-height: 44px; padding: 6px 10px; text-align: left; }
 .row-menu button.talk-choice.is-add { min-height: 36px; color: var(--text); }
