@@ -21,7 +21,7 @@ obid owns following, verifying and keeping the room, and posting; the app shows 
 - `waiting` shows as `Not sent yet`; `refused` as `Not sent:` and its `error`.
 - A `roomPost` event replaces the post with its `id`. Posts stay in `seq` order, those not yet sent after them, one copy each; a list read before an event landed doesn't take a post back to `waiting`. A reader at the end is followed down; one scrolled up stays where they are.
 - The room is read again when obid's stream comes back and each minute, from the last `seq` obid's answers listed, never an event's: an event can pass posts missed while the stream was away.
-- The message box takes words alone: no +, no @ list, no files, no usage. It keeps them until obid answers: anything but a post (a scan stop, an unsigned or unavailable refusal, obid away) leaves them in the box with obid's words over it. What was typed while they went stays.
+- The message box takes words alone: no +, no @ list, no files, no usage. It keeps them until obid answers: anything but a post (a scan stop, an unsigned or unavailable refusal, obid away) leaves them in the box with obid's words over it. What was typed while they went stays. Once they've gone and nothing is left, the box is one line again, as the chat's is.
 - A room with no posts says so. A member who joined later sees later posts, with no error (obid doesn't list the rest).
 
 ### Interfaces

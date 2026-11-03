@@ -43,6 +43,10 @@ export function numbered(name: string, taken: Set<string>) {
 export const leftInBox = (sent: string, now: string, went: boolean) =>
   !went ? now : now.startsWith(sent) ? now.slice(sent.length).trimStart() : now;
 
+// Whether the box stacks at this height: once its text runs past one line, until it's sent. An empty
+// box measured while still stacked is past one line by its padding alone, which is no reason to stay
+export const stackedAt = (was: boolean, height: number, text: string) => was || (height > 33 && text !== '');
+
 // The message box: Home's, and the one at the foot of a conversation (or a
 // task's or an Oby's page): tags for what's attached over one row of +, the
 // text and send; once the text runs past one line, the text over a row of +
@@ -390,7 +394,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onMentionKey={onMentionKey}
             onEnter={() => form.current?.requestSubmit()}
             // past one line (32px: 22 of text, 10 of padding) it stacks
-            onHeight={(h) => setStacked((was) => was || h > 33)}
+            onHeight={(h) => setStacked((was) => stackedAt(was, h, box.current?.text() ?? ''))}
             onPasteFiles={wordsOnly ? undefined : (list) => addFiles(list, true)}
           />
           {talk && <div className="composer-talk"><TalkPill chat={talk === true ? undefined : talk} /></div>}

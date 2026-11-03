@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseEvent, type RoomPost } from '../obid';
-import { leftInBox } from '../Composer';
+import { leftInBox, stackedAt } from '../Composer';
 import { aboutWords, atEnd, doing, merged, roomOpens } from '../room';
 import { RoomThread } from '../RoomView';
 
@@ -145,6 +145,16 @@ describe('the room, kept', () => {
     expect(leftInBox('Fix it', 'Fix it and more', true)).toBe('and more');
     expect(leftInBox('Fix it', 'Fix it', false)).toBe('Fix it');
     expect(leftInBox('Fix it', 'Fix it and more', false)).toBe('Fix it and more');
+  });
+
+  // Seen on a real obid: words that go only after obid answers empty the box while it's still
+  // stacked, whose padding alone measures past one line.
+  it('ROOMAPP-7: an emptied box goes back to one line, however tall it measures while stacked', () => {
+    expect(stackedAt(false, 40, '')).toBe(false);
+    expect(stackedAt(false, 40, 'a line that wrapped')).toBe(true);
+    expect(stackedAt(false, 20, 'one line')).toBe(false);
+    // until it's sent, however much of it is deleted
+    expect(stackedAt(true, 20, '')).toBe(true);
   });
 });
 
