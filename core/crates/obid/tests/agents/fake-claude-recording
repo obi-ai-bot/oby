@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+// In front of another stand-in, for tests/claude_bare.rs: `fake-claude-recording <url> <next> <args…>`.
+// It tells the test's server (support::planner_state) what obid launched Claude Code with, the
+// real arguments as `args` and the names in its environment as `input`, then runs <next> with them.
+// A box lets a launch write almost nothing that outlives it (a usage read's folder is gone after),
+// and its loopback stays open: why this asks a server rather than writing a file. Run in front of
+// `refresh_command` it has only the system's PATH, so node's folder goes on the end for <next>.
+
+import { spawnSync } from "node:child_process";
+import { dirname } from "node:path";
+
+const [url, next, ...args] = process.argv.slice(2);
+const body = JSON.stringify({ args, input: Object.keys(process.env).join("\n"), pwd: process.cwd() });
+// In a box on Linux the host's loopback is slirp4netns's 10.0.2.2 (support::start_with).
+for (const to of [url, url.replace("127.0.0.1", "10.0.2.2")]) {
+  try {
+    await fetch(to, { method: "POST", body });
+    break;
+  } catch {}
+}
+const env = { ...process.env, PATH: `${process.env.PATH}:${dirname(process.execPath)}` };
+const ran = spawnSync(next, args, { stdio: "inherit", env });
+process.exit(ran.status ?? 1);
