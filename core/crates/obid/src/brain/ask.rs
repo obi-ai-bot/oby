@@ -17,14 +17,12 @@ use super::harness::Session;
 use super::tools::{confirm_card, owners_word, parse, quoted};
 use crate::api::{ApiError, Shared};
 use crate::sphere::answering::clean;
-use crate::sphere::exchange::Exchange;
+use crate::sphere::exchange::{Exchange, QUIET};
 use crate::sphere::inbox::Item;
 use crate::sphere::link::{Picked, pick};
 
 /// How often obid looks again, for what no event says: a turn that ended, a question gone quiet.
 const EVERY: Duration = Duration::from_secs(5);
-/// How long a question goes unanswered, with no word from the other Oby, before the owner hears so.
-const QUIET: i64 = 120;
 /// Why a conversation is marked. Fixed: a job it starts carries this into a reviewer's input, and
 /// who said it is what a member chose.
 const ANOTHER_OBY_SAID: &str = "what another Oby said";
@@ -248,7 +246,7 @@ pub(super) async fn asks(shared: &Arc<Shared>, session: &Session) -> Result<Stri
         .iter()
         .map(|e| {
             json!({"to": e.peer_owner, "question": e.request["body"]["text"],
-                   "state": e.state, "waitingOnThem": waiting(e),
+                   "state": e.state, "waitingOnThem": e.waiting_on_them(),
                    "answeredBy": e.result.as_ref().and_then(|r| r["by"].as_str()),
                    "answer": e.result.as_ref().and_then(|r| r["text"].as_str())})
         })
@@ -258,14 +256,6 @@ pub(super) async fn asks(shared: &Arc<Shared>, session: &Session) -> Result<Stri
         "what other Obys said",
         &serde_json::to_string_pretty(&list).unwrap_or_default(),
     ))
-}
-
-fn waiting(exchange: &Exchange) -> bool {
-    exchange.messages.iter().any(|m| {
-        m.direction == "received"
-            && m.envelope["type"] == "status"
-            && m.envelope["body"]["state"] == "waiting_on_owner"
-    })
 }
 
 /// Another Oby's words as a Markdown quote: every line, so nothing they wrote can step out of it
@@ -344,7 +334,7 @@ fn telling(exchange: &Exchange, name: &str, now: i64) -> Option<Telling> {
             format!("{oby} never answered: the question expired."),
             false,
         ),
-        _ if waiting(exchange) => (!told("waiting")).then(|| Telling {
+        _ if exchange.waiting_on_them() => (!told("waiting")).then(|| Telling {
             key: "waiting",
             text: format!("{oby} hasn't answered. It's waiting on {name}."),
             quotes: false,

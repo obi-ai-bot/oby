@@ -66,6 +66,8 @@ const ROUTES: &[(&str, &str)] = &[
     // keys and the pins stay on the machine.
     ("GET", "/v1/obid/sphere"),
     ("GET", "/v1/obid/sphere/members"),
+    // A member's thread (docs/contracts/peer-thread.md): read only.
+    ("GET", "/v1/obid/sphere/peers/*"),
     ("GET", "/v1/events"),
     ("GET", "/v1/conversation"),
     ("GET", "/v1/conversations"),
@@ -1055,7 +1057,9 @@ mod tests {
     fn iosnew_4_a_phone_reads_the_sphere_and_changes_nothing() {
         assert!(allows(&Method::GET, "/v1/obid/sphere"));
         assert!(allows(&Method::GET, "/v1/obid/sphere/members"));
+        assert!(allows(&Method::GET, "/v1/obid/sphere/peers/ernesto"));
         for (method, path) in [
+            (Method::POST, "/v1/obid/sphere/peers/ernesto"),
             (Method::DELETE, "/v1/obid/sphere"),
             (Method::POST, "/v1/obid/sphere/join"),
             (Method::POST, "/v1/obid/sphere/key"),

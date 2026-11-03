@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 
 use crate::store;
 
+/// How long a question goes unanswered, with no word from the other Oby, before the owner hears so.
+pub const QUIET: i64 = 120;
+
 /// One envelope sent or received in an exchange, exactly as signed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -133,6 +136,15 @@ impl Exchange {
                 .any(|e| obi_protocol::TERMINAL_TYPES.contains(&e["type"].as_str().unwrap_or("")))
     }
 
+    /// Whether the other Oby said only its person can answer.
+    pub fn waiting_on_them(&self) -> bool {
+        self.messages.iter().any(|m| {
+            m.direction == "received"
+                && m.envelope["type"] == "status"
+                && m.envelope["body"]["state"] == "waiting_on_owner"
+        })
+    }
+
     /// The envelope ids it holds.
     pub fn envelope_ids(&self) -> impl Iterator<Item = &str> {
         self.messages
@@ -162,6 +174,94 @@ impl Exchange {
             "updated": date(self.updated),
         })
     }
+
+    /// What a member's thread shows of it (docs/contracts/peer-thread.md): one post per message, in
+    /// the room's shape, oldest first, typed fields and the words only. `me` is this Oby's owner, and
+    /// `verified` whether the owner compared the other's owner key. A reply still in `outbox` isn't
+    /// here: it may be sealed already, and `exchange.state` says what's coming.
+    pub fn posts(&self, me: &str, verified: bool) -> Vec<Value> {
+        let unconfirmed = !self.envelope_ids().any(|id| self.request["id"] == id);
+        let about = self.about_json();
+        let empty = json!([]);
+        let post = |direction: &str, seq: Option<u64>, at: Option<&str>, envelope: &Value| {
+            let (kind, body) = (envelope["type"].as_str().unwrap_or(""), &envelope["body"]);
+            let sent = direction == "sent";
+            let waiting = at.is_none();
+            json!({
+                "id": envelope["id"],
+                "seq": seq,
+                "recordedAt": at,
+                "from": envelope["from"],
+                "owner": if sent { Some(me) } else { self.peer_owner.as_deref() },
+                "kind": kind,
+                "by": said_by(kind, body),
+                "createdAt": envelope["created_at"],
+                "replyTo": envelope["in_reply_to"],
+                "text": words_of(kind, body),
+                "about": if body["about"].is_array() { &body["about"] } else if body["refs"].is_array() { &body["refs"] } else { &empty },
+                "state": if waiting { "waiting" } else { "sent" },
+                // Never what a Sphere said: `GET /v1/obid/sphere/exchanges/{id}` has the exchange's own.
+                "error": waiting.then_some("Not confirmed yet: the Obysphere didn't answer."),
+                "verified": sent || verified,
+                "direction": direction,
+                "status": (kind == "status").then(|| &body["state"]),
+                "reason": (kind == "decline").then(|| &body["reason"]),
+                "exchange": about,
+            })
+        };
+        let mut posts = Vec::with_capacity(self.messages.len() + 1);
+        if unconfirmed {
+            let direction = if self.direction == "outgoing" {
+                "sent"
+            } else {
+                "received"
+            };
+            posts.push(post(direction, None, None, &self.request));
+        }
+        posts.extend(
+            self.messages
+                .iter()
+                .map(|m| post(&m.direction, m.seq, Some(&m.at), &m.envelope)),
+        );
+        posts
+    }
+
+    /// What every post of a thread says of its exchange. `quietAt`: when an outgoing question with
+    /// no word yet counts as unanswered ([`QUIET`]), which the clock decides, so no event says it.
+    fn about_json(&self) -> Value {
+        let waiting = self.waiting_on_them();
+        let open = matches!(self.state.as_str(), "sent" | "accepted");
+        let quiet = self.direction == "outgoing" && self.kind == "question" && open && !waiting;
+        json!({
+            "id": self.correlation_id,
+            "type": self.kind,
+            "direction": self.direction,
+            "state": self.state,
+            "waitingOnThem": waiting,
+            "quietAt": quiet.then(|| obi_protocol::time::format(self.created + QUIET)),
+        })
+    }
+}
+
+/// Who a message's body says wrote it: its sender's own claim, as `by` on a room's post.
+fn said_by(kind: &str, body: &Value) -> &'static str {
+    let owners = body["by"] == "owner" || (kind == "decline" && body["reason"] == "owner_declined");
+    if owners { "owner" } else { "obi" }
+}
+
+/// The words of a message, as someone wrote them: data, shown only as a quote.
+fn words_of(kind: &str, body: &Value) -> Value {
+    let key = match kind {
+        "question" | "answer" => "text",
+        "status" | "decline" => "note",
+        "review_request" | "handoff" => "goal",
+        "result" => "summary",
+        _ => return Value::Null,
+    };
+    body.get(key)
+        .filter(|words| words.is_string())
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 /// Where exchanges are kept.
@@ -195,5 +295,144 @@ impl Exchanges {
 
     pub fn load_all(&self) -> Vec<Exchange> {
         store::load_dir(&self.dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(direction: &str, kind: &str, body: Value) -> Message {
+        Message {
+            direction: direction.into(),
+            seq: Some(1),
+            at: "2026-11-03T12:00:00Z".into(),
+            envelope: json!({"id": kind, "type": kind, "from": "obi-sam", "body": body}),
+        }
+    }
+
+    fn asked(kind: &str, body: Value) -> Exchange {
+        let request = json!({"id": "c", "correlation_id": "c", "type": kind, "body": body});
+        let mut asked = Exchange::new(
+            "outgoing",
+            request.clone(),
+            "obi-sam".into(),
+            Some("sam".into()),
+        );
+        asked.state = "sent".into();
+        asked.created = 1000;
+        asked.messages.push(Message {
+            direction: "sent".into(),
+            seq: Some(1),
+            at: "2026-11-03T12:00:00Z".into(),
+            envelope: request,
+        });
+        asked
+    }
+
+    /// PEER-1: each message's words, and what it says of itself, whatever its type.
+    #[test]
+    fn peer_1_each_message_says_its_words_and_no_more() {
+        for (kind, body, text, by) in [
+            ("question", json!({"text": "Q"}), json!("Q"), "obi"),
+            (
+                "answer",
+                json!({"by": "owner", "text": "A"}),
+                json!("A"),
+                "owner",
+            ),
+            (
+                "answer",
+                json!({"by": "obi", "text": "A"}),
+                json!("A"),
+                "obi",
+            ),
+            (
+                "status",
+                json!({"state": "working", "note": "N"}),
+                json!("N"),
+                "obi",
+            ),
+            ("decline", json!({"reason": "busy"}), Value::Null, "obi"),
+            (
+                "decline",
+                json!({"reason": "owner_declined", "note": "N"}),
+                json!("N"),
+                "owner",
+            ),
+            (
+                "review_request",
+                json!({"goal": "G", "summary": "S"}),
+                json!("G"),
+                "obi",
+            ),
+            ("handoff", json!({"goal": "G"}), json!("G"), "obi"),
+            (
+                "result",
+                json!({"summary": "S", "findings": ["F"]}),
+                json!("S"),
+                "obi",
+            ),
+            ("accept", json!({}), Value::Null, "obi"),
+            (
+                "share_offer",
+                json!({"text": "not a known type's words"}),
+                Value::Null,
+                "obi",
+            ),
+        ] {
+            let mut e = asked("question", json!({"text": "Q"}));
+            e.messages.push(message("received", kind, body));
+            let posts = e.posts("me", false);
+            assert_eq!(posts[1]["text"], text, "{kind}");
+            assert_eq!(posts[1]["by"], by, "{kind}");
+        }
+    }
+
+    /// PEER-1: where the exchange stands: when a question counts as unanswered, unless it's said why.
+    #[test]
+    fn peer_1_a_question_says_when_it_counts_as_unanswered() {
+        let quiet = |e: &Exchange| e.posts("me", false)[0]["exchange"]["quietAt"].clone();
+        let mut e = asked("question", json!({"text": "Q"}));
+        assert_eq!(quiet(&e), json!(obi_protocol::time::format(1000 + QUIET)));
+        e.messages
+            .push(message("received", "status", json!({"state": "working"})));
+        assert!(quiet(&e).is_string(), "a word that says nothing of when");
+        e.messages.push(message(
+            "received",
+            "status",
+            json!({"state": "waiting_on_owner"}),
+        ));
+        assert_eq!(quiet(&e), Value::Null);
+        assert_eq!(e.posts("me", false)[0]["exchange"]["waitingOnThem"], true);
+        for state in ["done", "declined", "expired"] {
+            let mut ended = asked("question", json!({"text": "Q"}));
+            ended.state = state.into();
+            assert_eq!(quiet(&ended), Value::Null, "{state}");
+        }
+        assert_eq!(
+            quiet(&asked("review_request", json!({"goal": "G"}))),
+            Value::Null
+        );
+    }
+
+    /// PEER-1: a request the Sphere hasn't confirmed is still in the thread, in obid's words, and what
+    /// obid keeps for itself isn't.
+    #[test]
+    fn peer_1_a_request_not_confirmed_shows_as_waiting() {
+        let mut e = asked("review_request", json!({"goal": "G"}));
+        e.messages.clear();
+        e.error = Some("Not confirmed yet: what a Sphere said".into());
+        e.asked_in = Some("conversation-id".into());
+        e.outbox
+            .push(json!({"id": "out", "body": {"text": "in the outbox"}}));
+        let posts = e.posts("me", false);
+        assert_eq!(posts.len(), 1, "what isn't sent yet isn't listed");
+        assert_eq!(posts[0]["state"], "waiting");
+        assert_eq!(posts[0]["seq"], Value::Null);
+        assert_eq!(posts[0]["text"], "G");
+        let shown = posts[0].to_string();
+        assert!(!shown.contains("what a Sphere said"), "{shown}");
+        assert!(!shown.contains("conversation-id"), "{shown}");
     }
 }
