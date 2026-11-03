@@ -8,8 +8,10 @@ use regex::Regex;
 use serde_json::Value;
 
 static LIMIT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:usage|rate)[ -]?limit|hit your limit|limit (?:reached|exceeded)\b")
-        .expect("a regex")
+    Regex::new(
+        r"(?i)\b(?:usage|rate)[ -]?limit|hit your (?:\w+ )?limit|limit (?:reached|exceeded)\b",
+    )
+    .expect("a regex")
 });
 /// Claude Code's older line: `Claude AI usage limit reached|1760000000`.
 static EPOCH: LazyLock<Regex> =
@@ -17,7 +19,7 @@ static EPOCH: LazyLock<Regex> =
 static WAIT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(?:in|after)\s+\d").expect("a regex"));
 static PART: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m)\b").expect("a regex")
+    Regex::new(r"(?i)(\d+)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m)\b").expect("a regex")
 });
 
 /// The text says a usage limit stopped it.
@@ -41,10 +43,10 @@ pub fn reset_in(text: &str, now: i64) -> Option<i64> {
         .captures_iter(text)
         .map(|part| {
             let n: i64 = part[1].parse().unwrap_or(0);
-            n.saturating_mul(if part[2].to_lowercase().starts_with('h') {
-                3600
-            } else {
-                60
+            n.saturating_mul(match part[2].to_lowercase().chars().next() {
+                Some('d') => 86_400,
+                Some('h') => 3600,
+                _ => 60,
             })
         })
         .fold(0_i64, i64::saturating_add);
@@ -117,6 +119,26 @@ mod tests {
         // A made-up wait saturates instead of overflowing.
         assert_eq!(reset_in("in 3000000000000000 hours", now), Some(i64::MAX));
         assert_eq!(reset_in("Try again at 10:45 PM.", now), None);
+    }
+
+    /// LIMITS-10: the words claude 2.1.302 ended a limit's turn with are a limit's, event or no
+    /// event, and a wait of days is told from one of hours: a week's never reads as five hours'.
+    #[test]
+    fn limits_10_the_tools_own_words_say_a_limit() {
+        for said in [
+            "You've hit your session limit · resets 4:36am (America/Sao_Paulo)",
+            "You've hit your weekly limit · resets Nov 6 at 3:36am (America/Sao_Paulo)",
+            "You've hit your limit · resets 4:36am",
+        ] {
+            assert!(is_limit(said), "{said}");
+        }
+        assert!(!is_limit("You've hit your stride, and the tests pass."));
+        let now = 1_760_000_000;
+        assert_eq!(
+            reset_in("Try again in 4 days 2 hours.", now),
+            Some(now + 4 * 86_400 + 2 * 3600)
+        );
+        assert_eq!(reset_in("Try again in 1d.", now), Some(now + 86_400));
     }
 
     #[test]

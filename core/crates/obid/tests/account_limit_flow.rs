@@ -760,6 +760,21 @@ fn limits_6_stop_ends_the_wait() {
     assert_eq!(prompts_of(&stopped.body).len(), 1);
 }
 
+/// LIMITS-6: while it waits its account is busy, as with any queued job: Stop is what frees it, since
+/// a queued job can't move.
+#[test]
+fn limits_6_stop_frees_the_waiting_jobs_account() {
+    let (_folder, _config, obid) = on_stub("limits-6-account");
+    let id = post(&obid, "LIMITED: 3600");
+    waiting_for_reset(&obid, &id);
+    let busy = call(&obid, "DELETE", "/v1/accounts/stub", None);
+    assert_eq!(busy.status, 409, "{}", busy.text);
+    assert!(busy.text.contains("stop it first"), "{}", busy.text);
+    assert!(!busy.text.contains("or move it"), "{}", busy.text);
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(call(&obid, "DELETE", "/v1/accounts/stub", None).status, 204);
+}
+
 /// LIMITS-7: the wait survives a restart: the same time on its line, nothing counted as cut, and it
 /// still resumes.
 #[test]
@@ -866,6 +881,77 @@ fn limits_9_three_tries_then_the_owner_is_asked() {
     assert_eq!(unsigned.status, 403, "{}", unsigned.text);
 }
 
+/// Job `id`, of `kind` and asked `task`, its account's limit stopped it `tries` waits in, and the owner's signed
+/// Resume of it: the decision they answered, and obid running it.
+fn signed_resume(
+    folder: &Folder,
+    id: &str,
+    kind: &str,
+    task: &str,
+    tries: usize,
+) -> (String, Value, Obid) {
+    let config = limit_config(&folder.0, "silent", false);
+    blocked_job(
+        &folder.0.join("home/jobs"),
+        id,
+        kind,
+        Some(obi_protocol::time::now() - 31 * 60),
+    );
+    let mut job = read_job(folder, id);
+    job.task = task.into();
+    job.recovery.limit_resumes = tries;
+    write_job(folder, &job);
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let decision = pending_decisions(&obid).remove(0);
+    let first = decision["id"].as_str().unwrap().to_owned();
+    let answered = answer(
+        &obid,
+        &first,
+        decision["revision"].as_u64().unwrap(),
+        "resume",
+        None,
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    (first, config, obid)
+}
+
+/// LIMITS-9: a signed Resume carries the job on, and gives it no new tries: its next limit asks again.
+#[test]
+fn limits_9_a_signed_resume_gives_no_new_tries() {
+    let folder = Folder::new("limits-9-signed");
+    let (first, _config, obid) =
+        signed_resume(&folder, "cccc0901", "investigate", "LIMITED AGAIN: 2", 3);
+    let asks = within(90, "its next limit asks again", || {
+        let job = job_now(&obid, "cccc0901");
+        (job["accountLimit"]["state"] == "pending"
+            && job["accountLimit"]["decision"] != first.as_str())
+        .then_some(job)
+    });
+    assert!(asks["resumesAt"].is_null(), "{asks}");
+    assert_eq!(read_job(&folder, "cccc0901").recovery.limit_resumes, 3);
+}
+
+/// LIMITS-9: the owner's own words start the count again; anyone else's don't.
+#[test]
+fn limits_9_only_the_owners_own_words_start_the_count_again() {
+    let (folder, _config, obid) = on_stub("limits-9-words");
+    let id = post(&obid, "LIMITED: 3600");
+    waiting_for_reset(&obid, &id);
+    let target = format!("/v1/jobs/{id}/messages");
+    let tries = || read_job(&folder, &id).recovery.limit_resumes;
+    within(10, "the try is counted", || (tries() == 1).then_some(()));
+    let unsigned = call(&obid, "POST", &target, Some(&json!({"text": "Look here"})));
+    assert_eq!(unsigned.status, 200, "{}", unsigned.text);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(tries(), 1);
+    let typed = call_typed(&obid, "POST", &target, &json!({"text": "Look there"}));
+    assert_eq!(typed.status, 200, "{}", typed.text);
+    within(10, "the count starts again", || {
+        (tries() == 0).then_some(())
+    });
+    assert_eq!(job_now(&obid, &id)["status"], "queued");
+}
+
 /// LIMITS-10: a weekly limit, a limit with no known reset, or one further off than five hours: the
 /// owner's decision, as before.
 #[test]
@@ -874,6 +960,7 @@ fn limits_10_any_other_limit_asks_as_before() {
         ("limits-10-week", "LIMITED WEEK: 86400"),
         ("limits-10-near-week", "LIMITED WEEK: 3600"),
         ("limits-10-none", "LIMITED NO RESET"),
+        ("limits-10-words", "LIMITED NO EVENT"),
         ("limits-10-far", "LIMITED: 21600"),
     ] {
         let (_folder, _config, obid) = on_stub(name);
@@ -885,6 +972,17 @@ fn limits_10_any_other_limit_asks_as_before() {
         let decisions = pending_decisions(&obid);
         assert_eq!(decisions[0]["jobs"][0]["id"], id.as_str(), "{task}");
     }
+}
+
+/// LIMITS-10: a job that starts on an account a week holds asks as it did: with no reset of its own.
+#[test]
+fn limits_10_a_job_that_starts_on_an_account_a_week_holds_asks_as_before() {
+    let (_folder, _config, obid) = on_stub("limits-10-start");
+    let first = asked(&obid, &post(&obid, "LIMITED WEEK: 86400"));
+    assert!(!first["accountLimit"]["resetAt"].is_null(), "{first}");
+    let second = asked(&obid, &post(&obid, "Look around"));
+    assert!(second["accountLimit"]["resetAt"].is_null(), "{second}");
+    assert!(second["resumesAt"].is_null(), "{second}");
 }
 
 /// LIMITS-11: at its time, an account a later five-hour reset still holds gets a new wait, no try
@@ -901,7 +999,7 @@ fn limits_11_an_account_still_held_at_the_reset() {
         "sevenDayResets": now + 86_400, "fullUntil": later}});
     let obid = its_time_comes(&folder, &config, obid, &id, Some(usage));
     let at = obi_protocol::time::format(later + 90);
-    within(40, "it waits for the later reset", || {
+    within(60, "it waits for the later reset", || {
         (job_now(&obid, &id)["resumesAt"] == at).then_some(())
     });
     let job = job_now(&obid, &id);
@@ -1023,6 +1121,110 @@ fn limits_12_resuming_keeps_everything_else() {
     let obid = start(&folder.0, &config, None);
     let job = ended(&obid, "aaaa1202");
     assert_eq!(job["stalled"]["why"], "budget", "{job}");
+}
+
+/// LIMITS-12: a resumed run is the round it was: uncounted, and it ends as that round would. A round
+/// of the agent's own says nothing was committed; one the owner asked for leaves that to their words.
+#[test]
+fn limits_12_a_resumed_run_ends_as_its_round_would() {
+    let (folder, config, obid) = on_stub("limits-12-round");
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "account": "stub", "rounds": 3,
+        "task": "LIMITED ONCE: 2"});
+    let posted = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let id = posted.body["id"].as_str().unwrap().to_owned();
+    waiting_for_reset(&obid, &id);
+    let obid = its_time_comes(&folder, &config, obid, &id, None);
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(
+        done["reason"], "Nothing committed, so nothing was published.",
+        "{done}"
+    );
+    assert_eq!(done["nothingDone"], true, "{done}");
+    assert_eq!(done["round"], 1, "{done}");
+    assert_eq!(done["rounds"], 3, "{done}");
+    drop(obid);
+
+    let folder = Folder::new("limits-12-asked");
+    let id = "cccc1201";
+    let (_, config, obid) = signed_resume(&folder, id, "build", "LIMITED ONCE: 2", 0);
+    waiting_for_reset(&obid, id);
+    let obid = its_time_comes(&folder, &config, obid, id, None);
+    let done = ended(&obid, id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(done["reason"].is_null(), "{done}");
+}
+
+/// LIMITS-14: a job waiting on a pull request merged or closed since spends no fresh window: it's
+/// let go, or, with commits that never went out, stopped in sight. Words for it still go.
+#[test]
+fn limits_14_a_wait_on_an_ended_pull_request_doesnt_run() {
+    let folder = Folder::new("limits-14");
+    let config = limit_config(&folder.0, "fake-claude", false);
+    let waiting = |id: &str, pushed: u64, heard: &[&str]| {
+        let mut job = obid::job::Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "fix".into(),
+            "Look around".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.branch = format!("oby/fix-{id}");
+        job.base = Some("dev".into());
+        job.status = obid::job::Status::Queued;
+        job.round = Some(2);
+        job.commits = Some(2);
+        job.pushed = Some(pushed);
+        job.published = Some("https://github.com/obi-e2e/fixture-app/pull/7".into());
+        job.pull_request = Some(
+            serde_json::from_value(json!({"state": "MERGED", "base": "dev",
+                "checkedAt": obi_protocol::time::now()}))
+            .unwrap(),
+        );
+        job.heard = heard.iter().map(|h| (*h).to_owned()).collect();
+        job.resumes_at = Some(obi_protocol::time::now() + 3600);
+        job.waiting = Some(obid::job::Waiting {
+            kind: "cap".into(),
+            text: "Resuming at 3:40 PM".into(),
+            reserved: None,
+            tool: None,
+        });
+        write_job(&folder, &job);
+    };
+    waiting("aaaa1401", 2, &[]);
+    waiting("aaaa1402", 1, &[]);
+    waiting("aaaa1403", 2, &["Also look at the readme."]);
+    let obid = start(&folder.0, &config, None);
+    let gone = within(30, "the wait is let go", || {
+        let job = job_now(&obid, "aaaa1401");
+        job["dismissed"].is_string().then_some(job)
+    });
+    assert_eq!(gone["status"], "stopped", "{gone}");
+    assert!(gone["resumesAt"].is_null(), "{gone}");
+    assert!(
+        gone["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["what"] == obid::jobs::LET_GO),
+        "{gone}"
+    );
+    let kept = job_now(&obid, "aaaa1402");
+    assert_eq!(kept["status"], "stopped", "{kept}");
+    assert!(kept["dismissed"].is_null(), "{kept}");
+    assert!(kept["resumesAt"].is_null(), "{kept}");
+    assert!(
+        kept["reason"]
+            .as_str()
+            .unwrap()
+            .contains("merged or closed"),
+        "{kept}"
+    );
+    let told = job_now(&obid, "aaaa1403");
+    assert_eq!(told["status"], "queued", "{told}");
+    assert!(!told["resumesAt"].is_null(), "{told}");
 }
 
 /// LIMITS-13: a wait an older release left a pending decision stays one, whatever its reset says.

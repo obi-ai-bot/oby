@@ -25,6 +25,7 @@
 //                    "went on: resume=<the session it resumed> marked=<whether Oby's note came first>"
 //   LIMITED AGAIN: <s> as LIMITED: <s>, this turn and every later one of the job
 //   LIMITED NO RESET ends the turn with a usage-limit error and no rate_limit_event
+//   LIMITED NO EVENT ends the turn with claude 2.1.302's session-limit words and no rate_limit_event
 //   LIMITED ON: <w>  this turn and every later one: as LIMITED: 3600 on an account whose login's
 //                    access token holds <w>, else ends the turn with "went on: resume=<the session
 //                    it resumed, or none> told=<whether it heard that an account hit its limit>"
@@ -639,6 +640,8 @@ rl.on("line", (line) => {
     limitEnds("You've hit your weekly limit · resets Nov 6 at 3:36am (America/Sao_Paulo)");
   } else if (prompt.includes("LIMITED NO RESET")) {
     result("Claude AI usage limit reached.", true);
+  } else if (prompt.includes("LIMITED NO EVENT")) {
+    limitEnds("You've hit your session limit · resets 4:36am (America/Sao_Paulo)");
   } else if (prompt.includes("QUIET")) {
     if (prompt.includes("NO NOTE")) {
       mkdirSync(".obi", { recursive: true });

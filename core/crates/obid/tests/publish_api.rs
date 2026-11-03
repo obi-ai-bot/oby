@@ -3814,6 +3814,58 @@ fn limits_5_a_review_waits_for_the_reset_with_its_job() {
     assert!(job["reviewError"].is_null(), "{job}");
 }
 
+/// LIMITS-14: a review waiting for its reset, of a head its job has pushed past, spends no turn: at
+/// its time it stops, and the newer head's review comes in its place.
+#[test]
+fn limits_14_a_waiting_review_of_an_old_head_spends_no_turn() {
+    let folder = Folder::new("publish-review-old-head");
+    let bin = fake_gh(&folder.0);
+    let (mut obid, _remote, config) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt LIMITED REVIEW",
+               "check": "test -f hello.txt"}),
+    );
+    let rid = review_of(&obid, &id, 0)["id"].as_str().unwrap().to_owned();
+    within(120, "the review waits for its reset", || {
+        let review = call(&obid, "GET", &format!("/v1/jobs/{rid}"), None).body;
+        (review["status"] == "queued" && !review["resumesAt"].is_null()).then_some(())
+    });
+    obid.stop();
+    let edit = |job: &str, change: &dyn Fn(&mut Value)| {
+        let file = folder.0.join(format!("home/jobs/{job}.json"));
+        let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        change(&mut kept);
+        std::fs::write(&file, kept.to_string()).unwrap();
+    };
+    edit(&id, &|job| {
+        let pushes = job["outgoing"].as_array_mut().unwrap();
+        let push = pushes
+            .iter_mut()
+            .rev()
+            .find(|o| o["action"] == "push")
+            .unwrap();
+        push["id"] = json!("0123456789012345678901234567890123456789");
+    });
+    edit(&rid, &|review| {
+        review["resumesAt"] = json!(obi_protocol::time::now() - 1);
+    });
+    let obid = start(&folder.0, &config, Some(&bin));
+    let stopped = within(60, "the old review stops", || {
+        let review = call(&obid, "GET", &format!("/v1/jobs/{rid}"), None).body;
+        (review["status"] == "stopped").then_some(review)
+    });
+    assert!(stopped["resumesAt"].is_null(), "{stopped}");
+    assert_eq!(stopped["round"], 1, "{stopped}");
+    // The newer head's review waits for an account with room: the only one is still full.
+    let job = within(30, "the newer head's review waits", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["noReviewer"].is_string().then_some(job)
+    });
+    assert!(job["reviewing"].is_null(), "{job}");
+    assert!(job["reviewError"].is_null(), "{job}");
+}
+
 /// With no account that fits (the author's own nearly full, no other), Oby's review never runs over
 /// the limit: the job says why it waits (`noReviewer`, the Review stage), with no review job and no
 /// error.

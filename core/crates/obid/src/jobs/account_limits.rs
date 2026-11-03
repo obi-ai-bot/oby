@@ -52,6 +52,18 @@ pub(super) fn wait_for_reset(job: &mut Job, at: i64) {
     job.step = line;
 }
 
+/// A run a five-hour limit stopped starts its wait, a try counted (LIMITS-9), unless Stop came as
+/// the run ended: nothing undoes it (LIMITS-6). Whether the owner asked for its round stays.
+pub(super) fn start_wait(job: &mut Job, at: i64) {
+    if !job.status.is_active() {
+        return;
+    }
+    job.recovery.limit_resumes += 1;
+    job.publish_step = None;
+    wait_for_reset(job, at);
+    job.changed(format!("A five-hour limit stopped it. {}", job.step));
+}
+
 impl Jobs {
     /// When job `id`, stopped by a limit its tool said resets at `reset`, resumes by itself: only a
     /// five-hour limit (the owner's decision of 2026-11-02), and only [`RESUME_TRIES`] times.
@@ -82,6 +94,17 @@ impl Jobs {
         let waits = |job: &Job| job.status == Status::Queued && job.resumes_at.is_some();
         for (_, id) in due {
             let Some(job) = self.get(&id) else { continue };
+            // A review of a head its job pushed past: its verdict wouldn't count (`reviewed`), so
+            // it spends no turn, and stopping it starts the newer head's (LIMITS-14).
+            if job
+                .review_of
+                .as_deref()
+                .and_then(|of| self.get(of))
+                .is_some_and(|author| job.read_another_head(&author))
+            {
+                self.stop(&id);
+                continue;
+            }
             if !self.limit_source_is_connected(&job.agent, &job.account) {
                 self.ask_about_limit(
                     &id,
@@ -107,11 +130,13 @@ impl Jobs {
             }
             self.update(&id, |job| {
                 if waits(job) {
+                    // The same round going on, as after a restart (RECOVERY-2).
+                    let (round, rounds) = (job.round, job.rounds);
                     next_round(job);
+                    (job.round, job.rounds) = (round, rounds);
                     job.step = "Starting".into();
                     // A job that never started has no session to tell: it gets its first prompt.
                     if job.session.is_some() {
-                        job.asked = true;
                         job.recovery.cut = Some(RESET_CAME.into());
                         job.recovery.sent.get_or_insert_default();
                     }
@@ -735,5 +760,31 @@ mod tests {
         assert_eq!(resuming_at(at, &utc), "Resuming at 7:36 AM");
         let sao_paulo = jiff::tz::TimeZone::get("America/Sao_Paulo").unwrap();
         assert_eq!(resuming_at(at, &sao_paulo), "Resuming at 4:36 AM");
+    }
+
+    /// LIMITS-6: a Stop that lands as the run ends, once obid read that it wasn't stopped, stays.
+    #[test]
+    fn limits_6_a_stop_as_the_run_ends_isnt_undone() {
+        let mut job = Job::new(
+            "aaaa0601".into(),
+            "o/r".into(),
+            "build".into(),
+            "Look around".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.status = Status::Stopped;
+        start_wait(&mut job, 1_793_691_381);
+        assert_eq!(job.status, Status::Stopped);
+        assert_eq!(job.resumes_at, None);
+        assert_eq!(job.recovery.limit_resumes, 0);
+
+        job.status = Status::Running;
+        job.asked = true;
+        start_wait(&mut job, 1_793_691_381);
+        assert_eq!(job.status, Status::Queued);
+        assert_eq!(job.resumes_at, Some(1_793_691_381));
+        assert_eq!(job.recovery.limit_resumes, 1);
+        assert!(job.asked, "whether the owner asked for its round stays");
     }
 }

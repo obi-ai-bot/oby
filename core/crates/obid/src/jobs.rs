@@ -49,6 +49,10 @@ const CHECK_OUTPUT_MAX: usize = 64 * 1024;
 const NOTHING_COMMITTED: &str = "Nothing committed, so nothing was published.";
 /// In the changes of a task obid let go itself (TASKS-13): not the owner's Dismiss.
 pub const LET_GO: &str = "Oby let it go: its pull request was merged or closed.";
+/// Why a job that waited for a five-hour limit's reset, with commits that never went out, stopped
+/// (LIMITS-14). Proposed words: Sangam's to change.
+const ENDED_WHILE_WAITING: &str =
+    "Its pull request was merged or closed while it waited, so Oby didn't run it again.";
 /// How long git in a job's sandbox may take.
 const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
@@ -6714,11 +6718,7 @@ impl Jobs {
                 };
                 self.update(id, |job| {
                     if let Some(at) = resume_at {
-                        job.recovery.limit_resumes += 1;
-                        job.asked = false;
-                        job.publish_step = None;
-                        account_limits::wait_for_reset(job, at);
-                        job.changed(format!("A five-hour limit stopped it. {}", job.step));
+                        account_limits::start_wait(job, at);
                         return;
                     }
                     let (reason, next, resumes) = match &end {
@@ -9456,7 +9456,9 @@ impl Jobs {
                     "{} hit its usage limit. Choose what Oby should do with the affected jobs.",
                     account.name
                 ),
-                reset: (!usage.full_until_inferred).then_some(until),
+                // A five-hour limit's waits (LIMITS-5). Any other's asks with no reset, as it did.
+                reset: Some(until)
+                    .filter(|at| usage.five_hour_limit(*at, obi_protocol::time::now())),
             });
         }
         let job = self.get(id).ok_or("the job is gone")?;
@@ -11172,7 +11174,7 @@ impl Jobs {
         // It read a head the job has pushed past, however it ended: the newer one gets a review
         // of its own, now unless the job's at work again (its publish starts one).
         let head = author.pushed_head().map(str::to_owned);
-        if head.is_none() || review.start_commit != head {
+        if review.read_another_head(&author) {
             self.update(&of, |job| job.reviewing = None);
             self.start_review(&of);
             return;
@@ -11814,7 +11816,9 @@ impl Jobs {
     /// merged or closed ([`Job::ended_with_its_pull_request`], TASKS-13), so Home doesn't keep
     /// them, saying so in their changes ([`LET_GO`]): obid let it go, not the owner. An Oby review
     /// still at work, or parked on the owner's OK, of a pull request merged or closed since is
-    /// stopped first ([`Job::reviews_an_ended_pull_request`]): it never reads it again.
+    /// stopped first ([`Job::reviews_an_ended_pull_request`]): it never reads it again. So is a job
+    /// waiting for a five-hour limit's reset on one ([`Job::waits_on_an_ended_pull_request`],
+    /// LIMITS-14): it spends no fresh window on it.
     fn let_go_ended(&self) {
         let now = obi_protocol::time::now();
         let (ended, outlived): (Vec<String>, Vec<String>) = {
@@ -11834,7 +11838,10 @@ impl Jobs {
             let outlived = state
                 .jobs
                 .values()
-                .filter(|job| job.reviews_an_ended_pull_request(reviewed(job)))
+                .filter(|job| {
+                    job.reviews_an_ended_pull_request(reviewed(job))
+                        || job.waits_on_an_ended_pull_request()
+                })
                 .map(|job| job.id.clone())
                 .collect();
             (ended, outlived)
@@ -11844,6 +11851,11 @@ impl Jobs {
         }
         for id in ended.iter().chain(&outlived) {
             self.update(id, |job| {
+                // Commits that never went out stay in sight, saying why it won't run on (LIMITS-14).
+                if job.kind != "review" && job.unpublished() > 0 {
+                    job.reason = Some(ENDED_WHILE_WAITING.to_owned());
+                    return;
+                }
                 job.dismissed.get_or_insert(now);
                 job.resumes_at = None;
                 job.changed(LET_GO.to_owned());

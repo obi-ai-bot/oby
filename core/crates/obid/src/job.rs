@@ -1230,6 +1230,22 @@ impl Job {
             && reviewed.is_some_and(Job::pull_request_ended)
     }
 
+    /// Waiting for a five-hour limit's reset on a pull request merged or closed since, with no words
+    /// to carry (LIMITS-14): the turn it would spend goes nowhere, since nothing of it can go out.
+    pub fn waits_on_an_ended_pull_request(&self) -> bool {
+        self.status == Status::Queued
+            && self.resumes_at.is_some()
+            && self.dismissed.is_none()
+            && self.heard.is_empty()
+            && self.pull_request_ended()
+    }
+
+    /// A review that read another head than the one `author` last pushed: its verdict doesn't count.
+    pub fn read_another_head(&self, author: &Job) -> bool {
+        let head = author.pushed_head();
+        head.is_none() || self.start_commit.as_deref() != head
+    }
+
     /// Done with commits its pull request will never take: it was merged or closed before they
     /// went out.
     pub fn stranded(&self) -> bool {
