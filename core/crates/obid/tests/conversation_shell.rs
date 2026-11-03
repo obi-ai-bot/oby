@@ -225,17 +225,16 @@ fn writes_ask_after_the_taint_and_always_saves_a_rule() {
     assert!(room.join("out/x").is_file());
     let rules = call(&obid, "GET", "/v1/permissions/rules", None);
     assert!(
-        rules.text.contains("Bash(touch:*)") && rules.text.contains("conversations"),
+        rules.text.contains("Bash(touch out/x)") && rules.text.contains("conversations"),
         "{}",
         rules.text
     );
     let (text, _) = shell(
         &obid,
         Some(&conversation),
-        json!({"command": "touch out/y"}),
+        json!({"command": "touch out/x"}),
     );
     assert!(text.contains("Exit status 0."), "{text}");
-    assert!(room.join("out/y").is_file());
 }
 
 /// Whether a process with `marker` in its command line runs.

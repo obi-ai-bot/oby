@@ -216,7 +216,7 @@ const limitHolds = (s: Live, j: Job) => !!j.accountLimit || s.limits.some((d) =>
 
 // What a job needs from you: that decision (a permission's command as its detail); or, failed or
 // interrupted and not let go, what's next for it
-function askOf(s: Live, j: Job): Ask | undefined {
+export function askOf(s: Live, j: Job): Ask | undefined {
   const item = itemOf(s, j.id);
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   const limited = limitHolds(s, j);
@@ -225,6 +225,7 @@ function askOf(s: Live, j: Job): Ask | undefined {
   const stopped = (j.status === 'failed' || j.status === 'interrupted') && !limited && !j.dismissed && !Object.values(s.jobs).some((o) => o.followUpOf === j.id);
   if (item) {
     const ask = itemAsk(item, item.kind === 'permission' ? j.permission?.detail : undefined);
+    if (item.kind === 'permission' && j.permission?.always) ask.always = j.permission.always;
     // Oby's own question about a task that stopped: a lone Done would only settle it, so it answers
     // as his failed card does, and his question card's Tell it something (#1795). What Oby
     // recommends is in its text, so no button looks recommended

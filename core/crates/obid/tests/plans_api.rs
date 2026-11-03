@@ -1558,6 +1558,40 @@ fn answering_an_inbox_item_settles_it() {
     );
 }
 
+/// PERMISSIONS-11, through the conversation: a turn that read something untrusted tells a waiting
+/// job no in words, and its agent hears them quoted as Oby's, not as the owner's order. The owner's
+/// own turn is theirs.
+#[test]
+fn permissions_11_a_turn_that_read_the_web_tells_a_job_no_as_oby_not_the_owner() {
+    let folder = Folder::new("brain-no-words");
+    let obid = started_harness_jobs(&folder);
+    let ask = r#"ASKS: [{"tool": "Bash", "input": {"command": "make lint"}}]"#;
+    let heard = |prefix: &str, title: &str| {
+        let job = job_that(&obid, title, ask, Some("ask"), "running");
+        let id = job["id"].as_str().unwrap().to_owned();
+        within(30, "a permission waits", || {
+            get_job(&obid, &id)["permission"].is_object().then_some(())
+        });
+        said_anew(
+            &obid,
+            &format!(r#"{prefix}OBY oby_tell_job {{"id":"{id}","words":"use scripts/x.sh"}}"#),
+        );
+        within(60, "the agent heard it", || {
+            let job = get_job(&obid, &id);
+            let summary = job["summary"].as_str().unwrap_or("").to_owned();
+            summary.contains("answers:").then_some(summary)
+        })
+    };
+    let web = heard("WEB ", "Vault secrets");
+    assert!(web.contains("Oby said no."), "{web}");
+    assert!(web.contains("not the owner's order"), "{web}");
+    assert!(!web.contains("The owner said no"), "{web}");
+    assert!(!web.contains("Go on as they say"), "{web}");
+    let owners = heard("", "Greeting");
+    assert!(owners.contains("The owner said no."), "{owners}");
+    assert!(owners.contains("Go on as they say"), "{owners}");
+}
+
 /// NoDispatchCardTests.aPlanStartsItsJobsAndLinksThemToTheTurn: a plan's jobs start as it's made,
 /// with their issue's files, joined to Oby's turn, and Oby says what started.
 #[test]

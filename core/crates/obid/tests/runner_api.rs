@@ -1694,9 +1694,11 @@ fn the_api_answers_permissions_and_modes() {
     assert_eq!(said.body["state"], "done");
     let ended = ended(&obid, &id);
     assert_eq!(ended["status"], "done", "{ended}");
-    assert_eq!(
-        ended["summary"],
-        "answers: allow, allow, deny: No, run only the tests"
+    let summary = ended["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("answers: allow, allow, deny: The owner said no.")
+            && summary.contains("Their words: “No, run only the tests”"),
+        "{summary}"
     );
     assert_eq!(ended["notes"], json!(["No, run only the tests"]));
     assert!(ended["permission"].is_null());
@@ -1802,9 +1804,12 @@ fn bypass_6_modes_answer_what_they_allow_and_stopping_drops_the_permission() {
         Some(&json!({"text": "use swift build instead"})),
     );
     assert_eq!(words.status, 200, "{}", words.text);
-    assert_eq!(
-        ended(&obid, &told)["summary"],
-        "answers: deny: use swift build instead"
+    let summary = ended(&obid, &told)["summary"].clone();
+    let summary = summary.as_str().unwrap();
+    assert!(
+        summary.starts_with("answers: deny: The owner said no.")
+            && summary.contains("Their words: “use swift build instead”"),
+        "{summary}"
     );
 
     let edits = asking(
@@ -1812,7 +1817,7 @@ fn bypass_6_modes_answer_what_they_allow_and_stopping_drops_the_permission() {
         "acceptEdits",
         json!([{"tool": "Edit", "input": {"file_path": "src/a.js"}}, bash("rm -rf build")]),
     );
-    waiting_for(&obid, &edits, "Run rm");
+    waiting_for(&obid, &edits, "Run rm -rf build");
     let stopped = call(&obid, "POST", &format!("/v1/jobs/{edits}/stop"), None);
     assert_eq!(stopped.body["status"], "stopped");
     assert!(stopped.body["permission"].is_null(), "{}", stopped.text);
@@ -1826,7 +1831,8 @@ fn bypass_6_modes_answer_what_they_allow_and_stopping_drops_the_permission() {
     let planned = ended(&obid, &planning);
     let summary = planned["summary"].as_str().unwrap();
     assert!(
-        summary.starts_with("answers: deny: Plan mode: read only") && summary.ends_with(", allow"),
+        summary.starts_with("answers: deny: Plan mode: this call did not run")
+            && summary.ends_with(", allow"),
         "{planned}"
     );
 }
