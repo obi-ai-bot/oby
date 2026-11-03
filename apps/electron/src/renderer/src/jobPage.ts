@@ -192,7 +192,7 @@ function lineOf(e: TranscriptEntry, now: number): Entry {
       const { verb, rest } = verbOf(e.summary);
       // ponytail: a tool kind the filters don't know (mcp, other) shows under All only
       return {
-        n, kind: 'tool', tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb: e.state === 'running' || e.state === 'declined' ? verb : PAST[verb] ?? verb, target: rest,
+        n, kind: 'tool', tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb: e.state === 'running' || e.state === 'declined' ? verb : PAST[verb] ?? verb, target: rest, summary: e.summary,
         state: e.state === 'running' || e.state === 'done' || e.state === 'declined' ? e.state : 'failed',
         seconds: e.seconds ?? (e.state === 'running' ? since(e.at, now) : 0),
         meta: e.state === 'declined' ? 'Declined' : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,

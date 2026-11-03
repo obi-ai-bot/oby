@@ -24,7 +24,7 @@ async function views(entries: Entry[], more: Partial<JobView> = {}, status: 'run
   SESSIONS.j1 = entries;
   const job = {
     id: 'j1', type: 'issues', title: 'Fix the login test', request: 'Fix it', agent: 'claude', account: 'Personal', model: 'Opus',
-    repo: 'deskree/obi', branch: 'oby/fix-1', base: 'dev', status: status === 'done' ? 'done' : 'running', step: 'Reading a.ts', stages: [], created: 12, ...more,
+    repo: 'deskree/obi', branch: 'oby/fix-1', base: 'dev', status: status === 'done' ? 'done' : 'running', step: 'Working', stages: [], created: 12, ...more,
   } as JobView;
   const task = { id: 'j1', type: 'issues', title: job.title, brand: AGENTS.claude.brand, status, job } as never;
   replaceTasks([task]);
@@ -70,6 +70,17 @@ describe('a task at work', () => {
     // and before it has done anything, what obid says it's on
     expect((await views([], { step: 'Waiting for a free slot' })).card).toContain('Waiting for a free slot');
     expect((await views([], { step: '', waiting: undefined })).card).not.toContain('lt-now');
+  });
+
+  it('RECOVERY-5: a job being tried again says so, under the steps it already has', async () => {
+    const trying = 'Trying again in 5 minutes (2 of 3)';
+    const reading = { ...tool('Read', 'a.ts'), summary: 'Reading a.ts' } as Entry;
+    expect((await views([reading], { step: trying })).card).toContain(trying);
+    expect((await views([reading, plan], { step: trying })).card).toContain(trying);
+    // what its session holds isn't said twice, nor that it's working
+    const line = (card: string) => card.includes('lt-thought');
+    expect(line((await views([reading], { step: 'Reading a.ts' })).card)).toBe(false);
+    expect(line((await views([reading], { step: 'Working' })).card)).toBe(false);
   });
 
   it('LIVETASK-3: obid\'s transcript events are read, entries update by n, and words never go back', () => {
