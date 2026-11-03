@@ -18,6 +18,7 @@
     "test:sphere": "node scripts/test-sphere.mjs",
     "test:core": "node scripts/test-core.mjs",
     "test:chat-first": "node scripts/test-chat-first.mjs",
+    "test:live-task": "node scripts/test-live-task.mjs",
     "drive": "node scripts/human-drive.mjs"
   },
   "dependencies": {

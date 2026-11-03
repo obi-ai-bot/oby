@@ -14,16 +14,32 @@ export type Detail = {
   exit?: number;
   diff?: string;     // an edit, as a unified diff
 };
-export type Entry =
+// n: obid's number for it (the mock's have none), which stays its own as the session changes
+export type Entry = { n?: number } & (
   | { kind: 'start'; text: string; at: string }
   | { kind: 'said'; text: string; at: string; live?: boolean }   // live: still being written
-  | { kind: 'thought'; text: string; seconds: number }
+  // running: still thinking. text: only what the tool gives (Claude Code gives none, only how long)
+  | { kind: 'thought'; text: string; seconds: number; running?: boolean }
   | { kind: 'you'; text: string; at: string }
   | { kind: 'plan'; todos: { text: string; state: 'done' | 'running' | 'pending' }[] }
   | { kind: 'asked'; text: string; answer: string }
-  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; state: 'done' | 'running' | 'failed'; seconds: number; meta?: string; detail?: Detail };
+  // its detail is fetched by n when it opens on obid; the mock's come with theirs
+  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; state: 'done' | 'running' | 'failed' | 'declined'; seconds: number; meta?: string; detail?: Detail }
+);
 
 export const SESSIONS: Record<string, Entry[]> = {
+  // a running task's, for its card and its own conversation on the mock (LIVETASK-1, -5)
+  t1: [
+    { kind: 'start', text: 'Started on Claude Code', at: '10:02 AM' },
+    { kind: 'you', text: 'CI on oberon is red since this morning, fix it', at: '10:02 AM' },
+    { kind: 'tool', tool: 'Bash', verb: 'Ran', target: 'gh run view --log-failed', state: 'done', seconds: 2.1, detail: { input: 'gh run view --log-failed', output: 'test/flags.test.ts: expected 200, got 500', lines: 318, exit: 0 } },
+    { kind: 'thought', text: '', seconds: 6 },
+    { kind: 'said', text: 'The flags test fails since this morning’s merge, so I’m reading what it changed.', at: '10:04 AM' },
+    { kind: 'plan', todos: [{ text: 'Find why CI fails', state: 'done' }, { text: 'Fix the flags route', state: 'running' }, { text: 'Run the tests', state: 'pending' }] },
+    { kind: 'tool', tool: 'Read', verb: 'Read', target: 'src/flags/route.ts', state: 'done', seconds: 0.2, detail: { range: 'Lines 1–88', output: 'export function flags(req) {\n  return load(req.org.id);\n}' } },
+    { kind: 'thought', text: 'The merge made org optional, and the route still reads it as always there.', seconds: 0 },
+    { kind: 'tool', tool: 'Edit', verb: 'Editing', target: 'src/flags/route.ts', state: 'running', seconds: 2 },
+  ],
   i1: [
     { kind: 'start', text: 'Round 1 · Cursor · Sonnet 5.5', at: '10:02 AM' },
     { kind: 'said', at: '10:02 AM', text: 'I’ll read how the attention queue is built before changing anything.' },

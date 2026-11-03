@@ -638,7 +638,9 @@ pub fn step(tool: &str, input: &Value) -> String {
         ),
         "Glob" => format!("Looking for {}", text("pattern").unwrap_or("files")),
         "WebFetch" | "WebSearch" => "Reading the web".into(),
-        "TodoWrite" => "Planning the work".into(),
+        "TodoWrite" | "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet" => {
+            "Planning the work".into()
+        }
         "Task" | "Agent" => text("description")
             .unwrap_or("Starting a helper")
             .to_owned(),
@@ -939,6 +941,20 @@ mod tests {
             step("Grep", &json!({"pattern": "(?i)usage"})),
             "Searching for usage"
         );
+    }
+
+    /// A to-do list is the agent's bookkeeping, whichever tool writes it (LIVETASK-14).
+    #[test]
+    fn its_to_do_tools_are_all_planning() {
+        for tool in [
+            "TodoWrite",
+            "TaskCreate",
+            "TaskUpdate",
+            "TaskList",
+            "TaskGet",
+        ] {
+            assert_eq!(step(tool, &json!({})), "Planning the work", "{tool}");
+        }
     }
 
     #[test]

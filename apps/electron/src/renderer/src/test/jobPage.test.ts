@@ -128,7 +128,7 @@ describe('the task page on obid data', () => {
     ], NOW);
     expect(lines.map((l) => l.kind)).toEqual(['start', 'said', 'tool', 'tool', 'tool', 'plan']);
     expect(lines[1]).toMatchObject({ text: 'Looking for where a blocked scan ends the job.' });
-    expect(lines[2]).toMatchObject({ tool: 'Bash', verb: 'Running', target: 'cargo test', state: 'failed', meta: 'exit 101', seconds: 41.5 });
+    expect(lines[2]).toMatchObject({ tool: 'Bash', verb: 'Ran', target: 'cargo test', state: 'failed', meta: 'exit 101', seconds: 41.5 });
     expect(lines[3]).toMatchObject({ tool: 'Edit', meta: '+3 −2' });
     expect(lines[4]).toMatchObject({ tool: 'Read', state: 'running', seconds: 2 });
   });

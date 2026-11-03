@@ -9,7 +9,7 @@
 //   - the prompt is not empty and holds no data text from the request (the canary);
 //   - the request reached it as a quoted file, .obi/inputs/obi-request.json, holding the canary;
 //   - the worktree's HEAD is the request's head_sha;
-//   - no CLAUDECODE, CLAUDE_CODE_*, ANTHROPIC_*, GH_TOKEN or GITHUB_TOKEN in its environment;
+//   - no CLAUDECODE, CLAUDE_CODE_* (but obid's own), ANTHROPIC_*, GH_TOKEN or GITHUB_TOKEN in its environment;
 //   - it runs in obid's job sandbox: creating a file in the folder that holds its worktree (obid's
 //     home/worktrees/) fails. If it succeeds, the stub removes the file at once and fails the turn.
 //     OBI_STUB_NO_SANDBOX=1 skips this one check; only the harness's preflight sets it, when it runs
@@ -67,7 +67,7 @@ function problems(prompt, request) {
   if (!prompt.trim()) found.push("the prompt is empty");
   if (prompt.includes(CANARY)) found.push("data text from the request is in the prompt (it must only be in .obi/inputs/obi-request.json)");
   for (const name of Object.keys(process.env)) {
-    if (name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN") found.push(`${name} is in the agent's environment`);
+    if (name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR" && name !== "CLAUDE_CODE_ENABLE_TODO_TOOLS") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN") found.push(`${name} is in the agent's environment`);
   }
   if (process.env.OBI_STUB_NO_SANDBOX !== "1") {
     const probe = join(dirname(cwd), `.obi-stub-sandbox-probe-${process.pid}`);

@@ -17,6 +17,7 @@ import type {
   SavedRule,
   SignIn,
   Status,
+  EntryDetail,
   TranscriptEntry,
   Tetrix,
   TetrixTarget,
@@ -94,6 +95,7 @@ export const api = {
   archive: (j: string, archived = true) => call<Job>('POST', `/v1/jobs/${id(j)}/archive`, { archived }),
   deleteJob: (j: string) => call<{ deleted: boolean; ask: InboxItem | null }>('POST', `/v1/jobs/${id(j)}/delete`),
   // obid only: the job's session (Full session), the entries that came or changed after entry `after`
+  transcriptEntry: (j: string, n: number) => call<TranscriptEntry & { detail?: EntryDetail }>('GET', `/v1/jobs/${id(j)}/transcript/${n}`),
   transcript: (j: string, after?: number) => call<{ next: number | null; entries: TranscriptEntry[] }>('GET', `/v1/jobs/${id(j)}/transcript${q({ after })}`),
   // conversation: the words go into the task's conversation too, made now if it has none (a task
   // page's box: docs/contracts/task-conversations.md, TASKCONV-4)

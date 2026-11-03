@@ -1,6 +1,7 @@
-import { useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { knownUpTo, withEntries, withLine } from './liveTask';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
-import { carriedOn, pageOf, publishOf, stagesOf } from './jobPage';
+import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { replaceTasks, type Asking, type Task } from './tasks';
@@ -54,7 +55,6 @@ type Live = {
   answering: Set<string>;
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
-  sessions: Record<string, TranscriptEntry[]>;  // each job's session opened (Full session), by job
   gone: Set<string>;             // the jobs obid said it deleted: never back from an answer that crossed it
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
   previews: Record<string, { name: string; shown: string; preview?: string }[]>;
@@ -62,7 +62,7 @@ type Live = {
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, expected: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, sessions: {}, previews: {}, gone: new Set(),
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, expected: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(),
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -72,7 +72,7 @@ const set = (patch: Partial<Live>) => {
 // An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
 // state read before the call's await, which would undo what came meanwhile (a Confirm's answer
 // putting back the job its own `deleted` event took away)
-const take = (e: Event) => set(apply(state, e));
+const take = (e: Event) => (e.kind === 'transcript' || e.kind === 'transcriptLine' ? heard(e) : set(apply(state, e)));
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
 // the limit decisions for a conversation's or a job's work (ChatView), as Home's stack shows them
 export const useLimitAsks = (conversation?: string, job?: string) => { useLive(); return limitAsks(state, conversation, job); };
@@ -232,7 +232,7 @@ function askOf(s: Live, j: Job): Ask | undefined {
     return item.kind === 'question' && (j.dismissed || takesNoAnswer(item)) ? undefined : ask;
   }
   if (stopped) {
-    return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: j.summary.split('\n')[0] || j.step, options: [ANOTHER_ROUND, STOP_HERE], recommended: 0 };
+    return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: (j.reason || j.summary).split('\n')[0] || j.step, options: [ANOTHER_ROUND, STOP_HERE], recommended: 0 };
   }
 }
 
@@ -404,7 +404,7 @@ function taskOf(s: Live, j: Job): Task {
     check: j.check ?? undefined, repoCheck: s.repos.find((r) => r.repo === j.repo)?.check, status: j.status, step: j.step, waiting: j.waiting ?? undefined,
     round: j.rounds > 1 ? [j.round, j.rounds] : undefined,
     stages: stagesOf(j),
-    ask, summary: j.summary || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
+    ask, summary: j.summary || undefined, reason: j.reason || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
     archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),
   };
@@ -460,11 +460,12 @@ export function lookAtUsage() {
 
 // --- events
 
-function apply(s: Live, e: Event): Live {
+function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
   switch (e.kind) {
     case 'job':
       return s.gone.has(e.job.id) ? s : { ...s, jobs: { ...s.jobs, [e.job.id]: newer(s.jobs[e.job.id], e.job) } };
     case 'jobGone':
+      sessions.delete(e.id);
       return { ...s, jobs: without(s.jobs, e.id), gone: new Set([...s.gone, e.id]) };
     case 'inbox': {
       const rest = s.inbox.filter((i) => i.id !== e.item.id);
@@ -670,7 +671,7 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
         .map((j) => (state.jobs[j.id] !== before[j.id] ? newer(state.jobs[j.id], j) : j))].map((j) => [j.id, j])),
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
-    for (const e of pending) next = apply(next, e);
+    for (const e of pending) { if (e.kind === 'transcript' || e.kind === 'transcriptLine') heard(e); else next = apply(next, e); }
     pending.length = 0;
     // the folders of conversations deleted since (folders.ts); with the ones that moved up a page
     // while it was read (their events, just applied). A list cut short at allConversations' last
@@ -890,6 +891,11 @@ export async function tellJob(id: string, text: string, files: { path?: string }
     say(e);
   }
 }
+// Told from the agent's own conversation (AgentPane.tsx): the follow-up it started, if it had finished
+export const tellAgent = async (id: string, text: string, files?: { path?: string }[]) => {
+  const j = await tellJob(id, text, files, true);
+  return j && j.id !== id ? j.id : undefined;
+};
 // A task's Mode menu: how much it asks from now on (POST /v1/jobs/{id}/mode)
 export async function changeMode(id: string, mode: string) {
   try { const j = await api.mode(id, mode); take({ kind: 'job', job: j }); } catch (e) { say(e); }
@@ -931,26 +937,56 @@ export async function deleteJob(id: string) {
   return true;
 }
 
-// A job's session, for Full session: fetched when it opens and again at each of the job's events
-// (at most once a second while its agent works), only what came or changed since (?after=), by n,
-// page after page (obid sends at most 1,000 at a time) until obid's `next` is null
+// A job's session, for whatever shows it (its live card, its pane, Full session): kept apart from
+// the rest of the state, so an agent's every line re-renders only those, not all that `publish` feeds.
+// Only a job something asked for is kept. Fetched when it's asked for and again at each of the job's
+// events (at most once a second while its agent works, and on coming back after a lost connection),
+// from the last entry known with none missing before it, so an event that didn't reach here is fetched
+// too; page after page (obid sends at most 1,000 at a time) until obid's `next` is null.
+const sessions = new Map<string, TranscriptEntry[]>();
+const sessionListeners = new Map<string, Set<() => void>>();
+export const sessionNow = (id: string) => sessions.get(id);
+const setSession = (id: string, entries: TranscriptEntry[]) => { sessions.set(id, entries); sessionListeners.get(id)?.forEach((l) => l()); };
+function heard(e: Extract<Event, { kind: 'transcript' | 'transcriptLine' }>) {
+  const had = sessions.get(e.job);
+  if (had) setSession(e.job, e.kind === 'transcript' ? withEntries(had, [e.entry]) : withLine(had, e.n, e.append));
+}
+// the last to stop showing it lets it go: a job looked at once costs nothing from then on
+export const useSession = (id: string) => useSyncExternalStore(useCallback((l: () => void) => {
+  const all = sessionListeners.get(id) ?? new Set();
+  sessionListeners.set(id, all.add(l));
+  return () => {
+    all.delete(l);
+    if (all.size === 0) { sessionListeners.delete(id); sessions.delete(id); }
+  };
+}, [id]), () => sessions.get(id));
+// follow: keep it up to date while this shows it (a card only while its task runs)
+export function useFollowedSession(id: string, follow = true) {
+  const wire = useLive().jobs[id];
+  useEffect(() => { if (follow) void loadSession(id); }, [id, follow, wire]);
+  return useSession(id);
+}
+// What a call ran and gave back, fetched when its line opens
+export const entryDetail = (id: string, n: number) => api.transcriptEntry(id, n).then((e) => detailOf(e.detail), (e) => { say(e); return undefined; });
 const loading = new Map<string, boolean>();  // in flight; true: asked again meanwhile
 export async function loadSession(id: string): Promise<void> {
+  if (state.gone.has(id)) return;
   if (loading.has(id)) { loading.set(id, true); return; }
   loading.set(id, false);
+  if (!sessions.has(id)) sessions.set(id, []);
   try {
-    const had = state.sessions[id] ?? [];
-    let after: number | null | undefined = had.length ? Math.max(...had.map((e) => e.n)) : undefined;
+    let after: number | null | undefined = knownUpTo(sessions.get(id)!) || undefined;
     do {
       const page = await api.transcript(id, after ?? undefined);
-      const now = state.sessions[id] ?? [];
-      set({ sessions: { ...state.sessions, [id]: [...now.filter((e) => !page.entries.some((m) => m.n === e.n)), ...page.entries] } });
+      const had = sessions.get(id);
+      if (!had) break;
+      if (page.entries.length) setSession(id, withEntries(had, page.entries.map((e) => ({ ...e, fetched: true }))));
       after = page.next;
     } while (after != null);
   } catch (e) { say(e); }
   const again = loading.get(id);
   loading.delete(id);
-  if (again) return loadSession(id);
+  if (again && sessions.has(id)) return loadSession(id);
 }
 
 // Work on a GitHub item, on the owner's tap (POST /v1/github/work/{id}/start): its job comes back,

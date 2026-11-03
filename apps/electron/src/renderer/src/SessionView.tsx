@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, Check, ChevronRight, ShieldCheck } from 'lucide-react';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -10,8 +10,10 @@ import { SESSIONS, type Detail, type Entry } from './session';
 import { useTasks, type Task } from './tasks';
 import { box as draftBox } from './drafts';
 import { onObid } from './lean';
-import { loadSession, useLive } from './live';
+import { entryDetail, useFollowedSession } from './live';
 import { sessionOf } from './jobPage';
+import { took } from './liveTask';
+import './liveTask.css';
 
 // how long the way out takes (the sink animation in app.css)
 const LEAVE_MS = 220;
@@ -26,8 +28,74 @@ const FILTERS: { id: string; label: string }[] = [
 const filterOf = (e: Entry) =>
   e.kind === 'tool' ? (e.tool === 'Grep' ? 'Read' : e.tool) : e.kind === 'said' || e.kind === 'thought' || e.kind === 'you' ? 'said' : null;
 
-// seconds as "0.2s", "41s" or "3m 12s"
-const took = (s: number) => (s < 10 ? `${Math.round(s * 10) / 10}s` : s < 60 ? `${Math.round(s)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`);
+// A job's session as lines: obid's, kept up to date while follow, or the mock's
+export function useEntries(id: string, follow = true) {
+  const had = onObid ? useFollowedSession(id, follow) : undefined;
+  return useMemo(() => (onObid ? sessionOf(had ?? []) : SESSIONS[id] ?? []), [id, had]);
+}
+
+// What the agent is writing now comes in a word at a time; the tool at work counts up, from when
+// its line was last made (only while one is at work: nothing to draw otherwise)
+export function useLiveLines(entries: Entry[], running: boolean) {
+  const liveSaid = useMemo(() => entries.find((e): e is Extract<Entry, { kind: 'said' }> => e.kind === 'said' && !!e.live), [entries]);
+  const words = (liveSaid?.text ?? '').match(/\S+\s*/g) ?? [];
+  const ticking = useMemo(() => entries.some((e) => e.kind === 'tool' && e.state === 'running'), [entries]);
+  const [shown, setShown] = useState(0);
+  const [tick, setTick] = useState(0);
+  useEffect(() => { setTick(0); }, [entries]);
+  useEffect(() => {
+    if (!running || !ticking) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [running, ticking]);
+  useEffect(() => {
+    if (!running || !words.length) return;
+    const w = setInterval(() => setShown((n) => Math.min(n + 1, words.length)), WORD_MS);
+    return () => clearInterval(w);
+  }, [running, words.length]);
+  return { shown: words.slice(0, shown).join(''), tick };
+}
+// Only a line that shows them gets them, so the rest of a long session doesn't draw again
+const IDLE = { shown: '', tick: 0 };
+export const liveFor = (e: Entry, live: { shown: string; tick: number }) => ((e.kind === 'tool' && e.state === 'running') || (e.kind === 'said' && e.live) ? live : IDLE);
+
+// A long session's last lines, and earlier ones on asking: all 5,000 are 65,000 nodes
+const TAIL = 300;
+export function useTail<T>(list: T[]) {
+  const [most, setMost] = useState(TAIL);
+  return { shown: list.slice(-most), earlier: Math.max(0, list.length - most), more: () => setMost((m) => m + TAIL) };
+}
+// proposed: Sangam's to change
+export const Earlier = ({ count, onClick }: { count: number; onClick: () => void }) => (count > 0 ? <li className="ss-earlier"><button onClick={onClick}>Show {count.toLocaleString()} earlier</button></li> : null);
+
+// A session's scroller: it opens at the live end, as a conversation does, and stays there while you're there
+export function useLiveEnd() {
+  const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
+  const [atEnd, setAtEnd] = useState(true);
+  const pinned = useRef(true);
+  useLayoutEffect(() => {
+    const el = list.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  });
+  // and again once it has risen in and laid out, and whenever its size changes
+  useEffect(() => {
+    const el = list.current;
+    if (!el) return;
+    const pin = () => { if (pinned.current) el.scrollTop = el.scrollHeight; };
+    const raf = requestAnimationFrame(pin);
+    const ro = new ResizeObserver(pin);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, [list]);
+  const onListScroll = (e: React.UIEvent<HTMLElement>) => {
+    onScroll();
+    const el = e.currentTarget, end = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    pinned.current = end;
+    setAtEnd(end);
+  };
+  return { list, onListScroll, atEnd, thumbProps };
+}
 
 // A job's session, live: the agent's words as it writes them, its thinking,
 // each tool call as a quiet line that opens into what it ran and what came
@@ -47,46 +115,12 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   const kept = useRef<Task>(null);
   const task = tasks.find((t) => t.id === id) ?? kept.current!;
   kept.current = task;
-  // on obid, its transcript, fetched on opening and again at each of the job's events
-  const live = onObid ? useLive() : undefined;
-  const wire = live?.jobs[id], had = live?.sessions[id];
-  useEffect(() => { if (onObid) void loadSession(id); }, [id, wire]);
-  const entries = useMemo(() => (onObid ? sessionOf(had ?? []) : SESSIONS[id] ?? []), [id, had]);
+  // on obid, its transcript, as it comes
+  const entries = useEntries(id);
   const running = task.status === 'running' || task.status === 'needs';
   const [filter, setFilter] = useState('all');
-  const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
-  const [atEnd, setAtEnd] = useState(true);
-
-  // what the agent is writing now comes in a word at a time; the tool at work counts up
-  const liveSaid = entries.find((e): e is Extract<Entry, { kind: 'said' }> => e.kind === 'said' && !!e.live);
-  const liveText = liveSaid?.text ?? '';
-  const words = liveText.match(/\S+\s*/g) ?? [];
-  const [shown, setShown] = useState(0);
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const w = setInterval(() => setShown((n) => Math.min(n + 1, words.length)), WORD_MS);
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => { clearInterval(w); clearInterval(t); };
-  }, [running, words.length]);
-
-  // it opens at the live end, as a conversation does, and stays there while you're there
-  const pinned = useRef(true);
-  useLayoutEffect(() => {
-    const el = list.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  });
-  // and again once it has risen in and laid out, and whenever its size changes
-  useEffect(() => {
-    const el = list.current;
-    if (!el) return;
-    const pin = () => { if (pinned.current) el.scrollTop = el.scrollHeight; };
-    const raf = requestAnimationFrame(pin);
-    const ro = new ResizeObserver(pin);
-    ro.observe(el);
-    if (el.firstElementChild) ro.observe(el.firstElementChild);
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
-  }, [list]);
+  const { list, onListScroll, atEnd, thumbProps } = useLiveEnd();
+  const live = useLiveLines(entries, running);
 
   useEffect(() => {
     if (!leaving) return;
@@ -101,8 +135,10 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   }, [onBack, covered]);
 
   const count = (f: string) => (f === 'all' ? entries.filter((e) => e.kind !== 'start').length : entries.filter((e) => filterOf(e) === f).length);
-  // keyed by their place in the whole session, so an opened line stays open across filters
+  // keyed by obid's number (the mock's: its place in the whole session), so an opened line stays
+  // open across filters and as the session changes
   const visible = entries.map((e, n) => ({ e, n })).filter(({ e }) => filter === 'all' || e.kind === 'start' || filterOf(e) === filter);
+  const tail = useTail(visible);
   const agent = AGENTS[task.job.agent];
 
   return (
@@ -112,12 +148,7 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
           ref={list}
           className="chat task-scroll"
           aria-label={`${task.title}: session`}
-          onScroll={(e) => {
-            onScroll();
-            const el = e.currentTarget, end = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-            pinned.current = end;
-            setAtEnd(end);
-          }}
+          onScroll={onListScroll}
         >
           <div className="chat-column ss">
             <header className="ss-head">
@@ -135,7 +166,8 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
               </div>
             </header>
             <ol className="ss-entries">
-              {visible.map(({ e, n }) => <Line key={n} entry={e} brand={agent.brand} live={{ shown: words.slice(0, shown).join(''), tick }} />)}
+              <Earlier count={tail.earlier} onClick={tail.more} />
+              {tail.shown.map(({ e, n }) => <Line key={e.n ?? n} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} />)}
             </ol>
           </div>
         </section>
@@ -159,9 +191,9 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   );
 }
 
-// One entry of the session.
-function Line({ entry: e, brand, live }: { entry: Entry; brand: Brand; live: { shown: string; tick: number } }) {
-  const [open, setOpen] = useState(false);
+// One entry of the session. inPane: in the agent's own conversation beside the chat (AgentPane.tsx),
+// where a message has its clock time and thinking shows without a click
+export const Line = memo(function Line({ entry: e, job, brand, live, inPane = false }: { entry: Entry; job: string; brand: Brand; live: { shown: string; tick: number }; inPane?: boolean }) {
   switch (e.kind) {
     case 'start':
       // a round begins: a quiet divider with the agent, model and time
@@ -173,16 +205,12 @@ function Line({ entry: e, brand, live }: { entry: Entry; brand: Brand; live: { s
           <div className="ss-words">
             <Said text={e.live ? live.shown : e.text} streaming={e.live} />
             {e.live && <span className="ss-caret" aria-hidden="true" />}
+            {inPane && <time className="ss-clock">{e.at}</time>}
           </div>
         </li>
       );
     case 'thought':
-      return (
-        <li className={`ss-thought${open ? ' is-open' : ''}`}>
-          <button onClick={() => setOpen(!open)} aria-expanded={open}>Thought for {took(e.seconds)}<ChevronRight size={12} strokeWidth={1.8} /></button>
-          {open && <p>{e.text}</p>}
-        </li>
-      );
+      return <Thought thought={e} inPane={inPane} />;
     case 'you':
       return <li className="ss-you"><p>{e.text}</p><time>{e.at}</time></li>;
     case 'plan':
@@ -201,24 +229,53 @@ function Line({ entry: e, brand, live }: { entry: Entry; brand: Brand; live: { s
       );
     case 'asked':
       return <li className="ss-asked"><ShieldCheck size={13} strokeWidth={1.7} /><span><Formatted text={e.text} /> · {e.answer}</span></li>;
-    case 'tool': {
-      const secs = e.state === 'running' ? e.seconds + live.tick : e.seconds;
-      return (
-        <li className={`ss-tool is-${e.state}${open ? ' is-open' : ''}`}>
-          <button className="ss-tool-row" onClick={() => e.detail && setOpen(!open)} aria-expanded={e.detail ? open : undefined} disabled={!e.detail}>
-            <span className="ss-tool-mark">
-              {e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : 'is-failed'}`} />}
-            </span>
-            <span className="ss-tool-text"><span className="ss-verb">{e.verb}</span> <code>{e.target}</code></span>
-            {e.meta && <span className="ss-tool-meta">{e.meta}</span>}
-            <span className="ss-took">{took(secs)}</span>
-            {e.detail && <ChevronRight size={12} strokeWidth={1.8} className="ss-chev" />}
-          </button>
-          {open && e.detail && <ToolDetail tool={e.tool} detail={e.detail} seconds={e.seconds} />}
-        </li>
-      );
-    }
+    case 'tool':
+      return <Tool call={e} job={job} tick={live.tick} />;
   }
+});
+
+// A tool call as a quiet line; a click opens what it ran and what came back, from obid then (and
+// again when it ends, if it was opened running), or the mock's own
+function Tool({ call: e, job, tick }: { call: Extract<Entry, { kind: 'tool' }>; job: string; tick: number }) {
+  const [open, setOpen] = useState(false);
+  const [fetched, setFetched] = useState<Detail>();
+  useEffect(() => {
+    if (!open || e.detail || e.n == null) return;
+    let here = true;
+    void entryDetail(job, e.n).then((d) => { if (here && d) setFetched(d); });
+    return () => { here = false; };
+  }, [open, e.state, e.n, e.detail, job]);
+  const detail = e.detail ?? fetched, opens = !!e.detail || e.n != null;
+  const secs = e.state === 'running' ? e.seconds + tick : e.seconds;
+  return (
+    <li className={`ss-tool is-${e.state}${open ? ' is-open' : ''}`}>
+      <button className="ss-tool-row" onClick={() => opens && setOpen(!open)} aria-expanded={opens ? open : undefined} disabled={!opens}>
+        <span className="ss-tool-mark">
+          {e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : e.state === 'declined' ? 'is-queued' : 'is-failed'}`} />}
+        </span>
+        <span className="ss-tool-text"><span className="ss-verb">{e.verb}</span> <code>{e.target}</code></span>
+        {e.meta && <span className="ss-tool-meta">{e.meta}</span>}
+        <span className="ss-took">{took(secs)}</span>
+        {opens && <ChevronRight size={12} strokeWidth={1.8} className="ss-chev" />}
+      </button>
+      {open && detail && <ToolDetail tool={e.tool} detail={detail} seconds={e.seconds} />}
+    </li>
+  );
+}
+
+// A thought, only what its tool gave. Thinking while it goes on. Claude Code's: how long, with no
+// words, so nothing opens. Codex's and Cursor's: their words, when they give any, which open
+function Thought({ thought: e, inPane }: { thought: Extract<Entry, { kind: 'thought' }>; inPane: boolean }) {
+  const [open, setOpen] = useState(inPane || !e.seconds);
+  if (e.running) return <li className="ss-thought"><span className="sheen">Thinking</span></li>;
+  const label = e.seconds ? `Thought for ${took(e.seconds)}` : 'Thought';
+  if (!e.text) return <li className="ss-thought"><span>{label}</span></li>;
+  return (
+    <li className={`ss-thought${open ? ' is-open' : ''}`}>
+      <button onClick={() => setOpen(!open)} aria-expanded={open}>{label}<ChevronRight size={12} strokeWidth={1.8} /></button>
+      {open && <p>{e.text}</p>}
+    </li>
+  );
 }
 
 // What a call ran and what came back: a command and its output, an edit's

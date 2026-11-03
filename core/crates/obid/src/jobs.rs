@@ -6813,6 +6813,7 @@ impl Jobs {
             env: {
                 if tool == Tool::Claude {
                     extra.push((process::CLAUDE_TMPDIR, spec.temp.clone().into_os_string()));
+                    extra.push((process::CLAUDE_TODO_TOOLS, "1".into()));
                 }
                 process::sandbox_env(&process::tools_path(), &spec.temp, &extra)
             },

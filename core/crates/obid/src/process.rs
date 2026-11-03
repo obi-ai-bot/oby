@@ -159,10 +159,13 @@ pub fn sandbox_env(
     for (name, value) in extra {
         env.push(((*name).into(), value.clone()));
     }
-    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below) and NO_CLAUDE_MDS are the only
-    // CLAUDE_CODE_* let in.
+    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS and NO_CLAUDE_MDS are
+    // the only CLAUDE_CODE_* let in.
     env.retain(|(name, _)| {
-        name == CLAUDE_TMPDIR || name == NO_CLAUDE_MDS || !is_forbidden(&name.to_string_lossy())
+        name == CLAUDE_TMPDIR
+            || name == CLAUDE_TODO_TOOLS
+            || name == NO_CLAUDE_MDS
+            || !is_forbidden(&name.to_string_lossy())
     });
     env
 }
@@ -199,6 +202,11 @@ pub const NO_CLAUDE_MDS: &str = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
 /// /tmp/claude-<uid> unless told, which the sandbox doesn't let a job write (a field test,
 /// 2026-10-17: every Bash command failed with EPERM), so it's the run's own temporary folder.
 pub const CLAUDE_TMPDIR: &str = "CLAUDE_CODE_TMPDIR";
+
+/// What a job's Claude Code launch adds too: headless, Claude Code offers no to-do tool unless told
+/// (claude 2.1.302's system `init`, 2026-11-02: no `TodoWrite` or `TaskCreate`), so a job could never
+/// make the list its card shows (docs/contracts/live-task.md).
+pub const CLAUDE_TODO_TOOLS: &str = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
 
 /// The person's Rust toolchain as their shell finds it: rustup's home (`RUSTUP_HOME`, else
 /// `~/.rustup`) and cargo's own `bin` (`CARGO_HOME/bin`, else `~/.cargo/bin`), each when it's a
@@ -669,6 +677,7 @@ mod claude_tmpdir_tests {
             temp,
             &[
                 (CLAUDE_TMPDIR, temp.into()),
+                (CLAUDE_TODO_TOOLS, "1".into()),
                 ("CLAUDE_CODE_OTHER", "x".into()),
             ],
         );
@@ -677,6 +686,7 @@ mod claude_tmpdir_tests {
             .map(|(k, _)| k.to_string_lossy().into_owned())
             .collect();
         assert!(names.contains(&CLAUDE_TMPDIR.to_owned()), "{names:?}");
+        assert!(names.contains(&CLAUDE_TODO_TOOLS.to_owned()), "{names:?}");
         assert!(
             !names.contains(&"CLAUDE_CODE_OTHER".to_owned()),
             "{names:?}"

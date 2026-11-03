@@ -534,7 +534,17 @@ fn scrubbed(detail: &str) -> String {
 
 /// Whether obid's answer to `tool` is worth the owner's seeing: the agent's own bookkeeping isn't.
 pub fn is_noted(tool: &str) -> bool {
-    !matches!(tool, "ExitPlanMode" | "Task" | "Agent" | "TodoWrite")
+    !matches!(
+        tool,
+        "ExitPlanMode"
+            | "Task"
+            | "Agent"
+            | "TodoWrite"
+            | "TaskCreate"
+            | "TaskUpdate"
+            | "TaskList"
+            | "TaskGet"
+    )
 }
 
 /// `entry` added to a job's answers, which keep the latest [`KEPT_ANSWERED`].
@@ -612,13 +622,17 @@ pub fn inbox_decision(answer: &str) -> (Decision, Option<String>) {
 
 /// What never asks: reads, and the agent's own bookkeeping (a to-do list, a helper whose own
 /// actions ask).
-const QUIET: [&str; 8] = [
+const QUIET: [&str; 12] = [
     "Read",
     "Grep",
     "Glob",
     "LS",
     "NotebookRead",
     "TodoWrite",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
+    "TaskGet",
     "Task",
     "Agent",
 ];
@@ -2392,7 +2406,8 @@ pub fn reach(call: &Call, bounds: &Bounds) -> Option<Reach> {
             .chain(&call.reads)
             .any(|p| !bounds.holds(p))
             .then_some(Reach::Outside),
-        "ExitPlanMode" | "Task" | "Agent" | "TodoWrite" => None,
+        "ExitPlanMode" | "Task" | "Agent" | "TodoWrite" | "TaskCreate" | "TaskUpdate"
+        | "TaskList" | "TaskGet" => None,
         _ if tool.starts_with("mcp__") => None,
         _ => Some(Reach::Unknown),
     }
@@ -3071,7 +3086,15 @@ mod tests {
             let got: Vec<Verdict> = calls.iter().map(|c| decide_in(c, mode, &[])).collect();
             assert_eq!(got, verdicts, "{mode:?}");
         }
-        for helper in ["Agent", "Task", "TodoWrite"] {
+        for helper in [
+            "Agent",
+            "Task",
+            "TodoWrite",
+            "TaskCreate",
+            "TaskUpdate",
+            "TaskList",
+            "TaskGet",
+        ] {
             for mode in Mode::ALL {
                 assert_eq!(decide_in(&tool(helper, &[]), mode, &[]), Verdict::Allow);
             }
