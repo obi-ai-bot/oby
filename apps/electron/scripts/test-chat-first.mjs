@@ -123,6 +123,8 @@ async function main() {
   // CHATFIRST-6: a task from its card in the conversation, and back to it
   const talk = await onTop(page);
   await page.locator('.msg-task.is-link', { hasText: 'Core flow' }).click();
+  await until('its conversation beside the chat', () => page.locator('.agent-pane').count());
+  await button(page, 'Open the task’s page').click();
   await until('its page', () => page.locator('[aria-placeholder="Tell Oby about this task…"]').count());
   await shot(page, '6-task-from-its-card');
   await button(page, 'Back').click();
@@ -144,18 +146,18 @@ async function main() {
   await shot(page, '1-opens-on-your-conversation');
   ok('CHATFIRST-1 opens on the latest conversation with its box focused');
 
-  // CHATFIRST-3: Oby first, its usage rows at the foot, a click to the accounts
+  // CHATFIRST-3: Oby first, and no usage in the panel: it's in the message box
   const order = await page.locator('.sidebar-content').innerText();
   assert.ok(order.indexOf('Oby') < order.indexOf('New conversation'), order);
-  assert.ok(order.indexOf('New conversation') < order.indexOf('Claude Code'), order);
-  assert.ok(order.includes('–'), `no usage reported, no number: ${order}`);
-  ok('CHATFIRST-3 the side panel lists Oby first and its usage at the foot');
+  assert.ok(!order.includes('Claude Code'), `no usage in the panel: ${order}`);
+  ok('CHATFIRST-3 the side panel lists Oby first, with no usage in it');
 
   // CHATFIRST-9: Esc stays; a page from the side panel comes back to the conversation you were in
   await page.keyboard.press('Escape');
   await sleep(400);
   assert.equal(await onTop(page), talk, 'CHATFIRST-9: Esc stays');
-  await button(page, 'Accounts and how much of each is used').click();
+  await visible(page, '.talk-pick').last().click();
+  await page.locator('.talk-choice.is-add').click();
   await until('the accounts', async () => (await page.locator('.settings-layer, .set-page, [class*="settings"]').count()) > 0);
   await button(page, 'Back').click();
   await until('back in the conversation', async () => (await onTop(page)) === talk);
@@ -200,7 +202,8 @@ async function main() {
   await shot(page, '4-new-conversation');
   // CHATFIRST-9: words half typed there, a page, and back: the empty chat, with them still in its box
   await page.keyboard.insertText('half a thought');
-  await button(page, 'Accounts and how much of each is used').click();
+  await visible(page, '.talk-pick').last().click();
+  await page.locator('.talk-choice.is-add').click();
   await button(page, 'Back').waitFor();
   await button(page, 'Back').click();
   await until('the empty chat again', async () => (await page.evaluate(() => !document.querySelector('.stage.is-hidden'))));
@@ -253,7 +256,7 @@ async function main() {
   await shot(page, '3-panel-with-teammates');
   const mine = await onTop(page);
   const text = await page.locator('.sidebar-content').innerText();
-  assert.ok(text.indexOf('Oby') < text.indexOf('Deskree') && text.indexOf('Deskree') < text.indexOf('Dima’s Oby') && text.indexOf('Dima’s Oby') < text.indexOf('Claude Code'), text);
+  assert.ok(text.indexOf('Oby') < text.indexOf('Deskree') && text.indexOf('Deskree') < text.indexOf('Dima’s Oby') && !text.includes('Claude Code'), text);
   await page.getByRole('button', { name: /^Chat with Dima’s Oby/ }).click();
   await page.locator('.crumb', { hasText: 'Dima’s Oby' }).waitFor();
   await shot(page, '5-a-teammates-oby');

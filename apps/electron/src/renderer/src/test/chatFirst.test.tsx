@@ -146,22 +146,14 @@ describe('chat first', () => {
     expect(latestChat([])).toBeUndefined();
   });
 
-  it('CHATFIRST-3: the panel lists Oby, then the Obysphere and its teammates’ Obys, then usage', async () => {
+  it('CHATFIRST-3: the panel lists Oby, then the Obysphere and its teammates’ Obys, with no usage', async () => {
     const html = await panel();
     const at = (words: string) => html.indexOf(words);
     expect(at('>Oby</span>')).toBeGreaterThan(-1);
     expect(at('>Oby</span>')).toBeLessThan(at('>Deskree</span>'));
     expect(at('>Deskree</span>')).toBeLessThan(at('Dima’s Oby'));
-    expect(at('Dima’s Oby')).toBeLessThan(at('Accounts and how much of each is used'));
-  });
-
-  it('CHATFIRST-3: a usage row shows the account with the most room, a full one as 100, none reported as no number', async () => {
-    await flag('');
-    const { usageRows } = await import('../talk');
-    const a = (agent: string, used?: number, more = {}) => ({ id: `${agent}${used}`, name: 'A', agent, used, ...more }) as never;
-    expect(usageRows([a('claude', 40), a('claude', 12), a('codex'), a('cursor', 10, { full: true })]).map((u) => [u.agent, u.used]))
-      .toEqual([['claude', 12], ['codex', null], ['cursor', 100]]);
-    expect(usageRows([a('codex', 5, { signedIn: false })])).toEqual([]);
+    expect(at('Dima’s Oby')).toBeGreaterThan(-1);
+    expect(html).not.toContain('panel-usage');
   });
 
   it('CHATFIRST-4: New conversation is in the panel', async () => {

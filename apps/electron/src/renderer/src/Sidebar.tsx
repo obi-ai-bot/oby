@@ -8,7 +8,7 @@ import { OBYS, ago } from './mock';
 import { ObyFace, OwnerAvatar } from './ObyFace';
 import { useScrollThumb } from './useScrollThumb';
 import { Menu } from './Menu';
-import { SETTINGS_PAGES, fullness, useAccounts } from './SettingsView';
+import { SETTINGS_PAGES } from './SettingsView';
 import InviteModal from './InviteModal';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
@@ -19,8 +19,6 @@ import StatusDot from './StatusDot';
 import { convosWith, hasUnread, useConvos } from './peers';
 import { lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
-import { lookAtUsage } from './live';
-import { usageRows } from './talk';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
 import { plain } from './Said';
@@ -261,10 +259,6 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const latest = latestChat(chats);
   const inOrder = [...pinned, ...talks.filter((c) => !c.pinned)];
   const recent = q || more.has('talks') ? inOrder : inOrder.filter((c, i) => i < RECENT || c.id === activeTalk);
-  const [accounts] = useAccounts();
-  const usage = usageRows(accounts);
-  // what the usage rows read: fresh while they show (as the message box's panel does)
-  useEffect(() => { if (open && section === 'oby') lookAtUsage(); }, [open, section]);
   const convoRow = (c: Chat) => (
     // a row with its own menu button, so the row itself isn't a <button>
     <div
@@ -678,18 +672,6 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         </div>
         <div {...thumbProps} />
         </div>
-        {/* chat first, Chats' foot: how much of each tool is used; a click, its accounts */}
-        {section === 'oby' && usage.length > 0 && (
-          <button className="panel-usage" aria-label="Accounts and how much of each is used" onClick={() => onOpenSetting(everything ? 'accounts' : 'agents')}>
-            {usage.map((u) => (
-              <span key={u.agent} className="panel-usage-row">
-                <span>{u.name}</span>
-                <span className="set-meter"><span className={u.used == null ? '' : fullness(u.used)} style={{ width: `${u.used ?? 0}%` }} /></span>
-                <span className="panel-usage-pct">{u.used == null ? '–' : `${u.used}%`}</span>
-              </span>
-            ))}
-          </button>
-        )}
         {/* Home's foot, held at the bottom under a line, however it's grouped:
             the archive, done tasks that have left Home; it opens as a page */}
         {/* there from the start, its count 0 till something's archived (Sangam, 2026-10-28) */}
