@@ -256,6 +256,15 @@ impl Connections {
         )
     }
 
+    /// ChatGPT's relay for job `id` (crate::chatgpt_relay), with the job's token: the broker's, so
+    /// it dies with the job the same way.
+    pub fn open_chatgpt(&self, id: &str) -> (String, String) {
+        (
+            crate::chatgpt_relay::base_url(&self.api_url, id),
+            self.job_token(id),
+        )
+    }
+
     /// Job `id`'s token, made the first time it's asked for. obid learns it as a secret: whatever
     /// repeats it (the agent's MCP config read back, a header it prints) is masked everywhere.
     fn job_token(&self, id: &str) -> String {

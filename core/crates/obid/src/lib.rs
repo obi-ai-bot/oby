@@ -16,6 +16,7 @@ pub mod approval;
 pub mod artifacts;
 pub mod brain;
 pub mod chatgpt;
+pub mod chatgpt_relay;
 pub mod clear;
 pub mod codex;
 pub mod config;
@@ -438,6 +439,7 @@ pub async fn serve(
         config.agents.clone(),
         chatgpt::Endpoints::here(),
     );
+    jobs.use_chatgpt(chatgpt.clone());
     // Tetrix was a plug-in once, which gave agents its server on the owner's own login: an owner
     // who turned that on and never signed Oby in to Tetrix hears how to get it back.
     if !tetrix.connected()

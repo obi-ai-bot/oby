@@ -2,7 +2,8 @@
 //! choice for it (`talkAccount` on `PATCH /v1/conversations/{id}`), else the setting's (on `PUT
 //! /v1/settings/jobs`), else Auto, whichever connected account has room. When that one can't run a
 //! turn, the turn moves to another account of any tool, and says so; `accountFailover` off keeps it
-//! to one. `conversation.agent` in the configuration is only the tool Auto looks at first.
+//! to one. A ChatGPT login stays out of that: no turn moves on to or off one without the owner's
+//! click ([`Apart`]). `conversation.agent` in the configuration is only the tool Auto looks at first.
 
 use axum::http::StatusCode;
 
@@ -76,14 +77,88 @@ pub(super) fn accounts(
     {
         tools.sort_by_key(|t| *t != tool);
     }
+    let apart = chatgpt_apart(shared, chosen, on);
     let lists = tools
         .into_iter()
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
         .collect();
     let on = on.filter(|on| shared.jobs.has_room(on));
-    order(chosen, on, lists, shared.jobs.account_failover(), |id| {
-        shared.jobs.has_room(id)
+    keep_apart(
+        order(chosen, on, lists, shared.jobs.account_failover(), |id| {
+            shared.jobs.has_room(id)
+        }),
+        &apart,
+    )
+}
+
+/// Where a ChatGPT login stands in a turn's choice. Nobody moves on to or off one without the owner's
+/// click (docs/contracts/chatgpt-sign-in.md): whatever holds the account it's on, the turn doesn't go
+/// elsewhere by itself.
+#[derive(Debug, PartialEq, Eq)]
+enum Apart {
+    /// The account it stays on, the owner's choice or the session's: this or nothing.
+    On(String),
+    /// None of them: it's chosen or on something else, or something else is here.
+    Off,
+    /// There's nothing else on this Mac, so Auto is the first of them.
+    OnlyThese,
+}
+
+fn on_chatgpt(id: &str, shared: &Shared) -> Option<bool> {
+    let (_, account) = crate::accounts::find(&shared.config.agents.get(), id)?;
+    Some(crate::chatgpt::marker_of(&account).is_some())
+}
+
+fn chatgpt_apart(shared: &Shared, chosen: Option<&str>, on: Option<&str>) -> Apart {
+    // The owner's choice is their click; else the session's, full or not, as it stands now.
+    if let Some((id, chatgpt)) = chosen
+        .into_iter()
+        .chain(on)
+        .find_map(|id| on_chatgpt(id, shared).map(|chatgpt| (id, chatgpt)))
+    {
+        return if chatgpt {
+            Apart::On(id.to_owned())
+        } else {
+            Apart::Off
+        };
+    }
+    nothing_else(shared)
+}
+
+/// With no account chosen or under way: whether anything but a ChatGPT login is on this Mac, of any
+/// tool, whether or not it can run now. A full one, or one whose token is ending, is still there:
+/// that isn't the owner's word to use their plan.
+fn nothing_else(shared: &Shared) -> Apart {
+    let home = crate::jobs::login_home();
+    let another = Tool::ALL.into_iter().any(|tool| {
+        shared.jobs.accounts(tool).iter().any(|account| {
+            crate::chatgpt::marker_of(account).is_none()
+                && crate::jobs::has_login(tool, account, home.as_deref())
+        })
+    });
+    if another {
+        Apart::Off
+    } else {
+        Apart::OnlyThese
+    }
+}
+
+fn keep_apart(order: Vec<(Tool, Account)>, apart: &Apart) -> Vec<(Tool, Account)> {
+    keep_chatgpt_apart(order, apart, |account| {
+        crate::chatgpt::marker_of(account).is_some()
     })
+}
+
+fn keep_chatgpt_apart(
+    order: Vec<(Tool, Account)>,
+    apart: &Apart,
+    on_chatgpt: impl Fn(&Account) -> bool,
+) -> Vec<(Tool, Account)> {
+    match apart {
+        Apart::On(id) => order.into_iter().filter(|(_, a)| a.id == *id).collect(),
+        Apart::Off => order.into_iter().filter(|(_, a)| !on_chatgpt(a)).collect(),
+        Apart::OnlyThese => order.into_iter().take(1).collect(),
+    }
 }
 
 /// The chosen account first, else the one the session is on, then whichever has room: those of its
@@ -145,13 +220,18 @@ pub fn next(shared: &Shared) -> Option<String> {
 /// Claude Code and Codex, whose own tools obid can take away. Never Cursor, whose can't be: such a
 /// turn reads only its job.
 pub(super) fn unattended(shared: &Shared) -> Option<(Tool, Account)> {
-    let lists = unwatched(tools(shared))
+    let tools = unwatched(tools(shared));
+    let apart = nothing_else(shared);
+    let lists = tools
         .into_iter()
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
         .collect();
-    order(None, None, lists, true, |id| shared.jobs.has_room(id))
-        .into_iter()
-        .next()
+    keep_apart(
+        order(None, None, lists, true, |id| shared.jobs.has_room(id)),
+        &apart,
+    )
+    .into_iter()
+    .next()
 }
 
 fn unwatched(mut tools: Vec<Tool>) -> Vec<Tool> {
@@ -186,6 +266,22 @@ pub(super) const ON_CURSOR_UNASKED: &str =
 pub(super) fn why_none(shared: &Shared, chosen: Option<&str>) -> String {
     let now = obi_protocol::time::now();
     let held = |tool: Tool, account: &Account| {
+        // OpenAI's limit names no time, and the hour obid inferred isn't one to say.
+        if crate::chatgpt::marker_of(account).is_some()
+            && shared
+                .jobs
+                .usage
+                .get(&account.id)
+                .full_until_at(now)
+                .is_some()
+        {
+            return format!(
+                "{} · {}: {}",
+                tool.name(),
+                account.name,
+                crate::chatgpt_relay::LIMIT_WORDS
+            );
+        }
         format!(
             "{} · {} {}",
             tool.name(),
@@ -252,6 +348,35 @@ pub(super) fn moved_line(
 
 #[cfg(test)]
 mod tests {
+    /// Nobody moves on to or off a ChatGPT login without the owner's click: the rule by itself, which
+    /// tests/chatgpt_api.rs holds through `accounts()`.
+    #[test]
+    fn a_chatgpt_login_never_takes_or_gives_a_turn_by_itself() {
+        let account = |id: &str| Account {
+            id: id.into(),
+            name: id.into(),
+            config_dir: None,
+            payer: None,
+        };
+        let list = |ids: &[&str]| -> Vec<(Tool, Account)> {
+            ids.iter().map(|id| (Tool::Codex, account(id))).collect()
+        };
+        let ids = |order: Vec<(Tool, Account)>| -> Vec<String> {
+            order.into_iter().map(|(_, a)| a.id).collect()
+        };
+        let plan = |a: &Account| a.id.starts_with("plan");
+        let off = |order, apart| ids(keep_chatgpt_apart(order, &apart, plan));
+        assert_eq!(off(list(&["plan1", "a", "b"]), Apart::Off), ["a", "b"]);
+        assert_eq!(
+            off(list(&["a", "plan1"]), Apart::On("plan1".into())),
+            ["plan1"]
+        );
+        // Full, so not in the list: nothing, never the next.
+        assert!(off(list(&["a", "plan2"]), Apart::On("plan1".into())).is_empty());
+        assert_eq!(off(list(&["plan1", "plan2"]), Apart::OnlyThese), ["plan1"]);
+        assert!(off(list(&[]), Apart::OnlyThese).is_empty());
+    }
+
     use super::*;
 
     fn account(id: &str) -> Account {

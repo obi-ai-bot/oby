@@ -116,6 +116,9 @@ pub struct Settings {
     /// tries it first while it's signed in with room ([`crate::jobs::Jobs`]'s `pick`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_account: Option<String>,
+    /// OpenAI's welcome for a first ChatGPT sign-in was shown (docs/contracts/chatgpt-sign-in.md).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chatgpt_welcomed: bool,
     /// The account conversations talk through unless one chose another (`talkAccount`,
     /// docs/contracts/conversation-agent.md), by id; none (or `auto`) is Auto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,6 +268,7 @@ impl Default for Settings {
         Settings {
             default_agent: default_agent(),
             default_account: None,
+            chatgpt_welcomed: false,
             talk_account: None,
             tuning: BTreeMap::new(),
             max_running: default_max_running(),

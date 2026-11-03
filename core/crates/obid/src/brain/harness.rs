@@ -755,7 +755,10 @@ pub async fn run(
                 failed.get_or_insert_with(|| account.id.clone());
                 let now = obi_protocol::time::now();
                 let usage = shared.jobs.usage.get(&account.id);
-                if usage.full_until_at(now).is_some() {
+                // (OpenAI's limit names no time, and the hour obid inferred isn't one to say.)
+                if usage.full_until_at(now).is_some()
+                    && crate::chatgpt::marker_of(account).is_none()
+                {
                     full.push(format!(
                         "{} · {} {}",
                         tool.name(),
@@ -1804,9 +1807,32 @@ async fn attempts(
         if super::too_long(&why) {
             return Err(super::TOO_LONG.into());
         }
+        // What OpenAI said, when the turn went through the relay: Codex's own words drop its code.
+        if let Some(refusal) = url
+            .rsplit('/')
+            .next()
+            .and_then(|run| shared.chatgpt.runs.take(run))
+        {
+            use crate::chatgpt_relay::After;
+            match refusal.after {
+                After::Limit => {
+                    let now = obi_protocol::time::now();
+                    shared.jobs.mark_full(&account.id, None, now);
+                    return Err(Unanswered::moves(format!(
+                        "{} hit its usage limit ({})",
+                        account.name, refusal.words
+                    )));
+                }
+                After::Stop | After::SignIn => return Err(refusal.words.into()),
+                After::TryAgain => {}
+            }
+        }
         // A usage limit: the account is marked full, as a job's is, and isn't tried again; the
-        // turn moves on to another account (`run`, #874).
-        if turn.resets.is_some() || crate::limits::is_limit(&why) {
+        // turn moves on to another account (`run`, #874). On a ChatGPT login only the relay's
+        // refusal, above, says it's one.
+        if crate::chatgpt::marker_of(account).is_none()
+            && (turn.resets.is_some() || crate::limits::is_limit(&why))
+        {
             let now = obi_protocol::time::now();
             let reset = turn.resets.or_else(|| crate::limits::reset_in(&why, now));
             shared.jobs.mark_full(&account.id, reset, now);

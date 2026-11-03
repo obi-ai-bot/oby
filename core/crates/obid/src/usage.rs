@@ -320,6 +320,22 @@ impl Usages {
         true
     }
 
+    /// A limit whose end obid only inferred is over, as a run that went through shows: whether it
+    /// held one. A time its tool gave stands.
+    pub fn clear_inferred(&self, id: &str) -> bool {
+        if !self.get(id).full_until_inferred {
+            return false;
+        }
+        let (_, _, saved) = self.change(id, false, |usage| {
+            usage.full_until = None;
+            usage.full_until_inferred = false;
+        });
+        if let Err(error) = saved {
+            tracing::warn!("account {id}: could not keep that its limit passed: {error}");
+        }
+        true
+    }
+
     /// Forgets how an account pays: a new sign-in may be another kind of login (an API key where a
     /// plan was), so its next job asks again. Its windows stay until its tool reports again.
     pub fn forget_priced(&self, id: &str) {

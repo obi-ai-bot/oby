@@ -34,6 +34,9 @@
 //   WAITS            says it'll continue when the build is done, with nothing running; told to
 //                    wait in the foreground, says "Built in the foreground.", or with WAITS
 //                    ALWAYS that it's waiting again
+//   RELAY            a turn on a ChatGPT login: through obid's relay, as real Codex takes one, saying
+//                    what the model said; RELAY HOLD writes its environment to .obi/env-seen.json
+//                    and waits for .obi/go first
 //   TOKENS           its thread uses 1000 input tokens (600 of them cached) and 100 output tokens
 //                    more, reported in `thread/tokenUsage/updated` twice
 //   Oby's review     (its prompt names .obi/inputs/asked.md) approves; of work asked with CODEX
@@ -93,11 +96,52 @@ const item = (type, fields) => ({ type, id: randomUUID(), ...fields });
 const complete = (turnId, text, status = "completed", error = null) =>
   send({ method: "turn/completed", params: { threadId: thread, turn: { id: turnId, status, error, items: text == null ? [] : [{ type: "agentMessage", id: "m1", text }] } } });
 
+// A turn on a ChatGPT login (crate::chatgpt_relay), as real Codex takes one (spike S5): it posts to
+// its `base_url` with the token named by `env_key`; a 401, a 403, a 5xx or a `response.failed` is
+// tried again, up to 5 more times (a 5xx's fewer here, to keep the tests short); a 400's body and a
+// 429's fixed words end the turn. Sends back what the model said.
+async function relayed() {
+  const key = "model_providers.openai_chatgpt_plan";
+  const base = setting(`${key}.base_url`);
+  const token = process.env[setting(`${key}.env_key`)];
+  if (!base) return { failed: "no relay in its settings" };
+  let last = "";
+  for (let tries = 0; tries < 6; tries++) {
+    const response = await fetch(`${base}/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ store: false, stream: true }),
+    });
+    const body = await response.text().catch(() => null);
+    if (body === null) { last = "stream disconnected before completion: error sending request"; continue; }
+    if (response.status === 400) return { failed: body };
+    if (response.status === 429) return { failed: "exceeded retry limit, last status: 429 Too Many Requests" };
+    if (!response.ok) { last = `unexpected status ${response.status}: ${body}`; continue; }
+    const events = body.split("\n").filter((l) => l.startsWith("data:")).map((l) => JSON.parse(l.slice(5)));
+    const failed = events.find((e) => e.type === "response.failed");
+    if (failed) { last = `stream disconnected before completion: ${failed.response.error.message}`; continue; }
+    if (!events.some((e) => e.type === "response.completed")) { last = "stream closed before response.completed"; continue; }
+    return { said: events.flatMap((e) => e.item?.content ?? []).map((c) => c.text).join("") };
+  }
+  return { failed: last };
+}
+
 async function runTurn(turnId, prompt) {
   if (leaked.length) return complete(turnId, null, "failed", { message: `leaked: ${leaked.join(", ")}` });
   if (state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy}` });
   const task = state.task;
+  if (task.includes("RELAY")) {
+    if (task.includes("HOLD")) {
+      mkdirSync(".obi", { recursive: true });
+      writeFileSync(".obi/env-seen.json", JSON.stringify(process.env));
+      while (!existsSync(".obi/go")) await new Promise((r) => setTimeout(r, 50));
+    }
+    const words = task.match(/SAID: (.*)$/m);
+    if (words) send({ method: "item/completed", params: { threadId: thread, turnId, item: item("agentMessage", { text: words[1] }) } });
+    const { said, failed } = await relayed();
+    return failed === undefined ? complete(turnId, said) : complete(turnId, null, "failed", { message: failed });
+  }
   if (prompt.includes("obid paused you") && !prompt.includes("The owner allowed it")) return complete(turnId, `heard: ${prompt}`);
   const asked = ".obi/inputs/asked.md";
   if (task.includes(asked) && existsSync(asked) && readFileSync(asked, "utf8").includes("CODEX REFUSED"))

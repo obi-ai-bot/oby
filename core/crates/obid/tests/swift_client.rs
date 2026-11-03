@@ -141,6 +141,55 @@ fn fake_claude() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude")
 }
 
+/// CHATGPT-18: the phones as they are decode a ChatGPT account: its new keys are ignored, its `agent`
+/// is still `codex`, and no enum they read as closed has a new value.
+#[test]
+fn chatgpt_18_older_phones_decode_the_new_keys() {
+    let client = client();
+    let folder = Folder::new("swift-client-chatgpt");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    let account = folder.0.join("home/accounts/plan");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(
+        account.join("chatgpt.json"),
+        json!({"email": "person@example.com", "signed": true, "planUse": true,
+               "expiresAt": 0, "refreshedAt": obi_protocol::time::now()})
+        .to_string(),
+    )
+    .unwrap();
+    config["agents"]["codex"] = json!({
+        "bin": Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-codex"),
+        "accounts": [{"id": "plan", "name": "Plan", "configDir": account}]
+    });
+    let obid = start(&folder.0, &config, None);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    let plan = status["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "plan")
+        .unwrap();
+    assert_eq!(plan["login"], "chatgpt", "{plan}");
+    assert_eq!(plan["loginEmail"], "person@example.com", "{plan}");
+    assert_eq!(plan["agent"], "codex", "{plan}");
+    let mut child = Command::new(&client)
+        .env("OBID_URL", format!("http://127.0.0.1:{}", obid.port))
+        .env("OBID_HOME", &obid.home)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = lines(&mut child);
+    let mut seen = Vec::new();
+    let line = next(&lines, "status ", 60, &mut seen);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        line.contains("accounts=stub,plan") || line.contains("accounts=plan,stub"),
+        "{line}"
+    );
+}
+
 /// The phones' client follows obid, lists its jobs, clears and stops all, every answer read into
 /// their own types.
 #[test]

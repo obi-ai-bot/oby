@@ -49,7 +49,7 @@ Principles:
 - **One decision per screen.** A screen asks one thing; anything Oby can find out, it finds out.
 - **Skip what's safe to skip.** Every step but the welcome has Skip or Later, and everything skipped is one place away in Settings.
 - **The system's own prompts, at the moment they're needed.** One line from Oby before each, saying why, then macOS's or iOS's prompt. Never a batch of permissions on first launch.
-- **Each tool's own login.** Claude Code, Codex, Cursor and GitHub sign in through their own pages; Oby only learns that it worked. Logins and secrets never leave the Mac, on either path.
+- **Each tool's own login.** Claude Code, Codex, Cursor and GitHub sign in through their own pages; Oby only learns that it worked. The one exception is Continue with ChatGPT, whose tokens Oby holds in its vault and sends only to OpenAI (docs/contracts/chatgpt-sign-in.md). Logins and secrets never leave the Mac, on either path.
 - **Sangam's language.** Near-black ground, white at low opacities, colour only for meaning, short first-person copy in sentence case, the one ink button. Light mirrors it.
 
 ### Mac, screen by screen
@@ -132,7 +132,7 @@ The design before the launch, for later: on Just this Mac, the local network plu
 
 | Rule | How it's kept |
 |---|---|
-| Logins and secrets never leave the Mac | Every sign-in happens on the Mac, by the tool itself; the vault stays in its Keychain; the relay never sees a login, a secret or a pairing key. |
+| Logins and secrets never leave the Mac | Every sign-in happens on the Mac, by the tool itself, or by obid with OpenAI for Continue with ChatGPT; the vault stays in its Keychain; the relay never sees a login, a secret or a pairing key. |
 | Everything outgoing is scanned for secrets | The gateway already passes only allowlisted routes, with vault secrets, `session` ids and home paths taken out (docs/runner-api.md, "obid only: the gateway"); sealing happens after that. |
 | Text from other people is data | Unchanged; the Obysphere carries typed actions only (`obi-sphere`'s design rules). |
 | No telemetry unless the user turns it on | Oby sends Deskree no usage data; Deskree's push relay gets only sealed alerts and the iPhone's push token. Oby Cloud keeps the account, its installations and endpoints, and hashes; never content, never logs of content. |

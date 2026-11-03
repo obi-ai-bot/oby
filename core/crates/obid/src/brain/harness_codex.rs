@@ -85,6 +85,14 @@ pub(super) async fn launch(
     for setting in SETTINGS {
         flags.extend(["-c".into(), (*setting).into()]);
     }
+    // On a ChatGPT login, no run holds a token: Codex goes through obid's relay with the turn's
+    // own token (crate::chatgpt_relay).
+    let chatgpt = crate::chatgpt::marker_of(account).is_some();
+    if chatgpt {
+        flags.extend(crate::chatgpt_relay::codex_settings(
+            &url.replace("/v1/agent/mcp/", "/v1/agent/chatgpt/"),
+        ));
+    }
     // Web search is on, but for a turn nobody watches (super::supervisor).
     let search = if web { "live" } else { "disabled" };
     flags.extend(["-c".into(), format!(r#"web_search="{search}""#).into()]);
@@ -107,15 +115,28 @@ pub(super) async fn launch(
     features_off(&launch).await?;
     launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
     let model = shared.config.conversation.model_for(Tool::Codex);
+    let mut model = (!model.is_empty()).then(|| model.to_owned());
+    if chatgpt {
+        // What its last run was refused is over.
+        if let Some(run) = url.rsplit('/').next() {
+            shared.chatgpt.runs.begin(run);
+        }
+        model = shared
+            .chatgpt
+            .model_for(&account.id, model.as_deref())
+            .await
+            .0;
+    }
     let options = crate::codex::Options {
         resume: resume.clone(),
-        model: (!model.is_empty()).then(|| model.to_owned()),
+        model,
         effort: None,
         plan: false,
         instructions: Some(orientation(shared, tetrix.is_some(), watched)),
         no_commands: true,
         usage: false,
         priced: None,
+        chatgpt,
     };
     Ok((launch, Some(options)))
 }

@@ -288,7 +288,11 @@ pub struct ChatGpt {
     agents: Live,
     home: PathBuf,
     http: reqwest::Client,
+    /// Model calls: no redirect either, and no limit on a whole answer, only on going quiet.
+    stream: reqwest::Client,
     state: Mutex<Memory>,
+    /// What each run was refused (crate::chatgpt_relay).
+    pub(crate) runs: crate::chatgpt_relay::Runs,
 }
 
 impl ChatGpt {
@@ -298,14 +302,41 @@ impl ChatGpt {
             .timeout(Duration::from_secs(15))
             .build()
             .expect("reqwest client");
+        let stream = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(600))
+            .build()
+            .expect("reqwest client");
         Arc::new(ChatGpt {
             ends,
             vault,
             agents,
             home: home.to_path_buf(),
             http,
+            stream,
             state: Mutex::default(),
+            runs: crate::chatgpt_relay::Runs::default(),
         })
+    }
+
+    pub(crate) fn endpoints(&self) -> &Endpoints {
+        &self.ends
+    }
+
+    pub(crate) fn streaming(&self) -> &reqwest::Client {
+        &self.stream
+    }
+
+    /// Whether the account's access token ends within `seconds`.
+    pub(crate) fn may_replace(&self, account: &str, sent: &str, seconds: i64) -> bool {
+        self.record(account)
+            .ok()
+            .flatten()
+            .and_then(|r| r.tokens)
+            .is_some_and(|t| {
+                t.access != sent || t.expires_at <= obi_protocol::time::now() + seconds
+            })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Memory> {
@@ -2433,8 +2464,13 @@ mod tests {
         );
         // A new obid reading the same file: the same, with nothing learned before.
         let home = world.dir.parent().unwrap().parent().unwrap().join("vault");
-        let again = Vault::file(home, Arc::new(crate::secrets::Secrets::default()));
+        let known = Arc::new(crate::secrets::Secrets::default());
+        let again = Vault::file(home, known.clone());
         let clean = again.redact(text).unwrap();
+        // What the log and the scan read too (`crate::scan`, through `known()`).
+        let logged = known.redact(text);
+        assert!(!logged.contains("access-old-abcdefgh"), "{logged}");
+        assert!(!logged.contains("refresh-new-1-abcdefgh"), "{logged}");
         for token in [
             "access-old-abcdefgh",
             "access-new-1-abcdefgh",

@@ -42,6 +42,10 @@ pub struct Options {
     /// How the job's account pays (`api` or `plan`), when obid knows it already: then the run
     /// doesn't ask `account/read`.
     pub priced: Option<String>,
+    /// On a ChatGPT login (crate::chatgpt): the thread starts with the model (OpenAI's page has it
+    /// so, and the provider has no default of its own) and Codex says it's Oby, the name it signed
+    /// in under.
+    pub chatgpt: bool,
 }
 
 /// The `command` line `codex app-server` runs as: the binary, then `app-server`. Oby's broker
@@ -103,6 +107,7 @@ pub async fn run_turn(
         reasoning: HashMap::new(),
         ended: None,
         resets: None,
+        chatgpt: options.chatgpt,
     };
     let mut turn = Turn::default();
     match run.turn(prompt, options).await {
@@ -244,6 +249,8 @@ struct Run<D, E> {
     ended: Option<(String, bool)>,
     /// When Codex's own limit resets, once it said it's full (crate::limits).
     resets: Option<i64>,
+    /// On a ChatGPT login ([`Options::chatgpt`]).
+    chatgpt: bool,
     /// The helper threads that spoke this turn, each said once as a tool call.
     helpers: std::collections::HashSet<String>,
 }
@@ -262,9 +269,14 @@ const NOT_TOOLS: &[&str] = &[
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     async fn turn(&mut self, prompt: &str, options: &Options) -> Result<(), Stop> {
         let version = env!("CARGO_PKG_VERSION");
+        let client = if options.chatgpt {
+            crate::chatgpt::AGENT_NAME
+        } else {
+            "obid"
+        };
         self.call(
             "initialize",
-            json!({"clientInfo": {"name": "obid", "title": "obid", "version": version}}),
+            json!({"clientInfo": {"name": client, "title": client, "version": version}}),
         )
         .await?
         .map_err(|e| Stop::Failed(format!("Codex couldn't start: {}", e.message)))?;
@@ -293,6 +305,11 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         let mut params = thread_params(&cwd);
         if let Some(instructions) = &options.instructions {
             params["developerInstructions"] = json!(instructions);
+        }
+        if options.chatgpt
+            && let Some(model) = options.model.as_deref().filter(|m| !m.is_empty())
+        {
+            params["model"] = json!(model);
         }
         let (method, what) = match &options.resume {
             Some(thread) => {
@@ -525,7 +542,14 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 ));
             }
             Some("turn/completed") => {
-                self.ended = Some(finished(&params["turn"], self.said.as_deref()));
+                let turn = &params["turn"];
+                // On a ChatGPT login nothing is read out of a failed turn's words, so they're
+                // Codex's: the model's can say anything (docs/contracts/chatgpt-sign-in.md).
+                self.ended = Some(if self.chatgpt && turn["status"] == "failed" {
+                    why_failed(turn)
+                } else {
+                    finished(turn, self.said.as_deref())
+                });
             }
             _ => {}
         }
@@ -1054,6 +1078,11 @@ pub fn finished(turn: &Value, said: Option<&str>) -> (String, bool) {
     if status == "interrupted" {
         return ("Stopped.".into(), true);
     }
+    why_failed(turn)
+}
+
+/// A failed turn's reason, in Codex's words, whatever the agent said before it.
+fn why_failed(turn: &Value) -> (String, bool) {
     // The API's own error arrives as JSON inside the message.
     let message = turn["error"]["message"].as_str().unwrap_or("");
     let reason = serde_json::from_str::<Value>(message)
