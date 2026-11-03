@@ -7918,7 +7918,7 @@ impl Jobs {
         let mut context = Vec::new();
         // Teammates' open pull requests on the files it claimed (crate::teammates).
         if let Some(found) = self
-            .teammates_on(&job, job.files.as_deref().unwrap_or_default())
+            .teammates_on(job, job.files.as_deref().unwrap_or_default())
             .await
         {
             let prs: Vec<_> = found.iter().map(|(pr, _)| pr.clone()).collect();

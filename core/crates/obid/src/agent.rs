@@ -221,9 +221,13 @@ impl Cause {
         if error.contains("no conversation found") {
             return Cause::SessionGone;
         }
-        if ["usage limit", "hit your limit", "limit reached"]
+        // "hit your limit", and as claude 2.1.302 says one: "hit your session limit"
+        if ["usage limit", "limit reached"]
             .iter()
             .any(|w| error.contains(w))
+            || error
+                .split_once("hit your ")
+                .is_some_and(|(_, rest)| rest.split(' ').take(2).any(|w| w.starts_with("limit")))
         {
             return Cause::Limit;
         }
@@ -1226,6 +1230,16 @@ mod tests {
             "api_error_status": 429, "result": "You've hit your limit · resets 3pm"}),
         );
         assert_eq!(limit.cause, Cause::Limit);
+        for words in [
+            "You've hit your session limit · resets 4:36am",
+            "You've hit your weekly limit",
+        ] {
+            let limit = of(
+                json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
+                "api_error_status": 429, "result": words}),
+            );
+            assert_eq!(limit.cause, Cause::Limit, "{words}");
+        }
         // An older Claude Code: its words alone.
         let old = of(
             json!({"subtype": "success", "is_error": true, "result": "API Error: 529 overloaded"}),
