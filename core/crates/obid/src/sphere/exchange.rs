@@ -77,6 +77,11 @@ pub struct Exchange {
     /// later event never says it twice. Never in the API's answer.
     #[serde(default)]
     pub told: Vec<String>,
+    /// The owner's own signed words asked this from their thread, with no model of theirs
+    /// (docs/contracts/peer-thread.md): the thread marks its question as theirs. Only here: a
+    /// question's body has no `by` in the protocol. Never in the API's answer.
+    #[serde(default)]
+    pub asked_by_owner: bool,
 }
 
 impl Exchange {
@@ -113,6 +118,7 @@ impl Exchange {
             asked_in: None,
             asked_name: None,
             told: Vec::new(),
+            asked_by_owner: false,
         }
     }
 
@@ -197,7 +203,7 @@ impl Exchange {
                 "from": envelope["from"],
                 "owner": if sent { Some(me) } else { self.peer_owner.as_deref() },
                 "kind": kind,
-                "by": said_by(kind, body),
+                "by": if sent && kind == "question" && self.asked_by_owner { "owner" } else { said_by(kind, body) },
                 "createdAt": envelope["created_at"],
                 "replyTo": envelope["in_reply_to"],
                 "text": words_of(kind, body),

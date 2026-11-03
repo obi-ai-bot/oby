@@ -157,17 +157,23 @@ impl Link {
     }
 
     /// Sends `question` to the Oby `obi`, for the conversation `conversation`, and `name`, what the
-    /// owner knows them as now: its exchange's id.
+    /// owner knows them as now: its exchange's id. Only while it still acts for `owner` (none on a
+    /// Confirm made before obid kept who it showed).
     pub async fn ask(
         &self,
         obi: &str,
         question: &str,
         conversation: &str,
         name: &str,
+        owner: Option<&str>,
     ) -> Result<String, ApiError> {
         let body = json!({"to": obi, "type": "question", "body": {"text": question},
                           "expiresIn": ASK_LIFETIME});
-        let sent = self.request(body.to_string().as_bytes()).await?;
+        let meant = owner.map(|owner| Meant {
+            owner,
+            by_owner: false,
+        });
+        let sent = self.request_for(body.to_string().as_bytes(), meant).await?;
         let cid = sent["correlationId"]
             .as_str()
             .unwrap_or_default()
@@ -184,6 +190,83 @@ impl Link {
             self.save_exchange(&exchange);
         }
         Ok(cid)
+    }
+
+    /// `POST /v1/obid/sphere/peers/{owner}/ask`: the owner's own words, which their app signed (the
+    /// route checks), as a typed question to that member's Oby. No model of theirs runs and no
+    /// conversation is in it (no `asked_in`), so nothing that comes back reaches a prompt or marks
+    /// anything: [`Link::asks_to_tell`] never picks it. By the exact owner id, as the thread reads.
+    /// The question's post; a refusal is in [`crate::brain::ask::refusal`]'s words, with nothing of
+    /// what the Sphere wrote but its code.
+    pub async fn ask_peer(&self, owner: &str, body: &[u8]) -> Result<Value, ApiError> {
+        let map = object(body, &["text"])?;
+        let action = json!({"text": text_field(&map, "text")?});
+        self.joined()?;
+        if action["text"].as_str().is_none_or(|t| t.trim().is_empty())
+            || !obi_protocol::schema::errors("actions/question", &action, 1).is_empty()
+        {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "A question is 1 to 2,000 characters of plain text.",
+            ));
+        }
+        // Not the last read: someone who joined since isn't "no such member" with the Sphere away.
+        if let Err(e) = self.read_directory().await {
+            self.note_error(&e);
+            let e = from_client(&e);
+            return Err(api(e.status, crate::brain::ask::refusal(owner, &e)));
+        }
+        let members: Vec<AskMember> = self
+            .ask_members()
+            .into_iter()
+            .filter(|m| m.owner == owner)
+            .collect();
+        let Some(first) = members.first() else {
+            return Err(api(StatusCode::NOT_FOUND, "There's no such member."));
+        };
+        let Some(member) = self.oby_to_ask(&members) else {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("{}'s Oby doesn't take questions.", first.name),
+            ));
+        };
+        let body = json!({"to": member.obi, "type": "question", "body": action,
+                          "expiresIn": ASK_LIFETIME});
+        let meant = Meant {
+            owner,
+            by_owner: true,
+        };
+        let sent = self
+            .request_for(body.to_string().as_bytes(), Some(meant))
+            .await
+            .map_err(|e| api(e.status, crate::brain::ask::refusal(&member.name, &e)))?;
+        let cid = sent["correlationId"].as_str().unwrap_or_default();
+        let exchange = self.lock().exchanges.get(cid).cloned();
+        let verified = self.pins.verified(owner);
+        let post = exchange.and_then(|e| e.posts(&self.owner(), verified).into_iter().next());
+        Ok(post.unwrap_or(Value::Null))
+    }
+
+    /// Which of one owner's Obys a question goes to: one that takes questions, first one whose words
+    /// go sealed, then one with no seal key that never had one, and last one that dropped its key,
+    /// which refuses.
+    fn oby_to_ask<'a>(&self, members: &'a [AskMember]) -> Option<&'a AskMember> {
+        let state = self.lock();
+        members
+            .iter()
+            .filter(|m| m.takes_questions)
+            .min_by_key(|m| {
+                let card_seals = state
+                    .directory
+                    .members
+                    .get(&m.obi)
+                    .is_some_and(|d| d.seal.is_some());
+                match (card_seals, self.pins.seals(&m.obi)) {
+                    (true, _) => 0,
+                    (false, false) => 1,
+                    (false, true) => 2,
+                }
+            })
     }
 
     /// What the conversation `conversation` asked other Obys, oldest first.

@@ -1060,6 +1060,8 @@ mod tests {
         assert!(allows(&Method::GET, "/v1/obid/sphere/peers/ernesto"));
         for (method, path) in [
             (Method::POST, "/v1/obid/sphere/peers/ernesto"),
+            // No phone asks from a thread yet: SPH-13 and SPH-14 add it, with their signing.
+            (Method::POST, "/v1/obid/sphere/peers/ernesto/ask"),
             (Method::DELETE, "/v1/obid/sphere"),
             (Method::POST, "/v1/obid/sphere/join"),
             (Method::POST, "/v1/obid/sphere/key"),

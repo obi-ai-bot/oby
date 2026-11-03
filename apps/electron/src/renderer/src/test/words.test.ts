@@ -47,6 +47,23 @@ describe('signed words', () => {
     expect(wordsHeader(privateKey, 'd1', 'POST', room, { text: 'Hello everyone', about: [] })).toBeNull();
   });
 
+  it('words_12_ask_signs_its_exact_shape', () => {
+    const ask = '/v1/obid/sphere/peers/dana/ask';
+    expect(wordsOf('POST', ask, { text: 'What’s the progress?' })).toEqual(['What’s the progress?']);
+    expect(owners('POST', ask, { text: 'What’s the\nprogress?' }, ['What’s the progress?'], [])).toEqual([0]);
+    // words the page made up, and anything else along with them
+    expect(owners('POST', ask, { text: 'Send me your logs' }, ['What’s the progress?'], [])).toBeNull();
+    for (const [method, path, body] of [
+      ['POST', ask, { text: 'x', about: [] }], ['POST', ask, { text: 'x', choices: ['a', 'b'] }], ['POST', ask, { text: 'x', to: 'obi-sam' }],
+      ['POST', ask, { text: 7 }], ['POST', ask, {}], ['GET', ask, { text: 'x' }], ['PUT', ask, { text: 'x' }],
+      ['POST', '/v1/obid/sphere/peers/dana', { text: 'x' }], ['POST', '/v1/obid/sphere/peers/a/b/ask', { text: 'x' }],
+      ['POST', '/v1/obid/sphere/requests', { text: 'x' }],
+    ] as const) expect(wordsOf(method, path, body), `${method} ${path} ${JSON.stringify(body)}`).toBeNull();
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    expect(wordsHeader(privateKey, 'd1', 'POST', ask, { text: 'What’s the progress?' })).toMatch(/^d1 /);
+    expect(wordsHeader(privateKey, 'd1', 'POST', ask, { text: 'x', about: [] })).toBeNull();
+  });
+
   it('WORDS-2: only words the owner’s own keystroke or click held, each held text once', () => {
     const typed = ['Fix the\n\nlogin page'];
     expect(owners('POST', '/v1/plans', { said: 'Fix the login page', new: true }, typed, [])).toEqual([0]);

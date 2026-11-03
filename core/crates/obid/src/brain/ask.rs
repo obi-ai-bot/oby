@@ -146,7 +146,7 @@ pub(super) async fn ask(
                 action: crate::sphere::inbox::action::ASK_OBY.into(),
                 target: member.obi.clone(),
                 payload: json!({"question": question, "conversation": session.conversation,
-                                "name": member.name}),
+                                "name": member.name, "owner": member.owner}),
             },
         )?;
         return Ok(format!(
@@ -155,7 +155,13 @@ pub(super) async fn ask(
     }
     shared
         .link
-        .ask(&member.obi, &question, &session.conversation, &member.name)
+        .ask(
+            &member.obi,
+            &question,
+            &session.conversation,
+            &member.name,
+            Some(&member.owner),
+        )
         .await
         .map_err(refused)?;
     Ok(format!(

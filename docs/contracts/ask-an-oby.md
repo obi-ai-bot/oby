@@ -100,7 +100,7 @@ The answerer's side:
 - **ASK-14** A turn nobody watches asks no one, lists no one, and isn't told who is there.
 - **ASK-15** On a Mac whose Claude Code login is only in the Keychain, the answering run still runs, on a copy of what calls the API (real-Mac step: no automated test reaches the Keychain).
 - **ASK-16** A new session hears nothing a member chose, words or name, and every turn in the conversation of their questions waits for the owner's Confirm; an unsigned turn leaves the owner's next signed words theirs, in a new session too.
-- **ASK-17** Only an exact owner id no other card claims goes without the owner seeing who: an Obi id reaches no one; a name, or an owner id another card claims, makes a Confirm showing who and tells the model nothing of it; a card gives a name, never a sentence or a look-alike.
+- **ASK-17** Only an exact owner id no other card claims goes without the owner seeing who: an Obi id reaches no one; a name, or an owner id another card claims, makes a Confirm showing who and tells the model nothing of it; a card gives a name, never a sentence or a look-alike. A card that says it acts for someone else by the time the question goes gets nothing, on the owner's word or after their Confirm.
 - **ASK-18** A question from another Oby never decides where the app opens, on the Mac or the iPhone, or where words that name no conversation go.
 
 ### Test it when it's done

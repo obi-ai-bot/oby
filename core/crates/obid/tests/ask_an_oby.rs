@@ -889,3 +889,47 @@ async fn ask_14_an_event_turn_isnt_told_who_is_there() {
     assert!(!recorded.contains("Obysphere"), "{recorded}");
     assert!(!recorded.contains("ernesto"), "{recorded}");
 }
+
+/// A Sphere that serves the Oby asked for as someone else's by the time the question goes gets
+/// nothing: on the owner's word, between obid's two reads, or after their Confirm showed who.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_17_a_card_swapped_after_the_pick_gets_nothing() {
+    let folder = Folder::new("ask-17-swap");
+    let (sphere, obid, ernesto) = setup(&folder).await;
+    let swapped = ernesto.entry_as(&sphere, "eve");
+    sphere.lock().swap_member = Some((1, swapped));
+    let (_, said) = tokio::task::block_in_place(|| ask(&obid, QUESTION));
+    assert!(said.contains("nothing was sent"), "{said}");
+    assert!(sphere.lock().sends.is_empty(), "nothing went");
+
+    let folder = Folder::new("ask-17-click");
+    let (sphere, obid, ernesto) = setup(&folder).await;
+    let id = tokio::task::block_in_place(|| {
+        let words = format!(
+            "OBY oby_ask {}",
+            json!({"to": "ernesto", "question": QUESTION})
+        );
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": words, "new": true})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        let inbox = call(&obid, "GET", "/v1/inbox", None);
+        inbox.body[0]["id"].as_str().unwrap().to_owned()
+    });
+    let swapped = ernesto.entry_as(&sphere, "eve");
+    sphere.lock().swap_member = Some((0, swapped));
+    let click = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{id}/answer"),
+            Some(&json!({"answer": "Confirm", "approval": confirm_approval(&obid, &id)})),
+        )
+    });
+    assert_eq!(click.status, 409, "{}", click.text);
+    assert!(click.text.contains("nothing was sent"), "{}", click.text);
+    assert!(sphere.lock().sends.is_empty(), "nothing went");
+}
