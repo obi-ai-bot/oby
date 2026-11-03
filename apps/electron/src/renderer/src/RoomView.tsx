@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { clock } from './ChatView';
 import Composer, { typingIn } from './Composer';
-import { ObyFace, OwnerAvatar, PeerByline } from './ObyFace';
+import { ObyFace, PeerByline } from './ObyFace';
 import { box as draftBox, forget } from './drafts';
-import { aboutWords, atEnd, doing, sayInRoom, useRoom, whose } from './room';
-import { ME, useSpheres } from './spheres';
+import { aboutWords, atEnd, doing, isMine, isYours, sayInRoom, useRoom } from './room';
+import { useSpheres } from './spheres';
 import { useScrollThumb } from './useScrollThumb';
 import type { RoomPost } from './obid';
 import './room.css';
@@ -16,29 +16,33 @@ const GAP_MS = 3_600_000;
 const at = (p: RoomPost) => Date.parse(p.recordedAt ?? p.createdAt);
 
 // The Sphere's room (docs/contracts/room-app.md; Wellington's Deskree board), in the chat's own
-// parts: what members' Obys post and what their owners say. Everything in a post is someone else's
-// words, so it's a text node under a byline: no Markdown, no links, nothing to click.
-export function RoomThread({ posts, me }: { posts: RoomPost[]; me: string }) {
+// parts: what members' Obys post. Everything in a post is what its sender says, so it's a text node
+// under a byline with who sent it as data: no Markdown, no links, nothing to click. A post's `by` and
+// `kind` are the sender's own claims: no one's post reads as more trustworthy for them, and the only
+// mark verification makes is its lack. obi: this Mac's Oby in this Sphere.
+export function RoomThread({ posts, obi }: { posts: RoomPost[]; obi?: string }) {
   return (
     <ol className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
       {posts.map((p, i) => {
         const prev = posts[i - 1];
         const cont = !!prev && prev.from === p.from && prev.by === p.by && prev.kind === p.kind && at(p) - at(prev) < GAP_MS;
-        const mine = p.owner === me, you = mine && p.by === 'owner';
-        const about = aboutWords(p), did = doing(p, posts, me), time = Number.isNaN(at(p)) ? null : clock((Date.now() - at(p)) / 60_000);
+        const mine = isMine(p, obi), you = isYours(p, obi);
+        const about = aboutWords(p), did = doing(p, posts, obi), time = Number.isNaN(at(p)) ? null : clock((Date.now() - at(p)) / 60_000);
         return (
           <li key={p.id} className={`msg ${you ? 'is-you' : 'is-oby'}${mine ? ' is-mine' : ''}${cont ? ' is-cont' : ''}${p.state === 'waiting' ? ' is-waiting' : ''}`}>
             {!you && !cont && (
-              <span className="room-by">
-                {p.by === 'owner' ? <span className="peer-by"><OwnerAvatar name={p.owner} size={22} badge={false} /><span>{p.owner}</span></span>
-                  : mine ? <span className="peer-by"><ObyFace size={22} /><span>{whose(p, me)}</span></span>
-                  : <PeerByline name={p.owner} />}
-                {did && <span className="room-did">{did}</span>}
-              </span>
+              <div className="room-who">
+                <span className="room-by">
+                  {mine ? <span className="peer-by"><ObyFace size={22} /><span>Your Oby</span></span> : <PeerByline name={p.owner} />}
+                  {did && <span className="room-did">{did}</span>}
+                </span>
+                <span className="room-from">{p.from} · {p.owner}</span>
+              </div>
             )}
             <div className="msg-end">
               <p className="msg-bubble">{p.text}</p>
               {about && <p className="room-about">{about}</p>}
+              {p.verified !== true && <p className="room-state">Not verified</p>}
               {p.state === 'waiting' && <p className="room-state">Not sent yet</p>}
               {p.state === 'refused' && <p className="room-state is-refused">Not sent{p.error ? `: ${p.error}` : ''}</p>}
               {time && <time className="msg-time">{time}</time>}
@@ -93,7 +97,7 @@ export default function RoomView({ id, leaving, covered = false, onClose, onGone
       <div className="chat-scroll">
         <section ref={list} className="chat" aria-label={`${s.name}’s room`} role="log" onScroll={(e) => { onScroll(); following.current = atEnd(e.currentTarget); }}>
           <div className="chat-column">
-            {room.posts.length > 0 && <RoomThread posts={room.posts} me={s.me ?? ME.name} />}
+            {room.posts.length > 0 && <RoomThread posts={room.posts} obi={s.obi} />}
           </div>
           {!room.posts.length && (
             <div className="group-none"><div>

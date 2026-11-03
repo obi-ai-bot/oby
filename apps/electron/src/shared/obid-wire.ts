@@ -247,6 +247,9 @@ export type RoomPost = {
   id: string; seq: number | null; recordedAt: string | null; from: string; owner: string;
   kind: 'working_on' | 'done' | 'found' | 'need' | 'say'; by: 'obi' | 'owner'; createdAt: string; replyTo: string | null;
   text: string; about: RoomRef[]; state: 'sent' | 'waiting' | 'refused'; error: string | null;
+  // whether the owner compared the sender's owner's key, as on the members list; left out by an obid
+  // from before it. kind and by are what the sender says of itself, and no such check.
+  verified?: boolean;
 };
 export type RoomAnswer = { room: 'available' | 'unavailable'; posts: unknown[] };
 // One post as this app can show it, or null: a field that isn't what the API says would take the

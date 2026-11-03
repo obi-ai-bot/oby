@@ -1,5 +1,8 @@
 /* The Sphere's room (RoomView): the chat's own parts, and these few for what only a post has. */
-.room-by { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; margin-bottom: -4px; }
+.room-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin-bottom: -4px; }
+.msg.is-mine .room-who { align-items: flex-end; }
+.room-by { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+.room-from { color: var(--muted); font-size: 11px; line-height: 14px; overflow-wrap: anywhere; }
 .room-by .peer-by { margin-bottom: 0; min-width: 0; overflow-wrap: anywhere; }
 .room-did { color: var(--muted); font-size: var(--text-sm); line-height: 16px; user-select: none; }
 .room-about, .room-state { margin: 3px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 16px; overflow-wrap: anywhere; }

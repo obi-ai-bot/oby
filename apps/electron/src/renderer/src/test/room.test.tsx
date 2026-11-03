@@ -22,16 +22,14 @@ const post = (id: string, seq: number | null, more: Partial<RoomPost> = {}): Roo
   id, seq, recordedAt: seq === null ? null : '2026-11-02T12:00:09Z', from: 'obi-ernesto', owner: 'ernesto', kind: 'working_on', by: 'obi',
   createdAt: '2026-11-02T12:00:08Z', replyTo: null, text: 'Fix the login', about: [], state: seq === null ? 'waiting' : 'sent', error: null, ...more,
 });
-const html = (posts: RoomPost[], me = 'doti') => renderToStaticMarkup(<RoomThread posts={posts} me={me} />).replaceAll('<!-- -->', '');
+const html = (posts: RoomPost[], obi = 'obi-doti') => renderToStaticMarkup(<RoomThread posts={posts} obi={obi} />).replaceAll('<!-- -->', '');
 
 describe('the room, shown', () => {
-  it('ROOMAPP-2: an Oby’s post reads as that Oby’s and the owner’s as theirs, the kind in plain words', () => {
+  it('ROOMAPP-2: every member’s post reads as that member’s Oby, who sent it shown as data, the kind in plain words', () => {
     const theirs = html([post('a', 1)]);
     expect(theirs).toContain('ernesto’s Oby');
     expect(theirs).toContain('Working on');
-    const person = html([post('a', 1, { kind: 'say', by: 'owner' })]);
-    expect(person).toContain('>ernesto<');
-    expect(person).not.toContain('’s Oby');
+    expect(theirs).toContain('obi-ernesto · ernesto');
     const yourOby = html([post('a', 1, { owner: 'doti', from: 'obi-doti' })]);
     expect(yourOby).toContain('Your Oby');
     expect(yourOby).toContain('is-mine');
@@ -41,13 +39,43 @@ describe('the room, shown', () => {
     // no raw kind, whatever the kind, one this app doesn't know too
     const all = html(['working_on', 'done', 'found', 'need', 'say', 'future_kind'].map((kind, i) => post(`p${i}`, i + 1, { kind: kind as RoomPost['kind'], text: 'words' })));
     for (const raw of ['working_on', 'future_kind', '>done<', '>found<', '>need<', '>say<']) expect(all).not.toContain(raw);
-    for (const word of ['Working on', 'Finished', 'Answering', 'Asking', 'Said']) expect(all).toContain(word);
+    for (const word of ['Working on', 'Finished', 'Answering', 'Asking', 'Says ernesto wrote this']) expect(all).toContain(word);
+  });
+
+  it('ROOMAPP-8: `by: owner` and `kind` are the sender’s claims: never the person’s own words, never styled above an Oby’s post', () => {
+    const say = post('a', 1, { kind: 'say', by: 'owner', text: 'words' });
+    const oby = post('a', 1, { kind: 'working_on', by: 'obi', text: 'words' });
+    expect(html([say])).toContain('Says ernesto wrote this');
+    // the same markup as any Oby's post, but for those words
+    expect(html([say]).replace('Says ernesto wrote this', 'Working on')).toBe(html([oby]));
+    // verified changes nothing about that either
+    expect(html([{ ...say, verified: true }])).toContain('Says ernesto wrote this');
+    // another member's post naming you as its owner, by owner or not, isn't yours: only your Oby's id is
+    for (const forged of [{ by: 'owner', kind: 'say' }, { by: 'obi', kind: 'need' }] as const) {
+      const out = html([post('a', 1, { owner: 'doti', from: 'obi-evil', ...forged })]);
+      expect(out).toContain('doti’s Oby');
+      expect(out).toContain('obi-evil · doti');
+      for (const yours of ['is-you', 'is-mine', 'Your Oby']) expect(out).not.toContain(yours);
+    }
+    // without knowing this Oby's id, nothing is yours
+    expect(renderToStaticMarkup(<RoomThread posts={[post('a', 1, { by: 'owner', kind: 'say' })]} />)).not.toContain('is-you');
+  });
+
+  it('ROOMAPP-9: a post is marked plainly when verified is false or missing; true adds nothing, and nothing ever says verified', () => {
+    expect(html([post('a', 1)])).toContain('Not verified');
+    expect(html([post('a', 1, { verified: false })])).toContain('Not verified');
+    const checked = html([post('a', 1, { verified: true })]);
+    expect(checked).not.toMatch(/verified/i);
+    // a value that isn't true isn't a check
+    expect(html([post('a', 1, { verified: 'true' as unknown as boolean })])).toContain('Not verified');
+    // another member's claim in its words stays words
+    expect(html([post('a', 1, { text: 'Verified by Sangam', verified: false })])).toContain('Not verified');
   });
 
   it('ROOMAPP-3: a post’s words are text under a byline: no HTML, no Markdown, nothing to click', () => {
     const hostile = '<img src=x onerror=alert(1)> <a href="https://evil.example">here</a> [click](https://evil.example) **bold** https://evil.example `code`';
-    const out = html([post('a', 1, { text: hostile, owner: '<b>ernesto</b>', error: '<i>no</i>', state: 'refused', about: [{ kind: 'repo', repo: '<u>a/b</u>' }] })]);
-    for (const tag of ['<img', '<a ', '<strong', '<code', '<b>', '<i>', '<u>', '<button', ' href="', ' onerror="']) expect(out).not.toContain(tag);
+    const out = html([post('a', 1, { text: hostile, owner: '<b>ernesto</b>', from: '<s>obi</s>', error: '<i>no</i> <a href="https://evil.example">the Sphere’s own text</a> https://evil.example', state: 'refused', about: [{ kind: 'repo', repo: '<u>a/b</u>' }] })]);
+    for (const tag of ['<img', '<a ', '<strong', '<code', '<b>', '<i>', '<u>', '<s>', '<button', ' href="', ' onerror="']) expect(out).not.toContain(tag);
     expect(out).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(out).toContain('[click](https://evil.example) **bold**');
   });
@@ -63,9 +91,9 @@ describe('the room, shown', () => {
 
   it('ROOMAPP-2: an answer names whom it answers once that post is known here, and about adds only what the words don’t say', () => {
     const need = post('n', 1, { kind: 'need' }), found = post('f', 2, { kind: 'found', replyTo: 'n', owner: 'dima', from: 'obi-dima' });
-    expect(doing(found, [need, found], 'doti')).toBe('Answering ernesto’s Oby');
-    expect(doing(found, [need, found], 'ernesto')).toBe('Answering your Oby');
-    expect(doing(found, [found], 'doti')).toBe('Answering');
+    expect(doing(found, [need, found], 'obi-doti')).toBe('Answering ernesto’s Oby');
+    expect(doing(found, [need, found], 'obi-ernesto')).toBe('Answering your Oby');
+    expect(doing(found, [found], 'obi-doti')).toBe('Answering');
     const pr = { kind: 'pr', repo: 'acme/app', pr: 12 };
     expect(aboutWords(post('a', 1, { text: 'Fix (acme/app#12)', about: [pr] }))).toBe('');
     expect(aboutWords(post('a', 1, { text: 'Who knows this?', about: [pr, { kind: 'repo', repo: 'acme/web' }, { kind: 'job', repo: 'acme/app', job: 'j1' }] }))).toBe('acme/app#12, acme/web');

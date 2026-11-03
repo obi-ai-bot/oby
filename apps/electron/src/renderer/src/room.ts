@@ -79,17 +79,20 @@ export async function sayInRoom(sphere: string, text: string): Promise<string | 
 }
 
 // What a kind means, in words: raw kinds are never shown. A kind this app doesn't know: no words
-const DOING: Record<string, string> = { working_on: 'Working on', done: 'Finished', need: 'Asking', found: 'Answering', say: 'Said' };
-// Who a post is from: its Oby's, or the person's own words
-export const whose = (p: RoomPost, me: string) => {
-  const mine = p.owner === me;
-  return p.by === 'owner' ? (mine ? 'You' : p.owner) : mine ? 'Your Oby' : `${p.owner}’s Oby`;
-};
-// what it's doing, and whom it answers once that post is known here
-export function doing(p: RoomPost, posts: RoomPost[], me: string) {
+const DOING: Record<string, string> = { working_on: 'Working on', done: 'Finished', need: 'Asking', found: 'Answering' };
+// Whose a post is. Its `from` is what obid checked the signature against, and only this Mac's Oby
+// signs as this Oby: that's what makes a post yours. Anyone else's is that member's Oby, whatever
+// its `by` claims, with its owner as obid's directory has it (never a card's name, which a card
+// declares for itself).
+export const isMine = (p: RoomPost, obi?: string) => p.from === obi;
+export const isYours = (p: RoomPost, obi?: string) => isMine(p, obi) && p.by === 'owner';
+const whose = (p: RoomPost, obi?: string) => (isYours(p, obi) ? 'you' : isMine(p, obi) ? 'your Oby' : `${p.owner}’s Oby`);
+// What it's doing, and whom it answers once that post is known here. Someone's `say` is their Oby
+// saying they wrote it: a claim, in words that say so.
+export function doing(p: RoomPost, posts: RoomPost[], obi?: string) {
+  if (p.kind === 'say') return `Says ${p.owner} wrote this`;
   const to = p.kind === 'found' && p.replyTo ? posts.find((x) => x.id === p.replyTo) : undefined;
-  const name = to && whose(to, me);
-  return (DOING[p.kind] ?? '') + (name ? ` ${name === 'You' ? 'you' : name === 'Your Oby' ? 'your Oby' : name}` : '');
+  return (DOING[p.kind] ?? '') + (to ? ` ${whose(to, obi)}` : '');
 }
 // The repositories, pull requests and issues it's about, as plain words, and not what its words
 // already say (a job's post names its own). A job's id means nothing to a person.
