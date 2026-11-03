@@ -186,7 +186,10 @@ const background = () => {
 };
 
 const leaked = Object.keys(process.env).filter((name) =>
-  name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
+  name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR" && name !== "CLAUDE_CODE_ENABLE_TODO_TOOLS") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN" || name === "OBID_API_TOKEN");
+
+// obid gives every job's Claude Code its to-do tools (docs/contracts/live-task.md, LIVETASK-14)
+if (process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS !== "1") leaked.push("no CLAUDE_CODE_ENABLE_TODO_TOOLS");
 
 let asked = null;
 // UNKNOWN REQUEST: what obid answered the request of a new kind, and the ask it holds back.

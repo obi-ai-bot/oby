@@ -25,6 +25,13 @@ export type TranscriptEntry = {
   tool?: string; activity?: string; state?: 'running' | 'done' | 'failed' | 'declined'; seconds?: number; exit?: number; added?: number; removed?: number;
   todos?: { text: string; state: 'pending' | 'running' | 'done' }[];
 };
+// What a call took in and gave back (GET /v1/jobs/{id}/transcript/{n}), masked as the transcript is; kept: false, past what obid keeps
+export type EntryDetail = {
+  input?: Record<string, unknown>;
+  output?: { text?: string; lines?: number; truncated?: boolean; exit?: number };
+  diff?: { path: string; patch: string }[];
+  kept?: boolean;
+};
 export type Outgoing = { action: string; repo?: string; id?: string; branch?: string; date: string };
 
 // "Job": the keys this app reads
@@ -44,6 +51,8 @@ export type Job = {
   status: JobStatus;
   step: string;
   summary: string;
+  // obid's own words for why it stopped; summary stays the agent's last (docs/runner-api.md)
+  reason?: string | null;
   created: string;
   finished: string | null;
   commits: number | null;
@@ -239,7 +248,10 @@ export type Event =
   | { kind: 'accounts'; accounts: Account[] }
   | { kind: 'conversation'; conversation: Conversation }
   | { kind: 'conversationGone'; id: string }
-  | { kind: 'github'; work: GitHubWork };
+  | { kind: 'github'; work: GitHubWork }
+  // obid only: an entry of a job's session that came or changed, and a line its agent just wrote
+  | { kind: 'transcript'; job: string; entry: TranscriptEntry }
+  | { kind: 'transcriptLine'; job: string; n: number; append: string };
 
 // Server-Sent Events, as the stream's text comes in a piece at a time: each event's name and data
 // to `onEvent`; comments (`: ping`) and other fields are skipped (apps/web/src/api.ts).
@@ -290,6 +302,10 @@ export function parseEvent(name: string, data: string): Event | null {
       if (v.deleted === true) return { kind: 'conversationGone', id: v.id };
       return typeof v.title === 'string' && typeof v.lastActivity === 'string' ? { kind: 'conversation', conversation: value as Conversation } : null;
     case 'github': return typeof v.signedIn === 'boolean' && Array.isArray(v.reviews) ? { kind: 'github', work: value as GitHubWork } : null;
+    case 'transcript':
+      if (typeof v.job !== 'string') return null;
+      if (typeof v.n === 'number' && typeof v.append === 'string') return { kind: 'transcriptLine', job: v.job, n: v.n, append: v.append };
+      return typeof (v.entry as TranscriptEntry | undefined)?.n === 'number' ? { kind: 'transcript', job: v.job, entry: v.entry as TranscriptEntry } : null;
     default: return null;
   }
 }

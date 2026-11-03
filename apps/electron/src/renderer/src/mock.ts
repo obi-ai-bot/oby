@@ -105,6 +105,7 @@ export type Job = {
   stages: Stage[];
   ask?: Ask;
   summary?: string;    // the agent's report once it's done
+  reason?: string;     // obid's: why it stopped, in its words
   commits?: number;
   published?: string;  // the pull request it opened
   publish?: { label: string; anyway?: true; why?: string };  // obid only: Publish by hand (jobPage.ts, publishOf)

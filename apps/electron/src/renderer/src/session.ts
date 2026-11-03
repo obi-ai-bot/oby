@@ -17,11 +17,13 @@ export type Detail = {
 export type Entry =
   | { kind: 'start'; text: string; at: string }
   | { kind: 'said'; text: string; at: string; live?: boolean }   // live: still being written
-  | { kind: 'thought'; text: string; seconds: number }
+  // running: still thinking. text: only what the tool gives (Claude Code gives none, only how long)
+  | { kind: 'thought'; text: string; seconds: number; running?: boolean }
   | { kind: 'you'; text: string; at: string }
   | { kind: 'plan'; todos: { text: string; state: 'done' | 'running' | 'pending' }[] }
   | { kind: 'asked'; text: string; answer: string }
-  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; state: 'done' | 'running' | 'failed'; seconds: number; meta?: string; detail?: Detail };
+  // n: obid's number for it, by which its detail is fetched on opening; the mock's come with theirs
+  | { kind: 'tool'; n?: number; tool: ToolKind; verb: string; target: string; state: 'done' | 'running' | 'failed' | 'declined'; seconds: number; meta?: string; detail?: Detail };
 
 export const SESSIONS: Record<string, Entry[]> = {
   i1: [

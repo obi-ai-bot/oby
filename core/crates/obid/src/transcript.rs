@@ -766,8 +766,9 @@ fn tool(
 ) -> Vec<Entry> {
     let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("");
     match name {
-        // Loading a deferred tool's schema is the agent's bookkeeping (as a conversation's steps).
-        "ToolSearch" => vec![],
+        // Loading a deferred tool's schema is the agent's bookkeeping (as a conversation's steps),
+        // and so is reading back its own to-do list.
+        "ToolSearch" | "TaskList" | "TaskGet" => vec![],
         "TodoWrite" => {
             let todos = input["todos"]
                 .as_array()
@@ -1288,6 +1289,11 @@ mod tests {
         t.rec(
             "j",
             &tool_event("t1", "TaskCreate", json!({"subject": "One"})),
+        );
+        // reading its own list back is no step of the session
+        assert!(
+            t.rec("j", &tool_event("t9", "TaskList", json!({})))
+                .is_empty()
         );
         t.forget("j");
         let updated = t.rec(

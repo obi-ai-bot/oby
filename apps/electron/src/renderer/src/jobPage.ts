@@ -1,7 +1,7 @@
-import type { Account, Job, Outgoing, TranscriptEntry } from './obid';
+import type { Account, EntryDetail, Job, Outgoing, TranscriptEntry } from './obid';
 import type { Page, Stage, StageId, ToolGroup } from './mock';
 import { modeLabel } from './modes';
-import type { Entry, ToolKind } from './session';
+import type { Detail, Entry, ToolKind } from './session';
 
 // obid's job as Sangam's task page shows it (TaskCard.tsx, mock.ts's Page): the stages with their
 // times, the time track from obid's estimate, the agent's activity, what the job used and its share
@@ -175,24 +175,45 @@ export function pageOf(j: Job, account?: Account, needs = false, now = Date.now(
 
 // obid's transcript as the session's lines (SessionView.tsx), in order
 const TOOLS: Record<string, ToolKind> = { read: 'Read', search: 'Grep', edit: 'Edit', command: 'Bash', test: 'Bash', tetrix: 'Tetrix', web: 'Web' };
+// obid names a call as it starts ("Reading scan.rs"); ended, it says what it did
+const PAST: Record<string, string> = { Reading: 'Read', Running: 'Ran', Editing: 'Edited', Searching: 'Searched', Looking: 'Looked', Planning: 'Planned', Using: 'Used', Fetching: 'Fetched', Writing: 'Wrote' };
 export function sessionOf(entries: TranscriptEntry[], now = Date.now()): Entry[] {
-  return [...entries].sort((a, b) => a.n - b.n).map((e): Entry => {
+  // one to-do list, the newest: each one obid wrote replaces the one before, as in Claude Code
+  const plan = Math.max(0, ...entries.filter((e) => e.kind === 'plan').map((e) => e.n));
+  return entries.filter((e) => e.kind !== 'plan' || e.n === plan).sort((a, b) => a.n - b.n).map((e): Entry => {
     switch (e.kind) {
       case 'start': return { kind: 'start', text: e.summary, at: clock(e.at) };
       case 'said': return { kind: 'said', text: e.text ?? e.summary, at: clock(e.at) };
-      case 'thought': return { kind: 'thought', text: e.text ?? '', seconds: e.seconds ?? 0 };
+      case 'thought': return { kind: 'thought', text: e.text ?? '', seconds: e.seconds ?? 0, running: e.state === 'running' || undefined };
       case 'you': return { kind: 'you', text: e.text ?? e.summary, at: clock(e.at) };
       case 'plan': return { kind: 'plan', todos: e.todos ?? [] };
       case 'tool': {
         const { verb, rest } = verbOf(e.summary);
         // ponytail: a tool kind the filters don't know (mcp, other) shows under All only
         return {
-          kind: 'tool', tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb, target: rest,
-          state: e.state === 'running' ? 'running' : e.state === 'done' ? 'done' : 'failed',
+          kind: 'tool', n: e.n, tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb: e.state === 'running' ? verb : PAST[verb] ?? verb, target: rest,
+          state: e.state === 'running' || e.state === 'done' || e.state === 'declined' ? e.state : 'failed',
           seconds: e.seconds ?? (e.state === 'running' ? since(e.at, now) : 0),
-          meta: e.exit ? `exit ${e.exit}` : e.added != null || e.removed != null ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
+          meta: e.state === 'declined' ? 'Declined' : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
         };
       }
     }
   });
+}
+
+// What obid gives for a call, as Sangam's session draws it: a command and its output, an edit's
+// diff, a read's lines, a search's matches
+export function detailOf(d: EntryDetail = {}): Detail {
+  if (d.kept === false) return { input: 'Oby didn’t keep the details of this one: this task’s are full.' };
+  const i = d.input ?? {}, text = (k: string) => (typeof i[k] === 'string' ? i[k] as string : undefined);
+  const first = typeof i.offset === 'number' ? i.offset : undefined, many = typeof i.limit === 'number' ? i.limit : undefined;
+  const asked = text('command') ?? text('file_path') ?? (text('pattern') ? [text('pattern'), text('path')].filter(Boolean).join('  in ') : undefined) ?? text('query') ?? (Object.keys(i).length ? JSON.stringify(i, null, 2) : undefined);
+  return {
+    input: asked,
+    range: first != null || many != null ? `Lines ${first ?? 1}${many != null ? `–${(first ?? 1) + many - 1}` : ' on'}` : undefined,
+    output: d.output?.text,
+    lines: d.output?.lines,
+    exit: d.output?.exit,
+    diff: d.diff?.length ? d.diff.map((f) => f.patch).join('\n') : undefined,
+  };
 }

@@ -183,7 +183,7 @@ describe('the task menu on obid', () => {
     answers['GET /v1/jobs/j1/transcript?after=2'] = { status: 200, body: { next: null, entries: [tool(3, 'running')] } };
     await live.loadSession('j1');
     expect(calls.map((c) => c.path)).toEqual(['/v1/jobs/j1/transcript', '/v1/jobs/j1/transcript?after=2']);
-    expect(live.liveState().sessions.j1.map((e) => e.n)).toEqual([1, 2, 3]);
+    expect(live.sessionNow('j1')!.map((e) => e.n)).toEqual([1, 2, 3]);
 
     // the next event: after the highest n; entry 3 ended, so it comes again, in place
     calls.length = 0;
@@ -196,9 +196,48 @@ describe('the task menu on obid', () => {
     await first;
     await flush();
     expect(calls.map((c) => c.path)).toEqual(['/v1/jobs/j1/transcript?after=3', '/v1/jobs/j1/transcript?after=4']);
-    const session = live.liveState().sessions.j1;
+    const session = live.sessionNow('j1')!;
     expect(session.map((e) => e.n).sort()).toEqual([1, 2, 3, 4]);
     expect(session.find((e) => e.n === 3)!.state).toBe('done');
+  });
+
+  it('LIVETASK-3: a followed session takes obid\'s events as they come, and fetches what it missed', async () => {
+    const { live } = await load(true);
+    const send = await following(live, [job({ status: 'running' })]);
+    const entry = (n: number, more = {}) => ({ n, at: '2026-10-30T10:00:00Z', kind: 'tool', tool: 'Read', summary: `Reading f${n}.rs`, state: 'running', ...more });
+    // nobody's looking: nothing kept
+    send('transcript', { job: 'j1', entry: entry(1) });
+    expect(live.sessionNow('j1')).toBeUndefined();
+    answers['GET /v1/jobs/j1/transcript'] = { status: 200, body: { next: null, entries: [entry(1), { n: 2, at: '2026-10-30T10:00:00Z', kind: 'said', summary: 'One', text: 'One\n' }] } };
+    await live.loadSession('j1');
+    calls.length = 0;
+    // an entry that came, one that ended, and a line the agent wrote: no fetch for any of them
+    send('transcript', { job: 'j1', entry: entry(3) });
+    send('transcript', { job: 'j1', entry: entry(1, { state: 'done', seconds: 1 }) });
+    send('transcript', { job: 'j1', n: 2, append: 'Two\n' });
+    expect(calls).toEqual([]);
+    expect(live.sessionNow('j1')!.find((e) => e.n === 1)!.state).toBe('done');
+    expect(live.sessionNow('j1')!.find((e) => e.n === 2)!.text).toBe('One\nTwo\n');
+    // 4 and 5 never reached here; 6 did. The next fetch starts before the hole, so they come
+    send('transcript', { job: 'j1', entry: entry(6) });
+    answers['GET /v1/jobs/j1/transcript?after=3'] = { status: 200, body: { next: null, entries: [entry(4), entry(5), entry(6, { state: 'done' })] } };
+    await live.loadSession('j1');
+    expect(calls.map((c) => c.path)).toEqual(['/v1/jobs/j1/transcript?after=3']);
+    expect(live.sessionNow('j1')!.map((e) => e.n).sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    // deleted: its session goes too
+    send('job', { id: 'j1', deleted: true });
+    expect(live.sessionNow('j1')).toBeUndefined();
+  });
+
+  it('LIVETASK-7: telling the agent is obid\'s own message; a finished one\'s follow-up is what the pane then follows', async () => {
+    const { live } = await load(true);
+    answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running' }) };
+    expect(await live.tellAgent('j1', 'Use the other file.')).toBeUndefined();
+    expect(calls.map((c) => [c.method, c.path])).toEqual([['POST', '/v1/jobs/j1/messages']]);
+    expect(calls[0].body).toMatchObject({ text: 'Use the other file.' });
+    answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ id: 'j2', followUpOf: 'j1', status: 'queued' }) };
+    answers['GET /v1/jobs/j1'] = { status: 200, body: job() };
+    expect(await live.tellAgent('j1', 'Now the docs.')).toBe('j2');
   });
 
   it('TASKS-10: on the mock (npm run web), the menu works in place and calls nothing', async () => {
@@ -243,7 +282,8 @@ describe('a turn\'s answer, as the plan\'s answer and its events land (#1788)', 
     live.ask(said, 'c1');
     await flush();
     // (the words' turn has the id the app sent them with)
-    const sentAs = (calls.at(-1)!.body as { id: string }).id;
+    // (a job's event refreshes the limits meanwhile: the last call with a body is the words')
+    const sentAs = (calls.filter((c) => c.body).at(-1)!.body as { id: string }).id;
     event('turn', turn('u1', 'user', { id: sentAs }));
     event('job', job({ conversation: 'c1', turn: sentAs, status: 'running', finished: null }));
     const shown = () => live.chatOf(live.liveState(), convo);

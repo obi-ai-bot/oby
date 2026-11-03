@@ -46,7 +46,7 @@ const set = (next: Task[]) => { tasks = next; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
 
 // every task; components that call it re-render when one is added or opened
-export const useTasks = () => useSyncExternalStore(subscribe, () => tasks);
+export const useTasks = () => useSyncExternalStore(subscribe, () => tasks, () => tasks);
 // Something obid asks the owner with no task to show it on (live.ts): a GitHub offer, a Confirm,
 // a failure, answered as a task's decision is (answer); or work Oby offers to start, as OfferCard
 // shows it, with the conversation it was offered in (talk). Home's stack shows them with the tasks
