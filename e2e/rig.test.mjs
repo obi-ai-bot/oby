@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { family, newExchange, ours, record, stillUp } from "./lib/rig-state.mjs";
+import { family, newExchange, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const rig = join(dirname(fileURLToPath(import.meta.url)), "rig.mjs");
 const FOREVER = "setInterval(() => {}, 1000)";
@@ -143,6 +143,48 @@ test("rig_23_a_wrong_obid_bin_says_so_with_nothing_up", (t) => {
   assert.match(out.stderr, /OBID_BIN names .*no-obid, and nothing is there/);
   assert.deepEqual(readdirSync(dir).sort(), ["rig.json"], "nothing cloned, built or started");
   assert.ok(!JSON.parse(readFileSync(join(dir, "rig.json"), "utf8")).running);
+});
+
+test("rig_16_a_link_further_in_stops_start_before_it_writes_through_it", (t) => {
+  const { top, dir, run } = aScratchMac(t);
+  const theirs = join(top, "their-folder");
+  mkdirSync(theirs);
+  writeFileSync(join(theirs, ".credentials.json"), "their login");
+  for (const name of ["dana/home/accounts/stand-in", "dana/gh"]) {
+    rmSync(join(dir, "dana"), { recursive: true, force: true });
+    state(dir, {});
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    symlinkSync(theirs, join(dir, name));
+    const out = run("start");
+    assert.equal(out.status, 2, `${name}: ${out.stdout}${out.stderr}`);
+    assert.match(out.stderr, /is a link/, name);
+    assert.deepEqual(readdirSync(theirs), [".credentials.json"], name);
+  }
+});
+
+test("rig_16_a_link_swapped_in_while_reset_stops_is_refused_too", async (t) => {
+  const { top, dir, run, started } = aScratchMac(t);
+  const theirs = join(top, "their-folder");
+  mkdirSync(join(theirs, "project"), { recursive: true });
+  mkdirSync(join(dir, "dana/home"), { recursive: true });
+  // What's stopped swaps the link in as it goes: after the check every command starts with.
+  const swap = `const fs = require("node:fs"); process.on("SIGTERM", () => { fs.rmSync(${JSON.stringify(join(dir, "dana/home"))}, { recursive: true }); fs.symlinkSync(${JSON.stringify(theirs)}, ${JSON.stringify(join(dir, "dana/home"))}); process.exit(0); }); console.log("ready"); ${FOREVER}`;
+  const child = spawn(process.execPath, ["-e", swap, join(dir, "you/x")], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  child.unref();
+  started.push(child.pid);
+  await once(child.stdout, "data");
+  child.stdout.destroy();
+  state(dir, { running: { you: await recorded(child.pid) } });
+  const out = run("reset");
+  assert.equal(out.status, 2, out.stdout + out.stderr);
+  assert.match(out.stderr, /is a link/);
+  assert.deepEqual(readdirSync(theirs), ["project"], "not deleted through it");
+});
+
+test("rig_15_start_times_are_in_one_time_zone", { skip: process.platform === "win32" }, () => {
+  // As ps says it with TZ=UTC: a Mac moving to another zone changes nothing remembered.
+  const utc = spawnSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { PATH: process.env.PATH, LC_ALL: "C", TZ: "UTC" } }).stdout.trim();
+  assert.equal(table().find((p) => p.pid === process.pid).lstart, utc);
 });
 
 test("rig_16_reset_removes_a_link_further_in_and_not_what_it_points_at", (t) => {

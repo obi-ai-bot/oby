@@ -8,8 +8,13 @@ import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
 const OBIDS_OWN_PORT = 7777;
-// What the rig makes, deletes or writes through: none of them may lead elsewhere.
-const OWN_PATHS = ["you", "you/home", "you/home/accounts", "dana", "dana/home", "dana/home/accounts", "sphere", "fixture", "obi-sphere"];
+// What the rig makes, deletes, reads or writes through: none of them may lead elsewhere.
+const EACH_PERSON = ["", "home", "home/accounts", "home/accounts/stand-in", "home/accounts/no-codex", "home/accounts/no-cursor", "home/pairing", "home/api-token", "gh", "env-home", "tmp", "config.json", "electron-data", "electron-launcher.cjs"];
+const OWN_PATHS = [
+  ...["you", "dana"].flatMap((who) => EACH_PERSON.map((name) => join(who, name))),
+  "sphere", "sphere/state", "sphere/home", "sphere/tmp", "fixture", "fixture/remote.git", "fixture/work", "obi-sphere", "obi-sphere/server", "obi-sphere.ready",
+  "sphere.log", "you-obid.log", "dana-obid.log", "app.log", "rig.json", "rig.json.new", "rig.lock",
+];
 
 // Both homes: HOME can be changed, and obid goes by the password database's.
 export const realObyFolders = () => [...new Set([homedir(), userInfo().homedir])].map((home) => join(home, "Library/Application Support/Oby"));
@@ -58,8 +63,14 @@ function notTheRigs(dir) {
   return readdirSync(dir).some((name) => name !== ".DS_Store") ? `${dir} has other things in it and isn't the rig's. Name an empty folder, or one of the rig's.` : null;
 }
 
-function aLink(dir, real) {
-  for (const name of OWN_PATHS) {
+// A link among the rig's own paths, or a refused one, or null. The accounts it doesn't name, too:
+// Dana's signed-in one has a name obid gave it.
+export function aLink(dir, real = realObyFolders()) {
+  const accounts = ["you", "dana"].flatMap((who) => {
+    const folder = join(who, "home/accounts");
+    try { return readdirSync(join(dir, folder)).map((name) => join(folder, name)); } catch { return []; }
+  });
+  for (const name of [...OWN_PATHS, ...accounts]) {
     const path = join(dir, name);
     let link = false;
     try { link = lstatSync(path).isSymbolicLink(); } catch {}

@@ -5,9 +5,10 @@ import { execFileSync } from "node:child_process";
 
 const ROW = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/;
 
-// Every process but the zombies.
+// Every process but the zombies, its start time in one time zone: one the Mac moves to doesn't
+// turn the rig's own into strangers.
 export function table() {
-  return execFileSync("ps", ["-axww", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], { encoding: "utf8", maxBuffer: 1 << 26, env: { PATH: process.env.PATH, LC_ALL: "C" } })
+  return execFileSync("ps", ["-axww", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], { encoding: "utf8", maxBuffer: 1 << 26, env: { PATH: process.env.PATH, LC_ALL: "C", TZ: "UTC" } })
     .split("\n").map((row) => ROW.exec(row)).filter(Boolean)
     .map(([, pid, ppid, pgid, stat, lstart, command]) => ({ pid: Number(pid), ppid: Number(ppid), pgid: Number(pgid), stat, lstart, command }))
     .filter((p) => !p.stat.startsWith("Z"));

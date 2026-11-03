@@ -66,6 +66,20 @@ test("rig_13_refuses_a_folder_that_isnt_the_rigs", (t) => {
   assert.equal(rigRefusal(empty, {}, real), null);
 });
 
+test("rig_16_a_link_further_in_is_refused", (t) => {
+  const { home, real } = aMac(t);
+  const dir = join(home, "rig"), theirs = join(home, "theirs");
+  mkdirSync(theirs);
+  for (const name of ["dana/home/accounts/stand-in", "dana/home/accounts/88a49151", "you/home/accounts/no-codex", "dana/gh", "dana/env-home", "dana/tmp", "dana/config.json", "dana/home/pairing", "dana/home/api-token", "you/electron-data", "you/electron-launcher.cjs", "sphere/state", "sphere/home", "fixture/remote.git", "obi-sphere/server", "obi-sphere.ready", "sphere.log", "you-obid.log", "app.log", "rig.lock", "rig.json.new"]) {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, "rig.json"), "{}");
+    assert.equal(rigRefusal(dir, {}, real), null, `${name}: nothing's a link yet`);
+    symlinkSync(theirs, join(dir, name));
+    assert.match(rigRefusal(dir, {}, real) ?? "", /is a link/, name);
+  }
+});
+
 test("rig_1_takes_a_folder_of_its_own", (t) => {
   const { support, home, real } = aMac(t);
   for (const path of [join(support, "oby-rig"), join(support, "Oby-release"), join(home, "elsewhere/deep")]) assert.equal(folderRefusal(path, real), null, path);

@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { buildFixture } from "./lib/fixture.mjs";
 import { requireNodeVersion } from "./lib/node-version.mjs";
 import { stopGroups } from "./lib/processes.mjs";
-import { rigRefusal } from "./lib/rig-guard.mjs";
+import { aLink, rigRefusal } from "./lib/rig-guard.mjs";
 import { family, newExchange, orphans, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -544,6 +544,12 @@ async function stop() {
 // goes by the folder's path, and obid knows it by accounts.json).
 async function reset() {
   await stop();
+  // Again, just before deleting: stopping takes time, and the check at the top was before it.
+  const link = aLink(RIG);
+  if (link) {
+    console.error(`Refused: ${link}`);
+    process.exit(2);
+  }
   const { danaAccount } = load({ anyway: true });
   for (const name of ["you", "sphere", "fixture", "sphere.log", "you-obid.log", "dana-obid.log", "app.log"]) rmSync(join(RIG, name), { recursive: true, force: true });
   if (existsSync(homeOf("dana"))) for (const name of readdirSync(homeOf("dana"))) if (name !== "accounts" && name !== "accounts.json") rmSync(join(homeOf("dana"), name), { recursive: true, force: true });
