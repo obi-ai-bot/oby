@@ -16,7 +16,8 @@ import { obys, ofObid, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
-import { openConversation, useLimitAsks } from './live';
+import { openConversation, talkReady, useLimitAsks } from './live';
+import { onObid } from './lean';
 import { box as draftBox } from './drafts';
 
 // how long the way out takes (the sink animation in app.css)
@@ -245,6 +246,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         onSend={(text, att) => (task ? tell(task.id, text, att) : talk ? (talk.id === WELCOME && typedFirst(text)) || tellChat(talk.id, text, att) : say(convo!.id, text, att))}
         repos={!!talk && !talk.local}
         conversation={talk?.id}
+        talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
         draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
       />
     </div>

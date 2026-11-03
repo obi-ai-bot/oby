@@ -679,7 +679,7 @@ function useDefaultAccount(): [string | null, (id: string) => Promise<void>] {
 }
 // who a new conversation talks through: obid's, else kept here (the mock). Asks again after: what a
 // first turn would use follows it (talkNext)
-function useTalkDefault(): [string, (id: string) => Promise<void>] {
+export function useTalkDefault(): [string, (id: string) => Promise<void>] {
   const status = useLive().status;
   const [kept, setKept] = useKeptSetting<string>(TALK_DEFAULT, AUTO);
   if (!keepsAgents(status)) return [kept, async (id) => setKept(id)];

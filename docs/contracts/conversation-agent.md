@@ -10,14 +10,14 @@ The business behavior contract for which account a conversation talks through.
 
 ## What the design shows (proposed: Sangam's to change)
 
-The chat window's header, on the right, a pill like MausBot's model pill: the agent, the account and its percentage ("Claude Code · Personal 38%"), with a dot yellow past 80% and red past 90% of its session or week, as the composer's gauge. The percentage is the fuller of its week and its 5-hour session, the limit that hits first. A click opens a menu: "Auto" ("Whichever has room") first, then every connected account under its tool with that percentage and a meter, the chosen one checked, and "Add account" last (Settings › Agents). An account obid holds full says "Full", in red. Cursor reports no usage, so it says "No usage reported", never a number. When the turn moved, Oby's answer ends in a line: "Personal hit its limit, so I moved to Codex · Personal." (or "Personal couldn't run, so I moved to …" when it wasn't its limit). When a turn reached Cursor without the owner choosing it, another line follows: "On Cursor, what you ask through my tools needs your OK from now on in this conversation." Settings › Agents, under "New tasks go to": "New conversations talk through", the same choices, for a new conversation's first turn, whose pill isn't there until obid has named it.
+In the message box, by send, on Home and in a conversation: the tool's icon, its name and its percentage ("Claude 57%"), with the account's name too once its tool has more than one ("Claude · Personal"), yellow past 80%, red past 90%, as the composer's gauge. The percentage is the fuller of its week and its 5-hour session, the limit that hits first. A click opens a list over it: "Auto" ("Whichever has room") first, then every connected account with its icon, who it is and that percentage ("Full" when held full, "No usage" for Cursor), the chosen one checked, and "Add account" last. In a conversation a choice is that conversation's, at its next turn; on Home it's the setting a new conversation follows, the same as Settings › Agents' "New conversations talk through". In a window under 560px the name goes, and the icon and percentage stay.
 
 ## Behavior
 
 ### Actors and ownership
 
 - **obid** decides which account each turn runs on, moves it, keeps the choice and says what happened. Everything here is obid's.
-- **The Electron app** shows obid's accounts and figures, and sends the owner's choice. It decides nothing: which account the pill names follows `talkAccount`, `talkedOn`, `movedOff`, `fullUntil` and `talkNext`.
+- **The Electron app** shows obid's accounts and figures, and sends the owner's choice. It decides nothing: which account the picker names follows `talkAccount`, `talkedOn`, `movedOff`, `fullUntil` and `talkNext`.
 - **`conversation.agent`** in `config.json` stays the fallback: the tool Auto looks at first, Claude Code when it's left out. It still takes `claude` or `codex` only.
 
 ### What a turn runs on
@@ -79,8 +79,8 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 - **CONVERSATION-AGENT-9:** Cursor's commands are refused, what it plants is gone before its next start, its login copy goes when the turn ends, and its folder goes with the conversation.
 - **CONVERSATION-AGENT-10:** A turn nobody watches never runs on Cursor, and runs on Claude Code or Codex, whichever has room.
 - **CONVERSATION-AGENT-11:** An account that's removed is no choice any more: the setting and every conversation's choice are cleared, and that conversation talks on Auto.
-- **CONVERSATION-AGENT-12:** The pill and the menu show each account's percentage (the fuller of its week and its session), one held full "Full", Cursor "No usage reported", the dot yellow past 80% and red past 90%, red when held full, and every connected account under its tool.
-- **CONVERSATION-AGENT-13:** The pill names the chosen account, at once; moved off it or on Auto, where it last talked, else what obid says is next, each only while it can run.
+- **CONVERSATION-AGENT-12:** The picker and its list show each account's percentage (the fuller of its week and its session), one held full "Full", Cursor "No usage", the dot yellow past 80% and red past 90%, red when held full, and every connected account under its tool.
+- **CONVERSATION-AGENT-13:** The picker names the chosen account, at once; moved off it or on Auto, where it last talked, else what obid says is next, each only while it can run.
 - **CONVERSATION-AGENT-14:** Settings › Agents offers Auto and every connected account for new conversations, and a new conversation's first turn runs on that choice.
 - **`conversation_agent_auto_goes_where_there_is_room`:** Auto takes an account with room before a held one, whatever the tool, and either before Cursor.
 - **`conversation_agent_nothing_can_run_names_what_holds_each_account`:** with nothing to try, the turn names every signed-in account's hold, of every tool.
@@ -89,6 +89,6 @@ The order of accounts and what a turn counts as off are tested in `brain/talk.rs
 
 ### Test it on a real Mac
 
-1. With Claude Code and Codex connected: open a conversation, click the pill, pick Codex. The next answer comes from Codex and knows what was said.
+1. With Claude Code and Codex connected: open a conversation, click the picker by send, pick Codex. The next answer comes from Codex and knows what was said.
 2. Run `cursor-agent login`, pick Cursor. It answers, `oby_jobs` works, `oby_dispatch` starts a job marked untrusted, and a run of `echo hi` by its own shell is refused.
 3. Fill an account (or mark it full): the chat keeps going on another, and says so once.

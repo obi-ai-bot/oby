@@ -15,8 +15,13 @@ export const percent = (a: Account) => (a.used == null && a.session == null ? nu
 export const usageWords = (a: Account) => {
   if (a.full) return 'Full';
   const used = percent(a);
-  return used == null ? 'No usage reported' : `${used}%`;
+  return used == null ? 'No usage' : `${used}%`;
 };
+// What a person calls the tool, in the message box's picker
+export const TOOL_NAME: Record<Agent, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor' };
+// An account by its tool; by its name too once its tool has more than one
+export const rowTitle = (a: Account, accounts: Account[]) =>
+  accounts.filter((x) => x.agent === a.agent && x.signedIn !== false).length > 1 ? `${TOOL_NAME[a.agent]} · ${a.name}` : TOOL_NAME[a.agent];
 // the dot: past 80% yellow, past 90% red, as the message box's gauge; red when obid holds it full
 export const dot = (a: Account) => (a.full ? 'is-over' : fullness(percent(a) ?? 0));
 
@@ -35,7 +40,10 @@ export function shownAccount(accounts: Account[], chosen: string | null, talkedO
   return [chosen === movedOff ? undefined : find(chosen), find(talkedOn), find(next)].find(can) ?? accounts.find(can) ?? find(talkedOn);
 }
 
-// The menu's groups: every connected account under its tool
+// The picker's rows: every connected account, tool by tool
+export const list = (accounts: Account[]) => TOOLS.flatMap((agent) => accounts.filter((a) => a.agent === agent && a.signedIn !== false));
+
+// Settings' list: every connected account under its tool
 export const groups = (accounts: Account[]) => TOOLS
   .map((agent) => ({ agent, accounts: accounts.filter((a) => a.agent === agent && a.signedIn !== false) }))
   .filter((g) => g.accounts.length);

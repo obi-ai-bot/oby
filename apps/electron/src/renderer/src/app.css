@@ -66,26 +66,6 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .bar-convo { height: 28px; padding: 0 12px; display: flex; align-items: center; border-radius: var(--radius-pill); background: var(--chip); color: var(--text); font-size: var(--text-md); white-space: nowrap; transition: background-color var(--fade), color var(--fade); }
 .bar-convo:hover { background: var(--chip-hover); color: var(--ink); }
 /* the chat window's way to who it talks through (TalkPill): the agent, the account and how full */
-.talk-end { flex: 0 1 auto; min-width: 0; }
-.talk-pill { gap: 6px; min-width: 0; max-width: 320px; }
-.talk-pill.is-on { background: var(--chip-hover); color: var(--ink); }
-.talk-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.talk-used { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
-.talk-used.is-high { color: var(--full); }
-.talk-used.is-over { color: var(--over); }
-.talk-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
-.talk-dot.is-high { background: var(--full); }
-.talk-dot.is-over { background: var(--over); }
-.row-menu .talk-group { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.row-menu button.talk-row { width: 100%; height: auto; min-height: 28px; padding: 6px 12px; text-align: left; }
-.talk-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.talk-row-line { display: flex; align-items: center; gap: 8px; }
-.talk-row-used { margin-left: auto; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
-.talk-row-used.is-high { color: var(--full); }
-.talk-row-used.is-over { color: var(--over); }
-.talk-row-used + .menu-check { margin-left: 0; }
-.talk-row-about { color: var(--muted); font-size: var(--text-sm); }
-.talk-row .set-meter { max-width: none; }
 /* on a task's page: its ⋮ right after its name, and its name as a field while renaming */
 .bar-more { flex: none; width: 28px; height: 28px; margin-left: 2px; }
 /* a task's way into its conversation, beside its ⋮, its name in a tooltip under it after a short
@@ -882,8 +862,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
    text runs past a line, the text full width over the + / usage / voice-or-send
    row, the text then starting where the + icon under it does */
 .composer-field { position: relative; flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 23px; transition: border-color var(--fade); }
-.composer-grid { display: grid; grid-template-columns: auto 1fr auto auto; grid-template-areas: "tags tags tags tags" "plus text usage end"; align-items: end; column-gap: 2px; padding: 6px; }
-.composer-field.is-stacked .composer-grid { grid-template-areas: "tags tags tags tags" "text text text text" "plus . usage end"; }
+.composer-grid { display: grid; grid-template-columns: auto 1fr auto auto auto; grid-template-areas: "tags tags tags tags tags" "plus text talk usage end"; align-items: end; column-gap: 2px; padding: 6px; }
+.composer-field.is-stacked .composer-grid { grid-template-areas: "tags tags tags tags tags" "text text text text text" "plus . talk usage end"; }
 /* hovered or focused: the same 20% white (between the app's hover and focus) */
 .composer-field:hover, .composer-field:focus-within { border-color: var(--field-edge-on); }
 .composer-grid > .composer-tags { grid-area: tags; }
@@ -1008,6 +988,28 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .usage-shared { margin: 10px 0 2px 8px; color: var(--label); font-size: var(--text-sm); }
 /* usage: a gauge; a dot at its top right while an account is past 80% (yellow) or 90% (red) */
 .composer-usage { position: relative; }
+/* who Oby talks through, by send */
+.composer-talk { grid-area: talk; min-width: 0; align-self: end; }
+.talk-pick { display: flex; align-items: center; gap: 6px; height: 32px; max-width: 200px; padding: 0 8px; border: 0; border-radius: 16px; background: transparent; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; transition: background-color var(--fade), color var(--fade); }
+.talk-pick:hover, .talk-pick.is-on { background: var(--chip-hover); color: var(--ink); }
+.talk-pick > svg { flex: none; }
+.talk-pick > svg:last-child { color: var(--muted); }
+.talk-pick-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.talk-pick-used { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.talk-pick-used.is-high { color: var(--full); }
+.talk-pick-used.is-over { color: var(--over); }
+@media (max-width: 560px) { .talk-pick-name { display: none; } }
+.row-menu .talk-menu hr { margin: 4px 8px; }
+.row-menu button.talk-choice { display: flex; align-items: center; gap: 10px; width: 100%; height: auto; min-height: 44px; padding: 6px 10px; text-align: left; }
+.row-menu button.talk-choice.is-add { min-height: 36px; color: var(--text); }
+.talk-choice-mark { flex: none; display: flex; align-items: center; justify-content: center; width: 20px; color: var(--ink); }
+.talk-choice-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.talk-choice-name { color: var(--ink); font-size: var(--text-md); line-height: 18px; }
+.talk-choice-about { overflow: hidden; color: var(--muted); font-size: var(--text-sm); line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
+.talk-choice-used { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.talk-choice-used.is-high { color: var(--full); }
+.talk-choice-used.is-over { color: var(--over); }
+.talk-choice-check { flex: none; color: var(--ink); }
 /* just past the gauge's top right corner, clear of its line */
 .usage-dot { position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; }
 .usage-dot.is-high { background: var(--full); }
