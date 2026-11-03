@@ -2072,7 +2072,8 @@ impl Jobs {
                         && reads.asked.get(&id).is_none_or(|at| at.elapsed() >= every)
                 };
                 // A ChatGPT login has no usage to read (docs/contracts/chatgpt-sign-in.md).
-                if !due || self.being_changed(&id) || crate::chatgpt::marker_of(&account).is_some() {
+                if !due || self.being_changed(&id) || crate::chatgpt::marker_of(&account).is_some()
+                {
                     continue;
                 }
                 // Off the runtime, as `GET /v1/status`'s: for Cursor's own login this reads the
@@ -9622,9 +9623,11 @@ impl Jobs {
                     "{} hit its usage limit. Choose what Oby should do with the affected jobs.",
                     account.name
                 ),
-                // A five-hour limit's waits (LIMITS-5). Any other's asks with no reset, as it did.
+                // A five-hour limit's waits (LIMITS-5). Any other's asks with no reset, as it did,
+                // and so does a ChatGPT login's, whatever time it holds from before it was one.
                 reset: Some(until)
-                    .filter(|at| usage.five_hour_limit(*at, obi_protocol::time::now())),
+                    .filter(|at| usage.five_hour_limit(*at, obi_protocol::time::now()))
+                    .filter(|_| crate::chatgpt::marker_of(&account).is_none()),
             });
         }
         let job = self.get(id).ok_or("the job is gone")?;

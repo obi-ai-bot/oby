@@ -41,7 +41,7 @@ What's borrowed, from reading Claude.app 4.4212.0: armed by default, 90 seconds 
 
 ### Invariants
 
-- A job resumes from a limit by itself only under LIMITS-5, at most 3 times (LIMITS-9). Otherwise no job resumes from a limit without the owner's signed answer, and no job ever moves without it; the answer covers exactly the jobs shown. `account_limit_blocked` marks exactly those waiting on the owner: a job armed under LIMITS-5 doesn't carry it, and the refusals of unsigned words and retries stay as they were for every job that does.
+- A job resumes from a limit by itself only under LIMITS-5, at most 3 times (LIMITS-9). A job on a ChatGPT login never does: OpenAI's limit names no time (docs/contracts/chatgpt-sign-in.md, `chatgpt_api::chatgpt_13_a_job_never_waits_for_a_reset_by_itself`). Otherwise no job resumes from a limit without the owner's signed answer, and no job ever moves without it; the answer covers exactly the jobs shown. `account_limit_blocked` marks exactly those waiting on the owner: a job armed under LIMITS-5 doesn't carry it, and the refusals of unsigned words and retries stay as they were for every job that does.
 - The worktree and branch are kept, whatever is chosen.
 
 ### Open

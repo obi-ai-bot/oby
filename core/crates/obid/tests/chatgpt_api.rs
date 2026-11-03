@@ -1227,13 +1227,14 @@ fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itsel
     };
     let id = new_account(&world.obid);
     signed_in(&world, &id);
+    // (a week's limit: a five-hour one waits for its reset, with no question: LIMITS-5)
     let posted = call(
         &world.obid,
         "POST",
         "/v1/jobs",
         Some(
             &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
-            "task": "LIMITED: 3600", "agent": "claude", "account": "stub"}}),
+            "task": "LIMITED WEEK: 86400", "agent": "claude", "account": "stub"}}),
         ),
     );
     assert_eq!(posted.status, 201, "{}", posted.text);
@@ -2008,6 +2009,55 @@ fn chatgpt_talk_a_turn_nobody_watches_keeps_off_chatgpt() {
         "it ran on Claude Code: {turns}"
     );
     assert_eq!(posts(&world), 0);
+}
+
+/// CHATGPT-13: a job on a ChatGPT login never waits for a reset by itself (LIMITS-5): OpenAI's limit
+/// names no time. Not even with a time from when the account was on a `codex login`: it asks.
+#[test]
+fn chatgpt_13_a_job_never_waits_for_a_reset_by_itself() {
+    let folder = Folder::new("chatgpt-13-no-wait");
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    let device = folder.0.join("home/accounts/device");
+    std::fs::create_dir_all(&device).unwrap();
+    std::fs::write(
+        device.join("auth.json"),
+        json!({"OPENAI_API_KEY": "fake"}).to_string(),
+    )
+    .unwrap();
+    config["agents"]["codex"]["accounts"] =
+        json!([{"id": "device", "name": "Device", "configDir": device}]);
+    let now = obi_protocol::time::now();
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        json!({"device": {"fullUntil": now + 3600}}).to_string(),
+    )
+    .unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    signed_in(&world, "device");
+    let job = job(&world, "device", "RELAY");
+    let stopped = ended(&world, &job);
+    assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    assert!(stopped["resumesAt"].is_null(), "{stopped}");
+    let decision = within(20, "the question", || {
+        call(&world.obid, "GET", "/v1/limit-decisions", None)
+            .body
+            .as_array()?
+            .first()
+            .cloned()
+    });
+    assert!(decision["resetAt"].is_null(), "{decision}");
+    assert_eq!(posts(&world), 0, "held, so nothing went to OpenAI");
 }
 
 /// A conversation on a ChatGPT login, nothing else signed in.
