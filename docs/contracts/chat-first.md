@@ -34,7 +34,7 @@ Tests: `apps/electron/src/renderer/src/test/chatFirst.test.tsx` and, driving the
 
 - **CHATFIRST-1:** With conversations, the app opens on the one that moved last, its box focused, with no Home behind it. An old conversation with a card still open doesn't count as having just moved.
 - **CHATFIRST-2:** With none, it opens on the empty chat: the character and the box, no chips. Words sent there open their conversation. A conversation that arrives meanwhile, from the iPhone say, doesn't move you off it.
-- **CHATFIRST-3:** The side panel, open the first time where it fits, lists Oby first, then each Obysphere with its teammates' Obys under it, then one usage row per tool with a connected account at its foot. A row shows the account with the most room; with no usage reported it shows "–", never a made-up number; a click opens the accounts.
+- **CHATFIRST-3:** The side panel, open the first time where it fits, lists Oby first, then each Obysphere with its teammates' Obys under it. It shows no usage: that's in the message box, its gauge and its picker's list (the owner's decision of 2026-11-03).
 - **CHATFIRST-4:** New conversation is one click from the side panel, and lands on the empty chat with its box focused.
 - **CHATFIRST-5:** A teammate's Oby opens from its row; you come back to your conversation from it.
 - **CHATFIRST-6:** A task opens from its card in the conversation, and back returns to that conversation.
