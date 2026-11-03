@@ -1973,11 +1973,11 @@ impl Jobs {
     }
 
     /// An app looks at the accounts (`GET /v1/status`, its event stream opening): each signed-in
-    /// Claude Code and Codex account not asked in the last [`usage_every`] is asked of its tool
-    /// now, one after another in the background, so the apps show its usage before any job runs
-    /// on it: Claude Code's own `/usage` and Codex's `account/rateLimits/read`, neither asking a
-    /// model. While no app looks, nothing is read: a running job reports its own. Cursor's CLI
-    /// reports no usage. `OBID_USAGE_READS=off` (obid's tests set it) reads none.
+    /// account not asked in the last [`usage_every`] is asked now, one after another in the
+    /// background, so the apps show its usage before any job runs on it: Claude Code's own
+    /// `/usage`, Codex's `account/rateLimits/read` and Cursor's dashboard (crate::cursor_usage),
+    /// none asking a model. While no app looks, nothing is read: a running job reports its own.
+    /// `OBID_USAGE_READS=off` (obid's tests set it) reads none.
     pub fn want_usage(self: &Arc<Self>) {
         if std::env::var_os("OBID_USAGE_READS").is_some_and(|v| v == "off")
             || self.shutting_down.load(Ordering::Relaxed)
@@ -2001,7 +2001,7 @@ impl Jobs {
         use crate::usage::Asked;
         let home = login_home();
         let every = usage_every();
-        for tool in [Tool::Claude, Tool::Codex] {
+        for tool in Tool::ALL {
             for account in self.accounts(tool) {
                 if self.shutting_down.load(Ordering::Relaxed) {
                     return;
@@ -2012,21 +2012,31 @@ impl Jobs {
                     !reads.never.contains(&id)
                         && reads.asked.get(&id).is_none_or(|at| at.elapsed() >= every)
                 };
-                if !due || self.being_changed(&id) || !signed_in(tool, &account, home.as_deref()) {
+                if !due || self.being_changed(&id) {
+                    continue;
+                }
+                if !signed_in(tool, &account, home.as_deref()) {
+                    self.forget_advisory_usage(&id);
                     continue;
                 }
                 self.usage_reads()
                     .asked
                     .insert(id.clone(), std::time::Instant::now());
                 let name = tool.name();
-                match self.read_usage(tool, &account).await {
+                let read = self.read_usage(tool, &account).await;
+                if !matches!(read, Ok(Asked::Said(_))) {
+                    self.forget_advisory_usage(&id);
+                }
+                match read {
                     // Not for an account removed or being changed meanwhile: its usage is forgotten.
                     Ok(Asked::Said(usage))
                         if !self.being_changed(&id)
                             && self.accounts(tool).iter().any(|a| a.id == id) =>
                     {
                         let (was, now) = self.usage.record(&id, &usage);
-                        self.share_rise(&id, &was, &now);
+                        if !usage.advisory {
+                            self.share_rise(&id, &was, &now);
+                        }
                         self.usage_changed.notify_one();
                     }
                     Ok(Asked::Said(_)) => {}
@@ -2045,8 +2055,17 @@ impl Jobs {
         }
     }
 
-    /// One account's usage, from its tool boxed as the brain's run is, in a folder of its own in
-    /// `home/plans` with its own copy of the account's login, removed however the read ends. A
+    /// A read that gave no figure leaves none (USAGE-8): Cursor's isn't kept past its read.
+    fn forget_advisory_usage(&self, id: &str) {
+        if self.usage.forget_advisory(id) {
+            self.usage_changed.notify_one();
+        }
+    }
+
+    /// One account's usage: Cursor's from its dashboard with its access token, by obid itself and
+    /// never in a box (crate::cursor_usage); the others' from the tool boxed as the brain's run is,
+    /// in a folder of its own in `home/plans` with its own copy of the account's login, removed
+    /// however the read ends. A
     /// Claude Code login is made ready first as a job's is ([`Jobs::claude_login_ready`]): one in
     /// the Keychain that ended or ends within 5 minutes is refreshed by the Mac's own Claude Code
     /// running its own `/usage`, which asks no model (USAGE-2), so a Mac whose CLI hasn't run in
@@ -2057,6 +2076,17 @@ impl Jobs {
         tool: Tool,
         account: &crate::config::Account,
     ) -> Result<crate::usage::Asked, String> {
+        if tool == Tool::Cursor {
+            let (account, home) = (account.clone(), login_home());
+            // Not on the runtime: a Keychain read can wait on macOS's prompt.
+            let token =
+                tokio::task::spawn_blocking(move || cursor_access_token(&account, home.as_deref()))
+                    .await
+                    .ok()
+                    .flatten()
+                    .ok_or("its login has no access token that hasn't ended")?;
+            return crate::cursor_usage::read_usage(&token).await;
+        }
         if tool == Tool::Claude {
             self.claude_login_ready(Some(account)).await?;
         }
@@ -2502,6 +2532,8 @@ impl Jobs {
                 let five = usage.five_hour_at(now).unwrap_or(0.0);
                 let week = usage.seven_day_at(now).unwrap_or(0.0);
                 Some(match usage.held(now) {
+                    // Cursor's figure holds nothing: it only puts the emptier first (USAGE-9).
+                    None if usage.advisory => (0, week, at, account),
                     None => (0, 0.0, at, account),
                     Some(_) if five.max(week) < crate::usage::NEARLY_FULL => (1, 0.0, at, account),
                     Some(_) => (2, five, at, account),
@@ -9998,11 +10030,7 @@ impl Jobs {
                     // As its windows are now: one past its reset is empty again.
                     let usage = self.usage.get(&job.account);
                     let at = obi_protocol::time::now();
-                    let full = usage.full_until_at(at).is_some()
-                        || [usage.five_hour_at(at), usage.seven_day_at(at)]
-                            .into_iter()
-                            .flatten()
-                            .any(|share| share >= 1.0);
+                    let full = usage.full_until_at(at).is_some() || usage.window_full(at);
                     // The CLI ended with no result, its session there to go on in: what it last
                     // said isn't why, its exit and its stderr are.
                     let session = self.get(id).is_some_and(|j| j.session.is_some());
@@ -16464,6 +16492,151 @@ mod tests {
             "{:?}",
             job.changes
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A Cursor account's read from its login file to what's kept and logged: the figure comes,
+    /// holds nothing, and goes with the read that can't give it, with the token in no log line and
+    /// no word of an answer anywhere.
+    #[tokio::test]
+    async fn usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept() {
+        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::{Answer, TOKEN, body, stand_in};
+        #[derive(Clone, Default)]
+        struct Logged(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Logged {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let logged = Logged::default();
+        let writer = logged.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _logging = tracing::subscriber::set_default(subscriber);
+
+        let root = std::env::temp_dir().join(format!("obid-cursor-{}", uuid::Uuid::new_v4()));
+        let login = root.join("accounts/own/.cursor/auth.json");
+        std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+        std::fs::write(
+            &login,
+            json!({"accessToken": TOKEN, "refreshToken": "cursor-test-refresh-token"}).to_string(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"cursor": {"bin": "/usr/bin/true", "accounts": [
+                    {"id": "own", "name": "own", "configDir": root.join("accounts/own")}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+
+        let answering: Arc<Mutex<Answer>> = Arc::new(Mutex::new(body(
+            200,
+            r#"{"billingCycleEnd":"4000000000000","displayMessage":"ANSWER-WORDS",
+                "planUsage":{"totalPercentUsed":96}}"#,
+        )));
+        let answer = answering.clone();
+        let (host, asks) = stand_in(move |_| answer.lock().unwrap().clone()).await;
+        *STAND_IN.lock().unwrap() = Some(host);
+        let read = || async {
+            jobs.usage_reads().asked.clear();
+            jobs.read_due_usages().await;
+            jobs.usage.get("own")
+        };
+
+        // At 96% of its period: shown, and held by nothing.
+        let usage = read().await;
+        assert_eq!(usage.seven_day, Some(0.96));
+        assert_eq!(usage.seven_day_resets, Some(4_000_000_000));
+        assert_eq!(usage.full_until, None);
+        assert!(!usage.reserved(obi_protocol::time::now()));
+        assert!(jobs.has_room("own"));
+        // A secret obid knows from here on: no log line can carry it.
+        assert!(!crate::secrets::known().redact(TOKEN).contains(TOKEN));
+
+        // An ended login: no number, nothing full, and it can still run.
+        *answering.lock().unwrap() = body(401, "ANSWER-WORDS");
+        let usage = read().await;
+        assert_eq!((usage.seven_day, usage.full_until), (None, None));
+        assert!(jobs.has_room("own"));
+
+        // The figure comes back, then a signed-out account gives none and asks nothing.
+        *answering.lock().unwrap() = body(200, r#"{"planUsage":{"totalPercentUsed":10}}"#);
+        assert_eq!(read().await.seven_day, Some(0.1));
+        let asked = asks.lock().unwrap().len();
+        std::fs::remove_file(&login).unwrap();
+        assert_eq!(read().await.seven_day, None);
+        assert_eq!(asks.lock().unwrap().len(), asked);
+
+        *STAND_IN.lock().unwrap() = None;
+        let logged = String::from_utf8_lossy(&logged.0.lock().unwrap()).into_owned();
+        assert!(
+            logged.contains("usage not read: Cursor answered 401"),
+            "{logged}"
+        );
+        assert!(!logged.contains(TOKEN), "{logged}");
+        assert!(!logged.contains("ANSWER-WORDS"), "{logged}");
+        let kept = std::fs::read_to_string(root.join("home/usage.json")).unwrap();
+        assert!(!kept.contains(TOKEN), "{kept}");
+        assert!(!kept.contains("ANSWER-WORDS"), "{kept}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// USAGE-9: among Cursor's accounts the emptier comes first, full figure or not, and neither is
+    /// held back.
+    #[tokio::test]
+    async fn usage_9_the_emptier_cursor_account_comes_first() {
+        let root = std::env::temp_dir().join(format!("obid-cursors-{}", uuid::Uuid::new_v4()));
+        let listed: Vec<Value> = ["a", "b"]
+            .iter()
+            .map(|id| {
+                let dir = root.join(id);
+                std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+                std::fs::write(dir.join(".cursor/auth.json"), r#"{"apiKey":"k"}"#).unwrap();
+                json!({"id": id, "name": id, "configDir": dir})
+            })
+            .collect();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"cursor": {"bin": "/usr/bin/true", "accounts": listed}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let figure = |used| crate::usage::Usage {
+            seven_day: Some(used),
+            advisory: true,
+            ..Default::default()
+        };
+        jobs.usage.record("a", &figure(1.0));
+        jobs.usage.record("b", &figure(0.2));
+        let order: Vec<String> = jobs
+            .thinking_accounts(Tool::Cursor)
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(order, ["b", "a"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

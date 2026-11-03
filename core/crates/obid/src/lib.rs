@@ -21,6 +21,7 @@ pub mod config;
 pub mod conn;
 pub mod connections;
 pub mod conversation;
+pub mod cursor_usage;
 pub mod decisions;
 pub mod detail;
 pub mod devices;

@@ -280,23 +280,28 @@ export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? '
 // what a card's bar shows: its 5-hour session, else its week
 export const barOf = (a: Account) => a.session ?? a.used;
 // an account's week in words, under its session's bar: its share when the tool reported one, else
-// what obid says (not signed in, none reported yet, Cursor's none); a session but no week: says so
+// what obid says (not signed in, none reported yet); a session but no week: says so. Cursor's share
+// is of its plan's period, a week or a month, so it names no week (USAGE-6)
 export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This week ${a.used}% · ${a.resets.replace(/^Resets/, 'resets')}`
+  : a.agent === 'cursor' && a.used != null ? `${a.used}% used · ${a.resets.replace(/^Resets/, 'resets')}`
   : a.weekly === false && a.session != null ? 'No weekly use reported yet' : a.resets);
+// a reset this week by its day; further off (a monthly plan's), by its date
+const resetDay = (at: string, now: number) => new Date(at).toLocaleDateString([], Date.parse(at) - now < 7 * 86_400_000 ? { weekday: 'long' } : { month: 'short', day: 'numeric' });
 // an account as obid's status says it (docs/contracts/usage.md, USAGE-1 and USAGE-6): its week's
 // share (else its session's), its 5-hour session (signed in only; a session past its reset reads
-// 0) and when it starts over, and what to say when there's no figure
+// 0) and when it starts over, and what to say when there's no figure ("No usage" for Cursor, whose
+// figure comes from its plan and goes when a read fails)
 export function accountRow(a: Status['accounts'][number], now: number): Account {
-  const used = a.agent === 'cursor' ? null : a.sevenDay ?? a.fiveHour;
+  const used = a.sevenDay ?? a.fiveHour;
   const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
-  const session = a.agent === 'cursor' || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
+  const session = !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
   return {
     id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
-    resets: !a.signedIn ? a.label ?? 'Not signed in' : a.agent === 'cursor' ? 'Cursor doesn’t report usage' : used == null ? 'No use reported yet'
-      : a.sevenDayResets ? `Resets ${new Date(a.sevenDayResets).toLocaleDateString([], { weekday: 'long' })}` : 'No reset reported',
+    resets: !a.signedIn ? a.label ?? 'Not signed in' : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
+      : a.sevenDayResets ? `Resets ${resetDay(a.sevenDayResets, now)}` : 'No reset reported',
     session,
     sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
-    weekly: a.sevenDay != null,
+    weekly: a.sevenDay != null && a.agent !== 'cursor',
     full: !!a.fullUntil && Date.parse(a.fullUntil) > now,
   };
 }
@@ -305,7 +310,7 @@ const ACCOUNTS: Account[] = [
   { id: 'a2', agent: 'claude', name: 'Personal', payer: 'Doti', who: 'doti@example.com · Max', used: 82, resets: 'Resets in 2 days', plan: 'personal', session: 86, sessionResets: '2:14 PM', weekly: true },
   { id: 'a3', agent: 'codex', name: 'Deskree', payer: 'Deskree', used: 12, resets: 'Resets Monday', plan: 'seat', session: 5, sessionResets: '6:40 PM', weekly: true },
   { id: 'a4', agent: 'claude', name: 'Deskree API', payer: 'Deskree', used: 8, resets: '$32 of $400 this month', plan: 'api', session: null, weekly: false },
-  { id: 'a5', agent: 'cursor', name: 'Personal', payer: 'Doti', used: null, resets: 'Cursor doesn’t report usage', plan: 'personal', session: null, weekly: false },
+  { id: 'a5', agent: 'cursor', name: 'Personal', payer: 'Doti', used: 24, resets: 'Resets Nov 20', plan: 'personal', session: null, weekly: false },
 ];
 // the accounts and their use (the 5-hour session, and the week): here, and in the message box's usage panel (the gauge)
 export const useAccounts = () => useSetting<Account[]>('accounts', onObid ? [] : ACCOUNTS);
@@ -769,7 +774,7 @@ function Agents() {
                 : out ? <span className="set-about">{x.label ?? 'Not signed in'}{own && !x.label ? `: sign in with ${tool} itself on this Mac` : ''}</span>
                 : bar != null ? <>
                     <span className="set-about">{x.session != null ? `5-hour session${x.sessionResets ? ` · resets ${x.sessionResets}` : ''}` : week}</span>
-                    <span className="set-meter" role="meter" aria-valuenow={bar} aria-valuemin={0} aria-valuemax={100} aria-label={x.session != null ? `${bar}% of the 5-hour session used` : `${bar}% of the week used`}>
+                    <span className="set-meter" role="meter" aria-valuenow={bar} aria-valuemin={0} aria-valuemax={100} aria-label={x.session != null ? `${bar}% of the 5-hour session used` : x.weekly === false ? `${bar}% used` : `${bar}% of the week used`}>
                       <span className={fullness(bar)} style={{ width: `${bar}%` }} />
                     </span>
                     {x.session != null && <span className="set-about is-quiet">{week}</span>}

@@ -362,6 +362,53 @@ fn keychain_3_a_cursor_login_macos_refused_says_why() {
     assert_eq!(reads, 1, "{asked}");
 }
 
+/// KEYCHAIN-8: Cursor's usage read prompts for nothing new: its own Keychain login is read by the
+/// same read as a run's copy, once while the item is unchanged however many reads come, and its
+/// refresh token is never asked for. The token here has ended, so nothing leaves the test.
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_8_a_usage_read_asks_the_keychain_nothing_new() {
+    use base64::Engine;
+    let folder = Folder::new("accounts-cursor-usage");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent("fake-claude"));
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor"), "accounts": []});
+    config["cursorKeychain"] = json!(true);
+    let items = folder.0.join("tmp/obid-test-keychain");
+    std::fs::create_dir_all(&items).unwrap();
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"exp":1000}"#);
+    std::fs::write(
+        items.join("cursor-access-token"),
+        format!("head.{claims}.signature\n"),
+    )
+    .unwrap();
+    std::fs::write(items.join("cursor-api-key"), "keychain-held-key\n").unwrap();
+    let security = agent("fake-security");
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+            ("OBID_USAGE_READS", "on"),
+            ("OBID_USAGE_EVERY_SECONDS", "0"),
+        ],
+    );
+    let read = "Cursor account cursor: usage not read";
+    within(30, "two usage reads", || {
+        call(&obid, "GET", "/v1/status", None);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        (obid.log().matches(read).count() >= 2).then_some(())
+    });
+    let asked = std::fs::read_to_string(folder.0.join("tmp/obid-test-security-calls")).unwrap();
+    let reads = asked
+        .lines()
+        .filter(|l| l.contains("-s cursor-access-token") && l.ends_with(" -w"))
+        .count();
+    assert_eq!(reads, 1, "{asked}");
+    assert!(!asked.contains("cursor-refresh-token"), "{asked}");
+}
+
 /// KEYCHAIN-3: Claude Code's Keychain login macOS didn't give obid (Deny): a run on it fails saying
 /// why, rather than starting with no login ("not logged in"), and the account then reads as signed
 /// out, its label saying to sign in again and choose Always Allow.

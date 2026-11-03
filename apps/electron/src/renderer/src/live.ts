@@ -434,9 +434,8 @@ function publish() {
   const due = Math.min(...state.inbox.map((i) => (i.later ? Date.parse(i.later) : Infinity)).filter((t) => t > Date.now()));
   if (due < Infinity) waking = setTimeout(() => set({}), Math.min(due - Date.now() + 500, 3600_000));
   // the week's share, else the 5-hour window's; unknown until the tool says (never a made-up 0%).
-  // Cursor's CLI reports no usage at all. Only when obid's status changed: publish runs at every
-  // change, each word of Oby's included, and Settings › Accounts and the usage gauge draw again
-  // for each list.
+  // Only when obid's status changed: publish runs at every change, each word of Oby's included,
+  // and Settings › Accounts and the usage gauge draw again for each list.
   if (!state.status || state.status === accountsFrom) return;
   accountsFrom = state.status;
   // a 5-hour window past its reset reads as empty (docs/runner-api.md): drawn again at the soonest
