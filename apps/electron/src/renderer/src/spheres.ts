@@ -91,8 +91,11 @@ const NAMES = 'oby.sphereNames';
 type Membership = { state: string; url: string | null; sphere: string | null; owner?: string; obiId?: string };
 export function liveSphere(m: Membership, members: { owner: string }[], names: Record<string, string>): Sphere | null {
   if (m.state !== 'joined' || !m.sphere || !m.url) return null;
-  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: members.map((x) => x.owner), invited: [], live: true, url: m.url, me: m.owner, obi: m.obiId };
+  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: [...new Set(members.map((x) => x.owner))], invited: [], live: true, url: m.url, me: m.owner, obi: m.obiId };
 }
+// a step that goes when its Obysphere does: a member's thread with the live one
+export const outOfSphere = (l: { kind: string; id?: string }, all: Sphere[]) =>
+  ((l.kind === 'sphere' || l.kind === 'knowledge' || l.kind === 'room') && !all.some((s) => s.id === l.id)) || (l.kind === 'member' && !all.some((s) => s.live));
 const names = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(NAMES) ?? '{}'); } catch { return {}; } };
 async function loadLive() {
   const call = window.app!.obid.call;

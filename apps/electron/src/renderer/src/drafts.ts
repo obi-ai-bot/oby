@@ -26,6 +26,8 @@ export const box = {
   oby: (name: string) => `oby:${name}`,
   // the Sphere's room
   room: (sphere: string) => `room:${sphere}`,
+  // a member's thread: a Sphere's own, as owner ids are
+  member: (sphere: string, owner: string) => `member:${sphere}:${owner}`,
 };
 
 type Kept = Record<string, { text: string; at: number }>;
@@ -60,6 +62,11 @@ export function keep(box: string, text: string, store: Storage = localStorage, n
     else store.removeItem(KEY);
   } catch { /* not kept, that's all */ }
 }
+
+// What stays in the box once words that could be refused are answered: all of it when they didn't
+// go; when they did, what was typed after them while they went
+export const leftInBox = (sent: string, now: string, went: boolean) =>
+  !went ? now : now.startsWith(sent) ? now.slice(sent.length).trimStart() : now;
 
 // The box's draft is gone (its conversation deleted, say)
 export const forget = (box: string, store: Storage = localStorage) => keep(box, '', store);

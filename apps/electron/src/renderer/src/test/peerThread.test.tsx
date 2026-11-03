@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { peerPostOf, peerThreadOf, parseEvent, type PeerExchange, type PeerPost, type PeerThread } from '../obid';
-import { leftInBox } from '../Composer';
+import { draft, keep, leftInBox } from '../drafts';
 import { PEER_CONVOS } from '../mock';
-import { askMember, boxShut, lineUnder, lookAtThread, memberOpens, mockConvosWith, nextQuiet, plainId, standing, threadChanged, threadNow, whoseOby, withWords } from '../peers';
+import { askFromBox, boxShut, lineUnder, openThread, lookAtThread, memberOpens, mockConvosWith, nextQuiet, plainId, standing, threadChanged, threadNow, whoseOby, withWords } from '../peers';
 import { RoomThread } from '../RoomView';
 
 // A member's thread in the app (docs/contracts/peer-thread.md, PEER-7 to PEER-12). What clicking it
@@ -13,7 +13,8 @@ const page = vi.hoisted(() => {
   const g = globalThis as Record<string, unknown>;
   g.location = { search: '' };
   g.window = {};
-  g.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+  const kept = new Map<string, string>();
+  g.localStorage = { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => { kept.set(k, v); }, removeItem: (k: string) => { kept.delete(k); } };
   g.document = { createElement: () => ({}) };
   return g;
 });
@@ -47,7 +48,7 @@ describe('the row', () => {
     answers.push(() => ({ status: 200, text: JSON.stringify(thread({ owner: 'a/b', posts: [asked()] })) }));
     await lookAtThread('a/b');
     expect(calls).toEqual([{ method: 'GET', path: '/v1/obid/sphere/peers/a%2Fb', body: undefined }]);
-    expect(threadNow('a/b')).toMatchObject({ name: 'Dana', posts: [{ id: 'q' }] });
+    expect(threadNow('a/b').thread).toMatchObject({ name: 'Dana', posts: [{ id: 'q' }] });
     // obid's event reads an opened thread again, and no other; an older answer doesn't take it back
     expect(parseEvent('peerThread', JSON.stringify({ owner: 'a/b', posts: [] }))).toEqual({ kind: 'peerThread', owner: 'a/b' });
     calls = [];
@@ -60,14 +61,20 @@ describe('the row', () => {
     await lookAtThread('a/b');
     older({ status: 200, text: JSON.stringify(thread({ name: 'Older' })) });
     await first;
-    expect(threadNow('a/b')).toMatchObject({ name: 'Newer' });
-    // obid away keeps what shows; no such thread any more says so
+    expect(threadNow('a/b').thread).toMatchObject({ name: 'Newer' });
+    // obid away keeps what shows; no such thread any more says why, in obid's words
     answers.push(() => ({ status: 503, text: '{}' }));
     await lookAtThread('a/b');
-    expect(threadNow('a/b')).toMatchObject({ name: 'Newer' });
-    answers.push(() => ({ status: 404, text: '{}' }));
+    expect(threadNow('a/b').thread).toMatchObject({ name: 'Newer' });
+    expect(threadNow('a/b').gone).toBeUndefined();
+    answers.push(() => ({ status: 404, text: JSON.stringify({ error: 'No such member.' }) }));
     await lookAtThread('a/b');
-    expect(threadNow('a/b')).toEqual({ gone: true });
+    expect(threadNow('a/b').gone).toBe('No such member.');
+    // and that isn't remembered against the next open: it's asked again
+    calls = [];
+    openThread('a/b');
+    expect(threadNow('a/b').gone).toBeUndefined();
+    await vi.waitFor(() => expect(calls.map((c) => c.path)).toEqual(['/v1/obid/sphere/peers/a%2Fb']));
   });
 
   it('peer_8_mock_stays_mock_in_tour_only', () => {
@@ -83,19 +90,46 @@ describe('the row', () => {
 
 describe('the box', () => {
   it('peer_9_box_keeps_words_until_sent', async () => {
+    const box = 'member:rig:dana';
     // words alone, signed by main (WORDS-12), then the thread again so they show as the box empties
-    expect(await askMember('dana', 'How is it going?')).toBeNull();
+    keep(box, 'How is it going?');
+    expect(await askFromBox('dana', ' How is it going? ', box)).toBe(true);
     expect(calls.map((c) => [c.method, c.path, c.body])).toEqual([
       ['POST', '/v1/obid/sphere/peers/dana/ask', { text: 'How is it going?' }],
       ['GET', '/v1/obid/sphere/peers/dana', undefined],
     ]);
     expect(leftInBox('How is it going?', 'How is it going?', true)).toBe('');
-    // a refusal is obid's own words, and the box keeps its own
+    // a refusal is obid's own words, kept for the thread whichever view is open, and the draft stays
+    keep(box, 'token');
     answers.push(() => ({ status: 422, text: JSON.stringify({ error: 'The secret scan found a possible secret: nothing was sent.' }) }));
-    expect(await askMember('dana', 'token')).toBe('The secret scan found a possible secret: nothing was sent.');
+    expect(await askFromBox('dana', 'token', box)).toBe(false);
+    expect(threadNow('dana').problem).toBe('The secret scan found a possible secret: nothing was sent.');
+    expect(draft(box)).toBe('token');
     answers.push(() => ({ status: 0, text: 'obid isn’t answering' }));
-    expect(await askMember('dana', 'token')).toBe('obid isn’t answering');
-    expect(leftInBox('token', 'token', false)).toBe('token');
+    expect(await askFromBox('dana', 'token', box)).toBe(false);
+    expect(threadNow('dana').problem).toBe('obid isn’t answering');
+    // the next words clear it
+    expect(await askFromBox('dana', 'token', box)).toBe(true);
+    expect(threadNow('dana').problem).toBeUndefined();
+  });
+
+  it('peer_13_one_send_per_owner_and_only_what_went_leaves_the_draft', async () => {
+    const box = 'member:rig:bob';
+    let answer!: (a: Answer) => void;
+    answers.push(() => new Promise((r) => { answer = r; }));
+    keep(box, 'first');
+    const first = askFromBox('bob', 'first', box);
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
+    expect(threadNow('bob').sending).toBe('first');
+    // the box put back from its draft, on the way back to this thread: nothing goes twice
+    expect(await askFromBox('bob', 'first', box)).toBe(false);
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    // words typed while it went stay
+    keep(box, 'first and more');
+    answer({ status: 202, text: '{}' });
+    expect(await first).toBe(true);
+    expect(draft(box)).toBe('and more');
+    expect(threadNow('bob').sending).toBeUndefined();
   });
 });
 

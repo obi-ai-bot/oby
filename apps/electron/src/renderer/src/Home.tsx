@@ -21,7 +21,7 @@ import ArchiveView from './ArchiveView';
 import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
-import { useSpheres } from './spheres';
+import { outOfSphere, useSpheres } from './spheres';
 import { chatFirst, everything, onObid, welcome } from './lean';
 import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
@@ -167,7 +167,7 @@ export default function Home() {
   }, [tasks]);
   // an Obysphere deleted or left (from its settings): its settings, Knowledge, room and threads go too
   useEffect(() => {
-    const i = live.findIndex((l) => ((l.kind === 'sphere' || l.kind === 'knowledge' || l.kind === 'room') && !spheres.some((s) => s.id === l.id)) || (l.kind === 'member' && !spheres.some((s) => s.live)));
+    const i = live.findIndex((l) => outOfSphere(l, spheres));
     if (i >= 0) backOut(i);
   }, [spheres]);
   // a conversation deleted (from its menu): its page goes too
@@ -340,7 +340,7 @@ export default function Home() {
     if (l.kind === 'knowledge') return knowledgeLabel;
     if (l.kind === 'room') return spheres.find((s) => s.id === l.id)?.name ?? '';
     if (l.kind === 'oby') return `${l.id}’s Oby`;
-    if (l.kind === 'member') { const t = threads.get(l.id); return whoseOby(t && 'name' in t ? t.name : l.id, l.id); }
+    if (l.kind === 'member') return whoseOby(threads.get(l.id)?.thread?.name ?? l.id, l.id);
     return convos.find((c) => c.id === l.id)?.title ?? '';
   };
   // the Obys in the conversation on top, if it's one with other people's Obys

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Composer, { typingIn } from './Composer';
-import { box as draftBox, forget } from './drafts';
-import { askMember, boxShut, lineUnder, lookAtThread, nextQuiet, useThreads, whoseOby, withWords } from './peers';
+import { box as draftBox } from './drafts';
+import { askFromBox, boxShut, lineUnder, nextQuiet, openThread, useThreads, whoseOby, withWords } from './peers';
 import { atEnd } from './room';
 import { RoomThread } from './RoomView';
 import { useSpheres } from './spheres';
@@ -21,16 +21,18 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
   onClose: () => void;
   onGone: () => void;
 }) {
-  const thread = useThreads().get(owner);
-  const obi = useSpheres().find((s) => s.live)?.obi;
-  const t = thread && 'posts' in thread ? thread : undefined;
+  const held = useThreads().get(owner) ?? {};
+  const t = held.thread;
+  const sphere = useSpheres().find((s) => s.live);
   const posts = useMemo(() => withWords(t?.posts ?? []), [t]);
   const who = whoseOby(t?.name ?? owner, owner);
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
-  const [problem, setProblem] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  // this view's box sent them: it keeps what's typed meanwhile. Another's (the owner clicked away and
+  // back): no box until they've gone or been refused, when its draft says what's left
+  const sentHere = useRef(false);
 
-  useEffect(() => { void lookAtThread(owner); }, [owner]);
+  useEffect(() => { openThread(owner); }, [owner]);
   // an open question goes quiet with no event: the clock's next word
   useEffect(() => {
     const at = nextQuiet(t?.posts ?? [], Date.now());
@@ -57,18 +59,16 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, [onClose, covered]);
-  // obid has no such thread any more (it left the Sphere); what was typed stays the box's draft
-  const gone = !!thread && !t;
-  useEffect(() => { if (gone && !leaving) onClose(); }, [gone, leaving, onClose]);
 
-  const shut = t && boxShut(t);
+  const shut = held.gone ?? (t ? boxShut(t) : null);
+  const waiting = held.sending !== undefined && !sentHere.current;
 
   return (
     <div className={`chat-layer room-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
       <div className="chat-scroll">
         <section ref={list} className="chat" aria-label={who} role="log" onScroll={(e) => { onScroll(); following.current = atEnd(e.currentTarget); }}>
           <div className="chat-column">
-            {posts.length > 0 && <RoomThread posts={posts} obi={obi} standing={(i) => lineUnder(posts, i, owner, Date.now())} />}
+            {posts.length > 0 && <RoomThread posts={posts} obi={sphere?.obi} standing={(i) => lineUnder(posts, i, owner, Date.now())} />}
           </div>
           {t && !posts.length && (
             <div className="group-none"><div>
@@ -79,23 +79,22 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
         </section>
         <div {...thumbProps} />
       </div>
-      {problem && <p className="room-problem" role="alert">{problem}</p>}
-      {shut ? <p className="room-under">{shut}</p> : (
+      {held.problem && <p className="room-problem" role="alert">{held.problem}</p>}
+      {shut || waiting ? <p className="room-under">{shut ?? `Asking ${who}…`}</p> : (
         <Composer
           style={{ '--i': 2 } as React.CSSProperties}
           placeholder={`Ask ${who}…`}
           label={`Ask ${who}`}
-          draft={draftBox.peer(owner)}
+          draft={draftBox.member(sphere?.slug ?? '', owner)}
           say={async (text) => {
-            setProblem(null);
-            const why = await askMember(owner, text.trim());
-            if (why) { setProblem(why); return false; }
+            sentHere.current = true;
+            const went = await askFromBox(owner, text, draftBox.member(sphere?.slug ?? '', owner));
+            sentHere.current = false;
+            if (!went) return false;
             // their own words: back to the end, to see them
             following.current = true;
             const l = list.current;
             if (l) l.scrollTop = l.scrollHeight;
-            // (moved away while they went, the box's draft is no longer the box's to let go of)
-            forget(draftBox.peer(owner));
             return true;
           }}
         />

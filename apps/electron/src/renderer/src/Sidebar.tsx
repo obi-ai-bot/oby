@@ -16,7 +16,7 @@ import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSp
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import StatusDot from './StatusDot';
-import { mockConvosWith, plainId, useConvos } from './peers';
+import { memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
 import { lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
@@ -317,10 +317,10 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     const unread = s.sample ? tour.call === o.name : mock.some((c) => c.unread);
     const lit = s.sample ? tour.member === o.name : activeOby === o.name;
     // a live member's row goes by their owner id (peers.ts), which is all obid's directory gives
-    const who = s.live ? plainId(o.name) : o.name;
+    const opens = memberOpens(s), who = opens === 'thread' ? plainId(o.name) : o.name;
     const shownName = asObys ? `${who}’s Oby` : who;
     return (
-      <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (s.sample ? tourDid(o.name) : s.live ? onOpenMember(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${who}’s Oby${s.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
+      <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (opens === 'tour' ? tourDid(o.name) : opens === 'thread' ? onOpenMember(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${who}’s Oby${s.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
         <OwnerAvatar name={o.name} size={22} />
         <span className="connector-text">
           <span className="connector-name">{shownName}</span>

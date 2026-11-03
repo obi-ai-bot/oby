@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { PEER_CONVOS, hasAttachments, type Attachments, type PeerConvo, type PeerMessage } from './mock';
 import { ApiError, api, peerThreadOf, type PeerExchange, type PeerPost, type PeerThread } from './obid';
+import { draft, keep, leftInBox } from './drafts';
 import { streamWords, wait } from './stream';
 
 // What a member's row opens: in a live Obysphere their thread, which is obid's; the tour's sample and
@@ -10,24 +11,25 @@ export const memberOpens = (s: { live?: true; sample?: true }) => (s.live ? 'thr
 // the mock's conversations with someone, for their row: a live member has none of them, whatever their name
 export const mockConvosWith = (s: { live?: true; sample?: true }, all: Convo[], name: string) => (memberOpens(s) === 'mock' ? convosWith(all, name) : []);
 
-// An owner id that can't pass for another's: only what obid's directory says, and anything but plain
-// ASCII (a Cyrillic i in "dima", a reversing mark) shows as its code. A Sphere's operator names ids.
+// An owner id with anything but plain ASCII shows those characters as codes, so a Cyrillic i in "dima"
+// or a reversing mark shows for what it is. A Sphere's operator names ids. ASCII look-alikes (`dirna`) still pass.
 export const plainId = (id: string) => id.replace(/[^\x21-\x7e]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
 // Who a thread is with, as obid's whose_oby (brain/ask.rs): a name is what a card says of itself, so
 // its owner id goes beside any name that differs. An ask has no Confirm: this is where the owner sees who.
 export const whoseOby = (name: string, owner: string) => (name === owner ? `${plainId(owner)}’s Oby` : `${name}’s Oby (${plainId(owner)})`);
 
-// Members' threads (docs/contracts/peer-thread.md), as obid has them; `gone`: obid no longer has this
-// one (it left the Sphere, or they aren't a member). One per owner read so far, by exact owner id.
+// Members' threads (docs/contracts/peer-thread.md), per exact owner id, outliving the view: thread, as
+// obid has it; gone, obid's words for why it has none; sending, words on their way; problem, why the
+// last words didn't go.
 // ponytail: each change reads the thread again rather than merging peerThread's posts: a read from
 // loopback, nothing to disagree with obid. The newest 50 exchanges, obid's default; add paging when
 // someone has more.
-export type Thread = PeerThread | { gone: true };
-let threads: ReadonlyMap<string, Thread> = new Map();
+export type Held = { thread?: PeerThread; gone?: string; sending?: string; problem?: string };
+let threads: ReadonlyMap<string, Held> = new Map();
 const threadListeners = new Set<() => void>();
-export const threadNow = (owner: string) => threads.get(owner);
+export const threadNow = (owner: string): Held => threads.get(owner) ?? {};
 export const useThreads = () => useSyncExternalStore((l) => { threadListeners.add(l); return () => { threadListeners.delete(l); }; }, () => threads);
-const setThread = (owner: string, thread: Thread) => { threads = new Map(threads).set(owner, thread); threadListeners.forEach((l) => l()); };
+const hold = (owner: string, change: Held) => { threads = new Map(threads).set(owner, { ...threads.get(owner), ...change }); threadListeners.forEach((l) => l()); };
 // the newest read asked for, per owner: an older answer doesn't take a thread back
 const asked = new Map<string, number>();
 export async function lookAtThread(owner: string) {
@@ -35,26 +37,38 @@ export async function lookAtThread(owner: string) {
   asked.set(owner, mine);
   try {
     const thread = peerThreadOf(await api.peerThread(owner));
-    if (thread && asked.get(owner) === mine) setThread(owner, thread);
+    if (thread && asked.get(owner) === mine) hold(owner, { thread, gone: undefined });
   } catch (e) {
     // obid down or a 5xx: as it was, until it's read again
-    if (e instanceof ApiError && (e.status === 404 || e.status === 409) && asked.get(owner) === mine) setThread(owner, { gone: true });
+    if (e instanceof ApiError && (e.status === 404 || e.status === 409) && asked.get(owner) === mine) hold(owner, { gone: e.message });
   }
+}
+// The view opening: what obid said last time isn't what it says now
+export function openThread(owner: string) {
+  if (threadNow(owner).gone !== undefined) hold(owner, { gone: undefined });
+  void lookAtThread(owner);
 }
 export const threadChanged = (owner: string) => { if (asked.has(owner)) void lookAtThread(owner); };
 export const lookAgainAtThreads = () => { for (const owner of asked.keys()) void lookAtThread(owner); };
 // out of the Sphere: rejoining starts every thread empty
-export const forgetThreads = () => { if (asked.size) { asked.clear(); threads = new Map(); threadListeners.forEach((l) => l()); } };
+export const forgetThreads = () => { if (asked.size || threads.size) { asked.clear(); threads = new Map(); threadListeners.forEach((l) => l()); } };
 
-// The owner's own question: null once obid took it, else why not (its own words)
-export async function askMember(owner: string, text: string): Promise<string | null> {
+// The box's send, which outlives its view (the owner can click someone else and back): whether the
+// words went. One at a time per owner, or a box put back from its draft would ask twice. A refusal is
+// kept to show whenever the thread is open. Of the draft it lets go of only what went.
+export async function askFromBox(owner: string, text: string, box: string): Promise<boolean> {
+  if (threadNow(owner).sending !== undefined) return false;
+  hold(owner, { sending: text, problem: undefined });
   try {
-    await api.peerAsk(owner, text);
-    await lookAtThread(owner);
-    return null;
+    await api.peerAsk(owner, text.trim());
   } catch (e) {
-    return e instanceof Error ? e.message : String(e);
+    hold(owner, { sending: undefined, problem: e instanceof Error ? e.message : String(e) });
+    return false;
   }
+  keep(box, leftInBox(text, draft(box), true));
+  hold(owner, { sending: undefined });
+  await lookAtThread(owner);
+  return true;
 }
 
 // Why the box can't ask, if so. null is obid not knowing yet (it hasn't read the directory): the box
