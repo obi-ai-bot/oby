@@ -993,6 +993,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .talk-pick { position: relative; display: flex; align-items: center; gap: 2px; height: 32px; padding: 0 6px 0 8px; border: 0; border-radius: 16px; background: transparent; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; transition: background-color var(--fade), color var(--fade); }
 .talk-pick:hover, .talk-pick.is-on { background: var(--chip-hover); color: var(--ink); }
 .talk-pick > svg { flex: none; }
+.talk-pick-auto { padding-right: 2px; }
 .talk-pick > svg:last-child { color: var(--muted); }
 .row-menu .talk-menu hr { margin: 4px 8px; }
 .row-menu button.talk-choice { display: flex; align-items: center; gap: 10px; width: 100%; height: auto; min-height: 44px; padding: 6px 10px; text-align: left; }
