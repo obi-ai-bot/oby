@@ -1374,8 +1374,10 @@ fn codex_and_cursor_park_and_resume_with_the_answer() {
     let said: Vec<(Value, String)> = jobs
         .iter()
         .map(|(id, _)| {
+            let job = ended(&obid, id);
+            // Read after its end: the agent writes the log as it takes the answer.
             let answers = std::fs::read_to_string(worktree(id).join(".obi/answers.log"));
-            (ended(&obid, id), answers.unwrap_or_default())
+            (job, answers.unwrap_or_default())
         })
         .collect();
     let [

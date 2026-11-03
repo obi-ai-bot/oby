@@ -226,7 +226,8 @@ rl.on("line", (line) => {
       setTimeout(() => {
         writeFileSync(slow[1], "hello\n");
         git("add", slow[1]);
-        git("commit", "-q", "-m", `Add ${slow[1]}`);
+        // A fix round finds it already there: nothing new, and a real agent wouldn't crash on that.
+        git("commit", "-q", "--allow-empty", "-m", `Add ${slow[1]}`);
         result(`Added ${slow[1]}.`);
       }, 3000);
     } else if (leak) {
