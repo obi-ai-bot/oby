@@ -2821,7 +2821,10 @@ fn inbox(obid: &Obid) -> Value {
 fn an_agents_stderr_reaches_the_reason_redacted() {
     let folder = Folder::new("stderr-redacted");
     let remote = fixture(&folder.0.join("fixture"));
-    let obid = start(&folder.0, &config(&folder.0, &remote));
+    // It's tried again first (RECOVERY-1), each try no longer than this.
+    let mut settings = config(&folder.0, &remote);
+    settings["stallAfter"] = json!(1);
+    let obid = start(&folder.0, &settings);
     let token = format!("{}{}{}", "gh", "p_", "Z".repeat(36));
     let posted = post_job(
         &obid,

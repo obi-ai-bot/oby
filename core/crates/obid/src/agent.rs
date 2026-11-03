@@ -357,12 +357,18 @@ pub async fn turn_on(
     let mut idle = false;
     // The partial message's thinking block, by its index, while it's open.
     let mut thinking: Option<u64> = None;
+    // Claude Code said it's retrying an API call, and hasn't been heard from since.
+    let mut retrying = false;
     loop {
         conn.holding = idle && !background.is_empty();
         let message = match conn.next().await {
             Ok(message) => message,
             Err(_) => break,
         };
+        if retrying && matches!(message["type"].as_str(), Some("stream_event" | "assistant")) {
+            retrying = false;
+            on_event(Event::Step("Working".into()));
+        }
         if message["type"] == "rate_limit_event" {
             on_event(Event::Usage(crate::usage::claude(&message)));
         }
@@ -412,6 +418,20 @@ pub async fn turn_on(
                     .filter(|t| t["ambient"] != true && t["awaited"] != true)
                     .map(|t| text_of(t, "description"))
                     .collect();
+            }
+            // Claude Code retrying an API call by itself (claude 2.1.302): any line is progress
+            // ([`Conn::next`]), and the person sees it try again (RECOVERY-6).
+            Some("system")
+                if message.get("subtype").and_then(Value::as_str) == Some("api_retry") =>
+            {
+                retrying = true;
+                on_event(Event::Step(crate::jobs::trying_again(
+                    &text_of(&message, "error"),
+                    Duration::from_millis(message["retry_delay_ms"].as_u64().unwrap_or(0))
+                        .max(Duration::from_secs(1)),
+                    message["attempt"].as_u64().unwrap_or(1) as usize,
+                    message["max_retries"].as_u64().unwrap_or(0) as usize,
+                )));
             }
             Some("system") if message.get("subtype").and_then(Value::as_str) == Some("init") => {
                 idle = false;

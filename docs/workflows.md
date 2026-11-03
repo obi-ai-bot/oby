@@ -82,7 +82,7 @@ pub struct Descriptor {
 
 ### 1.3 Effects and capabilities
 
-new-blok's effects are free strings, and whether a step has any is the one thing that decides how its engine journals it: no effects, re-run it after a crash; effects, journal it before dispatch and never re-run it. obid needs one more distinction, because most of what obid does changes something **inside** a folder obid owns (the job's worktree, the conversation's room, the clone's refs), and re-running that is safe: an agent round interrupted by a restart carries on today with "obid restarted while you were working: carry on with this round", and that should stay.
+new-blok's effects are free strings, and whether a step has any is the one thing that decides how its engine journals it: no effects, re-run it after a crash; effects, journal it before dispatch and never re-run it. obid needs one more distinction, because most of what obid does changes something **inside** a folder obid owns (the job's worktree, the conversation's room, the clone's refs), and re-running that is safe: an agent round interrupted by a restart carries on today with a marked message saying its run was cut (docs/contracts/recovery.md, RECOVERY-2), and that should stay.
 
 So obid's effects come in two kinds:
 

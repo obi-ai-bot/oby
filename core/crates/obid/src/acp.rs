@@ -636,7 +636,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             ),
             Some(_) if self.options.resume_only => {
                 return Err(Stop::Failed(format!(
-                    "{tool} can't load its session, so obid couldn't pick it up with your answer, and didn't start a new one that wouldn't know the task. Try again starts it in a new session."
+                    "{tool} can't load its session, so obid couldn't pick it up, and didn't start a new one that wouldn't know the task. Try again starts it in a new session."
                 )));
             }
             _ => ("session/new", json!({"cwd": cwd, "mcpServers": servers})),

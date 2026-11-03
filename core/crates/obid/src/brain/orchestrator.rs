@@ -98,11 +98,7 @@ impl Seen {
             // Those that crashed before obid started are the owner's too.
             crashed: jobs
                 .iter()
-                .filter(|j| {
-                    j.reason.as_deref().is_some_and(|r| {
-                        r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED
-                    })
-                })
+                .filter(|j| j.reason.as_deref().is_some_and(crate::job::obids_doing))
                 .map(|j| j.id.clone())
                 .collect(),
         }
@@ -127,9 +123,7 @@ impl Seen {
         // work ended is told on the job it reviewed.
         // obid's own bug, or obid going down with it, is the owner's (#914): tried again by Oby, a
         // bug that's always there would only loop.
-        let crashed = job["reason"]
-            .as_str()
-            .is_some_and(|r| r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED);
+        let crashed = job["reason"].as_str().is_some_and(crate::job::obids_doing);
         if crashed {
             self.crashed.insert(id.to_owned());
         } else {

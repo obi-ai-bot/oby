@@ -125,10 +125,7 @@ pub fn found(job: &Job, now: i64) -> Option<(String, Trigger, String)> {
     if now - finished >= FRESH {
         return None;
     }
-    let crashed = job
-        .reason
-        .as_deref()
-        .is_some_and(|r| r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED);
+    let crashed = job.reason.as_deref().is_some_and(crate::job::obids_doing);
     let (trigger, what) = match job.status {
         Status::Failed | Status::Interrupted if crashed => (
             Trigger::Crash,
