@@ -46,7 +46,7 @@ enum SampleTasks {
 
     /// A made-up Obysphere, for the side panel.
     static let sphere = RunnerSphere(state: "joined", sphere: "deskree")
-    static let members = ["Ernesto", "Dima", "Sangam"].map(RunnerSphereMember.init)
+    static let members = ["Ernesto", "Dima", "Sangam"].map { RunnerSphereMember(obi: "obi-\($0)", owner: $0) }
 
     /// What the running sample's agent did, for its live card and its own conversation.
     static func transcript(_ job: String) -> [TranscriptEntry] {
@@ -70,7 +70,7 @@ enum SampleTasks {
                             turn: .init(text: "It went out on Tuesday; the About row came after."))]
     }
 
-    /// `-ObySampleRoute new`, `settings`, `task:<id>`, `agent:<id>`, `kind:<review|issues|tasks|routines>`,
+    /// `-ObySampleRoute new`, `new-again`, `settings`, `task:<id>`, `agent:<id>`, `kind:<review|issues|tasks|routines>`,
     /// `panel:chats` or `panel:tasks`: opens that, for its screenshots. `-ObySamplePair '<QR code's
     /// JSON>'`: pairs as scanning it does, for a Simulator with no camera, on any debug launch.
     @MainActor static func launch(_ phone: Phone) {
@@ -91,6 +91,12 @@ enum SampleTasks {
         guard let route = defaults.string(forKey: "ObySampleRoute") else { return }
         let kind = [WorkType.review, .issues, .tasks, .routines].first { "kind:\($0.id)" == route }
         if route == "new" { phone.newConversation() }
+        // New conversation from the panel, while already on the empty chat: its Oby keeps its one WebView.
+        else if route == "new-again" {
+            phone.newConversation()
+            phone.panel = .chats
+            Task { try? await Task.sleep(for: .seconds(5)); phone.newConversation() }
+        }
         else if route == "panel:chats" { phone.panel = .chats }
         else if route == "panel:tasks" { phone.panel = .tasks }
         else if route == "settings" { phone.homePath = [.settings] }

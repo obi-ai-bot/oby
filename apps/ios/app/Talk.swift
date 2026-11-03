@@ -15,11 +15,10 @@ nonisolated enum TalkChoice {
     /// hits first, in percent. Nil: it reports none, as Cursor, and no number is made up.
     static func percent(_ account: Account, now: Date = .now) -> Int? {
         guard account.agent != "cursor" else { return nil }
-        let week = account.sevenDay ?? account.fiveHour
         let over = account.fiveHourResets.map { $0 <= now } ?? false
-        let session = !account.signedIn || account.fiveHour == nil ? nil : over ? 0 : account.fiveHour
-        guard week != nil || session != nil else { return nil }
-        return Int((max(week ?? 0, session ?? 0) * 100).rounded())
+        let session = over ? account.fiveHour.map { _ in 0 } : account.fiveHour
+        guard account.sevenDay != nil || session != nil else { return nil }
+        return Int((max(account.sevenDay ?? 0, session ?? 0) * 100).rounded())
     }
 
     static func usageWords(_ account: Account, now: Date = .now) -> String {
@@ -78,8 +77,14 @@ nonisolated enum TalkChoice {
 struct TalkPicker: View {
     @Environment(Phone.self) private var phone
     let conversation: String?
+    @State private var open = Self.opensAtLaunch
+
+    #if DEBUG
     /// `-ObySamplePicker YES` opens it, for its screenshot.
-    @State private var open = UserDefaults.standard.bool(forKey: "ObySamplePicker")
+    private static var opensAtLaunch: Bool { UserDefaults.standard.bool(forKey: "ObySamplePicker") }
+    #else
+    private static let opensAtLaunch = false
+    #endif
 
     private var own: RunnerConversation? { conversation.flatMap { id in phone.conversations?.first { $0.id == id } } }
     private var chosen: String? { TalkChoice.chosen(own: own?.talkAccount, setting: phone.talkSetting) }

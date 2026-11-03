@@ -138,7 +138,7 @@ struct ChatsColumn: View {
         .overlay(alignment: .top) { Tokens.line.frame(height: 1).padding(.top, 2) }
         .accessibilityElement(children: .combine)
         .plainRow(leading: 12)
-        ForEach(phone.sphereMembers, id: \.owner) { member in
+        ForEach(phone.sphereMembers, id: \.obi) { member in
             HStack(spacing: 10) {
                 OwnerPicture(name: member.owner)
                 Text("\(member.owner)’s Oby").font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item).fadeOut()

@@ -434,6 +434,7 @@ final class Phone {
     func rest(on place: Resting) {
         resting = place
         restMoves += 1
+        talkProblem = nil
         panel = nil
         homePath = []
     }
@@ -445,6 +446,11 @@ final class Phone {
         startingNew = false
         rest(on: .empty)
         focusHome = true
+    }
+
+    /// The owner started typing on the opening's box before obid's list came: they stay there.
+    func settleOnEmpty() {
+        if resting == .deciding { resting = .empty }
     }
 
     /// Decided once, as the app opens: a conversation that arrives later never moves you.
@@ -548,13 +554,20 @@ final class Phone {
     /// no event for the directory. A runner that doesn't serve them has none; a failed read keeps what
     /// was read.
     func readSphere() async {
+        // An answer from a runner since changed is dropped, as GitHub's is.
+        let asked = gitHubChanges
         guard let joined = try? await runner.sphere() else { return }
+        let members = joined.state == "joined" ? try? await runner.sphereMembers() : nil
+        guard gitHubChanges == asked else { return }
+        take(sphere: joined, members: members)
+    }
+
+    /// Only a Sphere obid is in shows, with the other owners' Obys: your own other Mac isn't a
+    /// teammate. Members that couldn't be read keep what was read.
+    func take(sphere joined: RunnerSphere, members: [RunnerSphereMember]?) {
         sphere = joined.state == "joined" ? joined : nil
-        guard sphere != nil, let members = try? await runner.sphereMembers() else {
-            if sphere == nil { sphereMembers = [] }
-            return
-        }
-        sphereMembers = members
+        guard sphere != nil else { sphereMembers = []; return }
+        if let members { sphereMembers = members.filter { $0.owner != joined.owner } }
     }
 
     // MARK: Sessions on screen
@@ -770,14 +783,17 @@ final class Phone {
         await readLimitDecisions()
         await readGitHub { try await runner.gitHubWork() }
         await readRoutines()
-        do { conversations = try await runner.conversations() } catch {
-            Logger.phone.error("listing conversations failed: \(error.localizedDescription, privacy: .public)")
-        }
+        // A 404 is a runner with one thread; any other failure is this connection's, tried again,
+        // or the app would come to rest on that one thread with no list to tell.
+        conversations = try await runner.conversations()
         decideRest()
-        await readSphere()
+        // Apart: a slow Sphere must not hold the events behind this.
+        Task { await readSphere() }
         // The thread's latest page every time: what was said on the Mac while the connection was
         // down is in it.
         await conversation.reload()
+        // And each session on screen, what it missed.
+        for (session, _) in sessions.values { Task { await session.catchUp() } }
         loaded = true
         // Alerts whose job needs nothing any more, if their clearing push didn't arrive. Apart: the
         // events wait behind this, and a system call that doesn't answer must not hold them.
@@ -857,6 +873,9 @@ final class Phone {
     /// The sample screens' made-up events (SampleTasks), through the same path as obid's.
     func sample(_ event: RunnerEvent) { apply(event) }
 
+    /// The connection, for the tests: the one `init` is given doesn't outlast its own `runnerURL`.
+    func sample(connection: RunnerConnection) { self.connection = connection }
+
     /// obid's list of conversations as `connected` takes it, for the tests.
     func sample(conversations list: [RunnerConversation]) {
         conversations = list
@@ -879,7 +898,7 @@ final class Phone {
         case .cleared(let date):
             clearedAt = date
         case .connected:
-            for (session, _) in sessions.values { Task { await session.catchUp() } }
+            break
         case .inbox(let item):
             // One that's done leaves the list.
             inbox.removeAll { $0.id == item.id }
@@ -931,17 +950,16 @@ final class Phone {
     func ask(_ words: String, spoken: Bool = false, new: Bool = false) {
         guard let said = ChatThread.words(words) else { return }
         cancelVoice()
-        let starts = new && conversations != nil
-        if starts {
+        // Words from the empty chat start a conversation, even before obid's list is in: without
+        // `new` obid joins them to its latest, whose turns this thread wouldn't show.
+        if new {
             current = nil
             startingNew = true
             heldDeltas = []
             conversation.forget()
             rest(on: .starting)
-        } else if resting == .empty || resting == .deciding {
-            rest(on: .conversation(current))
         }
-        plan(said, answer: nil, voice: spoken, new: starts)
+        plan(said, answer: nil, voice: spoken, new: new)
     }
 
     /// The user picked one of the brain's options.
@@ -957,7 +975,7 @@ final class Phone {
     func stopTurn() async {
         do {
             // obid stops the latest turn in any conversation unless it's told which (#493).
-            try await runner.stopConversation(talkIn ?? current)
+            try await runner.stopConversation(current ?? talkIn)
             stopProblem = nil
             conversation.settleSteps()
         } catch let error as RunnerError where error.status == 404 {

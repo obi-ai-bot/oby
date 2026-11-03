@@ -113,7 +113,7 @@ private struct AgentsPage: View {
         let agents = phone.accounts.sorted { (Self.order.firstIndex(of: $0.agent) ?? 9) < (Self.order.firstIndex(of: $1.agent) ?? 9) }
         let ready = agents.filter(\.signedIn)
         let chosen = ready.first { $0.id == phone.defaultAccount } ?? ready.first
-        SetGroup("Default agent", footer: "Add, sign in or remove an agent in Settings › Agents on your Mac, where it runs.", problem: problem) {
+        SetGroup("Default agent", footer: "Add, sign in or remove an agent in Settings › Agents on your Mac, where it runs.", problem: problem ?? phone.talkProblem) {
             if let chosen {
                 SetRow("New tasks go to") {
                     SetSelect("Default agent", selection: Binding { chosen.id } set: { id in

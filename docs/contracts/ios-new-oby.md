@@ -19,7 +19,7 @@ The business behavior contract for bringing the iPhone app (`apps/ios/app`) in l
 
 - **Your conversation:** the one that moved last by obid's `lastActivity` when the list comes in, then whichever you're in. Deciding once, as it opens: a conversation that arrives later never moves you.
 - **The empty chat:** no conversation: Oby, its line and the box, with what Oby is asking you where it was. Words sent there start a conversation, which opens, in the same page.
-- **Before the list comes:** a thread's bones and the box; with the Mac out of reach, the empty chat, its words waiting as words always did.
+- **Before the list comes:** a thread's bones and the box; with the Mac out of reach, the empty chat. Typing there keeps you there. Words sent start a conversation of their own, waiting as words always did if the Mac is out of reach. A list that fails is this connection's and is tried again: it never settles on a thread it can't name.
 - **A page over it:** a kind of work, a task, an agent's conversation, Archived, the Inbox, Settings. Back returns to where you rest. Opening a conversation, from the panel, a task or an alert, makes it where you rest.
 
 **Where the iPhone differs from the desktop, on purpose:** opening the app doesn't bring up the keyboard, which would cover half of the conversation; New conversation does. New conversation is also one tap at the top right of a conversation, as a phone's chats have it, besides the panel's row. What Oby is asking stays out of the thread except for an offer made in that conversation, which is in its thread where it was made, once, and a failure or a review, which stay under its card as they did.
@@ -53,15 +53,16 @@ A job being tried again stays `running`: its card says so with obid's `step` ("T
 ### Failures and recovery
 
 - **Mac out of reach:** the reach line stays over every screen, and words wait as they did. Back in reach, every session on screen reads what it missed, from the last entry known with none missing before it, and at each of its job's events, so a lost one fills by itself.
-- **Connecting:** nothing a system call does holds the events back: clearing old alerts goes apart, since one that didn't answer on a Simulator left the whole app deaf to obid until it was opened again.
+- **Connecting:** nothing slow holds the events back: clearing old alerts and reading the Sphere go apart, since one that didn't answer on a Simulator left the whole app deaf to obid until it was opened again.
 - **A late answer** never undoes an event: an ended call stays ended, and words stay as far as they got.
 - **The conversation you're in is deleted:** your latest, or the empty chat if none is left.
+- **The empty chat is one page:** New conversation on it builds no second, since two would put Oby's one WebPage in two WebViews, and WebKit stops the app.
 - **An older obid** with no `talkAccount`, no Sphere or no list of conversations: Auto, no Sphere's rows, the one thread.
 
 ### Invariants and boundaries
 
 - **Add-only API.** The iPhone sends what the desktop sends and decodes keys it doesn't know without failing. No enum the Swift apps decode changed.
-- **Sealed end to end.** Everything goes through the owner's Obysphere as before, and every route is on the gateway's allowlist. Two reads were added, for the panel's Obysphere rows: `GET /v1/obid/sphere` and `GET /v1/obid/sphere/members`. They carry the Sphere's id and URL, the owner, this Oby's public keys and signed card, the delegation's scope and expiry, the token's expiry but never the token, and the members' owners: no secret, and nothing a paired device, which is the owner's, shouldn't know. Joining, leaving, the keys, the card and the pins stay on the machine.
+- **Sealed end to end.** Everything goes through the owner's Obysphere as before, and every route is on the gateway's allowlist. Two reads were added, for the panel's Obysphere rows: `GET /v1/obid/sphere` and `GET /v1/obid/sphere/members`. The membership carries its state, the Sphere's id and URL, this Oby's id and owner, its public keys and signed card, what it accepts, whether it seals, the delegation's scope and expiry, the token's expiry but never the token, when it last polled and its last error. The members carry each Oby's id and owner, what it accepts, whether it's sealed and whether its owner's key was compared. No secret, and nothing a paired device, which is the owner's, shouldn't know. Joining, leaving, the keys, the card and the pins stay on the machine.
 - **Only a session something shows is kept,** and let go when the last thing showing it goes. A call's output and a file's contents come only when its line opens: the phone no longer reads one call's detail to learn whether obid serves it.
 - **English only.** Words are the desktop's. **Proposed, Sangam's to change:** "Chats", "Thinking", "Show N earlier", "N done before these", "N more to do", "Declined", "Open the task's page", "New conversations talk through" and the picker's words, all already proposed on the desktop. New on the iPhone: nothing a person reads; the pencil's label is the desktop's "New conversation".
 - **Sangam's Home isn't on the iPhone any more:** its chips, Running and Recent went to the panel. His first-run and pairing screens are unchanged.
@@ -78,9 +79,9 @@ A job being tried again stays `running`: its card says so with obid's `step` ("T
 Tests: `apps/ios/tests/NewObyTests.swift` (`IOSNEW-n`), and for the gateway `core/crates/obid/src/gateway.rs`, `iosnew_4_a_phone_reads_the_sphere_and_changes_nothing`.
 
 - **IOSNEW-1:** With conversations, the app rests on the one that moved last; with none, on the empty chat; with no list from the runner, on its one thread. A conversation that arrives later doesn't move it.
-- **IOSNEW-2:** New conversation lands on the empty chat, creating nothing; words sent there start the conversation, which obid's name then adopts in the same page. Deleting the one you're in goes to your latest, and when it was the last, to the empty chat.
+- **IOSNEW-2:** New conversation lands on the empty chat, creating nothing; words sent there, before obid's list is in too, start the conversation, which obid's name then adopts in the same page. Typing before the list comes keeps you on the box. Deleting the one you're in goes to your latest, and when it was the last, to the empty chat.
 - **IOSNEW-3:** The panel's chats are pinned first, then latest, five of them and Show more, the one you're in always among them; a search shows all it found.
-- **IOSNEW-4:** The Obysphere and its teammates' Obys come through the gateway, read only; a Sphere obid isn't in, or an obid that doesn't serve them, shows none.
+- **IOSNEW-4:** The Obysphere and its teammates' Obys come through the gateway, read only; a Sphere obid isn't in, or an obid that doesn't serve them, shows none. Your own other Mac isn't a teammate, and two Obys of one owner are two rows.
 - **IOSNEW-5:** Each account's percentage is the fuller of its week and 5-hour session, past its reset counting 0; "Full" when held full, "No usage" for Cursor; the dot yellow past 80%, red past 90% or held full.
 - **IOSNEW-6:** The picker names the chosen account; moved off it or on Auto, where it last talked, else what obid says is next, each only while it can run. A conversation's own choice beats the setting; `auto` is Auto whatever the setting says.
 - **IOSNEW-7:** The list has every connected account, tool by tool, by its tool's name and by its own once its tool has more than one, with who it is.

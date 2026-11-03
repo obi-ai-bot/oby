@@ -55,6 +55,9 @@ struct NewObyTests {
         #expect(phone.resting == .conversation("new"))
         phone.sample(.conversation(conversation("newer", minutesAgo: 0)))
         #expect(phone.resting == .conversation("new"))
+        // Listed again, as every connection does: still decided.
+        phone.sample(conversations: [conversation("old", minutesAgo: 90), conversation("new", minutesAgo: 1), conversation("newer", minutesAgo: 0)])
+        #expect(phone.resting == .conversation("new"))
     }
 
     @Test func iosnew_2_new_conversation_creates_nothing_and_a_deleted_one_goes_to_the_latest() throws {
@@ -76,6 +79,48 @@ struct NewObyTests {
         #expect(phone.resting == .empty)
     }
 
+    /// Words on the empty chat: obid's name for their conversation is adopted in the same page.
+    @Test func iosnew_2_words_start_a_conversation_and_its_name_is_adopted() throws {
+        let phone = try newPhone()
+        phone.sample(connection: .live)
+        phone.sample(conversations: [])
+        #expect(phone.resting == .empty)
+        phone.ask("Fix the route", new: true)
+        #expect(phone.resting == .starting && phone.startingNew)
+        let moves = phone.restMoves
+        // Named as its turn begins, before the request (no runner here) can answer.
+        phone.sample(.conversation(RunnerConversation(id: "named", title: "Fix the route")))
+        #expect(phone.resting == .conversation("named"))
+        #expect(phone.current == "named" && !phone.startingNew)
+        #expect(phone.restMoves == moves)
+    }
+
+    /// Before obid's list is in, words still start their own conversation, never its latest.
+    @Test func iosnew_2_words_before_the_list_start_their_own_conversation() throws {
+        let queue = OfflineQueue(defaults: try #require(UserDefaults(suiteName: "NewObyTests.\(UUID())")))
+        let phone = Phone(offlineQueue: queue)
+        #expect(phone.resting == .deciding && phone.conversations == nil)
+        phone.ask("Fix the route", new: true)
+        #expect(phone.resting == .starting)
+        #expect(queue.messages.first?.new == true)
+        // The list that comes later doesn't move it.
+        phone.sample(conversations: [conversation("old", minutesAgo: 1)])
+        #expect(phone.resting == .starting)
+    }
+
+    @Test func iosnew_2_typing_before_the_list_keeps_the_box() throws {
+        let phone = try newPhone()
+        phone.settleOnEmpty()
+        #expect(phone.resting == .empty)
+        phone.sample(conversations: [conversation("a", minutesAgo: 1)])
+        #expect(phone.resting == .empty)
+        // Once it has come to rest, it means nothing.
+        let settled = try newPhone()
+        settled.sample(conversations: [conversation("a", minutesAgo: 1)])
+        settled.settleOnEmpty()
+        #expect(settled.resting == .conversation("a"))
+    }
+
     @Test func iosnew_3_the_panel_lists_pinned_first_then_five_and_the_one_youre_in() {
         let list = (1...8).map { conversation("c\($0)", minutesAgo: Double($0)) } + [conversation("p", minutesAgo: 100, pinned: true)]
         let five = PhoneWork.chats(list, resting: "c1", all: false)
@@ -88,14 +133,25 @@ struct NewObyTests {
         #expect(all.rows.count == 9 && all.hidden == 0)
     }
 
-    @Test func iosnew_4_the_sphere_reads_with_only_what_the_panel_shows() throws {
+    @Test func iosnew_4_only_a_sphere_obid_is_in_shows_and_only_teammates() throws {
         let joined = #"{"state": "joined", "url": "http://127.0.0.1:8787", "sphere": "e2e", "owner": "wellington", "card": {"a": 1}, "tokenExpiresAt": "2026-10-14T13:00:05Z"}"#
         let sphere = try Runner.decoder.decode(RunnerSphere.self, from: Data(joined.utf8))
-        #expect(sphere == RunnerSphere(state: "joined", sphere: "e2e"))
-        let none = try Runner.decoder.decode(RunnerSphere.self, from: Data(#"{"state": "none", "url": null, "sphere": null}"#.utf8))
-        #expect(none.sphere == nil)
-        let members = try Runner.decoder.decode([RunnerSphereMember].self, from: Data(#"[{"obi": "obi-ernesto", "owner": "ernesto", "accepts": ["question"], "sealed": true, "verified": false}]"#.utf8))
-        #expect(members.map(\.owner) == ["ernesto"])
+        #expect(sphere == RunnerSphere(state: "joined", sphere: "e2e", owner: "wellington"))
+        let listed = #"[{"obi": "obi-1", "owner": "ernesto", "accepts": ["question"], "sealed": true, "verified": false}, {"obi": "obi-2", "owner": "ernesto"}, {"obi": "obi-3", "owner": "wellington"}]"#
+        let members = try Runner.decoder.decode([RunnerSphereMember].self, from: Data(listed.utf8))
+        let phone = try newPhone()
+        phone.take(sphere: sphere, members: members)
+        #expect(phone.sphere?.sphere == "e2e")
+        // Your own other Mac isn't a teammate; two Obys of one owner are two rows.
+        #expect(phone.sphereMembers.map(\.obi) == ["obi-1", "obi-2"])
+        // Members that couldn't be read keep what was read.
+        phone.take(sphere: sphere, members: nil)
+        #expect(phone.sphereMembers.count == 2)
+        // One obid isn't in shows nothing, and takes its people with it.
+        for state in ["revoked", "none"] {
+            phone.take(sphere: RunnerSphere(state: state, sphere: "e2e"), members: members)
+            #expect(phone.sphere == nil && phone.sphereMembers.isEmpty)
+        }
     }
 
     // MARK: Who Oby talks through
@@ -105,6 +161,9 @@ struct NewObyTests {
         #expect(TalkChoice.percent(account("a", week: 0.36, session: 0.12), now: now) == 36)
         // Past its reset, the session counts nothing.
         #expect(TalkChoice.percent(account("a", week: 0.2, session: 0.9, sessionResets: now.addingTimeInterval(-60)), now: now) == 20)
+        // With no week to go by too: its figure is over.
+        #expect(TalkChoice.percent(account("a", session: 0.9, sessionResets: now.addingTimeInterval(-60)), now: now) == 0)
+        #expect(TalkChoice.percent(account("a", session: 0.9), now: now) == 90)
         #expect(TalkChoice.usageWords(account("a", week: 0.36), now: now) == "36%")
         #expect(TalkChoice.usageWords(account("a", week: 0.36, fullUntil: now.addingTimeInterval(60)), now: now) == "Full")
         #expect(TalkChoice.usageWords(account("c", agent: "cursor", week: 0.5), now: now) == "No usage")
@@ -191,11 +250,14 @@ struct NewObyTests {
         let short = LiveTask.around(Array(long.prefix(3)))
         #expect(short.todos.count == 3 && short.before == 0 && short.after == 0)
         // With no steps and no list: what obid says it's on; past its agent's work: the stage.
-        #expect(LiveTask.now(try job(step: "Getting ready"), steps: [], list: false) == "Getting ready")
+        #expect(LiveTask.now(try job(step: "Getting ready"), entries: []) == "Getting ready")
         let stages = #", "pipeline": {"stages": [{"id": "work", "title": "Work", "state": "done"}, {"id": "check", "title": "Check", "state": "current"}], "number": 2, "total": 2}"#
-        #expect(LiveTask.now(try job(stages, step: "Reading a.ts"), steps: [tool(1, "Reading a.ts")], list: false) == "Check")
+        #expect(LiveTask.now(try job(stages, step: "Reading a.ts"), entries: [tool(1, "Reading a.ts")]) == "Check")
         // A step its session already shows isn't said again.
-        #expect(LiveTask.now(try job(step: "Reading a.ts"), steps: [tool(1, "Reading a.ts")], list: false) == nil)
+        #expect(LiveTask.now(try job(step: "Reading a.ts"), entries: [tool(1, "Reading a.ts")]) == nil)
+        // Older than the card's last three steps too.
+        let more = [tool(1, "Reading a.ts"), tool(2, "b"), tool(3, "c"), tool(4, "d")]
+        #expect(LiveTask.now(try job(step: "Reading a.ts"), entries: more) == nil)
     }
 
     @Test func iosnew_10_only_what_a_tool_gave_and_steps_read_as_they_stand() {
@@ -244,8 +306,33 @@ struct NewObyTests {
         phone.letGo(session: "j")
         phone.letGo(session: "j")
         #expect(phone.hold(session: "j") !== first)
-        first.apply(TranscriptEvent(job: "other", entry: tool(1, "x")))
-        #expect(first.entries.isEmpty)
+    }
+
+    /// `catchUp` asks from the last entry with none missing before it, so a lost event comes too.
+    @Test func iosnew_12_a_read_starts_where_the_entries_have_no_hole() async throws {
+        var asked: [Int?] = []
+        let session = LiveSession(job: "j", load: { after in
+            asked.append(after)
+            return TranscriptPage(entries: after == 2 ? [self.tool(3, "lost")] : [])
+        }, loadDetail: { _ in TranscriptDetail() })
+        for n in [1, 2, 5] { session.apply(TranscriptEvent(job: "j", entry: tool(n, "\(n)"))) }
+        await session.catchUp()
+        #expect(asked == [2])
+        #expect(session.entries.map(\.n) == [1, 2, 3, 5])
+    }
+
+    /// Each job's `transcript` events go to its own session, and only to one something holds.
+    @Test func iosnew_12_events_go_to_their_jobs_session() throws {
+        let phone = try newPhone()
+        let mine = phone.hold(session: "j")
+        let other = phone.hold(session: "k")
+        phone.sample(.transcript(TranscriptEvent(job: "j", entry: tool(1, "x"))))
+        #expect(mine.entries.map(\.n) == [1])
+        #expect(other.entries.isEmpty)
+        // Let go, it hears nothing more.
+        phone.letGo(session: "j")
+        phone.sample(.transcript(TranscriptEvent(job: "j", entry: tool(2, "y"))))
+        #expect(mine.entries.map(\.n) == [1])
     }
 
     // MARK: Recovery
@@ -257,9 +344,10 @@ struct NewObyTests {
         #expect(trying.line == "Trying again in 5 minutes (2 of 3)")
         #expect(PhoneWork.items([trying], since: now, seen: [])[0].status == .running)
         // It isn't one of its steps, so it shows even with steps above it.
-        #expect(LiveTask.now(trying, steps: [tool(1, "Reading a.ts")], list: true) == "Trying again in 5 minutes (2 of 3)")
+        let plan = TranscriptEntry(n: 2, kind: "plan", todos: [.init(text: "a", state: "running")])
+        #expect(LiveTask.now(trying, entries: [tool(1, "Reading a.ts"), plan]) == "Trying again in 5 minutes (2 of 3)")
         // A restart's line, past the third try's error, the same way.
-        #expect(LiveTask.now(try job(step: "Oby restarted while this ran: continuing it (1 of 3)"), steps: [tool(1, "Reading a.ts")], list: false) != nil)
+        #expect(LiveTask.now(try job(step: "Oby restarted while this ran: continuing it (1 of 3)"), entries: [tool(1, "Reading a.ts")]) != nil)
         // Past its tries: it needs you, with the real reason.
         let spent = try job(#", "reason": "API Error: 529""#, status: "interrupted", step: "")
         #expect(spent.needsYou)

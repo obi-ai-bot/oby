@@ -32,12 +32,11 @@ nonisolated enum LiveTask {
     /// work (the check, publishing); with nothing from its agent yet, what it waits for or its step;
     /// and a step the session doesn't hold, which is obid's own (RECOVERY-5: "Trying again in 5
     /// minutes (2 of 3)"), so a job being tried again says so.
-    static func now(_ job: Job, steps: [TranscriptEntry], list: Bool) -> String? {
+    static func now(_ job: Job, entries: [TranscriptEntry]) -> String? {
         guard job.isActive else { return nil }
         if let stage = job.pipeline?.stages.first(where: { $0.state == .current && $0.id != "work" }) { return stage.title }
-        if steps.isEmpty && !list { return job.waiting?.text ?? (job.step.isEmpty ? nil : job.step) }
-        let words = steps.map { $0.summary ?? "" }
-        return job.step.isEmpty || job.step == "Working" || words.contains(job.step) ? nil : job.step
+        if lastSteps(entries).isEmpty && todos(entries) == nil { return job.waiting?.text ?? (job.step.isEmpty ? nil : job.step) }
+        return job.step.isEmpty || job.step == "Working" || entries.contains { $0.summary == job.step } ? nil : job.step
     }
 
     /// How an ended task reads on its card (LIVETASK-4).
@@ -76,7 +75,7 @@ struct LiveTaskWork: View {
         let entries = session?.entries ?? []
         let list = LiveTask.todos(entries)
         let steps = LiveTask.lastSteps(entries)
-        let line = LiveTask.now(job, steps: steps, list: list != nil)
+        let line = LiveTask.now(job, entries: entries)
         let needs = ThreadTaskLine.mark(job) == .needs
         // A list with none in hand now: the last things it did go under the whole list.
         let under = !(list?.contains { $0.state == "running" } ?? false)
@@ -94,7 +93,7 @@ struct LiveTaskWork: View {
                 if shown.after > 0 { more("\(shown.after) more to do") }
             }
             if list == nil || under { stepLines(steps) }
-            if let line { Sheen(text: line, size: Tokens.textSm).lineLimit(1) }
+            if !needs, let line { Sheen(text: line, size: Tokens.textSm).lineLimit(1) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { if session == nil { session = phone.hold(session: job.id) } }
@@ -208,7 +207,8 @@ struct AgentPage: View {
         Group {
             if let session, let job {
                 SessionView(session: session, agent: job.agent, meta: "", live: job.isActive, compact: true, title: false, conversation: true)
-                    .task(id: job.isActive) { await session.follow(live: job.isActive) }
+                    // By its job too: a follow-up told from here is a new session to follow.
+                    .task(id: "\(session.job) \(job.isActive)") { await session.follow(live: job.isActive) }
                     .safeAreaInset(edge: .top, spacing: 0) { todos(session, job) }
                     .safeAreaInset(edge: .bottom, spacing: 0) { foot(job) }
             } else if looked && job == nil {

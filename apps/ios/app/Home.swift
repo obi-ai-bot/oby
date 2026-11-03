@@ -60,7 +60,10 @@ struct ChatRoot: View {
             if let notice = phone.notice { ReachLine(notice: notice) }
             NavigationStack(path: $phone.homePath) {
                 rest
-                    .id(phone.restMoves)
+                    // The empty chat stays the same page: a second one built while the first is
+                    // still out (the panel's close animation) puts Oby's one WebPage in two
+                    // WebViews, and WebKit stops the app.
+                    .id(phone.resting.showsStage ? -1 : phone.restMoves)
                     .toolbar {
                         // One panel button, as Sangam's: while the panel is open, its own puts it away.
                         if phone.panel == nil {
@@ -127,6 +130,9 @@ private struct EmptyChat: View {
                      typing: $typing, onSend: send, talkIn: .some(nil))
                 .keepsDraft($text, as: Drafts.home)
         }
+        // Typing before the list comes: the box is yours, so the app stays here for your words.
+        // (Not a draft restored as it opens, which isn't you typing now.)
+        .onChange(of: text) { if !text.isEmpty, typing || phone.voice.active { phone.settleOnEmpty() } }
         // Once the panel has slid away (Tokens.warm): focused while it's still out, the box doesn't take it.
         .onChange(of: phone.focusHome, initial: true) {
             guard phone.focusHome else { return }

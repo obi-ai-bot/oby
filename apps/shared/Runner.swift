@@ -694,10 +694,14 @@ nonisolated struct RunnerSphere: Decodable, Equatable, Sendable {
     var state: String
     /// Its id: obid knows no other name for it (the invite link's stays with the app that joined).
     var sphere: String?
+    /// Who obid acts for there.
+    var owner: String? = nil
 }
 
 /// Another Oby in that Obysphere (`GET /v1/obid/sphere/members`): the owner it speaks for.
 nonisolated struct RunnerSphereMember: Decodable, Equatable, Sendable {
+    /// Its id there: one owner can have several Obys.
+    var obi: String
     var owner: String
 }
 
