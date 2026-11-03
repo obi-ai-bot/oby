@@ -45,7 +45,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 
 ## Invariants
 
-- obid never reads, sends or keeps a login beyond the documented `claudeKeychain` copy, the Mac's own Claude Code's refresh (AGENTS.md) and Cursor's access token to Cursor's own host for its usage (docs/contracts/keychain.md, KEYCHAIN-8 and 9). The refresh runs the person's own Claude Code by its absolute path, with an empty config folder of obid's and the system's `PATH`, and its output is discarded.
+- obid never reads, sends or keeps a login beyond the documented `claudeKeychain` copy, the Mac's own Claude Code's refresh (AGENTS.md), Cursor's access token to Cursor's own host for its usage (docs/contracts/keychain.md, KEYCHAIN-8 and 9) and Continue with ChatGPT, which it is the OAuth client of (docs/contracts/chatgpt-sign-in.md). The refresh runs the person's own Claude Code by its absolute path, with an empty config folder of obid's and the system's `PATH`, and its output is discarded.
 - obid's API is unchanged: no key or route is added or removed, and no value in an enum.
 - A read never runs a model and never refreshes from inside a box.
 

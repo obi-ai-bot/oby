@@ -1579,7 +1579,7 @@ struct Target {
 }
 
 /// The page the browser lands on: a sentence of obid's own and nothing that runs.
-fn page(status: StatusCode, text: &str) -> Response {
+pub(crate) fn page(status: StatusCode, text: &str) -> Response {
     let escaped = text
         .replace('&', "&amp;")
         .replace('<', "&lt;")

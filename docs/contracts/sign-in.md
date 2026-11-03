@@ -23,7 +23,7 @@ The business behavior contract for why a sign-in didn't take, shown under its ow
 | `ownLogin` | the account is the tool's own login, which the tool signs in itself | `409` | `Sign in with Claude Code itself on this Mac, then Connect again.` |
 | `folderUnsafe` | the account's login file, its lock or folder is a link or not the person's (`409`), or its folder isn't one or can't be made (`502`) | `409`, `502` | `Codex’s login folder isn’t one Oby can sign in through.` |
 | `keychainOff` | Claude Code on macOS with `claudeKeychain` off | `409` | `Oby can’t use Claude Code’s login in your Keychain yet.` |
-| `busy` | a task of the account is queued or running, it's being removed, or GitHub's sign-in is starting | `409` | `Codex is busy with a task. Try again when it’s done.`; GitHub: `GitHub’s sign-in is already starting. Try again in a moment.` |
+| `busy` | a task of the account is queued or running, it's being removed, a sign-in of the other kind is under way (`?with=chatgpt`), or GitHub's sign-in is starting | `409` | `Codex is busy with a task. Try again when it’s done.`; GitHub: `GitHub’s sign-in is already starting. Try again in a moment.` |
 | `didNotStart` | the login (or gh) gave no link or code, or couldn't start; Tetrix's sign-in server didn't register Oby | `502` | `GitHub’s sign-in didn’t start. Try again.` |
 | `codeRefused` | Claude Code didn't sign in with the code pasted | `422` | `That code didn’t work. Connect again for a new one.` |
 | `badAddress` | a Tetrix address that isn't HTTPS (or loopback HTTP), one with a login, a fragment or a query other than `?org=<uuid>` (the organization a login in several answers for, #1667), or an unknown preset | `422` | `That isn’t a Tetrix address Oby can use.` |

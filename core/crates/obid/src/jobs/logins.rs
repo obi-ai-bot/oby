@@ -38,6 +38,12 @@ pub(super) fn login_file(
 /// obid copies in its place ([`keychain_login`], [`cursor_keychain_login`]). Whether a run can use it
 /// is [`signed_in`].
 pub(crate) fn has_login(tool: Tool, account: &crate::config::Account, home: Option<&Path>) -> bool {
+    // Signed in with ChatGPT: its tokens are in the vault, and its marker says so (crate::chatgpt).
+    if tool == Tool::Codex
+        && let Some(marker) = crate::chatgpt::marker_of(account)
+    {
+        return marker.signed;
+    }
     login_file(tool, account, home).is_some_and(|path| is_regular_file(&path))
         || (tool == Tool::Claude && keychain_has(account.config_dir.as_deref()))
         || (tool == Tool::Cursor && account.config_dir.is_none() && cursor_keychain_has())
@@ -48,6 +54,11 @@ pub(crate) fn has_login(tool: Tool, account: &crate::config::Account, home: Opti
 /// Cursor an access token or API key in its file, or its own login in the Keychain (all a run's copy
 /// keeps). Claude Code's is only looked for.
 pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Option<&Path>) -> bool {
+    if tool == Tool::Codex
+        && let Some(marker) = crate::chatgpt::marker_of(account)
+    {
+        return CHATGPT_RUNS && marker.usable(now_ms() as i64 / 1000);
+    }
     has_login(tool, account, home)
         && match (tool, login_file(tool, account, home)) {
             (Tool::Codex, Some(file)) => codex_copy_ready(&file, &account.name).is_ok(),
@@ -59,6 +70,13 @@ pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Opti
         }
 }
 
+/// A ChatGPT login without the plan's scope: the sign-in is kept, and no run starts on it.
+const CHATGPT_PLAN_OFF: &str = "ChatGPT plan use is off";
+
+/// Whether a run can use a ChatGPT login yet: off until runs go through obid's relay, or routing
+/// would start a run that fails and says "run codex login".
+const CHATGPT_RUNS: bool = false;
+
 /// Why a login that's there can't run, as a run would say it: Codex's access token ends within 5
 /// minutes, and only Codex itself refreshes it ([`codex_copy_ready`]); Cursor's own Keychain login
 /// has ended, and only the Mac's own cursor-agent refreshes it ([`cursor_keychain_live`]).
@@ -67,6 +85,18 @@ pub(super) fn login_problem(
     account: &crate::config::Account,
     home: Option<&Path>,
 ) -> Option<String> {
+    if tool == Tool::Codex
+        && let Some(marker) = crate::chatgpt::marker_of(account)
+    {
+        let now = now_ms() as i64 / 1000;
+        return (marker.signed && !marker.usable(now)).then(|| {
+            if marker.too_old(now) {
+                crate::chatgpt::SIGN_IN_AGAIN.to_owned()
+            } else {
+                CHATGPT_PLAN_OFF.to_owned()
+            }
+        });
+    }
     let file = login_file(tool, account, home)?;
     if !has_login(tool, account, home) {
         return None;
@@ -135,6 +165,8 @@ pub(crate) fn login_note(
     home: Option<&Path>,
 ) -> Option<&'static str> {
     login_problem(tool, account, home).map(|why| match tool {
+        _ if why == CHATGPT_PLAN_OFF => CHATGPT_PLAN_OFF,
+        _ if why == crate::chatgpt::SIGN_IN_AGAIN => "Continue with ChatGPT again",
         _ if why.contains("Always Allow") => "Sign in again, then Always Allow",
         Tool::Cursor => "Run cursor-agent once",
         _ if why.contains(CODEX_SIGN_IN) => "Run codex login",
