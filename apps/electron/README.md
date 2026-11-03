@@ -110,6 +110,11 @@ obid, gh and gitleaks are staged again only when `core/`, `plugins/` or the bund
 scripts changed since (`build/helpers/stamp`). `scripts/vm-test.sh [dmg]` then
 runs the clean-install test in a throwaway macOS 26 VM.
 
+Before anything builds, `scripts/package.sh` reads Continue with ChatGPT's gate
+(`src/renderer/src/chatgptGate.ts`, `docs/contracts/chatgpt-sign-in.md`, "The gate").
+Left empty, the release has no way to start a ChatGPT sign-in; set, it has to be
+the link of a comment on #1879 that GitHub says exists.
+
 ```
 src/main/       the window (opens at 994×670, at least 420×520) and the cursor feed;
                 obid.ts: obid's API through main, which holds its token, and

@@ -8,7 +8,7 @@ OpenAI's words below were re-read from the pages themselves on 2026-11-03 (https
 
 - **Sangam's screen:** `SetupCard.tsx` (first run), `SettingsView.tsx` Agents, `Composer.tsx` usage panel, the limit card in `live.ts`. His ChatGPT row is at `Connectors.tsx:55`.
 - **Outcome:** someone with no Codex login connects their ChatGPT plan in the browser with one click and no code to type, and Codex jobs run on it. They can add several ChatGPT accounts.
-- **Status:** **Implemented against a stand-in OpenAI, not yet proven with a real sign-in.** The owner's decisions of 2026-11-02: obid may hold ChatGPT tokens, for ChatGPT only; conversations on any connected agent, yes; offer ChatGPT accounts at limits, yes; OpenAI's required words, no objection; unattended jobs, yes. **It must not ship in a release until "One real sign-in" below has run.** Its rule is in `AGENTS.md` (#1886).
+- **Status:** **Implemented against a stand-in OpenAI, not yet proven with a real sign-in.** The owner's decisions of 2026-11-02: obid may hold ChatGPT tokens, for ChatGPT only; conversations on any connected agent, yes; offer ChatGPT accounts at limits, yes; OpenAI's required words, no objection; unattended jobs, yes. A release leaves its way in out by default until "One real sign-in" below has run ("The gate", below). Its rule is in `AGENTS.md` (#1886).
 - **Scope:**
   - In: Codex accounts with their own folder, on the Electron app.
   - Phones: display only (their screens are later work; CHATGPT-18 proves the new keys decode).
@@ -148,6 +148,28 @@ What only a real account can prove, for the owner's first sign-in. None of these
 - **S7:** a second account, re-adding one (does `dynamic_agent_client` return the same client?), a conversation turn. *If it fails:* conversations skip these accounts.
 - **S8:** does revoking an old refresh token after a same-`sub` sign-in end the new session? *Safe default now:* a replaced refresh token isn't revoked; it runs out by itself. *If it doesn't:* revoke it.
 - **S9:** the other way round: a same-`sub` sign-in that fails after its code is spent (say, an id token that doesn't check out) revokes the tokens it was just given. Does that end the session the account already had? *Default now:* it revokes. *If it does:* a failed same-`sub` sign-in drops its tokens instead of revoking them.
+
+## The gate
+
+A release doesn't offer a new ChatGPT sign-in until the real one has run. This is a default, not a refusal: whoever owns the release opens it with one line.
+
+- **The gate** is one line, `REAL_CHATGPT_SIGN_IN_REPORT` in `apps/electron/src/renderer/src/chatgptGate.ts`, empty until "One real sign-in" has run. To open it, set it to the link of the comment on #1879 that reports that run. The owner can open it sooner with their own word in such a comment. Our plan also holds the button for background-use consent and a privacy notice, which the gate can't see, so check those before setting it.
+- **Who sees the button:** a development build (`npm run dev`) always does, so the real sign-in can be run; a build with the gate set does. It's decided when the app is built, so `?everything`, `?dev`, stored defaults and Deskree's own settings don't reach it.
+- **What it hides,** every way the app starts a new one: first run's Tools row (`AgentRows`, `SetupCard.tsx`, with `FirstRun.tsx` and the setup card), an account's row in Settings › Agents, and Add account, whether opened from there or from the message box's list (`TalkPill.tsx`). Codex's own sign-in, with its code, stays in each. Its welcome and the other words show only for an account already signed in.
+- **What it doesn't touch:** obid, and any account already signed in this way. Those accounts keep running jobs and conversations, show Using ChatGPT plan and Manage usage, and can be removed. One whose login ended, or with plan use off, keeps Continue with ChatGPT on its own row in Settings › Agents, since nothing else can sign it back in with the same login. `GET /v1/accounts/{id}/sign-in?with=chatgpt` still answers on obid's loopback API: the gate is the app's button, not a limit on the owner.
+- **What `apps/electron/scripts/package.sh` checks,** before it builds or signs anything:
+  1. The line is there once and reads as a plain string. If not, it stops.
+  2. Empty: it says the button stays hidden and goes on.
+  3. Set: the value must be a link to a comment on #1879 (`https://github.com/obi-ai-bot/oby/issues/1879#issuecomment-<id>`), and `gh api` must answer with exactly that link. If it doesn't, or GitHub can't be reached, it stops. It doesn't read what the comment says or who wrote it.
+
+Scenarios (`apps/electron/src/renderer/src/test/chatgptGate.test.tsx`):
+
+- **CHATGPT-GATE-1:** Given a packaged build with the gate empty, then first run, Settings › Agents and Add account show no Continue with ChatGPT, and each still offers Codex's own sign-in. `chatgpt_gate_1_packaged_build_hides_the_button`
+- **CHATGPT-GATE-2:** Given a gate that isn't a link to a comment on #1879, one GitHub doesn't confirm, or one that can't be read, then the release script stops before building. Given an empty gate, or a confirmed report, it goes on. `chatgpt_gate_2_release_script_refuses_without_the_real_run`
+- **CHATGPT-GATE-3:** A development build keeps the button. `chatgpt_gate_3_development_build_keeps_the_button`
+- **CHATGPT-GATE-4:** A packaged build with the gate set shows the button. `chatgpt_gate_4_gate_set_shows_the_button_in_a_packaged_build`
+- **CHATGPT-GATE-5:** `?everything` and stored defaults don't open it. `chatgpt_gate_5_everything_and_stored_defaults_dont_open_it`
+- **CHATGPT-GATE-6:** With the gate empty, an account signed in this way still shows as using its plan, and one whose login ended keeps its own button, with no other way in showing. `chatgpt_gate_6_an_account_signed_in_this_way_keeps_working`
 
 ## Test it when it's done
 
