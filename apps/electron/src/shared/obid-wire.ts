@@ -176,6 +176,10 @@ export type Account = {
   email?: string;
   plan?: string;
   org?: string;
+  // obid only: an account signed in with Continue with ChatGPT, and the email it said
+  // (docs/contracts/chatgpt-sign-in.md)
+  login?: string;
+  loginEmail?: string;
   // obid only: the model and efforts its jobs run on, each only when the owner chose it (#1574)
   model?: string;
   effort?: string;

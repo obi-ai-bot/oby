@@ -158,7 +158,8 @@ export const api = {
   // obid only: accounts, and signing them in with the tool's own login
   addAccount: (body: { agent: Agent; default: true } | { agent: Agent; name?: string; payer?: string }) => call<Account>('POST', '/v1/accounts', body),
   renameAccount: (a: string, name: string) => call<Account>('PATCH', `/v1/accounts/${id(a)}`, { name }),
-  removeAccount: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}`),
+  // (a ChatGPT login OpenAI didn't confirm ending: {revoked: false}, and it's gone all the same)
+  removeAccount: (a: string) => call<null | { revoked: boolean }>('DELETE', `/v1/accounts/${id(a)}`),
   // obid only, Settings › Agents: an account's model and efforts (null: the tool's own), the
   // choices, and the account new tasks go to (null: routing's own order)
   tuneAccount: (a: string, change: { model?: string | null; effort?: string | null; complexEffort?: string | null }) =>
@@ -170,6 +171,10 @@ export const api = {
   setDefaultAccount: (account: string | null) =>
     call<{ defaultAccount: string | null }>('PUT', '/v1/settings/jobs', { defaultAccount: account }),
   signIn: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in`),
+  // Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md): obid's own page, no code to type
+  signInChatGpt: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in?with=chatgpt`),
+  chatgptSettings: () => call<{ welcomed: boolean }>('GET', '/v1/settings/chatgpt'),
+  setChatgptWelcomed: () => call<{ welcomed: boolean }>('PUT', '/v1/settings/chatgpt', { welcomed: true }),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
   endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's

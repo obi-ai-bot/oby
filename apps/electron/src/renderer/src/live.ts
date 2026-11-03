@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
+import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
@@ -336,16 +337,18 @@ export function limitAsks(s: Live, conversation?: string, job?: string): Asking[
       const reset = d.resetAt != null && Number.isFinite(d.resetAt)
         ? new Date(d.resetAt * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : null;
       const n = d.jobs.length;
+      // ChatGPT's limit names no time (docs/contracts/chatgpt-sign-in.md), and OpenAI's own words go first
+      const plan = source?.login === 'chatgpt';
       const text = [
         `${n} ${n === 1 ? 'task is' : 'tasks are'} waiting: ${d.jobs.map((j) => j.title).join(', ')}.`,
-        reset ? `It resets ${reset}.` : 'Its reset time is unknown.',
+        plan ? LIMIT_WORDS : reset ? `It resets ${reset}.` : 'Its reset time is unknown.',
         source?.fiveHour != null ? `Five-hour usage: ${Math.round(source.fiveHour * 100)}%.` : '',
         limitError.get(d.id) ?? d.problem ?? '',
       ].filter(Boolean).join(' ');
       return {
         id: `limit:${d.id}:${d.revision}`, title: source?.name ?? d.agent,
         brand: AGENTS[d.agent as keyof typeof AGENTS]?.brand,
-        ask: { kind: 'limit', headline: `${source?.name ?? d.agent} reached its limit`, text, options: d.options.map(limitLabel) },
+        ask: { kind: 'limit', headline: plan ? LIMIT_REACHED : `${source?.name ?? d.agent} reached its limit`, text, options: [...(plan ? [MANAGE_USAGE] : []), ...d.options.map(limitLabel)] },
       };
     });
 }
@@ -353,6 +356,8 @@ export function limitAsks(s: Live, conversation?: string, job?: string): Asking[
 async function answerLimitAsk(id: string, option: string) {
   const [, decisionId, revision] = id.split(':');
   if (option === 'Later') { limitLater.set(`${decisionId}:${revision}`, Date.now() + 3600_000); set({}); return; }
+  // (no answer: it opens OpenAI's settings, and the question stays)
+  if (option === MANAGE_USAGE) { manageUsage(); return; }
   const decision = state.limits.find((d) => d.id === decisionId && String(d.revision) === revision);
   const picked = decision?.options.find((o) => limitLabel(o) === option);
   if (!decision || !picked) throw new Error('This choice changed. Look at it again before choosing.');

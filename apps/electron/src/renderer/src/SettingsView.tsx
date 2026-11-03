@@ -12,6 +12,8 @@ import { ApiError, api, qrText, type Invitation, type PairedDevice, type ModelOp
 import Connectors, { ConfirmWindow, Window, readConnectors } from './Connectors';
 import { again, sameAs, startAdding, stopAdding, toolRows, whoseAgain, type Found } from './addAccount';
 import { UNFINISHED, signInWhy } from './signInWhy';
+import { CONTINUE, LIMIT_REACHED, USING_PLAN, offersChatGpt } from './chatgpt';
+import { ChatGptLogo, ManageUsage } from './ChatGptPlan';
 import { Menu } from './Menu';
 import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
 import { AUTO, TALK_DEFAULT, talkChoices } from './talk';
@@ -274,7 +276,8 @@ function MockRemote() {
 // "Run codex once" while it's signed out
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
-export type Account = { id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean };
+// chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
+export type Account = { chatgpt?: boolean; id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -299,7 +302,8 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
   const session = ultra || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
   return {
     id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
-    resets: !a.signedIn ? a.label ?? 'Not signed in' : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
+    chatgpt: a.login === 'chatgpt',
+    resets: !a.signedIn ? a.label ?? 'Not signed in' : a.login === 'chatgpt' && a.fullUntil ? LIMIT_REACHED : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
       : a.sevenDayResets ? `Resets ${resetDay(a.sevenDayResets, now)}` : 'No reset reported',
     session,
     sessionResets: session != null && !over && a.fiveHourResets ? new Date(a.fiveHourResets).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null,
@@ -331,7 +335,7 @@ const ADD = 'add';
 // Signing accounts in, as Settings › Accounts and › Agents both do: the tools' own logins obid
 // offers, each account's sign-in under way and what went wrong where (an account's row, or ADD:
 // adding one)
-type Signing = 'opening' | (SignIn & { code?: 'sending' | 'sent' });
+type Signing = 'opening' | (SignIn & { code?: 'sending' | 'sent'; chatgpt?: boolean });
 function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   // the tools' own logins on this Mac that aren't accounts (found, or removed here): only
   // GET /v1/status has them, read as the page opens and after a change (obid also reads the usage
@@ -359,6 +363,22 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
       window.app?.openExternal(page.url);
     } catch (e) { put(id); throw e; }
   });
+  // Continue with ChatGPT: the Mac's own login's account can't take it, so a new one does
+  const signInChatGpt = (id: string) => tried(id, async () => {
+    put(id, 'opening');
+    let at = id;
+    try {
+      const page = await api.signInChatGpt(id).catch(async (e) => {
+        if (!(e instanceof ApiError && e.reason === 'ownLogin')) throw e;
+        at = (await api.addAccount({ agent: 'codex' })).id;
+        put(id);
+        put(at, 'opening');
+        return api.signInChatGpt(at);
+      });
+      put(at, { ...page, chatgpt: true });
+      window.app?.openExternal(page.url);
+    } catch (e) { put(at); throw e; }
+  });
   // Claude Code's code: signed in; refused (422: that sign-in is over, so Sign In opens a new link);
   // or no answer in time (504): it may still sign in, until its page runs out or Cancel
   const sendCode = (id: string, page: SignIn, code: string) => tried(id, async () => {
@@ -373,7 +393,13 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   });
   const cancel = (id: string) => { put(id); void tried(id, () => api.endSignIn(id)); };
   // signed in (Codex and Cursor end by themselves; obid's `accounts` event says so)
-  useEffect(() => { for (const a of accounts) if (a.signedIn && signing[a.id]) put(a.id); }, [accounts]);
+  // (and a ChatGPT sign-in that ended without: its row says why)
+  useEffect(() => {
+    for (const a of accounts) {
+      const s = signing[a.id];
+      if (s && (a.signedIn || (s !== 'opening' && s.chatgpt && a.label))) put(a.id);
+    }
+  }, [accounts]);
   // a sign-in whose page ran out (15 minutes) without signing in: Sign In again
   useEffect(() => {
     const timers = Object.entries(signing).flatMap(([id, s]) => {
@@ -387,8 +413,11 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   const remove = (a: Account) => (onObid ? setRemoving(a.id) : setAccounts(accounts.filter((x) => x.id !== a.id)));
   const gone = accounts.find((x) => x.id === removing);
   const removeWindow = gone && <ConfirmWindow brand={AGENTS[gone.agent].brand} title={`Remove ${gone.name}?`} text={removeNote(gone)} action="Remove"
-    onConfirm={() => void tried(gone.id, () => api.removeAccount(gone.id).then(() => { put(gone.id); look(); }))} onClose={() => setRemoving(null)} />;
-  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow };
+    onConfirm={() => void tried(gone.id, () => api.removeAccount(gone.id).then((said) => {
+      put(gone.id); look();
+      if (said?.revoked === false) setProblems((p) => ({ ...p, [ADD]: `ChatGPT didn’t confirm ending ${gone.name}’s session. You can disconnect it in ChatGPT settings.` }));
+    }))} onClose={() => setRemoving(null)} />;
+  return { offered, setOffered, look, signing, put, problems, busy, tried, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow };
 }
 
 function Accounts() {
@@ -461,6 +490,7 @@ function Accounts() {
 // its window's Remove X?
 function removeNote(a: Account) {
   const tool = AGENTS[a.agent].name, provider = { claude: 'Anthropic', codex: 'OpenAI', cursor: 'Cursor' }[a.agent];
+  if (a.chatgpt) return 'Oby signs it out of ChatGPT and deletes what it kept for it. Its registration stays in your ChatGPT settings until you disconnect it there.';
   if (ownLogin(a)) return `Oby stops using ${tool}’s own login on this Mac; nothing of it is deleted. Bring it back with Use ${tool}’s Own Login.`;
   // one obid made has eight hex digits; any other is in obid's configuration, whose folder stays
   const made = /^[0-9a-f]{8}$/.test(a.id);
@@ -729,8 +759,9 @@ function Agents() {
   const [chosen, setChosen] = useDefaultAccount();
   const [talking, setTalking] = useTalkDefault();
   // signing in, as Settings › Accounts does (useSignIns): its states, its problems, the tool's own login
-  const { offered, setOffered, look, signing, problems, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
+  const { offered, setOffered, look, signing, problems, signIn, signInChatGpt, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
   const [adding, setAdding] = useState(false);
+  const { status } = useLive();
   const ids = Object.keys(AGENTS) as Agent[];
   // one card per agent you added, in the providers' order
   const agents = ids.flatMap((a) => accounts.filter((x) => x.agent === a));
@@ -749,7 +780,7 @@ function Agents() {
         </Row>
       )}
     </Group>
-    <Group i={2} footer={offered.length ? `Found on this Mac: ${offered.map((l) => AGENTS[l.agent].name).join(', ')}` : undefined}>
+    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : offered.length ? `Found on this Mac: ${offered.map((l) => AGENTS[l.agent].name).join(', ')}` : undefined}>
       {/* the card's action, not a row's: on the left */}
       <div className="set-row is-action">
         <button className="set-button is-primary" onClick={() => setAdding(true)}>Add account</button>
@@ -759,6 +790,8 @@ function Agents() {
       const a = x.agent, t = tuning(x), o = options[a];
       const efforts = a === 'codex' ? o?.models.find((m) => m.id === t.model)?.efforts : o?.efforts;
       const out = x.signedIn === false, sign = signing[x.id], tool = AGENTS[a].name, own = ownLogin(x);
+      // Codex with no login on this Mac, or a ChatGPT one that ended
+      const plan = a === 'codex' && out && (x.chatgpt || (offersChatGpt(status) && !x.label));
       // the bar: the 5-hour session; the week, in words under it
       const week = weekWords(x), bar = barOf(x);
       return (
@@ -771,6 +804,7 @@ function Agents() {
                 {!out && !sign && bar != null && <span className="set-value">{bar}% used</span>}
               </span>
               {x.who && <span className="set-about">{x.who}</span>}
+              {x.chatgpt && !out && <span className="set-about">{x.full ? LIMIT_REACHED : USING_PLAN} · <ManageUsage /></span>}
               {sign
                 ? <span className="set-about">{sign === 'opening' ? `Opening ${tool}’s sign-in page` : sign.code ? `Signing in to ${tool}` : `Finish on ${tool}’s sign-in page${sign.userCode ? ` · enter ${sign.userCode}` : ''}`}</span>
                 : out ? <span className="set-about">{x.label ?? 'Not signed in'}{own && !x.label ? `: sign in with ${tool} itself on this Mac` : ''}</span>
@@ -786,10 +820,15 @@ function Agents() {
               {problems[x.id] && <span className="set-about set-problem" role="alert">{problems[x.id]}</span>}
             </span>
             {/* (obid signs in only the accounts with a folder of their own: not the tool's own login) */}
-            {out && !own && <span className="set-control set-control-top">
+            {out && (!own || plan) && <span className="set-control set-control-top">
               {sign && sign !== 'opening' && sign.code !== 'sending'
                 ? <button className="set-button" onClick={() => cancel(x.id)}>Cancel</button>
-                : <button className="set-button" disabled={!!sign} onClick={() => signIn(x.id)}>{sign ? 'Waiting…' : 'Sign In'}</button>}
+                : plan
+                  ? <>
+                      {!own && !sign && <button type="button" className="chatgpt-link" onClick={() => signIn(x.id)}>Use a code instead</button>}
+                      <button className="set-button" disabled={!!sign} onClick={() => signInChatGpt(x.id)}>{sign ? 'Waiting…' : <><ChatGptLogo />{CONTINUE}</>}</button>
+                    </>
+                  : <button className="set-button" disabled={!!sign} onClick={() => signIn(x.id)}>{sign ? 'Waiting…' : 'Sign In'}</button>}
             </span>}
           </div>
           {/* the model and, after it in grey, how hard it thinks (one menu for both); complex tasks get an effort of their own */}
@@ -817,7 +856,7 @@ function Agents() {
 // name is optional after it. A login found on this Mac is one click. Words proposed, Sangam's to
 // rewrite. (ponytail: off obid, the tool's page is a moment's wait, as first run's)
 type Adding = { at: 'tools'; why?: string }
-  | { at: 'signing'; agent: Agent; account: string; page?: SignIn; sending?: boolean }
+  | { at: 'signing'; chatgpt?: boolean; agent: Agent; account: string; page?: SignIn; sending?: boolean }
   | { at: 'named'; agent: Agent; account: string }
   | { at: 'same'; agent: Agent; words: string };
 function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
@@ -831,7 +870,7 @@ function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
   const live = accounts.find((a) => a.id === account);
   // the try under way: one cancelled while its page was still opening is undone once it's there
   const tries = useRef(0);
-  const pick = async (agent: Agent) => {
+  const pick = async (agent: Agent, chatgpt = false) => {
     const now = ++tries.current;
     if (!onObid) {
       setStep({ at: 'signing', agent, account: '' });
@@ -845,9 +884,9 @@ function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
     }
     setStep({ at: 'signing', agent, account: '' });
     try {
-      const { account: made, page } = await startAdding(agent);
+      const { account: made, page } = await startAdding(agent, chatgpt);
       if (now !== tries.current) return void stopAdding(made);
-      setStep({ at: 'signing', agent, account: made, page });
+      setStep({ at: 'signing', agent, account: made, page, chatgpt });
     } catch (e) { if (now === tries.current) setStep({ at: 'tools', why: signInWhy(AGENTS[agent].name, e) }); }
   };
   const use = async (l: Found) => {
@@ -894,6 +933,11 @@ function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
     if (live) {
       if (seen !== account) setSeen(account);
       if (signing && live.signedIn) setStep({ at: 'named', agent: signing.agent, account });
+      // ChatGPT's page said no: why, on the tools again. Signed in with plan use off, it stays.
+      else if (signing?.chatgpt && live.label) {
+        if (live.chatgpt) setStep({ at: 'tools', why: live.label });
+        else void stop(live.label);
+      }
     } else if (seen === account && onObid) {
       const agent = (step as { agent: Agent }).agent;
       void whoseAgain(account).then((same) => setStep(same ? { at: 'same', agent, words: again(accounts, same) } : { at: 'tools' }));
@@ -939,7 +983,10 @@ function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
           <div className="set-row">
             <BrandMark brand={AGENTS[agent].brand} size={16} mono />
             <span className="set-label">{AGENTS[agent].name}<span className="set-about">{added ? `${added} added` : 'None yet'}</span></span>
-            <span className="set-control"><button type="button" className="set-button" onClick={() => void pick(agent)}>Sign in</button></span>
+            <span className="set-control">
+              {agent === 'codex' && !here.length && <button type="button" className="set-button" onClick={() => void pick(agent, true)}><ChatGptLogo />{CONTINUE}</button>}
+              <button type="button" className={agent === 'codex' && !here.length ? 'chatgpt-link' : 'set-button'} onClick={() => void pick(agent)}>{agent === 'codex' && !here.length ? 'Use a code instead' : 'Sign in'}</button>
+            </span>
           </div>
           {here.map((l) => (
             <div key={l.id} className="set-row">

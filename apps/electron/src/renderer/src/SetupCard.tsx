@@ -12,6 +12,8 @@ import { PasteCode } from './SettingsView';
 import { useLive } from './live';
 import { api, type Tetrix } from './obid';
 import { TetrixWindow } from './Connectors';
+import { CONTINUE, offersChatGpt } from './chatgpt';
+import { ChatGptLogo } from './ChatGptPlan';
 
 // a sign-in's code to type on its page, after what the row says
 const typed = (c?: Code) => (c?.userCode ? ` · enter ${c.userCode}` : '');
@@ -115,12 +117,16 @@ const AGENT_SUB: Record<Agent, [ready: string, out: string]> = {
 // or Claude Code's field for the one its page shows), the button, or a check once it's ready
 export function AgentRows({ bare = false }: { bare?: boolean }) {
   const s = useSetup();
+  const { status } = useLive();
   return <>{(Object.keys(AGENTS) as Agent[]).map((a, i) => {
     const st = s.found <= i ? 'looking' : s.agents[a];
+    // Codex with no login on this Mac: Continue with ChatGPT, its device code a way besides
+    const chatgpt = a === 'codex' && offersChatGpt(status);
     // on obid: the account obid signed in, the code its page wants, Claude Code's code to paste
     const sub = bare ? undefined : st === 'looking' ? 'Looking' : st === 'waiting' ? `Finish on ${AGENTS[a].name}’s sign-in page${typed(s.codes[a])}`
       : onObid && st === 'in' ? `Signed in · ${accountOf(a) ?? AGENTS[a].name}` : AGENT_SUB[a][st === 'in' ? 0 : 1];
-    return <Row key={a} mark={<BrandMark brand={AGENTS[a].brand} size={22} />} name={AGENTS[a].name} state={st} act={bare ? 'Connect' : 'Sign in'} onAct={() => signInAgent(a)}
+    return <Row key={a} mark={<BrandMark brand={AGENTS[a].brand} size={22} />} name={AGENTS[a].name} state={st} act={chatgpt ? <><ChatGptLogo />{CONTINUE}</> : bare ? 'Connect' : 'Sign in'} onAct={() => signInAgent(a, chatgpt)}
+      alt={chatgpt && st === 'out' ? { label: 'Use a code instead', onAct: () => void signInAgent(a) } : undefined}
       sub={sub} why={s.problems[a]} code={bare ? s.codes[a]?.userCode ?? undefined : undefined} bare={bare}
       onCancel={bare && st === 'waiting' ? () => cancelAgent(a) : undefined} canCancel={!!s.codes[a]}>
       {st === 'waiting' && s.codes[a]?.paste ? <PasteCode onCode={(code) => sendAgentCode(a, code)} /> : undefined}
@@ -146,13 +152,14 @@ const busy = (name: string, state: 'looking' | 'waiting', code?: string) => <>
 // one thing to connect: its mark, its name and how it stands (and anything it needs from you
 // there, why its last try didn't take), and its button until it's ready (none: nothing to do
 // there); under way, its Cancel where the button was (on once there's something to cancel)
-const Row = ({ mark, name, sub, why, code, state, act, onAct, onCancel, canCancel = true, bare = false, children }: { mark: ReactNode; name: string; sub?: string; why?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: string; onAct?: () => void; onCancel?: () => void; canCancel?: boolean; bare?: boolean; children?: ReactNode }) => (
+const Row = ({ mark, name, sub, why, code, state, act, onAct, alt, onCancel, canCancel = true, bare = false, children }: { mark: ReactNode; name: string; sub?: string; why?: string; code?: string; state: 'out' | 'waiting' | 'in' | 'looking'; act?: ReactNode; onAct?: () => void; alt?: { label: string; onAct: () => void }; onCancel?: () => void; canCancel?: boolean; bare?: boolean; children?: ReactNode }) => (
   <li className="setup-row">
     {mark}
     <span className="wl-two">
       <span className="wl-name">{name}</span>
       {sub && <span className={`wl-sub${state === 'looking' ? ' msg-step' : ''}`}>{sub}</span>}
       {why && state === 'out' && <span className="wl-sub is-problem" role="alert">{why}</span>}
+      {alt && <button type="button" className="chatgpt-link wl-alt" onClick={alt.onAct}>{alt.label}</button>}
       {!bare && children}
     </span>
     {bare && (state === 'looking' || state === 'waiting') ? (onCancel

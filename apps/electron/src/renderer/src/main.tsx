@@ -8,6 +8,7 @@ import Splash from './Splash';
 import FirstRun, { sizeWindow, useHandover, useOnboarding } from './FirstRun';
 import { everything, onObid } from './lean';
 import { connect, useLive } from './live';
+import { ChatGptWelcome } from './ChatGptPlan';
 
 // Line the title bar up with the traffic lights, where macOS actually put them
 const chrome = window.app?.chrome;
@@ -54,7 +55,7 @@ function App() {
   if (!onboarding && !ready) return <Splash />;
   if (!onboarding && welcome) return <Welcome onDone={done} />;
   // (keyed, so neither starts over as the other comes or goes)
-  return <>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}</>;
+  return <>{home && <Home key="home" />}{onboarding && <FirstRun key="setup" />}<ChatGptWelcome /></>;
 }
 
 if (onObid) connect();

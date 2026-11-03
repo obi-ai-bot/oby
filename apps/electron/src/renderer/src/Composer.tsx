@@ -10,6 +10,8 @@ import { useClicksEverywhere } from './Menu';
 import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
 import { fullness, useAccounts, weekWords } from './SettingsView';
+import { USING_PLAN } from './chatgpt';
+import { ManageUsage } from './ChatGptPlan';
 import { lookAtUsage, uploadFiles, useRepos } from './live';
 import { useScrollThumb } from './useScrollThumb';
 import { usePrompt } from './prompts';
@@ -658,6 +660,7 @@ function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: Reac
                 <span className={fullness(a.session)} style={{ width: `${a.session}%` }} />
               </span>}
               <span className="usage-week">{week}</span>
+              {a.chatgpt && a.signedIn && <span className="usage-week">{USING_PLAN} · <ManageUsage /></span>}
             </span>
           </div>
         );
