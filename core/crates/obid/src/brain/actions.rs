@@ -995,10 +995,13 @@ pub(super) async fn answer_inbox(
         && let Some(head) = crate::merge::item_head(&item.id)
     {
         // The head this card is about: one pushed since is refused, and gets its own card.
-        return match shared
-            .jobs
-            .merge_by_owner(&item.job, head, false, crate::merge::Lift::Word)
-            .await
+        return match Box::pin(shared.jobs.merge_by_owner(
+            &item.job,
+            head,
+            false,
+            crate::merge::Lift::Word,
+        ))
+        .await
         {
             Ok(open) => {
                 shared.link.merge_items(&item.job, None);

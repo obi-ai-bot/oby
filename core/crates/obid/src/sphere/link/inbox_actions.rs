@@ -230,7 +230,7 @@ impl Link {
                 }
                 if answer == inbox::CONFIRM {
                     let done = match item.confirm.clone() {
-                        Some(confirmed) => self.carry_out(*confirmed, signed_at).await,
+                        Some(confirmed) => Box::pin(self.carry_out(*confirmed, signed_at)).await,
                         None => Err(api(StatusCode::CONFLICT, "That item says nothing to do.")),
                     };
                     // What it was for moved on (the permission was answered, the job ended): the
@@ -1287,10 +1287,7 @@ impl Link {
                 true => crate::merge::Lift::Named(&item.text),
                 false => crate::merge::Lift::Before,
             };
-            let merged = self
-                .jobs
-                .merge_by_owner(&item.job, &head, false, lift)
-                .await;
+            let merged = Box::pin(self.jobs.merge_by_owner(&item.job, &head, false, lift)).await;
             if let Err(why) = merged {
                 // Open again only while it's still the job's item: one a newer review settled stays.
                 let current = self
