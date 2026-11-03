@@ -24,6 +24,8 @@ export const box = {
   peer: (id: string) => `peer:${id}`,
   // an Oby's page: the box that starts a conversation with it
   oby: (name: string) => `oby:${name}`,
+  // the Sphere's room
+  room: (sphere: string) => `room:${sphere}`,
 };
 
 type Kept = Record<string, { text: string; at: number }>;

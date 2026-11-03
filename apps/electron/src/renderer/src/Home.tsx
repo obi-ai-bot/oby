@@ -15,6 +15,7 @@ import SettingsTip, { dismissSettingsTip } from './SettingsTip';
 import { setFolders } from './folders';
 import AskStack from './AskStack';
 import ObyView from './ObyView';
+import RoomView from './RoomView';
 import ArchiveView from './ArchiveView';
 import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
@@ -70,8 +71,8 @@ function rubberBand(w: number) {
 type Step =
   | { kind: 'group'; id: string; tab: Tab }
   | { kind: 'task' | 'thread' | 'talk' | 'oby' | 'peer' | 'settings' | 'session'; id: string }
-  // an Obysphere's settings, or its knowledge: which one
-  | { kind: 'sphere' | 'knowledge'; id: string }
+  // an Obysphere's settings, its knowledge or its room: which one
+  | { kind: 'sphere' | 'knowledge' | 'room'; id: string }
   | { kind: 'archive'; id?: undefined };
 // a step on screen; leaving: on its way out (gone once its animation ends)
 type Layer = Step & { key: string; leaving?: boolean };
@@ -161,9 +162,9 @@ export default function Home() {
     const i = live.findIndex((l) => l.kind === 'task' && !tasks.some((t) => t.id === l.id));
     if (i >= 0) backOut(i);
   }, [tasks]);
-  // an Obysphere deleted or left (from its settings): its settings and Knowledge pages go too
+  // an Obysphere deleted or left (from its settings): its settings, Knowledge and room go too
   useEffect(() => {
-    const i = live.findIndex((l) => (l.kind === 'sphere' || l.kind === 'knowledge') && !spheres.some((s) => s.id === l.id));
+    const i = live.findIndex((l) => (l.kind === 'sphere' || l.kind === 'knowledge' || l.kind === 'room') && !spheres.some((s) => s.id === l.id));
     if (i >= 0) backOut(i);
   }, [spheres]);
   // a conversation deleted (from its menu): its page goes too
@@ -334,6 +335,7 @@ export default function Home() {
     if (l.kind === 'settings') return settingsLabel(l.id);
     if (l.kind === 'sphere') return sphereSettingsLabel(l.id, spheres);
     if (l.kind === 'knowledge') return knowledgeLabel;
+    if (l.kind === 'room') return spheres.find((s) => s.id === l.id)?.name ?? '';
     if (l.kind === 'oby') return `${l.id}’s Oby`;
     return convos.find((c) => c.id === l.id)?.title ?? '';
   };
@@ -367,6 +369,8 @@ export default function Home() {
         activeSphereSetting={top?.kind === 'sphere' ? top.id : null}
         onOpenKnowledge={(id) => start({ kind: 'knowledge', id })}
         activeKnowledge={top?.kind === 'knowledge' ? top.id : null}
+        onOpenRoom={(id) => start({ kind: 'room', id })}
+        activeRoom={top?.kind === 'room' ? top.id : null}
         active={rootTask}
         activeTalk={top?.kind === 'talk' ? top.id : null}
         activeOby={firstOby?.id ?? null}
@@ -537,6 +541,7 @@ export default function Home() {
         if (l.kind === 'settings') return <SettingsView key={l.key} page={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'sphere') return <SphereSettings key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'knowledge') return <KnowledgeView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
+        if (l.kind === 'room') return <RoomView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'oby') return <ObyView key={l.key} name={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenConvo={(id) => push({ kind: 'peer', id })} />;
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} />;

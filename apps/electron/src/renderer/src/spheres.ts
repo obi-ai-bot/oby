@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
 import { OBYS } from './mock';
 import { everything, onObid } from './lean';
+import { forgetRoom, lookAtRoom } from './room';
 
 // The Obyspheres you're in: each a place where your Oby works with other
 // people's. Its picture in the icon strip is its logo (an image you gave it,
@@ -14,8 +15,8 @@ export type Sphere = {
   id: string; name: string; slug: string; brand?: Brand; image?: string;
   admin: boolean; members: string[]; invited: string[]; domain?: string; sample?: true;
   // live: the one obid is in (docs/contracts/obysphere.md), at its own address; me: who your Oby
-  // acts for there (obid's owner id)
-  live?: true; url?: string; me?: string;
+  // acts for there (obid's owner id); obi: your Oby's id there
+  live?: true; url?: string; me?: string; obi?: string;
 };
 // you (until there's sign-in)
 export const ME = { name: 'Doti', email: 'doti@deskree.com' };
@@ -23,7 +24,7 @@ export const SUFFIX = '.obysphere.com';
 export const urlOf = (s: Sphere) => (s.url ? new URL(s.url).host : `${s.slug}${SUFFIX}`);
 
 let spheres: Sphere[] = [
-  { id: 'deskree', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: true, members: OBYS.map((o) => o.name), invited: [], domain: 'deskree.com' },
+  { id: 'deskree', name: 'Deskree', slug: 'deskree', brand: BRANDS.deskree, admin: true, members: OBYS.map((o) => o.name), invited: [], domain: 'deskree.com', obi: 'obi-doti' },
 ];
 // A sample to look around in while setting up (onboarding.ts's Obysphere tour): shown, never
 // kept. It's outside the store, so nothing that lists your Obyspheres (Settings, Knowledge, Home)
@@ -86,10 +87,10 @@ export const invite = (id: string, emails: string[]) =>
 // the other Obys' owners. Not its admin: its admin made it on the Obysphere's own server.
 const LIVE = 'live:';
 const NAMES = 'oby.sphereNames';
-type Membership = { state: string; url: string | null; sphere: string | null; owner?: string };
+type Membership = { state: string; url: string | null; sphere: string | null; owner?: string; obiId?: string };
 export function liveSphere(m: Membership, members: { owner: string }[], names: Record<string, string>): Sphere | null {
   if (m.state !== 'joined' || !m.sphere || !m.url) return null;
-  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: members.map((x) => x.owner), invited: [], live: true, url: m.url, me: m.owner };
+  return { id: LIVE + m.sphere, name: names[m.sphere] ?? m.sphere, slug: m.sphere, admin: false, members: members.map((x) => x.owner), invited: [], live: true, url: m.url, me: m.owner, obi: m.obiId };
 }
 // Whether a member's row opens a conversation with its Oby (SPHERE-7): not in a live Obysphere,
 // whose conversations are the mock's (peers.ts), which would say a message went when nothing did.
@@ -104,6 +105,8 @@ async function loadLive() {
   const r = membership.state === 'joined' ? await call('GET', '/v1/obid/sphere/members') : null;
   const live = liveSphere(membership, r?.status === 200 ? JSON.parse(r.text) : [], names());
   set([...spheres.filter((s) => !s.live), ...(live ? [live] : [])]);
+  // whether it has a room, and what came since: with this minute's look at the directory, below
+  if (live) void lookAtRoom(live.slug); else forgetRoom();
 }
 if (onObid && window.app?.onSphere) {
   window.app.onSphere(({ sphere, name }) => {

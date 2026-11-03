@@ -17,6 +17,7 @@ import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import StatusDot from './StatusDot';
 import { convosWith, hasUnread, useConvos } from './peers';
+import { roomOpens, useRoom } from './room';
 import { lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
@@ -63,7 +64,7 @@ const convoAbout = (c: Chat) => {
 // Settings from your account picture at the foot), the column beside
 // them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenOwn, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenOwn, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, activeRoom = null, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -83,6 +84,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   activeSphereSetting?: string | null;  // the Obysphere whose settings are showing
   onOpenKnowledge: (sphere: string) => void;  // an Obysphere's knowledge, from Knowledge
   activeKnowledge?: string | null;  // the Obysphere whose knowledge is showing: Knowledge is highlighted
+  onOpenRoom: (sphere: string) => void;  // an Obysphere's room, from its row under Chats
+  activeRoom?: string | null;  // the Obysphere whose room is showing: its row is highlighted
   onOpenSetting: (id: string) => void;  // a Settings page, from the account menu or the Settings list
   active?: string | null;  // the task whose card is showing on its own: its row is highlighted
   width: number;
@@ -119,6 +122,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
   // what the org knows) by its name, under its own logo. Which one is showing
   const spheres = useSpheres();
+  const room = useRoom();
   // ponytail: the one list here that knows of setting up's tour: yours, and its sample while
   // it's out (onboarding.ts), so the sample opens, and goes, as any other one does
   const tour = useSetup();
@@ -496,7 +500,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
             {strip.map((s) => (
               <Fragment key={s.id}>
                 <span className="chat-sep" role="separator" />
-                <button className="connector chat-sphere" onClick={() => { setSphereId(s.id); pick('obysphere'); if (s.sample) tourDid('tile'); }}>
+                {/* its room, when it has one (room.ts); one without goes on opening its own section */}
+                <button className={`connector chat-sphere${activeRoom === s.id ? ' is-active' : ''}`} aria-current={activeRoom === s.id || undefined} onClick={() => { if (roomOpens(room, s)) return onOpenRoom(s.id); setSphereId(s.id); pick('obysphere'); if (s.sample) tourDid('tile'); }}>
                   <SphereTile name={s.name} brand={s.brand} image={s.image} />
                   <span className="connector-text">
                     <span className="connector-name">{s.name}</span>

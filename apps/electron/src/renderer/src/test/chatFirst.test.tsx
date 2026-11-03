@@ -28,7 +28,7 @@ async function panel() {
   const none = () => {};
   const html = renderToStaticMarkup(
     <Sidebar open atHome={false} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenOwn={none} onOpenGroup={none}
-      onOpenTask={none} onOpenChat={none} onOpenOby={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} />,
+      onOpenTask={none} onOpenChat={none} onOpenOby={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} />,
   );
   return html.replaceAll('<!-- -->', '');
 }
@@ -105,7 +105,7 @@ describe('chat first', () => {
       const none = () => {};
       const html = renderToStaticMarkup(
         <Sidebar open atHome width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenOwn={none} onOpenGroup={none}
-          onOpenTask={none} onOpenChat={none} onOpenOby={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} />,
+          onOpenTask={none} onOpenChat={none} onOpenOby={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} />,
       );
       return /<button[^>]*class="rail-button[^"]*has-dot is-needs[^"]*"[^>]*aria-label="Tasks"/.test(html);
     };

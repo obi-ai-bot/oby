@@ -14,6 +14,8 @@ import type {
   LimitDecision,
   PlanAnswer,
   Repo,
+  RoomAnswer,
+  RoomPost,
   SavedRule,
   SignIn,
   Status,
@@ -179,6 +181,10 @@ export const api = {
   tetrixCancel: () => call<null>('DELETE', '/v1/tetrix/sign-in'),
   // signs Oby out of Tetrix (its refresh token revoked where the server offers it)
   tetrixDisconnect: () => call<null>('DELETE', '/v1/tetrix'),
+  // obid only: the Sphere's room (docs/contracts/rooms.md). An obid without it answers 404
+  room: (sphere: string, after = 0) => call<RoomAnswer>('GET', `/v1/spheres/${id(sphere)}/room${q({ after })}`),
+  // the owner's own words in it: main signs them on their keystroke or click (shared/words.ts)
+  roomSay: (sphere: string, text: string) => call<RoomPost>('POST', `/v1/spheres/${id(sphere)}/room`, { text }),
   conversations: (opts: { after?: string; limit?: number } = {}) => call<Conversation[]>('GET', `/v1/conversations${q(opts)}`),
   editConversation: (c: string, change: { title?: string; pinned?: boolean; folders?: string[]; talkAccount?: string | null }) => call<Conversation>('PATCH', `/v1/conversations/${id(c)}`, change),
   deleteConversation: (c: string) => call<null>('DELETE', `/v1/conversations/${id(c)}`),
