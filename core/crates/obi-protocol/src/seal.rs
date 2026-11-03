@@ -304,6 +304,65 @@ pub fn open(envelope: &Value, key: &SealKey) -> Result<Value, Rejection> {
     Ok(body)
 }
 
+/// Where a room post's copy holds its one text value (protocol.md section 9.2).
+const ROOM_TEXT: &str = "/text";
+
+/// A room post's words for the seal key `recipient` (protocol.md section 9.2): section 9.1's sealing
+/// of one text value at `/text`, with a new X25519 key of its own, the info over `header`. `(seal,
+/// text)`, as the copy holds them.
+pub fn seal_text(
+    header: &Map<String, Value>,
+    recipient: &[u8; 32],
+    words: &str,
+) -> Result<(Value, String), String> {
+    let ephemeral = SealKey::generate()?;
+    let enc = *ephemeral.public();
+    let key = aead_key(&derive(
+        &agree(ephemeral.private_bytes(), recipient)?,
+        &enc,
+        recipient,
+        header,
+    )?);
+    let mut bytes = words.as_bytes().to_vec();
+    key.seal_in_place_append_tag(
+        nonce(ROOM_TEXT),
+        aead::Aad::from(ROOM_TEXT.as_bytes()),
+        &mut bytes,
+    )
+    .map_err(|_| "a value couldn't be sealed".to_owned())?;
+    Ok((
+        json!({"suite": SUITE, "key_id": key_id_of(recipient), "enc": b64url(enc)}),
+        b64url(bytes),
+    ))
+}
+
+/// [`seal_text`]'s words, for the holder of `key`: `seal_invalid` when they don't open (changed,
+/// copied from another post or for another member, for another key) or aren't UTF-8.
+pub fn open_text(
+    header: &Map<String, Value>,
+    seal: &Value,
+    sealed: &str,
+    key: &SealKey,
+) -> Result<String, Rejection> {
+    let invalid = |m: &str| Rejection::new("seal_invalid", m);
+    let enc = seal["enc"]
+        .as_str()
+        .and_then(from_b64url)
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .ok_or_else(|| invalid("its seal has no enc"))?;
+    let shared = agree(&key.private, &enc).map_err(invalid)?;
+    let derived = derive(&shared, &enc, &key.public, header).map_err(|e| invalid(&e))?;
+    let mut bytes = from_b64url(sealed).ok_or_else(|| invalid("a sealed value isn't base64url"))?;
+    let plain = aead_key(&derived)
+        .open_in_place(
+            nonce(ROOM_TEXT),
+            aead::Aad::from(ROOM_TEXT.as_bytes()),
+            &mut bytes,
+        )
+        .map_err(|_| invalid("a sealed value doesn't open"))?;
+    String::from_utf8(plain.to_vec()).map_err(|_| invalid("an opened value isn't UTF-8"))
+}
+
 /// Check 11 (protocol.md section 9.1), once checks 1 to 10 have passed, as the receiver with the
 /// seal keys `own` judges it: a sealed envelope's opened body, checked against the plain schema and
 /// check 3; `None` for one in the clear, which is `not_sealed` when the receiver has a seal key
@@ -457,6 +516,32 @@ mod tests {
         body.insert("summary".into(), goal);
         let rejection = open(&Value::Object(sealed), &key).unwrap_err();
         assert_eq!(rejection.code, "seal_invalid");
+    }
+
+    #[test]
+    fn room_words_open_only_for_their_member_and_their_post() {
+        let (key, other) = (SealKey::generate().unwrap(), SealKey::generate().unwrap());
+        let header = |to: &str| {
+            json!({"sphere": "s", "id": "i", "from": "a", "to": to, "type": "room_post"})
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        let (seal, sealed) = seal_text(&header("b"), key.public(), "hello").unwrap();
+        assert_eq!(seal["key_id"], key.key_id());
+        assert_eq!(
+            open_text(&header("b"), &seal, &sealed, &key).unwrap(),
+            "hello"
+        );
+        // Another member's copy, another member's key, or a changed value: no words.
+        assert!(open_text(&header("c"), &seal, &sealed, &key).is_err());
+        assert!(open_text(&header("b"), &seal, &sealed, &other).is_err());
+        let flipped = format!(
+            "{}{}",
+            if sealed.starts_with('A') { "B" } else { "A" },
+            &sealed[1..]
+        );
+        assert!(open_text(&header("b"), &seal, &flipped, &key).is_err());
     }
 
     #[test]

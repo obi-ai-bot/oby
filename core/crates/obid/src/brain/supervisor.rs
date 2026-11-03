@@ -200,6 +200,10 @@ pub fn refused(session: &Session, tool: &str, args: &serde_json::Value) -> Optio
         "oby_shell" | "oby_shell_output" | "oby_shell_stop" => {
             Some("A turn nobody watches runs no commands.")
         }
+        // What other Obys wrote, and words that reach them all: never unattended.
+        "oby_room_read" | "oby_room_post" => Some(
+            "A turn nobody watches reads nothing of the Obysphere's room and posts nothing there.",
+        ),
         // The inbox is what waits for the owner: an unattended turn answers none of it, and adds
         // no offer to it.
         "oby_answer" => Some("A turn nobody watches answers nothing in the inbox."),
@@ -607,6 +611,7 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(true),
+            shared: std::sync::Weak::new(),
             dispatched: AtomicUsize::new(0),
             acted: std::sync::atomic::AtomicBool::new(false),
             told: AtomicUsize::new(0),
@@ -654,6 +659,8 @@ mod tests {
             "oby_shell_stop",
             "oby_tasks",
             "oby_offer",
+            "oby_room_read",
+            "oby_room_post",
         ] {
             assert!(
                 refused(&unattended, tool, &serde_json::json!({})).is_some(),

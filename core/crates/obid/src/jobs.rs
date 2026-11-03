@@ -1314,6 +1314,14 @@ impl Jobs {
         });
     }
 
+    /// What job `id` posted in the Sphere's room, by its id, in its outgoing actions.
+    pub fn room_posted(&self, id: &str, post: &str) {
+        self.update(id, |job| {
+            let sent = crate::publish::Outgoing::new("roomPost", &job.repo, post, None);
+            job.outgoing.push(sent);
+        });
+    }
+
     /// The session job `id`'s agent saved in Tetrix, in its outgoing actions.
     pub fn sent_to_tetrix(&self, id: &str, session: &str) {
         self.update(id, |job| {
@@ -2386,10 +2394,11 @@ impl Jobs {
         see: impl FnOnce(&HashMap<String, Job>) -> T,
         change: impl FnOnce(&mut Job, T),
     ) -> Option<Job> {
-        let job = {
+        let (job, before) = {
             let mut state = self.lock();
             let seen = see(&state.jobs);
             let job = state.jobs.get_mut(id)?;
+            let before = job.status;
             change(job, seen);
             // Its stages' times, and its estimate again when a stage started or ended (#733).
             // ponytail: reads every job kept; an index by repository if that ever shows.
@@ -2402,7 +2411,7 @@ impl Jobs {
                     job.estimate = estimate;
                 }
             }
-            state.jobs.get_mut(id)?.revised()
+            (state.jobs.get_mut(id)?.revised(), before)
         };
         if let Err(e) = self.store.save(&job) {
             tracing::error!("can't keep job {id}: {e}");
@@ -2410,6 +2419,12 @@ impl Jobs {
         crate::failures::observe(&self.config.home, &job);
         self.events.send("job", job.to_json());
         self.changed.notify_waiters();
+        // It started or ended: the Sphere's room may hear (docs/contracts/rooms.md).
+        if job.status != before
+            && let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade)
+        {
+            link.job_moved(&job);
+        }
         Some(job)
     }
 

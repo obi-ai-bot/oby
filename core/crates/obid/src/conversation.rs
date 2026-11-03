@@ -97,6 +97,13 @@ struct Thread {
     /// kept before obid marked it reads as marked ([`kept_before_marks`]).
     #[serde(default = "kept_before_marks")]
     foreign: Option<String>,
+    /// Whether a turn of its read something untrusted (`Session::taint`), which `foreign` doesn't
+    /// tell: that also counts a turn's own unsigned words, files attached and tools that read
+    /// nothing, and the owner's next signed words are still theirs after those (TASKCONV-9). Kept
+    /// here too so that no failure to write a session's own file makes the owner's word of a
+    /// conversation that read it (TASKCONV-6).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    read_untrusted: bool,
     /// The folders its work is in (crate::folders): canonical paths, in the order picked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     folders: Vec<String>,
@@ -503,6 +510,7 @@ impl Conversations {
                     tasks: vec![],
                     tasks_tainted: false,
                     foreign: kept_before_marks(),
+                    read_untrusted: false,
                     folders: vec![],
                     uploads: vec![],
                     talk_account: None,
@@ -624,6 +632,7 @@ impl Conversations {
                 tasks: vec![],
                 tasks_tainted: false,
                 foreign: None,
+                read_untrusted: false,
                 folders: vec![],
                 uploads: vec![],
                 talk_account: None,
@@ -781,6 +790,7 @@ impl Conversations {
             tasks: vec![],
             tasks_tainted: false,
             foreign: None,
+            read_untrusted: false,
             folders: vec![],
             uploads: vec![],
             talk_account: None,
@@ -842,6 +852,31 @@ impl Conversations {
             // Kept in memory still: what it starts now is someone else's either way.
             tracing::warn!("conversation {id}'s mark wasn't kept: {e}");
         }
+    }
+
+    /// A turn of the conversation `id` read something untrusted.
+    pub fn note_read_untrusted(&self, id: &str) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if thread.read_untrusted {
+            return;
+        }
+        thread.read_untrusted = true;
+        if let Err(e) = self.write(thread) {
+            // Kept in memory still.
+            tracing::warn!("conversation {id}'s mark wasn't kept: {e}");
+        }
+    }
+
+    /// Whether a turn of the conversation `id` read something untrusted. One obid doesn't keep has
+    /// read something it can't tell.
+    pub fn read_untrusted(&self, id: &str) -> bool {
+        self.lock()
+            .iter()
+            .find(|t| t.id == id)
+            .is_none_or(|thread| thread.read_untrusted)
     }
 
     /// What, not on obid's allowlist, the conversation `id` read or heard first

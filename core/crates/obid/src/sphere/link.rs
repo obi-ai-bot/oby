@@ -30,6 +30,7 @@ use super::decisions::{self, Decision, Decisions};
 use super::exchange::{Exchange, Exchanges, Message};
 use super::inbox::{self, Inbox, Item};
 use super::membership::{Files, Membership};
+use super::room::{self, Room};
 use super::sharing::{self, Rule, Sharing};
 use crate::api::ApiError;
 use crate::config::Config;
@@ -43,7 +44,10 @@ use obi_protocol::identity::takes_card_runtime;
 mod follower;
 mod inbox_actions;
 mod reviews;
+mod room_link;
 mod sender;
+
+pub use room_link::Asked;
 
 /// How long a reply obid sends lives, at least (runner-api.md, "Expiry of what obid sends").
 const REPLY_LIFETIME: i64 = 3_600;
@@ -524,6 +528,17 @@ pub struct Link {
     relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
     /// Who obid acts for in its Sphere ([`Link::owner`]).
     owner: Mutex<String>,
+    /// What obid keeps of the Sphere's room (crate::sphere::room).
+    room: Mutex<Room>,
+    /// Woken when a post waits to be sent.
+    room_outbox: Notify,
+    /// Woken when an API call wants the room looked at now.
+    room_wake: Notify,
+    /// Whether the room's follower runs: one at a time, so a post is read once.
+    room_following: AtomicBool,
+    /// One room send at a time, so posts go in order; apart from `sending`, so a rate-limited room
+    /// never holds a reply back.
+    room_sending: tokio::sync::Mutex<()>,
 }
 
 fn api(status: StatusCode, message: impl Into<String>) -> ApiError {
@@ -724,6 +739,7 @@ impl Link {
         let pins = super::pins::Pins::open(&config.home);
         let triage = crate::triage::Kept::open(&config.home);
         let chain = ChainKept::open(&config.home);
+        let room = Room::open(&config.home);
         let sandbox = std::env::current_exe()
             .map_err(|e| format!("obid can't find its own executable: {e}"))
             .and_then(|obid| Sandbox::detect(&obid));
@@ -848,6 +864,11 @@ impl Link {
             stopping,
             relay: std::sync::OnceLock::new(),
             owner: Mutex::new(owner),
+            room: Mutex::new(room),
+            room_outbox: Notify::new(),
+            room_wake: Notify::new(),
+            room_following: AtomicBool::new(false),
+            room_sending: tokio::sync::Mutex::new(()),
         });
         // The inbox hears of the permissions jobs wait on. Jobs tells it with none of its own
         // locks held, and never while this Link's state is locked (only `start_obi_review` is
@@ -926,7 +947,14 @@ impl Link {
                         .map(|at| (e.peer_owner.clone().unwrap_or_default(), at))
                 })
                 .collect();
-            for (owner, at) in started {
+            let needs: Vec<(String, i64)> = self
+                .room_lock()
+                .self_answers
+                .iter()
+                .filter(|(_, at)| *at > since)
+                .cloned()
+                .collect();
+            for (owner, at) in started.into_iter().chain(needs) {
                 state.self_answers.entry(owner).or_default().push(at);
                 state.all_self_answers.push(at);
             }
@@ -1670,6 +1698,11 @@ impl Link {
         }
         *self.chain.lock().unwrap_or_else(|e| e.into_inner()) = ChainKept::default();
         self.pins.forget_all();
+        // Its file went with `home/sphere`, and what waits was for this Sphere.
+        {
+            let _sending = self.room_sending.lock().await;
+            self.room_lock().close();
+        }
         // The phone relay's socket stops serving phones now.
         if let Some(relay) = self.relay.get() {
             relay.wake();

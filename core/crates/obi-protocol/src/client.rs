@@ -18,6 +18,8 @@ pub const TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchang
 /// The token type of both assertions.
 pub const JWT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:jwt";
 
+/// The highest `seq` a room's post may have: the most a Sphere takes back as `after`.
+pub const MAX_ROOM_SEQ: u64 = (1 << 53) - 1;
 /// How many times a `429` is retried before the client answers it.
 const RATE_LIMIT_TRIES: u32 = 5;
 /// The longest answer from a Sphere an Obi reads (an audit page of 1,000 entries is far less).
@@ -482,6 +484,67 @@ impl Client {
             .ok_or_else(|| {
                 ClientError::Protocol("a delivery without its id, seq or envelope".into())
             })
+    }
+
+    /// Posts a signed room post (sphere-api.md section 6.5). A retry of one already stored answers
+    /// its first place (`200`); the answer is the post's only when it names it, with a `seq` and a
+    /// `recorded_at` that can be one. Its `(seq, recorded_at)`.
+    pub async fn room_post(&self, token: &str, post: &Value) -> Result<(u64, String), ClientError> {
+        let url = self.sphere_path("/room/posts");
+        let (status, body) = self
+            .call(|| self.http.post(&url).bearer_auth(token).json(post))
+            .await?;
+        if !matches!(status, 200 | 202) {
+            return Err(Client::refused(status, &body));
+        }
+        match (
+            body["id"].as_str(),
+            body["seq"].as_u64(),
+            body["recorded_at"].as_str(),
+        ) {
+            (Some(id), Some(seq), Some(at))
+                if post["id"].as_str() == Some(id)
+                    && (1..=MAX_ROOM_SEQ).contains(&seq)
+                    && schema::is_valid("common#/$defs/timestamp", &json!(at)) =>
+            {
+                Ok((seq, at.to_owned()))
+            }
+            _ => Err(ClientError::Protocol(
+                "a room post's receipt is {id, seq, recorded_at} of the post sent".into(),
+            )),
+        }
+    }
+
+    /// The room's posts above `after`, lowest first, each `(seq, recorded_at, post)`: all of it
+    /// unchecked, the reader's to judge. The Sphere may hold the call up to `wait` seconds (0 to 25)
+    /// while there are none. A Sphere without the room answers `404`.
+    pub async fn room_posts(
+        &self,
+        token: &str,
+        after: u64,
+        limit: u32,
+        wait: u32,
+    ) -> Result<Vec<(u64, String, Value)>, ClientError> {
+        let url = self.sphere_path(&format!(
+            "/room/posts?after={after}&limit={limit}&wait={wait}"
+        ));
+        let (status, body) = self.call(|| self.http.get(&url).bearer_auth(token)).await?;
+        if status != 200 {
+            return Err(Client::refused(status, &body));
+        }
+        let list = body["posts"]
+            .as_array()
+            .ok_or_else(|| ClientError::Protocol("posts isn't a list".into()))?;
+        list.iter()
+            .map(|p| {
+                Some((
+                    p["seq"].as_u64()?,
+                    p["recorded_at"].as_str()?.to_owned(),
+                    p.get("post")?.clone(),
+                ))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| ClientError::Protocol("a room post without its seq or post".into()))
     }
 
     /// Acknowledges deliveries: answers how many were waiting for this Obi.

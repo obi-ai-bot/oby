@@ -56,7 +56,7 @@ impl Step {
 /// Something obid sent out for a job (`outgoing`): ids only, never what was sent.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Outgoing {
-    /// `push`, `pullRequest` or `pullRequestEdit`.
+    /// `push`, `pullRequest`, `pullRequestEdit`, `roomPost` and others.
     pub action: String,
     pub repo: String,
     /// The commit pushed, or the pull request's URL.

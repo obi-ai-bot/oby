@@ -272,6 +272,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             post(crate::routes::answer_limit_decision),
         )
         .route(
+            "/v1/spheres/{sphere}/room",
+            get(crate::sphere::routes::room).post(crate::sphere::routes::room_say),
+        )
+        .route(
             "/v1/obid/sphere",
             get(crate::sphere::routes::membership).delete(crate::sphere::routes::leave),
         )

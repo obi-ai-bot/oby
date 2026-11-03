@@ -27,6 +27,13 @@ impl Link {
                 () = stopped(link.stopping.clone()) => {}
             }
         });
+        let link = self.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = link.clone().run_room_sender() => {}
+                () = stopped(link.stopping.clone()) => {}
+            }
+        });
     }
 
     pub(super) async fn run_sender(self: Arc<Self>) {

@@ -305,6 +305,50 @@ pub async fn answer(
     ))
 }
 
+#[derive(serde::Deserialize)]
+pub struct RoomQuery {
+    after: Option<String>,
+}
+
+/// `GET /v1/spheres/{sphere}/room?after=`: the room (docs/contracts/rooms.md).
+pub async fn room(
+    State(shared): State<Arc<Shared>>,
+    Path(sphere): Path<String>,
+    Query(query): Query<RoomQuery>,
+) -> Result<Response, ApiError> {
+    let after = match query.after.as_deref() {
+        None => 0,
+        Some(text) => text.parse::<u64>().map_err(|_| {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "after is a post's seq.")
+        })?,
+    };
+    Ok(json(
+        StatusCode::OK,
+        Box::pin(shared.link.room_json(&sphere, after)).await?,
+    ))
+}
+
+/// `POST /v1/spheres/{sphere}/room`: the owner's own words in the room, signed by an app of theirs
+/// (docs/contracts/signed-words.md).
+pub async fn room_say(
+    State(shared): State<Arc<Shared>>,
+    Path(sphere): Path<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    if crate::routes::signed_by(&shared, "POST", &uri, &headers, &body).is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Only your own words go in the room as yours: an app of yours signs them.",
+        ));
+    }
+    Ok(json(
+        StatusCode::ACCEPTED,
+        Box::pin(shared.link.room_say(&sphere, &body)).await?,
+    ))
+}
+
 /// `GET /v1/obid/sharing`.
 pub async fn sharing(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.sharing_json())

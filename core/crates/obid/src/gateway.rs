@@ -855,8 +855,9 @@ async fn scrubbed(
 }
 
 /// Events about logins and the watcher, which only the Mac's own Settings uses: Tetrix's
-/// sign-in, and the watcher's rules and runs (what people wrote, quoted).
-const MAC_ONLY_EVENTS: &[&str] = &["tetrix", "hooks", "watch"];
+/// sign-in, and the watcher's rules and runs (what people wrote, quoted). And the Sphere's room,
+/// which a phone doesn't reach yet (docs/contracts/rooms.md).
+const MAC_ONLY_EVENTS: &[&str] = &["tetrix", "hooks", "watch", "roomPost"];
 
 /// `text`, a piece of the event stream, without the frames of [`MAC_ONLY_EVENTS`]. The stream
 /// comes a frame at a time, each ending with a blank line.
@@ -946,6 +947,13 @@ impl Scrubber {
 
 #[cfg(test)]
 mod tests {
+    /// ROOMS: a phone doesn't reach the room yet, so its event doesn't either.
+    #[test]
+    fn the_rooms_event_never_reaches_a_phone() {
+        let stream = "event: job\ndata: {}\n\nevent: roomPost\ndata: {\"text\":\"x\"}\n\n";
+        assert_eq!(super::without_mac_only(stream), "event: job\ndata: {}\n\n");
+    }
+
     use super::*;
 
     fn folder(name: &str) -> PathBuf {
