@@ -183,6 +183,17 @@ impl Live {
         })))
     }
 
+    /// Whether `home/accounts.json` doesn't read: the accounts now are the configuration's alone,
+    /// and one missing from them says nothing.
+    pub fn broken(&self) -> bool {
+        self.read().broken.is_some()
+    }
+
+    /// Whether the owner removed the account `id` (kept in `home/accounts.json`).
+    pub fn was_removed(&self, id: &str) -> bool {
+        self.read().saved.removed.iter().any(|r| r == id)
+    }
+
     /// The agents and their accounts now.
     pub fn get(&self) -> Agents {
         self.read().agents.clone()
@@ -1287,6 +1298,11 @@ impl SignIns {
         self.running().get(id).cloned()
     }
 
+    /// Whether the account's sign-in is under way.
+    pub(crate) fn under_way(&self, id: &str) -> bool {
+        self.running().contains_key(id)
+    }
+
     fn running(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<SignIn>>> {
         self.running.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -1502,15 +1518,6 @@ async fn start_chatgpt(
             () = watched.cancel.notified() => false,
         };
         flow.stop();
-        {
-            let mut running = shared.sign_ins.running();
-            if running
-                .get(&account.id)
-                .is_some_and(|s| Arc::ptr_eq(s, &watched))
-            {
-                running.remove(&account.id);
-            }
-        }
         if signed {
             shared.jobs.usage.forget_priced(&account.id);
             let who = crate::chatgpt::marker_of(&account).and_then(|m| m.email);
@@ -1532,6 +1539,16 @@ async fn start_chatgpt(
             );
         }
         drop(changing);
+        // (it stops saying `signingIn` only once jobs may use it)
+        {
+            let mut running = shared.sign_ins.running();
+            if running
+                .get(&account.id)
+                .is_some_and(|s| Arc::ptr_eq(s, &watched))
+            {
+                running.remove(&account.id);
+            }
+        }
         let _ = ended_tx.send(Some(signed));
         send_accounts(&shared).await;
     });

@@ -87,7 +87,8 @@ fn started(obid: &Obid, id: &str) -> String {
 fn settled(obid: &Obid, id: &str) -> Value {
     within(15, "the sign-in ended", || {
         let a = account(obid, id)?;
-        (a["login"] == "chatgpt" || !a["label"].is_null()).then_some(a)
+        (a.get("signingIn").is_none() && (a["login"] == "chatgpt" || !a["label"].is_null()))
+            .then_some(a)
     })
 }
 
@@ -491,6 +492,101 @@ fn chatgpt_15_removal_revokes_and_a_failed_revoke_says_so() {
         &std::fs::read(vault(&world.obid)).unwrap_or_default(),
         &minted
     ));
+}
+
+/// CHATGPT-15: a broken `accounts.json` at start revokes nothing and deletes nothing: Live keeps the
+/// file but rebuilds accounts from the seed, and the sweep must not take that for removals. Mending
+/// the file brings every login back. An account the file's checks leave out, or a seeded one taken
+/// out of the configuration, stays in the vault too: absence alone proves nothing.
+#[test]
+fn chatgpt_15_a_broken_accounts_file_at_start_revokes_nothing() {
+    let folder = Folder::new("chatgpt-15-broken");
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    let seeded = folder.0.join("home/accounts/seeded");
+    config["agents"]["codex"]["accounts"] =
+        json!([{"id": "seeded", "name": "Seeded", "configDir": seeded}]);
+    let env = [("OBID_TEST_CHATGPT_ORIGIN", openai.origin.as_str())];
+    let mut obid = start_with(&folder.0, &config, None, &env);
+    let world_sign_in = |obid: &Obid, id: &str| {
+        let url = started(obid, id);
+        let (status, _, _) = http("GET", &openai.consent(&url), &[], None);
+        assert_eq!(status, 200);
+        settled(obid, id)
+    };
+    let added = new_account(&obid);
+    world_sign_in(&obid, &added);
+    openai.with(|s| s.callback_client = None);
+    world_sign_in(&obid, "seeded");
+    assert!(obid.stop().success());
+    let accounts = obid.home.join("accounts.json");
+    let good = std::fs::read(&accounts).unwrap();
+    let held = std::fs::read(vault(&obid)).unwrap();
+    std::fs::write(&accounts, "this isn't JSON").unwrap();
+    let mut obid = start_with(&folder.0, &config, None, &env);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(openai.with(|s| s.revoked.is_empty()), "nothing revoked");
+    assert_eq!(
+        std::fs::read(vault(&obid)).unwrap(),
+        held,
+        "nothing deleted"
+    );
+    assert!(obid.stop().success());
+    // Mended: as it was.
+    std::fs::write(&accounts, &good).unwrap();
+    let mut obid = start_with(&folder.0, &config, None, &env);
+    let a = account(&obid, &added).unwrap();
+    assert_eq!(a["login"], "chatgpt", "{a}");
+    assert!(obid.stop().success());
+    // A seeded account taken out of the configuration, an added one the file's checks leave out.
+    let mut without = config.clone();
+    without["agents"]["codex"]["accounts"] = json!([]);
+    let mut left_out: Value = serde_json::from_slice(&good).unwrap();
+    left_out["added"][0]["configDir"] = json!("/not/obids/own");
+    std::fs::write(&accounts, left_out.to_string()).unwrap();
+    let obid = start_with(&folder.0, &without, None, &env);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(openai.with(|s| s.revoked.is_empty()), "nothing revoked");
+    assert_eq!(
+        std::fs::read(vault(&obid)).unwrap(),
+        held,
+        "nothing deleted"
+    );
+}
+
+/// While its browser page is open an account says `signingIn`: an app waiting on it can tell that
+/// from a `label` it already had.
+#[test]
+fn chatgpt_6_an_account_says_while_it_is_signing_in() {
+    let world = world("chatgpt-6-signing");
+    let id = new_account(&world.obid);
+    world
+        .openai
+        .with(|s| s.scope = "openid profile email offline_access".into());
+    signed_in(&world, &id);
+    let before = account(&world.obid, &id).unwrap();
+    assert_eq!(before["label"], "ChatGPT plan use is off");
+    assert!(before.get("signingIn").is_none(), "{before}");
+    world
+        .openai
+        .with(|s| s.scope = format!("openid offline_access {DIRECT}"));
+    let url = within(10, "the sign-in started", || {
+        let page = call(
+            &world.obid,
+            "GET",
+            &format!("/v1/accounts/{id}/sign-in?with=chatgpt"),
+            None,
+        );
+        (page.status == 200).then(|| page.body["url"].as_str().unwrap().to_owned())
+    });
+    let during = account(&world.obid, &id).unwrap();
+    assert_eq!(during["signingIn"], true, "{during}");
+    let (status, _, _) = http("GET", &world.openai.consent(&url), &[], None);
+    assert_eq!(status, 200);
+    let after = within(10, "the sign-in ended", || {
+        account(&world.obid, &id).filter(|a| a.get("signingIn").is_none())
+    });
+    assert!(after.get("signingIn").is_none(), "{after}");
 }
 
 /// CHATGPT-16: switching kinds removes the old login only after the new one succeeded.

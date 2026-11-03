@@ -686,6 +686,10 @@ pub struct AccountJson {
     /// Its `email`, `plan` and `org`, each only when its tool said (docs/contracts/accounts.md).
     #[serde(flatten)]
     pub identity: crate::accounts::Identity,
+    /// True while its sign-in is under way; else left out (add-only): how an app waiting on one tells
+    /// it from a `label` the account already had.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub signing_in: bool,
     /// `chatgpt` on an account signed in with Continue with ChatGPT; else left out (add-only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login: Option<&'static str>,
@@ -832,6 +836,7 @@ pub fn account_json(
             .remove(&account.id)
             .unwrap_or_default(),
         identity: shared.config.agents.identity(&account.id),
+        signing_in: shared.sign_ins.under_way(&account.id),
         login: chatgpt.is_some().then_some("chatgpt"),
         login_email: chatgpt.and_then(|marker| marker.email),
     }

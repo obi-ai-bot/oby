@@ -70,8 +70,12 @@ The page names no address for "ChatGPT usage settings"; `https://chatgpt.com/set
 | 503, `subscription_sharing_usage_unavailable`, `subscription_sharing_user_unavailable`, or a network failure | Credentials kept. Codex's own retries (30 requests in about 24 seconds), then the job's bounded `RETRY_WAITS`. |
 | Revoke | Only a 200 counts. A network failure or 5xx gets at most three tries within 10 seconds, then removal completes with `revoked:false`. |
 | A token set obid won't keep (mismatch, account removed mid-exchange or mid-refresh) | Revoked best effort, then dropped. |
+| A refresh that fails for now (a network failure, a 5xx, a 429, anything unlisted) | No other POST until its wait ends: `Retry-After` when it says, else 30 seconds doubling to 5 minutes. A token that still works goes on being used. |
+| A refresh answer of 200 that isn't whole (a bad `expires_in`, no access token) | Its rotated refresh token is kept anyway, and the next use refreshes with it. |
+| A refresh in flight when a new sign-in or a device login takes the account | It writes nothing. Over a new sign-in it's only dropped, since revoking might end that session too (S8); over a device login it's revoked. A terminal answer about a token already replaced ends nothing. |
+| `accounts.json` doesn't read at start, an entry its checks leave out, a seeded account taken out of `config.json` | No login is revoked or deleted: mending the file brings them back. Only an entry whose account the owner removed is taken back at start. |
 
-**Refresh can't lose a rotated token.** Each account's refresh runs in one spawned task callers wait on, so stopping a job can't cancel it. The new record is written before any caller gets the token. If the write fails, the record stays in memory and is retried, with no other refresh meanwhile. After a timeout, the same refresh token is retried with backoff. Only a crash between the answer and the write ends in sign in needed.
+**Refresh tries not to lose a rotated token, and can't always.** Each account's refresh runs in one spawned task callers wait on, so stopping a job can't cancel it. A new token is held for the scrub the moment it comes, and written at once. If the write fails, the record stays in memory and is retried, with no other refresh meanwhile, and runs use the token it holds. The answer itself can be lost: after a timeout or a dropped connection the same refresh token is sent again. If OpenAI hadn't rotated it, that works. If it had, the answer is `refresh_token_reused`, the login is over and the person signs in again, since OpenAI's pages describe no grace period. A crash between the answer and the write ends the same way.
 
 ### Invariants and boundaries
 
@@ -89,12 +93,12 @@ The page names no address for "ChatGPT usage settings"; `https://chatgpt.com/set
 All add-only.
 
 - `GET /v1/accounts/{id}/sign-in?with=chatgpt`: same answer shape, no code. A plain GET stays device auth. A sign-in of the other kind under way answers `busy`.
-- `AccountJson` gains optional `login:"chatgpt"` and `loginEmail`. `sub` is the identity, never the email.
+- `AccountJson` gains optional `login:"chatgpt"` and `loginEmail`. `sub` is the identity, never the email. It also gains `signingIn:true` while a sign-in is under way, since a `label` can be there already (plan use off, too old).
 - `DELETE /v1/accounts/{id}` stays 204, and answers 200 `{"revoked":false}` when revocation wasn't confirmed.
-- No new reason word. Callback failures use `label` with `signedIn:false`, and the app's wait also ends when the tried account has a `label`.
+- No new reason word. Callback failures use `label` with `signedIn:false`, and the app's wait ends when the tried account stops saying `signingIn`.
 - `GET` and `PUT /v1/settings/chatgpt` `{"welcomed": bool}`, off the gateway, for the welcome shown once.
 - `POST /v1/agent/chatgpt/{job}/responses`, `GET /v1/agent/chatgpt/{job}/models`: the relay, with the job's broker or a conversation turn's token only.
-- **Storage:** one vault entry per account, `oby.chatgpt.<id>`, holding access and refresh tokens, scopes, expiry, `earliest_refresh_at`, client id, `sub`, email, host id and replaced access tokens. A non-secret marker in the account's folder (`chatgpt.json`) holds email, whether it's signed in, plan use, expiry and refresh age; `has_login`, `signed_in`, `login_problem` and `login_note` branch on it. One `ext_agent_host_id`, `urn:uuid:<v4>`, per Mac (`home/chatgpt-host`). Removal: revoke, delete the entry, `retire`. At start, obid revokes and deletes any entry with no account.
+- **Storage:** one vault entry per account, `oby.chatgpt.<id>`, holding access and refresh tokens, scopes, expiry, `earliest_refresh_at`, client id, `sub`, email, host id and replaced access tokens. A non-secret marker in the account's folder (`chatgpt.json`) holds email, whether it's signed in, plan use, expiry and refresh age; `has_login`, `signed_in`, `login_problem` and `login_note` branch on it. One `ext_agent_host_id`, `urn:uuid:<v4>`, per Mac (`home/chatgpt-host`). Removal: revoke, delete the entry, `retire`. At start, obid revokes and deletes an entry with no account only when the owner removed that account; absence alone proves nothing.
 - **Models:** the picker stays static. At launch obid checks the chosen model against the account's cached `/v1/models`. A null, absent or unlisted model takes the first `visibility=="list"` slug, and the job's own `model` and its transcript say so.
 - **Usage:** none exists. Accounts show "No use reported yet" and route as unknown. obid skips the periodic read and runs with `usage:false`, `priced:"plan"`.
 - **Codex:** `-c model_provider="openai_chatgpt_plan"` with `base_url` the relay, `env_key="OBY_MCP_TOKEN"`, `wire_api="responses"`, `requires_openai_auth=false`, `supports_websockets=false`, `cli_auth_credentials_store="ephemeral"`, and `features.tool_search=false`, since OpenAI's page says configurations that emit Responses `tool_search` fail. `clientInfo.name` is `Oby`, matching `agent_name_hint`.
@@ -119,7 +123,7 @@ All add-only.
 - **CHATGPT-16:** Switching kinds removes the old login only after success.
 - **CHATGPT-17:** The welcome shows once, even with `localStorage` emptied.
 - **CHATGPT-18:** Older phones decode the new keys, with no new enum value.
-- **CHATGPT-19:** Stopping a job mid-refresh, a lost answer and a failed vault write each leave the account signed in.
+- **CHATGPT-19:** Stopping a job mid-refresh and a failed vault write leave the account signed in. So does a lost answer OpenAI hadn't acted on; one it had comes back `refresh_token_reused` and ends in sign in needed.
 
 ## Spikes
 
@@ -139,6 +143,7 @@ What only a real account can prove, for the owner's first sign-in. None of these
 - **S4:** real-token `account/rateLimits/read`. *Default now:* never asked. *If it answers:* usage can show later.
 - **S7:** a second account, re-adding one (does `dynamic_agent_client` return the same client?), a conversation turn. *If it fails:* conversations skip these accounts.
 - **S8:** does revoking an old refresh token after a same-`sub` sign-in end the new session? *Safe default now:* a replaced refresh token isn't revoked; it runs out by itself. *If it doesn't:* revoke it.
+- **S9:** the other way round: a same-`sub` sign-in that fails after its code is spent (say, an id token that doesn't check out) revokes the tokens it was just given. Does that end the session the account already had? *Default now:* it revokes. *If it does:* a failed same-`sub` sign-in drops its tokens instead of revoking them.
 
 ## Test it when it's done
 

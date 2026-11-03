@@ -546,6 +546,20 @@ impl Vault {
         Ok(())
     }
 
+    /// `value` is about to be written as `name`: it's taken out of everything from now, whether the
+    /// write takes or not, and however often the store is read meanwhile. A second name in the sets,
+    /// which a read of the store leaves alone.
+    pub fn hold(&self, name: &str, value: &str) {
+        self.learn(&format!("{name}.held"), value);
+    }
+
+    /// What [`Vault::hold`] held is the store's now, or gone.
+    pub fn release(&self, name: &str) {
+        let held = format!("{name}.held");
+        self.known.forget(&known_name(&held));
+        self.secrets.forget(&held);
+    }
+
     /// Learns `name`'s value in both sets. A ChatGPT login's entry is JSON, which a token inside it
     /// would never match whole: its tokens are forms of that one name (crate::chatgpt).
     fn learn(&self, name: &str, value: &str) {
