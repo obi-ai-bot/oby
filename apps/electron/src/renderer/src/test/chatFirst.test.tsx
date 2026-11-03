@@ -33,8 +33,101 @@ async function panel() {
   return html.replaceAll('<!-- -->', '');
 }
 
+// Home as it first renders, on the mock: its heavy pieces as markers, to read what it chose to show
+vi.mock('../ChatView', () => ({ default: ({ id }: { id: string }) => <div data-chat={id} />, ThreadTask: () => null, clock: () => '' }));
+vi.mock('../Composer', () => ({ default: ({ home, hidden }: { home?: boolean; hidden?: boolean }) => <div data-box={home && !hidden ? 'empty-chat' : 'other'} />, typingIn: () => false }));
+vi.mock('../AskStack', () => ({ default: () => <section data-asks="" /> }));
+vi.mock('../Oby', () => ({ default: () => <div data-oby="" /> }));
+async function home(search: string) {
+  vi.resetModules();
+  vi.stubGlobal('location', { search });
+  vi.stubGlobal('window', {});
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+  vi.stubGlobal('document', { createElement: () => ({}) });
+  vi.stubGlobal('innerWidth', 1000);
+  const { default: Home } = await import('../Home');
+  return renderToStaticMarkup(<Home />).replaceAll('<!-- -->', '');
+}
+
 describe('chat first', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('CHATFIRST-1: Home opens on the latest conversation, with no way back from it and no chips', async () => {
+    const html = await home('?everything&chat');
+    expect(html).toMatch(/data-chat="[^"]+"/);
+    expect(html).toContain('stage is-hidden');
+    expect(html).not.toContain('aria-label="Back"');
+    expect(html).not.toContain('class="chip"');
+  });
+
+  it('CHATFIRST-1: an old conversation with a card still open has not just moved', async () => {
+    await flag('');
+    const { latestChat } = await import('../chats');
+    const open = { id: 'three-days', title: 'Old, its Confirm open', said: [{ who: 'oby' as const, text: '', ago: 0 }], at: 4320 };
+    const talked = { id: 'five-minutes', title: 'Talked', said: [{ who: 'you' as const, text: 'x', ago: 5 }], at: 5 };
+    expect(latestChat([open, talked])?.id).toBe('five-minutes');
+    expect(latestChat([talked, open])?.id).toBe('five-minutes');
+  });
+
+  it('CHATFIRST-2: with none, Home is the empty chat: the character and its box, no chips', async () => {
+    const html = await home('');
+    expect(html).not.toContain('data-chat');
+    expect(html).toContain('data-oby');
+    expect(html).toContain('data-box="empty-chat"');
+    expect(html).not.toContain('class="chip"');
+  });
+
+  it('CHATFIRST-8: what Oby asks shows over your conversation', async () => {
+    expect(await home('?everything&chat')).toMatch(/class="asks-over"><section data-asks/);
+  });
+
+  it('CHATFIRST-8: an ask with no task is on the page on Home and over a conversation; a job’s only on its own', async () => {
+    vi.doMock('electron', () => ({ app: { getPath: () => '', isPackaged: false }, BrowserWindow: {}, Notification: {}, ipcMain: {}, powerMonitor: {}, shell: {} }));
+    const { onPage } = await import('../../../main/notify');
+    expect(onPage({}, {})).toBe(true);
+    expect(onPage({ conversation: 'c1' }, {})).toBe(true);
+    expect(onPage({ job: 'j1' }, {})).toBe(false);
+    expect(onPage({ conversation: 'c1' }, { conversation: 'c2' })).toBe(false);
+    expect(onPage({ conversation: 'c1' }, { job: 'j1' })).toBe(false);
+    expect(onPage({ job: 'j1' }, { job: 'j1' })).toBe(true);
+  });
+
+  it('CHATFIRST-7: the Tasks icon’s dot shows GitHub’s work waiting on you', async () => {
+    const dotted = async (work: unknown[]) => {
+      vi.resetModules();
+      vi.stubGlobal('location', { search: '' });
+      vi.stubGlobal('window', {});
+      vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+      vi.stubGlobal('document', { createElement: () => ({}) });
+      const { replaceTasks } = await import('../tasks');
+      replaceTasks([], { asks: [], work: work as never });
+      const { default: Sidebar } = await import('../Sidebar');
+      const none = () => {};
+      const html = renderToStaticMarkup(
+        <Sidebar open atHome width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenOwn={none} onOpenGroup={none}
+          onOpenTask={none} onOpenChat={none} onOpenOby={none} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} />,
+      );
+      return /<button[^>]*class="rail-button[^"]*has-dot is-needs[^"]*"[^>]*aria-label="Tasks"/.test(html);
+    };
+    expect(await dotted([])).toBe(false);
+    expect(await dotted([{ id: 'g1', type: 'review', who: 'Ernesto', title: '#417', repo: 'r', request: 'Review', updated: 1 }])).toBe(true);
+  });
+
+  it('CHATFIRST-9: back rests where you were: your conversation, or the empty chat', async () => {
+    await flag('');
+    const { restingChat } = await import('../chats');
+    const chats = [{ id: 'mine', title: 'Mine', said: [], at: 90 }, { id: 'newest', title: 'Newest', said: [], at: 1 }];
+    expect(restingChat('mine', chats)).toBe('mine');
+    expect(restingChat(null, chats)).toBeNull();
+  });
+
+  it('CHATFIRST-12: one deleted falls back to your latest, and with none left to the empty chat', async () => {
+    await flag('');
+    const { restingChat } = await import('../chats');
+    const chats = [{ id: 'older', title: 'Older', said: [], at: 90 }, { id: 'newest', title: 'Newest', said: [], at: 1 }];
+    expect(restingChat('deleted', chats)).toBe('newest');
+    expect(restingChat('deleted', [])).toBeNull();
+  });
 
   it('CHATFIRST-1: it opens on the conversation that moved last', async () => {
     await flag('');
@@ -86,5 +179,12 @@ describe('chat first', () => {
     expect(await flag('?everything')).toBe(false);
     expect(await flag('?everything&chat')).toBe(true);
     expect(await flag('?everything&chat&home')).toBe(false);
+  });
+
+  it('CHATFIRST-11: Sangam’s Home shows its chips and opens on no conversation', async () => {
+    const html = await home('?everything');
+    expect(html).not.toContain('data-chat');
+    expect(html).toContain('class="chip"');
+    expect(html).not.toContain('asks-over');
   });
 });

@@ -2198,6 +2198,6 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .panel-usage-row { display: grid; grid-template-columns: 76px minmax(0, 1fr) 32px; align-items: center; gap: 8px; color: var(--text); font-size: 11px; line-height: 14px; }
 .panel-usage .set-meter { margin: 0; max-width: none; }
 .panel-usage-pct { color: var(--item); text-align: right; font-variant-numeric: tabular-nums; }
-.asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }
+.asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; max-height: calc(100% - var(--bar)); overflow-y: auto; scrollbar-width: none; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }
 .asks-over .asks { pointer-events: auto; }
 .asks-over .ask-card { background: var(--surface); box-shadow: 0 0 0 1px var(--surface-edge); }

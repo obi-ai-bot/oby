@@ -210,14 +210,17 @@ function focused() {
   return !!w && w.isVisible() && !w.isMinimized() && w.isFocused();
 }
 
-// Whether the window is in front on that place now
-function looking(p: Place) {
-  if (!showing || !focused()) return false;
+// Whether what the window's page shows has that place on it
+export function onPage(showing: Place, p: Place) {
   if (p.job && showing.job === p.job) return true;
   if (p.conversation) return showing.conversation === p.conversation;
-  // Home, whose stack shows what has no task
-  return !p.job && !showing.job && !showing.conversation;
+  // the stack shows what has no task: on Home, and chat first over a conversation too
+  // (docs/contracts/chat-first.md, CHATFIRST-8). ponytail: with ?home a conversation has no stack, and
+  // this takes such an alert away all the same; only Sangam's comparison sees it
+  return !p.job && !showing.job;
 }
+// Whether the window is in front on that place now
+const looking = (p: Place) => !!showing && focused() && onPage(showing, p);
 
 function withdraw(key: string) {
   const s = shown.get(key);

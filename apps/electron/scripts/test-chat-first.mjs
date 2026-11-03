@@ -103,8 +103,16 @@ async function main() {
   await shot(page, '10b-first-run-landed');
   ok('CHATFIRST-10 first run lands on the empty chat');
 
-  // CHATFIRST-2: words sent on the empty chat open their conversation
+  // CHATFIRST-2: a conversation that arrives meanwhile, as from the iPhone, doesn't move you off it
   await landed.click();
+  const late = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'research', title: 'Came in later', task: 'Look around' } });
+  await until('it’s listed', () => page.locator('.convo-row', { hasText: 'Came in later' }).count());
+  await until('it ends', async () => ['done', 'failed', 'interrupted', 'stopped'].includes((await s.call('GET', `/v1/jobs/${late.id}`)).status), 120_000);
+  await sleep(500);
+  assert.equal(await onTop(page), null, 'CHATFIRST-2: still on the empty chat');
+  assert.equal(await focusedBox(page), true, 'CHATFIRST-2: still in its box');
+  ok('CHATFIRST-2 a conversation that arrives later doesn’t move you');
+  // and words sent on it open their conversation
   await page.keyboard.insertText('OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"research","title":"Core flow","task":"Look around"}');
   await page.keyboard.press('Enter');
   await until('its conversation opens', async () => (await onTop(page)) !== null);
@@ -151,7 +159,8 @@ async function main() {
   await until('the accounts', async () => (await page.locator('.settings-layer, .set-page, [class*="settings"]').count()) > 0);
   await button(page, 'Back').click();
   await until('back in the conversation', async () => (await onTop(page)) === talk);
-  ok('CHATFIRST-9 Esc stays, and back from a page returns to the conversation');
+  await until('the panel back on the chats', async () => (await page.locator('.rail-button[aria-label="Oby"]').getAttribute('aria-pressed')) === 'true');
+  ok('CHATFIRST-9 Esc stays, and back from a page returns to the conversation and the chats');
 
   // CHATFIRST-7: the kinds of work under Tasks
   await page.locator('.rail-button[aria-label="Tasks"]').click();
@@ -189,10 +198,43 @@ async function main() {
   await until('the empty chat', async () => (await page.evaluate(() => !document.querySelector('.stage.is-hidden'))));
   await until('its box focused', () => focusedBox(page));
   await shot(page, '4-new-conversation');
+  // CHATFIRST-9: words half typed there, a page, and back: the empty chat, with them still in its box
+  await page.keyboard.insertText('half a thought');
+  await button(page, 'Accounts and how much of each is used').click();
+  await button(page, 'Back').waitFor();
+  await button(page, 'Back').click();
+  await until('the empty chat again', async () => (await page.evaluate(() => !document.querySelector('.stage.is-hidden'))));
+  await sleep(400);
+  assert.equal(await onTop(page), null, 'CHATFIRST-9: not the conversation you’d left');
+  assert.ok((await visible(page, '.composer [contenteditable="true"]').innerText()).includes('half a thought'), 'CHATFIRST-9: your words kept');
+  await visible(page, '.composer [contenteditable="true"]').click();
+  await page.keyboard.press('Meta+A');
+  await page.keyboard.press('Backspace');
+  ok('CHATFIRST-9 back from a page returns to the empty chat, your words kept');
   // and Oby's row, your latest conversation
   await page.locator('.chat-own').click();
   await until('your latest', async () => (await onTop(page)) !== null);
   ok('CHATFIRST-4 New conversation is one click, and Oby’s row goes back');
+
+  // CHATFIRST-12: deleting the one you're in goes to your latest, and the last one to the empty chat
+  const deleteOnTop = async () => {
+    await button(page, 'Conversation options').click();
+    await page.getByRole('menuitem', { name: 'Delete conversation' }).click();
+  };
+  const before = await onTop(page);
+  await deleteOnTop();
+  await until('your latest', async () => { const t = await onTop(page); return t !== null && t !== before; });
+  await shot(page, '12a-deleted-goes-to-latest');
+  // (the rest, one by one, each landing on the next)
+  for (let left = (await s.call('GET', '/v1/conversations')).length; left > 0; left--) {
+    const on = await onTop(page);
+    await deleteOnTop();
+    await until('it left', async () => (await onTop(page)) !== on);
+  }
+  await until('none left: the empty chat', async () => (await onTop(page)) === null && page.evaluate(() => !document.querySelector('.stage.is-hidden')));
+  await visible(page, '.composer [contenteditable="true"]').waitFor();
+  await shot(page, '12b-deleted-the-last');
+  ok('CHATFIRST-12 deleting the conversation you’re in goes to your latest, then the empty chat');
 
   // CHATFIRST-11: Sangam's Home, as he left it, next to this
   const built = pathToFileURL(join(appRoot, 'out/renderer/index.html')).href;
@@ -218,6 +260,30 @@ async function main() {
   await button(page, 'Back').click();
   await until('back in your conversation', async () => (await onTop(page)) === mine);
   ok('CHATFIRST-3 and 5 the Obysphere and teammates list under Oby, and a teammate’s Oby opens and comes back');
+
+  // CHATFIRST-8: at the window's smallest height a tall ask scrolls, so a real click reaches Later
+  await button(page, 'Hide sidebar').click();
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(420, 520));
+  await until('the small window', () => page.evaluate(() => innerWidth <= 420 && innerHeight <= 520));
+  const over = page.locator('.asks-over');
+  await sleep(500);
+  const room = await over.evaluate((el) => ({ bottom: el.getBoundingClientRect().bottom, scroll: el.scrollHeight, client: el.clientHeight, window: innerHeight }));
+  console.log(`    (the stack at 420×520: ${JSON.stringify(room)})`);
+  assert.ok(room.bottom <= room.window, 'CHATFIRST-8: it stays in the window');
+  await shot(page, '8b-ask-at-the-smallest-window');
+  // the mock's tallest ask fits at 420×520 (271px: its text is clamped). One with more choices wrapping
+  // wouldn't, and no card here is that tall: stretched, its choices below the fold, a real click reaches them
+  await page.locator('.asks-over .ask-card.is-up').evaluate((el) => { el.style.paddingTop = '500px'; });
+  await sleep(600);
+  const tall = await over.evaluate((el) => ({ bottom: el.getBoundingClientRect().bottom, scroll: el.scrollHeight, client: el.clientHeight, window: innerHeight }));
+  console.log(`    (stretched: ${JSON.stringify(tall)})`);
+  assert.ok(tall.bottom <= tall.window, 'CHATFIRST-8: it stays in the window');
+  assert.ok(tall.scroll > tall.client, 'CHATFIRST-8: taller than the window, it scrolls');
+  const first = await page.locator('.asks-over .ask-card.is-up .tc-title').innerText();
+  await sleep(600);
+  await page.locator('.asks-over .ask-card.is-up').getByRole('button', { name: 'Later', exact: true }).click({ timeout: 10_000 });
+  await until('the next card', async () => (await page.locator('.asks-over .ask-card.is-up .tc-title').innerText()) !== first);
+  ok('CHATFIRST-8 an ask taller than the smallest window scrolls, its Later reachable');
 
   await close();
 }

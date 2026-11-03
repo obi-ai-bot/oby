@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, EllipsisVertical, PanelLeft } from 'lucide-react';
 import { ChatsCircleIcon } from '@phosphor-icons/react';
 import Oby from './Oby';
@@ -23,7 +23,7 @@ import { useSpheres } from './spheres';
 import { chatFirst, everything, onObid, welcome } from './lean';
 import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
-import { askOby, chatOfTask, latestChat, renameChat, tellAbout, useChats } from './chats';
+import { askOby, chatOfTask, latestChat, renameChat, restingChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
@@ -77,6 +77,7 @@ type Step =
 type Layer = Step & { key: string; leaving?: boolean };
 const same = (a: Step, b: Step) => a.kind === b.kind && a.id === b.id;
 let made = 0;
+const layer = (step: Step): Layer => ({ ...step, key: `${step.kind}:${step.id ?? ''}:${++made}` });
 
 export default function Home() {
   const tasks = useTasks();  // counts and dots follow tasks being added and opened
@@ -86,12 +87,17 @@ export default function Home() {
   // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
   const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length;
 
-  const [layers, setLayers] = useState<Layer[]>([]);
+  // chat first (docs/contracts/chat-first.md): it opens on your latest conversation, once and only
+  // as it opens (the splash holds it till obid's list is in, main.tsx): one that comes in later, from
+  // the iPhone, never takes you off what you're at. With none, Home's stage, then just the empty chat
+  const [layers, setLayers] = useState<Layer[]>(() => {
+    const latest = chatFirst ? latestChat(chats) : undefined;
+    return latest ? [layer({ kind: 'talk', id: latest.id })] : [];
+  });
   const live = layers.filter((l) => !l.leaving);
   const top = live.at(-1);
   // Settings opened, however: the tip over the message box has done its job
   useEffect(() => { if (top?.kind === 'settings') dismissSettingsTip(); }, [top?.kind]);
-  const layer = (step: Step): Layer => ({ ...step, key: `${step.kind}:${step.id ?? ''}:${++made}` });
   // over what's open: a step, or back to it if it's already in the trail
   const push = (step: Step) => setLayers((all) => {
     const now = all.filter((l) => !l.leaving), at = now.findIndex((l) => same(l, step));
@@ -137,26 +143,19 @@ export default function Home() {
   const [barMenu, setBarMenu] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
   useEffect(() => { setBarMenu(null); setRenaming(false); }, [top?.key]);
-  // Chat first (docs/contracts/chat-first.md): what "back" comes to rest on is your conversation,
-  // the one you were last in (CHATFIRST-9), never a page of its own
-  const lastTalk = useRef<string | null>(null);
-  useEffect(() => { if (top?.kind === 'talk') lastTalk.current = top.id; }, [top?.kind, top?.id]);
+  // Chat first: what back comes to rest on is your conversation, or the empty chat if you were on
+  // that (a new conversation, words half typed: CHATFIRST-9), never a page of its own
+  const rest = useRef<string | null>(null);
+  useEffect(() => {
+    if (!live.length) rest.current = null;
+    else if (top?.kind === 'talk') rest.current = top.id;
+  }, [live.length, top?.kind, top?.id]);
   const home = () => {
-    const id = chats.find((c) => c.id === lastTalk.current)?.id ?? latestChat(chats)?.id;
-    if (chatFirst && id) start({ kind: 'talk', id }); else closeAll();
+    const id = chatFirst ? restingChat(rest.current, chats) : null;
+    if (id) start({ kind: 'talk', id }); else closeAll();
   };
   // a page whose subject went: the step before it, or from the first step, as back does
   const backOut = (i: number) => { if (i > 0 || !chatFirst) backTo(i - 1); else home(); };
-  // it opens on your latest conversation, before anything paints, once obid's list is in; with none
-  // yet, on Home's stage, which is then just the empty chat. Never over what's since been opened
-  const opened = useRef(false);
-  useLayoutEffect(() => {
-    if (!chatFirst || opened.current) return;
-    const latest = latestChat(chats);
-    if (!latest) return;
-    opened.current = true;
-    if (!layers.length) start({ kind: 'talk', id: latest.id });
-  }, [chats]);
   // deleted from its page or a conversation: its page goes too
   useEffect(() => {
     const i = live.findIndex((l) => l.kind === 'task' && !tasks.some((t) => t.id === l.id));

@@ -113,6 +113,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const chats = useChats();
   // Home's dot turns orange while any task needs you
   const needsYou = countOf('needs') + asksWaiting().length > 0;
+  // and chat first, with Home's chips gone from sight: GitHub's work waiting on you too (a review
+  // asked of you, an issue of yours), as the chips' own dots said
+  const tasksNeedYou = needsYou || (chatFirst && TYPES.some((t) => toDoOf(t.id).length > 0));
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
   // the Obyspheres you're in (spheres.ts), under the line in the icon strip:
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
@@ -146,7 +149,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const [creating, setCreating] = useState(false);
   const inSettings = section === 'settings';
   // a Settings page opened from elsewhere (the message box's usage gear): the panel follows
-  useEffect(() => { if (activeSetting) setSection('settings'); }, [activeSetting]);
+  // (chat first, back from it, the panel goes back to the chats too)
+  useEffect(() => {
+    if (activeSetting) setSection('settings');
+    else if (chatFirst) setSection((s) => (s === 'settings' ? SECTIONS[0].id : s));
+  }, [activeSetting]);
   // and an Obysphere's settings or knowledge: the panel shows that Obysphere
   useEffect(() => {
     const id = activeSphereSetting ?? activeKnowledge;
@@ -338,7 +345,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <div className="rail">
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <Fragment key={id}>
-              <button className={`rail-button${section === id ? ' is-on' : ''}${id === 'home' && tasks.some((t) => t.fresh) ? ' has-dot' : ''}${id === 'home' && needsYou ? ' has-dot is-needs' : ''}`} data-tip={label} aria-label={label} aria-pressed={section === id} onClick={() => pick(id)}>
+              <button className={`rail-button${section === id ? ' is-on' : ''}${id === 'home' && tasks.some((t) => t.fresh) ? ' has-dot' : ''}${id === 'home' && tasksNeedYou ? ' has-dot is-needs' : ''}`} data-tip={label} aria-label={label} aria-pressed={section === id} onClick={() => pick(id)}>
                 <Icon size={20} weight={section === id ? 'fill' : 'regular'} />
               </button>
               {/* your own places above the line; the Obyspheres (there can be several) below */}
