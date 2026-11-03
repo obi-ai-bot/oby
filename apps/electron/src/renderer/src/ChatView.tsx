@@ -71,7 +71,9 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const j = task?.job;
   const { list, onScroll, thumbProps } = useScrollThumb<HTMLElement>();
   // the task whose agent's own conversation is open beside this one (from its card)
-  const [pane, setPane] = useState<string | null>(null);
+  const [opened, setPane] = useState<string | null>(null);
+  // (deleted, it closes with its task: there's nobody left to tell)
+  const pane = opened && tasks.some((t) => t.id === opened) ? opened : null;
   const agent = j ? AGENTS[j.agent].name : 'Oby';
   // a task's: what came before, the decision (if any) where things stand, then
   // what's been said since (the decision has been waiting since Oby's last

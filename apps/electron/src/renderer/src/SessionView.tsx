@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, Check, ChevronRight, ShieldCheck } from 'lucide-react';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
@@ -34,20 +34,39 @@ export function useEntries(id: string, follow = true) {
   return useMemo(() => (onObid ? sessionOf(had ?? []) : SESSIONS[id] ?? []), [id, had]);
 }
 
-// What the agent is writing now comes in a word at a time; the tool at work counts up
+// What the agent is writing now comes in a word at a time; the tool at work counts up, from when
+// its line was last made (only while one is at work: nothing to draw otherwise)
 export function useLiveLines(entries: Entry[], running: boolean) {
-  const liveSaid = entries.find((e): e is Extract<Entry, { kind: 'said' }> => e.kind === 'said' && !!e.live);
+  const liveSaid = useMemo(() => entries.find((e): e is Extract<Entry, { kind: 'said' }> => e.kind === 'said' && !!e.live), [entries]);
   const words = (liveSaid?.text ?? '').match(/\S+\s*/g) ?? [];
+  const ticking = useMemo(() => entries.some((e) => e.kind === 'tool' && e.state === 'running'), [entries]);
   const [shown, setShown] = useState(0);
   const [tick, setTick] = useState(0);
+  useEffect(() => { setTick(0); }, [entries]);
   useEffect(() => {
-    if (!running) return;
-    const w = setInterval(() => setShown((n) => Math.min(n + 1, words.length)), WORD_MS);
+    if (!running || !ticking) return;
     const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => { clearInterval(w); clearInterval(t); };
+    return () => clearInterval(t);
+  }, [running, ticking]);
+  useEffect(() => {
+    if (!running || !words.length) return;
+    const w = setInterval(() => setShown((n) => Math.min(n + 1, words.length)), WORD_MS);
+    return () => clearInterval(w);
   }, [running, words.length]);
   return { shown: words.slice(0, shown).join(''), tick };
 }
+// Only a line that shows them gets them, so the rest of a long session doesn't draw again
+const IDLE = { shown: '', tick: 0 };
+export const liveFor = (e: Entry, live: { shown: string; tick: number }) => ((e.kind === 'tool' && e.state === 'running') || (e.kind === 'said' && e.live) ? live : IDLE);
+
+// A long session's last lines, and earlier ones on asking: all 5,000 are 65,000 nodes
+const TAIL = 300;
+export function useTail<T>(list: T[]) {
+  const [most, setMost] = useState(TAIL);
+  return { shown: list.slice(-most), earlier: Math.max(0, list.length - most), more: () => setMost((m) => m + TAIL) };
+}
+// proposed: Sangam's to change
+export const Earlier = ({ count, onClick }: { count: number; onClick: () => void }) => (count > 0 ? <li className="ss-earlier"><button onClick={onClick}>Show {count.toLocaleString()} earlier</button></li> : null);
 
 // A session's scroller: it opens at the live end, as a conversation does, and stays there while you're there
 export function useLiveEnd() {
@@ -116,8 +135,10 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   }, [onBack, covered]);
 
   const count = (f: string) => (f === 'all' ? entries.filter((e) => e.kind !== 'start').length : entries.filter((e) => filterOf(e) === f).length);
-  // keyed by their place in the whole session, so an opened line stays open across filters
+  // keyed by obid's number (the mock's: its place in the whole session), so an opened line stays
+  // open across filters and as the session changes
   const visible = entries.map((e, n) => ({ e, n })).filter(({ e }) => filter === 'all' || e.kind === 'start' || filterOf(e) === filter);
+  const tail = useTail(visible);
   const agent = AGENTS[task.job.agent];
 
   return (
@@ -145,7 +166,8 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
               </div>
             </header>
             <ol className="ss-entries">
-              {visible.map(({ e, n }) => <Line key={n} entry={e} job={id} brand={agent.brand} live={live} />)}
+              <Earlier count={tail.earlier} onClick={tail.more} />
+              {tail.shown.map(({ e, n }) => <Line key={e.n ?? n} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} />)}
             </ol>
           </div>
         </section>
@@ -171,7 +193,7 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
 
 // One entry of the session. inPane: in the agent's own conversation beside the chat (AgentPane.tsx),
 // where a message has its clock time and thinking shows without a click
-export function Line({ entry: e, job, brand, live, inPane = false }: { entry: Entry; job: string; brand: Brand; live: { shown: string; tick: number }; inPane?: boolean }) {
+export const Line = memo(function Line({ entry: e, job, brand, live, inPane = false }: { entry: Entry; job: string; brand: Brand; live: { shown: string; tick: number }; inPane?: boolean }) {
   switch (e.kind) {
     case 'start':
       // a round begins: a quiet divider with the agent, model and time
@@ -210,7 +232,7 @@ export function Line({ entry: e, job, brand, live, inPane = false }: { entry: En
     case 'tool':
       return <Tool call={e} job={job} tick={live.tick} />;
   }
-}
+});
 
 // A tool call as a quiet line; a click opens what it ran and what came back, from obid then (and
 // again when it ends, if it was opened running), or the mock's own

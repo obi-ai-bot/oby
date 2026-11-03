@@ -107,6 +107,7 @@ fn never_bare(what: &str, launches: &[Launch], which: impl Fn(&Launch) -> bool) 
                     || name.starts_with("ANTHROPIC_")
                     || (name.starts_with("CLAUDE_CODE_")
                         && name != "CLAUDE_CODE_TMPDIR"
+                        && name != "CLAUDE_CODE_ENABLE_TODO_TOOLS"
                         && name != "CLAUDE_CODE_DISABLE_CLAUDE_MDS")),
                 "{what}: {name} reached Claude Code"
             );

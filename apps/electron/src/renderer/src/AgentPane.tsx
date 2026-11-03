@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import { ArrowUpRight, Check, X } from 'lucide-react';
 import Composer from './Composer';
-import { Line, useEntries, useLiveEnd, useLiveLines } from './SessionView';
+import { Earlier, Line, liveFor, useEntries, useLiveEnd, useLiveLines, useTail } from './SessionView';
 import { AskBlock } from './TaskCard';
 import { box as draftBox } from './drafts';
 import { onObid } from './lean';
@@ -92,9 +92,7 @@ export default function AgentPane({ id, onClose, onDetails, onFollowUp }: {
   onFollowUp: (id: string) => void;
 }) {
   const tasks = useTasks();
-  const kept = useRef<Task>(null);
-  const task = tasks.find((t) => t.id === id) ?? kept.current!;
-  kept.current = task;
+  const task = tasks.find((t) => t.id === id)!;
   const entries = useEntries(id);
   // opened, it's seen, as its page is
   useEffect(() => { markSeen(id); }, [id]);
@@ -102,6 +100,8 @@ export default function AgentPane({ id, onClose, onDetails, onFollowUp }: {
   const live = useLiveLines(entries, atWork);
   const { list, onListScroll, thumbProps } = useLiveEnd();
   const j = task.job, agent = AGENTS[j.agent], todos = todosOf(entries);
+  // its to-dos are on top, not in the conversation as well
+  const tail = useTail(useMemo(() => entries.filter((e) => e.kind !== 'plan'), [entries]));
   const send = (text: string, att: Parameters<typeof tell>[2]) => {
     if (!onObid) return void tell(id, text, att);
     void tellAgent(id, text, att?.files).then((next) => { if (next) onFollowUp(next); });
@@ -122,7 +122,8 @@ export default function AgentPane({ id, onClose, onDetails, onFollowUp }: {
       <div className="agent-pane-scroll">
         <section ref={list} className="agent-pane-thread" onScroll={onListScroll}>
           <ol className="ss-entries">
-            {entries.map((e, i) => (e.kind === 'plan' ? null : <Line key={i} entry={e} job={id} brand={agent.brand} live={live} inPane />))}
+            <Earlier count={tail.earlier} onClick={tail.more} />
+            {tail.shown.map((e, i) => <Line key={e.n ?? i} entry={e} job={id} brand={agent.brand} live={liveFor(e, live)} inPane />)}
           </ol>
         </section>
         <div {...thumbProps} />

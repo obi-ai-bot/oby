@@ -83,8 +83,11 @@ describe('a task at work', () => {
     expect(withEntries(ended, [wire(1)])[0].state).toBe('done');
     const words = wire(4, { kind: 'said', state: undefined, text: 'One\nTwo\n' });
     expect(withEntries([words], [{ ...words, text: 'One\n' }])[0].text).toBe('One\nTwo\n');
-    // the same line from a fetch and an event shows once
-    expect(withLine([words], 4, 'Two\n')[0].text).toBe('One\nTwo\n');
+    // the same line from a fetch and its event shows once
+    expect(withLine([{ ...words, fetched: true }], 4, 'Two\n')[0].text).toBe('One\nTwo\n');
+    // and only then: an agent that writes the same line twice wrote it twice
+    expect(withLine([words], 4, 'Two\n')[0].text).toBe('One\nTwo\nTwo\n');
+    expect(withLine(withLine([{ ...words, fetched: true }], 4, 'Two\n'), 4, 'Two\n')[0].text).toBe('One\nTwo\nTwo\n');
     expect(withLine([words], 4, 'Three\n')[0].text).toBe('One\nTwo\nThree\n');
     // what to fetch after: the last with none missing before it
     expect(knownUpTo([wire(1), wire(2), wire(5)])).toBe(2);
@@ -166,7 +169,28 @@ describe('a task at work', () => {
       wire(2, { kind: 'plan', summary: '0 of 2 done', state: undefined, todos: [{ text: 'A', state: 'running' }, { text: 'B', state: 'pending' }] }),
       wire(3), wire(5, { kind: 'plan', summary: '1 of 2 done', state: undefined, todos: [{ text: 'A', state: 'done' }, { text: 'B', state: 'running' }] }),
     ]);
-    expect(lines.filter((l) => l.kind === 'plan')).toEqual([{ kind: 'plan', todos: [{ text: 'A', state: 'done' }, { text: 'B', state: 'running' }] }]);
+    expect(lines.filter((l) => l.kind === 'plan')).toEqual([{ n: 5, kind: 'plan', todos: [{ text: 'A', state: 'done' }, { text: 'B', state: 'running' }] }]);
+  });
+
+  it('LIVETASK-15: a line keeps obid\'s number as the list before it changes, and an unchanged one stays the same object', () => {
+    const plan = (n: number) => wire(n, { kind: 'plan', state: undefined, todos: [{ text: 'A', state: 'running' }] });
+    const tool = wire(3, { state: 'done' }), before = [plan(2), tool, wire(4, { state: 'done' })];
+    const [, a1] = sessionOf(before);
+    const after = sessionOf([...before, plan(5)]);
+    // the older list went, so its place shifted; its number didn't
+    expect(after.map((l) => l.n)).toEqual([3, 4, 5]);
+    expect(after[0]).toBe(a1);
+    // one at work is made anew, for its clock
+    const running = wire(6);
+    expect(sessionOf([running])[0]).not.toBe(sessionOf([running])[0]);
+  });
+
+  it('LIVETASK-5: the mock\'s running card has a conversation to review', async () => {
+    const { SESSIONS } = await import('../session');
+    // t1: a running job the mock's first conversation has a card for
+    const { pane, card } = await views(SESSIONS.t1);
+    expect(card).toContain('Fix the flags route');
+    expect(pane).toContain('Thought for 6s');
   });
 
   it('LIVETASK-8: in a narrow window it lies over the chat, beside it otherwise', () => {
@@ -191,7 +215,8 @@ describe('a task at work', () => {
       wire(1, { summary: 'Reading a.ts', state: 'running' }), wire(2, { summary: 'Reading a.ts', state: 'done' }), wire(3, { summary: 'Running npm test', state: 'failed', exit: 1 }),
       wire(4, { summary: 'Running git push', state: 'declined' }), wire(5, { summary: 'Fix the timer', state: 'done' }),
     ]);
-    expect(lines.map((l) => (l as Extract<Entry, { kind: 'tool' }>).verb)).toEqual(['Reading', 'Read', 'Ran', 'Ran', 'Fix']);
+    // refused, it never ran
+    expect(lines.map((l) => (l as Extract<Entry, { kind: 'tool' }>).verb)).toEqual(['Reading', 'Read', 'Ran', 'Running', 'Fix']);
     // refused isn't failed
     expect(lines[3]).toMatchObject({ meta: 'Declined', state: 'declined' });
     expect(lines[2]).toMatchObject({ state: 'failed' });

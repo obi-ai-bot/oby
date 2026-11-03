@@ -175,29 +175,40 @@ export function pageOf(j: Job, account?: Account, needs = false, now = Date.now(
 
 // obid's transcript as the session's lines (SessionView.tsx), in order
 const TOOLS: Record<string, ToolKind> = { read: 'Read', search: 'Grep', edit: 'Edit', command: 'Bash', test: 'Bash', tetrix: 'Tetrix', web: 'Web' };
-// obid names a call as it starts ("Reading scan.rs"); ended, it says what it did
+// obid names a call as it starts ("Reading scan.rs"); ended, it says what it did. Refused, it never ran.
 const PAST: Record<string, string> = { Reading: 'Read', Running: 'Ran', Editing: 'Edited', Searching: 'Searched', Looking: 'Looked', Planning: 'Planned', Using: 'Used', Fetching: 'Fetched', Writing: 'Wrote' };
+// A line once made stays the same object while its entry does (live.ts keeps those), so a long
+// session's unchanged lines don't draw again; a call running has a clock in it, so it's made anew
+const lines = new WeakMap<TranscriptEntry, Entry>();
+function lineOf(e: TranscriptEntry, now: number): Entry {
+  const n = e.n;
+  switch (e.kind) {
+    case 'start': return { n, kind: 'start', text: e.summary, at: clock(e.at) };
+    case 'said': return { n, kind: 'said', text: e.text ?? e.summary, at: clock(e.at) };
+    case 'thought': return { n, kind: 'thought', text: e.text ?? '', seconds: e.seconds ?? 0, running: e.state === 'running' || undefined };
+    case 'you': return { n, kind: 'you', text: e.text ?? e.summary, at: clock(e.at) };
+    case 'plan': return { n, kind: 'plan', todos: e.todos ?? [] };
+    case 'tool': {
+      const { verb, rest } = verbOf(e.summary);
+      // ponytail: a tool kind the filters don't know (mcp, other) shows under All only
+      return {
+        n, kind: 'tool', tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb: e.state === 'running' || e.state === 'declined' ? verb : PAST[verb] ?? verb, target: rest,
+        state: e.state === 'running' || e.state === 'done' || e.state === 'declined' ? e.state : 'failed',
+        seconds: e.seconds ?? (e.state === 'running' ? since(e.at, now) : 0),
+        meta: e.state === 'declined' ? 'Declined' : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
+      };
+    }
+  }
+}
 export function sessionOf(entries: TranscriptEntry[], now = Date.now()): Entry[] {
   // one to-do list, the newest: each one obid wrote replaces the one before, as in Claude Code
   const plan = Math.max(0, ...entries.filter((e) => e.kind === 'plan').map((e) => e.n));
-  return entries.filter((e) => e.kind !== 'plan' || e.n === plan).sort((a, b) => a.n - b.n).map((e): Entry => {
-    switch (e.kind) {
-      case 'start': return { kind: 'start', text: e.summary, at: clock(e.at) };
-      case 'said': return { kind: 'said', text: e.text ?? e.summary, at: clock(e.at) };
-      case 'thought': return { kind: 'thought', text: e.text ?? '', seconds: e.seconds ?? 0, running: e.state === 'running' || undefined };
-      case 'you': return { kind: 'you', text: e.text ?? e.summary, at: clock(e.at) };
-      case 'plan': return { kind: 'plan', todos: e.todos ?? [] };
-      case 'tool': {
-        const { verb, rest } = verbOf(e.summary);
-        // ponytail: a tool kind the filters don't know (mcp, other) shows under All only
-        return {
-          kind: 'tool', n: e.n, tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb: e.state === 'running' ? verb : PAST[verb] ?? verb, target: rest,
-          state: e.state === 'running' || e.state === 'done' || e.state === 'declined' ? e.state : 'failed',
-          seconds: e.seconds ?? (e.state === 'running' ? since(e.at, now) : 0),
-          meta: e.state === 'declined' ? 'Declined' : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
-        };
-      }
-    }
+  return entries.filter((e) => e.kind !== 'plan' || e.n === plan).sort((a, b) => a.n - b.n).map((e) => {
+    const had = lines.get(e);
+    if (had) return had;
+    const line = lineOf(e, now);
+    if (!(e.kind === 'tool' && e.state === 'running')) lines.set(e, line);
+    return line;
   });
 }
 

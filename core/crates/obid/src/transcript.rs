@@ -740,6 +740,15 @@ fn held(lines: &[&str]) -> usize {
     open_key.max(crate::detail::encoded_tail(lines))
 }
 
+/// Claude Code's task list as it shows: a deleted task keeps its place in `live.tasks`, its number.
+fn task_list(live: &Live) -> Vec<Todo> {
+    live.tasks
+        .iter()
+        .filter(|t| t.state != "deleted")
+        .cloned()
+        .collect()
+}
+
 fn plan(live: &mut Live, todos: Vec<Todo>) -> Entry {
     let todos: Vec<Todo> = todos
         .into_iter()
@@ -786,11 +795,14 @@ fn tool(
                 text: text("subject").to_owned(),
                 state: "pending".into(),
             });
-            vec![plan(live, live.tasks.clone())]
+            let list = task_list(live);
+            vec![plan(live, list)]
         }
         "TaskUpdate" => {
             // ponytail: Claude Code numbers tasks 1, 2, … as they're made, so the id is the
-            // place; its answer (which names the id) is never read, as no tool's output is.
+            // place, a deleted one keeping its own; its answer (which names the id) is never read,
+            // as no tool's output is. After a restart the list comes from the last one written,
+            // which has no deleted ones: only then can a later number land one off.
             let task = input["taskId"]
                 .as_str()
                 .and_then(|id| id.parse::<usize>().ok())
@@ -799,8 +811,8 @@ fn tool(
                 (Some(task), Some(status)) => task.state = todo_state(status).into(),
                 _ => return vec![],
             }
-            live.tasks.retain(|t| t.state != "deleted");
-            vec![plan(live, live.tasks.clone())]
+            let list = task_list(live);
+            vec![plan(live, list)]
         }
         _ => {
             // Masked before they're cut short, so no part of a secret is left.
@@ -1306,6 +1318,48 @@ mod tests {
         );
         assert_eq!(updated[0].summary, "1 of 1 done");
         assert_eq!(updated[0].n, 2);
+    }
+
+    /// A deleted task keeps its number: after deleting 2, completing 3 ticks 3.
+    #[test]
+    fn a_deleted_task_keeps_the_numbers_of_the_rest() {
+        let t = transcripts("deleted");
+        for (id, subject) in [
+            ("c1", "One"),
+            ("c2", "Two"),
+            ("c3", "Three"),
+            ("c4", "Four"),
+        ] {
+            t.rec(
+                "j",
+                &tool_event(id, "TaskCreate", json!({"subject": subject})),
+            );
+        }
+        t.rec(
+            "j",
+            &tool_event(
+                "u1",
+                "TaskUpdate",
+                json!({"taskId": "2", "status": "deleted"}),
+            ),
+        );
+        let updated = t.rec(
+            "j",
+            &tool_event(
+                "u2",
+                "TaskUpdate",
+                json!({"taskId": "3", "status": "completed"}),
+            ),
+        );
+        let todos = updated[0].todos.as_ref().unwrap();
+        let shown: Vec<_> = todos
+            .iter()
+            .map(|t| (t.text.as_str(), t.state.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [("One", "pending"), ("Three", "done"), ("Four", "pending")]
+        );
     }
 
     #[test]

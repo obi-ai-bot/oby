@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
@@ -951,11 +951,15 @@ function heard(e: Extract<Event, { kind: 'transcript' | 'transcriptLine' }>) {
   const had = sessions.get(e.job);
   if (had) setSession(e.job, e.kind === 'transcript' ? withEntries(had, [e.entry]) : withLine(had, e.n, e.append));
 }
-export const useSession = (id: string) => useSyncExternalStore((l) => {
+// the last to stop showing it lets it go: a job looked at once costs nothing from then on
+export const useSession = (id: string) => useSyncExternalStore(useCallback((l: () => void) => {
   const all = sessionListeners.get(id) ?? new Set();
   sessionListeners.set(id, all.add(l));
-  return () => { all.delete(l); };
-}, () => sessions.get(id));
+  return () => {
+    all.delete(l);
+    if (all.size === 0) { sessionListeners.delete(id); sessions.delete(id); }
+  };
+}, [id]), () => sessions.get(id));
 // follow: keep it up to date while this shows it (a card only while its task runs)
 export function useFollowedSession(id: string, follow = true) {
   const wire = useLive().jobs[id];
@@ -966,6 +970,7 @@ export function useFollowedSession(id: string, follow = true) {
 export const entryDetail = (id: string, n: number) => api.transcriptEntry(id, n).then((e) => detailOf(e.detail), (e) => { say(e); return undefined; });
 const loading = new Map<string, boolean>();  // in flight; true: asked again meanwhile
 export async function loadSession(id: string): Promise<void> {
+  if (state.gone.has(id)) return;
   if (loading.has(id)) { loading.set(id, true); return; }
   loading.set(id, false);
   if (!sessions.has(id)) sessions.set(id, []);
@@ -973,13 +978,15 @@ export async function loadSession(id: string): Promise<void> {
     let after: number | null | undefined = knownUpTo(sessions.get(id)!) || undefined;
     do {
       const page = await api.transcript(id, after ?? undefined);
-      if (sessions.has(id)) setSession(id, withEntries(sessions.get(id)!, page.entries));
+      const had = sessions.get(id);
+      if (!had) break;
+      if (page.entries.length) setSession(id, withEntries(had, page.entries.map((e) => ({ ...e, fetched: true }))));
       after = page.next;
     } while (after != null);
   } catch (e) { say(e); }
   const again = loading.get(id);
   loading.delete(id);
-  if (again) return loadSession(id);
+  if (again && sessions.has(id)) return loadSession(id);
 }
 
 // Work on a GitHub item, on the owner's tap (POST /v1/github/work/{id}/start): its job comes back,

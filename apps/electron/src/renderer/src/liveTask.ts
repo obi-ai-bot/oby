@@ -15,9 +15,14 @@ export function withEntries(had: TranscriptEntry[], entries: TranscriptEntry[]) 
   }
   return [...by.values()];
 }
-// A line the agent just wrote, on the end of its entry's words (already there: a fetch brought it)
-export const withLine = (had: TranscriptEntry[], n: number, line: string) =>
-  had.map((e) => (e.n !== n || (line.trim() && e.text?.endsWith(line)) ? e : { ...e, text: (e.text ?? '') + line }));
+// A line the agent just wrote, on the end of its entry's words. Only right after a fetch can that
+// line be there already, its event still on the way.
+// ponytail: an identical line next after a fetch is dropped too, until the message's final copy
+export const withLine = (had: TranscriptEntry[], n: number, line: string) => had.map((e) => {
+  if (e.n !== n) return e;
+  const { fetched, ...rest } = e;
+  return fetched && e.text?.endsWith(line) ? rest : { ...rest, text: (e.text ?? '') + line };
+});
 // The last n with none missing before it: what to ask `after` for, so a lost event comes too
 export function knownUpTo(entries: TranscriptEntry[]) {
   const have = new Set(entries.map((e) => e.n));

@@ -229,6 +229,55 @@ describe('the task menu on obid', () => {
     expect(live.sessionNow('j1')).toBeUndefined();
   });
 
+  it('LIVETASK-3: an event that comes while the first read is on its way is kept', async () => {
+    const { live } = await load(true);
+    const entry = (n: number) => ({ n, at: '2026-10-30T10:00:00Z', kind: 'tool', tool: 'Read', summary: `Reading f${n}.rs`, state: 'done' });
+    answers['GET /v1/jobs/j1/transcript'] = { status: 200, body: { next: null, entries: [entry(1)] } };
+    await live.loadSession('j1');
+    answers['GET /v1/status'] = { status: 200, body: { runner: { version: '0.2.4', host: 'mac' }, accounts: [], models: {}, maxRunning: 6, running: 0 } };
+    answers['GET /v1/jobs?limit=100'] = { status: 200, body: [job({ status: 'running' })] };
+    answers['GET /v1/inbox'] = { status: 200, body: [] };
+    answers['GET /v1/conversations?limit=200'] = { status: 200, body: [] };
+    live.connect();
+    // obid's first text holds it: the read of everything else starts only then
+    feed(`event: transcript\ndata: ${JSON.stringify({ job: 'j1', entry: entry(2) })}\n\n`);
+    for (let i = 0; i < 5; i++) await flush();
+    expect(live.liveState().connection).toBe('live');
+    expect(live.sessionNow('j1')!.map((e) => e.n).sort()).toEqual([1, 2]);
+  });
+
+  it('LIVETASK-11: a line opens from obid\'s entry, its output, diff and all', async () => {
+    const { live } = await load(true);
+    answers['GET /v1/jobs/j1/transcript/7'] = { status: 200, body: { n: 7, kind: 'tool', detail: { input: { command: 'cargo test' }, output: { text: 'FAILED', lines: 9, exit: 101 } } } };
+    expect(await live.entryDetail('j1', 7)).toMatchObject({ input: 'cargo test', output: 'FAILED', lines: 9, exit: 101 });
+    expect(calls.map((c) => [c.method, c.path])).toEqual([['GET', '/v1/jobs/j1/transcript/7']]);
+    // obid hasn't got it: says why, opens nothing
+    expect(await live.entryDetail('j1', 8)).toBeUndefined();
+    expect(live.liveState().problem).toBe('Not found.');
+  });
+
+  it('LIVETASK-12: why it stopped is obid\'s reason, on its task and on the card that asks, before the agent\'s last words', async () => {
+    const { live, tasks } = await load(true);
+    await following(live, [job({ id: 'j1', status: 'stopped', reason: 'Stopped by you.', summary: 'I was reading.' }), job({ id: 'j2', status: 'failed', reason: 'The login failed.\nThe log', summary: 'I was reading.', dismissed: null })]);
+    const all = tasks.tasksOf('tasks');
+    expect(all.find((t) => t.id === 'j1')!.job.reason).toBe('Stopped by you.');
+    const failed = all.find((t) => t.id === 'j2')!;
+    expect(failed.job.reason).toBe('The login failed.\nThe log');
+    expect(failed.job.ask?.text).toBe('The login failed.');
+  });
+
+  it('LIVETASK-15: a deleted job fetches nothing more', async () => {
+    const { live } = await load(true);
+    const send = await following(live, [job({ status: 'running' })]);
+    answers['GET /v1/jobs/j1/transcript'] = { status: 200, body: { next: null, entries: [] } };
+    await live.loadSession('j1');
+    send('job', { id: 'j1', deleted: true });
+    calls.length = 0;
+    await live.loadSession('j1');
+    expect(calls).toEqual([]);
+    expect(live.liveState().problem).toBeNull();
+  });
+
   it('LIVETASK-7: telling the agent is obid\'s own message; a finished one\'s follow-up is what the pane then follows', async () => {
     const { live } = await load(true);
     answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running' }) };

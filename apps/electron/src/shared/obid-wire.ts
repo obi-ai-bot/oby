@@ -24,6 +24,8 @@ export type TranscriptEntry = {
   n: number; at: string; kind: 'tool' | 'said' | 'thought' | 'you' | 'plan' | 'start'; summary: string; text?: string;
   tool?: string; activity?: string; state?: 'running' | 'done' | 'failed' | 'declined'; seconds?: number; exit?: number; added?: number; removed?: number;
   todos?: { text: string; state: 'pending' | 'running' | 'done' }[];
+  // this app's, not obid's: it came from a fetch, not an event (liveTask.ts, withLine)
+  fetched?: boolean;
 };
 // What a call took in and gave back (GET /v1/jobs/{id}/transcript/{n}), masked as the transcript is; kept: false, past what obid keeps
 export type EntryDetail = {

@@ -40,11 +40,19 @@
 /* the agent's own conversation: beside the chat, over it when there's no room for both */
 .chat-layer { container-type: inline-size; --agent-pane: min(460px, 48cqw); }
 .agent-pane { position: absolute; top: 0; right: 0; bottom: 0; width: var(--agent-pane); min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--surface-edge, var(--line)); background: var(--bg, #161618); animation: fade-in 160ms ease-out both; }
-.has-agent-pane > .chat-scroll, .has-agent-pane > .composer, .has-agent-pane > .chat-ask, .has-agent-pane > .chat-composer { margin-right: var(--agent-pane); }
+.has-agent-pane > .chat-scroll, .has-agent-pane > .chat-ask { margin-right: var(--agent-pane); }
+/* the message box stays centred under the chat, whose column it lines up with */
+.has-agent-pane > .chat-composer { margin-left: max(0px, calc((100cqw - var(--agent-pane) - 540px - 2 * var(--gutter)) / 2)); margin-right: 0; max-width: min(calc(540px + 2 * var(--gutter)), calc(100cqw - var(--agent-pane))); }
 @container (max-width: 760px) {
   .agent-pane { width: 100%; border-left: 0; }
-  .has-agent-pane > .chat-scroll, .has-agent-pane > .composer, .has-agent-pane > .chat-ask, .has-agent-pane > .chat-composer { margin-right: 0; }
+  .has-agent-pane > .chat-scroll, .has-agent-pane > .chat-ask { margin-right: 0; }
+  .has-agent-pane > .chat-composer { margin: 0 auto; max-width: calc(540px + 2 * var(--gutter)); }
 }
+/* the side panel open in a window too narrow for it and the view's minimum, the view runs past the
+   window's edge: the pane stays inside what shows */
+.has-sidebar .agent-pane { right: max(0px, calc(var(--view-min) + var(--sidebar) - 100vw)); max-width: calc(100vw - var(--sidebar)); }
+/* what Oby asks over the chat (.asks-over, Home) leaves the pane and its bar in view */
+.home:has(> .chat-layer.has-agent-pane:not(.is-covered):not(.is-leaving)) .asks-over { top: calc(var(--bar) + 48px); right: min(460px, 48%); }
 .agent-pane-bar { flex: none; height: 48px; padding: 0 12px 0 8px; display: flex; align-items: center; gap: 8px; }
 .agent-pane-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .agent-pane-title span { white-space: nowrap; overflow: hidden; mask-image: var(--fade-out); }
@@ -56,6 +64,9 @@
 .agent-pane-thread::-webkit-scrollbar { display: none; }
 .agent-pane .ss-mark { display: none; }
 .agent-pane .ss-said { margin: 6px 0; }
+.agent-pane .ss-you p { overflow-wrap: anywhere; }
 .agent-pane .ss-tool, .agent-pane .ss-thought, .agent-pane .ss-asked { margin-left: 0; }
+.ss-earlier { align-self: center; }
+.ss-earlier button { padding: 4px 10px; border: 0; border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.08); color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
 .agent-pane .ss-clock { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 14px; font-variant-numeric: tabular-nums; }
 .agent-pane-ask { flex: none; margin: 0; padding: 0 12px 8px; max-height: 45%; overflow-y: auto; }
