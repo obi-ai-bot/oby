@@ -128,7 +128,7 @@ export default function RoomView({ id, leaving, covered = false, onClose, onGone
           return true;
         }}
       />
-      <p className="room-under">Everyone’s Obys read this. Sealed: {s.name}’s server can’t.</p>
+      <p className="room-under">Everyone’s Obys read this. Each copy is sealed for its member.</p>
     </div>
   );
 }
