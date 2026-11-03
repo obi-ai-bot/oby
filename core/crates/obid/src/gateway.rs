@@ -56,7 +56,7 @@ const HOME: &str = "[home]";
 /// The routes a phone may use through the gateway (Runner/Routes.swift), apart from the API's own
 /// router: adding an endpoint never makes it reachable from a phone by itself. Kept off on purpose:
 /// `/v1/checks/…` and `/v1/agent/…` (the Mac's and agents' own calls), `/v1/connections…`,
-/// `/v1/speech`, `/v1/pairing/…`, `/v1/obid/…` but the two reads of the Sphere below, adding,
+/// `/v1/speech`, `/v1/pairing/…`, `/v1/obid/…` but the reads of the Sphere below, adding,
 /// removing and signing in accounts, and everything else.
 /// `*` is one path segment; `**`, last only, is one or more.
 const ROUTES: &[(&str, &str)] = &[

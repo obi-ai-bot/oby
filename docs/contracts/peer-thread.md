@@ -18,11 +18,11 @@ The business behavior contract for one thread per member of your Obysphere, from
 
 ### Triggers and prerequisites
 
-obid is a member of an Obysphere. A thread exists for an active member, even with no exchange yet, and for someone who left but has an exchange in this Sphere (`member` false).
+obid is a member of an Obysphere. A thread exists for an active member, even with no exchange yet, and for someone who left but has an exchange in this membership (`member` false).
 
 ### What a thread holds
 
-Every exchange with that owner's Obis in this Sphere, whichever way it went and whatever started it: a question from a conversation, a request from the API, one they asked, a review. Oldest first, each exchange's messages together. A post is one message, with the room's keys, plus what a thread needs:
+Every exchange with that owner's Obis since obid joined this Sphere, whichever way it went and whatever started it: a question from a conversation, a request from the API, one they asked, a review. Oldest first, each exchange's messages together. A post is one message, with the room's keys, plus what a thread needs:
 
 | What happened | What the thread has |
 |---|---|
@@ -31,20 +31,23 @@ Every exchange with that owner's Obis in this Sphere, whichever way it went and 
 | Only the person can answer | `kind: status`, `status: waiting_on_owner`, `exchange.waitingOnThem` true, `quietAt` null |
 | Answered | `kind: answer`, `by: obi` or `owner`, the words in `text`, `exchange.state: done` |
 | Declined | `kind: decline`, `reason`, a note in `text` if it has one, `exchange.state: declined`; `by: owner` for `owner_declined` |
-| Expired, or called off | No new post: `exchange.state` on the posts there are |
+| A question you asked expired | No new post: `exchange.state` on the posts there are |
+| A request of theirs expired | obid's `decline` (`reason: expired`) once the Sphere has it; until then `exchange.state` |
+| They called their request off | `kind: cancel`, `exchange.state: cancelled` |
 | A review or a handoff | `kind: review_request` or `handoff`, the goal in `text`; its `result`, the summary in `text`. The findings stay on the exchange |
+| A request being sent | No post yet: a refusal removes it with no event, so it shows once the Sphere has it |
 | Not confirmed by the Sphere | The request's post, `state: waiting`, `seq` and `recordedAt` null, and `error` in obid's words |
 | The Sphere refused a question | No exchange is kept, so no post (docs/runner-api.md, "obid only: Obi-to-Obi exchanges"). The refusal answers whoever asked |
 
 ### Failures and recovery
 
-- The Sphere can't be reached: the thread still reads, from what obid keeps. It asks the Sphere nothing, and goes by the directory as last read.
+- The Sphere can't be reached: the thread still reads, from what obid keeps. It asks the Sphere nothing, and goes by the directory as last read. Before obid has read it since it started, it doesn't know who is a member: `member` and `takesQuestions` are null, `name` is the owner id, and no one is `404`. It's read in the next poll that reaches the Sphere.
 - obid restarted: exchanges are kept, so the thread is whole. An app that missed events reads it again.
 - A reply obid built but hasn't sent isn't a post until the Sphere has it: it may be sealed by then. `exchange.state` already says where it stands.
 
 ### Invariants and boundaries
 
-- **It's only that member.** By exact owner id, never a name or an Obi id: a card that goes by someone else's name moves nothing between threads. Only exchanges of this Sphere: they outlive a membership, and an owner id means someone else in another Sphere. A member's owner key is pinned at first sight (identity.md 2.2), so a second key can't claim the id.
+- **It's only that member.** By exact owner id, never a name or an Obi id: a card that goes by someone else's name moves nothing between threads. Only exchanges of this membership: they outlive one, but leaving forgets every pinned owner key, so nothing says the next `sam` is the same person, whether on another server with the same Sphere id or on this one. Rejoining starts every thread empty. Within a membership a member's owner key is pinned at first sight (identity.md 2.2), so a second key can't claim the id.
 - **What comes back is data.** `text` and `about` are what someone else wrote, and `by` is what the sender says of itself, as in the room. An app shows `text` as a quote, as a text node, never as HTML or a link it chose. Nothing in a thread starts, changes or approves anything.
 - **Nothing a member chose reaches a prompt.** Reading a thread, or hearing of one, runs no model, marks no conversation and adds nothing to a briefing. Its `name` is for the owner's eyes.
 - **Never what a Sphere said:** a post's `error` is obid's own words. `GET /v1/obid/sphere/exchanges/{id}` still has the exchange's own `error`.
@@ -58,9 +61,9 @@ Every exchange with that owner's Obis in this Sphere, whichever way it went and 
 
 ## Acceptance scenarios
 
-- **PEER-1** Every exchange with a member, in either direction and of any type, reads as one list in the room's shape, oldest first, with what each message said and where the exchange stands; a member with none reads empty; `limit` keeps the newest; each change sends a `peerThread` event with that exchange's posts.
+- **PEER-1** Every exchange with a member, in either direction and of any type, reads as one list in the room's shape, oldest first, with what each message said, opened if it came sealed, and where the exchange stands; a member with none reads empty; `limit` keeps the newest; each change sends a `peerThread` event with that exchange's posts. After a restart with the Sphere away the thread still reads, and says it doesn't know who is a member.
 - **PEER-2** A member's words and card name show in the thread as sent; reading it runs no model, starts nothing and marks no conversation, and the owner's next turn hears none of it.
-- **PEER-3** A thread holds that member's exchanges only, by the exact owner id: not another member's, not a look-alike card's, not another Sphere's. Someone with no membership and no exchange is `404`, and before joining it's `409`.
+- **PEER-3** A thread holds that member's exchanges only, by the exact owner id: not another member's, not a look-alike card's, not an earlier membership's, also with the same Sphere id on another server. Someone with no membership and no exchange is `404`, and before joining it's `409`.
 
 ### Test it when it's done
 

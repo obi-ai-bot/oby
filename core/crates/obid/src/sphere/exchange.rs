@@ -178,9 +178,12 @@ impl Exchange {
     /// What a member's thread shows of it (docs/contracts/peer-thread.md): one post per message, in
     /// the room's shape, oldest first, typed fields and the words only. `me` is this Oby's owner, and
     /// `verified` whether the owner compared the other's owner key. A reply still in `outbox` isn't
-    /// here: it may be sealed already, and `exchange.state` says what's coming.
+    /// here: it may be sealed already, and `exchange.state` says what's coming. Nor is a request being
+    /// sent: a refusal removes it with no event, so it shows once the Sphere has it, or with `error`
+    /// once obid doesn't know whether it does.
     pub fn posts(&self, me: &str, verified: bool) -> Vec<Value> {
-        let unconfirmed = !self.envelope_ids().any(|id| self.request["id"] == id);
+        let unconfirmed =
+            self.error.is_some() && !self.envelope_ids().any(|id| self.request["id"] == id);
         let about = self.about_json();
         let empty = json!([]);
         let post = |direction: &str, seq: Option<u64>, at: Option<&str>, envelope: &Value| {
@@ -237,7 +240,7 @@ impl Exchange {
             "type": self.kind,
             "direction": self.direction,
             "state": self.state,
-            "waitingOnThem": waiting,
+            "waitingOnThem": waiting && open,
             "quietAt": quiet.then(|| obi_protocol::time::format(self.created + QUIET)),
         })
     }
@@ -386,6 +389,9 @@ mod tests {
             let posts = e.posts("me", false);
             assert_eq!(posts[1]["text"], text, "{kind}");
             assert_eq!(posts[1]["by"], by, "{kind}");
+            assert_eq!(posts[0]["verified"], true, "this Oby's own");
+            assert_eq!(posts[1]["verified"], false, "not compared");
+            assert_eq!(e.posts("me", true)[1]["verified"], true, "compared");
         }
     }
 
@@ -405,6 +411,12 @@ mod tests {
         ));
         assert_eq!(quiet(&e), Value::Null);
         assert_eq!(e.posts("me", false)[0]["exchange"]["waitingOnThem"], true);
+        e.state = "done".into();
+        assert_eq!(
+            e.posts("me", false)[0]["exchange"]["waitingOnThem"],
+            false,
+            "it ended"
+        );
         for state in ["done", "declined", "expired"] {
             let mut ended = asked("question", json!({"text": "Q"}));
             ended.state = state.into();
@@ -422,6 +434,7 @@ mod tests {
     fn peer_1_a_request_not_confirmed_shows_as_waiting() {
         let mut e = asked("review_request", json!({"goal": "G"}));
         e.messages.clear();
+        assert_eq!(e.posts("me", false), Vec::<Value>::new(), "being sent");
         e.error = Some("Not confirmed yet: what a Sphere said".into());
         e.asked_in = Some("conversation-id".into());
         e.outbox

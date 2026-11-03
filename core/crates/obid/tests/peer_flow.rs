@@ -11,23 +11,37 @@ use support::*;
 
 const QUESTION: &str = "What is Ernesto working on?";
 
-/// obid with the stand-in as Claude Code, joined to a fake Sphere, and obi-ernesto joined too.
-async fn setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
-    let sphere = FakeSphere::start().await;
-    let remote = fixture(&folder.0.join("fixture"));
+fn the_config(folder: &Folder, remote: &Path) -> Value {
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
-    let mut config = config(&folder.0, &remote, &agent);
+    let mut config = config(&folder.0, remote, &agent);
     config["conversation"] = json!({"agent": "claude"});
     config["orchestratorDelay"] = json!(1);
+    config
+}
+
+/// obid with the stand-in as Claude Code, joined to a fake Sphere.
+async fn started(folder: &Folder) -> (FakeSphere, Obid, Owner) {
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
     std::fs::write(account.join(".credentials.json"), "{}").unwrap();
-    let obid = start(&folder.0, &config, None);
+    let obid = start(&folder.0, &the_config(folder, &remote), None);
     let owner = Owner::new("wellington");
+    join_to(&obid, &sphere, &owner);
+    (sphere, obid, owner)
+}
+
+fn join_to(obid: &Obid, sphere: &FakeSphere, owner: &Owner) {
     let joined = tokio::task::block_in_place(|| {
-        join_a_accepting(&obid, &sphere, &owner, &["review_request", "question"])
+        join_a_accepting(obid, sphere, owner, &["review_request", "question"])
     });
     assert_eq!(joined["state"], "joined");
+}
+
+/// [`started`], and obi-ernesto joined too.
+async fn setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
+    let (sphere, obid, _) = started(folder).await;
     let ernesto = TestObi::join_accepting(&sphere, "obi-ernesto", "ernesto", &["question"]).await;
     read_members(&obid);
     (sphere, obid, ernesto)
@@ -153,6 +167,7 @@ async fn peer_1_thread_lists_every_exchange_with_that_member() {
         json!([{"kind": "repo", "repo": "acme/app"}])
     );
     assert_eq!(answer[0]["exchange"]["state"], "done");
+    assert_eq!(answer[0]["exchange"]["waitingOnThem"], false, "it ended");
 
     // Each change names the thread, with that exchange's posts.
     let told = tokio::task::block_in_place(|| {
@@ -244,14 +259,103 @@ async fn peer_1_thread_lists_every_exchange_with_that_member() {
     let last_one = tokio::task::block_in_place(|| {
         call(&obid, "GET", "/v1/obid/sphere/peers/ernesto?limit=1", None)
     });
-    assert_eq!(last_one.body["posts"].as_array().unwrap().len(), 1);
+    let newest = last_one.body["posts"].as_array().unwrap();
+    assert_eq!(newest.len(), 1);
+    assert_eq!(
+        &newest[0]["exchange"]["id"], seen[3],
+        "the newest, not the oldest"
+    );
     let bad = tokio::task::block_in_place(|| {
         call(&obid, "GET", "/v1/obid/sphere/peers/ernesto?limit=0", None)
     });
     assert_eq!(bad.status, 422);
-    // Nothing but what the contract names: what obid keeps for itself stays out.
-    assert!(!thread.to_string().contains("asked_in"), "{thread}");
-    assert!(!thread.to_string().contains("sealed"), "{thread}");
+    // Compared with them: the thread says so, and so does each of their posts.
+    let compared = tokio::task::block_in_place(|| {
+        let accepted = call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/pins/ernesto",
+            Some(&json!({"fingerprint": ernesto.owner.key.key_id()})),
+        );
+        assert_eq!(accepted.status, 200, "{}", accepted.text);
+        thread_of(&obid, "ernesto")
+    });
+    assert_eq!(compared["verified"], true);
+    assert_eq!(
+        posts(&compared)
+            .iter()
+            .find(|p| p["direction"] == "received")
+            .unwrap()["verified"],
+        true
+    );
+}
+
+/// Sealed words read opened, as the owner's own Oby can, and what the Sphere carried doesn't show.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_1_sealed_words_read_opened_and_the_ciphertext_stays_out() {
+    let folder = Folder::new("peer-1-sealed");
+    let (sphere, obid, owner) = started(&folder).await;
+    let ernesto = TestObi::join_sealing(&sphere, "obi-ernesto", "ernesto").await;
+    let sealing = tokio::task::block_in_place(|| seal_card(&obid, &sphere, &owner));
+    assert_eq!(sealing, "on");
+    let own_seal = sphere.seal_key_of("obi-wellington").unwrap();
+    let words = "Is #251 landing Thursday?";
+    let question = ernesto.sealed_request(
+        "obi-wellington",
+        "question",
+        json!({"text": words}),
+        &own_seal,
+    );
+    let ciphertext = question["body"]["text"].as_str().unwrap();
+    assert_ne!(ciphertext, words);
+    ernesto.send(&question).await;
+    let (thread, raw) = tokio::task::block_in_place(|| {
+        let thread = thread_with(&obid, "ernesto", "question");
+        let raw = call(&obid, "GET", "/v1/obid/sphere/peers/ernesto", None).text;
+        (thread, raw)
+    });
+    assert_eq!(posts(&thread)[0]["text"], words);
+    assert!(!raw.contains(ciphertext), "{raw}");
+    assert!(!raw.contains("\"sealed\""), "{raw}");
+}
+
+/// After a restart with the Sphere away, obid doesn't know who is a member: the thread still reads,
+/// and it says that it doesn't know rather than that they left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_1_after_a_restart_with_the_sphere_away_no_one_looks_gone() {
+    let folder = Folder::new("peer-1-restart");
+    let (_sphere, mut obid, ernesto) = setup(&folder).await;
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "Before the restart?"}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    tokio::task::block_in_place(|| {
+        let known = thread_with(&obid, "ernesto", "question");
+        assert_eq!(known["member"], true);
+        let status = obid.stop();
+        assert!(status.success(), "obid exited {status}");
+    });
+    drop(obid);
+    // Nothing answers there now.
+    let file = folder.0.join("home/sphere/membership.json");
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["url"] = json!("http://127.0.0.1:9/");
+    std::fs::write(&file, kept.to_string()).unwrap();
+    let remote = folder.0.join("fixture/remote.git");
+    let obid = start(&folder.0, &the_config(&folder, &remote), None);
+    tokio::task::block_in_place(|| {
+        let thread = thread_of(&obid, "ernesto");
+        assert_eq!(posts(&thread)[0]["text"], "Before the restart?");
+        assert_eq!(thread["member"], Value::Null, "not known, not gone");
+        assert_eq!(thread["takesQuestions"], Value::Null);
+        assert_eq!(thread["name"], "ernesto");
+        let no_exchange = thread_of(&obid, "giulia");
+        assert_eq!(no_exchange["posts"], json!([]));
+        assert_eq!(no_exchange["member"], Value::Null);
+    });
 }
 
 /// A thread is for the owner's eyes: what a member chose, its words and its card's name, reaches the
@@ -270,6 +374,17 @@ async fn peer_2_nothing_a_member_chose_reaches_a_prompt() {
     mallory.send(&question).await;
     let (thread, before) = tokio::task::block_in_place(|| {
         let thread = thread_with(&obid, "mallory", "question");
+        // Its own turn, in the conversation for other Obys' questions: then nothing more is due.
+        within(30, "the question said to the owner", || {
+            let all = call(&obid, "GET", "/v1/conversations", None).body;
+            let said = all.as_array().unwrap().iter().any(|c| {
+                let id = c["id"].as_str().unwrap();
+                call(&obid, "GET", &format!("/v1/conversation?id={id}"), None)
+                    .text
+                    .contains("PROBE-INJECT")
+            });
+            said.then_some(())
+        });
         (thread, call(&obid, "GET", "/v1/conversations", None).body)
     });
     // The words as sent: the app quotes them, as a text node. The name, for the owner to read.
@@ -368,4 +483,47 @@ async fn peer_3_a_thread_is_only_that_member() {
             }
         }
     });
+}
+
+/// The same Sphere id on another server, where someone else goes by the same owner id: leaving
+/// forgets who everyone was, so what the first said isn't under the second's name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_3_the_same_sphere_id_on_another_server_starts_empty() {
+    let folder = Folder::new("peer-3-servers");
+    let (first, obid, owner) = started(&folder).await;
+    let sam = TestObi::join_accepting(&first, "obi-sam", "sam", &["question"]).await;
+    read_members(&obid);
+    let earlier = sam.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "The first sam's words"}),
+        3600,
+    );
+    sam.send(&earlier).await;
+    let second = FakeSphere::start().await;
+    tokio::task::block_in_place(|| {
+        thread_with(&obid, "sam", "question");
+        // `created` and `joined_at` are in whole seconds.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
+        assert_eq!(left.status, 200, "{}", left.text);
+    });
+    join_to(&obid, &second, &owner);
+    let other = TestObi::join_accepting(&second, "obi-sam", "sam", &["question"]).await;
+    read_members(&obid);
+    let thread = tokio::task::block_in_place(|| thread_of(&obid, "sam"));
+    assert_eq!(thread["posts"], json!([]), "{thread}");
+    assert_eq!(thread["member"], true);
+    assert_eq!(thread["verified"], false);
+    let question = other.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "The second sam's words"}),
+        3600,
+    );
+    other.send(&question).await;
+    let thread = tokio::task::block_in_place(|| thread_with(&obid, "sam", "question"));
+    let list = posts(&thread);
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["text"], "The second sam's words");
 }
