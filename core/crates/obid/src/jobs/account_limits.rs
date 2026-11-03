@@ -15,7 +15,164 @@ const RESUME_WAIT: &str = "Waiting for the account's usage limit. Oby resumes th
 /// An approved Resume its account's weekly reserve alone holds.
 const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 80% of its week. Lift its reserve to resume now.";
 
+/// How long after a five-hour limit's reset its job resumes by itself, as Claude's desktop app
+/// does (LIMITS-5). The tool's clock and the Mac's may differ.
+const RESUME_AFTER_RESET: i64 = 90;
+
+/// How many times a job's five-hour limit is waited out by itself; the next asks (LIMITS-9).
+const RESUME_TRIES: usize = 3;
+
+/// What cut its run, as the session that resumes hears it (`continue_message`).
+const RESET_CAME: &str = "your account hit its five-hour usage limit, and that limit has reset";
+
+/// What asks the owner about a job that stopped at its account's limit.
+const LIMIT_QUESTION: &str =
+    "This account reached its usage limit. Choose what Oby should do with the affected jobs.";
+
+/// A job's line while it waits for its reset. Proposed words: Sangam's to change.
+fn resuming_at(at: i64, zone: &jiff::tz::TimeZone) -> String {
+    let time = jiff::Timestamp::from_second(at)
+        .map(|t| t.to_zoned(zone.clone()).strftime("%-I:%M %p").to_string())
+        .unwrap_or_else(|_| "the reset".into());
+    format!("Resuming at {time}")
+}
+
+/// `job` waits, `queued`, until `at` (LIMITS-5): `cap`, as the apps know it (their job decodes no
+/// other kind), with no slot, no card, and Stop as for any queued job.
+pub(super) fn wait_for_reset(job: &mut Job, at: i64) {
+    let line = resuming_at(at, &jiff::tz::TimeZone::system());
+    job.status = Status::Queued;
+    job.resumes_at = Some(at);
+    job.waiting = Some(Waiting {
+        kind: "cap".into(),
+        text: line.clone(),
+        reserved: None,
+        tool: None,
+    });
+    job.step = line;
+}
+
+/// A run a five-hour limit stopped starts its wait, a try counted (LIMITS-9), unless Stop came as
+/// the run ended: nothing undoes it (LIMITS-6). Whether the owner asked for its round stays.
+pub(super) fn start_wait(job: &mut Job, at: i64) {
+    if !job.status.is_active() {
+        return;
+    }
+    job.recovery.limit_resumes += 1;
+    job.publish_step = None;
+    wait_for_reset(job, at);
+    job.changed(format!("A five-hour limit stopped it. {}", job.step));
+}
+
 impl Jobs {
+    /// When job `id`, stopped by a limit its tool said resets at `reset`, resumes by itself: only a
+    /// five-hour limit (the owner's decision of 2026-11-02), and only [`RESUME_TRIES`] times.
+    pub(super) fn limit_resume_at(&self, id: &str, reset: Option<i64>) -> Option<i64> {
+        let (job, reset) = (self.get(id)?, reset?);
+        (job.recovery.limit_resumes < RESUME_TRIES
+            && self
+                .usage
+                .get(&job.account)
+                .five_hour_limit(reset, obi_protocol::time::now()))
+        .then(|| reset + RESUME_AFTER_RESET)
+    }
+
+    /// Resumes the jobs whose reset came, in their own sessions: one each [`RESET_TICK`], so a Mac
+    /// that slept through several resets doesn't start them all at once (LIMITS-8). An account
+    /// that's still held waits for its new reset if that's still a five-hour limit's; anything
+    /// else goes to the owner, as any limit does (LIMITS-11).
+    pub(super) fn resume_limit_waits(self: &Arc<Self>) {
+        let now = obi_protocol::time::now();
+        let mut due: Vec<(i64, String)> = self
+            .lock()
+            .jobs
+            .values()
+            .filter(|j| j.status == Status::Queued)
+            .filter_map(|j| Some((j.resumes_at.filter(|at| *at <= now)?, j.id.clone())))
+            .collect();
+        due.sort();
+        let waits = |job: &Job| job.status == Status::Queued && job.resumes_at.is_some();
+        for (_, id) in due {
+            let Some(job) = self.get(&id) else { continue };
+            // A review of a head its job pushed past: its verdict wouldn't count (`reviewed`), so
+            // it spends no turn, and stopping it starts the newer head's (LIMITS-14).
+            if job
+                .review_of
+                .as_deref()
+                .and_then(|of| self.get(of))
+                .is_some_and(|author| job.read_another_head(&author))
+            {
+                self.stop(&id);
+                continue;
+            }
+            if !self.limit_source_is_connected(&job.agent, &job.account) {
+                self.ask_about_limit(
+                    &id,
+                    None,
+                    "The original account is no longer connected. Choose what Oby should do with this job.",
+                );
+                continue;
+            }
+            let usage = self.usage.get(&job.account);
+            if usage.held(now).is_some() {
+                let free = usage.free_at(now);
+                match free.filter(|at| usage.five_hour_limit(*at, now)) {
+                    Some(at) => {
+                        self.update(&id, |job| {
+                            if waits(job) {
+                                wait_for_reset(job, at + RESUME_AFTER_RESET);
+                            }
+                        });
+                    }
+                    None => self.ask_about_limit(&id, free, LIMIT_QUESTION),
+                }
+                continue;
+            }
+            self.update(&id, |job| {
+                if waits(job) {
+                    // The same round going on, as after a restart (RECOVERY-2).
+                    let (round, rounds) = (job.round, job.rounds);
+                    next_round(job);
+                    (job.round, job.rounds) = (round, rounds);
+                    job.step = "Starting".into();
+                    // A job that never started has no session to tell: it gets its first prompt.
+                    if job.session.is_some() {
+                        job.recovery.cut = Some(RESET_CAME.into());
+                        job.recovery.sent.get_or_insert_default();
+                    }
+                }
+            });
+            self.changed.notify_waiters();
+            self.schedule();
+            return;
+        }
+    }
+
+    /// A job waiting for its reset becomes today's decision (#1563), its worktree and branch kept.
+    fn ask_about_limit(&self, id: &str, reset: Option<i64>, why: &str) {
+        self.update(id, |job| {
+            if job.status != Status::Queued || job.resumes_at.is_none() {
+                return;
+            }
+            job.status = Status::Interrupted;
+            job.resumes_at = None;
+            job.waiting = None;
+            job.step = String::new();
+            job.account_limit_blocked = true;
+            job.account_limit_episode = None;
+            job.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
+            job.account_limit_reset = reset;
+            job.account_limit_choice = None;
+            job.reason = Some(why.to_owned());
+            job.next_step = Some(crate::job::TRY_AGAIN.into());
+            job.finished = Some(obi_protocol::time::now());
+            if job.summary.trim().is_empty() {
+                job.summary = why.to_owned();
+            }
+        });
+        self.record_account_limit(id);
+    }
+
     /// A persisted answer remains visible after its question closes, including after a restart
     /// between saving the answer and updating its jobs. This mirror never authorizes execution.
     pub(super) fn sync_limit_answer(&self, decision: &crate::account_limits::Decision) {
@@ -31,10 +188,15 @@ impl Jobs {
                 continue;
             };
             let reason = match decision.choice {
-                Choice::Pending => job.reason.clone().unwrap_or_else(|| "This account reached its usage limit. Choose what Oby should do with the affected jobs.".into()),
+                Choice::Pending => job.reason.clone().unwrap_or_else(|| LIMIT_QUESTION.into()),
                 Choice::Resume => RESUME_WAIT.into(),
-                Choice::Stop => "You kept this job stopped after its account reached its usage limit.".into(),
-                Choice::Move => "You chose another account. Oby is moving this job with its work and context.".into(),
+                Choice::Stop => {
+                    "You kept this job stopped after its account reached its usage limit.".into()
+                }
+                Choice::Move => {
+                    "You chose another account. Oby is moving this job with its work and context."
+                        .into()
+                }
             };
             self.update(id, |job| {
                 if job.account_limit_episode.as_deref() == Some(&decision.id) {
@@ -59,7 +221,7 @@ impl Jobs {
             }
             // A disconnected source cannot produce a fresh usage report. Reconcile it before
             // waiting for usage, otherwise an accepted choice would disappear indefinitely.
-            if !self.limit_source_connected(&decision) {
+            if !self.limit_source_is_connected(&decision.agent, &decision.account) {
                 for id in &decision.jobs {
                     self.reask_limit_job(
                         &decision,
@@ -144,12 +306,12 @@ impl Jobs {
         }
     }
 
-    fn limit_source_connected(&self, decision: &crate::account_limits::Decision) -> bool {
+    fn limit_source_is_connected(&self, agent: &str, id: &str) -> bool {
         let home = login_home();
-        Tool::from_id(&decision.agent).is_some_and(|tool| {
-            self.accounts(tool).iter().any(|account| {
-                account.id == decision.account && signed_in(tool, account, home.as_deref())
-            })
+        Tool::from_id(agent).is_some_and(|tool| {
+            self.accounts(tool)
+                .iter()
+                .any(|account| account.id == id && signed_in(tool, account, home.as_deref()))
         })
     }
 
@@ -294,7 +456,8 @@ impl Jobs {
                 continue;
             }
             let mut options = self.limit_destinations(&decision).await;
-            let source_connected = self.limit_source_connected(&decision);
+            let source_connected =
+                self.limit_source_is_connected(&decision.agent, &decision.account);
             if options.is_empty() && source_connected {
                 options.push(json!({"kind":"resume"}));
             }
@@ -582,5 +745,46 @@ impl Jobs {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// LIMITS-5: the job's line says the local time it resumes.
+    #[test]
+    fn limits_5_the_line_says_the_time_in_the_macs_zone() {
+        let at = 1_793_691_381; // 2026-11-03T07:36:21Z
+        let utc = jiff::tz::TimeZone::UTC;
+        assert_eq!(resuming_at(at, &utc), "Resuming at 7:36 AM");
+        let sao_paulo = jiff::tz::TimeZone::get("America/Sao_Paulo").unwrap();
+        assert_eq!(resuming_at(at, &sao_paulo), "Resuming at 4:36 AM");
+    }
+
+    /// LIMITS-6: a Stop that lands as the run ends, once obid read that it wasn't stopped, stays.
+    #[test]
+    fn limits_6_a_stop_as_the_run_ends_isnt_undone() {
+        let mut job = Job::new(
+            "aaaa0601".into(),
+            "o/r".into(),
+            "build".into(),
+            "Look around".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.status = Status::Stopped;
+        start_wait(&mut job, 1_793_691_381);
+        assert_eq!(job.status, Status::Stopped);
+        assert_eq!(job.resumes_at, None);
+        assert_eq!(job.recovery.limit_resumes, 0);
+
+        job.status = Status::Running;
+        job.asked = true;
+        start_wait(&mut job, 1_793_691_381);
+        assert_eq!(job.status, Status::Queued);
+        assert_eq!(job.resumes_at, Some(1_793_691_381));
+        assert_eq!(job.recovery.limit_resumes, 1);
+        assert!(job.asked, "whether the owner asked for its round stays");
     }
 }

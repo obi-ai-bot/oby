@@ -42,7 +42,7 @@ The error is what the CLI's `result` says or, with none, the run's exit and what
 ### Failures and recovery
 
 - A login error, or a session that's gone, isn't tried again, nor is an error that isn't on the allowlist. With no result from the CLI, that run's stderr decides, in whole words: a login (`not logged in`, `/login`, `authentication`, `401`, …) or `No conversation found` ends the job as today.
-- A usage limit goes to #1563 as today, whatever cut the turn: a passing error on an account its usage or the tool says is full is that limit's.
+- A usage limit goes to [account-limits.md](account-limits.md) as today, whatever cut the turn: a passing error on an account its usage or the tool says is full is that limit's. It takes none of these tries: a five-hour limit counts its own (LIMITS-9).
 - A try goes to its own session or doesn't run: a tool that can't load sessions (a Cursor without `loadSession`) leaves the job `interrupted` with why, and Try again starts a new session. A Codex thread that refuses to resume (cut before its first prompt) ends with Codex's own words, not proven on a real Codex.
 - With no session to continue: a passing error runs the same prompt again, as it did. A CLI that ended with no result, a restart, a panic or a stall ends as today.
 - A panic once publishing began (its claim, its phase, its step, or a branch already pushed) ends as today: nothing can run twice mid-publish.
@@ -75,7 +75,7 @@ Claude Code's side is what the 2.1.302 binary, the app-managed 2.1.309 binary an
 | Subagent fails | Aborted, marked failed; the parent model decides, with no automatic restart | Past the tries, the job's conversation supervises it; a job with none goes to the orchestrator | Same shape |
 | Turn limit | `max_turns` ends the turn; no continuation | Continued, counted with quiet | **Differs on purpose**, by the owner's direction; Claude Code only, since Codex and Cursor have no such switch |
 | Its own retrying seen as progress | `system/api_retry` in stream-json | Any line is progress; `api_retry` also shows on the step | Same |
-| Usage limit | Desktop app resumes after the reset, five-hour only | Untouched: the owner's choice (#1563) | **Differs**, the owner's decision of 2026-10-28 |
+| Usage limit | Desktop app resumes after the reset, five-hour only, skipping unattended sessions | Resumes after the reset, five-hour only, unattended jobs too; any other limit is the owner's choice ([account-limits.md](account-limits.md), LIMITS-5 to 13) | **Differs on unattended jobs**, the owner's decision of 2026-11-02 |
 | Runaway cost | No job ceiling or budget found | 12-hour ceiling, token budget, loop detector, all as they were | Oby only. The loop detector doesn't see Cursor, whose adapter reports no calls |
 | Past every limit | A plain failed state (`api_error`, a failed agent, "keeps crashing") | A plain failed state (`interrupted` or `failed`, with the real reason) | Same |
 

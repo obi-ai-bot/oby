@@ -1235,7 +1235,7 @@ fn busy(account: &Account) -> ApiError {
     ApiError::new(
         StatusCode::CONFLICT,
         format!(
-            "{} has a job queued or running: stop it, or move it to another account, first.",
+            "{} has a job queued or running: stop it first. A stopped job can move to another account.",
             account.name
         ),
     )

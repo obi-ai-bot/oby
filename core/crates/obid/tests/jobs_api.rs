@@ -1442,7 +1442,7 @@ fn usage_limit_jobs_wait_for_one_owner_decision() {
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));
     let post = || {
-        post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED: 3600", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
+        post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
     let first = post();
     let job = wait(&obid, &first);

@@ -73,6 +73,8 @@ pub struct Recovery {
     pub stalls: usize,
     /// Runs cut by obid or the Mac going down, or obid's own bug (RECOVERY-2).
     pub restarts: usize,
+    /// Times a five-hour limit's wait was armed for it (docs/contracts/account-limits.md, LIMITS-9).
+    pub limit_resumes: usize,
     /// What cut its run, for the next run's marked message; taken when that run starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,
@@ -534,8 +536,9 @@ pub struct Job {
     /// own words, or Dismiss, can take it on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_step: Option<String>,
-    /// When obid tries a job its account's usage limit stopped again by itself (`interrupted`),
-    /// in seconds since the epoch: a minute after the reset its tool named. None otherwise.
+    /// When a job a five-hour limit stopped resumes by itself (`queued`, LIMITS-5), in seconds since
+    /// the epoch: 90 seconds after the reset its tool named. None otherwise. On an `interrupted`
+    /// job, an older release's wait, made a pending decision when obid starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes_at: Option<i64>,
     /// This job stopped at an account limit and awaits an owner decision (#1563).
@@ -1225,6 +1228,22 @@ impl Job {
             && self.status.is_active()
             && self.dismissed.is_none()
             && reviewed.is_some_and(Job::pull_request_ended)
+    }
+
+    /// Waiting for a five-hour limit's reset on a pull request merged or closed since, with no words
+    /// to carry (LIMITS-14): the turn it would spend goes nowhere, since nothing of it can go out.
+    pub fn waits_on_an_ended_pull_request(&self) -> bool {
+        self.status == Status::Queued
+            && self.resumes_at.is_some()
+            && self.dismissed.is_none()
+            && self.heard.is_empty()
+            && self.pull_request_ended()
+    }
+
+    /// A review that read another head than the one `author` last pushed: its verdict doesn't count.
+    pub fn read_another_head(&self, author: &Job) -> bool {
+        let head = author.pushed_head();
+        head.is_none() || self.start_commit.as_deref() != head
     }
 
     /// Done with commits its pull request will never take: it was merged or closed before they

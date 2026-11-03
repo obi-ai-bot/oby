@@ -23,6 +23,9 @@ const WEEK: i64 = 7 * 86_400;
 /// How long a refused account is held when its tool didn't say when it resets: its next report
 /// says more.
 pub(crate) const UNKNOWN_RESET: i64 = 3_600;
+/// The longest a five-hour window's reset can be away, with a minute for the tool's clock and the
+/// Mac's to differ.
+const FIVE_HOURS: i64 = 5 * 3_600 + 60;
 /// The last second `time::format` writes with four digits (9999-12-31T23:59:59Z).
 const LAST: i64 = 253_402_300_799;
 
@@ -91,6 +94,18 @@ impl Usage {
             && self.five_hour_at(now).unwrap_or(0.0) < NEARLY_FULL
             && self.seven_day_at(now).unwrap_or(0.0) < NEARLY_FULL
     }
+    /// Whether a limit that resets at `reset` is a five-hour one (LIMITS-5): a reset its tool said,
+    /// never obid's guess, no further off than that window, with the week neither nearly full nor
+    /// in its reserve. Anything else is the owner's to decide (#1563).
+    pub fn five_hour_limit(&self, reset: i64, now: i64) -> bool {
+        let guessed = self.full_until_inferred && self.full_until == Some(reset);
+        !guessed
+            && reset > now
+            && reset - now <= FIVE_HOURS
+            && self.seven_day_at(now).unwrap_or(0.0) < NEARLY_FULL
+            && !self.reserved(now)
+    }
+
     /// When it takes automatic work again, as far as its tool said: the latest of the resets that
     /// hold it ([`Usage::held`]). `None` when it can now, or when no reset of them is known.
     pub fn free_at(&self, now: i64) -> Option<i64> {
@@ -825,6 +840,51 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    /// LIMITS-5, LIMITS-10: only a reset its tool said, no further off than a five-hour window,
+    /// with room in the week, is a five-hour limit. The events are what claude 2.1.302 and
+    /// `codex app-server` 0.163 printed.
+    #[test]
+    fn limits_5_only_a_five_hour_limit_is_waited_out() {
+        let now = 1_793_680_000;
+        let claude = |limit: &str, reset: i64, five: f64, week: f64| {
+            claude(&json!({"type": "rate_limit_event", "rate_limit_info": {
+                "status": "rejected", "resetsAt": reset, "rateLimitType": limit,
+                "overageStatus": "rejected", "isUsingOverage": false,
+                "unifiedWindows": {"five_hour": {"utilization": five, "resetsAt": now + 3600},
+                                   "seven_day": {"utilization": week, "resetsAt": now + 3 * 86_400}}}}))
+        };
+        let session = claude("five_hour", now + 3600, 1.0, 0.4);
+        assert!(session.five_hour_limit(now + 3600, now));
+        // A reset that has come, or further off than five hours, isn't.
+        assert!(!session.five_hour_limit(now, now));
+        assert!(!session.five_hour_limit(now + 5 * 3600 + 120, now));
+        // The week: full, or in its reserve (lifted, it isn't held).
+        let week = claude("seven_day", now + 3 * 86_400, 0.2, 1.0);
+        assert!(!week.five_hour_limit(now + 3 * 86_400, now));
+        assert!(!week.five_hour_limit(now + 3600, now));
+        let mut reserved = claude("five_hour", now + 3600, 1.0, 0.85);
+        assert!(!reserved.five_hour_limit(now + 3600, now));
+        reserved.reserve_lifted_until = Some(now + 86_400);
+        assert!(reserved.five_hour_limit(now + 3600, now));
+        // obid's own guess at a reset isn't one its tool said.
+        let guessed = Usage {
+            full_until: Some(now + UNKNOWN_RESET),
+            full_until_inferred: true,
+            ..Usage::default()
+        };
+        assert!(!guessed.five_hour_limit(now + UNKNOWN_RESET, now));
+        // A tool that reports no week (Cursor) has only its reset to go by.
+        assert!(Usage::default().five_hour_limit(now + 3600, now));
+
+        let codex = |week_used: u64| {
+            codex(&json!({"limitId": "codex", "primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": now + 3600},
+                "secondary": {"usedPercent": week_used, "windowDurationMins": 10080, "resetsAt": now + 3 * 86_400},
+                "rateLimitReachedType": "rate_limit_reached"})).unwrap()
+        };
+        assert!(codex(40).five_hour_limit(now + 3600, now));
+        assert!(!codex(100).five_hour_limit(now + 3 * 86_400, now));
     }
 
     /// The answer `codex app-server` 0.163 gave on 2026-10-17 for a Plus account at 100% of its

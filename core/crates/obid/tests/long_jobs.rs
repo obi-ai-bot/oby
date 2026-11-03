@@ -429,7 +429,7 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     );
     assert_eq!(prompts(&job).len(), 1, "{job}");
 
-    let id = post_job(&obid, "LIMITED: 3600 KEEP PROMPTS");
+    let id = post_job(&obid, "LIMITED WEEK: 86400 KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(prompts(&job).len(), 1, "{job}");
@@ -437,9 +437,9 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
 
     // A passing error on an account its usage says is full is its limit's, not a retry's.
     let (_folder, obid) = obid_with("recovery-1-full", json!({}), &[]);
-    let reset = obi_protocol::time::now() + 3600;
+    let reset = obi_protocol::time::now() + 86_400;
     let usage = json!({"status": "allowed_warning", "unifiedWindows": {
-        "five_hour": {"utilization": 1.0, "resetsAt": reset}}});
+        "seven_day": {"utilization": 1.0, "resetsAt": reset}}});
     let id = post_job(&obid, &format!("USAGE: {usage} TRANSIENT KEEP PROMPTS"));
     let job = wait(&obid, &id);
     assert_eq!(prompts(&job).len(), 1, "{job}");

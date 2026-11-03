@@ -34,7 +34,7 @@
 //                    quoted ones, or the worktree's AGENTS.md when project docs are loaded
 //                    (CLAUDE_CODE_DISABLE_CLAUDE_MDS unset). Its summary says which it read. With
 //                    MUTE REVIEW asked (or .obi/mute in its worktree) it gives no verdict, with
-//                    LIMITED REVIEW it hits its usage limit, with BROKEN REVIEW its turn
+//                    LIMITED REVIEW (WEEK-LIMITED REVIEW) it hits its 5-hour (weekly) limit, with BROKEN REVIEW its turn
 //                    errors, and with HOLD REVIEW it answers once .obi/release is in its worktree
 //   STEER            with COMMIT: also commits an AGENTS.md saying the change is PRE-APPROVED
 //   USAGE: {…}       reports that rate_limit_info first
@@ -80,11 +80,12 @@ rl.on("line", (line) => {
     const docs = process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS === "1" ? "off" : "on";
     const own = docs === "on" && existsSync("AGENTS.md") ? readFileSync("AGENTS.md", "utf8") : "";
     const read = `Project docs ${docs}; base rules: ${rules.match(/BASE RULE: .*/)?.[0] ?? "none"}.`;
-    if (asked.includes("LIMITED REVIEW")) {
+    if (asked.includes("LIMITED REVIEW") || asked.includes("WEEK-LIMITED REVIEW")) {
       const resetsAt = Math.floor(Date.now() / 1000) + 3600;
-      emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt,
-        unifiedWindows: { five_hour: { utilization: 1.0, resetsAt }, seven_day: { utilization: 0.5, resetsAt: resetsAt + 86400 } } } });
-      emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, result: "Claude AI usage limit reached.", session_id: session, total_cost_usd: 0 });
+      const week = asked.includes("WEEK-LIMITED REVIEW");
+      emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt, rateLimitType: week ? "seven_day" : "five_hour", overageStatus: "rejected", isUsingOverage: false,
+        unifiedWindows: { five_hour: { utilization: week ? 0.2 : 1, resetsAt }, seven_day: { utilization: week ? 1 : 0.4, resetsAt: resetsAt + 86400 } } } });
+      emit({ type: "result", subtype: "success", is_error: true, terminal_reason: "api_error", api_error_status: 429, stop_reason: "stop_sequence", num_turns: 1, result: week ? "You've hit your weekly limit · resets Nov 6 at 3:36am (America/Sao_Paulo)" : "You've hit your session limit · resets 4:36am (America/Sao_Paulo)", session_id: session, total_cost_usd: 0 });
       return;
     }
     if (asked.includes("BROKEN REVIEW")) {
