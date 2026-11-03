@@ -8,7 +8,7 @@ OpenAI's words below were re-read from the pages themselves on 2026-11-03 (https
 
 - **Sangam's screen:** `SetupCard.tsx` (first run), `SettingsView.tsx` Agents, `Composer.tsx` usage panel, the limit card in `live.ts`. His ChatGPT row is at `Connectors.tsx:55`.
 - **Outcome:** someone with no Codex login connects their ChatGPT plan in the browser with one click and no code to type, and Codex jobs run on it. They can add several ChatGPT accounts.
-- **Status:** **Implemented against a stand-in OpenAI, not yet proven with a real sign-in.** The owner's decisions of 2026-11-02: obid may hold ChatGPT tokens, for ChatGPT only; conversations on any connected agent, yes; offer ChatGPT accounts at limits, yes; OpenAI's required words, no objection; unattended jobs, yes. **It must not ship in a release until the rule below is in `AGENTS.md`**, which needs the owner's click (MERGING-13), and until "One real sign-in" below has run.
+- **Status:** **Implemented against a stand-in OpenAI, not yet proven with a real sign-in.** The owner's decisions of 2026-11-02: obid may hold ChatGPT tokens, for ChatGPT only; conversations on any connected agent, yes; offer ChatGPT accounts at limits, yes; OpenAI's required words, no objection; unattended jobs, yes. **It must not ship in a release until "One real sign-in" below has run.** Its rule is in `AGENTS.md` (#1886).
 - **Scope:**
   - In: Codex accounts with their own folder, on the Electron app.
   - Phones: display only (their screens are later work; CHATGPT-18 proves the new keys decode).
@@ -151,11 +151,3 @@ What only a real account can prove, for the owner's first sign-in. None of these
 2. A job over 70 minutes that uses Oby's MCP tools.
 3. Remove the account and see it gone in ChatGPT settings.
 4. An existing device-login account unchanged after upgrade.
-
-## The rule for `AGENTS.md`
-
-`AGENTS.md` is a security path, so this waits for two reviews by different tools or the owner's click (MERGING-13). Add after the logins rule:
-
-> ChatGPT is the one provider obid signs in to itself (the owner's decision of 2026-11-02, for ChatGPT only): a Codex account signed in with "Continue with ChatGPT", OpenAI's Sign in with ChatGPT for open-source and local apps, has obid as the OAuth client (PKCE, a loopback redirect on 127.0.0.1), its tokens in the vault as `oby.chatgpt.<account>` (0600), taken out of every answer, log line and push. No run gets any of its tokens: Codex reaches OpenAI through obid's relay with the job's broker token, which dies with the job. Claude stays on Claude Code's own login, as Anthropic's rules require, and Cursor is unchanged. An account signed in with `codex login` works as below, and none moves without the owner's click.
-
-Also change: "Every Codex run gets `auth.json`" → "Every Codex run on a `codex login` gets `auth.json`"; "Oby never reads, stores or forwards the user's agent logins" gains this exception.

@@ -318,7 +318,12 @@ impl ChatGpt {
 
     /// The account's record as it is now: the one a failed write left, else the vault's.
     fn record(&self, account: &str) -> Result<Option<Record>, String> {
-        if let Some(record) = self.lock().unwritten.get(account) {
+        self.record_held(&self.lock(), account)
+    }
+
+    /// [`Self::record`], for a caller that holds the lock through what it does with it.
+    fn record_held(&self, state: &Memory, account: &str) -> Result<Option<Record>, String> {
+        if let Some(record) = state.unwritten.get(account) {
             return Ok(Some(record.clone()));
         }
         Ok(self
@@ -327,19 +332,10 @@ impl ChatGpt {
             .and_then(|text| serde_json::from_str(&text).ok()))
     }
 
-    /// Writes `record`, then the marker, unless the account is on its way out. Its tokens are
-    /// scrubbed before anything else, written or not. A failed write stays in memory to be tried
-    /// again; the error says so.
-    fn keep(&self, account: &str, record: &Record, dir: &Path) -> Result<Kept, String> {
-        let mut state = self.lock();
-        if state.gone.contains(account) {
-            return Ok(Kept::Gone);
-        }
-        self.write(&mut state, account, record, dir)
-    }
-
-    /// [`Self::keep`] for a refresh started at `epoch`: nothing, if another login has taken the
-    /// account's place since.
+    /// What a refresh started at `epoch` writes: `record`, then the marker, unless the account is on
+    /// its way out or another login has taken its place since. Its tokens are scrubbed before
+    /// anything else, written or not. A failed write stays in memory to be tried again; the error
+    /// says so.
     fn keep_since(
         &self,
         account: &str,
@@ -378,15 +374,28 @@ impl ChatGpt {
     }
 
     /// A new sign-in's record takes the account's place: a refresh in flight on the old one writes
-    /// nothing after this.
+    /// nothing after this. The access tokens it replaces, as they stand now, stay scrubbed until
+    /// they end. The old refresh token isn't revoked: whether that would end this new session is
+    /// spike S8's, not known yet, and Tetrix's server does exactly that.
+    // ponytail: same `sub`, so left to expire; revoke it here once S8 says it's safe.
     fn replace(&self, account: &str, record: &Record, dir: &Path) -> Result<Kept, String> {
         let mut state = self.lock();
         if state.gone.contains(account) {
             return Ok(Kept::Gone);
         }
+        let mut record = record.clone();
+        if let Some(before) = self.record_held(&state, account)? {
+            record.previous = carried_over(&before, obi_protocol::time::now());
+            if let Some(old) = before.tokens {
+                record.previous.push(OldToken {
+                    access: old.access,
+                    expires_at: old.expires_at,
+                });
+            }
+        }
         *state.epochs.entry(account.to_owned()).or_default() += 1;
         state.cooling.remove(account);
-        self.write(&mut state, account, record, dir)
+        self.write(&mut state, account, &record, dir)
     }
 
     /// Why the account's last sign-in didn't take, till its next try.
@@ -659,28 +668,14 @@ impl ChatGpt {
         let Some(tokens) = tokens_from(&answer, now, None) else {
             return Err(drop_it("ChatGPT's answer was incomplete. Try again.".into()).await);
         };
-        let mut record = Record {
+        let record = Record {
             client_id: client.clone(),
             sub: who.sub,
             host_id: pending.host_id.clone(),
             email: who.email,
-            previous: pending
-                .prior
-                .as_ref()
-                .map(|p| carried_over(p, now))
-                .unwrap_or_default(),
+            previous: Vec::new(),
             tokens: Some(tokens),
         };
-        // The access token it replaces stays scrubbed until it ends. The refresh token isn't
-        // revoked: whether that would end this new session is spike S8's, not known yet, and
-        // Tetrix's server does exactly that.
-        // ponytail: same `sub`, so left to expire; revoke it here once S8 says it's safe.
-        if let Some(old) = pending.prior.as_ref().and_then(|p| p.tokens.as_ref()) {
-            record.previous.push(OldToken {
-                access: old.access.clone(),
-                expires_at: old.expires_at,
-            });
-        }
         let Some(dir) = self.folder(account) else {
             return Err(drop_it("That account has gone.".into()).await);
         };
@@ -762,8 +757,20 @@ impl ChatGpt {
     }
 
     fn current(&self, account: &str) -> Result<Record, Refused> {
-        self.record(account)
+        Self::found(self.record(account))
+    }
+
+    fn found(record: Result<Option<Record>, String>) -> Result<Record, Refused> {
+        record
             .map_err(|why| Refused::Later(format!("Oby's vault can't be read: {why}")))?
+            .ok_or_else(sign_in_again)
+    }
+
+    /// The token of the login that took this one's place, if that login has one.
+    fn in_its_place(&self, account: &str) -> Result<String, Refused> {
+        self.current(account)?
+            .tokens
+            .map(|tokens| tokens.access)
             .ok_or_else(sign_in_again)
     }
 
@@ -826,20 +833,26 @@ impl ChatGpt {
     async fn refresh(&self, account: &str) -> Result<String, Refused> {
         let dir = self.folder(account).ok_or_else(sign_in_again)?;
         // What a failed write left is the only copy of a rotated token: written, never refreshed
-        // over. While it can't be, runs go on with the token held, scrubbed like any (`keep`).
+        // over. While it can't be, runs go on with the token held, scrubbed like any (`keep_since`).
         // ponytail: past that token's end a vault that won't write stops the runs; refreshing from
         // memory would carry on if a full disk ever lasts an hour.
-        let left = self.lock().unwritten.get(account).cloned();
+        // All as of one moment: a token from after a new login, kept under the epoch from before
+        // it, would be dropped once rotated, and the login ends at its next refresh.
+        let (epoch, left, record) = {
+            let state = self.lock();
+            let epoch = state.epochs.get(account).copied().unwrap_or(0);
+            let record = self.record_held(&state, account);
+            (epoch, state.unwritten.get(account).cloned(), record)
+        };
         if let Some(left) = left {
             let usable = left
                 .tokens
                 .as_ref()
                 .filter(|t| t.expires_at > obi_protocol::time::now())
                 .map(|t| t.access.clone());
-            return match self.keep(account, &left, &dir) {
-                Ok(Kept::Written | Kept::Stale) => {
-                    left.tokens.map(|t| t.access).ok_or_else(sign_in_again)
-                }
+            return match self.keep_since(account, &left, &dir, epoch) {
+                Ok(Kept::Written) => left.tokens.map(|t| t.access).ok_or_else(sign_in_again),
+                Ok(Kept::Stale) => self.in_its_place(account),
                 Ok(Kept::Gone) => {
                     self.revoke_kept(&left).await;
                     Err(sign_in_again())
@@ -847,8 +860,7 @@ impl ChatGpt {
                 Err(_) => usable.ok_or_else(|| Refused::Later(NOT_NOW.into())),
             };
         }
-        let epoch = self.lock().epochs.get(account).copied().unwrap_or(0);
-        let record = self.current(account)?;
+        let record = Self::found(record)?;
         let tokens = record.tokens.clone().ok_or_else(sign_in_again)?;
         for wait in REFRESH_WAITS {
             tokio::time::sleep(Duration::from_secs(wait)).await;
@@ -885,7 +897,7 @@ impl ChatGpt {
                 return Err(Refused::Client(BAD_CLIENT.into()));
             }
             if TERMINAL.contains(&code.as_str()) {
-                return self.ended(account, &dir, &tokens, &code);
+                return self.ended(account, &dir, &tokens, &code, epoch);
             }
             tracing::warn!("account {account}: ChatGPT's refresh answered {status} {code}");
             return Err(Refused::Later(NOT_NOW.into()));
@@ -952,14 +964,16 @@ impl ChatGpt {
     }
 
     /// A terminal refresh answer: tokens cleared, the record kept so its client id survives. Only if
-    /// the vault still holds the token that was sent: a new sign-in, or another obid, may have
-    /// replaced it, and the answer says nothing of that one.
+    /// the vault still holds the token that was sent and no other login has come since: a new
+    /// sign-in, a device login or another obid may have taken its place, and the answer says nothing
+    /// of those.
     fn ended(
         &self,
         account: &str,
         dir: &Path,
         sent: &Tokens,
         code: &str,
+        epoch: u64,
     ) -> Result<String, Refused> {
         let mut record = self.current(account)?;
         if let Some(now) = &record.tokens
@@ -976,8 +990,14 @@ impl ChatGpt {
                 expires_at: old.expires_at,
             });
         }
-        if let Err(why) = self.keep(account, &record, dir) {
-            tracing::error!("account {account}: its ended ChatGPT login stays in the vault: {why}");
+        match self.keep_since(account, &record, dir, epoch) {
+            Ok(Kept::Stale) => return self.in_its_place(account),
+            Ok(Kept::Written | Kept::Gone) => {}
+            Err(why) => {
+                tracing::error!(
+                    "account {account}: its ended ChatGPT login stays in the vault: {why}"
+                );
+            }
         }
         Err(sign_in_again())
     }
@@ -1084,9 +1104,9 @@ impl ChatGpt {
         };
         // The old login's tokens go first: a refresh in flight finds none and no say (`keep_since`),
         // and gives back what it was given.
-        let record = self.record(account).ok().flatten();
         let old = {
             let mut state = self.lock();
+            let record = self.record_held(&state, account).ok().flatten();
             *state.epochs.entry(account.to_owned()).or_default() += 1;
             state.unwritten.remove(account);
             state.cooling.remove(account);
@@ -1921,7 +1941,10 @@ mod tests {
             }),
             previous: Vec::new(),
         };
-        assert!(matches!(me.keep(ID, &record, &dir), Ok(Kept::Written)));
+        assert!(matches!(
+            me.keep_since(ID, &record, &dir, 0),
+            Ok(Kept::Written)
+        ));
         World {
             me,
             script,
@@ -2034,7 +2057,7 @@ mod tests {
         tokens.refresh = "refresh-theirs-abcdefgh".into();
         tokens.access = "access-theirs-abcdefgh".into();
         assert!(matches!(
-            world.me.keep(ID, &newer, &world.dir),
+            world.me.keep_since(ID, &newer, &world.dir, 0),
             Ok(Kept::Written)
         ));
         assert_eq!(waiting.await.unwrap().unwrap(), "access-theirs-abcdefgh");
@@ -2323,6 +2346,51 @@ mod tests {
         ));
         assert_eq!(asking.await.unwrap().unwrap(), "access-signed-in-abcdefgh");
         assert!(world.stored().tokens.is_some());
+    }
+
+    /// CHATGPT-16: OpenAI ending the old login late says nothing of the device login in its place:
+    /// the account doesn't turn back into a ChatGPT login that needs signing in.
+    #[tokio::test]
+    async fn chatgpt_16_a_terminal_answer_after_a_device_login_leaves_the_marker_gone() {
+        let world = world(60).await;
+        {
+            let mut script = world.script.lock().unwrap();
+            script.hold = Duration::from_millis(400);
+            script
+                .answers
+                .push_back(Answer::Says(400, json!({"error": "invalid_grant"})));
+        }
+        let asking = {
+            let me = world.me.clone();
+            tokio::spawn(async move { me.access(ID).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        world.me.replaced_by_device_login(ID).await;
+        assert_eq!(asking.await.unwrap().unwrap_err(), sign_in_again());
+        assert!(marker_in(&world.dir).is_none(), "the marker stays gone");
+    }
+
+    /// CHATGPT-11: the token a new sign-in replaces stays scrubbed, as the record stands then, not
+    /// as it stood when the sign-in began: one rotated during the wait is still alive.
+    #[tokio::test]
+    async fn chatgpt_11_a_new_sign_in_scrubs_the_token_rotated_during_its_wait() {
+        let world = world(60).await;
+        let rotated = world.me.access(ID).await.unwrap();
+        let mut newer = world.stored();
+        newer.previous.clear();
+        let tokens = newer.tokens.as_mut().unwrap();
+        tokens.access = "access-signed-in-abcdefgh".into();
+        tokens.refresh = "refresh-signed-in-abcdefgh".into();
+        assert!(matches!(
+            world.me.replace(ID, &newer, &world.dir),
+            Ok(Kept::Written)
+        ));
+        let kept = world.stored();
+        assert!(
+            kept.previous.iter().any(|old| old.access == rotated),
+            "still alive, so still scrubbed"
+        );
+        assert_eq!(kept.tokens.unwrap().access, "access-signed-in-abcdefgh");
     }
 
     /// CHATGPT-15: a refresh in flight when the account goes writes nothing and gives back what it
