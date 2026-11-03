@@ -1,3 +1,4 @@
+import { REAL_CHATGPT_SIGN_IN_REPORT } from './chatgptGate';
 import { api, type Status } from './obid';
 
 // Continue with ChatGPT in the app (docs/contracts/chatgpt-sign-in.md): obid holds the tokens, and
@@ -13,9 +14,17 @@ export const manageUsage = () => window.app?.openExternal(USAGE_URL);
 // Off obid, Sangam's mock: its stand-in sign-in shows the welcome
 export const MOCK_WELCOME = 'oby:chatgpt-welcome';
 
+// A new ChatGPT sign-in is offered in a development build, so the real one can be run, or a build
+// with the gate set (chatgptGate.ts). Decided when it's built: ?everything and stored defaults don't
+// reach it. An account already signed in this way isn't asked: it keeps its own way back.
+const wayIn = import.meta.env.DEV || !!REAL_CHATGPT_SIGN_IN_REPORT;
+// Add account's row for a tool, with the logins found on this Mac
+export const addsWithChatGpt = (agent: string, found: unknown[]) => wayIn && agent === 'codex' && !found.length;
+
 // The button shows only with no Codex login on this Mac: one that's there is adopted with no click
 // (or, removed here, offered by name), and one signed out is the tool's own to sign in.
 export function offersChatGpt(status: Pick<Status, 'accounts' | 'availableLogins'> | null | undefined) {
+  if (!wayIn) return false;
   if (!status) return true;
   if (status.availableLogins?.some((l) => l.agent === 'codex')) return false;
   return !status.accounts.some((a) => a.agent === 'codex' && (a.signedIn || (!a.login && !!a.label)));

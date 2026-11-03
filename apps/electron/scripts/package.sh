@@ -1,6 +1,9 @@
 #!/bin/zsh
 # Packages the Mac app, one DMG per architecture, on this Mac (no CI), as scripts/release.sh does
 # the Swift app's (docs/release.md):
+#   0. Continue with ChatGPT's gate (src/renderer/src/chatgptGate.ts, docs/contracts/chatgpt-sign-in.md,
+#      "The gate"): left empty, the app is built without the button; set, it must be the link of a
+#      comment on #1879 that GitHub says exists, or nothing is built;
 #   1. obid, gh and gitleaks, staged and signed by helpers.sh when what goes in changed since;
 #   2. main, preload and the renderer (electron-vite);
 #   3. per architecture: window-style built for it, the app signed with Developer ID and the
@@ -18,6 +21,21 @@ set -euo pipefail
 app_dir=${0:A:h:h}
 root=${app_dir:h:h}
 cd "$app_dir"
+die() { echo "error: $*" >&2; exit 1; }
+say() { echo "==> $*"; }
+
+gate=src/renderer/src/chatgptGate.ts
+line="^export const REAL_CHATGPT_SIGN_IN_REPORT = '\([^']*\)';$"
+[[ "$(grep -c "$line" "$gate" 2> /dev/null)" == 1 ]] || die "$gate doesn't say whether ChatGPT's real sign-in has run"
+report=$(sed -n "s/$line/\1/p" "$gate")
+if [[ -z "$report" ]]; then
+  say "Continue with ChatGPT stays hidden in this build: its real sign-in isn't reported ($gate)"
+else
+  [[ "$report" == https://github.com/obi-ai-bot/oby/issues/1879\#issuecomment-<-> ]] || die "$gate has to be the link of the comment on #1879 that reports the real sign-in, not: $report"
+  [[ "$(gh api "repos/obi-ai-bot/oby/issues/comments/${report##*-}" --jq .html_url 2> /dev/null)" == "$report" ]] || die "GitHub doesn't confirm the real sign-in's report: $report"
+  say "Continue with ChatGPT shows in this build: $report"
+fi
+
 profile=${OBY_NOTARY_PROFILE:-oby-notary}
 team=${OBY_TEAM_ID:-3UV9W5SV7W}
 # the identity electron-builder signs with (CSC_NAME: electron-builder.yml names none): another
@@ -31,8 +49,6 @@ name=$(sed -n 's/^productName: //p' electron-builder.yml)
 electron=$(node -p "require('electron/package.json').version")
 identity=$(security find-identity -v -p codesigning | grep "Developer ID Application" | grep "($team)" | head -n 1 | awk '{print $2}')
 [[ -n "$identity" ]] || { echo "error: no Developer ID Application identity of team $team in the keychain" >&2; exit 1; }
-die() { echo "error: $*" >&2; exit 1; }
-say() { echo "==> $*"; }
 
 notarize() {
   local item=$1 submit=$2 log=dist/notary-${1:t}.log

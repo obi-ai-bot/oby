@@ -12,7 +12,7 @@ import { ApiError, api, qrText, type Invitation, type PairedDevice, type ModelOp
 import Connectors, { ConfirmWindow, Window, readConnectors } from './Connectors';
 import { again, sameAs, startAdding, stopAdding, toolRows, whoseAgain, type Found } from './addAccount';
 import { UNFINISHED, signInWhy } from './signInWhy';
-import { CONTINUE, LIMIT_REACHED, USING_PLAN, accountNow, offersChatGpt, waitingOver } from './chatgpt';
+import { CONTINUE, LIMIT_REACHED, USING_PLAN, accountNow, addsWithChatGpt, offersChatGpt, waitingOver } from './chatgpt';
 import { ChatGptLogo, ManageUsage } from './ChatGptPlan';
 import { Menu } from './Menu';
 import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
@@ -757,7 +757,7 @@ const choices = (list: { id: string; name: string }[], set: string | undefined) 
 const effortChoices = (list: string[] | undefined, set: string | undefined) =>
   choices((list ?? []).map((e) => ({ id: e, name: EFFORT_NAMES[e] ?? e })), set);
 
-function Agents() {
+export function Agents() {
   const [accounts, setAccounts] = useAccounts();
   const [tuning, options, tune] = useModels();
   const [chosen, setChosen] = useDefaultAccount();
@@ -863,7 +863,7 @@ type Adding = { at: 'tools'; why?: string }
   | { at: 'signing'; chatgpt?: boolean; agent: Agent; account: string; page?: SignIn; sending?: boolean }
   | { at: 'named'; agent: Agent; account: string }
   | { at: 'same'; agent: Agent; words: string };
-function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
+export function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
   accounts: Account[]; setAccounts: (a: Account[]) => void; found: Found[]; onFound: (l: Found) => void; onClose: () => void;
 }) {
   const [step, setStep] = useState<Adding>({ at: 'tools' });
@@ -992,8 +992,8 @@ function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
             <BrandMark brand={AGENTS[agent].brand} size={16} mono />
             <span className="set-label">{AGENTS[agent].name}<span className="set-about">{added ? `${added} added` : 'None yet'}</span></span>
             <span className="set-control">
-              {agent === 'codex' && !here.length && <button type="button" className="set-button" onClick={() => void pick(agent, true)}><ChatGptLogo />{CONTINUE}</button>}
-              <button type="button" className={agent === 'codex' && !here.length ? 'chatgpt-link' : 'set-button'} onClick={() => void pick(agent)}>{agent === 'codex' && !here.length ? 'Use a code instead' : 'Sign in'}</button>
+              {addsWithChatGpt(agent, here) && <button type="button" className="set-button" onClick={() => void pick(agent, true)}><ChatGptLogo />{CONTINUE}</button>}
+              <button type="button" className={addsWithChatGpt(agent, here) ? 'chatgpt-link' : 'set-button'} onClick={() => void pick(agent)}>{addsWithChatGpt(agent, here) ? 'Use a code instead' : 'Sign in'}</button>
             </span>
           </div>
           {here.map((l) => (
