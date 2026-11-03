@@ -211,6 +211,8 @@ async function main() {
   // on the owner's Confirm it leaves the side panel at once, with no reload (TASKS-11)
   const draft = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'research', title: 'Draft task', task: 'DRAFT: notes.md' } });
   await until('the draft task ends', async () => ended(await s.call('GET', `/v1/jobs/${draft.id}`)), 120_000);
+  // (chat first, the side panel's tasks are under its Tasks icon: docs/contracts/chat-first.md)
+  await page.locator('.rail-button[aria-label="Tasks"]').evaluate((el) => el.click());
   const row = page.locator('.task-row', { hasText: 'Draft task' });
   await until('its row in the side panel', async () => (await row.count()) === 1);
   // (the side panel may be folded away: its row's own right-click and menu, as a person's)

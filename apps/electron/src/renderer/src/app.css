@@ -2181,3 +2181,23 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
   .onb-go:hover:not(:disabled), .onb-go:active:not(:disabled) { transform: none; }
   .onb-copy.is-leaving > .onb-in { transform: none; }
 }
+
+/* Chat first (docs/contracts/chat-first.md): the side panel's Oby, Obysphere and usage rows
+   (the canvas's), and what Oby is asking you, over your conversation */
+.connector.chat-own { min-height: 52px; }
+.connector.chat-own .connector-name, .connector.chat-sphere .connector-name { color: var(--ink); font-weight: 500; }
+.chat-own-end { flex: none; align-self: flex-start; margin-top: 2px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.sidebar-new.chat-new { margin: 4px 0 2px; }
+.chat-sep { display: block; height: 1px; margin: 8px 10px; background: var(--line); }
+.connector.chat-sphere { min-height: 44px; }
+.connector.oby-row + .connector.chat-sphere { margin-top: 6px; }
+.sidebar-item.chat-kind { gap: 6px; }
+.sidebar-item.chat-kind:last-of-type { margin-bottom: 8px; }
+.panel-usage { flex: none; margin: 4px -6px -8px; padding: 10px 10px 12px; display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--line); text-align: left; transition: background-color var(--fade); }
+.panel-usage:hover { background: var(--hover); }
+.panel-usage-row { display: grid; grid-template-columns: 76px minmax(0, 1fr) 32px; align-items: center; gap: 8px; color: var(--text); font-size: 11px; line-height: 14px; }
+.panel-usage .set-meter { margin: 0; max-width: none; }
+.panel-usage-pct { color: var(--item); text-align: right; font-variant-numeric: tabular-nums; }
+.asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }
+.asks-over .asks { pointer-events: auto; }
+.asks-over .ask-card { background: var(--surface); box-shadow: 0 0 0 1px var(--surface-edge); }

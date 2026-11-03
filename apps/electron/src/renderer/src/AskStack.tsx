@@ -22,12 +22,15 @@ type Entry = Asking & { task?: boolean; answer?: string };
 const entryOf = (t: Task): Entry => ({ id: t.id, title: t.title, who: t.who, brand: t.brand, ask: t.job.ask!, answer: t.answer, task: true });
 const LEAVE_MS = 320;  // the longest way out (app.css, ask-later and the like)
 let left = 0;
+let keptAt = { id: '', i: 0 };
 export default function AskStack({ active, onOpen, onOpenTalk }: { active: boolean; onOpen: (id: string) => void; onOpenTalk: (id: string) => void }) {
   useTasks();
   const asks: Entry[] = [...tasksWith('needs').filter((t) => !t.answer).map(entryOf), ...asksWaiting()];
   const n = asks.length;
   // the card on top, and where it was: answered, the one after it takes its place
-  const [at, setAt] = useState({ id: '', i: 0 });
+  // (kept here: chat first, the stack comes and goes with the page under it, and stays where you left it)
+  const [at, setShown] = useState(keptAt);
+  const setAt = (next: typeof keptAt) => { keptAt = next; setShown(next); };
   const found = asks.findIndex((t) => t.id === at.id);
   const i = found >= 0 ? found : n ? at.i % n : 0;
   const top = asks[i];

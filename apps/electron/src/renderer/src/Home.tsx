@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, EllipsisVertical, PanelLeft } from 'lucide-react';
 import { ChatsCircleIcon } from '@phosphor-icons/react';
 import Oby from './Oby';
@@ -20,10 +20,10 @@ import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
 import { useSpheres } from './spheres';
-import { everything, onObid, welcome } from './lean';
+import { chatFirst, everything, onObid, welcome } from './lean';
 import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
-import { askOby, chatOfTask, renameChat, tellAbout, useChats } from './chats';
+import { askOby, chatOfTask, latestChat, renameChat, tellAbout, useChats } from './chats';
 import { useConvos } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
@@ -47,6 +47,8 @@ function attention(running: number, needs: number, fresh = false) {
 // side panel width limits, icons (48px) included
 // (the default: halfway between the narrowest and widest, 362px)
 const SIDEBAR_MIN = 252, SIDEBAR_MAX = 472, SIDEBAR_DEFAULT = (SIDEBAR_MIN + SIDEBAR_MAX) / 2;
+// chat first: open or closed, once you've said (setting up's and Home's "closed" isn't yours)
+const PANEL_KEPT = 'oby.chatPanelOpen';
 // How far past a limit the panel can stretch, and how stiffly (UIKit's
 // rubber-band curve: gives STIFF of the drag at first, approaching STRETCH)
 const STRETCH = 60, STIFF = 0.55;
@@ -135,20 +137,40 @@ export default function Home() {
   const [barMenu, setBarMenu] = useState<DOMRect | null>(null);
   const [renaming, setRenaming] = useState(false);
   useEffect(() => { setBarMenu(null); setRenaming(false); }, [top?.key]);
+  // Chat first (docs/contracts/chat-first.md): what "back" comes to rest on is your conversation,
+  // the one you were last in (CHATFIRST-9), never a page of its own
+  const lastTalk = useRef<string | null>(null);
+  useEffect(() => { if (top?.kind === 'talk') lastTalk.current = top.id; }, [top?.kind, top?.id]);
+  const home = () => {
+    const id = chats.find((c) => c.id === lastTalk.current)?.id ?? latestChat(chats)?.id;
+    if (chatFirst && id) start({ kind: 'talk', id }); else closeAll();
+  };
+  // a page whose subject went: the step before it, or from the first step, as back does
+  const backOut = (i: number) => { if (i > 0 || !chatFirst) backTo(i - 1); else home(); };
+  // it opens on your latest conversation, before anything paints, once obid's list is in; with none
+  // yet, on Home's stage, which is then just the empty chat. Never over what's since been opened
+  const opened = useRef(false);
+  useLayoutEffect(() => {
+    if (!chatFirst || opened.current) return;
+    const latest = latestChat(chats);
+    if (!latest) return;
+    opened.current = true;
+    if (!layers.length) start({ kind: 'talk', id: latest.id });
+  }, [chats]);
   // deleted from its page or a conversation: its page goes too
   useEffect(() => {
     const i = live.findIndex((l) => l.kind === 'task' && !tasks.some((t) => t.id === l.id));
-    if (i >= 0) backTo(i - 1);
+    if (i >= 0) backOut(i);
   }, [tasks]);
   // an Obysphere deleted or left (from its settings): its settings and Knowledge pages go too
   useEffect(() => {
     const i = live.findIndex((l) => (l.kind === 'sphere' || l.kind === 'knowledge') && !spheres.some((s) => s.id === l.id));
-    if (i >= 0) backTo(i - 1);
+    if (i >= 0) backOut(i);
   }, [spheres]);
   // a conversation deleted (from its menu): its page goes too
   useEffect(() => {
     const i = live.findIndex((l) => l.kind === 'talk' && !chats.some((c) => c.id === l.id));
-    if (i >= 0) backTo(i - 1);
+    if (i >= 0) backOut(i);
   }, [chats]);
 
   // a task's conversation: the one with Oby it was started in (the whole of it),
@@ -200,7 +222,7 @@ export default function Home() {
     const talk = opening.conversation && shownId(opening.conversation);
     if (opening.job) { if (!tasks.some((t) => t.id === opening.job)) return; start({ kind: 'task', id: opening.job }); }
     else if (talk) { if (!chats.some((c) => c.id === talk)) return; start({ kind: 'talk', id: talk }); }
-    else closeAll();
+    else home();
     setOpening(null);
   }, [opening, tasks, chats]);
 
@@ -217,16 +239,24 @@ export default function Home() {
     const t = setTimeout(() => setTipShown(true), enterIn ? 1550 + 2000 : 600);
     return () => clearTimeout(t);
   }, [enterIn, arriving]);
-  // the side panel opens as you left it: closed the first time
+  // the side panel opens as you left it: closed the first time. Chat first, it's where the Obys are:
+  // open the first time too, where it fits beside the chat (--view-min), so not in setting up's
+  // narrow window, whose hand over is still just Oby
   const [sidebar, setSidebar] = useState(() => {
-    try { return localStorage.getItem('oby.sidebarOpen') === '1'; } catch { return false; }
+    try {
+      if (!chatFirst) return localStorage.getItem('oby.sidebarOpen') === '1';
+      return localStorage.getItem(PANEL_KEPT) !== '0' && innerWidth >= SIDEBAR_DEFAULT + 420;
+    } catch { return false; }
   });
   // lent: opened by setting up's Obysphere tour (onboarding.ts), which isn't your choice, so it
   // isn't remembered, and the tour closes it again at its end unless you've toggled it since
   const lent = useRef(false);
+  const panelSeen = useRef(false);
   useEffect(() => {
+    // (not as it opens: only what you've changed is remembered)
+    if (!panelSeen.current) { panelSeen.current = true; return; }
     if (lent.current) return;
-    try { localStorage.setItem('oby.sidebarOpen', sidebar ? '1' : '0'); } catch { /* not remembered, that's all */ }
+    try { localStorage.setItem(chatFirst ? PANEL_KEPT : 'oby.sidebarOpen', sidebar ? '1' : '0'); } catch { /* not remembered, that's all */ }
   }, [sidebar]);
   // the side panel's width (icons included), set by dragging its edge; remembered
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -281,10 +311,12 @@ export default function Home() {
     addEventListener('oby:open', open);
     return () => removeEventListener('oby:open', open);
   }, []);
-  // New task: back Home, and into its message box once what was open has gone
+  // New task, New conversation: back Home, and into its message box once what was open has gone
   // (the box can't take the focus while a page is still over it)
   const [focusHome, setFocusHome] = useState(false);
   const newChat = useCallback(() => { closeAll(); setFocusHome(true); }, [closeAll]);
+  // the side panel's Oby: your latest conversation, or with none, the empty chat
+  const openOwn = () => { const c = latestChat(chats); if (c) start({ kind: 'talk', id: c.id }); else newChat(); };
   useEffect(() => {
     if (!focusHome || layers.length) return;
     document.querySelector<HTMLElement>('.composer .composer-input')?.focus();
@@ -322,7 +354,9 @@ export default function Home() {
         atHome={!away}
         onClose={() => { lent.current = false; setSidebar(false); }}
         onNewChat={newChat}
-        onHome={closeAll}
+        onHome={home}
+        onOpenOwn={openOwn}
+        onOpenGroup={(id) => start({ kind: 'group', id, tab: firstTab(id) })}
         onOpenTask={(id) => start({ kind: 'task', id })}
         onOpenChat={(id) => start({ kind: 'task', id }, conversationOf(id))}
         onOpenOby={(name) => start({ kind: 'oby', id: name })}
@@ -344,8 +378,9 @@ export default function Home() {
     <div className="home">
       <header className="bar">
         {/* back: to Home, from anywhere (the trail beside it goes to the steps between) */}
-        {away && (
-          <button className={`icon-button bar-back${leavingAll ? ' is-leaving' : ''}`} onClick={closeAll} aria-label="Back to Home">
+        {/* chat first: nowhere to go back to from your conversation; from a page, back to it */}
+        {away && !(chatFirst && live.length === 1 && top?.kind === 'talk') && (
+          <button className={`icon-button bar-back${leavingAll ? ' is-leaving' : ''}`} onClick={home} aria-label={chatFirst ? 'Back' : 'Back to Home'}>
             <ChevronLeft size={24} strokeWidth={1.2} />
           </button>
         )}
@@ -439,11 +474,12 @@ export default function Home() {
             {/* coming in from setting up: it waits till Oby has hopped up, then rises in (app.css) */}
             <span className={`attention-label${running || needsYou ? '' : ' is-idle'}${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`}>{attention(running, needsYou, tasks.length === 0)}</span>
             {/* what Oby is asking you, answered here; opening one goes to its task's page */}
-            <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />
+            {(!chatFirst || !away) && <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />}
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
                 show here even while the side panel groups by status */}
-            <div className={`chips${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
+            {/* chat first, this stage is the empty chat: the kinds of work are in the side panel, under Tasks */}
+            {!chatFirst && <div className={`chips${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
                 {TYPES.map((c) => {
                   // blue: holds a new task; orange: something in it needs you (a task's decision, or
                   // GitHub's work waiting on you under To do: a review asked of you, an issue of yours);
@@ -461,7 +497,7 @@ export default function Home() {
                     </button>
                   );
                 })}
-            </div>
+            </div>}
           </section>
         )}
         </div>
@@ -493,9 +529,10 @@ export default function Home() {
         const covered = layers.indexOf(l) < layers.length - 1;
         const leaving = !!l.leaving, onGone = goneFor(l.key);
         // a page on its way out has nowhere to go back to (a second quick Esc)
-        const back = () => { if (i < 0) return; if (i > 0) backTo(i - 1); else closeAll(); };
+        // (chat first: your conversation is where you rest, so nothing to leave it for)
+        const back = () => { if (i < 0 || (chatFirst && i === 0 && l.kind === 'talk')) return; if (i > 0) backTo(i - 1); else home(); };
         if (l.kind === 'group') return <GroupView key={l.key} group={TYPES.find((t) => t.id === l.id)!} tab={l.tab} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} onOpenArchive={() => push({ kind: 'archive' })} />;
-        if (l.kind === 'task') return <TaskView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onHome={closeAll} onGone={onGone} onTell={tellFromTask} onSession={(id) => push({ kind: 'session', id })} />;
+        if (l.kind === 'task') return <TaskView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onHome={home} onGone={onGone} onTell={tellFromTask} onSession={(id) => push({ kind: 'session', id })} />;
         if (l.kind === 'session') return <SessionView key={l.key} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onTell={tellFromTask} />;
         if (l.kind === 'archive') return <ArchiveView key={l.key} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenTask={openTask} />;
         if (l.kind === 'settings') return <SettingsView key={l.key} page={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
@@ -505,6 +542,11 @@ export default function Home() {
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} />;
       })}
+      {/* chat first: what Oby is asking you, over your conversation, answered there in one click
+          (with none open, on the stage, as on Home) */}
+      {chatFirst && top?.kind === 'talk' && (
+        <div className="asks-over"><AskStack active onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} /></div>
+      )}
     </div>
       {/* stays next to the traffic lights whether the side panel is open or not.
           Last in the page on purpose: Electron reads drag areas in page order,

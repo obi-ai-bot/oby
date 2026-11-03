@@ -110,6 +110,9 @@ const past: Chat[] = PAST.map(([title, asked, answer, at], i) => ({
 // when it last moved (minutes ago): its latest message
 export const lastAgo = (c: Chat) => Math.min(c.at ?? Infinity, ...c.said.map((m) => m.ago));
 
+// the one that moved last: where the app opens (docs/contracts/chat-first.md, CHATFIRST-1)
+export const latestChat = (all: Chat[]) => all.reduce<Chat | undefined>((best, c) => (!best || lastAgo(c) < lastAgo(best) ? c : best), undefined);
+
 // a new user (lean.ts) starts with none: Oby opens the first (onboarding.ts)
 let chats: Chat[] = everything ? [...seeded, ...past].sort((a, b) => lastAgo(a) - lastAgo(b)) : [];
 const listeners = new Set<() => void>();

@@ -15,9 +15,12 @@ const stamp = new Date().toISOString().slice(0, 16);
 // a task name no earlier run used: the side panel finds tasks by name
 const taskName = `Oby drive ${stamp.slice(11)}`;
 
+// the empty chat, Home's stage, where words start a new conversation (docs/contracts/chat-first.md)
 async function home(t) {
-  const back = t.page.getByRole('button', { name: 'Back to Home' });
-  if (await back.isVisible()) { await t.click('Back to Home'); await back.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {}); }
+  if (await t.page.getByRole('button', { name: 'Show sidebar' }).isVisible()) await t.click('Show sidebar');
+  const oby = t.page.locator('.rail-button[aria-label="Oby"]');
+  if ((await oby.getAttribute('aria-pressed')) !== 'true') await oby.click();
+  await t.click('New conversation');
   await t.see(/Fix a bug|What should I work on|need you|All caught up/, { label: 'Home' });
 }
 
@@ -88,7 +91,7 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
 // a task's page, from the side panel, as the owner opens it
 async function openTask(t, title) {
   await home(t);
-  if (await t.page.getByRole('button', { name: 'Show sidebar' }).isVisible()) await t.click('Show sidebar');
+  await t.page.locator('.rail-button[aria-label="Tasks"]').click();
   const panel = t.page.locator('nav[aria-label="Side panel"]'), row = panel.getByText(title, { exact: true }).first();
   // Completed shows its latest 5: an older task (one its follow-up and reviews came after) is under Show N more
   if (!(await row.isVisible())) for (const more of await panel.getByRole('button', { name: /^Show \d+ more$/ }).all()) await more.click();
