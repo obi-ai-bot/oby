@@ -892,6 +892,7 @@ pub struct Jobs {
     routines: std::sync::OnceLock<Arc<crate::routines::Routines>>,
     /// Oby's Tetrix login: every owner's job's agent gets Tetrix through obid (crate::tetrix).
     tetrix: std::sync::OnceLock<Arc<crate::tetrix::Tetrix>>,
+    chatgpt: std::sync::OnceLock<Arc<crate::chatgpt::ChatGpt>>,
     /// A job's agent's only way off the Mac (crate::egress, #616).
     egress: std::sync::OnceLock<Arc<crate::egress::Egress>>,
     /// Where a job's `.obi/artifacts/` is published when it ends.
@@ -1182,6 +1183,7 @@ impl Jobs {
             connections: std::sync::OnceLock::new(),
             routines: std::sync::OnceLock::new(),
             tetrix: std::sync::OnceLock::new(),
+            chatgpt: std::sync::OnceLock::new(),
             egress: std::sync::OnceLock::new(),
             artifacts: std::sync::OnceLock::new(),
             approvals,
@@ -1267,6 +1269,56 @@ impl Jobs {
 
     pub fn use_tetrix(&self, tetrix: Arc<crate::tetrix::Tetrix>) {
         let _ = self.tetrix.set(tetrix);
+    }
+
+    pub fn use_chatgpt(&self, chatgpt: Arc<crate::chatgpt::ChatGpt>) {
+        let _ = self.chatgpt.set(chatgpt);
+    }
+
+    /// What OpenAI refused run `id`, once, when it ran on a ChatGPT login (crate::chatgpt_relay).
+    fn chatgpt_refusal(&self, id: &str) -> Option<crate::chatgpt_relay::Refusal> {
+        self.chatgpt.get().and_then(|chatgpt| chatgpt.runs.take(id))
+    }
+
+    /// Before a run on a ChatGPT login: the login still runs, and its model is one the account
+    /// lists: the first it lists otherwise, which the job's own `model` and its transcript say. A
+    /// token that can't be renewed just now isn't a reason to stop: the relay tries again.
+    async fn chatgpt_ready(
+        &self,
+        id: &str,
+        account: &crate::config::Account,
+    ) -> Result<(), String> {
+        let Some(chatgpt) = self
+            .chatgpt
+            .get()
+            .filter(|_| crate::chatgpt::marker_of(account).is_some())
+        else {
+            return Ok(());
+        };
+        if let Err(refused) = chatgpt.access(&account.id).await
+            && !matches!(refused, crate::chatgpt::Refused::Later(_))
+        {
+            return Err(refused.words().to_owned());
+        }
+        let was = self.get(id).and_then(|job| job.model);
+        let (model, changed) = chatgpt.model_for(&account.id, was.as_deref()).await;
+        if model != was {
+            if changed {
+                self.transcribed(
+                    id,
+                    self.transcripts.start(
+                        id,
+                        &format!(
+                            "Using {}: {} isn't one of this ChatGPT account's models",
+                            model.as_deref().unwrap_or("Codex's own model"),
+                            was.as_deref().unwrap_or("the model chosen")
+                        ),
+                    ),
+                );
+            }
+            self.update(id, |job| job.model = model);
+        }
+        Ok(())
     }
 
     /// Whether this machine's job sandbox holds an agent to obid's egress proxy
@@ -2012,7 +2064,8 @@ impl Jobs {
                     !reads.never.contains(&id)
                         && reads.asked.get(&id).is_none_or(|at| at.elapsed() >= every)
                 };
-                if !due || self.being_changed(&id) {
+                // A ChatGPT login has no usage to read (docs/contracts/chatgpt-sign-in.md).
+                if !due || self.being_changed(&id) || crate::chatgpt::marker_of(&account).is_some() {
                     continue;
                 }
                 // Off the runtime, as `GET /v1/status`'s: for Cursor's own login this reads the
@@ -6950,11 +7003,32 @@ impl Jobs {
         // Its builds take what memory leaves them next to the other jobs (crate::meter).
         extra.extend(self.build_env(&job.id, false));
         let tetrix = self.tetrix_mcp(job);
+        // On a ChatGPT login, no run holds a token: Codex goes through obid's relay, with the job's
+        // broker token (crate::chatgpt_relay).
+        let relay = (tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some())
+            .then(|| {
+                if let Some(why) = login_problem(tool, account, login_home().as_deref()) {
+                    return Err(why);
+                }
+                if !signed_in(tool, account, login_home().as_deref()) {
+                    return Err(crate::chatgpt::SIGN_IN_AGAIN.to_owned());
+                }
+                self.connections
+                    .get()
+                    .map(|connections| connections.open_chatgpt(&job.id))
+                    .ok_or_else(|| "obid's relay isn't running, so Codex didn't start.".to_owned())
+            })
+            .transpose()?;
         if tool == Tool::Codex
-            && let Some((_, token)) = broker.or(tetrix.as_ref())
+            && let Some((_, token)) = broker.or(tetrix.as_ref()).or(relay.as_ref())
         {
             // A secret obid knows since it made it (crate::connections::Connections::job_token).
             extra.push(("OBY_MCP_TOKEN", token.into()));
+        }
+        if relay.is_some()
+            && let Some(chatgpt) = self.chatgpt.get()
+        {
+            chatgpt.runs.begin(&job.id);
         }
         let own = self.own_sandbox(tool, account);
         match (&account.config_dir, tool) {
@@ -6973,6 +7047,10 @@ impl Jobs {
                         extra.push(("CLAUDE_CONFIG_DIR", login.clone().into_os_string()))
                     }
                     Tool::Codex => {
+                        // A job moved here from a device login keeps no copy of that login.
+                        if relay.is_some() {
+                            let _ = std::fs::remove_file(login.join("auth.json"));
+                        }
                         codex_copy_ready(&login.join("auth.json"), &account.name)?;
                         extra.push(("CODEX_HOME", login.clone().into_os_string()))
                     }
@@ -7051,6 +7129,9 @@ impl Jobs {
                 // github.com, which the egress proxy would ask the owner about (#616), and a job's
                 // `CODEX_HOME` has no plug-in in it anyway.
                 argv.splice(1..1, ["-c".into(), "features.plugins=false".into()]);
+                if let Some((base, _)) = &relay {
+                    argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
+                }
                 argv
             }
             Tool::Cursor => acp::cursor::argv(bin),
@@ -7697,6 +7778,10 @@ impl Jobs {
                     .await
                 }
                 Tool::Codex => {
+                    // A ChatGPT login has no usage to read, and pays by its plan.
+                    let chatgpt = self
+                        .job_account(&job)
+                        .is_ok_and(|(_, account)| crate::chatgpt::marker_of(&account).is_some());
                     let options = codex::Options {
                         resume: job.session.clone(),
                         model: job.model.clone(),
@@ -7704,8 +7789,13 @@ impl Jobs {
                         plan,
                         instructions: None,
                         no_commands: false,
-                        usage: true,
-                        priced: self.usage.get(&job.account).priced,
+                        usage: !chatgpt,
+                        priced: if chatgpt {
+                            Some("plan".into())
+                        } else {
+                            self.usage.get(&job.account).priced
+                        },
+                        chatgpt,
                     };
                     codex::run_turn(
                         launch,
@@ -9006,6 +9096,10 @@ impl Jobs {
         if tool == Tool::Claude {
             self.claude_login_ready(Some(&account)).await?;
         }
+        if tool == Tool::Codex {
+            Box::pin(self.chatgpt_ready(id, &account)).await?;
+        }
+        let job = self.get(id).unwrap_or(job);
         let launch = self.launch(&job, &spec, tool, flags, &account, None)?;
         if *signal.borrow() != Signal::Run {
             return Ok(());
@@ -9899,6 +9993,11 @@ impl Jobs {
                 {
                     return Err(why.into());
                 }
+                if tool == Tool::Codex
+                    && let Err(why) = Box::pin(self.chatgpt_ready(id, &account)).await
+                {
+                    return Err(End::needs_you(why, Some(crate::job::TRY_AGAIN)));
+                }
                 let left = self
                     .config
                     .job_ceiling
@@ -10029,6 +10128,9 @@ impl Jobs {
                 // transcript does: a login copy's token, a job's MCP token, the vault's.
                 let said = crate::secrets::known().redact(&turn.last_said());
                 if !turn.succeeded() {
+                    // What OpenAI said, when the run went through the relay: Codex's own words
+                    // drop its code (crate::chatgpt_relay).
+                    let refusal = self.chatgpt_refusal(id);
                     let subtype = turn.result.as_ref().and_then(|r| r.get("subtype"));
                     if subtype.and_then(Value::as_str) == Some("error_max_turns") {
                         // RECOVERY-4: the same session goes on, counted with RECOVERY-3's.
@@ -10068,16 +10170,22 @@ impl Jobs {
                         || crate::limits::is_limit(&ended)
                         || crate::limits::is_limit(&first);
                     // A limit the account's usage or the tool reports is #1563's, whatever cut it.
-                    let passing = (!full && turn.resets.is_none() && transient(&error, full))
-                        || (no_result && !limit_said && !retrying_wont_mend(&ended));
+                    use crate::chatgpt_relay::After;
+                    let passing = match &refusal {
+                        Some(refusal) => refusal.after == After::TryAgain,
+                        None => {
+                            (!full && turn.resets.is_none() && transient(&error, full))
+                                || (no_result && !limit_said && !retrying_wont_mend(&ended))
+                        }
+                    };
                     let tries = self.get(id).map_or(0, |j| j.recovery.errors);
                     if passing && tries < CUT_WAITS.len() {
                         // RECOVERY-1: running, in its same session and worker, so Stop works, no
                         // card shows and the tries count with what came before them.
-                        let error = if no_result {
-                            ended.as_str()
-                        } else {
-                            first.as_str()
+                        let error = match &refusal {
+                            Some(refusal) => refusal.words.as_str(),
+                            None if no_result => ended.as_str(),
+                            None => first.as_str(),
                         };
                         let wait = CUT_WAITS[tries].min(self.config.stall_after);
                         let attempt = tries + 1;
@@ -10123,7 +10231,9 @@ impl Jobs {
                     // OpenAI refused the Codex login, as Codex itself says (never the agent's own
                     // words): no run on it starts again until the owner signs in, and the job says
                     // so in words they can act on.
-                    if tool == Tool::Codex
+                    if let Some(refusal) = &refusal {
+                        reason = refusal.words.clone();
+                    } else if tool == Tool::Codex
                         && let Some(error) = codex_error(&reason).filter(|e| codex_login_refused(e))
                     {
                         let login = self.login_path(id);
@@ -10140,7 +10250,10 @@ impl Jobs {
                     // nothing that could loop. Not a stall: #773's budget and ceiling still hold,
                     // since the Try-again words go through `Jobs::message` as the owner's would.
                     let now = obi_protocol::time::now();
-                    let limited = turn.resets.is_some() || full || crate::limits::is_limit(&reason);
+                    let limited = match &refusal {
+                        Some(refusal) => refusal.after == After::Limit,
+                        None => turn.resets.is_some() || full || crate::limits::is_limit(&reason),
+                    };
                     let reset = turn
                         .resets
                         .or_else(|| {
@@ -10148,8 +10261,10 @@ impl Jobs {
                                 .then(|| crate::limits::reset_in(&reason, now))
                                 .flatten()
                         })
-                        // Else when the account's own usage says it's full until (#745).
-                        .or_else(|| limited.then(|| usage.full_until_at(now)).flatten());
+                        // Else when the account's own usage says it's full until (#745). OpenAI's
+                        // limit names no time, and an hour obid inferred never reaches the card.
+                        .or_else(|| limited.then(|| usage.full_until_at(now)).flatten())
+                        .filter(|_| refusal.is_none());
                     // The account is full whatever the tool said, so nothing else is routed there
                     // until it resets; and while another of the tool has room, the job goes on there.
                     if limited {

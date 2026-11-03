@@ -7,6 +7,7 @@
 // $CODEX_HOME/turns.jsonl: argv, cwd, HOME, CODEX_HOME, the prompt, the thread it resumed, its
 // settings, and what its CODEX_HOME holds.
 // What a turn does comes from the last line of the owner's words:
+//   RELAY              a turn on a ChatGPT login: through obid's relay, as fake-codex's
 //   HELLO              searches the web for "greetings" and streams "Hello there."
 //   REMEMBER           says "resume=<the thread it resumed, or none>"
 //   TOOLS              says "tools: <the oby tools, by name>"
@@ -55,7 +56,9 @@ if (argv.slice(-2).join(" ") === "features list") {
     process.stderr.write(`Error: CODEX_HOME points to "${process.env.CODEX_HOME}", but that path does not exist\n`);
     process.exit(1);
   }
-  if (process.env.CODEX_HOME && !existsSync(join(process.env.CODEX_HOME, "auth.json"))) {
+  // (a ChatGPT login has none: its run goes through obid's relay)
+  const relayed = argv.some((a) => a.startsWith("model_provider="));
+  if (!relayed && process.env.CODEX_HOME && !existsSync(join(process.env.CODEX_HOME, "auth.json"))) {
     process.stderr.write("fake-codex-harness: features list ran without the run's login copy\n");
     process.exit(1);
   }
@@ -134,6 +137,34 @@ async function mcpCall(turnId, server, tool, args, asked = tool) {
   const answer = server === "oby" ? await oby("tools/call", { name: tool, arguments: args }) : { result: { content: [{ type: "text", text: "ran" }] } };
   event("item/completed", turnId, { item: { ...item, status: answer.result?.isError ? "failed" : "completed", result: answer.result } });
   return answer;
+}
+
+// A turn on a ChatGPT login (crate::chatgpt_relay), as real Codex takes one (spike S5): it posts to
+// its `base_url` with the token named by `env_key`; a 401, a 403, a 5xx or a `response.failed` is
+// tried again, up to 5 more times (a 5xx's fewer here, to keep the tests short); a 400's body and a
+// 429's fixed words end the turn. Sends back what the model said.
+async function relayed() {
+  const key = "model_providers.openai_chatgpt_plan";
+  const base = setting(`${key}.base_url`);
+  const token = process.env[setting(`${key}.env_key`)];
+  if (!base) return { failed: "no relay in its settings" };
+  let last = "";
+  for (let tries = 0; tries < 6; tries++) {
+    const response = await fetch(`${base}/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ store: false, stream: true }),
+    });
+    const body = await response.text();
+    if (response.status === 400) return { failed: body };
+    if (response.status === 429) return { failed: "exceeded retry limit, last status: 429 Too Many Requests" };
+    if (!response.ok) { last = `unexpected status ${response.status}: ${body}`; continue; }
+    const events = body.split("\n").filter((l) => l.startsWith("data:")).map((l) => JSON.parse(l.slice(5)));
+    const failed = events.find((e) => e.type === "response.failed");
+    if (failed) { last = `stream disconnected before completion: ${failed.response.error.message}`; continue; }
+    return { said: events.flatMap((e) => e.item?.content ?? []).map((c) => c.text).join("") };
+  }
+  return { failed: last };
 }
 
 async function runTurn(turnId, prompt) {
@@ -249,6 +280,10 @@ async function act(turnId, words) {
     const used = { inputTokens: 120, cachedInputTokens: 100, outputTokens: 9, reasoningOutputTokens: 0, totalTokens: 129 };
     event("thread/tokenUsage/updated", turnId, { tokenUsage: { total: used, last: used } });
     return say(turnId, "used");
+  }
+  if (words.startsWith("RELAY")) {
+    const { said, failed } = await relayed();
+    return failed === undefined ? say(turnId, said) : complete(turnId, null, "failed", { message: failed });
   }
   if (words.startsWith("HELLO")) {
     const search = { type: "webSearch", id: randomUUID(), query: "greetings" };

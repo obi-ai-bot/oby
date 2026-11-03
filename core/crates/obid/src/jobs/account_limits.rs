@@ -12,6 +12,9 @@ const UNREAD_RESUME: i64 = 30 * 60;
 /// An approved Resume waiting for room.
 const RESUME_WAIT: &str = "Waiting for the account's usage limit. Oby resumes this job once fresh usage confirms room, or 30 minutes after the reset when the account reports none.";
 
+/// An approved Resume on a ChatGPT login: OpenAI's limit names no time, and neither does Oby.
+const RESUME_WAIT_NO_TIME: &str = "Waiting for ChatGPT's usage limit. It doesn't say when it ends, so Oby tries again by itself, and you can check Manage usage.";
+
 /// An approved Resume its account's weekly reserve alone holds.
 const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 80% of its week. Lift its reserve to resume now.";
 
@@ -189,7 +192,7 @@ impl Jobs {
             };
             let reason = match decision.choice {
                 Choice::Pending => job.reason.clone().unwrap_or_else(|| LIMIT_QUESTION.into()),
-                Choice::Resume => RESUME_WAIT.into(),
+                Choice::Resume => self.resume_wait(&decision.account).into(),
                 Choice::Stop => {
                     "You kept this job stopped after its account reached its usage limit.".into()
                 }
@@ -261,7 +264,7 @@ impl Jobs {
                     let why = if usage.only_reserved(now) {
                         RESERVE_WAIT
                     } else {
-                        RESUME_WAIT
+                        self.resume_wait(&decision.account)
                     };
                     self.say_limit_wait(&decision, why);
                     continue;
@@ -354,6 +357,27 @@ impl Jobs {
         }
     }
 
+    /// What an approved Resume on `account` says while it waits.
+    fn resume_wait(&self, account: &str) -> &'static str {
+        let on_chatgpt = Tool::ALL
+            .into_iter()
+            .flat_map(|tool| self.accounts(tool))
+            .find(|a| a.id == account)
+            .is_some_and(|a| crate::chatgpt::marker_of(&a).is_some());
+        if on_chatgpt {
+            RESUME_WAIT_NO_TIME
+        } else {
+            RESUME_WAIT
+        }
+    }
+
+    /// A ChatGPT login reports no usage (docs/contracts/chatgpt-sign-in.md), so it can never show
+    /// room: it's offered while nothing obid knows holds it, and it moves only on the owner's click.
+    fn chatgpt_has_room(&self, account: &crate::config::Account, now: i64) -> bool {
+        crate::chatgpt::marker_of(account).is_some()
+            && self.usage.get(&account.id).full_until_at(now).is_none()
+    }
+
     /// Only current, provider-reported windows constitute evidence that an account has room.
     fn verified_limit_room(&self, account: &str, now: i64, since: i64) -> bool {
         let usage = self.usage.get(account);
@@ -402,7 +426,8 @@ impl Jobs {
                 if account.id == decision.account
                     || self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())
-                    || !self.verified_limit_room(&account.id, now, now.saturating_sub(600))
+                    || !(self.verified_limit_room(&account.id, now, now.saturating_sub(600))
+                        || self.chatgpt_has_room(&account, now))
                     || self.own_sandbox(tool, &account)
                 {
                     continue;

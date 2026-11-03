@@ -17,7 +17,7 @@ fn agent(name: &str) -> PathBuf {
 
 /// The tests' configuration with stand-in agents, Codex's among them, and no account yet.
 fn configured(folder: &Path) -> Value {
-    let remote = folder.join("remote.git");
+    let remote = fixture(&folder.join("fixture"));
     let mut config = config(folder, &remote, &agent("fake-claude"));
     config["agents"]["codex"] = json!({"bin": agent("fake-codex"), "accounts": []});
     config
@@ -134,6 +134,7 @@ fn chatgpt_1_signs_in_with_no_auth_json_and_tokens_only_in_the_vault() {
     let world = world("chatgpt-1");
     let id = new_account(&world.obid);
     let a = signed_in(&world, &id);
+    assert_eq!(a["signedIn"], true, "{a}");
     assert_eq!(a["login"], "chatgpt");
     assert_eq!(a["loginEmail"], "person@example.com");
     assert_eq!(a["email"], "person@example.com");
@@ -685,6 +686,681 @@ fn chatgpt_11_every_token_is_taken_out_of_answers_also_after_a_restart() {
     }
 }
 
+/// A job on the account, with `task` for the stand-in Codex: the relay, in its box.
+fn job(world: &World, account: &str, task: &str) -> String {
+    // (a sign-in that just took still holds the account for a moment)
+    let posted = within(10, "the job was taken", || {
+        let posted = call(
+            &world.obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "check": "true",
+                "agent": "codex", "account": account, "task": task}}),
+            ),
+        );
+        (posted.status != 422).then_some(posted)
+    });
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    posted.body["id"].as_str().unwrap().to_owned()
+}
+
+fn ended(world: &World, id: &str) -> Value {
+    let answer = call(&world.obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    answer.body
+}
+
+fn posts(world: &World) -> usize {
+    world
+        .openai
+        .with(|s| s.bearers.iter().filter(|(_, m, _)| m == "POST").count())
+}
+
+/// CHATGPT-1, with runs: a job on the account goes to OpenAI through the relay. OpenAI sees the
+/// access token, Codex's process never has it, and the model comes from the account's list.
+#[test]
+fn chatgpt_1_a_job_runs_through_the_relay_on_the_accounts_own_model() {
+    let world = world("chatgpt-1-job");
+    let id = new_account(&world.obid);
+    let a = signed_in(&world, &id);
+    assert_eq!(a["signedIn"], true, "{a}");
+    let access = world.openai.with(|s| s.tokens[0].clone());
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(summary_of(&done).contains("From the stand-in."), "{done}");
+    assert_eq!(done["model"], "gpt-stand-in", "the first the account lists");
+    let seen = world.openai.with(|s| s.bearers.clone());
+    assert!(
+        seen.iter().any(|(token, method, path)| token == &access
+            && method == "POST"
+            && path == "/v1/responses"),
+        "{seen:?}"
+    );
+    // The periodic read and `account/read` aren't asked on a login that has neither.
+    assert!(!done.to_string().contains("rateLimits"));
+}
+
+/// CHATGPT-7: the access token is over and the refresh token good: still signed in, and the next
+/// run refreshes first.
+#[test]
+fn chatgpt_7_an_expired_token_stays_signed_in_and_the_next_run_refreshes() {
+    let world = world("chatgpt-7");
+    world.openai.with(|s| s.expires_in = 1);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    std::thread::sleep(Duration::from_secs(2));
+    let a = account(&world.obid, &id).unwrap();
+    assert_eq!(a["signedIn"], true, "{a}");
+    world.openai.with(|s| s.expires_in = 3600);
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_eq!(done["status"], "done", "{done}");
+    let refreshes = world.openai.with(|s| s.refreshes.len());
+    assert_eq!(refreshes, 1);
+}
+
+/// Every process's environment and arguments, as anything of this user can read them: S0 showed a
+/// box reads what an unboxed reader does.
+fn every_environment() -> String {
+    let flags = if cfg!(target_os = "macos") {
+        "-axEww"
+    } else {
+        "axeww"
+    };
+    let output = std::process::Command::new("/bin/ps")
+        .args([flags, "-o", "command="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// CHATGPT-10: while a job runs, no OpenAI token is in any process's environment or arguments, or
+/// anywhere in `CODEX_HOME`, and Codex's own `env_key` holds only the job's broker token.
+#[test]
+fn chatgpt_10_no_process_and_no_file_of_a_running_job_holds_a_token() {
+    let world = world("chatgpt-10");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let tokens = world.openai.with(|s| s.tokens.clone());
+    let job = job(&world, &id, "RELAY HOLD");
+    let worktree = world.obid.home.join("worktrees").join(&job);
+    let seen = worktree.join(".obi/env-seen.json");
+    let env = within(30, "the run is under way", || std::fs::read(&seen).ok());
+    let running = every_environment();
+    assert!(
+        running.contains("model_providers.openai_chatgpt_plan.base_url"),
+        "its own arguments show"
+    );
+    for token in &tokens {
+        assert!(!running.contains(token.as_str()), "{token} in a process");
+        assert!(!holds(&env, token), "{token} in its environment");
+    }
+    let env: Value = serde_json::from_slice(&env).unwrap();
+    let broker = env["OBY_MCP_TOKEN"].as_str().unwrap();
+    assert!(!tokens.iter().any(|t| t == broker));
+    for (path, bytes) in files(&world.obid.home) {
+        for token in &tokens {
+            assert!(
+                !holds(&bytes, token) || path == vault(&world.obid),
+                "{token} in {}",
+                path.display()
+            );
+        }
+    }
+    // The broker token calls nothing but the relay's two routes, and only this job's.
+    let host = format!("127.0.0.1:{}", world.obid.port);
+    let base = format!("http://{host}/v1/agent/chatgpt/{job}");
+    let auth = format!("Bearer {broker}");
+    let with_token: &[(&str, &str)] = &[("Authorization", &auth)];
+    assert_eq!(
+        http("GET", &format!("{base}/models"), with_token, None).0,
+        200
+    );
+    assert_eq!(http("GET", &format!("{base}/models"), &[], None).0, 401);
+    assert_eq!(
+        http("POST", &format!("{base}/files"), with_token, None).0,
+        401
+    );
+    assert_eq!(
+        http("GET", &format!("http://{host}/v1/status"), with_token, None).0,
+        401
+    );
+    assert_eq!(
+        http(
+            "GET",
+            &format!("http://{host}/v1/agent/chatgpt/other/models"),
+            with_token,
+            None
+        )
+        .0,
+        401
+    );
+    std::fs::write(worktree.join(".obi/go"), "").unwrap();
+    assert_eq!(ended(&world, &job)["status"], "done");
+    // It dies with the job.
+    assert_eq!(
+        http("GET", &format!("{base}/models"), with_token, None).0,
+        401
+    );
+}
+
+/// CHATGPT-11, through the whole way: a model's words holding a token are taken out on their way to
+/// the job, as every answer's are.
+#[test]
+fn chatgpt_11_a_token_in_a_models_words_is_taken_out_on_the_way_through() {
+    let world = world("chatgpt-11-through");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let access = world.openai.with(|s| s.tokens[0].clone());
+    world.openai.with(|s| {
+        s.responses
+            .push_back(Reply::Sse(said(&format!("the token is {access} there"))));
+    });
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(!done.to_string().contains(&access), "{done}");
+    assert!(summary_of(&done).contains("[vault: oby.chatgpt."), "{done}");
+}
+
+/// CHATGPT-12: a job outlives its token and finishes on the same thread: the relay refreshes on the
+/// 401 and sends the same request again, with no `RETRY_WAITS` spent and Codex none the wiser.
+#[test]
+fn chatgpt_12_a_job_outlives_its_token_with_no_retry_spent() {
+    let world = world("chatgpt-12");
+    // Past the 5 minutes a refresh comes first, within the 10 a 401 is taken to be its end.
+    world.openai.with(|s| s.expires_in = 500);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let first = world.openai.with(|s| {
+        let first = s.tokens[0].clone();
+        s.refused.insert(first.clone());
+        first
+    });
+    let started = std::time::Instant::now();
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(summary_of(&done).contains("From the stand-in."), "{done}");
+    assert!(
+        started.elapsed() < Duration::from_secs(25),
+        "no retry's 30-second wait"
+    );
+    let (refreshes, seen) = world
+        .openai
+        .with(|s| (s.refreshes.len(), s.bearers.clone()));
+    assert_eq!(refreshes, 1);
+    let tokens: Vec<&String> = seen
+        .iter()
+        .filter(|(_, method, _)| method == "POST")
+        .map(|(token, _, _)| token)
+        .collect();
+    assert_eq!(tokens.len(), 2, "the same request again: {seen:?}");
+    assert_eq!(tokens[0], &first);
+    assert_ne!(tokens[1], &first);
+    assert_eq!(account(&world.obid, &id).unwrap()["signedIn"], true);
+}
+
+/// CHATGPT-13: a usage limit, before the stream begins or after: the #1563 question with no reset
+/// time, the account marked as held, and the inferred hour never its `resetAt`, a second job's
+/// neither. Nothing else goes to OpenAI meanwhile, whatever Codex tries.
+#[test]
+fn chatgpt_13_a_usage_limit_is_the_question_with_no_reset_time() {
+    let world = world("chatgpt-13");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let body =
+        json!({"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "Over."}});
+    world
+        .openai
+        .with(|s| s.responses.push_back(Reply::Json(429, body.clone())));
+    let first = job(&world, &id, "RELAY");
+    let stopped = ended(&world, &first);
+    assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    assert!(
+        stopped["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Usage limit reached"),
+        "{stopped}"
+    );
+    assert_eq!(posts(&world), 1, "Codex doesn't try a 429 again");
+
+    let decision = within(20, "the question", || {
+        call(&world.obid, "GET", "/v1/limit-decisions", None)
+            .body
+            .as_array()?
+            .iter()
+            .find(|d| {
+                d["jobs"]
+                    .as_array()
+                    .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == first.as_str()))
+            })
+            .cloned()
+    });
+    assert!(decision["resetAt"].is_null(), "{decision}");
+    let options = decision["options"].as_array().unwrap();
+    assert!(options.iter().any(|o| o["kind"] == "resume"), "{decision}");
+
+    // The hold obid inferred stays obid's: a job after it isn't told it as a time either.
+    let held = account(&world.obid, &id).unwrap();
+    assert!(!held["fullUntil"].is_null(), "{held}");
+    world.openai.with(|s| {
+        s.responses.push_back(Reply::Sse(failed(
+            "subscription_sharing_usage_limit_exceeded",
+            "Over.",
+        )))
+    });
+    let posted = call(
+        &world.obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "check": "true",
+            "agent": "codex", "account": id, "task": "RELAY", "startNow": true}}),
+        ),
+    );
+    if posted.status == 201 {
+        let second = posted.body["id"].as_str().unwrap();
+        let before = posts(&world);
+        let stopped = within(40, "the second job stopped or waits", || {
+            let j = call(&world.obid, "GET", &format!("/v1/jobs/{second}"), None).body;
+            (j["status"] == "interrupted" || j["status"] == "queued").then_some(j)
+        });
+        if stopped["status"] == "interrupted" {
+            assert_eq!(
+                posts(&world),
+                before + 1,
+                "a stream's failure stops Codex's retries here"
+            );
+            for decision in call(&world.obid, "GET", "/v1/limit-decisions", None)
+                .body
+                .as_array()
+                .unwrap()
+            {
+                assert!(decision["resetAt"].is_null(), "{decision}");
+            }
+        }
+    }
+}
+
+/// CHATGPT-14: a 503 keeps the credentials and backs off; a 403 not-eligible goes to OpenAI once and
+/// ends the job saying so; a 401 far from the token's end, or a second straight after a refresh, ends
+/// the job with the request id and asks for no sign-in.
+#[test]
+fn chatgpt_14_a_503_backs_off_a_403_stops_and_a_repeated_401_ends_the_job() {
+    let world = world("chatgpt-14");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+
+    // 403: one request, though Codex would try five more.
+    let error =
+        json!({"error": {"code": "subscription_sharing_user_not_eligible", "message": "No."}});
+    world
+        .openai
+        .with(|s| s.responses.push_back(Reply::Json(403, error.clone())));
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_ne!(done["status"], "done", "{done}");
+    let reason = done["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("isn't available for this account"),
+        "{done}"
+    );
+    assert!(reason.contains("req_scripted"), "{done}");
+    assert_eq!(posts(&world), 1, "no retry of a 403");
+    assert_eq!(
+        world.openai.with(|s| s.authorized.len()),
+        1,
+        "no OAuth loop"
+    );
+    let a = account(&world.obid, &id).unwrap();
+    assert_eq!(a["signedIn"], true, "{a}");
+    assert!(a["fullUntil"].is_null(), "not a usage limit: {a}");
+
+    // 401, far from the token's end: not cured by a refresh, so none is tried.
+    let refreshes = world.openai.with(|s| s.refreshes.len());
+    let current = world.openai.with(|s| {
+        let token = s
+            .tokens
+            .iter()
+            .rev()
+            .find(|t| t.contains("-access-"))
+            .cloned()
+            .unwrap();
+        s.refused.insert(token.clone());
+        token
+    });
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_ne!(done["status"], "done", "{done}");
+    assert!(
+        done["reason"].as_str().unwrap().contains("req_refused"),
+        "{done}"
+    );
+    assert_eq!(world.openai.with(|s| s.refreshes.len()), refreshes);
+    assert_eq!(account(&world.obid, &id).unwrap()["signedIn"], true);
+    world.openai.with(|s| s.refused.remove(&current));
+
+    // 503: credentials kept, and the round tried again by itself.
+    for _ in 0..30 {
+        world.openai.with(|s| {
+            s.responses.push_back(Reply::Json(
+                503,
+                json!({"detail": "Direct routing is unavailable"}),
+            ))
+        });
+    }
+    let id503 = job(&world, &id, "RELAY");
+    let retrying = within(60, "it waits to try again", || {
+        let j = call(&world.obid, "GET", &format!("/v1/jobs/{id503}"), None).body;
+        j["step"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("Retrying after"))
+            .then_some(j)
+    });
+    assert_eq!(retrying["status"], "running", "{retrying}");
+    assert_eq!(account(&world.obid, &id).unwrap()["signedIn"], true);
+    let _ = call(&world.obid, "POST", &format!("/v1/jobs/{id503}/stop"), None);
+
+    // A second 401 straight after a refresh: the job ends, the login stays.
+    let world = self::world("chatgpt-14-again");
+    world.openai.with(|s| s.expires_in = 500);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    world.openai.with(|s| s.refuse_all = true);
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_ne!(done["status"], "done", "{done}");
+    assert!(
+        done["reason"].as_str().unwrap().contains("req_refused"),
+        "{done}"
+    );
+    assert_eq!(world.openai.with(|s| s.refreshes.len()), 1);
+    assert_eq!(account(&world.obid, &id).unwrap()["signedIn"], true);
+}
+
+/// CHATGPT-9, at a run: the refresh a run needs says the login ended: the job says what to do, the
+/// row stops saying signed in, and nothing is retried.
+#[test]
+fn chatgpt_9_a_login_ended_mid_job_says_sign_in_again() {
+    let world = world("chatgpt-9-job");
+    world.openai.with(|s| s.expires_in = 60);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    world.openai.with(|s| {
+        s.token_errors
+            .push_back((400, json!({"error": "refresh_token_expired"})))
+    });
+    let done = ended(&world, &job(&world, &id, "RELAY"));
+    assert_ne!(done["status"], "done", "{done}");
+    assert!(
+        done["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Continue with ChatGPT"),
+        "{done}"
+    );
+    let a = account(&world.obid, &id).unwrap();
+    assert_eq!(a["signedIn"], false, "{a}");
+    assert_eq!(a["login"], "chatgpt", "the record stays, for its client id");
+    let url = started(&world.obid, &id);
+    assert!(
+        url.contains("client_id=oaiapp_1"),
+        "the saved client: {url}"
+    );
+    assert!(!url.contains("agent_name_hint"), "{url}");
+}
+
+/// A conversation on a ChatGPT login goes through the relay with its turn's own token.
+#[test]
+fn chatgpt_a_conversations_turn_goes_through_the_relay() {
+    let folder = Folder::new("chatgpt-conversation");
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    config["agents"]["codex"]["bin"] = json!(agent("fake-codex-harness"));
+    config["conversation"] = json!({"agent": "codex"});
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let answer = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "RELAY", "new": true})),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(
+        answer.text.contains("From the stand-in."),
+        "{}",
+        answer.text
+    );
+    let access = world.openai.with(|s| s.tokens[0].clone());
+    assert!(world.openai.with(|s| {
+        s.bearers
+            .iter()
+            .any(|(t, m, _)| t == &access && m == "POST")
+    }));
+    // Over its limit: stated, and the turn doesn't go on to another account by itself.
+    world.openai.with(|s| {
+        s.responses.push_back(Reply::Json(
+            429,
+            json!({"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "Over."}}),
+        ))
+    });
+    let answer = call(
+        &world.obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "RELAY", "new": true})),
+    );
+    assert!(
+        answer.text.contains("Usage limit reached"),
+        "{}",
+        answer.text
+    );
+    assert!(!account(&world.obid, &id).unwrap()["fullUntil"].is_null());
+}
+
+/// The owner's decision of 2026-11-02: ChatGPT accounts are offered at a limit, though they report
+/// no usage. Offered, never moved to without the owner's click.
+#[test]
+fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itself() {
+    let folder = Folder::new("chatgpt-13-offer");
+    let openai = OpenAi::start();
+    let config = configured(&folder.0);
+    let claude = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join(".credentials.json"),
+        json!({"claudeAiOauth": {"accessToken": "fake-claude",
+            "expiresAt": (obi_protocol::time::now() + 86400) * 1000}})
+        .to_string(),
+    )
+    .unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let posted = call(
+        &world.obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
+            "task": "LIMITED: 3600", "agent": "claude", "account": "stub"}}),
+        ),
+    );
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let job = posted.body["id"].as_str().unwrap().to_owned();
+    let decision = within(30, "the question offers the ChatGPT account", || {
+        call(&world.obid, "GET", "/v1/limit-decisions", None)
+            .body
+            .as_array()?
+            .iter()
+            .find(|d| {
+                d["options"]
+                    .as_array()
+                    .is_some_and(|o| o.iter().any(|o| o["account"] == id.as_str()))
+            })
+            .cloned()
+    });
+    assert_eq!(decision["jobs"][0]["id"], job.as_str());
+    let stays = call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
+    assert_eq!(stays["status"], "interrupted", "{stays}");
+    assert_eq!(
+        stays["account"], "stub",
+        "it moves only on the owner's click"
+    );
+    assert_eq!(posts(&world), 0);
+}
+
+/// S0's whole way, on demand: real `codex` as the job's agent in obid's real box, through obid's
+/// real relay, to this stand-in, with a shell command approved on the way. Set `OBY_REAL_CODEX` to
+/// its binary: never the owner's login, since its `CODEX_HOME` is the job's own.
+#[test]
+#[ignore = "needs a real codex: OBY_REAL_CODEX=<binary>"]
+fn chatgpt_real_codex_talks_through_the_relay() {
+    let bin = std::env::var("OBY_REAL_CODEX").expect("OBY_REAL_CODEX");
+    let folder = Folder::new("chatgpt-real-talk");
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    config["agents"]["codex"]["bin"] = json!(bin);
+    config["conversation"] = json!({"agent": "codex"});
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    world.openai.with(|s| {
+        s.responses
+            .push_back(Reply::Sse(said("Hello from the plan.")))
+    });
+    let answer = within(30, "the account is free", || {
+        let answer = call(
+            &world.obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": "hi", "new": true})),
+        );
+        (!answer.text.contains("is being signed in")).then_some(answer)
+    });
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(
+        answer.text.contains("Hello from the plan."),
+        "{}",
+        answer.text
+    );
+    let access = world.openai.with(|s| s.tokens[0].clone());
+    let seen = world.openai.with(|s| s.bearers.clone());
+    assert!(
+        seen.iter().all(|(token, _, _)| token == &access),
+        "{seen:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a real codex: OBY_REAL_CODEX=<binary>"]
+fn chatgpt_real_codex_runs_through_the_relay() {
+    let bin = std::env::var("OBY_REAL_CODEX").expect("OBY_REAL_CODEX");
+    let folder = Folder::new("chatgpt-real");
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    config["agents"]["codex"]["bin"] = json!(bin);
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    world.openai.with(|s| {
+        s.responses
+            .push_back(Reply::Sse(said("Real Codex, through the relay.")));
+    });
+    let done = ended(&world, &job(&world, &id, "Say hello."));
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(summary_of(&done).contains("through the relay"), "{done}");
+    let access = world.openai.with(|s| s.tokens[0].clone());
+    let seen = world.openai.with(|s| s.bearers.clone());
+    assert!(
+        seen.iter().all(|(token, _, _)| token == &access),
+        "{seen:?}"
+    );
+    // Over its limit: the code decides, not Codex's words about a 429.
+    world.openai.with(|s| {
+        s.responses.push_back(Reply::Json(
+            429,
+            json!({"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "Over."}}),
+        ));
+    });
+    let stopped = ended(&world, &job(&world, &id, "Say hello again."));
+    assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    assert!(
+        stopped["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Usage limit reached"),
+        "{stopped}"
+    );
+    // Not eligible: said at once, and the one request is all OpenAI gets.
+    let world2 = world;
+    let again = new_account(&world2.obid);
+    signed_in(&world2, &again);
+    let before = posts(&world2);
+    world2.openai.with(|s| {
+        s.responses.push_back(Reply::Json(
+            403,
+            json!({"error": {"code": "subscription_sharing_user_not_eligible", "message": "No."}}),
+        ));
+    });
+    let refused = ended(&world2, &job(&world2, &again, "Say hello once more."));
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("isn't available"),
+        "{refused}"
+    );
+    assert_eq!(
+        posts(&world2),
+        before + 1,
+        "real Codex retried past the relay"
+    );
+}
+
+fn summary_of(job: &Value) -> &str {
+    job["summary"].as_str().unwrap_or("")
+}
+
 #[allow(dead_code)]
 mod stand_in_openai {
     //! A stand-in OpenAI on loopback for the ChatGPT tests (docs/contracts/chatgpt-sign-in.md):
@@ -750,6 +1426,8 @@ mod stand_in_openai {
         pub bearers: Vec<(String, String, String)>,
         /// Access tokens it answers 401 for.
         pub refused: HashSet<String>,
+        /// Answers 401 for every token.
+        pub refuse_all: bool,
         issued_clients: u32,
         minted: u32,
         codes: HashMap<String, Grant>,
@@ -802,6 +1480,7 @@ mod stand_in_openai {
                 revoked: Vec::new(),
                 bearers: Vec::new(),
                 refused: HashSet::new(),
+                refuse_all: false,
                 issued_clients: 0,
                 minted: 0,
                 codes: HashMap::new(),
@@ -1138,7 +1817,7 @@ mod stand_in_openai {
         script
             .bearers
             .push((token.clone(), "POST".into(), "/v1/responses".into()));
-        if script.refused.contains(&token) {
+        if script.refuse_all || script.refused.contains(&token) {
             return (
                 StatusCode::UNAUTHORIZED,
                 [("x-request-id", "req_refused")],
@@ -1177,7 +1856,10 @@ mod stand_in_openai {
             json!({"type": "response.created", "response": {"id": "resp_1"}}),
             json!({"type": "response.output_item.done", "item": {"type": "message", "role": "assistant",
             "content": [{"type": "output_text", "text": words}]}}),
-            json!({"type": "response.completed", "response": {"id": "resp_1"}}),
+            json!({"type": "response.completed", "response": {"id": "resp_1", "usage": {
+            "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}}}}),
         ]
     }
 

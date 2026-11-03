@@ -42,6 +42,10 @@ pub struct Options {
     /// How the job's account pays (`api` or `plan`), when obid knows it already: then the run
     /// doesn't ask `account/read`.
     pub priced: Option<String>,
+    /// On a ChatGPT login (crate::chatgpt): the thread starts with the model (OpenAI's page has it
+    /// so, and the provider has no default of its own) and Codex says it's Oby, the name it signed
+    /// in under.
+    pub chatgpt: bool,
 }
 
 /// The `command` line `codex app-server` runs as: the binary, then `app-server`. Oby's broker
@@ -262,9 +266,14 @@ const NOT_TOOLS: &[&str] = &[
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     async fn turn(&mut self, prompt: &str, options: &Options) -> Result<(), Stop> {
         let version = env!("CARGO_PKG_VERSION");
+        let client = if options.chatgpt {
+            crate::chatgpt::AGENT_NAME
+        } else {
+            "obid"
+        };
         self.call(
             "initialize",
-            json!({"clientInfo": {"name": "obid", "title": "obid", "version": version}}),
+            json!({"clientInfo": {"name": client, "title": client, "version": version}}),
         )
         .await?
         .map_err(|e| Stop::Failed(format!("Codex couldn't start: {}", e.message)))?;
@@ -293,6 +302,11 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         let mut params = thread_params(&cwd);
         if let Some(instructions) = &options.instructions {
             params["developerInstructions"] = json!(instructions);
+        }
+        if options.chatgpt
+            && let Some(model) = options.model.as_deref().filter(|m| !m.is_empty())
+        {
+            params["model"] = json!(model);
         }
         let (method, what) = match &options.resume {
             Some(thread) => {

@@ -57,7 +57,7 @@ pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Opti
     if tool == Tool::Codex
         && let Some(marker) = crate::chatgpt::marker_of(account)
     {
-        return CHATGPT_RUNS && marker.usable(now_ms() as i64 / 1000);
+        return marker.usable(now_ms() as i64 / 1000);
     }
     has_login(tool, account, home)
         && match (tool, login_file(tool, account, home)) {
@@ -72,10 +72,6 @@ pub(crate) fn signed_in(tool: Tool, account: &crate::config::Account, home: Opti
 
 /// A ChatGPT login without the plan's scope: the sign-in is kept, and no run starts on it.
 const CHATGPT_PLAN_OFF: &str = "ChatGPT plan use is off";
-
-/// Whether a run can use a ChatGPT login yet: off until runs go through obid's relay, or routing
-/// would start a run that fails and says "run codex login".
-const CHATGPT_RUNS: bool = false;
 
 /// Why a login that's there can't run, as a run would say it: Codex's access token ends within 5
 /// minutes, and only Codex itself refreshes it ([`codex_copy_ready`]); Cursor's own Keychain login

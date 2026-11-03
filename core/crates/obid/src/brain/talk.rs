@@ -81,9 +81,28 @@ pub(super) fn accounts(
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
         .collect();
     let on = on.filter(|on| shared.jobs.has_room(on));
-    order(chosen, on, lists, shared.jobs.account_failover(), |id| {
-        shared.jobs.has_room(id)
-    })
+    keep_chatgpt_apart(
+        order(chosen, on, lists, shared.jobs.account_failover(), |id| {
+            shared.jobs.has_room(id)
+        }),
+        |account| crate::chatgpt::marker_of(account).is_some(),
+    )
+}
+
+/// Nobody moves on to or off a ChatGPT login without the owner's click: a turn on one tries only
+/// that, and one on anything else never goes on to one. On a Mac with nothing else, Auto is the
+/// ChatGPT account (docs/contracts/chatgpt-sign-in.md).
+fn keep_chatgpt_apart(
+    order: Vec<(Tool, Account)>,
+    on_chatgpt: impl Fn(&Account) -> bool,
+) -> Vec<(Tool, Account)> {
+    match order.first() {
+        Some((_, first)) if on_chatgpt(first) => order.into_iter().take(1).collect(),
+        _ => order
+            .into_iter()
+            .filter(|(_, account)| !on_chatgpt(account))
+            .collect(),
+    }
 }
 
 /// The chosen account first, else the one the session is on, then whichever has room: those of its
@@ -252,6 +271,35 @@ pub(super) fn moved_line(
 
 #[cfg(test)]
 mod tests {
+    /// Nobody moves on to or off a ChatGPT login without the owner's click.
+    #[test]
+    fn a_chatgpt_login_never_takes_or_gives_a_turn_by_itself() {
+        let account = |id: &str| Account {
+            id: id.into(),
+            name: id.into(),
+            config_dir: None,
+            payer: None,
+        };
+        let list = |ids: &[&str]| -> Vec<(Tool, Account)> {
+            ids.iter().map(|id| (Tool::Codex, account(id))).collect()
+        };
+        let ids = |order: Vec<(Tool, Account)>| -> Vec<String> {
+            order.into_iter().map(|(_, a)| a.id).collect()
+        };
+        let plan = |a: &Account| a.id.starts_with("plan");
+        // A turn on anything else never goes on to one.
+        assert_eq!(
+            ids(keep_chatgpt_apart(list(&["a", "plan1", "b"]), plan)),
+            ["a", "b"]
+        );
+        // One on a ChatGPT login tries only that: the owner's choice, or a Mac with nothing else.
+        assert_eq!(
+            ids(keep_chatgpt_apart(list(&["plan1", "a", "plan2"]), plan)),
+            ["plan1"]
+        );
+        assert!(keep_chatgpt_apart(list(&[]), plan).is_empty());
+    }
+
     use super::*;
 
     fn account(id: &str) -> Account {

@@ -279,6 +279,18 @@ fn resource_fits(resource: &str, mcp: &reqwest::Url) -> bool {
 }
 
 /// The JSON a sign-in server answered, read up to 256 KB; null past that or when it isn't JSON.
+/// [`small_json`], when an answer may be plain text: then the text, as a JSON string.
+pub(crate) async fn small_json_or_text(response: reqwest::Response) -> Value {
+    let Ok(bytes) = response.bytes().await else {
+        return Value::Null;
+    };
+    let bytes = &bytes[..bytes.len().min(1 << 20)];
+    serde_json::from_slice(bytes).unwrap_or_else(|_| {
+        let text: String = String::from_utf8_lossy(bytes).chars().take(4096).collect();
+        Value::String(text)
+    })
+}
+
 pub(crate) async fn small_json(mut response: reqwest::Response) -> Value {
     let mut bytes = Vec::new();
     while let Ok(Some(chunk)) = response.chunk().await {

@@ -1039,6 +1039,8 @@ mod tests {
             (Method::PATCH, "/v1/settings/jobs"),
             (Method::GET, "/v1/checks/next"),
             (Method::POST, "/v1/agent/mcp/abc"),
+            (Method::POST, "/v1/agent/chatgpt/abc/responses"),
+            (Method::GET, "/v1/agent/chatgpt/abc/models"),
             (Method::GET, "/v1/obid/plugins"),
             (Method::GET, "/app/"),
         ] {

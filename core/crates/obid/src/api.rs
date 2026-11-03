@@ -208,6 +208,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/notifications", post(crate::push::register))
         .merge(crate::connections::router())
         .merge(crate::tetrix::router())
+        .merge(crate::chatgpt_relay::router())
         .route(
             "/v1/settings/jobs",
             get(crate::routes::job_settings).put(crate::routes::set_job_settings),
@@ -411,12 +412,9 @@ pub const NO_TOKEN: &str = "This Oby answers only requests with its API token.";
 async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -> Response {
     let api = request.uri().path().starts_with("/v1/");
     let path = request.uri().path();
-    let agent_mcp = path
-        .strip_prefix("/v1/agent/mcp/")
-        .or_else(|| path.strip_prefix("/v1/agent/tetrix/"))
-        .filter(|id| !id.is_empty() && !id.contains('/'));
+    let agent_mcp = agent_route_of(path);
     // On Linux an agent reaches obid at slirp4netns's host alias: admitted for the agent's own
-    // routes only, its broker's and Tetrix's, each with its token.
+    // routes only, its broker's, Tetrix's and ChatGPT's relay, each with its token.
     let agent_route = agent_mcp.is_some();
     let via_gateway = agent_route && agent_gateway_request(request.uri(), request.headers());
     let admitted = admit(request.uri(), request.headers(), &shared.token).or_else(|error| {
@@ -461,6 +459,14 @@ async fn gate(State(shared): State<Arc<Shared>>, request: Request, next: Next) -
     response
 }
 
+/// The one id in an agent's own route: its broker's, Tetrix's or ChatGPT's relay.
+fn agent_route_of(path: &str) -> Option<&str> {
+    path.strip_prefix("/v1/agent/mcp/")
+        .or_else(|| path.strip_prefix("/v1/agent/tetrix/"))
+        .filter(|id| !id.is_empty() && !id.contains('/'))
+        .or_else(|| crate::chatgpt_relay::run_of(path))
+}
+
 /// On Linux, sandboxed agents reach the host through slirp4netns at 10.0.2.2. Admit that fixed
 /// host only for the agent's own routes (its job-token MCP route and Tetrix's); normal
 /// app API requests still require a loopback Host.
@@ -489,11 +495,7 @@ fn gateway_host(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
 /// Linux, the agents' gateway host), with one Bearer token: what the gate takes to its broker and
 /// session tokens, which only it checks (`gate`).
 pub fn agent_request(uri: &axum::http::Uri, headers: &HeaderMap) -> bool {
-    let path = uri.path();
-    let one_id = path
-        .strip_prefix("/v1/agent/mcp/")
-        .or_else(|| path.strip_prefix("/v1/agent/tetrix/"))
-        .is_some_and(|id| !id.is_empty() && !id.contains('/'));
+    let one_id = agent_route_of(uri.path()).is_some();
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let one_bearer = matches!(
         (values.next(), values.next()),
