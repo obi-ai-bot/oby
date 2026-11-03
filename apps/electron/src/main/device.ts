@@ -5,7 +5,7 @@ import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, write
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, type Answer, type Trusted } from './obid';
-import { takeInput, wordsHeader } from './words';
+import { mayConfirm, takeInput, wordsHeader } from './words';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
@@ -92,7 +92,7 @@ async function registerNow(): Promise<string> {
   return (JSON.parse(r.text) as { id: string }).id;
 }
 
-type Item = { id: string; kind: string; title: string; state: string };
+type Item = { id: string; kind: string; title: string; state: string; confirm?: { action?: string } };
 
 // The owner's words, signed with this Mac's key: the preload saw the owner's own keystroke or
 // click hold them, main saw that keystroke or click itself (main/words.ts, takeInput), and the
@@ -146,13 +146,14 @@ const publishQuery = (c: PublishChoices) => {
 // device's signature over obid's sentence for it (POST /v1/inbox/{id}/answer, "Confirm takes the
 // owner's tap")
 export function confirming(trusted: Trusted) {
-  ipcMain.handle('obid-confirm', async (e, id: unknown): Promise<Answer> => {
+  ipcMain.handle('obid-confirm', async (e, id: unknown, clicked: unknown): Promise<Answer> => {
     if (!trusted(e) || typeof id !== 'string') return { status: 403, text: '' };
     try {
       const inbox = await obid('GET', '/v1/inbox');
       if (inbox.status !== 200) return inbox;
       const item = (JSON.parse(inbox.text) as Item[]).find((i) => i.id === id && i.kind === 'confirm' && i.state !== 'done');
       if (!item) return { status: 409, text: JSON.stringify({ error: 'That isn’t waiting for a Confirm anymore.' }) };
+      if (!mayConfirm(item, clicked === true)) return { status: 403, text: JSON.stringify({ error: 'Sharing takes your own click.' }) };
       const device = await register(), signedAt = now();
       const signature = signed(`oby-confirm\n${item.id}\n${item.title}\n${signedAt}`);
       return obid('POST', `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: 'Confirm', approval: { device, action: item.title, signedAt, signature } });

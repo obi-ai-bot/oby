@@ -933,3 +933,78 @@ async fn ask_17_a_card_swapped_after_the_pick_gets_nothing() {
     assert!(click.text.contains("nothing was sent"), "{}", click.text);
     assert!(sphere.lock().sends.is_empty(), "nothing went");
 }
+
+/// The owner's yes to sharing (docs/contracts/peer-thread.md, PEER-17) takes the questions waiting on
+/// them, but not one they're already answering: their words on its Confirm stay theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_17_a_yes_leaves_the_question_the_owner_is_answering() {
+    let folder = Folder::new("peer-17-draft");
+    let (_sphere, obid, ernesto) = setup(&folder).await;
+    let words = "Which account does staging deploy to?";
+    tokio::task::block_in_place(|| {
+        let shared = call(&obid, "GET", "/v1/obid/sharing", None).body;
+        let id = shared["rules"][0]["id"].as_str().unwrap().to_owned();
+        let gone = call(
+            &obid,
+            "DELETE",
+            &format!("/v1/obid/sharing/rules/{id}"),
+            None,
+        );
+        assert_eq!(gone.status, 204, "{}", gone.text);
+    });
+    let question = ernesto.request("obi-wellington", "question", json!({"text": words}), 3600);
+    ernesto.send(&question).await;
+    let cid = question["id"].as_str().unwrap();
+    tokio::task::block_in_place(|| {
+        let conversation = asks_conversation(&obid, words);
+        let said =
+            format!(r#"OBY oby_answer {{"item": "obi-{cid}", "answer": "The Deskree one."}}"#);
+        let turn = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": said, "conversation": conversation})),
+        );
+        assert!(turn.status < 300, "{}", turn.text);
+        let inbox = || call(&obid, "GET", "/v1/inbox", None).body;
+        let draft = within(30, "the owner's answer on its Confirm", || {
+            inbox()
+                .as_array()?
+                .iter()
+                .find(|i| i["confirm"]["action"] == "answer_question")
+                .cloned()
+        });
+        let opened = call(&obid, "POST", "/v1/obid/sharing/offer", Some(&json!({})));
+        assert_eq!(opened.status, 201, "{}", opened.text);
+        let yes = confirm(&obid, opened.body["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let state = call(
+            &obid,
+            "GET",
+            &format!("/v1/obid/sphere/exchanges/{cid}"),
+            None,
+        );
+        assert_eq!(state.body["state"], "inbox", "still theirs: {}", state.text);
+        let sent: Vec<_> = state.body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["direction"] == "sent")
+            .map(|m| m["envelope"]["type"].clone())
+            .collect();
+        assert_eq!(
+            sent,
+            vec![json!("status")],
+            "no run was taken on: it never came back"
+        );
+        assert!(
+            inbox()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == draft["id"]),
+            "its Confirm stands"
+        );
+    });
+}

@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACCEPTS, NotThisKey, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
 } from '../../../shared/sphere';
+import { canOpenRoom, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
 // one local Obysphere) is scripts/test-sphere.mjs.
@@ -217,5 +218,32 @@ describe('obysphere in the side panel', () => {
     expect(spheres.canChat(live)).toBe(false);
     // the mock's (and the tour's sample) keep Sangam's conversations
     expect(spheres.canChat(spheres.SAMPLE)).toBe(true);
+  });
+});
+
+describe('what your Oby tells (docs/contracts/peer-thread.md)', () => {
+  const rule = { id: 's-1', for: '*', repos: '*', tells: ['jobStatus'], uses: 0, starter: true } as SharingRule;
+  it('peer_17_no_silent_share: a rule says what it tells, to whom and where, in plain words', () => {
+    expect(whatItTells(rule, ['dana'])).toEqual({
+      label: 'How your tasks are going',
+      about: 'Each task’s title, repository, stage, state and pull request. To everyone in this Obysphere who asks, in every repository.',
+    });
+    expect(whatItTells({ ...rule, for: ['dana'], repos: ['acme/app'], uses: 2 }, ['dana', 'ernesto']).about).toContain('To dana, in acme/app. Answered 2 times.');
+  });
+  it('rooms_17: offers the room once status is shared, and not once a rule opens it', () => {
+    const own = { ...rule, starter: false };
+    expect(canOpenRoom([])).toBe(false);
+    expect(canOpenRoom([{ ...rule, for: ['dana'] }])).toBe(false);
+    expect(canOpenRoom([rule])).toBe(true);
+    expect(canOpenRoom([rule, own])).toBe(false);
+  });
+  it('says the room only for a rule the owner made that covers everyone', () => {
+    const own = { ...rule, starter: false };
+    expect(whatItTells(own, ['dana']).about).toContain('in the room');
+    expect(whatItTells(own, ['dana']).label).toBe('How your tasks are going, in the room');
+    expect(whatItTells(rule, ['dana']).label).toBe('How your tasks are going');
+    expect(whatItTells(rule, ['dana']).about).not.toContain('room');
+    expect(whatItTells({ ...own, for: ['dana'] }, ['dana', 'ernesto']).about).not.toContain('room');
+    expect(whatItTells({ ...own, for: ['dana', 'ernesto'] }, ['dana', 'ernesto']).about).toContain('in the room');
   });
 });

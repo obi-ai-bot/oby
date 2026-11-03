@@ -139,6 +139,12 @@ pub mod action {
     /// Turn check-ins on or change them (`oby_check_in`, TASKCONV-11): `target` the conversation they
     /// post in, `payload` `{"checkIn": <settings' checkIn>}`.
     pub const SET_CHECK_IN: &str = "set_check_in";
+    /// Answer members' questions about how the owner's work goes, by itself (PEER-16,
+    /// docs/contracts/peer-thread.md): `target` empty, `payload` null.
+    pub const SHARE_STATUS: &str = "share_status";
+    /// Post in the Sphere's room as the owner's jobs start and end (ROOMS-17,
+    /// docs/contracts/rooms.md): `target` empty, `payload` null.
+    pub const SHARE_ROOM: &str = "share_room";
 }
 
 /// A `confirm` item: `title` says exactly what `Confirm` does, `confirmed` is what obid carries
@@ -178,6 +184,62 @@ pub fn confirm_item(
         github: None,
         watch: None,
     }
+}
+
+/// Oby's one ask whether it may answer members' questions by itself (PEER-16): obid's own fixed words
+/// and nothing a member chose, so nothing another Oby wrote shapes what the owner's device signs.
+pub fn share_item(now: i64) -> Item {
+    let title =
+        "Can I tell people in your Obysphere how your tasks are going, in every repository?"
+            .to_owned();
+    // Short enough that Home's card, which shows three lines, shows all of it.
+    let text = "I'd answer whoever asks, starting with the questions waiting now, with each task's \
+                title, repository, stage, state and pull request. Never logs, diffs, prompts or files."
+        .to_owned();
+    let mut item = confirm_item(
+        "",
+        title,
+        text,
+        Confirmed {
+            action: action::SHARE_STATUS.into(),
+            target: String::new(),
+            payload: Value::Null,
+        },
+        now,
+    );
+    item.details = Some(vec![
+        "I answer members' questions about your tasks by myself, the ones waiting now first, until you remove it in the Obysphere's settings.".into(),
+        "Every question keeps waiting for you, and I don't ask again. You can still share from the Obysphere's settings.".into(),
+    ]);
+    item
+}
+
+/// Oby's ask, from the Obysphere's settings, whether it may also post in the room (ROOMS-17): obid's
+/// own fixed words, like [`share_item`].
+pub fn share_room_item(now: i64) -> Item {
+    let title =
+        "Can I also post in your Obysphere's room as your tasks start and end, in every repository?"
+            .to_owned();
+    // Short enough that Home's card, which shows three lines, shows all of it.
+    let text = "Everyone there sees each task's title, repository and pull request without asking, \
+                and I'd answer what they ask for there from the same. Never logs, diffs, prompts or files."
+        .to_owned();
+    let mut item = confirm_item(
+        "",
+        title,
+        text,
+        Confirmed {
+            action: action::SHARE_ROOM.into(),
+            target: String::new(),
+            payload: Value::Null,
+        },
+        now,
+    );
+    item.details = Some(vec![
+        "I post in the room by myself, until you remove it in the Obysphere's settings.".into(),
+        "Nothing goes in the room by itself. I still answer who asks.".into(),
+    ]);
+    item
 }
 
 /// Oby's ask about `repo`'s check (#1062), on job `job` (empty for one the owner opened,

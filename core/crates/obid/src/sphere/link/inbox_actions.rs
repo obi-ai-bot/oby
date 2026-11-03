@@ -652,6 +652,8 @@ impl Link {
                     .map(|_| ())
                     .map_err(|why| api(StatusCode::CONFLICT, why))
             }
+            inbox::action::SHARE_STATUS => self.share_status(),
+            inbox::action::SHARE_ROOM => self.share_room(),
             inbox::action::SET_SETTINGS => {
                 let asked: crate::brain::owners_word::Settings =
                     serde_json::from_value(confirmed.payload["settings"].clone())

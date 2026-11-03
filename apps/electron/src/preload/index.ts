@@ -26,9 +26,10 @@ const labelOf = (el: Element | null) => {
   return b && seen(b) && !b.querySelector('button, input, textarea, [contenteditable="true"]') ? b.innerText : null;
 };
 function hold(e: Event) {
-  if (!e.isTrusted || (e instanceof KeyboardEvent && (e.key !== 'Enter' || e.isComposing))) return;
+  if (!e.isTrusted || (e instanceof KeyboardEvent && ((e.key !== 'Enter' && e.key !== ' ') || e.isComposing))) return;
   const target = e.target instanceof Element ? e.target : null, at = Date.now();
-  const texts = e.type === 'keydown' ? [textOf(target)]
+  // the keys that press a focused button hold its label; Enter holds the box it was pressed in
+  const texts = e.type === 'keydown' ? [...(e instanceof KeyboardEvent && e.key === ' ' ? [] : [textOf(target)]), labelOf(target)]
     : [labelOf(target), ...[...(target?.closest('form')?.querySelectorAll('textarea, input, [contenteditable="true"]') ?? [])].map(textOf)];
   for (const text of texts) if (text?.trim()) keep(held, { text, at });
 }
@@ -44,6 +45,14 @@ function signs(method: string, path: string, body: unknown) {
   // the words an answer to Oby's question sends again
   if (path === '/v1/plans') keep(earlier, (body as { said: string }).said);
   return true;
+}
+
+// Whether the owner's own event just pressed a button labelled Confirm (each press once)
+function pressedConfirm() {
+  const now = Date.now();
+  const at = held.findIndex((h) => now - h.at < WITHIN_MS && h.text.trim() === 'Confirm');
+  if (at >= 0) held.splice(at, 1);
+  return at >= 0;
 }
 
 contextBridge.exposeInMainWorld('app', {
@@ -109,7 +118,7 @@ contextBridge.exposeInMainWorld('app', {
     // the owner's words go signed (signs): main adds this Mac's signature
     call: (method: string, path: string, body?: unknown) => ipcRenderer.invoke('obid', method, path, body, signs(method, path, body)) as Promise<Answer>,
     // Confirm on an open confirm item, by its id: main signs it with this Mac's device key
-    confirm: (item: string) => ipcRenderer.invoke('obid-confirm', item) as Promise<Answer>,
+    confirm: (item: string) => ipcRenderer.invoke('obid-confirm', item, pressedConfirm()) as Promise<Answer>,
     // Publish by hand, on the owner's click: main reads obid's sentence again and signs it
     publish: (job: string, action: string, choices: { anyway?: boolean; force?: boolean; to?: string }) =>
       ipcRenderer.invoke('obid-publish', job, action, choices) as Promise<Answer>,

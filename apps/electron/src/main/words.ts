@@ -33,3 +33,22 @@ export function takeInput(at = Date.now()): boolean {
   inputs = inputs.filter((t) => at - t < WITHIN_MS);
   return inputs.shift() !== undefined;
 }
+
+// Space on a focused button, which clicks it, is the owner's too, but only for the Confirm below:
+// a Space while typing signs no words.
+let spaces: number[] = [];
+export function space(at = Date.now()) {
+  spaces = [...spaces.filter((t) => at - t < WITHIN_MS), at];
+}
+const takeSpace = (at: number) => {
+  spaces = spaces.filter((t) => at - t < WITHIN_MS);
+  return spaces.shift() !== undefined;
+};
+
+// A Confirm that lets this Oby tell other people things by itself (PEER-17, ROOMS-17) takes a press of
+// that button: the preload saw a button labelled Confirm held by a real event (`clicked`), and main
+// saw a real click or key itself. Other Confirms sign on the page's say, as they did. It stops a script
+// acting on an input it didn't arrange, no more (docs/contracts/signed-words.md).
+const SHARING = ['share_status', 'share_room'];
+export const mayConfirm = (item: { confirm?: { action?: string } }, clicked: boolean, at = Date.now()) =>
+  !SHARING.includes(item.confirm?.action ?? '') || (clicked && (takeInput(at) || takeSpace(at)));

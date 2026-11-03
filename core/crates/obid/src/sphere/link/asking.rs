@@ -295,7 +295,9 @@ impl Link {
                     || (e.direction == "incoming"
                         && e.kind == "question"
                         && ((e.state == "inbox" && !told("owner"))
-                            || (matches!(e.state.as_str(), "cancelled" | "expired")
+                            || ((matches!(e.state.as_str(), "cancelled" | "expired")
+                                || (e.decided_by.as_deref() == Some("sharing")
+                                    && (e.state == "done" || e.scan_stopped())))
                                 && told("owner")
                                 && !told("over"))))
             })

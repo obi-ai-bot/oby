@@ -133,7 +133,7 @@ fn shown(obid: &Obid, text: &str) -> Value {
 
 /// Adds a sharing rule.
 fn share(obid: &Obid, rule: Value) -> String {
-    let made = call(obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
+    let made = call_signed(obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
     assert_eq!(made.status, 201, "{}", made.text);
     made.body["id"].as_str().unwrap().to_owned()
 }
@@ -1529,4 +1529,101 @@ fn http(
         _ => Value::Null,
     };
     (status, json)
+}
+
+/// ROOMS-17: the owner's way to say yes to the room. A rule the room goes by comes only from a signed
+/// Confirm on its card, and Remove takes it back. Until then a job posts nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rooms_17_a_signed_yes_on_its_card_opens_the_room_and_remove_closes_it() {
+    let folder = Folder::new("room-17");
+    let (sphere, obid, _, _ernesto) = setup(&folder, false).await;
+    let rules = |obid: &Obid| call(obid, "GET", "/v1/obid/sharing", None).body["rules"].clone();
+    let card = tokio::task::block_in_place(|| {
+        assert_eq!(
+            rules(&obid)[0]["starter"],
+            true,
+            "status shared, by the seed"
+        );
+        let opened = call(
+            &obid,
+            "POST",
+            "/v1/obid/sharing/offer",
+            Some(&json!({"room": true})),
+        );
+        assert_eq!(opened.status, 201, "{}", opened.text);
+        assert_eq!(opened.body["confirm"]["action"], "share_room");
+        let id = opened.body["id"].as_str().unwrap().to_owned();
+        let unsigned = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{id}/answer"),
+            Some(&json!({"answer": "Confirm"})),
+        );
+        assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+        a_job(&obid, "Before the yes");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        id
+    });
+    assert!(
+        sphere.lock().room_tries.is_empty(),
+        "the card opens nothing"
+    );
+    let made = tokio::task::block_in_place(|| {
+        let yes = confirm(&obid, &card);
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        let all = rules(&obid);
+        let list = all.as_array().unwrap();
+        assert_eq!(list.len(), 2, "{list:?}");
+        assert_eq!(list[1]["starter"], false);
+        a_job(&obid, "After the yes");
+        within(30, "its post", || {
+            let done = posts(&obid);
+            done.iter()
+                .any(|p| p["kind"] == "done" && p["state"] == "sent")
+                .then_some(())
+        });
+        list[1]["id"].as_str().unwrap().to_owned()
+    });
+    let tries = sphere.lock().room_tries.len();
+    tokio::task::block_in_place(|| {
+        let gone = call(
+            &obid,
+            "DELETE",
+            &format!("/v1/obid/sharing/rules/{made}"),
+            None,
+        );
+        assert_eq!(gone.status, 204, "{}", gone.text);
+        a_job(&obid, "After Remove");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    });
+    assert_eq!(
+        sphere.lock().room_tries.len(),
+        tries,
+        "Remove closes it again"
+    );
+}
+
+/// ROOMS-17: the room's card builds on sharing status, and isn't a way to start it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rooms_17_the_rooms_card_needs_status_shared_first() {
+    let folder = Folder::new("room-17b");
+    let (_sphere, obid, _, _ernesto) = setup(&folder, false).await;
+    tokio::task::block_in_place(|| {
+        let all = call(&obid, "GET", "/v1/obid/sharing", None).body;
+        let id = all["rules"][0]["id"].as_str().unwrap();
+        let gone = call(
+            &obid,
+            "DELETE",
+            &format!("/v1/obid/sharing/rules/{id}"),
+            None,
+        );
+        assert_eq!(gone.status, 204, "{}", gone.text);
+        let opened = call(
+            &obid,
+            "POST",
+            "/v1/obid/sharing/offer",
+            Some(&json!({"room": true})),
+        );
+        assert_eq!(opened.status, 409, "{}", opened.text);
+    });
 }

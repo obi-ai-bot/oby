@@ -3,6 +3,7 @@
 // Every call goes through main (window.app.obid, main/obid.ts), which holds obid's token and adds
 // it: the page never sees it.
 
+import type { SharingRule } from './sharing';
 import type {
   Account,
   Agent,
@@ -115,6 +116,11 @@ export const api = {
   publish: (j: string, action: string, c: PublishChoices = {}) => call<{ url?: string }>('POST', `/v1/jobs/${id(j)}/publish`, undefined, (b) => b.publish(j, action, c)),
   // Confirm on a confirm item: main signs it with this Mac's device key (main/device.ts)
   confirm: (i: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, undefined, (b) => b.confirm(i)),
+  // What this Oby tells other Obys by itself (docs/contracts/peer-thread.md, PEER-16 to 18): the
+  // rules, taking one out, and the card that asks, which only a Confirm above answers
+  sharing: () => call<{ rules: SharingRule[] }>('GET', '/v1/obid/sharing'),
+  removeSharingRule: (r: string) => call<null>('DELETE', `/v1/obid/sharing/rules/${id(r)}`),
+  offerSharing: (room = false) => call<InboxItem>('POST', '/v1/obid/sharing/offer', room ? { room } : undefined),
   // Settings › Remote access: pairing an iPhone through obid's Obysphere (main signs the invitation), the
   // paired ones, and Revoke
   pairInvite: () => call<Invitation>('POST', '/v1/pairing/invite', undefined, (b) => b.pairInvite()),

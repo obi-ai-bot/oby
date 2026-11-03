@@ -4,6 +4,10 @@ import { Check, Mail, X } from 'lucide-react';
 import { Group, Row, SettingsPage, Value } from './SettingsView';
 import SphereTile from './SphereTile';
 import { OwnerAvatar } from './ObyFace';
+import { api } from './obid';
+import type { InboxItem } from '../../shared/obid-wire';
+import { canOpenRoom, whatItTells, type SharingRule } from './sharing';
+import { roomOpens, useRoom } from './room';
 import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
@@ -142,8 +146,9 @@ function Settings({ sphere }: { sphere: Sphere }) {
         </div>
       ))}
     </Group>
+    {sphere.live && <WhatItTells sphere={sphere} />}
     {/* last, set apart: what it does, then its button under it at the left */}
-    <Group i={3}>
+    <Group i={4}>
       <div className="set-row set-danger">
         <span className="set-label">
           {admin ? 'Delete Obysphere' : `Leave ${sphere.name}`}
@@ -154,6 +159,78 @@ function Settings({ sphere }: { sphere: Sphere }) {
     </Group>
     {confirming && <ConfirmModal sphere={sphere} onClose={() => setConfirming(false)} />}
   </>;
+}
+
+// What your Oby tells the others by itself, from obid's rules, each with Remove. With nothing shared,
+// Share opens the card a first question brings, in full, and only its Confirm grants it. With status
+// shared and a room there, the room's own card by the same path: its Confirm makes the rule the room
+// goes by, and Remove takes it back.
+function WhatItTells({ sphere }: { sphere: Sphere }) {
+  const room = useRoom();
+  const [rules, setRules] = useState<SharingRule[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [card, setCard] = useState<InboxItem | null>(null);
+  const change = (what?: () => Promise<unknown>) => void (what?.() ?? Promise.resolve())
+    .then(() => api.sharing())
+    .then((s) => { setRules(s.rules); setProblem(null); })
+    .catch((e: Error) => setProblem(e.message));
+  useEffect(() => change(), []);
+  const open = (forRoom = false) => void api.offerSharing(forRoom).then(setCard, (e: Error) => setProblem(e.message));
+  return (
+    <Group i={3} title="What your Oby tells" footer={rules?.length ? 'It answers by itself only from this. Never logs, diffs, prompts or files.' : undefined}>
+      {rules?.map((rule) => {
+        const { label, about } = whatItTells(rule, sphere.members);
+        return (
+          <Row key={rule.id} label={label} about={about}>
+            <button className="set-button set-member-action" onClick={() => change(() => api.removeSharingRule(rule.id))} aria-label={`Remove ${label}`}>Remove</button>
+          </Row>
+        );
+      })}
+      {rules?.length === 0 && (
+        <Row label="Nothing yet" about="Every question waits for you.">
+          <button className="set-button set-member-action" onClick={() => open()}>Share how my tasks are going</button>
+        </Row>
+      )}
+      {rules && canOpenRoom(rules) && roomOpens(room, sphere) && (
+        <Row label="Also post in the room" about="Everyone there sees when your tasks start and end, without asking.">
+          <button className="set-button set-member-action" onClick={() => open(true)}>Post in the room</button>
+        </Row>
+      )}
+      {problem && <Row label={<span className="set-problem">{problem}</span>} />}
+      {card && <ShareModal card={card} onClose={() => setCard(null)} onAnswered={() => { setCard(null); change(); }} />}
+    </Group>
+  );
+}
+
+// The card, whole, as Home shows it: what its Confirm signs is on screen. Closed with Esc or a click
+// outside, it stays open on Home.
+function ShareModal({ card, onClose, onAnswered }: { card: InboxItem; onClose: () => void; onAnswered: () => void }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const answer = (done: Promise<unknown>) => void done.then(onAnswered, (e: Error) => setProblem(e.message));
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); close.current(); } };
+    addEventListener('keydown', onKey, true);
+    return () => removeEventListener('keydown', onKey, true);
+  }, []);
+  return createPortal(
+    <div className="modal-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal is-small" role="alertdialog" aria-modal="true" aria-labelledby="share-title" aria-describedby="share-what">
+        <header className="modal-head">
+          <h2 id="share-title">{card.title}</h2>
+          <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
+        </header>
+        <p id="share-what" className="modal-lede">{card.text}</p>
+        {problem && <p className="set-problem">{problem}</p>}
+        <div className="modal-actions">
+          <button type="button" className="set-button" autoFocus onClick={() => answer(api.answer(card.id, { answer: 'Cancel' }))}>Cancel</button>
+          <button type="button" className="modal-primary" onClick={() => answer(api.confirm(card.id))}>Confirm</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 // Before it's deleted (or left): what goes with it, and, to delete, its name

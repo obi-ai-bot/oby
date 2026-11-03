@@ -11,6 +11,26 @@ use serde_json::{Value, json};
 
 use super::*;
 
+const NOT_SHARING_STATUS: &str =
+    "The room builds on telling members how your tasks are going: share that first.";
+
+/// Whether `peer` is an active member, by the directory as last read: a removed one gets nothing
+/// more from obid, and a directory obid hasn't read yet says no.
+pub(super) fn active_member(state: &State, peer: &str) -> bool {
+    state.directory.members.get(peer).is_some_and(|m| m.active)
+}
+
+/// Whether the owner's own answer to this `obiRequest` item waits on a Confirm: their words, which a
+/// model's mustn't replace.
+fn owner_is_answering(state: &State, item: Option<&str>) -> bool {
+    item.is_some_and(|item| {
+        state
+            .inbox
+            .values()
+            .any(|i| i.done.is_none() && i.confirm.as_ref().is_some_and(|c| c.target == item))
+    })
+}
+
 impl Link {
     // -----------------------------------------------------------------------------------------
     // Following: deliveries
@@ -485,12 +505,164 @@ impl Link {
         }
         self.save_exchange(&exchange);
         self.outbox.notify_one();
+        if kind == "question" && exchange.state == "inbox" {
+            self.offer_to_share();
+        }
         if let Some(rule) = answer_by_itself {
             let link = self.clone();
             let cid = exchange.correlation_id.clone();
             tokio::spawn(async move {
                 link.answer_by_itself(cid, rule, repos, referenced).await;
             });
+        }
+    }
+
+    /// A question waits on an owner who shares nothing and was never asked: one card asks whether
+    /// obid may answer by itself (PEER-16). It shares nothing until their Confirm. A file that doesn't
+    /// read says nothing of what they chose, and stays as it is.
+    fn offer_to_share(&self) {
+        let now = time::now();
+        {
+            let mut state = self.lock();
+            if !state.sharing.to_offer() || !self.sharing.reads() {
+                return;
+            }
+            state.sharing.offered = Some(now);
+            // Kept under the lock, so an older copy never overwrites a newer one.
+            self.save_sharing(&state.sharing);
+        }
+        self.add_confirm_once(inbox::share_item(now));
+    }
+
+    /// `POST /v1/obid/sharing/offer`: the same card, from Settings, for an owner who said no or
+    /// removed the rule and changed their mind; with `{"room": true}`, the room's, for one who shares
+    /// status. Only their Confirm makes the rule.
+    pub fn offer_again(&self, room: bool) -> Result<Value, ApiError> {
+        self.sharing_reads()?;
+        let now = time::now();
+        if room {
+            if !self.lock().sharing.shares_status() {
+                return Err(api(StatusCode::CONFLICT, NOT_SHARING_STATUS));
+            }
+            return Ok(self.shown(&self.add_confirm_once(inbox::share_room_item(now))));
+        }
+        {
+            let mut state = self.lock();
+            state.sharing.offered.get_or_insert(now);
+            self.save_sharing(&state.sharing);
+        }
+        let item = self.add_confirm_once(inbox::share_item(now));
+        Ok(self.shown(&item))
+    }
+
+    /// The owner's Confirm on the room's card (ROOMS-17).
+    pub(super) fn share_room(&self) -> Result<(), ApiError> {
+        self.sharing_reads()?;
+        let mut state = self.lock();
+        if state.sharing.share_room(time::now()).is_none() {
+            return Err(api(StatusCode::CONFLICT, NOT_SHARING_STATUS));
+        }
+        self.save_sharing(&state.sharing);
+        Ok(())
+    }
+
+    /// The owner's Confirm (PEER-17): the rule, and the questions waiting on them go by it, as one
+    /// that came now would. One the run can't answer comes back to them. One they're already answering
+    /// stays theirs, and one from someone who has left the Sphere gets nothing.
+    pub(super) fn share_status(self: &Arc<Self>) -> Result<(), ApiError> {
+        self.sharing_reads()?;
+        let now = time::now();
+        let (rule, waiting) = {
+            let mut state = self.lock();
+            let rule = state.sharing.share_job_status(now);
+            self.save_sharing(&state.sharing);
+            let waiting: Vec<String> = state
+                .exchanges
+                .values()
+                .filter(|e| e.direction == "incoming" && e.kind == "question" && e.state == "inbox")
+                .map(|e| e.correlation_id.clone())
+                .collect();
+            (rule, waiting)
+        };
+        for cid in waiting {
+            let body = self
+                .lock()
+                .exchanges
+                .get(&cid)
+                .map(|e| e.request["body"].clone());
+            let (repos, referenced) = self.question_repos(&body.unwrap_or_default());
+            let (exchange, item) = {
+                let mut state = self.lock();
+                let Some(mut exchange) = state.exchanges.get(&cid).cloned() else {
+                    continue;
+                };
+                let owner = exchange.peer_owner.clone().unwrap_or_default();
+                if exchange.state != "inbox"
+                    || !rule.covers(&owner, &repos)
+                    || !active_member(&state, &exchange.peer)
+                    || owner_is_answering(&state, exchange.inbox_item.as_deref())
+                    || !Link::take_self_answer(&mut state, &owner, now)
+                {
+                    continue;
+                }
+                exchange.self_answered = Some(now);
+                exchange.state = "answering".into();
+                exchange.decided_by = Some("sharing".into());
+                exchange.rule = Some(rule.id.clone());
+                exchange.updated = now;
+                state.exchanges.insert(cid.clone(), exchange.clone());
+                let item = exchange
+                    .inbox_item
+                    .as_ref()
+                    .and_then(|id| state.inbox.get_mut(id))
+                    .map(|i| {
+                        i.done = Some(now);
+                        i.clone()
+                    });
+                (exchange, item)
+            };
+            if let Some(item) = item {
+                self.save_item(&item);
+            }
+            self.save_exchange(&exchange);
+            let link = self.clone();
+            let rule = rule.clone();
+            tokio::spawn(async move {
+                link.answer_by_itself(cid, rule, repos, referenced).await;
+            });
+        }
+        Ok(())
+    }
+
+    /// Leaving a Sphere (PEER-19): a rule obid made on a yes (a first join's, the offer's, the room's)
+    /// names no Sphere, and what they agreed to was this one's. It goes, with the cards and that they
+    /// were asked, so the next Sphere asks again, also when the file stopped reading: what's in
+    /// memory answers in the next Sphere otherwise. Rules they wrote themselves stay.
+    pub(super) fn forget_the_offer(&self) {
+        let closed: Vec<Item> = {
+            let mut state = self.lock();
+            state.sharing.rules.retain(|r| !r.for_this_sphere());
+            state.sharing.offered = None;
+            self.save_sharing(&state.sharing);
+            let now = time::now();
+            state
+                .inbox
+                .values_mut()
+                .filter(|i| {
+                    i.done.is_none()
+                        && i.confirm.as_ref().is_some_and(|c| {
+                            c.action == inbox::action::SHARE_STATUS
+                                || c.action == inbox::action::SHARE_ROOM
+                        })
+                })
+                .map(|i| {
+                    i.done = Some(now);
+                    i.clone()
+                })
+                .collect()
+        };
+        for item in closed {
+            self.save_item(&item);
         }
     }
 

@@ -367,7 +367,7 @@ async fn issue_1867_an_answer_to_another_oby_never_runs_bare() {
         job_ended(&obid, None);
         let rule =
             json!({"for": ["ernesto"], "repos": ["obi-e2e/fixture-app"], "tells": ["jobStatus"]});
-        let made = call(&obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
+        let made = call_signed(&obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
         assert_eq!(made.status, 201, "{}", made.text);
     });
     let ernesto = TestObi::join_accepting(

@@ -307,6 +307,18 @@ impl Exchanges {
     }
 }
 
+impl Exchange {
+    /// Whether it was declined because what obid wrote didn't pass the secret scan, and not for any
+    /// other reason (leaving the Sphere settles what's open as declined too).
+    pub fn scan_stopped(&self) -> bool {
+        self.state == "declined"
+            && self
+                .publish_scan
+                .as_ref()
+                .is_some_and(|scan| scan["clean"] == false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

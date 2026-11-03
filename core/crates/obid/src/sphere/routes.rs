@@ -408,9 +408,28 @@ pub async fn renew(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Res
 /// `POST /v1/obid/sharing/rules`.
 pub async fn add_rule(
     State(shared): State<Arc<Shared>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    // What obid tells people by itself is only the owner's to widen (PEER-17): obid's token, which
+    // the page reaches through main, isn't enough. Taking one out shares less, and needs no more.
+    if crate::routes::signed_by(&shared, "POST", &uri, &headers, &body).is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "A sharing rule is only yours to make: an app of yours signs it.",
+        ));
+    }
     Ok(json(StatusCode::CREATED, shared.link.add_rule(&body)?))
+}
+
+/// `POST /v1/obid/sharing/offer`.
+pub async fn offer_to_share(
+    State(shared): State<Arc<Shared>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let room = serde_json::from_slice::<Value>(&body).is_ok_and(|b| b["room"] == true);
+    Ok(json(StatusCode::CREATED, shared.link.offer_again(room)?))
 }
 
 /// `DELETE /v1/obid/sharing/rules/{id}`.
