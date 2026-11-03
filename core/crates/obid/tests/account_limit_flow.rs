@@ -764,10 +764,14 @@ fn limits_6_stop_ends_the_wait() {
 /// still resumes.
 #[test]
 fn limits_7_the_wait_survives_a_restart() {
-    let (folder, config, mut obid) = on_stub("limits-7");
+    let (folder, config, obid) = on_stub("limits-7");
     let id = post(&obid, "LIMITED ONCE: 2 KEEP PROMPTS");
     let waits = waiting_for_reset(&obid, &id);
-    obid.stop();
+    within(10, "the wait is kept", || {
+        read_job(&folder, &id).resumes_at.is_some().then_some(())
+    });
+    // Going down with no clean stop: a job at work counts that against it, and this one isn't.
+    drop(obid);
     let obid = start(&folder.0, &config, None);
     // Past a tick of the clock that looks for resets, its time not come.
     std::thread::sleep(std::time::Duration::from_secs(17));
@@ -938,7 +942,7 @@ fn limits_11_an_account_still_held_at_the_reset() {
 /// A limit isn't a passing error, and words for a waiting job go with its resume.
 #[test]
 fn limits_12_resuming_keeps_everything_else() {
-    let (folder, config, obid) = on_stub("limits-12");
+    let (folder, config, mut obid) = on_stub("limits-12");
     let id = post(&obid, "LIMITED ONCE: 2 KEEP PROMPTS");
     waiting_for_reset(&obid, &id);
     let told = call_typed(
@@ -951,7 +955,7 @@ fn limits_12_resuming_keeps_everything_else() {
     let still = job_now(&obid, &id);
     assert_eq!(still["status"], "queued", "{still}");
     assert!(!still["resumesAt"].is_null(), "{still}");
-    drop(obid);
+    obid.stop();
     let mut job = read_job(&folder, &id);
     job.mode = Some("plan".into());
     job.untrusted = true;
