@@ -18,7 +18,7 @@ export default function TalkPill({ chat }: { chat: Chat }) {
   const { account: setting, next } = useTalkSetting();
   const [at, setAt] = useState<DOMRect | null>(null);
   const chosen = chosenOf(chat.talkAccount, setting);
-  const on = shownAccount(accounts, chosen, chat.talkedOn, next);
+  const on = shownAccount(accounts, chosen, chat.talkedOn, next, chat.movedOff);
   // as the usage panel: the menu shows use read in the last 10 minutes
   useEffect(() => { if (at) lookAtUsage(); }, [at]);
   const list = groups(accounts);

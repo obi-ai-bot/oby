@@ -26,13 +26,13 @@ export const chosenOf = (own: string | null | undefined, setting: string | null 
   return id === AUTO ? null : id;
 };
 
-// The account the pill names: the chosen one while it can run; else, Auto or moved off it, the one
-// its last answer came from, else the one obid says a first turn would use, each while it can run;
-// none can, where it last talked.
-export function shownAccount(accounts: Account[], chosen: string | null, talkedOn?: string | null, next?: string | null) {
+// The account the pill names: the chosen one while it can run and its turns haven't moved off it;
+// else, Auto or moved off it, the one its last answer came from, else the one obid says a first turn
+// would use, each while it can run; none can, where it last talked.
+export function shownAccount(accounts: Account[], chosen: string | null, talkedOn?: string | null, next?: string | null, movedOff?: string | null) {
   const find = (id?: string | null) => accounts.find((a) => a.id === id);
   const can = (a?: Account) => !!a && a.signedIn !== false && !a.full;
-  return [find(chosen), find(talkedOn), find(next)].find(can) ?? accounts.find(can) ?? find(talkedOn);
+  return [chosen === movedOff ? undefined : find(chosen), find(talkedOn), find(next)].find(can) ?? accounts.find(can) ?? find(talkedOn);
 }
 
 // The menu's groups: every connected account under its tool

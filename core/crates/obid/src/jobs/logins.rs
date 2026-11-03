@@ -1574,10 +1574,16 @@ pub(crate) fn cursor_login_file() -> &'static str {
     }
 }
 
+/// What stands in a copy for Cursor's refresh token: cursor-agent 2026.10.01 calls a login with an
+/// access token and no refresh token "partially authenticated", and won't start (ACP's
+/// "Authentication required"). It's no secret, and a refresh with it does nothing to the account.
+pub(super) const CURSOR_NO_REFRESH: &str = "oby-keeps-the-refresh-token";
+
 /// Cursor's `auth.json` as obid copies it for a job: only what calls Cursor's API, its
 /// `accessToken` and `apiKey`, and nothing else the file holds (never the refresh token, which a
-/// refresh inside a box would rotate away from the account, #651, nor Bedrock's keys). Its tokens
-/// are learned as secrets obid knows. `None` when it isn't a JSON object.
+/// refresh inside a box would rotate away from the account, #651, nor Bedrock's keys; a stand-in
+/// takes its place, [`CURSOR_NO_REFRESH`]). Its tokens are learned as secrets obid knows. `None`
+/// when it isn't a JSON object.
 pub(super) fn cursor_without_refresh(bytes: &[u8], account: &Path) -> Option<Vec<u8>> {
     let login: Value = serde_json::from_slice(bytes).ok()?;
     let fields = login.as_object()?;
@@ -1590,10 +1596,13 @@ pub(super) fn cursor_without_refresh(bytes: &[u8], account: &Path) -> Option<Vec
             crate::secrets::known().learn(&format!("Cursor {} {key}", account.display()), token);
         }
     }
-    let kept: serde_json::Map<String, Value> = ["accessToken", "apiKey"]
+    let mut kept: serde_json::Map<String, Value> = ["accessToken", "apiKey"]
         .into_iter()
         .filter_map(|key| Some((key.to_owned(), fields.get(key)?.clone())))
         .collect();
+    if kept.contains_key("accessToken") {
+        kept.insert("refreshToken".to_owned(), CURSOR_NO_REFRESH.into());
+    }
     serde_json::to_vec(&kept).ok()
 }
 
@@ -2758,8 +2767,11 @@ attributes:
         copy_account_folder(Tool::Cursor, &account, &login).unwrap();
         let copied: Value =
             serde_json::from_slice(&std::fs::read(login.join(file)).unwrap()).unwrap();
-        // Only what calls Cursor's API: no refresh token, no Bedrock keys.
-        assert_eq!(copied, json!({"accessToken": access, "apiKey": null}));
+        // Only what calls Cursor's API: no refresh token, a stand-in for it, no Bedrock keys.
+        assert_eq!(
+            copied,
+            json!({"accessToken": access, "apiKey": null, "refreshToken": CURSOR_NO_REFRESH})
+        );
         // Never the account's MCP servers.
         assert!(!login.join("mcp.json").exists());
         assert!(
@@ -2798,7 +2810,10 @@ attributes:
         let copied: Value =
             serde_json::from_slice(&std::fs::read(login.join(cursor_login_file())).unwrap())
                 .unwrap();
-        assert_eq!(copied, json!({"accessToken": access}));
+        assert_eq!(
+            copied,
+            json!({"accessToken": access, "refreshToken": CURSOR_NO_REFRESH})
+        );
         assert!(
             !crate::secrets::known().redact(&access).contains(&access),
             "not learned"

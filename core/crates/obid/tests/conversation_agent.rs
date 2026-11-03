@@ -115,7 +115,7 @@ fn cursor_turns(obid: &Obid) -> Vec<Value> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("talk-"))
+        .filter(|e| e.file_name().to_string_lossy().starts_with("t-"))
         .flat_map(|e| recorded(&e.path().join("turns.jsonl")))
         .collect()
 }
@@ -307,8 +307,13 @@ fn conversation_agent_3_a_chosen_account_that_cant_run_moves_too() {
         "{}",
         second.text
     );
+    // The apps' pill follows it: it names where the answers come from, not the chosen one.
+    assert_eq!(listed(&obid, &id)["movedOff"], CODEX);
     let third = said(&obid, json!({"said": "HELLO", "conversation": id}));
     assert_eq!(text(&third), "Hello there.", "{}", third.text);
+    // Choosing again names the choice at once.
+    choose(&obid, &id, json!(CODEX));
+    assert!(listed(&obid, &id).get("movedOff").is_none());
 
     let fresh = said(&obid, json!({"said": "REMEMBER", "new": true}));
     let fresh = conversation(&fresh);
@@ -526,7 +531,7 @@ fn conversation_agent_6_cursor_talks_with_obys_tools_and_keeps_its_session() {
         turns[0]["home"]
             .as_str()
             .unwrap()
-            .contains("/home/logins/talk-"),
+            .contains("/home/logins/t-"),
         "{turns:?}"
     );
 
@@ -686,7 +691,7 @@ fn conversation_agent_9_cursors_commands_are_refused_and_what_it_plants_goes() {
     let talk = std::fs::read_dir(obid.home.join("logins"))
         .unwrap()
         .flatten()
-        .find(|e| e.file_name().to_string_lossy().starts_with("talk-"))
+        .find(|e| e.file_name().to_string_lossy().starts_with("t-"))
         .unwrap()
         .path();
     assert!(!talk.join(".cursor/auth.json").exists());

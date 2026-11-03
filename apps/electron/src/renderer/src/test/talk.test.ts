@@ -51,6 +51,8 @@ describe('talking on any agent', () => {
     // The chosen one filled, or can't run: where it moved to.
     expect(shownAccount(all, 'f', 'x', 'p')?.id).toBe('x');
     expect(shownAccount(all, 'o', 'x', 'p')?.id).toBe('x');
+    // Moved off a chosen one that looks fine (it couldn't run): where it moved to, as the answer says.
+    expect(shownAccount(all, 'p', 'x', 'p', 'p')?.id).toBe('x');
     // Auto: where it talked, else what obid says a first turn would use.
     expect(shownAccount(all, null, 'x', 'p')?.id).toBe('x');
     expect(shownAccount(all, null, null, 'p')?.id).toBe('p');

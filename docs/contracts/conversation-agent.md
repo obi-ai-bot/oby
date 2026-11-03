@@ -17,7 +17,7 @@ The chat window's header, on the right, a pill like MausBot's model pill: the ag
 ### Actors and ownership
 
 - **obid** decides which account each turn runs on, moves it, keeps the choice and says what happened. Everything here is obid's.
-- **The Electron app** shows obid's accounts and figures, and sends the owner's choice. It decides nothing: which account the pill names follows `talkAccount`, `talkedOn`, `fullUntil` and `talkNext`.
+- **The Electron app** shows obid's accounts and figures, and sends the owner's choice. It decides nothing: which account the pill names follows `talkAccount`, `talkedOn`, `movedOff`, `fullUntil` and `talkNext`.
 - **`conversation.agent`** in `config.json` stays the fallback: the tool Auto looks at first, Claude Code when it's left out. It still takes `claude` or `codex` only.
 
 ### What a turn runs on
@@ -62,7 +62,7 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 ## Interfaces and dependencies
 
 - `PUT`/`GET /v1/settings/jobs`: `talkAccount` (an id, or null for Auto; `auto` on `PUT` is null). `422` for an account there isn't, or one that can't talk here (`reason: talk-needs-egress-box`).
-- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. A conversation's JSON gains them once there's something to say: `talkAccount`, and `talkedOn`, the account its last answer came from. Each goes out in the `conversation` event, `talkedOn` with the answer's. Which account it has said it moved off is obid's own, in its file, never in the API.
+- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. A conversation's JSON gains them once there's something to say: `talkAccount`, `talkedOn`, the account its last answer came from, and `movedOff`, the account its turns have moved off, gone when one answers from it again or the owner chooses again. Each goes out in the `conversation` event, `talkedOn` with the answer's. Which account it has said it moved off is obid's own, in its file, never in the API.
 - `GET /v1/status`: `talkAccount`, and `talkNext`, the account a new conversation's first turn would use now. obid works it out off its runtime, since whether an account can run can ask the macOS Keychain.
 - Kept in `home/settings.json` and the conversation's own file, across restarts. Cursor's folder: `home/logins/talk-<12 of its id>`, short for its sockets, gone with the conversation.
 

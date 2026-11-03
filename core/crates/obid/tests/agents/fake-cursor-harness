@@ -31,9 +31,12 @@ const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", 
 const home = process.env.HOME || "/nonexistent";
 const config = process.env.CURSOR_CONFIG_DIR || join(home, ".cursor");
 const sessions = join(config, "sessions");
-const signedIn = existsSync(process.platform === "darwin"
+const loginFile = process.platform === "darwin"
   ? join(home, ".cursor", "auth.json")
-  : join(process.env.XDG_CONFIG_HOME || "/nonexistent", "cursor", "auth.json"));
+  : join(process.env.XDG_CONFIG_HOME || "/nonexistent", "cursor", "auth.json");
+// As cursor-agent 2026.10.01: an access token with no refresh token is "partially authenticated".
+const login = existsSync(loginFile) ? JSON.parse(readFileSync(loginFile, "utf8")) : null;
+const signedIn = login && (!login.accessToken || !!login.refreshToken);
 
 let nextId = 100;
 const waiting = new Map();
@@ -132,9 +135,9 @@ async function prompt(id, text) {
   if (last.startsWith("OBY ")) {
     const [, tool, ...rest] = last.split(" ");
     const call = randomUUID();
-    const title = `mcp__oby__${tool}`;
+    const title = `oby-${tool}: ${tool}`; // as cursor-agent 2026.10.01 titles it
     update("tool_call", { toolCallId: call, kind: "other", title, status: "pending" });
-    const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: call, title }, options });
+    const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: call, kind: "other", title }, options });
     if (answer.outcome?.optionId !== "allow-once") return say(id, `oby: declined ${answer.outcome?.optionId}`);
     const result = await mcp("tools/call", { name: tool, arguments: JSON.parse(rest.join(" ")) });
     update("tool_call_update", { toolCallId: call, status: "completed" });

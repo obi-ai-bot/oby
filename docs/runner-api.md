@@ -2155,6 +2155,7 @@ A conversation, as `GET /v1/conversations` lists it and the `conversation` event
 ```
 
 - `talkAccount` (obid only, docs/contracts/conversation-agent.md): the account this conversation talks through from its next turn, as the owner chose it here: an account's id or `auto`; left out, it follows the setting. `PATCH /v1/conversations/{id}` sets it (null clears it), with `PUT /v1/settings/jobs`'s `422`s. `talkedOn`: the account its last answer came from, left out before its first. A change of either goes in the `conversation` event, `talkedOn` with the answer's.
+- `movedOff` (obid only, docs/contracts/conversation-agent.md): the account its turns have moved off, and said so; left out when none. The apps name where the answers come from, not the chosen one, while it's there; it goes when an answer comes from that account again or the owner chooses again.
 
 - `folders` (#1572): the working folders its work is in, canonical paths in the order picked (obid only: working folders, below). Always a list, empty when it has none. A change sends the `conversation` event.
 

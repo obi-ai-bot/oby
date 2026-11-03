@@ -124,9 +124,9 @@ pub(crate) fn cursor_folder(home: &Path, id: &str) -> PathBuf {
     let short: String = id
         .chars()
         .filter(char::is_ascii_alphanumeric)
-        .take(12)
+        .take(8)
         .collect();
-    home.join("logins").join(format!("talk-{short}"))
+    home.join("logins").join(format!("t-{short}"))
 }
 
 /// A conversation kept before obid marked what each one read: its turns' words may be anyone's.
@@ -252,6 +252,9 @@ impl Thread {
         }
         if let Some(account) = &self.talked_on {
             summary["talkedOn"] = json!(account);
+        }
+        if let Some(account) = &self.moved_off {
+            summary["movedOff"] = json!(account);
         }
         summary
     }
@@ -1153,6 +1156,8 @@ impl Conversations {
         }
         if let Some(talk_account) = talk_account {
             thread.talk_account = talk_account;
+            // the owner chose again: the pill names it at once, and a move off it is news again
+            thread.moved_off = None;
         }
         if let Err(e) = self.write(thread) {
             *thread = kept;

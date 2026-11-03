@@ -177,3 +177,10 @@ assumes they do:
   stays disabled (bubblewrap can't nest); Oby answers every command.
 - Sign-in is the tool's own command in Terminal: `cursor-agent login` with the three variables
   (`NO_OPEN_BROWSER=1` on the runner).
+
+## What real Cursor needs (cursor-agent 2026.10.01, proven 2026-11-02)
+
+- **A refresh token in its login file.** With an access token and none, `status` says "Partially authenticated (missing refresh token)" and ACP's `session/new` answers -32000 "Authentication required". A run's copy has a stand-in, `CURSOR_NO_REFRESH`, never the real one: Cursor then logs in and opens a session.
+- **Room for its sockets.** `CURSOR_DATA_DIR` (or `~/.cursor`), then `projects`, must fit in 84 characters, or it uses `/tmp/.cursor`, which the box denies, and it dies at once. `acp::cursor::data_dir` keeps it short.
+- **An MCP tool's title** is `<server>-<tool>: <tool>` (`oby-oby_jobs: oby_jobs`), of kind `other`.
+- **A turn takes 30 to 40 seconds** in Oby's box, where Claude Code and Codex take 4 to 6. The proxy refuses nothing in that time: only `api2.cursor.sh` and `agentn.global.api5.cursor.sh` are asked for. Why isn't known.

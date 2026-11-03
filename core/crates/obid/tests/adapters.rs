@@ -582,7 +582,7 @@ fn cursors_keychain_login_runs_from_a_copy_of_only_what_calls_the_api() {
     assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
     assert_eq!(job["account"], "cursor");
     let said = summary(&job);
-    assert!(said.contains("keys=accessToken\n"), "{said}");
+    assert!(said.contains("keys=accessToken,refreshToken\n"), "{said}");
     assert!(
         !said.contains("keychain-held-access") && said.contains("[redacted"),
         "{said}"

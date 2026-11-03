@@ -1045,6 +1045,7 @@ impl Place {
         for dir in [
             self.cursor.clone(),
             self.cursor.join(".cursor"),
+            self.cursor.join(crate::acp::cursor::SHORT_DATA),
             self.cursor.join(".config/cursor"),
         ] {
             remove_in(&dir, CURSOR);

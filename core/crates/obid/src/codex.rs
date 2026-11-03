@@ -852,6 +852,8 @@ const NOTICES: &[&str] = &[
     "thread/compacted",
     "thread/queue/changed",
     "thread/closed",
+    // codex 0.162 on every thread/resume, with no goal set: nothing to do with what runs
+    "thread/goal/cleared",
     "turn/started",
     "turn/completed",
     "turn/diff/updated",
@@ -1359,6 +1361,7 @@ exec sleep 30
             "serverRequest/resolved",
             "thread/queue/changed",
             "thread/closed",
+            "thread/goal/cleared",
         ] {
             assert_eq!(ran_outside(&notice(method)), None, "{method}");
         }
