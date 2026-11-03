@@ -446,6 +446,170 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     assert!(!job["accountLimit"].is_null(), "{job}");
 }
 
+/// RECOVERY-7: how a turn ended is read from the tool's fields: a 429 whose words name no status
+/// obid could read is a passing error, not an account's limit.
+#[test]
+fn recovery_7_a_429_is_read_from_its_status() {
+    let (_folder, obid) = obid("recovery-7-429");
+    let id = post_job(&obid, "REJECTED 429 KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(job["accountLimit"].is_null(), "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("Request rejected (429)"), "{told:?}");
+}
+
+/// RECOVERY-7: a 429 past its tries ends as any passing error does, with the tool's words and Try
+/// again: its words say "rate limit", and no account is full, so nothing asks about one.
+#[test]
+fn recovery_7_a_429_past_its_tries_is_no_limit() {
+    let (_folder, obid) = obid("recovery-7-429-out");
+    let id = post_job(&obid, "REJECTED 429 ALWAYS KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    assert!(job["accountLimit"].is_null(), "{job}");
+    assert_eq!(prompts(&job).len(), 4, "{job}");
+    assert!(
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("API Error: Request rejected (429)"),
+        "{job}"
+    );
+}
+
+/// RECOVERY-7: words of the agent's that name a limit, before an error of the tool's own, mark no
+/// account full: the tool's error decides.
+#[test]
+fn recovery_7_the_agents_words_are_no_limit() {
+    let (_folder, obid) = obid("recovery-7-words");
+    let id = post_job(&obid, "LAST WORDS LIMIT KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(job["accountLimit"].is_null(), "{job}");
+    let told = prompts(&job);
+    assert!(told[1].contains("> API Error: 529"), "{told:?}");
+    assert!(!told[1].contains("stranger"), "{told:?}");
+}
+
+/// RECOVERY-8: a session too long for its model goes on in a new one, told so and given its whole
+/// task, with nobody asked. It isn't told to Try again in that session.
+#[test]
+fn recovery_8_a_session_too_long_goes_on_in_a_new_one() {
+    let (_folder, obid) = obid("recovery-8");
+    let id = post_job(&obid, "TOO LONG KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("not the owner's words"), "{told:?}");
+    assert!(told[1].contains("new one"), "{told:?}");
+    assert!(
+        told[1].contains("What the user asked for: TOO LONG"),
+        "{told:?}"
+    );
+    let args =
+        std::fs::read_to_string(Path::new(job["worktree"].as_str().unwrap()).join(".obi/args.log"))
+            .unwrap();
+    assert_eq!(args.matches("--max-turns").count(), 2, "{args}");
+    assert!(!args.contains("--resume"), "{args}");
+    assert_eq!(
+        told[1].matches("What the user asked for").count(),
+        1,
+        "{told:?}"
+    );
+}
+
+/// RECOVERY-8: a new session hears all a job's first message said, whatever its last message was:
+/// here Try again's, with the owner's memories and the repository's rules nowhere else.
+#[test]
+fn recovery_8_a_new_session_hears_all_it_was_first_told() {
+    let (_folder, obid) = obid("recovery-8-told");
+    let memories = obid.home.join("memory/user");
+    std::fs::create_dir_all(&memories).unwrap();
+    std::fs::write(
+        memories.join("m0000000a.md"),
+        "---\nid: m0000000a\nscope: user\nkind: preference\nsource: found\ntitle: Short answers\nfrom: You said it in 2 conversations\ncreated: 2026-10-22T10:00:00Z\nupdated: 2026-10-22T10:00:00Z\nused: 0\n---\nAnswer in one sentence.\n",
+    )
+    .unwrap();
+    let id = post_job(&obid, "LONG WHEN TOLD KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    let answer = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": TRY_AGAIN}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 3, "{told:?}");
+    let new = &told[2];
+    assert!(new.contains("grew too long"), "{new}");
+    assert!(new.contains("What the user asked for"), "{new}");
+    assert!(new.contains(".obi/inputs/memories.md"), "{new}");
+    assert!(new.contains(TRY_AGAIN), "{new}");
+}
+
+/// RECOVERY-8: one new session a job, until the owner's words: too long in that one too, it ends
+/// with the tool's words, and the owner's Try again starts a new one again.
+#[test]
+fn recovery_8_too_long_again_tells_the_owner() {
+    let (_folder, obid) = obid("recovery-8-out");
+    let id = post_job(&obid, "TOO LONG ALWAYS KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    assert!(
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Prompt is too long"),
+        "{job}"
+    );
+    assert_eq!(prompts(&job).len(), 2, "{job}");
+    let answer = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": TRY_AGAIN}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(prompts(&job).len(), 4, "{job}");
+}
+
+/// TASKS-15: every run gets the job's standing rules in its system prompt, a resumed one too, which
+/// would otherwise have none; and none of them is in the first message any more.
+#[test]
+fn tasks_15_every_run_gets_the_standing_rules() {
+    let (_folder, obid) = obid("tasks-15");
+    let id = post_job(&obid, "TRANSIENT KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let args =
+        std::fs::read_to_string(Path::new(job["worktree"].as_str().unwrap()).join(".obi/args.log"))
+            .unwrap();
+    assert_eq!(args.matches("--max-turns").count(), 2, "{args}");
+    assert_eq!(args.matches("--resume").count(), 1, "{args}");
+    assert!(
+        args.contains("--exclude-dynamic-system-prompt-sections"),
+        "{args}"
+    );
+    let rules = "--append-system-prompt";
+    assert_eq!(args.matches(rules).count(), 2, "{args}");
+    assert!(args.contains("Finish with a short summary."), "{args}");
+    assert!(
+        !prompts(&job)[0].contains("Finish with a short summary."),
+        "{job}"
+    );
+}
+
 /// Waits until job `id`'s agent got its first prompt.
 fn at_work(obid: &Obid, id: &str) {
     within(30, "its first turn", || {

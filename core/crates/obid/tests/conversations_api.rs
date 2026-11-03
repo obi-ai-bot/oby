@@ -540,7 +540,8 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
     let kept: Value = serde_json::from_slice(&std::fs::read(&aside).unwrap()).unwrap();
     assert_eq!(kept, old_thread());
 
-    // An app from before carries it on, and the brain reads it, each turn on one line.
+    // An app from before carries it on, and the brain reads it, each turn on one line; but for one
+    // naming a job obid no longer has, which may have held someone else's words (TASKCONV-20).
     let answer = plan(&obid, json!({"said": "hello"}));
     assert_eq!(answer["conversation"], id);
     let recorded =
@@ -549,7 +550,9 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
     let turn: Value = serde_json::from_str(recorded.lines().next().unwrap()).unwrap();
     let prompt = turn["prompt"].as_str().unwrap();
     assert!(
-        prompt.contains("Owner: review oby PR #33 please\nOby: On it.\nOwner: and the vault one?"),
+        prompt.contains(
+            "Owner: review oby PR #33 please\nOby: [a line about a job, left out: oby_job reads it, quoted]\nOwner: and the vault one?"
+        ),
         "{prompt}"
     );
     assert_eq!(turns(&obid, "").len(), 5);
@@ -847,6 +850,86 @@ fn failed_turn_write_does_not_change_the_existing_conversation() {
     let mut restarted = start(&folder.0, &config, None);
     assert_eq!(turns(&restarted, &query), after);
     restarted.stop();
+}
+
+/// TASKCONV-18: a job that ended with nobody to hear it (obid went down) tells its conversation at
+/// the next start, once; one that ended before obid kept the mark says nothing, so an upgrade adds
+/// nothing to old conversations.
+#[test]
+fn taskconv_18_a_job_end_notice_cant_be_lost() {
+    let kept_job = |home: &Path, id: &str, conversation: &str, finished: i64| {
+        let mut job = obid::job::Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "investigate".into(),
+            "Look around".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.status = obid::job::Status::Done;
+        job.conversation = Some(conversation.to_owned());
+        job.finished = Some(finished);
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        std::fs::write(
+            home.join(format!("jobs/{id}.json")),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+    };
+    let prepared = |name: &str| {
+        use std::os::unix::fs::DirBuilderExt;
+        let folder = Folder::new(name);
+        let remote = fixture(&folder.0.join("fixture"));
+        let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+        let config = config(&folder.0, &remote, &agent);
+        let home = folder.0.join("home");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(home.join("conversations"))
+            .unwrap();
+        let (id, _) = kept_talk(&home, 1, "Work", 2, None);
+        (folder, config, home, id)
+    };
+    let reports = |obid: &Obid, id: &str| -> Vec<Value> {
+        turns(obid, &format!("?id={id}"))
+            .into_iter()
+            .filter(|t| t["ended"] == true)
+            .collect()
+    };
+
+    let (folder, config, home, id) = prepared("conversation-told");
+    let mut obid = start(&folder.0, &config, None);
+    obid.stop();
+    // Before obid kept the mark, whatever else is so; and after, with nobody to hear it.
+    let since: i64 = std::fs::read_to_string(home.join("job-reports-since"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    kept_job(&home, "old00001", &id, since - 60);
+    kept_job(&home, "lost0001", &id, since + 1);
+    let mut obid = start(&folder.0, &config, None);
+    within(30, "the job's report", || {
+        (!reports(&obid, &id).is_empty()).then_some(())
+    });
+    let told = reports(&obid, &id);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["jobs"], json!(["lost0001"]), "{told:?}");
+    obid.stop();
+    // Told once: another start says nothing more.
+    let mut obid = start(&folder.0, &config, None);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(reports(&obid, &id).len(), 1);
+    obid.stop();
+
+    // An upgrade's first start, with nothing noted: what had ended stays quiet.
+    let (folder, config, home, id) = prepared("conversation-told-upgrade");
+    kept_job(&home, "old00002", &id, obi_protocol::time::now() - 1);
+    let mut obid = start(&folder.0, &config, None);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(reports(&obid, &id).is_empty());
+    obid.stop();
 }
 
 /// A kept conversation titled `title`, its `n`th turn (from 1) saying `said` and the others

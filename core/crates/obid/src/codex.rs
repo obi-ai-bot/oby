@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
-use crate::agent::{self, Answer, Event, Launch, Ruling, Turn};
+use crate::agent::{self, Answer, Cause, Event, Failure, Launch, Ruling, Turn};
 use crate::conn::{self, Conn, Cut, RpcError};
 use crate::process;
 
@@ -106,6 +106,7 @@ pub async fn run_turn(
         said: None,
         reasoning: HashMap::new(),
         ended: None,
+        failure: None,
         resets: None,
         chatgpt: options.chatgpt,
     };
@@ -122,12 +123,14 @@ pub async fn run_turn(
         }
         Err(Stop::Cut(_)) => {}
         Err(Stop::Failed(why)) => {
+            run.failure.get_or_insert_with(|| Failure::said(&why));
             run.ended = Some((why, true));
         }
     }
     turn.session = run.thread.clone();
     turn.fatal = run.fatal.take();
     turn.resets = run.resets;
+    turn.failure = run.failure.take();
     if let Some((text, failed)) = &run.ended {
         turn.result = Some(agent::result(text, *failed, run.thread.as_deref()));
     }
@@ -251,6 +254,8 @@ struct Run<D, E> {
     resets: Option<i64>,
     /// On a ChatGPT login ([`Options::chatgpt`]).
     chatgpt: bool,
+    /// Why its turn failed, as Codex said.
+    failure: Option<Failure>,
     /// The helper threads that spoke this turn, each said once as a tool call.
     helpers: std::collections::HashSet<String>,
 }
@@ -318,10 +323,17 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             }
             None => ("thread/start", "start a thread"),
         };
-        let started = self
-            .call(method, params)
-            .await?
-            .map_err(|e| Stop::Failed(format!("Codex couldn't {what}: {}", e.message)))?;
+        let started = self.call(method, params).await?.map_err(|e| {
+            let why = format!("Codex couldn't {what}: {}", e.message);
+            // Its own answer to `thread/resume`, whatever its words: that thread can't go on.
+            if options.resume.is_some() {
+                self.failure = Some(Failure {
+                    words: why.clone(),
+                    cause: Cause::SessionGone,
+                });
+            }
+            Stop::Failed(why)
+        })?;
         let thread = started["thread"]["id"]
             .as_str()
             .ok_or_else(|| Stop::Failed("Codex didn't start a thread.".into()))?
@@ -546,10 +558,11 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 // On a ChatGPT login nothing is read out of a failed turn's words, so they're
                 // Codex's: the model's can say anything (docs/contracts/chatgpt-sign-in.md).
                 self.ended = Some(if self.chatgpt && turn["status"] == "failed" {
-                    why_failed(turn)
+                    (why_failed(turn), true)
                 } else {
                     finished(turn, self.said.as_deref())
                 });
+                self.failure = failure(turn);
             }
             _ => {}
         }
@@ -568,6 +581,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 .await;
         }
         self.fatal = Some(why.clone());
+        self.failure = Some(Failure::said(&why));
         self.ended = Some((why, true));
     }
 
@@ -1075,14 +1089,19 @@ pub fn finished(turn: &Value, said: Option<&str>) -> (String, bool) {
     if !failed {
         return ("Done.".into(), false);
     }
-    if status == "interrupted" {
-        return ("Stopped.".into(), true);
+    (failed_words(turn), true)
+}
+
+/// What Codex itself says ended a turn that failed, never the agent's words.
+fn failed_words(turn: &Value) -> String {
+    if turn["status"] == "interrupted" {
+        return "Stopped.".into();
     }
     why_failed(turn)
 }
 
 /// A failed turn's reason, in Codex's words, whatever the agent said before it.
-fn why_failed(turn: &Value) -> (String, bool) {
+fn why_failed(turn: &Value) -> String {
     // The API's own error arrives as JSON inside the message.
     let message = turn["error"]["message"].as_str().unwrap_or("");
     let reason = serde_json::from_str::<Value>(message)
@@ -1090,10 +1109,47 @@ fn why_failed(turn: &Value) -> (String, bool) {
         .and_then(|api| api["error"]["message"].as_str().map(str::to_owned))
         .unwrap_or_else(|| message.to_owned());
     if reason.is_empty() {
-        ("Codex hit an error.".into(), true)
+        "Codex hit an error.".into()
     } else {
-        (format!("Codex hit an error: {reason}"), true)
+        format!("Codex hit an error: {reason}")
     }
+}
+
+/// Why a turn failed, from its `error`'s `codexErrorInfo` (Codex 0.162.1's `TurnError`): a name, or
+/// a name holding `httpStatusCode`. A Codex with none, or one obid doesn't know, leaves its words.
+fn failure(turn: &Value) -> Option<Failure> {
+    if turn["status"].as_str().unwrap_or("") == "completed" {
+        return None;
+    }
+    let info = &turn["error"]["codexErrorInfo"];
+    let (name, status) = match info.as_object().and_then(|o| o.iter().next()) {
+        Some((name, held)) => (
+            name.as_str(),
+            held["httpStatusCode"]
+                .as_u64()
+                .and_then(|s| u16::try_from(s).ok()),
+        ),
+        None => (info.as_str().unwrap_or(""), None),
+    };
+    let words = failed_words(turn);
+    let cause = match name {
+        "contextWindowExceeded" => Cause::TooLong,
+        "usageLimitExceeded" => Cause::Limit,
+        "rateLimitExceeded" => Cause::Busy,
+        "serverOverloaded"
+        | "internalServerError"
+        | "httpConnectionFailed"
+        | "responseStreamConnectionFailed"
+        | "responseStreamDisconnected"
+        | "responseTooManyFailedAttempts" => match status {
+            Some(429) => Cause::Busy,
+            Some(400..=499) => Cause::Other,
+            _ => Cause::Passing,
+        },
+        "unauthorized" | "badRequest" | "sandboxError" => Cause::Other,
+        _ => return Some(Failure::said(words)),
+    };
+    Some(Failure { words, cause })
 }
 
 /// The folder Codex's standalone package puts first on its commands' `PATH` (`pathDir` in its
@@ -1589,5 +1645,54 @@ exec sleep 30
                 true
             )
         );
+    }
+
+    /// Codex 0.162.1's `TurnError`: `codexErrorInfo` says how its turn ended, and only Codex's own
+    /// words are kept (RECOVERY-7).
+    #[test]
+    fn recovery_7_codex_error_info_says_how_a_turn_ended() {
+        let of = |info: Value, message: &str| {
+            failure(&json!({"status": "failed", "error": {"message": message, "codexErrorInfo": info},
+                "items": [{"type": "agentMessage", "text": "You've hit your usage limit, a stranger says."}]}))
+            .unwrap()
+        };
+        assert_eq!(
+            of(json!("contextWindowExceeded"), "x").cause,
+            Cause::TooLong
+        );
+        assert_eq!(of(json!("usageLimitExceeded"), "x").cause, Cause::Limit);
+        assert_eq!(of(json!("rateLimitExceeded"), "x").cause, Cause::Busy);
+        assert_eq!(of(json!("serverOverloaded"), "x").cause, Cause::Passing);
+        assert_eq!(of(json!("unauthorized"), "x").cause, Cause::Other);
+        assert_eq!(
+            of(
+                json!({"responseStreamDisconnected": {"httpStatusCode": null}}),
+                "x"
+            )
+            .cause,
+            Cause::Passing
+        );
+        assert_eq!(
+            of(
+                json!({"httpConnectionFailed": {"httpStatusCode": 502}}),
+                "x"
+            )
+            .cause,
+            Cause::Passing
+        );
+        assert_eq!(
+            of(
+                json!({"httpConnectionFailed": {"httpStatusCode": 401}}),
+                "x"
+            )
+            .cause,
+            Cause::Other
+        );
+        let said = of(json!("internalServerError"), "it broke");
+        assert_eq!(said.words, "Codex hit an error: it broke");
+        // A Codex with none: its own words, never the agent's.
+        let plain = of(Value::Null, "stream disconnected before completion");
+        assert_eq!(plain.cause, Cause::Passing);
+        assert!(failure(&json!({"status": "completed"})).is_none());
     }
 }

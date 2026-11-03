@@ -23,6 +23,7 @@
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
 //   QUIET            says nothing until it is ended, then in the prompt obid continues says "Carried
 //                    on.", having heard its task again under "What you were last sent"
+//   RULES            exits on its first prompt; loaded again, says whether both had the job's rules
 //   DIE              exits with no result, then the same; DIE NO LOAD can't load sessions after
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is cancelled
 //   FAIL             answers the prompt with an error
@@ -100,7 +101,12 @@ function sessionAnswer() {
   };
 }
 
-async function prompt(id, text) {
+// Obid's standing rules, which come first in every prompt on ACP: told apart from the prompt, as a
+// system prompt would be.
+const RULES_END = "Its first line is one sentence the user will see.\n\n";
+async function prompt(id, whole) {
+  const ruled = whole.includes(RULES_END);
+  const text = ruled ? whole.slice(whole.indexOf(RULES_END) + RULES_END.length) : whole;
   if (leaked.length) return send({ id, error: { code: -32603, message: `leaked: ${leaked.join(", ")}` } });
   if (state.task === null) {
     state.task = text;
@@ -109,6 +115,16 @@ async function prompt(id, text) {
   const task = state.task;
   if (text.includes("obid paused you") && !text.includes("The owner allowed it")) {
     say(`heard: ${text}`);
+    return answered(id);
+  }
+  // Dies on its first prompt, to be loaded again; then says whether each came with its rules.
+  if (task.includes("RULES")) {
+    if (!text.includes("Your run was cut")) {
+      state.rules = ruled;
+      save();
+      process.exit(1);
+    }
+    say(state.rules && ruled ? "rules with its prompt, twice" : "no rules");
     return answered(id);
   }
   const commit = task.match(/COMMIT: (\S+)/);

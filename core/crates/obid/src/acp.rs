@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
-use crate::agent::{self, Answer, Event, Launch, Ruling, Turn};
+use crate::agent::{self, Answer, Cause, Event, Failure, Launch, Ruling, Turn};
 use crate::conn::{self, Conn, Cut, RpcError};
 use crate::process;
 
@@ -81,6 +81,7 @@ pub async fn run_turn(
         owners_words: None,
         tokens: crate::usage::Tokens::default(),
         loading: false,
+        failure: None,
     };
     let mut turn = Turn::default();
     let ended = match run.turn(prompt).await {
@@ -94,12 +95,16 @@ pub async fn run_turn(
             None
         }
         Err(Stop::Cut(_)) => None,
-        Err(Stop::Failed(why)) => Some((why, true)),
+        Err(Stop::Failed(why)) => {
+            run.failure.get_or_insert_with(|| Failure::said(&why));
+            Some((why, true))
+        }
     };
     turn.session = run.session.clone();
     if let Some((text, failed)) = &ended {
         turn.result = Some(agent::result(text, *failed, run.session.as_deref()));
     }
+    turn.failure = run.failure.take();
     turn.notes = std::mem::take(&mut run.notes);
     run.conn.close_input();
     if ended.is_some() {
@@ -518,23 +523,31 @@ fn cancelled() -> Value {
 /// What a `session/prompt` answered: the turn's words and whether it failed.
 pub fn finished(stop_reason: &str, said: &str) -> (String, bool) {
     let said = said.trim();
-    let or = |fallback: &str| {
+    let or = |fallback: String| {
         if said.is_empty() {
-            fallback.to_owned()
+            fallback
         } else {
             said.to_owned()
         }
     };
+    match stop_words(stop_reason) {
+        None => (or("Done.".into()), false),
+        Some(words) => (or(words), true),
+    }
+}
+
+/// What the tool's own `stopReason` says of a turn that failed; none when it ended well. The agent's
+/// words aren't in it: they can quote anyone.
+fn stop_words(stop_reason: &str) -> Option<String> {
     match stop_reason {
-        "end_turn" => (or("Done."), false),
-        "cancelled" => (or("Stopped."), true),
-        "max_turn_requests" => (
-            or("It ran out of requests for this turn before it finished."),
-            true,
-        ),
-        "refusal" => (or("The model refused to continue."), true),
-        "max_tokens" => (or("The model ran out of tokens in this turn."), true),
-        other => (or(&format!("The turn ended: {other}.")), true),
+        "end_turn" => None,
+        "cancelled" => Some("Stopped.".into()),
+        "max_turn_requests" => {
+            Some("It ran out of requests for this turn before it finished.".into())
+        }
+        "refusal" => Some("The model refused to continue.".into()),
+        "max_tokens" => Some("The model ran out of tokens in this turn.".into()),
+        other => Some(format!("The turn ended: {other}.")),
     }
 }
 
@@ -578,6 +591,8 @@ struct Run<D, E> {
     tokens: crate::usage::Tokens,
     /// `session/load` is under way, and what it replays goes unreported ([`Options::quiet_load`]).
     loading: bool,
+    /// Why its turn failed, as the tool said.
+    failure: Option<Failure>,
 }
 
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
@@ -635,9 +650,14 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 json!({"sessionId": session, "cwd": cwd, "mcpServers": servers}),
             ),
             Some(_) if self.options.resume_only => {
-                return Err(Stop::Failed(format!(
+                let why = format!(
                     "{tool} can't load its session, so obid couldn't pick it up, and didn't start a new one that wouldn't know the task. Try again starts it in a new session."
-                )));
+                );
+                self.failure = Some(Failure {
+                    words: why.clone(),
+                    cause: Cause::SessionGone,
+                });
+                return Err(Stop::Failed(why));
             }
             _ => ("session/new", json!({"cwd": cwd, "mcpServers": servers})),
         };
@@ -648,10 +668,15 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             Ok(answer) => answer,
             Err(e) if is_auth(&e) => return Err(Stop::Failed(self.signed_out())),
             Err(e) => {
-                return Err(Stop::Failed(format!(
-                    "{tool} couldn't start a session: {}",
-                    e.message
-                )));
+                let why = format!("{tool} couldn't start a session: {}", e.message);
+                // Its own answer to `session/load`, whatever its words: that session can't go on.
+                if method == "session/load" {
+                    self.failure = Some(Failure {
+                        words: why.clone(),
+                        cause: Cause::SessionGone,
+                    });
+                }
+                return Err(Stop::Failed(why));
             }
         };
         self.found = found(&answer);
@@ -719,6 +744,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 .await?;
         }
         let (stop_reason, said) = (ended.1, ended.0);
+        self.failure = stop_words(&stop_reason).map(Failure::said);
         Ok(finished(&stop_reason, &said))
     }
 

@@ -178,6 +178,154 @@ pub struct Turn {
     /// It ended with a background task of its own still running: it ended before the task did
     /// (Claude Code's; crate::jobs).
     pub left_running: bool,
+    /// Why it failed, as the tool itself said: none for a turn that succeeded, or one that ended
+    /// with no result.
+    pub failure: Option<Failure>,
+}
+
+/// Why a turn failed, from the tool's own fields where it has them (docs/contracts/recovery.md,
+/// RECOVERY-7). Never the agent's own words, which can quote anyone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    /// The tool's own words: Claude Code's `errors`, or the `result` of its error; Codex's turn
+    /// error; what ACP answered.
+    pub words: String,
+    pub cause: Cause,
+}
+
+/// What ended a failed turn, as far as obid has to tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// More than the model can read at once: Claude Code's `prompt_too_long`, Codex's
+    /// `contextWindowExceeded`.
+    TooLong,
+    /// The session can't be picked up: it's gone, or the tool can't load it.
+    SessionGone,
+    /// The API failed for now: a 5xx, overloaded, a dropped connection or stream.
+    Passing,
+    /// The API said too many requests (429): passing, unless the account's usage says it's full.
+    Busy,
+    /// The account's usage limit, in the tool's own words.
+    Limit,
+    Other,
+}
+
+impl Cause {
+    /// From the tool's own words alone: what older CLIs and Cursor give. Only ever handed the
+    /// tool's words, never the agent's.
+    pub fn read(words: &str) -> Cause {
+        let error = words.to_lowercase();
+        if crate::brain::too_long(words) {
+            return Cause::TooLong;
+        }
+        if error.contains("no conversation found") {
+            return Cause::SessionGone;
+        }
+        // "hit your limit", and as claude 2.1.302 says one: "hit your session limit"
+        if ["usage limit", "limit reached"]
+            .iter()
+            .any(|w| error.contains(w))
+            || error
+                .split_once("hit your ")
+                .is_some_and(|(_, rest)| rest.split(' ').take(2).any(|w| w.starts_with("limit")))
+        {
+            return Cause::Limit;
+        }
+        // Words of a limit that holds no account full (a disk's quota, too), and no passing error.
+        if ["out of credits", "quota"]
+            .iter()
+            .any(|w| error.contains(w))
+        {
+            return Cause::Other;
+        }
+        let status = error
+            .split("api error: ")
+            .nth(1)
+            .and_then(|rest| rest.get(..3))
+            .and_then(|code| code.parse::<u16>().ok());
+        if status.is_some() {
+            return Cause::of_status(status);
+        }
+        let cut = [
+            "overloaded",
+            "connection error",
+            "connection reset",
+            "econnreset",
+            "socket hang up",
+            "stream disconnected",
+            "request timed out",
+            "exceeded retry limit",
+        ]
+        .iter()
+        .any(|w| error.contains(w));
+        match cut {
+            true if error.contains("429") => Cause::Busy,
+            true => Cause::Passing,
+            false => Cause::Other,
+        }
+    }
+
+    /// From an HTTP status the tool reports.
+    fn of_status(status: Option<u16>) -> Cause {
+        match status {
+            Some(429) => Cause::Busy,
+            Some(500..=599) => Cause::Passing,
+            _ => Cause::Other,
+        }
+    }
+}
+
+impl Failure {
+    /// One whose cause only its words can say.
+    pub fn said(words: impl Into<String>) -> Failure {
+        let words = words.into();
+        Failure {
+            cause: Cause::read(&words),
+            words,
+        }
+    }
+
+    /// One whose status the tool reports: what its words add is only what a status can't say
+    /// (a usage limit answers 429 too).
+    pub fn with_status(words: impl Into<String>, status: Option<u16>) -> Failure {
+        let failure = Failure::said(words);
+        let cause = match (failure.cause, status) {
+            (cause @ (Cause::TooLong | Cause::SessionGone | Cause::Limit), _) | (cause, None) => {
+                cause
+            }
+            (_, status) => Cause::of_status(status),
+        };
+        Failure { cause, ..failure }
+    }
+
+    /// Claude Code's `result` line, when it says the turn failed: `errors`, which is all an
+    /// `error_*` subtype has (claude 2.1.302: `No conversation found…`), or the `result` of an
+    /// error with subtype `success` (`API Error: 529…`), with its optional `terminal_reason` and
+    /// `api_error_status`.
+    fn of_claude(result: &Value) -> Option<Failure> {
+        let errors: Vec<&str> = result["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let words = match errors.is_empty() {
+            true => result["result"].as_str().unwrap_or("").to_owned(),
+            false => errors.join("; "),
+        };
+        let status = result["api_error_status"]
+            .as_u64()
+            .and_then(|s| u16::try_from(s).ok());
+        let failure = Failure::with_status(words, status);
+        // What its own table calls a context limit (claude 2.1.302).
+        Some(match result["terminal_reason"].as_str() {
+            Some("prompt_too_long" | "blocking_limit" | "rapid_refill_breaker") => Failure {
+                cause: Cause::TooLong,
+                ..failure
+            },
+            _ => failure,
+        })
+    }
 }
 
 impl Turn {
@@ -199,6 +347,26 @@ impl Turn {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned()
+    }
+
+    /// The tool's own words for why the turn failed: empty when it succeeded, or said nothing.
+    pub fn error(&self) -> &str {
+        self.failure.as_ref().map_or("", |f| f.words.as_str())
+    }
+
+    /// What the tool says ended the turn: none when it gave no result.
+    pub fn cause(&self) -> Option<Cause> {
+        self.failure.as_ref().map(|f| f.cause)
+    }
+
+    /// Whether `words`, the tool's, say a usage limit ended the turn: its own fields decide, and only
+    /// where they can't do the words count. A real 429's words hold "rate limit", and it's passing.
+    pub fn says_limit(&self, words: &str) -> bool {
+        match self.cause() {
+            Some(Cause::Limit) => true,
+            Some(Cause::Busy | Cause::Passing | Cause::TooLong | Cause::SessionGone) => false,
+            Some(Cause::Other) | None => crate::limits::is_limit(words),
+        }
     }
 
     /// What the agent said last: [`Turn::text`], or when that has no words (its last message was
@@ -565,6 +733,10 @@ pub async fn turn_on(
                     api_key_source.as_deref(),
                 )));
                 turn.result = Some(message);
+                turn.failure = match turn.succeeded() {
+                    true => None,
+                    false => turn.result.as_ref().and_then(Failure::of_claude),
+                };
                 // Headless Claude Code wakes itself when a background task ends, as it does in a
                 // terminal (claude 2.1.302, 2026-10-20): with its input still open, a
                 // `task_notification` and then a turn of its own, `init` to `result`. So a turn
@@ -992,5 +1164,96 @@ mod tests {
             "Looking for **/*.js"
         );
         assert_eq!(step("Mystery", &json!({})), "Using Mystery");
+    }
+
+    /// RECOVERY-7: a 429's words say "rate limit", and that's no usage limit: the tool's fields
+    /// decide, and the words count only where they can't.
+    #[test]
+    fn recovery_7_a_rate_limit_is_no_usage_limit() {
+        let words = "API Error: Request rejected (429) · This request would exceed your rate limit";
+        let ended = |failure: Option<Failure>| Turn {
+            failure,
+            ..Turn::default()
+        };
+        let busy = ended(Some(Failure::with_status(words, Some(429))));
+        assert_eq!(busy.cause(), Some(Cause::Busy));
+        assert!(!busy.says_limit(words));
+        assert!(ended(Some(Failure::said("You've hit your limit"))).says_limit(""));
+        // Nothing to go on but the words: an older CLI's, or a stderr line.
+        assert!(ended(None).says_limit("telemetry: rate limit exceeded"));
+        assert!(
+            ended(Some(Failure::said("rate limit exceeded"))).says_limit("rate limit exceeded")
+        );
+    }
+
+    /// What claude 2.1.302 really ended its turns with, against a stand-in API (RECOVERY-7).
+    #[test]
+    fn recovery_7_how_a_turn_ended_is_read_from_the_tools_fields() {
+        let of = |line: Value| Failure::of_claude(&line).unwrap();
+        // Its error in `errors`, with no `result`.
+        let gone = of(
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+            "num_turns": 0, "errors": ["No conversation found with session ID: 00000000-0000-4000-8000-000000000000"]}),
+        );
+        assert_eq!(gone.cause, Cause::SessionGone);
+        assert!(gone.words.starts_with("No conversation found"));
+        // A status its words don't show the way an older CLI's did.
+        let busy = of(
+            json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
+            "api_error_status": 429, "result": "API Error: Request rejected (429) · This request would exceed your rate limit"}),
+        );
+        assert_eq!(busy.cause, Cause::Busy);
+        let down = of(
+            json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
+            "api_error_status": 529, "result": "API Error: 529 Overloaded."}),
+        );
+        assert_eq!(down.cause, Cause::Passing);
+        let login = of(
+            json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
+            "api_error_status": 401, "result": "Invalid API key · Fix external API key"}),
+        );
+        assert_eq!(login.cause, Cause::Other);
+        let other = of(
+            json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
+            "api_error_status": 400, "result": "API Error: 400 the service is overloaded, it says"}),
+        );
+        assert_eq!(other.cause, Cause::Other, "the status beats the words");
+        // Its reason, whatever its words.
+        let long = of(
+            json!({"subtype": "success", "is_error": true, "terminal_reason": "prompt_too_long",
+            "api_error_status": 400, "result": "too much"}),
+        );
+        assert_eq!(long.cause, Cause::TooLong);
+        // A plan's limit answers 429 too: its words say which.
+        let limit = of(
+            json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
+            "api_error_status": 429, "result": "You've hit your limit · resets 3pm"}),
+        );
+        assert_eq!(limit.cause, Cause::Limit);
+        for words in [
+            "You've hit your session limit · resets 4:36am",
+            "You've hit your weekly limit",
+        ] {
+            let limit = of(
+                json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
+                "api_error_status": 429, "result": words}),
+            );
+            assert_eq!(limit.cause, Cause::Limit, "{words}");
+        }
+        // An older Claude Code: its words alone.
+        let old = of(
+            json!({"subtype": "success", "is_error": true, "result": "API Error: 529 overloaded"}),
+        );
+        assert_eq!(old.cause, Cause::Passing);
+        assert_eq!(
+            of(json!({"subtype": "success", "is_error": true, "result": "Prompt is too long"}))
+                .cause,
+            Cause::TooLong
+        );
+        // Codex's sentence too, for a Codex with no `codexErrorInfo`.
+        assert_eq!(
+            Cause::read("Codex hit an error: Codex ran out of room in the model's context window."),
+            Cause::TooLong
+        );
     }
 }

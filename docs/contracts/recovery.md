@@ -6,7 +6,7 @@ The business behavior contract for what obid does by itself when a job's run is 
 
 - **Outcome:** The owner's direction: "Follow the exact way Claude Code follows." A job whose run was cut carries itself on and tells a person last; every automatic loop has a limit, and past it the job ends plainly, with the real reason.
 - **Status:** **Implemented.** The words on the step lines are proposed, and Sangam's to change.
-- **Scope:** The owner's own jobs on Claude Code, Codex and Cursor. Outside it: usage limits ([account-limits.md](account-limits.md), #1563), the Confirms, follow-ups on a new session or branch, a nudge for a looping agent, publish retries, `CLAUDE_CODE_RETRY_WATCHDOG`, and a review another Oby asked for (its answer goes back to that Oby).
+- **Scope:** The owner's own jobs on Claude Code, Codex and Cursor; RECOVERY-7's reading is for a conversation's turns too ([conversation-agent.md](conversation-agent.md), CONVERSATION-AGENT-15). Outside it: usage limits ([account-limits.md](account-limits.md), #1563), the Confirms, follow-ups on a new session or branch, a nudge for a looping agent, publish retries, `CLAUDE_CODE_RETRY_WATCHDOG`, and a review another Oby asked for (its answer goes back to that Oby).
 
 ## Behavior
 
@@ -23,6 +23,7 @@ The business behavior contract for what obid does by itself when a job's run is 
 | obid or the Mac went down, or obid's own bug | obid starts with a job at work; or a panic in the job's task before publishing began | 3 | None | `interrupted` with `obid or the Mac went down 4 times…` and `Try again`; after a panic, today's `failed` and its item |
 | Gone quiet | No progress for `stallAfter` | 5, shared with the turn limit | None | Today's stalled path, where the parent decides |
 | The 200-turn limit (Claude Code only) | `error_max_turns` | 5, shared with quiet | None | Today's stalled path |
+| A session too long for its model | The tool says so (RECOVERY-7) | 1 new session, until the owner's own words | None | `interrupted` with the tool's words and `Try again`, which starts a new session again |
 
 ### What the agent hears
 
@@ -31,6 +32,20 @@ The business behavior contract for what obid does by itself when a job's run is 
 What follows is what the cut may have lost. After a passing error or a quiet job: `What you were last sent, which may not have reached you (check before acting on it again):` and all of it, with any words that came meanwhile, so the owner's words, a failed check's output, a rebase order or the very first prompt are never replaced by "carry on". At the turn limit nothing follows: 200 turns in, it was heard. After a restart with a session: the same, kept in the job's file until its turn ends well, since the owner's words it holds are nowhere else; with nothing kept, the prompt, or the owner's words, as it always did.
 
 The error is what the CLI's `result` says or, with none, the run's exit and what that run printed on stderr. It's never the agent's own last words, which can quote anyone, nor an earlier run's stderr (`agent.log` keeps them all).
+
+A new session, when the last grew too long, hears `[From Oby, by itself: not the owner's words] Your run was cut: your session grew too long for your model, so this is a new one with none of its history. What was done so far is on this branch: read its log and diff first…`, then all its first message said (its task, the repository's rules, the owner's memories, teammates' pull requests, Tetrix's context) and what it was last sent.
+
+### How a turn's end is read
+
+From the tool's own fields, in this order, and only then from its own words, for older CLIs and Cursor. The agent's words are never read for any of it, so a stranger's comment that says "you've hit your usage limit" holds nothing.
+
+| Tool | Its words | Passing | Too long | Session gone |
+|---|---|---|---|---|
+| Claude Code | `errors`, else the `result` of an error with subtype `success` | `api_error_status` 5xx, or 429 unless the account is full | `terminal_reason` `prompt_too_long`, `blocking_limit` or `rapid_refill_breaker` | `errors`' `No conversation found` |
+| Codex | `turn.error.message` | `codexErrorInfo` `serverOverloaded`, `internalServerError`, or a connection or stream kind short of a 4xx; `rateLimitExceeded` unless full | `contextWindowExceeded` | Its answer to `thread/resume` was an error |
+| Cursor | What ACP answered, or its `stopReason` | Words only | Words only | Its answer to `session/load` was an error, or it can't load |
+
+A status beats the words about a status: `API Error: 400 … overloaded` isn't passing. Words that name an account's usage limit beat a 429, which a plan's limit answers too. Codex's `usageLimitExceeded` is a limit whatever its words. A 429's own words say "rate limit", and that's no usage limit: past its tries it ends as any passing error does, and neither a job nor a conversation marks its account full over one. Only a turn the tool's fields can't place (no status, no reason) has its words read for a limit.
 
 ### What the person sees
 
@@ -81,12 +96,16 @@ Claude Code's side is what the 2.1.302 binary, the app-managed 2.1.309 binary an
 
 **Proven against the installed CLI:** `claude` 2.1.302 against a local stand-in answering 529, with a made-up key and no real account, printed `{"type":"system","subtype":"api_retry","attempt":1,"max_retries":4,"retry_delay_ms":552,"error_status":529,"error":"overloaded",…}`. Everything else in Claude Code's column comes from reading it, not running it.
 
+The same way, its `result` lines, which RECOVERY-7 reads: a 529 and a 500, `is_error` true, subtype `success`, `terminal_reason` `api_error`, `api_error_status`, `result` `API Error: 529 Overloaded…`; a 429, the same with `API Error: Request rejected (429) · This request would exceed your rate limit`, words the old reading took for no status at all; a 401, `Invalid API key · Fix external API key`; a 400 saying the prompt is too long, `terminal_reason` `prompt_too_long`, `Prompt is too long · the request is ~250000 tokens…`; `--resume` of a session that isn't there, subtype `error_during_execution`, no `result` and no `terminal_reason`, `errors` `["No conversation found with session ID: …"]`. Codex's field names and sentence come from its 0.162.1 schema and binary, not from a run.
+
+On a real account, on a scratch obid and haiku (2026-11-03): a job stopped mid-run, its session grown past what Claude Code's own compaction could mend, then Try again: `Started a new session: its last was too long for its model`, and the new session's first message held obid's note, the task and the owner's memories line (RECOVERY-8). A conversation whose session the API refused (a block it doesn't know, planted in the session's file) answered from a new session with the earlier turns (CONVERSATION-AGENT-15), and the next turn went on there.
+
 ## Interfaces and dependencies
 
 - **API:** add-only, and nothing was added: `step` is the existing string, and no status or enum changes. `docs/runner-api.md` says what changed.
 - **Persistence:** `recovery` in the job's file (`errors`, `stalls`, `restarts`, what cut it, what its turn under way was sent), never in the API.
 - **Clients:** `apps/electron` needs no change: `askOf` shows a card only for `failed` and `interrupted`, `taskOf` shows `queued` and `running` as running with their step, and `notify.ts` alerts only on an end.
-- **Open:** the tries are borrowed from Claude Code and not measured. Nothing here has run on a real CLI but `api_retry`, above.
+- **Open:** the tries are borrowed from Claude Code and not measured. Nothing here has run on a real CLI but what's said above. How well a new session does from the branch alone wasn't measured beyond that one job, which had no commits. Cursor's words for a session too long aren't known, so it isn't told apart.
 
 ## Acceptance scenarios
 
@@ -96,5 +115,8 @@ Claude Code's side is what the 2.1.302 binary, the app-managed 2.1.309 binary an
 - **RECOVERY-4** The 200-turn limit continues the same session, counted in RECOVERY-3's 5. The ceiling, the budget and the loop detector stall at once, as they did. `long_jobs::recovery_4_the_turn_limit_continues_and_counts_with_quiet`; the guards: `long_jobs::a_looping_job_stalls`, `long_jobs::the_token_budget_stalls_and_only_the_owners_confirm_carries_on`, `long_jobs::the_ceiling_counts_every_run`.
 - **RECOVERY-5** While it's tried again, the job shows as running and nothing says it failed; its step says it's trying again and when, the real error only from the third try; Stop ends a wait. `long_jobs::recovery_5_a_retry_shows_as_running_with_the_error_held_back`; on the desktop card, under the steps it already has: `liveTask.test.tsx`, "RECOVERY-5".
 - **RECOVERY-6** Claude Code's own `system/api_retry` counts as activity, so its retrying trips no quiet window, and shows the same way. `long_jobs::recovery_6_claude_codes_own_retrying_is_activity`.
+
+- **RECOVERY-7** How a turn ended is read from the tool's own fields, its words only as the fallback, and never the agent's words: a 429 is a passing error, a status beats the words, and words of the agent's that name a limit hold nothing. `agent::tests::recovery_7_how_a_turn_ended_is_read_from_the_tools_fields`, `codex::tests::recovery_7_codex_error_info_says_how_a_turn_ended`, `agent::tests::recovery_7_a_rate_limit_is_no_usage_limit`, `long_jobs::recovery_7_a_429_is_read_from_its_status`, `long_jobs::recovery_7_a_429_past_its_tries_is_no_limit`, `conversation_harness::recovery_7_a_conversations_429_holds_no_account_full`, `long_jobs::recovery_7_the_agents_words_are_no_limit`, `adapters::recovery_7_codex_says_how_its_turn_ended`, `adapters::recovery_7_codex_says_its_limit_in_its_field`, `conversation_codex::recovery_7_the_agents_own_words_never_say_a_limit`.
+- **RECOVERY-8** A session too long for its model goes on in a new one, told so with all its first message said, no one asked, and isn't told to Try again in that session. Once until the owner's own words; too long there too, it ends `interrupted` with the tool's words. `long_jobs::recovery_8_a_session_too_long_goes_on_in_a_new_one`, `long_jobs::recovery_8_a_new_session_hears_all_it_was_first_told`, `long_jobs::recovery_8_too_long_again_tells_the_owner`, `adapters::recovery_8_codex_out_of_room_goes_on_in_a_new_thread`.
 
 **Test it when it's done (real Mac):** turn the Wi-Fi off during a task until Claude Code gives up, then on: the task says it's trying again and goes on, with no alert. Quit obid during a task and start it: the task continues, and its agent says it checked what ran.

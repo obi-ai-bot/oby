@@ -75,6 +75,8 @@ pub struct Recovery {
     pub restarts: usize,
     /// Times a five-hour limit's wait was armed for it (docs/contracts/account-limits.md, LIMITS-9).
     pub limit_resumes: usize,
+    /// New sessions it got because its last grew too long for its model (RECOVERY-8).
+    pub renewed: usize,
     /// What cut its run, for the next run's marked message; taken when that run starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,
@@ -689,6 +691,10 @@ pub struct Job {
     /// (crate::merge); none otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_error: Option<String>,
+    /// The `finished` of the end its conversation was last told of (TASKCONV-18): another end of
+    /// the same job tells it again. Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told: Option<i64>,
     /// The merge stopped where the owner takes over: `merge_error` says why.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub merge_needs_you: bool,
@@ -893,6 +899,11 @@ impl Job {
         })
     }
 
+    /// Its conversation was told of this end of it.
+    pub fn told_of_end(&self) -> bool {
+        self.told.is_some() && self.told == self.finished
+    }
+
     pub fn merged(&self) -> bool {
         self.to_json()["pullRequest"]["state"] == "MERGED"
     }
@@ -1040,6 +1051,7 @@ impl Job {
             ran_secs: None,
             budget_from: None,
             merge_error: None,
+            told: None,
             merge_needs_you: false,
             merged_by: None,
             sending: Vec::new(),

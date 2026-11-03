@@ -45,6 +45,8 @@ const STEP_CHARS: usize = 2_000;
 const LOG_MOST: u64 = 64 * 1024 * 1024;
 /// The most of a command the owner's card shows: a longer one is never asked about.
 pub const CARD_CHARS: usize = 2_000;
+/// The most of a conversation's cut commands its next turn hears of.
+const CUT_MOST: usize = 5;
 /// The longest command obid takes.
 const COMMAND_CHARS: usize = 20_000;
 
@@ -482,11 +484,16 @@ struct Kept {
     tasks: HashMap<String, Vec<Arc<Task>>>,
     /// Each conversation's turn that ended last: a command of it that comes after never starts.
     ended: HashMap<String, String>,
+    /// What a conversation's turns left running, until a turn that heard it answers (TASKCONV-19). In memory:
+    // ponytail: a restart loses them; keep them in the conversation's folder if that ever matters.
+    cut: HashMap<String, Vec<String>>,
 }
 
 /// One command, running or ended.
 pub struct Task {
     pub id: String,
+    /// What it runs: what its next turn hears it by, once it's been cut.
+    command: String,
     /// Its process group (obid starts each in a session of its own).
     pgid: Option<u32>,
     /// What it wrote (obid's, never in a box) and its own temporary folder.
@@ -534,6 +541,30 @@ impl Task {
         (text, from + (whole as u64) < size)
     }
 
+    /// The line its conversation's next turn hears when its turn ended with it running: what it runs
+    /// and the end of what it wrote, without any secret obid knows (TASKCONV-19).
+    fn cut_line(&self) -> String {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut bytes = vec![];
+        if let Ok(mut file) = std::fs::File::open(&self.log) {
+            let size = file.metadata().map_or(0, |m| m.len());
+            let from = size.saturating_sub(STEP_CHARS as u64 * 4);
+            let _ = file
+                .seek(SeekFrom::Start(from))
+                .and_then(|_| file.read_to_end(&mut bytes));
+        }
+        let output = tail(&String::from_utf8_lossy(&bytes));
+        let output = if output.is_empty() {
+            "it wrote nothing".to_owned()
+        } else {
+            format!("it last wrote:\n{output}")
+        };
+        crate::secrets::known().redact(&crate::detail::mask(&format!(
+            "`{}` ended with the turn; {output}",
+            super::briefing::line(&self.command, 200)
+        )))
+    }
+
     /// Ends it and everything it started; its watcher sees it end.
     async fn end(&self) {
         if let Some(pgid) = self.pgid {
@@ -568,7 +599,19 @@ impl Tasks {
         let tasks = {
             let mut kept = self.lock();
             kept.ended.insert(conversation.to_owned(), turn.to_owned());
-            kept.tasks.remove(conversation).unwrap_or_default()
+            let tasks = kept.tasks.remove(conversation).unwrap_or_default();
+            let cut: Vec<String> = tasks
+                .iter()
+                .filter(|t| t.running())
+                .map(|t| t.cut_line())
+                .collect();
+            if !cut.is_empty() {
+                let lines = kept.cut.entry(conversation.to_owned()).or_default();
+                lines.extend(cut);
+                let over = lines.len().saturating_sub(CUT_MOST);
+                lines.drain(..over);
+            }
+            tasks
         };
         forget_asks(conversation);
         if tasks.is_empty() {
@@ -589,6 +632,16 @@ impl Tasks {
                 task.forget();
             }
         });
+    }
+
+    /// What `conversation`'s turns left running that no answered turn has heard (TASKCONV-19).
+    pub fn cut(&self, conversation: &str) -> Option<Vec<String>> {
+        self.lock().cut.get(conversation).cloned()
+    }
+
+    /// A turn answered, having heard what [`Tasks::cut`] said.
+    pub fn forget_cut(&self, conversation: &str) {
+        self.lock().cut.remove(conversation);
     }
 
     /// obid stops: every conversation's commands end.
@@ -972,6 +1025,7 @@ fn start(
     });
     Ok(Arc::new(Task {
         id: id.to_owned(),
+        command: command.to_owned(),
         pgid,
         log,
         temp: temp.to_path_buf(),

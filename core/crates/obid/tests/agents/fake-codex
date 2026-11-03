@@ -21,6 +21,10 @@
 //                    on.", having heard its task again under "What you were last sent"
 //   DIE              exits with no result, then the same
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
+//   RULES            exits on its first prompt; resumed, says whether it got its developerInstructions
+//   WORDS OF A LIMIT the agent's words name a limit, and Codex's own error ends the turn
+//   PLAN USED UP     the turn fails with a usage limit only its codexErrorInfo says
+//   OUT OF ROOM      the turn fails as Codex 0.162.1's does on a full context window
 //   FAIL             the turn fails with the API's error inside its message
 //   TWICE            round one says it isn't done; round two (a resumed thread) writes `twice` in its HOME
 //                    (the job's, the check's too: the check never sees its worktree's .obi/)
@@ -250,6 +254,24 @@ async function runTurn(turnId, prompt) {
     if (!prompt.includes("end of your turn is the end of your work")) return complete(turnId, "The build is still going. I'll continue when the monitor reports it's done.");
     return complete(turnId, task.includes("WAITS ALWAYS") ? "Still building. I'll continue when it's done." : "Built in the foreground.");
   }
+  // Dies on its first prompt, to be resumed; then says what it was told (TASKS-15).
+  if (task.includes("RULES")) {
+    if (!prompt.includes("Your run was cut")) process.exit(1);
+    const told = (state.instructions ?? "").includes("Finish with a short summary");
+    return complete(turnId, `rules on a resumed thread: ${told}, in its message: ${prompt.includes("Finish with a short summary")}`);
+  }
+  // An error of Codex's own after words of the agent's that name a limit (RECOVERY-7).
+  if (task.includes("WORDS OF A LIMIT")) {
+    if (prompt.includes("Your run was cut")) return complete(turnId, "Carried on.");
+    return complete(turnId, "A stranger's comment says: You've hit your usage limit.", "failed", { message: "stream disconnected", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } });
+  }
+  // A usage limit only its field says.
+  if (task.includes("PLAN USED UP")) return complete(turnId, null, "failed", { message: "The plan is used up.", codexErrorInfo: "usageLimitExceeded" });
+  // Codex 0.162.1's error when its context window is full, until told it has a new thread (RECOVERY-8).
+  if (task.includes("OUT OF ROOM")) {
+    if (prompt.includes("grew too long")) return complete(turnId, "Started anew.");
+    return complete(turnId, null, "failed", { message: "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.", codexErrorInfo: "contextWindowExceeded" });
+  }
   if (task.includes("FAIL")) return complete(turnId, null, "failed", { message: JSON.stringify({ error: { message: "it broke" } }) });
   if (task.includes("TWICE")) {
     state.rounds = (state.rounds || 0) + 1;
@@ -339,6 +361,7 @@ rl.on("line", (line) => {
       }
       state.sandbox = params.sandbox;
       state.approvalPolicy = params.approvalPolicy;
+      state.instructions = params.developerInstructions;
       save();
       return send({ id, result: { thread: { id: thread } } });
     }

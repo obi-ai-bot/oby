@@ -320,6 +320,12 @@ describe('a turn\'s answer, as the plan\'s answer and its events land (#1788)', 
 
   const convo = { id: 'c1', title: 'Fixes', pinned: false, created: '2026-11-01T12:00:00Z', lastActivity: '2026-11-01T12:00:00Z', cursor: '' };
   const turn = (id: string, who: string, more: Record<string, unknown> = {}) => ({ id, who, text: id, at: `2026-11-01T12:0${id.at(-1)}:00Z`, jobs: [], conversation: 'c1', ...more });
+  // the id of words the app sent, once it has, after `before` such calls (it sends them in its own time)
+  const wordsSent = (before: number) => vi.waitFor(() => {
+    const sent = calls.filter((c) => c.path === '/v1/plans');
+    expect(sent.length).toBeGreaterThan(before);
+    return (sent.at(-1)!.body as { id: string }).id;
+  }, { timeout: 5000 });
   // words sent in a conversation, their plan's answer held; a job they started, and what obid has so far
   async function sentWords(said = 'Fix it') {
     const { live } = await load(true);
@@ -329,10 +335,8 @@ describe('a turn\'s answer, as the plan\'s answer and its events land (#1788)', 
     const plan = held();
     answers['POST /v1/plans'] = { status: 200, body: { kind: 'none', jobs: [], conversation: 'c1' }, hold: plan.hold };
     live.ask(said, 'c1');
-    await flush();
     // (the words' turn has the id the app sent them with)
-    // (a job's event refreshes the limits meanwhile: the last call with a body is the words')
-    const sentAs = (calls.filter((c) => c.body).at(-1)!.body as { id: string }).id;
+    const sentAs = await wordsSent(0);
     event('turn', turn('u1', 'user', { id: sentAs }));
     event('job', job({ conversation: 'c1', turn: sentAs, status: 'running', finished: null }));
     const shown = () => live.chatOf(live.liveState(), convo);
@@ -394,10 +398,11 @@ describe('a turn\'s answer, as the plan\'s answer and its events land (#1788)', 
     expect(under('u1')).toEqual(['j1']);
     const next = held();
     answers['POST /v1/plans'] = { status: 200, body: { kind: 'reply', text: 'Ok', jobs: [], conversation: 'c1' }, hold: next.hold };
+    const before = calls.filter((c) => c.path === '/v1/plans').length;
     live.ask('And this', 'c1');
-    await flush();
+    const sentAs2 = await wordsSent(before);
     expect(under('u1')).toEqual(['j1']);
-    event('turn', turn('u2', 'user', { id: (calls.at(-1)!.body as { id: string }).id }));
+    event('turn', turn('u2', 'user', { id: sentAs2 }));
     expect(under('u1')).toEqual(['j1']);
   });
 

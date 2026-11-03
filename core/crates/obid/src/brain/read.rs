@@ -1,5 +1,6 @@
 //! The chat reads before it answers (Engine/ReadJob.swift, #302): `oby_job` answers one job's
-//! report, its pull request, its last Mac checks and Oby's last verdict, the way Claude Code reads a
+//! request, report, files changed, pull request, last Mac checks and Oby's last verdict, and why
+//! reviewing or merging it stopped, the way Claude Code reads a
 //! file first. All of it is what agents and tools wrote: quoted data in the turn's fence, never
 //! instructions.
 
@@ -15,6 +16,8 @@ use crate::job::Job;
 pub const SIZE: usize = 8 * 1024;
 /// The most failure records one job's read carries, newest first.
 pub const FAILURES: usize = 3;
+/// The most changed files one job's read names.
+const FILES: usize = 30;
 
 /// `text` cut at `size` bytes on a whole character, with a note when it was cut.
 pub fn clamp(text: &str, size: usize) -> String {
@@ -71,21 +74,21 @@ pub fn section(job: &Job, home: &Path) -> String {
             ),
         });
     }
+    lines.extend([String::new(), "### What was asked".into()]);
+    lines.push(cut(&job.request, 1500));
     lines.extend([String::new(), "### Report".into()]);
     // The replies to the owner's words keep their own room past a long report (#1661).
     lines.push(match crate::job::steered(&job.summary) {
         ("", None) => "(none yet)".into(),
-        (report, None) => report.chars().take(3000).collect(),
-        (report, Some(replies)) => format!(
-            "{}\n\n{}",
-            report.chars().take(2000).collect::<String>(),
-            replies.chars().take(1500).collect::<String>()
-        ),
+        (report, None) => cut(report, 3000),
+        (report, Some(replies)) => format!("{}\n\n{}", cut(report, 2000), cut(replies, 1500)),
     });
     if let Some(stalled) = &job.stalled {
         lines.extend([String::new(), "### Handoff note".into()]);
-        lines.push(stalled.note.chars().take(3000).collect());
+        lines.push(cut(&stalled.note, 3000));
     }
+    lines.extend([String::new(), "### Files changed".into()]);
+    lines.extend(files_changed(job));
     // What obid sent for it, ids only: a push that went out is never read as nothing (#627).
     lines.extend([String::new(), "### Outgoing actions".into()]);
     if job.outgoing.is_empty() {
@@ -111,10 +114,9 @@ pub fn section(job: &Job, home: &Path) -> String {
     lines.extend([
         String::new(),
         "### Oby's last verdict on its pull request".into(),
-        "(no verdict yet)".into(),
-        String::new(),
-        "### Failure post-mortem".into(),
     ]);
+    lines.extend(verdict(job));
+    lines.extend([String::new(), "### Failure post-mortem".into()]);
     // Its failure records, newest first, each with what the job kept and its post-mortem (#591).
     let records: Vec<Record> = crate::failures::list(home, crate::failures::MOST)
         .into_iter()
@@ -135,6 +137,79 @@ pub fn section(job: &Job, home: &Path) -> String {
         lines.push(post_mortem(record));
     }
     lines.join("\n")
+}
+
+/// `text`'s first `most` characters, saying so when that's not all of it.
+fn cut(text: &str, most: usize) -> String {
+    let count = text.chars().count();
+    if count <= most {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(most).collect();
+    format!("{kept}\n…(cut: this is the first {most} of {count} characters)")
+}
+
+/// Oby's verdict on its pull request, and why reviewing or merging it stopped (the job's `review`,
+/// `reviewError`, `mergeError`), as the orientation promises.
+fn verdict(job: &Job) -> Vec<String> {
+    let mut lines = vec![];
+    if let Some(review) = &job.review {
+        lines.push(format!(
+            "{}, by {} on {}, round {}, of commit {}",
+            line(&review.verdict, 40),
+            line(&review.agent, 40),
+            line(&review.account, 80),
+            review.round,
+            line(&review.commit, 40)
+        ));
+        if let Some(why) = &review.two_reviews {
+            lines.push(format!(
+                "It needs two approving reviews: {}",
+                line(why, 300)
+            ));
+        }
+    }
+    if let Some(reviewing) = &job.reviewing {
+        lines.push(format!(
+            "A review is under way: job {}",
+            line(reviewing, 40)
+        ));
+    }
+    if let Some(error) = &job.review_error {
+        lines.push(format!("Reviewing stopped: {}", line(error, 600)));
+    }
+    if let Some(error) = &job.merge_error {
+        lines.push(format!("Merging stopped: {}", line(error, 600)));
+    }
+    if lines.is_empty() {
+        lines.push("(no verdict yet)".into());
+    }
+    lines
+}
+
+/// The files its last round changed, with its lines added and removed.
+fn files_changed(job: &Job) -> Vec<String> {
+    let Some(diff) = job.diffs.last() else {
+        return vec!["(none recorded)".into()];
+    };
+    let mut lines: Vec<String> = diff
+        .by_file
+        .iter()
+        .take(FILES)
+        .map(|f| format!("- {} (+{} -{})", line(&f.path, 200), f.added, f.removed))
+        .collect();
+    let told = lines.len() as u64;
+    if diff.files > told {
+        lines.push(format!(
+            "…(cut: {} more of {} files)",
+            diff.files - told,
+            diff.files
+        ));
+    }
+    if lines.is_empty() {
+        lines.push("(none)".into());
+    }
+    lines
 }
 
 /// The job's last Mac checks: the merge check, and the Apple build and test its agent asked for.
@@ -241,6 +316,42 @@ mod tests {
     }
 
     /// ReadJobTests.theSectionHasTheVerdictTheAppleCheckAndThePostMortem, for what obid keeps.
+    /// TASKCONV-16: `oby_job` says what the orientation promises: what was asked, the files changed,
+    /// the real verdict, why reviewing or merging stopped, and a note where anything was cut.
+    #[test]
+    fn taskconv_16_oby_job_says_what_the_orientation_promises() {
+        let mut told = failed("aaaa1111", "Vault secrets");
+        told.request = "Fix the parser".into();
+        told.review = Some(crate::job::Review {
+            verdict: "changesRequested".into(),
+            job: "rev1".into(),
+            agent: "Codex".into(),
+            account: "Work".into(),
+            same_account: false,
+            round: 2,
+            date: 0,
+            commit: "abc123".into(),
+            two_reviews: Some("an untrusted task".into()),
+        });
+        told.review_error = Some("The review found a problem.".into());
+        told.merge_error = Some("GitHub refused: a required review is missing.".into());
+        told.diffs = vec![crate::facts::numstat("3\t1\tsrc/a.rs\0")];
+        told.summary = "r".repeat(3100);
+        let text = section(&told, Path::new("/nonexistent"));
+        for part in [
+            "Fix the parser",
+            "changesRequested, by Codex on Work, round 2, of commit abc123",
+            "It needs two approving reviews: an untrusted task",
+            "Reviewing stopped: The review found a problem.",
+            "Merging stopped: GitHub refused: a required review is missing.",
+            "- src/a.rs (+3 -1)",
+            "(cut: this is the first 3000 of 3100 characters)",
+        ] {
+            assert!(text.contains(part), "{part}\n\n{text}");
+        }
+        assert!(!text.contains("(no verdict yet)"), "{text}");
+    }
+
     #[test]
     fn the_section_has_the_report_and_the_mac_checks() {
         let mut job = failed("aaaa1111", "Vault secrets");

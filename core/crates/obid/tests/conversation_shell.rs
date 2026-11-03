@@ -274,6 +274,90 @@ fn a_long_command_goes_to_the_background_and_ends_with_the_turn() {
     std::thread::sleep(Duration::from_millis(200));
 }
 
+/// TASKCONV-19: a command its turn cut is mentioned once in that conversation's next turn: fenced,
+/// what it wrote last, no secret obid knows.
+#[test]
+fn taskconv_19_a_cut_command_is_mentioned_in_the_next_turn() {
+    let (_folder, obid) = obid("shell-cut");
+    let marker = format!("sleep 5{}.5", std::process::id() % 10);
+    // The token only in what it writes: a command holding one is hidden whole.
+    let token = format!("ghp_{}", "a".repeat(36));
+    let (_, conversation) = shell(
+        &obid,
+        None,
+        json!({"command": format!("echo marker-line; echo ghp_$(printf %036d 0 | tr 0 a); {marker}"), "timeout": 1500}),
+    );
+    let (_, _) = shell(
+        &obid,
+        Some(&conversation),
+        json!({"command": "echo second"}),
+    );
+    let prompts = recorded_prompts(&obid);
+    let next = prompts.iter().rfind(|p| p.contains("echo second")).unwrap();
+    assert!(
+        next.contains("still running when your last turn ended"),
+        "{next}"
+    );
+    assert!(next.contains(&marker), "{next}");
+    assert!(next.contains("<<<quoted-"), "{next}");
+    assert!(next.contains("marker-line"), "{next}");
+    assert!(!next.contains(&token), "{next}");
+    let (_, _) = shell(&obid, Some(&conversation), json!({"command": "echo third"}));
+    let prompts = recorded_prompts(&obid);
+    let last = prompts.iter().rfind(|p| p.contains("echo third")).unwrap();
+    assert!(
+        !last.contains("still running when your last turn ended"),
+        "{last}"
+    );
+}
+
+/// TASKCONV-19: a turn that got no answer heard nothing: the mention is still to say.
+#[test]
+fn taskconv_19_a_turn_with_no_answer_leaves_the_mention() {
+    let (_folder, obid) = obid("shell-cut-unheard");
+    let marker = format!("sleep 6{}.5", std::process::id() % 10);
+    let (_, conversation) = shell(&obid, None, json!({"command": marker, "timeout": 1500}));
+    let failed = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "FAIL", "conversation": conversation})),
+    );
+    assert!(
+        failed.body["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("I couldn't answer:"),
+        "{}",
+        failed.text
+    );
+    let (_, _) = shell(&obid, Some(&conversation), json!({"command": "echo after"}));
+    let prompts = recorded_prompts(&obid);
+    let next = prompts.iter().rfind(|p| p.contains("echo after")).unwrap();
+    assert!(next.contains(&marker), "{next}");
+}
+
+/// Every prompt the stand-in recorded, oldest first.
+fn recorded_prompts(obid: &Obid) -> Vec<String> {
+    let mut turns = vec![];
+    for entry in std::fs::read_dir(obid.home.join("conversations"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let file = entry.path().join("config/turns.jsonl");
+        for line in std::fs::read_to_string(file).unwrap_or_default().lines() {
+            let turn: Value = serde_json::from_str(line).unwrap();
+            turns.push(turn);
+        }
+    }
+    turns.sort_by_key(|t| t["at"].as_i64());
+    turns
+        .iter()
+        .map(|t| t["prompt"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
 /// A command sees only its own conversation's room: another's is hidden, even read by a script
 /// the rules can't follow (#774's review, 10).
 #[test]

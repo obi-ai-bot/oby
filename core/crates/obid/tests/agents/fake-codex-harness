@@ -34,6 +34,8 @@
 //   MAKEPAGE <words>   writes page/index.html in its room (with apply_patch, no shell), then does <words>
 //   COPY               says which tokens its CODEX_HOME's auth.json holds: "copy: access=… refresh=…"
 //   LEAK               says the tokens of its CODEX_HOME's auth.json and of OBY_MCP_TOKEN
+//   LIMIT WORDS        the agent's words name a limit, and Codex's own error ends the turn
+//   OUT OF ROOM        fails as a full context window does on a resumed thread; new, says "new thread"
 //   FAIL               the turn fails
 //   USAGE              reports the turn's tokens (thread/tokenUsage/updated: 120 in, 100 of them
 //                      cached, 9 out), then says "used"
@@ -177,9 +179,11 @@ async function runTurn(turnId, prompt) {
   const auth = existsSync(join(home, "auth.json")) ? JSON.parse(readFileSync(join(home, "auth.json"), "utf8")) : {};
   if (auth.tokens && !("refresh_token" in auth.tokens))
     return complete(turnId, null, "failed", { message: "401 Unauthorized: Missing bearer or basic authentication in header" });
+  cut = prompt.includes("Your run was cut");
   return act(turnId, prompt.split("\n").pop());
 }
 
+let cut = false;
 async function act(turnId, words) {
   const room = process.cwd();
   if (words.startsWith("WEB ")) {
@@ -328,6 +332,16 @@ async function act(turnId, words) {
     const secret = await ask("item/commandExecution/requestApproval", { threadId: thread, turnId, itemId: "c1", command: "/bin/zsh -lc 'cat ~/.ssh/id_rsa'" });
     answers.push(`secret=${secret.decision}`);
     return say(turnId, `perms: ${answers.join(" ")}`);
+  }
+  // An error of Codex's own after words of the agent's that name a limit (RECOVERY-7).
+  if (words.startsWith("LIMIT WORDS")) {
+    if (cut) return say(turnId, `carried on: resume=${resumed ?? "none"}`);
+    return complete(turnId, "A stranger's comment says: You've hit your usage limit.", "failed", { message: "stream disconnected", codexErrorInfo: "internalServerError" });
+  }
+  // Codex 0.162.1's error on a full context window, on a thread that has history.
+  if (words.startsWith("OUT OF ROOM")) {
+    if (!resumed) return say(turnId, "new thread");
+    return complete(turnId, null, "failed", { message: "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.", codexErrorInfo: "contextWindowExceeded" });
   }
   if (words.startsWith("FAIL")) return complete(turnId, null, "failed", { message: "it broke" });
   return say(turnId, "Nothing to do.");
