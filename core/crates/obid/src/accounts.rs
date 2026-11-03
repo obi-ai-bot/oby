@@ -11,7 +11,8 @@
 //! box ever gets that folder (#655), so nothing a job wrote can steer the login, and obid never
 //! reads or copies what it writes. obid passes on only the link to open and the code to type,
 //! both read from what the login prints and checked, and the code the person pastes back goes to
-//! the login's stdin. Nothing else the login prints is kept, shown or logged.
+//! the login's stdin. Nothing else the login prints is kept, shown or logged. The one exception is
+//! Continue with ChatGPT (`?with=chatgpt`), where obid is the OAuth client itself (crate::chatgpt).
 //!
 //! Who an account is (its [`Identity`]) is what the tool's own status says of it, run the way its
 //! sign-in is: only the email, plan and org are taken from the answer (docs/contracts/accounts.md).
@@ -22,7 +23,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
@@ -1115,7 +1116,8 @@ pub async fn reserve(
 }
 
 /// `DELETE /v1/accounts/{id}`: `204`. A sign-in under way ends first; then `409` while a job of
-/// the account is queued or running. Its folder goes too when obid made it.
+/// the account is queued or running. Its folder goes too when obid made it. A ChatGPT login is
+/// revoked first and its entry deleted; `200 {"revoked": false}` when OpenAI didn't confirm it.
 pub async fn remove(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
@@ -1139,8 +1141,12 @@ pub async fn remove(
         .jobs
         .begin_change(&id)
         .ok_or_else(|| busy(&account))?;
+    let revoked = shared.chatgpt.remove(&id).await;
     forget_account(&shared, &account)?;
     send_accounts(&shared).await;
+    if !revoked {
+        return Ok(answer(StatusCode::OK, json!({"revoked": false})));
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1272,6 +1278,8 @@ pub struct SignIn {
     /// Whether it signed the account in, once it ended.
     ended: tokio::sync::watch::Receiver<Option<bool>>,
     cancel: tokio::sync::Notify,
+    /// Continue with ChatGPT, not the tool's own login.
+    chatgpt: bool,
 }
 
 impl SignIns {
@@ -1363,7 +1371,9 @@ pub fn sweep(home: &Path) {
 pub async fn sign_in(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
+    let with_chatgpt = query.get("with").is_some_and(|with| with == "chatgpt");
     if let Some(other) = shared.sign_ins.same_as(&id) {
         return Ok(same_account(&shared, &other));
     }
@@ -1374,6 +1384,17 @@ pub async fn sign_in(
     let agents = shared.config.agents.get();
     let (tool, account) = find(&agents, &id).ok_or_else(|| no_account(&id))?;
     if let Some(sign_in) = shared.sign_ins.get(&id) {
+        // A sign-in of the other kind under way: one at a time, and the one under way isn't touched.
+        if sign_in.chatgpt != with_chatgpt {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "{} is signing in another way: finish or cancel that first.",
+                    account.name
+                ),
+            )
+            .because("busy"));
+        }
         return Ok(answer(StatusCode::OK, sign_in.to_json()));
     }
     // Each refusal carries its stable reason (docs/contracts/sign-in.md, SIGN-IN-1 to SIGN-IN-7).
@@ -1399,6 +1420,11 @@ pub async fn sign_in(
                 account.name
             ),
         );
+    }
+    if with_chatgpt && tool != Tool::Codex {
+        return Err(unprocessable(
+            "Continue with ChatGPT is for Codex accounts.",
+        ));
     }
     if tool == Tool::Claude && cfg!(target_os = "macos") && !crate::jobs::keychain_on() {
         return conflict("keychainOff", "On macOS Claude Code keeps its login in the Keychain, which obid uses only with claudeKeychain on: obid turns it on by itself when it's left out and Claude Code's login is only in the Keychain, or set it to true in its configuration.".into());
@@ -1431,10 +1457,85 @@ pub async fn sign_in(
                 .map_err(|e| format!("obid can't make the account's folder: {e}"))
         })
         .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why).because("folderUnsafe"))?;
-    let sign_in = start(&shared, tool, &account, &bin, &dir, changing)
-        .await
-        .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why).because("didNotStart"))?;
+    let sign_in = if with_chatgpt {
+        start_chatgpt(&shared, tool, &account, changing).await
+    } else {
+        start(&shared, tool, &account, &bin, &dir, changing).await
+    }
+    .map_err(|why| ApiError::new(StatusCode::BAD_GATEWAY, why).because("didNotStart"))?;
     Ok(answer(StatusCode::OK, sign_in.to_json()))
+}
+
+/// Continue with ChatGPT: the listener runs and the page's address is answered, then the account
+/// stays off jobs until the person's browser comes back, they cancel, or it runs out
+/// (crate::chatgpt). How it ended shows as the account's `signedIn`, or its `label`.
+async fn start_chatgpt(
+    shared: &Arc<Shared>,
+    tool: Tool,
+    account: &Account,
+    changing: crate::jobs::Changing,
+) -> Result<Arc<SignIn>, String> {
+    let mut flow = shared.chatgpt.begin(&account.id).await?;
+    let (ended_tx, ended) = tokio::sync::watch::channel(None);
+    let sign_in = Arc::new(SignIn {
+        account: account.id.clone(),
+        url: flow.url.clone(),
+        user_code: None,
+        paste: false,
+        expires: obi_protocol::time::now() + SIGN_IN_LASTS.as_secs() as i64,
+        group: None,
+        stdin: tokio::sync::Mutex::new(None),
+        ended,
+        cancel: tokio::sync::Notify::new(),
+        chatgpt: true,
+    });
+    shared
+        .sign_ins
+        .running()
+        .insert(account.id.clone(), sign_in.clone());
+    tracing::info!("account {}: ChatGPT sign-in started", account.id);
+    let (shared, watched, account) = (shared.clone(), sign_in.clone(), account.clone());
+    tokio::spawn(async move {
+        let signed = tokio::select! {
+            signed = flow.ended() => signed,
+            () = tokio::time::sleep(SIGN_IN_LASTS) => false,
+            () = watched.cancel.notified() => false,
+        };
+        flow.stop();
+        {
+            let mut running = shared.sign_ins.running();
+            if running
+                .get(&account.id)
+                .is_some_and(|s| Arc::ptr_eq(s, &watched))
+            {
+                running.remove(&account.id);
+            }
+        }
+        if signed {
+            shared.jobs.usage.forget_priced(&account.id);
+            let who = crate::chatgpt::marker_of(&account).and_then(|m| m.email);
+            shared.config.agents.learn(
+                tool,
+                &account.id,
+                Identity {
+                    email: who,
+                    plan: None,
+                    org: None,
+                },
+                true,
+            );
+            tracing::info!("account {}: signed in with ChatGPT", account.id);
+        } else {
+            tracing::info!(
+                "account {}: ChatGPT sign-in ended without signing in",
+                account.id
+            );
+        }
+        drop(changing);
+        let _ = ended_tx.send(Some(signed));
+        send_accounts(&shared).await;
+    });
+    Ok(sign_in)
 }
 
 /// `409` for an account a sign-in took off as `other`'s login again (ACCOUNTS-7): `sameAs` is the
@@ -1693,6 +1794,7 @@ async fn start(
         stdin: tokio::sync::Mutex::new(child.stdin.take()),
         ended,
         cancel: tokio::sync::Notify::new(),
+        chatgpt: false,
     });
     shared
         .sign_ins
@@ -1716,6 +1818,14 @@ async fn start(
         let _ = std::fs::remove_dir_all(&scratch);
         let signed = match exited {
             Some(status) if status.success() => {
+                // A ChatGPT login goes only now that this one took (CHATGPT-16).
+                if tool == Tool::Codex
+                    && let Some(login) = account.config_dir.as_ref().map(|d| d.join("auth.json"))
+                    && login.is_file()
+                    && crate::jobs::codex_copy_ready(&login, &account.name).is_ok()
+                {
+                    shared.chatgpt.replaced_by_device_login(&account.id).await;
+                }
                 let account = account.clone();
                 tokio::task::spawn_blocking(move || {
                     crate::jobs::signed_in(tool, &account, crate::jobs::login_home().as_deref())
@@ -1851,6 +1961,16 @@ pub async fn read_identities(shared: Arc<Shared>, only: Option<String>) {
 /// What the tool says of the account, from its own status run the way its sign-in is, or None when
 /// it didn't answer. Nothing but [`identity_from`]'s values is kept or logged of the answer.
 async fn read_identity(shared: &Shared, tool: Tool, account: &Account) -> Option<Identity> {
+    // A ChatGPT login has no status of the tool's to ask: who it is came with its id token.
+    if tool == Tool::Codex
+        && let Some(marker) = crate::chatgpt::marker_of(account)
+    {
+        return Some(Identity {
+            email: marker.email,
+            plan: None,
+            org: None,
+        });
+    }
     let bin = agent_of(&shared.config.agents.get(), tool)
         .as_ref()
         .and_then(|agent| crate::process::resolve_bin(&agent.bin))

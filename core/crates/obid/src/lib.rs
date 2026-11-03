@@ -15,6 +15,7 @@ pub mod app;
 pub mod approval;
 pub mod artifacts;
 pub mod brain;
+pub mod chatgpt;
 pub mod clear;
 pub mod codex;
 pub mod config;
@@ -431,6 +432,12 @@ pub async fn serve(
         events.clone(),
     );
     jobs.use_tetrix(tetrix.clone());
+    let chatgpt = chatgpt::ChatGpt::open(
+        &config.home,
+        vault::shared().expect("the vault is installed first"),
+        config.agents.clone(),
+        chatgpt::Endpoints::here(),
+    );
     // Tetrix was a plug-in once, which gave agents its server on the owner's own login: an owner
     // who turned that on and never signed Oby in to Tetrix hears how to get it back.
     if !tetrix.connected()
@@ -476,6 +483,7 @@ pub async fn serve(
         sign_ins: accounts::SignIns::default(),
         github: github_login::GitHubLogin::default(),
         tetrix,
+        chatgpt: chatgpt.clone(),
         github_work: github.clone(),
         push: pushes,
         stopping: stopping_rx.clone(),
@@ -511,6 +519,11 @@ pub async fn serve(
     }
     // Who each signed-in account is, from its tool (docs/contracts/accounts.md).
     tokio::spawn(accounts::read_identities(shared.clone(), None));
+    // A ChatGPT login whose account went in a crash goes too.
+    {
+        let chatgpt = shared.chatgpt.clone();
+        tokio::spawn(async move { chatgpt.sweep().await });
+    }
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
     brain::ask::report(shared.clone());

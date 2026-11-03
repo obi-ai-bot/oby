@@ -537,14 +537,29 @@ impl Vault {
         }
         let mut learned = self.learned.lock().unwrap_or_else(|e| e.into_inner());
         self.store.save(value, name)?;
-        self.known.learn(&known_name(name), value);
-        self.secrets.learn(name, value);
+        self.learn(name, value);
         learned.names.insert(name.to_owned());
         learned.values.insert(name.to_owned(), value.to_owned());
         learned.stamp = None;
         learned.ticket += 1;
         learned.learned = learned.ticket;
         Ok(())
+    }
+
+    /// Learns `name`'s value in both sets. A ChatGPT login's entry is JSON, which a token inside it
+    /// would never match whole: its tokens are forms of that one name (crate::chatgpt).
+    fn learn(&self, name: &str, value: &str) {
+        if !name.starts_with(crate::chatgpt::VAULT_PREFIX) {
+            self.known.learn(&known_name(name), value);
+            self.secrets.learn(name, value);
+            return;
+        }
+        let tokens = crate::chatgpt::secret_forms(value);
+        let forms: Vec<&[u8]> = std::iter::once(value.as_bytes())
+            .chain(tokens.iter().map(String::as_bytes))
+            .collect();
+        self.known.learn_forms(&known_name(name), &forms);
+        self.secrets.learn_forms(name, &forms);
     }
 
     /// Removes `name`; whether the vault had it.
@@ -611,8 +626,7 @@ impl Vault {
             self.secrets.forget(gone);
         }
         for (name, value) in &values {
-            self.known.learn(&known_name(name), value);
-            self.secrets.learn(name, value);
+            self.learn(name, value);
         }
         learned.names = values.keys().cloned().collect();
         learned.values = values;

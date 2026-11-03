@@ -66,6 +66,8 @@ pub struct Shared {
     pub github: crate::github_login::GitHubLogin,
     /// Oby's Tetrix login, and agents' Tetrix through obid (crate::tetrix).
     pub tetrix: Arc<crate::tetrix::Tetrix>,
+    /// ChatGPT sign-ins and their tokens (crate::chatgpt).
+    pub chatgpt: Arc<crate::chatgpt::ChatGpt>,
     /// What GitHub wants from the owner (crate::github_work).
     pub github_work: Arc<crate::github_work::Feed>,
     /// The phones' FCM tokens and the job alerts sent to them (crate::push).
@@ -684,6 +686,12 @@ pub struct AccountJson {
     /// Its `email`, `plan` and `org`, each only when its tool said (docs/contracts/accounts.md).
     #[serde(flatten)]
     pub identity: crate::accounts::Identity,
+    /// `chatgpt` on an account signed in with Continue with ChatGPT; else left out (add-only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<&'static str>,
+    /// The email its ChatGPT login said, for display: `sub` is the identity, never this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_email: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -793,13 +801,18 @@ pub fn account_json(
     let home = crate::jobs::login_home();
     let usage = shared.jobs.usage.get(&account.id);
     let now = time::now();
+    let chatgpt = crate::chatgpt::marker_of(account).filter(|_| tool == crate::agent::Tool::Codex);
     AccountJson {
         id: account.id.clone(),
         agent: tool.id(),
         name: account.name.clone(),
         payer: account.payer.clone(),
-        // Why a login that's there can't run: Codex's token is ending.
-        label: crate::jobs::login_note(tool, account, home.as_deref()).map(str::to_owned),
+        // Why its last ChatGPT sign-in didn't take; else why a login that's there can't run:
+        // Codex's token is ending.
+        label: shared
+            .chatgpt
+            .problem(&account.id)
+            .or_else(|| crate::jobs::login_note(tool, account, home.as_deref()).map(str::to_owned)),
         // Whether its login is there and a run can use it (#626).
         signed_in: crate::jobs::signed_in(tool, account, home.as_deref()),
         five_hour: usage.five_hour_at(now),
@@ -819,6 +832,8 @@ pub fn account_json(
             .remove(&account.id)
             .unwrap_or_default(),
         identity: shared.config.agents.identity(&account.id),
+        login: chatgpt.is_some().then_some("chatgpt"),
+        login_email: chatgpt.and_then(|marker| marker.email),
     }
 }
 
