@@ -5,7 +5,7 @@ The business behavior contract for `e2e/rig.mjs`, from [the template](../busines
 ## Feature and status
 
 - **Outcome:** anyone working on talking to a person's Oby ([ask-an-oby.md](ask-an-oby.md)) can have a real second Oby with real work, with one command, and throw it away with another. A milestone is tested on it before it's called done.
-- **Status:** **Implemented.** Run for real on stand-ins, and with the real Claude Code up to its missing login. **Not run yet:** a real job and a real answer, which need the owner's sign-in below.
+- **Status:** **Implemented.** Run for real on stand-ins, and with the real Claude Code up to its missing login. A real job and real answers ran on 2026-11-03, once the owner signed Dana in (peer-thread.md, PEER-20).
 - **Scope:** one Mac. **Out of scope:** the second pass on a second Mac and on the live Sphere (PEER-18), and changing obi-sphere.
 
 ## Behavior
