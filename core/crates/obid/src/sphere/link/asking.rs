@@ -51,6 +51,15 @@ fn named(members: Vec<AskMember>, me: &[String]) -> Vec<AskMember> {
     out
 }
 
+/// Whether an exchange belongs to the membership that began at `joined_at`. Exchanges outlive a
+/// membership, but leaving forgets the owner keys it pinned, so nothing says the next `sam` is the
+/// same person, on another server with the same Sphere id or on this one. ponytail: by the clock, so
+/// a clock set back across a leave and a join could show older ones; stamp the exchange with its
+/// membership if that ever matters.
+fn of_membership(exchange: &Exchange, joined_at: i64) -> bool {
+    exchange.created >= joined_at
+}
+
 /// Who a request for someone means. Never by Obi id, which whoever redeems an open invitation picks,
 /// and a name proves nothing, so only an exact owner id that no one else's card also claims goes
 /// without the owner seeing who.
@@ -211,6 +220,65 @@ impl Link {
             .collect()
     }
 
+    /// `GET /v1/obid/sphere/peers/{owner}`: this owner's thread (docs/contracts/peer-thread.md), its
+    /// newest `limit` exchanges, oldest first, of this membership only ([`of_membership`]). `404` for
+    /// someone who isn't a member and has no exchange; `409` before joining. The directory as last
+    /// read: this asks the Sphere nothing, and until obid has read it (a restart, with the Sphere
+    /// away) it doesn't know who is a member, so it says so rather than that they left.
+    pub fn peer_thread_json(&self, owner: &str, limit: usize) -> Result<Value, ApiError> {
+        let joined_at = self.joined()?.joined_at;
+        let known = self.lock().directory_read != 0;
+        let members: Vec<AskMember> = self
+            .ask_members()
+            .into_iter()
+            .filter(|m| m.owner == owner)
+            .collect();
+        let mut exchanges: Vec<Exchange> = self
+            .lock()
+            .exchanges
+            .values()
+            .filter(|e| e.peer_owner.as_deref() == Some(owner) && of_membership(e, joined_at))
+            .cloned()
+            .collect();
+        if known && members.is_empty() && exchanges.is_empty() {
+            return Err(api(StatusCode::NOT_FOUND, "There's no such member."));
+        }
+        // Created in the same second: the Sphere's order.
+        exchanges.sort_by_cached_key(|e| {
+            let seq = e.messages.first().and_then(|m| m.seq);
+            (e.created, seq.unwrap_or(u64::MAX), e.correlation_id.clone())
+        });
+        exchanges.drain(..exchanges.len().saturating_sub(limit));
+        let (me, verified) = (self.owner(), self.pins.verified(owner));
+        let posts: Vec<Value> = exchanges
+            .iter()
+            .flat_map(|e| e.posts(&me, verified))
+            .collect();
+        Ok(json!({
+            "owner": owner,
+            "name": members.first().map_or(owner, |m| &m.name),
+            "member": known.then_some(!members.is_empty()),
+            "takesQuestions": known.then(|| members.iter().any(|m| m.takes_questions)),
+            "verified": verified,
+            "posts": posts,
+        }))
+    }
+
+    /// Tells the apps which thread `exchange` changed: a `peerThread` event with its posts.
+    pub(super) fn peer_thread_moved(&self, exchange: &Exchange) {
+        let Some(owner) = exchange.peer_owner.as_deref() else {
+            return;
+        };
+        let here = self
+            .joined()
+            .is_ok_and(|m| of_membership(exchange, m.joined_at));
+        if here {
+            let posts = exchange.posts(&self.owner(), self.pins.verified(owner));
+            self.events
+                .send("peerThread", json!({"owner": owner, "posts": posts}));
+        }
+    }
+
     /// Keeps that the owner was told `what` about the exchange `cid`.
     pub fn mark_told(&self, cid: &str, what: &str) {
         let kept = {
@@ -238,6 +306,101 @@ mod tests {
             name: owner.into(),
             takes_questions: true,
         }
+    }
+
+    /// PEER-3: exchanges outlive a membership, and leaving forgets who everyone is: what came before
+    /// joining is in no thread and told to no one. Until the directory is read, no one is called gone.
+    #[tokio::test]
+    async fn peer_3_an_exchange_from_before_this_membership_isnt_in_a_thread_or_told() {
+        let home = std::env::temp_dir().join(format!("obid-peer-3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let mut heard = events.subscribe();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events, stopping);
+        let asked = |cid: &str, created: i64| {
+            let request = json!({"id": cid, "correlation_id": cid, "type": "question",
+                                 "body": {"text": cid}});
+            let mut e = Exchange::new(
+                "outgoing",
+                request.clone(),
+                "obi-sam".into(),
+                Some("sam".into()),
+            );
+            e.created = created;
+            e.messages.push(Message {
+                direction: "sent".into(),
+                seq: Some(1),
+                at: "2026-11-03T12:00:00Z".into(),
+                envelope: request,
+            });
+            e
+        };
+        let (here, before) = (asked("c-here", 1000), asked("c-before", 999));
+        assert_eq!(
+            link.peer_thread_json("sam", 50).unwrap_err().status,
+            StatusCode::CONFLICT,
+            "before joining"
+        );
+        link.peer_thread_moved(&here);
+        {
+            let mut state = link.lock();
+            state.membership = Some(Membership {
+                state: "joined".into(),
+                url: "https://sphere.test".into(),
+                sphere: "team".into(),
+                obi_id: "obi-wellington".into(),
+                card: json!({}),
+                joined_at: 1000,
+            });
+            for e in [&here, &before] {
+                state.exchanges.insert(e.correlation_id.clone(), e.clone());
+            }
+        }
+        let thread = link.peer_thread_json("sam", 50).unwrap();
+        let ids: Vec<&str> = thread["posts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["exchange"]["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["c-here"]);
+
+        link.peer_thread_moved(&before);
+        link.peer_thread_moved(&here);
+        let mut told = Vec::new();
+        while let Ok(event) = heard.try_recv() {
+            if event.name == "peerThread" {
+                told.push(event.data["posts"][0]["exchange"]["id"].clone());
+            }
+        }
+        assert_eq!(
+            told,
+            [json!("c-here")],
+            "not before joining, nor from before"
+        );
+
+        // No directory read yet: who is a member isn't known, and no one is gone.
+        assert_eq!(thread["member"], Value::Null);
+        assert_eq!(thread["takesQuestions"], Value::Null);
+        assert_eq!(thread["name"], "sam");
+        let nobody = link.peer_thread_json("nobody", 50).unwrap();
+        assert_eq!(nobody["posts"], json!([]));
+        // Read, with no one by that name.
+        link.lock().directory_read = 1;
+        let thread = link.peer_thread_json("sam", 50).unwrap();
+        assert_eq!(thread["member"], false, "they left");
+        assert_eq!(thread["takesQuestions"], false);
+        assert_eq!(
+            link.peer_thread_json("nobody", 50).unwrap_err().status,
+            StatusCode::NOT_FOUND
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     const ME: [&str; 1] = ["wellington"];

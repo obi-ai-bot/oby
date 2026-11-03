@@ -310,6 +310,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/obid/sphere/exchanges/{id}",
             get(crate::sphere::routes::exchange),
         )
+        .route(
+            "/v1/obid/sphere/peers/{owner}",
+            get(crate::sphere::routes::peer_thread),
+        )
         .route("/v1/memory", get(crate::memory::get))
         .route(
             "/v1/memory/{id}",

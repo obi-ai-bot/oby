@@ -129,6 +129,20 @@ pub async fn exchange(
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no such exchange."))
 }
 
+/// `GET /v1/obid/sphere/peers/{owner}?limit=50`: that member's thread
+/// (docs/contracts/peer-thread.md).
+pub async fn peer_thread(
+    State(shared): State<Arc<Shared>>,
+    Path(owner): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> Result<Response, ApiError> {
+    let limit = limit(query.limit.as_deref(), 50, 500)?;
+    Ok(json(
+        StatusCode::OK,
+        shared.link.peer_thread_json(&owner, limit)?,
+    ))
+}
+
 /// `GET /v1/obid/decisions`.
 pub async fn decisions(State(shared): State<Arc<Shared>>) -> Response {
     json(StatusCode::OK, shared.link.decisions_json())

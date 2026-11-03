@@ -1562,6 +1562,7 @@ impl Link {
             tracing::error!("can't keep exchange {}: {e}", exchange.correlation_id);
         }
         self.events.send("exchange", exchange.to_json());
+        self.peer_thread_moved(exchange);
     }
 
     /// Keeps the item and tells the apps, as it is now (as `save_exchange`).
