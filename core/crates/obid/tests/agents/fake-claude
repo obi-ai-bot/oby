@@ -249,6 +249,10 @@ const askNext = () => {
   emit({ type: "control_request", request_id: `r${said.length + 1}`, request: { subtype: "can_use_tool", tool_name: tool, input } });
 };
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+// Its stdin closed: obid is done with it or was killed, so a turn told to wait forever (QUIET, LOOP)
+// ends too. Not at once: Claude Code goes on with its turn, and a test watches it outlive a killed
+// obid until the next obid ends its group. Unref'd, so it holds nothing open by itself.
+rl.on("close", () => setTimeout(() => process.exit(0), 60000).unref());
 rl.on("line", (line) => {
   let message;
   try {

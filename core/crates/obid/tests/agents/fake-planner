@@ -31,6 +31,9 @@ printf '%s\n' "$input" > "$HOME/plan-input"
 url=""
 if [ ! -d "$HOME/.fake-planner" ]; then
   d=$(pwd)
+  # Its working folder is gone, so its test ended under it: nobody is left to answer. (`dirname ""`
+  # is `.`, and so is `dirname .`: the walk up would never end.)
+  [ -n "$d" ] || exit 1
   while [ "$d" != / ]; do
     if [ -r "$d/fake-planner-url" ]; then url=$(cat "$d/fake-planner-url"); break; fi
     d=$(dirname "$d")
@@ -51,7 +54,14 @@ if [ -n "$url" ]; then
 else
   if [ -d "$HOME/.fake-planner" ]; then state=$HOME/.fake-planner; else state=$HOME; fi
   mkdir -p "$state/calls"
-  until mkdir "$state/lock" 2>/dev/null; do sleep 0.05; done
+  # A lock is held for moments. One that stays (its holder was killed, or $state went or can't be
+  # written) would otherwise be waited on forever.
+  waited=0
+  until mkdir "$state/lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -lt 600 ] || exit 1
+    sleep 0.05
+  done
   n=$(($(ls "$state/calls" | wc -l) + 1))
   call="$state/calls/$n"
   mkdir -p "$call"
