@@ -86,8 +86,9 @@ const resumed = flag("--resume");
 let going = resumed;
 const session = resumed ?? "c0000000-0000-4000-8000-00000000000" + (Date.now() % 10);
 const partial = argv.includes("--include-partial-messages");
+// As 2.1.302: an error of subtype error_* has `errors`, and no `result`.
 const result = (text, error = false) =>
-  emit({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, result: text, session_id: session });
+  emit({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, ...(error ? { errors: [text] } : { result: text }), session_id: session });
 const say = (text) => {
   if (partial) {
     const third = Math.ceil(text.length / 3);
@@ -166,6 +167,12 @@ rl.on("line", (line) => {
     join(process.env.CLAUDE_CONFIG_DIR, "turns.jsonl"),
     JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME, config: process.env.CLAUDE_CONFIG_DIR, prompt, resumed, id: procId, pid: process.pid }) + "\n",
   );
+  // A session it can't find: 2.1.302 says so in `errors`, with no `result` and no init, and exits.
+  if (prompt.split("\n").pop().startsWith("GONE") && !prompt.includes("earlier turns")) {
+    emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 0, stop_reason: null, session_id: session, total_cost_usd: 0, errors: [`No conversation found with session ID: ${session}`], result_index: 0 });
+    process.stdout.end(() => process.exit(1));
+    return;
+  }
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Read", "Bash"], mcp_servers: [{ name: "oby", status: "connected" }], model: flag("--model") ?? "fake" });
   const before = going;
   going = session;
@@ -204,7 +211,8 @@ rl.on("line", (line) => {
     setTimeout(() => say("woke"), 120000);
     return;
   }
-  if (prompt.startsWith("Oby here, not the owner") && existsSync("supervise.txt")) {
+  // (A try after a cut has obid's note first.)
+  if (prompt.includes("Oby here, not the owner") && existsSync("supervise.txt")) {
     // $JOB is the stalled job the prompt names.
     const job = /Job (\S+) \(/.exec(prompt)?.[1] ?? "";
     const eventJob = /job=([^,\s]+),/.exec(prompt)?.[1] ?? "";
@@ -225,6 +233,9 @@ async function supervise(lines, prompt) {
   }
   await act(lines[lines.length - 1], prompt);
 }
+
+// What 2.1.302 ends with when the prompt doesn't fit its model.
+const toolong = () => emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "prompt_too_long", api_error_status: 400, result: "Prompt is too long · the request is ~250000 tokens (limit 200000)", session_id: session });
 
 async function act(words, prompt = "", before = resumed) {
   const room = process.cwd();
@@ -364,11 +375,35 @@ async function act(words, prompt = "", before = resumed) {
     } else {
       say("answered");
     }
-  } else if (words.startsWith("TOOLONG")) {
-    // What Claude Code 2.1.302 ends with when the prompt doesn't fit its model.
+  } else if (words.startsWith("TOOLONG OLD")) {
+    // An older Claude Code: only its words say so.
     emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: "Prompt is too long", session_id: session });
+  } else if (words.startsWith("TOOLONG RESUMED") && !before) {
+    say(`new session: ${prompt.includes("earlier turns") ? "with" : "without"} the earlier turns`);
+  } else if (words.startsWith("TOOLONG AFTER ")) {
+    if (before) {
+      const [, , tool, ...rest] = words.split(" ");
+      use("t1", `mcp__oby__${tool}`, JSON.parse(rest.join(" ")));
+      const answer = await oby(tool, JSON.parse(rest.join(" ")));
+      used("t1", answer.result?.content?.[0]?.text ?? "", answer.result?.isError);
+      toolong();
+    } else {
+      say("started anew");
+    }
+  } else if (words.startsWith("TOOLONG")) {
+    toolong();
+  } else if (words.startsWith("FAIL ONCE")) {
+    // What 2.1.302 ends with on an API that keeps failing, its error nowhere but its result.
+    if (prompt.includes("Your run was cut")) {
+      say(`carried on: resume=${before ?? "none"}`);
+    } else {
+      emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "text", text: "Reading the logs." }] } });
+      emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "api_error", api_error_status: 529, result: "API Error: 529 Overloaded.", session_id: session });
+    }
   } else if (words.startsWith("FAIL")) {
     result("it broke", true);
+  } else if (words.startsWith("GONE")) {
+    say(`handed over: ${prompt.includes("earlier turns")}`);
   } else if (words.startsWith("USAGE")) {
     emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "text", text: "used" }] } });
     emit({ type: "result", subtype: "success", is_error: false, num_turns: 2, duration_ms: 40, result: "used", session_id: session, total_cost_usd: 0.002,

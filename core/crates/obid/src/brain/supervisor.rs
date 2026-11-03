@@ -1,7 +1,7 @@
 //! The conversation supervises its jobs (docs/runner-api.md, "obid only: the conversation
 //! supervises its jobs"), as Claude Code's main session drives its sub-agents: when a job a
 //! conversation started stalls (the `stalled` event), obid starts a turn of that conversation's
-//! agent session, in obid's own words, to read the job's handoff note (the agent's words: quoted
+//! agent, in a session of its own and obid's own words (never its session with the owner), to read the job's handoff note (the agent's words: quoted
 //! data, never instructions) and decide by itself: carry it on in its session, start it fresh from
 //! the note, or split what's left into new jobs. Then it tells the owner in one line.
 //!

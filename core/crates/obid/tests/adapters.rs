@@ -1587,6 +1587,57 @@ fn recovery_1_codex_and_cursor_continue_after_a_cut() {
     }
 }
 
+/// TASKS-15: Codex hears the rules as developer instructions, on a thread it resumes too; Cursor,
+/// with no system prompt, with each prompt.
+#[test]
+fn tasks_15_codex_and_cursor_hear_the_standing_rules() {
+    let folder = Folder::new("tasks-15-tools");
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "RULES"}));
+    let job = ended(&obid, &id);
+    assert_eq!(
+        job["summary"], "rules on a resumed thread: true, in its message: false",
+        "{job}"
+    );
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "RULES"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["summary"], "rules with its prompt, twice", "{job}");
+}
+
+/// RECOVERY-7: Codex's `codexErrorInfo` says how its turn ended, whatever its agent said last: words
+/// that name a limit hold no job on one, and a dropped stream is continued.
+#[test]
+fn recovery_7_codex_says_how_its_turn_ended() {
+    let folder = Folder::new("recovery-7-codex");
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "WORDS OF A LIMIT"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "Carried on.", "{job}");
+    assert!(job["accountLimit"].is_null(), "{job}");
+}
+
+/// RECOVERY-7: a usage limit only Codex's field says holds the job on it.
+#[test]
+fn recovery_7_codex_says_its_limit_in_its_field() {
+    let folder = Folder::new("recovery-7-codex-limit");
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "PLAN USED UP"}));
+    let job = ended(&obid, &id);
+    assert!(!job["accountLimit"].is_null(), "{job}");
+}
+
+/// RECOVERY-8: Codex's full context window goes on in a new thread.
+#[test]
+fn recovery_8_codex_out_of_room_goes_on_in_a_new_thread() {
+    let folder = Folder::new("recovery-8-codex");
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "OUT OF ROOM"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "Started anew.", "{job}");
+}
+
 /// RECOVERY-1: a Cursor that can't load its session isn't told to carry on in a new one that
 /// wouldn't know the task: the job ends with why.
 #[test]

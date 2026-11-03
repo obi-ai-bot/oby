@@ -1535,54 +1535,115 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
 
 /// Follows obid's job events (#351): when a job a conversation's plan started goes from queued or
 /// running to an end, that conversation gets one Oby turn saying how ([`job_report`]), with the
-/// job's card. What had ended when obid started says nothing, and neither does a dismissed job or
-/// one that no conversation started.
+/// job's card, once ([`Job::told`](crate::job::Job::told)). What had ended before this obid first
+/// kept that mark says nothing, and neither does a dismissed job or one that no conversation
+/// started. What events missed (obid went down, or too far behind them) is found at start and when
+/// it falls behind (TASKCONV-18).
 pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
-    let mut bus = shared.events.subscribe();
-    let mut stopping = shared.stopping.clone();
-    let mut active: std::collections::HashMap<String, bool> = shared
-        .jobs
-        .list(usize::MAX)
-        .iter()
-        .map(|j| (j.id.clone(), j.status.is_active()))
-        .collect();
-    tokio::spawn(async move {
-        loop {
-            let event = tokio::select! {
-                got = bus.recv() => match got {
-                    Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(_) => return,
-                },
-                _ = stopping.changed() => return,
-            };
-            let Some(id) = event.data["id"].as_str().filter(|_| event.name == "job") else {
-                continue;
-            };
-            let now = matches!(event.data["status"].as_str(), Some("queued" | "running"));
-            if active.insert(id.to_owned(), now) != Some(true) || now {
-                continue;
-            }
-            let Some((conversation, text)) = job_report(&event.data) else {
-                continue;
-            };
-            // Its summary is its agent's: on obid's allowlist only when everything the job read
-            // was (crate::secretspec).
-            let foreign = match shared.jobs.get(id) {
-                Some(job) => job
-                    .check_refuses_secrets()
-                    .map(|why| format!("the summary of job {id}, which {why}")),
-                None => Some(format!("the summary of job {id}, which obid doesn't have")),
-            };
-            if let Err(e) =
-                shared
-                    .conversations
-                    .job_ended(&conversation, text, id.to_owned(), foreign)
-            {
-                tracing::info!("job {id} ended; conversation {conversation} wasn't told: {e:?}");
-            }
+    let since = report_since(&shared.config.home);
+    tell_unreported(&shared, since);
+    let bus = shared.events.subscribe();
+    let stopping = shared.stopping.clone();
+    let active_jobs = |shared: &Shared| -> std::collections::HashMap<String, bool> {
+        shared
+            .jobs
+            .list(usize::MAX)
+            .iter()
+            .map(|j| (j.id.clone(), j.status.is_active()))
+            .collect()
+    };
+    let mut active = active_jobs(&shared);
+    tokio::spawn(follow(bus, stopping, move |next| {
+        let Some(event) = next else {
+            tell_unreported(&shared, since);
+            // Whatever was reported just now isn't reported again by a late event.
+            active = active_jobs(&shared);
+            return;
+        };
+        let Some(id) = event.data["id"].as_str().filter(|_| event.name == "job") else {
+            return;
+        };
+        let now = matches!(event.data["status"].as_str(), Some("queued" | "running"));
+        if active.insert(id.to_owned(), now) != Some(true) || now {
+            return;
         }
-    });
+        tell(&shared, id, &event.data);
+    }));
+}
+
+/// Hands `bus`'s events to `next` until it closes or obid stops, and none when it went on without
+/// us: events were missed.
+async fn follow<T: Clone>(
+    mut bus: tokio::sync::broadcast::Receiver<T>,
+    mut stopping: tokio::sync::watch::Receiver<bool>,
+    mut next: impl FnMut(Option<T>),
+) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        tokio::select! {
+            got = bus.recv() => match got {
+                Ok(event) => next(Some(event)),
+                Err(RecvError::Lagged(_)) => next(None),
+                Err(RecvError::Closed) => return,
+            },
+            _ = stopping.changed() => return,
+        }
+    }
+}
+
+/// When this obid first kept `told`, in seconds since the epoch, written once: a job that ended
+/// before then was reported or never will be, so an upgrade adds nothing to old conversations.
+fn report_since(home: &std::path::Path) -> i64 {
+    let file = home.join("job-reports-since");
+    if let Some(since) = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+    {
+        return since;
+    }
+    let now = obi_protocol::time::now();
+    if let Err(e) = crate::store::write_private(&file, now.to_string().as_bytes()) {
+        tracing::warn!("obid couldn't note when it began keeping job reports: {e}");
+    }
+    now
+}
+
+/// Reports every job that ended since `since` and hasn't told its conversation.
+fn tell_unreported(shared: &Shared, since: i64) {
+    for job in shared.jobs.list(usize::MAX) {
+        let ended = job.finished.is_some_and(|at| at >= since);
+        if ended && !job.status.is_active() && !job.told_of_end() {
+            tell(shared, &job.id, &job.to_json());
+        }
+    }
+}
+
+/// Tells the job's conversation how it ended, once for each of its ends: the mark goes on with the
+/// turn. A turn that couldn't be written is tried again; a conversation that's gone never will be.
+fn tell(shared: &Shared, id: &str, data: &Value) {
+    let Some((conversation, text)) = job_report(data) else {
+        return;
+    };
+    // Its summary is its agent's: on obid's allowlist only when everything the job read
+    // was (crate::secretspec).
+    let foreign = match shared.jobs.get(id) {
+        Some(job) => job
+            .check_refuses_secrets()
+            .map(|why| format!("the summary of job {id}, which {why}")),
+        None => Some(format!("the summary of job {id}, which obid doesn't have")),
+    };
+    match shared
+        .conversations
+        .job_ended(&conversation, text, id.to_owned(), foreign)
+    {
+        Err(Error::Io(e)) => {
+            tracing::warn!("job {id} ended; conversation {conversation} couldn't be told: {e}");
+            return;
+        }
+        Err(e) => tracing::info!("job {id} ended; conversation {conversation} wasn't told: {e:?}"),
+        Ok(_) => {}
+    }
+    shared.jobs.mark_told(id);
 }
 
 /// The conversations as the list orders them, after `after` (or from the first): the pinned
@@ -1883,7 +1944,20 @@ pub async fn remove(
 
 #[cfg(test)]
 mod tests {
-    use super::{Cursor, Error, FolderChange, Task, checked_tasks, job_report, titled};
+    use super::{Cursor, Error, FolderChange, Task, checked_tasks, follow, job_report, titled};
+
+    /// TASKCONV-18: a bus that went on without its reader says so, so what it missed is looked for.
+    #[tokio::test]
+    async fn taskconv_18_events_missed_are_said() {
+        let (sender, bus) = tokio::sync::broadcast::channel(1);
+        let (_stopping, stop) = tokio::sync::watch::channel(false);
+        sender.send("first").unwrap();
+        sender.send("second").unwrap();
+        drop(sender);
+        let mut seen = vec![];
+        follow(bus, stop, |next| seen.push(next)).await;
+        assert_eq!(seen, vec![None, Some("second")]);
+    }
 
     /// A PATCH merged against the folders as they are under the lock: one taken off meanwhile
     /// comes back only through its own check, so a stale list never puts back a refused folder.

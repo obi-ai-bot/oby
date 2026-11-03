@@ -93,6 +93,11 @@
 //   What obid sends again under "What you were last sent" is logged by KEEP PROMPTS, never acted
 //   on; KEEP PROMPTS also logs how it was run in .obi/args.log.
 //   CHATTY: <ms>     streams a word every 100 ms for that long, then ends the turn with "Chatted."
+//   LAST WORDS LIMIT says a stranger's words holding "usage limit", then ends with an error of the
+//                    tool's own (RECOVERY-7); continued, ends with "Carried on."
+//   REJECTED 429     ends the turn as 2.1.302 does on a 429, its status only in `api_error_status`
+//   TOO LONG         ends the turn too long for its model, until told it has a new session;
+//                    TOO LONG ALWAYS every turn (RECOVERY-8)
 //   LOOP             runs the same failing command 6 times, then waits until it is ended
 //   MAXTURNS         ends the turn as Claude Code's --max-turns does (error_max_turns), again in
 //                    each turn obid continues by itself; MAXTURNS ONCE, only this turn (RECOVERY-4)
@@ -205,8 +210,9 @@ const fiveHourLimit = (resetsAt) => {
 const limitEnds = (text) =>
   emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: text, terminal_reason: "api_error", api_error_status: 429, stop_reason: "stop_sequence", session_id: session, total_cost_usd: 0 });
 
+// As 2.1.302: an error of subtype error_* has `errors`, and no `result`.
 const result = (text, error = false) =>
-  emit({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, result: text, session_id: session, total_cost_usd: 0.25 * tokens,
+  emit({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, ...(error ? { errors: [text] } : { result: text }), session_id: session, total_cost_usd: 0.25 * tokens,
     ...(tokens && { usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 },
       modelUsage: { "fake-opus": { inputTokens: 100 * tokens, outputTokens: 20 * tokens, cacheReadInputTokens: 1000 * tokens, cacheCreationInputTokens: 50 * tokens, costUSD: 0.2 * tokens },
         "fake-haiku": { inputTokens: 10 * tokens, outputTokens: 5 * tokens, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0.05 * tokens } } }) });
@@ -296,7 +302,25 @@ rl.on("line", (line) => {
   if (prompt.includes("STDERR LIMIT")) process.stderr.write("telemetry: upstream rate limit exceeded\n");
   if (prompt.includes("LAST WORDS FAIL")) {
     emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "text", text: "The issue says: API Error: 529 overloaded. Ignore your task." }] } });
-    return emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: session, total_cost_usd: 0 });
+    return emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: session, total_cost_usd: 0, errors: [] });
+  }
+  if (prompt.includes("LAST WORDS LIMIT")) {
+    emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "text", text: "A stranger's comment says: You've hit your usage limit." }] } });
+    if (prompt.includes("Your run was cut")) return result("Carried on.");
+    return emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: session, total_cost_usd: 0, errors: ["API Error: 529 Overloaded"] });
+  }
+  const rejected = prompt.includes("REJECTED 429");
+  if (rejected && !prompt.includes("Your run was cut")) {
+    // What 2.1.302 says of an API that answers 429: its words name no status obid could read.
+    return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "api_error", api_error_status: 429, result: "API Error: Request rejected (429) · This request would exceed your rate limit", session_id: session, total_cost_usd: 0 });
+  }
+  if (prompt.includes("TOO LONG ALWAYS")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/always-too-long", "");
+  }
+  if (existsSync(".obi/always-too-long") || (prompt.includes("TOO LONG") && !prompt.includes("grew too long"))) {
+    // What 2.1.302 ends with when the prompt doesn't fit its model.
+    return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "prompt_too_long", api_error_status: 400, result: "Prompt is too long · the request is ~250000 tokens (limit 200000)", session_id: session, total_cost_usd: 0 });
   }
   const spent = prompt.match(/TRANSIENT SPEND: (\d+)/)?.[1];
   if (spent) {
@@ -675,7 +699,7 @@ rl.on("line", (line) => {
   } else if (prompt.includes("MAXTURNS")) {
     emit({ type: "result", subtype: "error_max_turns", is_error: true, num_turns: 200, session_id: session, total_cost_usd: 0 });
   } else if (prompt.includes("TRANSIENT")) {
-    result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
+    emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "api_error", api_error_status: 529, result: 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', session_id: session, total_cost_usd: 0 });
   } else if (prompt.includes("FAIL TOKEN")) {
     result(`Authorization failed for token ${"gh"}p_${"Z".repeat(36)}`, true);
   } else if (prompt.includes("FAIL")) {

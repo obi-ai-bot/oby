@@ -1762,6 +1762,201 @@ fn a_turn_says_why_when_the_session_cant_run() {
     assert_eq!(turns(&obid).len(), 3);
 }
 
+/// A failed try stays on its session, which holds what its tools did, says what happened and sends
+/// the owner's words again: never a new session that knows only a summary (CONVERSATION-AGENT-15).
+#[test]
+fn conversation_agent_15_a_retry_stays_on_its_session_and_says_what_happened() {
+    let (_folder, obid) = obid("harness-retry", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let answer = said(&obid, json!({"said": "FAIL ONCE", "conversation": id}));
+    let session = turns(&obid)[0]["id"].clone();
+    let all = turns(&obid);
+    let retry = all.last().unwrap();
+    assert!(
+        answer.body["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("carried on: resume=c0"),
+        "{}",
+        answer.text
+    );
+    assert!(retry["resumed"].is_string(), "{retry} {session}");
+    let told = retry["prompt"].as_str().unwrap();
+    assert!(told.contains("not the owner's words"), "{told}");
+    assert!(told.contains("> API Error: 529"), "{told}");
+    assert!(told.contains("check what really ran"), "{told}");
+    assert!(told.ends_with("FAIL ONCE"), "{told}");
+    assert!(!told.contains("earlier turns"), "{told}");
+}
+
+/// The tool says the session is gone: a new one, with the earlier turns handed over. A session gone
+/// costs no second failure (CONVERSATION-AGENT-15).
+#[test]
+fn conversation_agent_15_a_session_thats_gone_starts_anew_with_the_earlier_turns() {
+    let (_folder, obid) = obid("harness-gone", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let answer = said(&obid, json!({"said": "GONE", "conversation": id}));
+    assert_eq!(answer.body["text"], "handed over: true", "{}", answer.text);
+    let all = turns(&obid);
+    let last = all.last().unwrap();
+    assert!(last["resumed"].is_null(), "{last}");
+    assert!(
+        last["prompt"].as_str().unwrap().contains("Owner: HELLO"),
+        "{last}"
+    );
+    assert!(
+        !last["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Your run was cut"),
+        "{last}"
+    );
+}
+
+/// A session grown too long for its model carries on in a new one on the same account, the earlier
+/// turns handed over, and says so on its step (CONVERSATION-AGENT-16).
+#[test]
+fn conversation_agent_16_a_conversation_too_long_carries_on_in_a_new_session() {
+    let (_folder, obid) = obid("harness-long", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let events = follow_events(&obid);
+    let answer = said(
+        &obid,
+        json!({"said": "TOOLONG RESUMED", "conversation": id}),
+    );
+    assert_eq!(
+        answer.body["text"], "new session: with the earlier turns",
+        "{}",
+        answer.text
+    );
+    let all = turns(&obid);
+    assert!(all.last().unwrap()["resumed"].is_null(), "{all:?}");
+    let seen = until_oby_turn(&events, 30);
+    assert!(
+        seen.iter().any(|(name, data)| name == "thinking"
+            && data["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("carrying on in a new session"))),
+        "{seen:?}"
+    );
+}
+
+/// Too long even so, or for a turn that already did something: the plain words, and no new session
+/// that would do it again. An older Claude Code's words say it too (CONVERSATION-AGENT-16).
+#[test]
+fn conversation_agent_16_too_long_says_so_when_a_new_session_cant_help() {
+    const PLAIN: &str = "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one.";
+    let (_folder, obid) = obid("harness-long-still", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let before = turns(&obid).len();
+    let answer = said(&obid, json!({"said": "TOOLONG", "conversation": id}));
+    assert_eq!(answer.body["text"], PLAIN, "{}", answer.text);
+    assert_eq!(turns(&obid).len(), before + 2, "one new session, no more");
+
+    let old = said(&obid, json!({"said": "TOOLONG OLD", "new": true}));
+    assert_eq!(old.body["text"], PLAIN, "{}", old.text);
+
+    // A turn that did something stays where it is, as moving it does.
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let before = turns(&obid).len();
+    let job = json!({"repo": "obi-e2e/fixture-app", "task": "Add a note"});
+    let acted = said(
+        &obid,
+        json!({"said": format!("TOOLONG AFTER oby_dispatch {job}"), "conversation": id}),
+    );
+    assert_eq!(acted.body["text"], PLAIN, "{}", acted.text);
+    assert_eq!(turns(&obid).len(), before + 1, "no new session");
+}
+
+/// TASKCONV-17: the session going on hears, once, how its jobs ended since the owner last spoke,
+/// quoted. A job started on the owner's own word leaves the next turn theirs.
+#[test]
+fn taskconv_17_the_next_turn_hears_how_its_jobs_ended() {
+    let (_folder, obid) = obid("harness-job-told", true);
+    let start = json!({"repo": "obi-e2e/fixture-app", "task": "Look around"});
+    let say = |said: String, conversation: Option<&str>| {
+        let mut body = json!({"said": said});
+        match conversation {
+            Some(id) => body["conversation"] = json!(id),
+            None => body["new"] = json!(true),
+        }
+        let answer = call_typed(&obid, "POST", "/v1/plans", &body);
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer
+    };
+    let first = say(format!("OBY oby_dispatch {start}"), None);
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let job = first.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    assert!(ended(&obid, &job)["status"].is_string());
+    within(30, "the job's report", || {
+        let thread = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None);
+        thread.text.contains("\"ended\":true").then_some(())
+    });
+    let second = say(format!("OBY oby_dispatch {start}"), Some(&id));
+    let told = turns(&obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(told.contains("How your jobs ended"), "{told}");
+    assert!(told.contains("<<<quoted-"), "{told}");
+    assert!(told.contains("ended with nothing done"), "{told}");
+    // What its agent wrote stays out: reading that is oby_job's.
+    assert!(!told.contains("Nothing to do."), "{told}");
+    // Started on the owner's own word, and nothing foreign in it: the turn stays theirs.
+    assert_ne!(second.body["jobs"][0]["untrusted"], true, "{}", second.text);
+    let job = second.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    assert!(ended(&obid, &job)["status"].is_string());
+    within(30, "the job's report", || {
+        let thread = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None);
+        (thread.text.matches("\"ended\":true").count() >= 2).then_some(())
+    });
+    say("REMEMBER".into(), Some(&id));
+    say("REMEMBER".into(), Some(&id));
+    let last = turns(&obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!last.contains("How your jobs ended"), "once: {last}");
+}
+
+/// TASKCONV-17: of a job that isn't on obid's allowlist, whose title and reason may hold someone
+/// else's words, the next turn hears only its id and status, and stays as it was.
+#[test]
+fn taskconv_17_a_foreign_jobs_words_stay_out_of_the_prompt() {
+    let (_folder, obid) = obid("harness-job-foreign", true);
+    let start =
+        json!({"repo": "obi-e2e/fixture-app", "task": "Look around", "title": "STRANGERS-WORDS"});
+    // Unsigned words: its job didn't start from the owner's own words.
+    let first = said(
+        &obid,
+        json!({"said": format!("OBY oby_dispatch {start}"), "new": true}),
+    );
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let job = first.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    assert!(ended(&obid, &job)["status"].is_string());
+    within(30, "the job's report", || {
+        let thread = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None);
+        thread
+            .text
+            .contains("STRANGERS-WORDS")
+            .then_some(())
+            .filter(|()| thread.text.contains("\"ended\":true"))
+    });
+    let next = said(&obid, json!({"said": "REMEMBER", "conversation": id}));
+    assert_eq!(next.status, 200, "{}", next.text);
+    let told = turns(&obid).last().unwrap()["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(told.contains(&format!("Job {job} ended: done.")), "{told}");
+    assert!(!told.contains("STRANGERS-WORDS"), "{told}");
+}
+
 /// Each run of a turn is kept as the brain's, with the numbers Claude Code's `result` line
 /// reported and never the words, and `GET /v1/brain/usage` adds them up by kind.
 #[test]

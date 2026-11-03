@@ -716,3 +716,32 @@ fn a_codex_turn_says_why_when_codex_cant_run() {
     );
     assert_eq!(turns(&obid).len(), 2);
 }
+
+/// Codex's own error ends the turn, whatever the agent said before it: words that name a limit mark
+/// no account full, and the try stays on its thread (RECOVERY-7, CONVERSATION-AGENT-15).
+#[test]
+fn recovery_7_the_agents_own_words_never_say_a_limit() {
+    let (_folder, obid) = obid("codex-words", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let answer = said(&obid, json!({"said": "LIMIT WORDS", "conversation": id}));
+    assert!(
+        words(&answer).starts_with("carried on: resume="),
+        "{}",
+        answer.text
+    );
+    assert!(!words(&answer).ends_with("none"), "{}", answer.text);
+}
+
+/// Codex's full context window, on a thread with history: a new thread goes on, and on a new one it
+/// isn't tried again (CONVERSATION-AGENT-16).
+#[test]
+fn conversation_agent_16_codex_out_of_room_carries_on_in_a_new_thread() {
+    let (_folder, obid) = obid("codex-room", true);
+    let first = said(&obid, json!({"said": "HELLO", "new": true}));
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let answer = said(&obid, json!({"said": "OUT OF ROOM", "conversation": id}));
+    assert_eq!(words(&answer), "new thread", "{}", answer.text);
+    let all = turns(&obid);
+    assert!(all.last().unwrap()["resumed"].is_null(), "{all:?}");
+}

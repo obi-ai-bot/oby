@@ -67,6 +67,8 @@ pub const READ_WAIT: Duration = Duration::from_secs(5);
 const MCP_FILE: &str = "oby-mcp.json";
 /// Why a turn couldn't answer when its session failed twice.
 pub const FAILED_TWICE: &str = "its agent session failed twice";
+/// What a turn's step says while it carries on in a new session (proposed: Sangam's to change).
+const NEW_SESSION: &str = "This conversation grew too long, so Oby is carrying on in a new session";
 /// The most earlier turns a new session is handed, quoted.
 const EARLIER: usize = 20;
 /// The largest attachment copied into the room, in bytes (P3): a larger one is left out.
@@ -622,6 +624,8 @@ fn claude_flags(shared: &Shared, tetrix: bool, watched: bool) -> Vec<OsString> {
         "",
         "--strict-mcp-config",
         "--restricted",
+        // The room's path out of the prompt's cached part: every conversation's prefix is one.
+        "--exclude-dynamic-system-prompt-sections",
         "--tools",
         TOOLS,
         "--max-turns",
@@ -1545,6 +1549,26 @@ async fn attempts(
     if tasks.is_some() && tainted {
         session.taint();
     }
+    // What came of its work since its last turn (TASKCONV-17, TASKCONV-19): what its commands wrote
+    // is untrusted, as every command is; of its jobs, only obid's own words are told.
+    let reports = if session.unwatched() {
+        None
+    } else {
+        job_reports(shared, given, &session.nonce)
+    };
+    let commands = if session.unwatched() {
+        None
+    } else {
+        shared.harness.shell.take_cut(&control.conversation)
+    };
+    let commands = commands.map(|lines| {
+        session.taint();
+        format!(
+            "Commands of yours that were still running when your last turn ended, so obid ended them:\n{}\n{}",
+            super::briefing::fence_rule(&session.nonce, "what those commands wrote"),
+            super::briefing::fence(&session.nonce, &lines.join("\n"))
+        )
+    });
     // The jobs the owner attached (Sangam's Attach tasks), by obid's own ids, checked when the
     // words came: the agent reads each with oby_job, which quotes what agents wrote.
     let jobs = (!session.attached_jobs.is_empty()).then(|| {
@@ -1554,6 +1578,10 @@ async fn attempts(
         )
     });
     let with = |prompt: String| {
+        let prompt = match &commands {
+            Some(commands) => format!("{commands}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = match &session.repos_note {
             Some(note) => format!("{note}\n\n{prompt}"),
             None => prompt,
@@ -1571,7 +1599,12 @@ async fn attempts(
             None => prompt,
         }
     };
-    let words = crate::vault::for_agent(&with(said.trim().to_owned()))?;
+    // A session that goes on hasn't heard them; a new one gets them with the earlier turns.
+    let words = match &reports {
+        Some(reports) => format!("{reports}\n\n{}", said.trim()),
+        None => said.trim().to_owned(),
+    };
+    let words = crate::vault::for_agent(&with(words))?;
     let first = crate::vault::for_agent(&with(first_prompt(said.trim(), given)))?;
     let first = if tool == Tool::Cursor {
         super::harness_cursor::first_prompt(shared, tetrix.is_some(), !session.unwatched(), &first)?
@@ -1579,14 +1612,22 @@ async fn attempts(
         first
     };
     let mut failures = vec![];
-    for attempt in 1..=2 {
+    // What the first attempt sends, and what a try after a cut says first (CONVERSATION-AGENT-15).
+    let sent = if resume.is_some() { &words } else { &first };
+    let mut cut: Option<String> = None;
+    // The one new session a conversation too long for its model gets (CONVERSATION-AGENT-16).
+    let mut renewed = false;
+    let mut attempt = 0;
+    while attempt < 2 {
+        attempt += 1;
         let limit = deadline.saturating_duration_since(Instant::now());
         if limit.is_zero() {
             return Ok((turn::AS_FAR_AS.to_owned(), End::BudgetSpent));
         }
-        let prompt = match resume {
-            Some(_) => words.clone(),
-            None => first.clone(),
+        let prompt = match (&resume, &cut) {
+            (Some(_), Some(note)) => crate::vault::for_agent(&crate::jobs::after_cut(note, sent))?,
+            (Some(_), None) => words.clone(),
+            (None, _) => first.clone(),
         };
         let mut flags = claude_flags(shared, tetrix.is_some(), !session.unwatched());
         if session.unwatched()
@@ -1611,7 +1652,6 @@ async fn attempts(
         // What the agent planted for the next Claude Code goes before every turn, a waiting one's
         // too (it loads nothing again, but the rule is the turn's).
         place.scrub();
-        let was_warm = warm.is_some();
         // Its Claude Code is given the turn when it was started as this run would be, its login
         // copy is good for the turn, and it wrote nothing while it waited (a line read now would be
         // taken for this turn's); else it ends, and the turn starts one.
@@ -1802,10 +1842,19 @@ async fn attempts(
         if turn.succeeded() {
             return Ok((text, End::Answered));
         }
-        let why = turn.text().lines().next().unwrap_or("").trim().to_owned();
-        // More than the model can read at once: not tried again (`run`).
-        if super::too_long(&why) {
-            return Err(super::TOO_LONG.into());
+        // What the tool said ended it, never the agent's own words (RECOVERY-7).
+        let why = turn.error().lines().next().unwrap_or("").trim().to_owned();
+        // More than the model can read at once: a session grown that long goes on in a new one,
+        // once, if nothing but reading happened yet; a turn that did something would do it again.
+        if turn.cause() == Some(agent::Cause::TooLong) {
+            if resume.is_none() || renewed || session.acted.load(Ordering::SeqCst) {
+                return Err(super::TOO_LONG.into());
+            }
+            renewed = true;
+            resume = None;
+            attempt -= 1;
+            super::thinking(shared, control, 1, NEW_SESSION, State::Running);
+            continue;
         }
         // What OpenAI said, when the turn went through the relay: Codex's own words drop its code.
         if let Some(refusal) = url
@@ -1831,7 +1880,9 @@ async fn attempts(
         // turn moves on to another account (`run`, #874). On a ChatGPT login only the relay's
         // refusal, above, says it's one.
         if crate::chatgpt::marker_of(account).is_none()
-            && (turn.resets.is_some() || crate::limits::is_limit(&why))
+            && (turn.resets.is_some()
+                || turn.cause() == Some(agent::Cause::Limit)
+                || crate::limits::is_limit(&why))
         {
             let now = obi_protocol::time::now();
             let reset = turn.resets.or_else(|| crate::limits::reset_in(&why, now));
@@ -1842,11 +1893,17 @@ async fn attempts(
             )));
         }
         failures.push(format!("attempt {attempt}: {} ({why})", turn.exit));
-        // A session that can't be picked up (another account's, or gone): a new one. A waiting
-        // Claude Code that had ended is started again on its session.
-        if !was_warm {
-            resume = None;
-        }
+        // A session the tool says can't be picked up: a new one, the earlier turns handed over.
+        // Any other stays on its session, which holds what its tools did, and hears what happened.
+        resume = match turn.cause() {
+            Some(agent::Cause::SessionGone) => None,
+            _ => turn.session.clone().or(resume.take()),
+        };
+        let error = crate::detail::mask(&why);
+        cut = Some(crate::jobs::continue_message(
+            "your last try at this turn ended before it finished",
+            Some(error.as_str()).filter(|e| !e.is_empty()),
+        ));
     }
     tracing::warn!(
         "conversation {}: its session failed twice: {}",
@@ -2004,6 +2061,40 @@ fn tasks_line(tasks: &[crate::conversation::Task], nonce: &str) -> Option<String
     ))
 }
 
+/// How the jobs of this conversation ended since the owner last spoke, which the session going on
+/// hasn't heard, quoted (TASKCONV-17): the first line of obid's reports, its own words. What their
+/// agents wrote stays out: reading that is `oby_job`'s, and makes the turn no longer the owner's word.
+/// A job that isn't on obid's allowlist (crate::secretspec) may have someone else's words in its
+/// title and reason too, so only its id and status are said.
+fn job_reports(shared: &Shared, given: &[Turn], nonce: &str) -> Option<String> {
+    let since = given
+        .iter()
+        .rposition(|t| t.who == "user")
+        .map_or(0, |at| at + 1);
+    let lines: Vec<String> = given[since..]
+        .iter()
+        .filter(|t| t.ended)
+        .map(|t| {
+            let id = t.jobs.first().map_or("", String::as_str);
+            match shared.jobs.get(id) {
+                Some(job) if job.check_refuses_secrets().is_none() => {
+                    t.text.lines().next().unwrap_or("").to_owned()
+                }
+                Some(job) => format!("Job {id} ended: {}.", job.status.as_str()),
+                None => format!("Job {id} ended, and obid no longer has it."),
+            }
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "How your jobs ended since the owner last spoke, which you weren't told (oby_job reads more):\n{}\n{}",
+        super::briefing::fence_rule(nonce, "obid's reports on those jobs"),
+        super::briefing::fence(nonce, &crate::secrets::known().redact(&lines.join("\n")))
+    ))
+}
+
 /// The first prompt of a session: the conversation so far, quoted, before the owner's words.
 fn first_prompt(words: &str, given: &[Turn]) -> String {
     let earlier: Vec<String> = given
@@ -2057,12 +2148,12 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool, watched: bool) -> Strin
         crate::memory::prompt_line(&format!("{} in your room", crate::memory::FILE))
     );
     if !repos.is_empty() {
-        orientation += &format!("\n\nThe owner's repositories: {}.", repos.join(", "));
+        orientation += &format!("\n\nThe owner's repositories: {}.", named(repos));
     }
     if !github.is_empty() {
         orientation += &format!(
             "\n\nOther GitHub repositories the owner can push to, where a job may start too: {}. repos/ has a checkout of one only once the owner names it as owner/name; for one they mean but didn't name, ask which. Read a repository from repos/ rather than its GitHub web page: you have no login there, and a private one's is a 404.",
-            github.join(", ")
+            named(github)
         );
     }
     // Only when the session gets Tetrix's server (`mcp_config`, never a turn nobody watches): a
@@ -2072,6 +2163,14 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool, watched: bool) -> Strin
     }
     orientation += &super::ask::orientation(shared, watched);
     orientation
+}
+
+/// Repositories as the orientation names them, in an order no push changes: the prompt's cached part
+/// is the same until the list itself is (CONVERSATION-AGENT-17).
+// ponytail: an owner past repos::MOST_TOLD still sees the list change when an older one is pushed.
+fn named(mut repos: Vec<String>) -> String {
+    repos.sort_unstable_by_key(|repo| repo.to_lowercase());
+    repos.join(", ")
 }
 
 /// One run of the agent for the turn, by its `protocol`, for at most `limit`, its events sent as
@@ -2988,6 +3087,17 @@ async fn extract(shared: &Shared, repo: &str, sha: &str, dest: &Path) -> Result<
 
 #[cfg(test)]
 mod tests {
+    /// CONVERSATION-AGENT-17: a push reorders GitHub's list, and the orientation stays the same.
+    #[test]
+    fn conversation_agent_17_a_push_doesnt_change_the_orientation() {
+        let newest_first = |first: &str, second: &str| vec![first.to_owned(), second.to_owned()];
+        assert_eq!(
+            super::named(newest_first("o/b", "O/a")),
+            super::named(newest_first("O/a", "o/b"))
+        );
+        assert_eq!(super::named(newest_first("o/b", "O/a")), "O/a, o/b");
+    }
+
     use super::*;
 
     /// TASKS-14: every prompt that writes to the owner takes the one rule for Oby's words.
