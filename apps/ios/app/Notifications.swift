@@ -52,6 +52,10 @@ final class Notifications: NSObject, UIApplicationDelegate, UNUserNotificationCe
     /// and the runner (maybe another Mac) gets what it pushes with. The first one, or the first
     /// job dispatched from the phone, asks whether Oby may notify; after that it doesn't ask again.
     static func ask() {
+        #if DEBUG
+        // `-ObySampleQuiet YES`: no prompt over the screenshots of a Simulator nobody taps on (it holds the app inactive, and so off the Mac).
+        if UserDefaults.standard.bool(forKey: "ObySampleQuiet") { return }
+        #endif
         Task {
             let center = UNUserNotificationCenter.current()
             switch await center.notificationSettings().authorizationStatus {

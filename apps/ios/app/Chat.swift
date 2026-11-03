@@ -7,34 +7,42 @@ extension ChatThread {
     }
 }
 
-/// The side panel's Conversations (Sangam's Sidebar.tsx, #493): obid's conversations, Pinned then
-/// Recent, each with its last line and how long ago; search finds them by what was said. Swipe to
-/// delete, hold for Pin and Rename. A runner that keeps one thread lists just that one.
-struct ConversationsColumn: View {
+/// The side panel's Chats (docs/contracts/ios-new-oby.md, Sangam's Sidebar.tsx on the canvas's
+/// "Chats"): Oby first, New conversation, your conversations under it (the latest five, then Show
+/// more; pinned first; each with its last line and how long ago), then the Obysphere with its
+/// teammates' Obys. It shows no usage: that's in the message box. Search finds conversations by what
+/// was said. Swipe to delete, hold for Pin and Rename. A runner that keeps one thread lists that one.
+struct ChatsColumn: View {
     @Environment(Phone.self) private var phone
-    /// Opens a conversation over Home, closing the panel.
-    let open: (Route) -> Void
+    /// The search field under the title, while it's open.
+    let searching: Bool
+    let needsYou: Bool
+    let startNew: () -> Void
     @State private var query = ""
     /// What the search found, or nil while there's no search.
     @State private var found: [RunnerConversation]?
+    @State private var showAll = false
     @State private var renaming: RunnerConversation?
     @State private var title = ""
     @State private var problem: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(Tokens.font(13)).foregroundStyle(Tokens.muted)
-                TextField("Search conversations", text: $query)
-                    .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.ink)
-                    .submitLabel(.search)
+            if searching {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").font(Tokens.font(13)).foregroundStyle(Tokens.muted)
+                    TextField("Search", text: $query)
+                        .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.ink)
+                        .submitLabel(.search)
+                }
+                .padding(.horizontal, 10).frame(height: 36)
+                .background(Tokens.field, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Tokens.line) }
+                .padding(.horizontal, 12).padding(.bottom, 8)
             }
-            .padding(.horizontal, 10).frame(height: 36)
-            .background(Tokens.field, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Tokens.line) }
-            .padding(.horizontal, 12).padding(.bottom, 8)
             list
         }
+        .onChange(of: searching) { if !searching { query = "" } }
         .task(id: query) { await search() }
         .alert("Rename conversation", isPresented: Binding { renaming != nil } set: { if !$0 { renaming = nil } }) {
             TextField("Name", text: $title)
@@ -43,62 +51,111 @@ struct ConversationsColumn: View {
         }
     }
 
-    @ViewBuilder private var list: some View {
-        if let conversations = found ?? phone.conversations {
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-                List {
-                    let sections = ConversationOrder.sections(conversations)
-                    if conversations.isEmpty {
-                        Text(found == nil ? "No conversations yet" : "No conversations match “\(query.trimmingCharacters(in: .whitespaces))”")
-                            .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
-                            .listRowBackground(Color.clear).listRowSeparator(.hidden)
-                    }
-                    if !sections.pinned.isEmpty {
-                        Section { rows(sections.pinned, now: context.date) } header: { label("Pinned") }
-                    }
-                    if !sections.recent.isEmpty {
-                        // No headings while nothing's pinned, as the design has it.
-                        if sections.pinned.isEmpty { Section { rows(sections.recent, now: context.date) } }
-                        else { Section { rows(sections.recent, now: context.date) } header: { label("Recent") } }
-                    }
-                    if let problem {
-                        Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger)
-                    }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .contentMargins(.top, 0, for: .scrollContent)
-                .listSectionSpacing(0)
-                .refreshable { await phone.reload() }
-            }
-        } else {
-            // A runner with one thread: that thread.
+    private var list: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let all = phone.conversations ?? []
+            let latest = all.max { $0.latest < $1.latest }
+            let chats = PhoneWork.chats(found ?? all, resting: phone.resting.conversation, all: showAll || found != nil)
             List {
-                Button { open(.conversation(nil)) } label: {
-                    row(title: "Oby", last: phone.conversation.runnerTurns.last?.text, at: phone.conversation.runnerTurns.last?.date, now: .now)
+                if found == nil {
+                    Button { openOwn(latest) } label: { own(latest, now: context.date) }
+                        .plainRow(leading: 12)
+                    Button(action: startNew) {
+                        Label("New conversation", systemImage: "plus")
+                            .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .plainRow(leading: 12)
                 }
-                .listRowBackground(Color.clear)
+                if found != nil, chats.rows.isEmpty {
+                    Text("No conversations match “\(query.trimmingCharacters(in: .whitespaces))”")
+                        .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.muted)
+                        .plainRow(leading: 12)
+                }
+                rows(chats.rows, now: context.date)
+                if found == nil, showAll || chats.hidden > 0 {
+                    Button(showAll ? "Show less" : "Show \(chats.hidden) more") { showAll.toggle() }
+                        .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
+                        .frame(minHeight: 36)
+                        .plainRow(leading: 12)
+                }
+                if let problem {
+                    Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).plainRow(leading: 12)
+                }
+                if found == nil, let sphere = phone.sphere {
+                    sphereRows(sphere)
+                }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .contentMargins(.top, 0, for: .scrollContent)
+            .listSectionSpacing(0)
+            .refreshable { await phone.reload(); await phone.readSphere() }
         }
     }
 
-    private func label(_ text: String) -> some View {
-        Text(text).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.label).textCase(nil)
+    /// Oby, first: where you come to rest, its latest words, and the orange dot while something needs you.
+    private func own(_ latest: RunnerConversation?, now: Date) -> some View {
+        HStack(spacing: 10) {
+            ObyMark(size: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Oby").font(Tokens.font(Tokens.textBase, .medium)).foregroundStyle(Tokens.ink)
+                Text(latest.map { conversationAbout($0) ?? $0.title } ?? "No conversations yet")
+                    .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).fadeOut()
+            }
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 4) {
+                if let latest, latest.latest > .distantPast {
+                    Text(ConversationOrder.ago(latest.latest, now: now)).font(Tokens.font(Tokens.textSm)).monospacedDigit().foregroundStyle(Tokens.muted)
+                }
+                if needsYou { Circle().fill(Tokens.needs).frame(width: 6, height: 6).accessibilityLabel("Needs you") }
+            }
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+
+    private func conversationAbout(_ conversation: RunnerConversation) -> String? {
+        ConversationOrder.about(tasks: phone.jobs.count { $0.conversation == conversation.id },
+                                said: conversation.turn?.text ?? phone.previews[conversation.id])
+    }
+
+    /// The Obysphere, and who's in it. A member's row opens nothing yet: obid has no conversation
+    /// with another Oby to open (SPHERE-7; Obys asking Obys are coming, #1871).
+    @ViewBuilder private func sphereRows(_ sphere: RunnerSphere) -> some View {
+        let name = sphere.sphere ?? "Obysphere"
+        let members = phone.sphereMembers.count + 1
+        HStack(spacing: 10) {
+            Text(String(name.prefix(1)).uppercased()).font(Tokens.font(13, .semibold)).foregroundStyle(Tokens.ink)
+                .frame(width: 28, height: 28).background(Tokens.pill, in: RoundedRectangle(cornerRadius: Tokens.iconRadius, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name).font(Tokens.font(Tokens.textBase, .medium)).foregroundStyle(Tokens.ink).fadeOut()
+                Text("\(members) member\(members == 1 ? "" : "s")").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
+            }
+        }
+        .padding(.top, 14).padding(.bottom, 4)
+        .overlay(alignment: .top) { Tokens.line.frame(height: 1).padding(.top, 2) }
+        .accessibilityElement(children: .combine)
+        .plainRow(leading: 12)
+        ForEach(phone.sphereMembers, id: \.obi) { member in
+            HStack(spacing: 10) {
+                OwnerPicture(name: member.owner)
+                Text("\(member.owner)’s Oby").font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item).fadeOut()
+            }
+            .frame(minHeight: 40)
+            .accessibilityElement(children: .combine)
+            .plainRow(leading: 12)
+        }
     }
 
     private func rows(_ list: [RunnerConversation], now: Date) -> some View {
         ForEach(list) { conversation in
-            Button { open(.conversation(conversation.id)) } label: {
+            Button { phone.rest(on: .conversation(conversation.id)) } label: {
                 row(title: conversation.title.isEmpty ? "Conversation" : conversation.title,
-                    last: ConversationOrder.about(tasks: phone.jobs.count { $0.conversation == conversation.id },
-                                                  said: conversation.turn?.text ?? phone.previews[conversation.id]),
-                    at: conversation.latest, now: now)
+                    last: conversationAbout(conversation), at: conversation.latest, now: now, on: phone.resting == .conversation(conversation.id))
             }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
+            .plainRow(leading: 12)
             .task { await phone.preview(conversation.id) }
             .swipeActions {
                 Button("Delete", systemImage: "trash", role: .destructive) { run { try await phone.delete(conversation.id) } }
@@ -114,10 +171,10 @@ struct ConversationsColumn: View {
         }
     }
 
-    private func row(title: String, last: String?, at: Date?, now: Date) -> some View {
+    private func row(title: String, last: String?, at: Date?, now: Date, on: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
-                Text(title).font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item).fadeOut()
+                Text(title).font(Tokens.font(Tokens.textBase, on ? .medium : .regular)).foregroundStyle(on ? Tokens.ink : Tokens.item).fadeOut()
                 Spacer(minLength: 8)
                 if let at, at > .distantPast {
                     Text(ConversationOrder.ago(at, now: now)).font(Tokens.font(Tokens.textSm)).monospacedDigit().foregroundStyle(Tokens.muted)
@@ -128,6 +185,14 @@ struct ConversationsColumn: View {
             }
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    /// Oby's row: back to the conversation you rest on, or your latest from the empty chat.
+    private func openOwn(_ latest: RunnerConversation?) {
+        if phone.resting.conversation != nil { phone.panel = nil; phone.homePath = []; return }
+        phone.rest(on: latest.map { .conversation($0.id) } ?? .empty)
     }
 
     /// obid's own search (`?q=`), a moment after the typing stops.
@@ -155,26 +220,35 @@ struct ConversationsColumn: View {
     }
 }
 
-/// A conversation with Oby (Sangam's ChatView.tsx, the Mac's ConversationPage): your words in
-/// bubbles at the right, Oby's as plain text under its face, in runs with the time under each; the
-/// tasks an answer started as cards under it, and their decisions; Oby at work, with what it's
-/// on; its question, when it asks one; and the box at the foot.
+private extension View {
+    /// A list row with no furniture.
+    func plainRow(leading: CGFloat) -> some View {
+        listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: leading, bottom: 0, trailing: 12))
+    }
+}
+
+/// A conversation with Oby (Sangam's ChatView.tsx, the Mac's ConversationPage), where the app rests:
+/// your words in bubbles at the right, Oby's as plain text under its face, in runs with the time
+/// under each; the tasks an answer started as live cards under it; what Oby is asking you over it;
+/// Oby at work, with what it's on; its question, when it asks one; and the box at the foot.
 struct ConversationPage: View {
     @Environment(Phone.self) private var phone
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     /// obid's conversation, or nil for the latest (the one thread).
     let id: String?
-    /// The one Home's box just started: it's the thread shown until obid names it.
+    /// The one the empty chat's box just started: it's the thread shown until obid names it.
     var isNew = false
-    @State private var adopted: String?
     @State private var text = ""
     @FocusState private var typing: Bool
     @State private var renaming = false
     @State private var title = ""
     @State private var problem: String?
+    @State private var atEnd = true
+    @State private var following = true
 
-    private var shown: String? { isNew ? adopted : id }
+    private var shown: String? { id }
     private var conversation: RunnerConversation? { shown.flatMap { id in phone.conversations?.first { $0.id == id } } }
     private var thinking: Bool { if case .thinking = phone.talkHere { true } else { false } }
     private var working: Bool { phone.conversation.working }
@@ -184,9 +258,14 @@ struct ConversationPage: View {
             .obyPage()
             .navigationTitle(conversation?.title ?? (isNew ? "New conversation" : "Oby"))
             .navigationBarTitleDisplayMode(.inline)
+            // What Oby is asking, over the conversation and answered there; taller than this, it scrolls.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                AsksOver(asks: PhoneAsks.over(phone.answering, in: shown), typing: typing)
+            }
             .safeAreaInset(edge: .bottom) {
                 Composer(text: $text, prompt: "Reply to Oby…", typing: $typing, onSend: send,
-                         onStop: thinking || working ? { Task { await phone.stopTurn() } } : nil)
+                         onStop: thinking || working ? { Task { await phone.stopTurn() } } : nil,
+                         talkIn: isNew ? nil : .some(shown))
             }
             .keepsDraft($text, as: Drafts.conversation(shown))
             .scrollDismissesKeyboard(.interactively)
@@ -200,7 +279,7 @@ struct ConversationPage: View {
                             Button("Rename", systemImage: "pencil") { title = conversation.title; renaming = true }
                             Divider()
                             Button("Delete conversation", systemImage: "trash", role: .destructive) {
-                                run { try await phone.delete(conversation.id); dismiss() }
+                                run { try await phone.delete(conversation.id) }
                             }
                         } label: { Image(systemName: "ellipsis") }
                             .accessibilityLabel("Conversation options")
@@ -215,10 +294,7 @@ struct ConversationPage: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
-            .onAppear { if !isNew || adopted != nil { phone.show(shown) } }
-            .onChange(of: phone.current, initial: true) {
-                if isNew, adopted == nil, !phone.startingNew, let current = phone.current { adopted = current }
-            }
+            .onAppear { if !isNew { phone.show(shown) } }
             .onDisappear { phone.cancelVoice() }
             .onChange(of: scenePhase) { if scenePhase != .active { phone.leftForeground(background: scenePhase == .background) } }
     }
@@ -276,7 +352,8 @@ struct ConversationPage: View {
                                     // A job older than the runner's list: fetched, so its card shows.
                                     for id in ConversationModel.missing(of: row.turn, among: phone.jobs) { await phone.fetch(id) }
                                 }
-                            ForEach(decisions.filter { $0.offer == nil && (row.turn.jobs?.contains($0.job) ?? false) }) { item in
+                            // What the stack over the thread doesn't show stays with its card: a failure, a review.
+                            ForEach(decisions.filter { !PhoneAsks.kinds.contains($0.kind) && (row.turn.jobs?.contains($0.job) ?? false) }) { item in
                                 InboxDecision(item: item).padding(.top, 12)
                             }
                             ForEach(offers.under[row.turn.id] ?? []) { OfferCard(offer: $0).padding(.top, 12) }
@@ -303,6 +380,19 @@ struct ConversationPage: View {
                     .padding(.horizontal, Tokens.gutter).padding(.top, 12).padding(.bottom, 16)
                 }
                 .defaultScrollAnchor(.bottom)
+                // At the end, it stays there as a live card or the stack over it changes the room.
+                .onScrollGeometryChange(for: ThreadEnd.self) { geometry in
+                    ThreadEnd(height: geometry.contentSize.height,
+                              at: geometry.contentOffset.y + geometry.containerSize.height - geometry.contentInsets.bottom >= geometry.contentSize.height - 64)
+                } action: { was, now in
+                    atEnd = now.at
+                    if following, now.height != was.height { proxy.scrollTo("end", anchor: .bottom) }
+                }
+                // It follows the thread's end, as a live card grows, until you scroll away from it.
+                .onScrollPhaseChange { was, phase in
+                    if phase == .interacting { following = false }
+                    else if phase == .idle, was == .interacting || was == .decelerating { following = atEnd }
+                }
                 .onChange(of: turns.last?.id) { withAnimation(Tokens.warm) { proxy.scrollTo("end", anchor: .bottom) } }
                 .onChange(of: phone.talk) { proxy.scrollTo("end", anchor: .bottom) }
                 .onChange(of: phone.conversation.steps) { proxy.scrollTo("end", anchor: .bottom) }
@@ -329,6 +419,12 @@ struct ConversationPage: View {
             do { try await work(); problem = nil } catch { problem = error.localizedDescription }
         }
     }
+}
+
+/// How tall the thread is, and whether its end is in sight.
+private struct ThreadEnd: Equatable {
+    var height: CGFloat
+    var at: Bool
 }
 
 /// One message in its run: yours in a bubble at the right, Oby's as plain text under its face (on
@@ -409,8 +505,10 @@ private struct MessageRow: View {
     }
 }
 
-/// A task an answer started, as a small card under it (Sangam's ThreadTask): its agent's mark,
-/// its title, "Running · agent · account · repo", its mark and a chevron; a tap opens its page.
+/// A task an answer started, as a small card under it (Sangam's ThreadTask, docs/contracts/live-task.md):
+/// its agent's mark, its title, "Running · agent · account · repo · 12m", its mark and a chevron;
+/// while it works, its to-dos and the last things it did (LiveTaskWork); ended, how, why, and what it
+/// left, in one line. A tap opens the agent's own conversation.
 struct ThreadTask: View {
     @Environment(\.push) private var push
     let job: Job
@@ -418,29 +516,42 @@ struct ThreadTask: View {
 
     var body: some View {
         let mark = ThreadTaskLine.mark(job)
-        Button { push(.task(job.id)) } label: {
+        let atWork = job.isActive
+        Button { push(.agent(job.id)) } label: {
             HStack(alignment: .top, spacing: 10) {
                 AgentMark(agent: job.agent).font(Tokens.font(13, .semibold)).frame(width: 16).padding(.top, 1)
                     .foregroundStyle(Tokens.muted)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(job.heading).font(Tokens.font(Tokens.textMd, .medium)).foregroundStyle(Tokens.ink).lineLimit(1)
-                    Text(ThreadTaskLine.meta(job: job, mark: mark, account: account)).font(Tokens.font(Tokens.textSm))
-                        .foregroundStyle(Tokens.muted).lineLimit(1)
-                    JobCardLines(job: job).padding(.top, 4)
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(LiveTask.meta(job, mark: mark, account: account, now: context.date)).font(Tokens.font(Tokens.textSm))
+                            .foregroundStyle(Tokens.muted).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let why = LiveTask.why(job) {
+                        Text(why).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.text).lineLimit(1)
+                    }
+                    if !atWork, let line = TaskFacts.resultLine(job) {
+                        Text(line).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).lineLimit(1)
+                    }
+                    if atWork { LiveTaskWork(job: job).padding(.top, 6) }
                 }
                 Spacer(minLength: 4)
-                WorkMarkView(mark: mark).padding(.top, 3)
+                if mark == .done, [.failed, .stopped, .interrupted].contains(job.status) {
+                    Circle().fill(Tokens.danger).frame(width: 8, height: 8).padding(.top, 5).accessibilityLabel(LiveTask.ended(job))
+                } else {
+                    WorkMarkView(mark: mark).padding(.top, 3)
+                }
                 Image(systemName: "chevron.right").font(Tokens.font(11, .semibold)).padding(.top, 3)
                     .foregroundStyle(Tokens.muted.opacity(0.6))
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Tokens.cardFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Tokens.line) }
+            .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(mark == .needs ? Tokens.needs.opacity(0.5) : Tokens.line) }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open \(job.heading), \(ThreadTaskLine.status(mark))")
+        .accessibilityLabel("Open \(job.heading), \(LiveTask.meta(job, mark: mark, account: account))")
     }
 }
 

@@ -1,14 +1,14 @@
 import SwiftUI
 import UIKit
 
-/// What the side panel shows (Sangam's Sidebar.tsx): its icon strip picks Home's tasks or the
-/// conversations; your picture at its foot opens Settings.
-enum PanelSection: Hashable { case home, conversations }
+/// What the side panel shows (Sangam's Sidebar.tsx, chat first): its icon strip picks the chats or
+/// the tasks; your picture at its foot opens Settings.
+enum PanelSection: Hashable { case chats, tasks }
 
-/// Oby on iPhone with no tab bar (the owner's call, 2026-10-18, as Sangam's design has none): Home
-/// and everything opened over it in one stack, and Sangam's side panel. It opens from the left and
-/// pushes the view over: the panel button at Home's top left, or a swipe from the screen's left
-/// edge on Home; a tap on what it pushed aside, a swipe back on it, the panel's own button, or
+/// Oby on iPhone with no tab bar (the owner's call, 2026-10-18, as Sangam's design has none): your
+/// conversation and everything opened over it in one stack, and Sangam's side panel. It opens from
+/// the left and pushes the view over: the panel button at the top left, or a swipe from the screen's
+/// left edge where the app rests; a tap on what it pushed aside, a swipe back on it, the panel's own button, or
 /// VoiceOver's escape closes it. With Reduce Motion it appears and goes without sliding.
 struct PhoneRoot: View {
     @Environment(Phone.self) private var phone
@@ -40,15 +40,15 @@ struct PhoneRoot: View {
                     .offset(x: shift - width)
                     .accessibilityHidden(!open)
                     .accessibilityAction(.escape) { close() }
-                HomeView(character: home.character)
+                ChatRoot(character: home.character)
                     .frame(width: geometry.size.width)
-                    // Home's left edge: a swipe right opens the panel. The system's own edge pan,
+                    // The left edge where the app rests: a swipe right opens the panel. The system's own edge pan,
                     // which cancels the touch under it, so a row the swipe ends on isn't tapped and
-                    // a tap near the edge still lands. Only on Home itself: over a page the edge
+                    // a tap near the edge still lands. Only there: over a page the edge
                     // is the system's back swipe.
                     .gesture(EdgeSwipe(enabled: !open && phone.homePath.isEmpty) { edge = $0 } ended: { moved in
                         edge = 0
-                        if moved > width / 3, phone.homePath.isEmpty { phone.panel = .home }
+                        if moved > width / 3, phone.homePath.isEmpty { phone.panel = .chats }
                     })
                     .overlay {
                         // What the panel pushed aside: a tap brings it back, and so does a drag
@@ -74,7 +74,7 @@ struct PhoneRoot: View {
             .onEnded { value in
                 let open = phone.panel != nil
                 let moved = value.predictedEndTranslation.width
-                if !open, moved > width / 3 { phone.panel = .home }
+                if !open, moved > width / 3 { phone.panel = .chats }
                 if open, moved < -width / 3 { close() }
             }
     }
@@ -82,19 +82,31 @@ struct PhoneRoot: View {
     private func close() { phone.panel = nil }
 }
 
-/// The panel (Sangam's Sidebar.tsx, on a phone): the icon strip on the far left (Home,
-/// Conversations, and your picture at its foot for Settings), the column beside it showing one.
+/// The panel (Sangam's Sidebar.tsx, chat first, on a phone): the icon strip on the far left (Oby's
+/// chats, Tasks with its dots, and your picture at its foot for Settings), the column beside it
+/// showing one. Search on the title's row for chats, the ⋮ for tasks.
 private struct SidePanel: View {
     @Environment(Phone.self) private var phone
+    @AppStorage(GroupBy.key) private var groupBy = GroupBy.type
     let width: CGFloat
     let close: () -> Void
+    @State private var searching = false
+    @State private var problem: String?
+
+    /// Anything in the tasks needing you, GitHub's work waiting on you included (CHATFIRST-7).
+    private var tasksNeed: Bool {
+        WorkList.needsYou(phone.work, loose: phone.loose.count) + phone.limitDecisions.count > 0
+            || !(phone.gitHubWork?.toDo(.review, later: phone.gitHubLater) ?? []).isEmpty
+            || !(phone.gitHubWork?.toDo(.issues, later: phone.gitHubLater) ?? []).isEmpty
+    }
 
     var body: some View {
-        let section = phone.panel ?? .home
+        let section = phone.panel ?? .chats
         HStack(spacing: 0) {
             VStack(spacing: 8) {
-                strip(.home, "house", "Home", on: section == .home)
-                strip(.conversations, "bubble.left.and.bubble.right", "Conversations", on: section == .conversations)
+                strip(.chats, "bubble.left.and.bubble.right", "Oby", on: section == .chats, dot: nil)
+                strip(.tasks, "checklist", "Tasks", on: section == .tasks,
+                      dot: tasksNeed ? Tokens.needs : phone.work.contains(where: \.fresh) ? Tokens.unread : nil)
                 Spacer()
                 Button { open(.settings) } label: { OwnerPicture(name: HomeLine.owner(ofMac: phone.link?.name)) }
                     .buttonStyle(.plain)
@@ -105,122 +117,155 @@ private struct SidePanel: View {
             .frame(width: Tokens.rail)
             .overlay(alignment: .trailing) { Rectangle().fill(Tokens.edge).frame(width: 1) }
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text(section == .home ? "Home" : "Conversations")
+                HStack(spacing: 0) {
+                    Text(section == .chats ? "Chats" : "Tasks")
                         .font(Tokens.font(Tokens.textTitle, .semibold)).foregroundStyle(Tokens.ink)
                         .accessibilityAddTraits(.isHeader)
                     Spacer()
-                    // Sangam's panel button, here to put it away again.
-                    Button(action: close) {
-                        Image(systemName: "sidebar.left").font(Tokens.font(17)).foregroundStyle(Tokens.muted)
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    if section == .chats {
+                        Button { withAnimation(Tokens.warm) { searching.toggle() } } label: { barIcon("magnifyingglass") }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Search")
+                    } else {
+                        tasksMenu
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Hide sidebar")
+                    // Sangam's panel button, here to put it away again.
+                    Button(action: close) { barIcon("sidebar.left") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Hide sidebar")
                 }
                 .padding(.leading, 12).padding(.trailing, 4).padding(.top, 4).padding(.bottom, 8)
-                // What this tab starts, first thing under its title (Sangam's `.sidebar-new`): both go
-                // to Home's box, as his do.
-                Button(action: startNew) {
-                    Label(section == .home ? "New task" : "New conversation", systemImage: "plus")
-                        .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
                 switch section {
-                case .home: TasksColumn(open: open)
-                case .conversations: ConversationsColumn(open: open)
+                case .chats: ChatsColumn(searching: searching, needsYou: !phone.answering.isEmpty, startNew: { phone.newConversation() })
+                case .tasks: TasksColumn(open: open, groupBy: groupBy, problem: problem)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Tokens.bg)
+        // obid has no event for the Sphere's directory: read as the panel opens.
+        .task(id: phone.panel) { if phone.panel != nil { await phone.readSphere() } }
     }
 
-    private func strip(_ section: PanelSection, _ icon: String, _ label: String, on: Bool) -> some View {
+    private func barIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol).font(Tokens.font(17)).foregroundStyle(Tokens.muted)
+            .frame(width: 44, height: 44).contentShape(Rectangle())
+    }
+
+    /// Tasks' ⋮ (Sangam's): by kind of work or by status, and Clear done.
+    private var tasksMenu: some View {
+        Menu {
+            Picker("Group by", selection: $groupBy) {
+                ForEach(GroupBy.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            // Through the runner (it keeps the time), so every app clears too.
+            Button("Clear done") {
+                Task { do { try await phone.clear(); problem = nil } catch { problem = error.localizedDescription } }
+            }
+            .disabled(!phone.visibleJobs.contains { $0.clearable(among: phone.jobs) })
+        } label: { barIcon("ellipsis") }
+            .accessibilityLabel("Tasks options")
+    }
+
+    private func strip(_ section: PanelSection, _ icon: String, _ label: String, on: Bool, dot: Color?) -> some View {
         Button { phone.panel = section } label: {
-            Image(systemName: on ? "\(icon).fill" : icon).font(Tokens.font(17))
+            Image(systemName: on && section == .chats ? "\(icon).fill" : icon).font(Tokens.font(17))
                 .foregroundStyle(on ? Tokens.ink : Tokens.railIcon)
                 .frame(width: 36, height: 36)
                 .background(on ? Tokens.active : .clear, in: RoundedRectangle(cornerRadius: Tokens.iconRadius, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    if let dot { Circle().fill(dot).frame(width: 7, height: 7).offset(x: -3, y: 4) }
+                }
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+        .accessibilityValue(dot == Tokens.needs ? "Needs you" : dot == nil ? "" : "New")
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 
-    private func startNew() {
-        phone.homePath = []
-        phone.panel = nil
-        phone.focusHome = true
-    }
-
-    /// Opens a page over Home and closes the panel, as Sangam's does.
+    /// Opens a page over where the app rests and closes the panel, as Sangam's does.
     private func open(_ route: Route) {
         phone.homePath = [route]
         phone.panel = nil
     }
 }
 
-/// Home's tasks in the panel (Sangam's side panel grouped by kind): each kind's open tasks and its
-/// latest done ones; every task and Archived under them.
+/// The panel's Tasks (Sangam's side panel, chat first): New task, the kinds of work (Home's chips) with
+/// their dots, then each group's open tasks and its latest done ones; Archived under them.
 private struct TasksColumn: View {
     @Environment(Phone.self) private var phone
     let open: (Route) -> Void
+    let groupBy: GroupBy
+    let problem: String?
+    @State private var more: Set<String> = []
 
     var body: some View {
-        let groups = WorkList.groups(phone.work, by: .type)
+        let groups = WorkList.groups(phone.work, by: groupBy)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                // New task goes to the empty chat's box, as his does.
+                Button { phone.newConversation() } label: {
+                    Label("New task", systemImage: "plus")
+                        .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                ForEach(WorkList.kinds(phone.work, routines: Launch.everything)) { kind in
+                    let toDo = kind.type.map { $0 == .review || $0 == .issues ? !(phone.gitHubWork?.toDo($0, later: phone.gitHubLater) ?? []).isEmpty : false } ?? false
+                    Button { if let type = kind.type { open(.kind(type)) } } label: {
+                        HStack(spacing: 8) {
+                            Text(kind.label).lineLimit(1)
+                            if kind.fresh { Circle().fill(Tokens.unread).frame(width: 6, height: 6).accessibilityLabel("New") }
+                            if kind.needs > 0 || toDo { Circle().fill(Tokens.needs).frame(width: 6, height: 6).accessibilityLabel("Needs you") }
+                        }
+                        .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                }
+                if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.horizontal, 12) }
                 if groups.isEmpty {
                     if !phone.loaded && phone.connection == .connecting {
                         RowBones()
                     } else {
                         Text(!phone.loaded ? "Reaching your Mac…" : phone.archived.isEmpty ? "No tasks yet. They’ll show up here once you give me one." : "All caught up. Finished tasks are in Archived.")
-                            .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.horizontal, 12)
+                            .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.horizontal, 12).padding(.top, 12)
                     }
                 }
                 ForEach(groups) { group in
                     let folded = phone.panelFolded.contains(group.id)
-                    // A kind's name opens its page, as Home's chip does (the owner's addition to
-                    // Sangam's design, 2026-10-21); the chevron and the rest of the row fold it.
-                    HStack(spacing: 0) {
-                        if let kind = group.type {
-                            Button { open(.kind(kind)) } label: {
-                                Text(group.label).padding(.leading, 12).padding(.trailing, 6).frame(minHeight: 44).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Open \(group.label)")
-                            .accessibilityAddTraits(.isHeader)
+                    let shown = WorkList.shown(group, more: more.contains(group.id))
+                    // The chevron and the row fold it, his way.
+                    Button { withAnimation(Tokens.warm) { phone.panelFolded.formSymmetricDifference([group.id]) } } label: {
+                        HStack(spacing: 4) {
+                            Text(group.label).padding(.trailing, 2)
+                            Image(systemName: "chevron.down").font(Tokens.font(9, .semibold)).rotationEffect(.degrees(folded ? 180 : 0))
+                            Spacer(minLength: 4)
+                            if folded && group.needs > 0 { Circle().fill(Tokens.needs).frame(width: 6, height: 6) }
+                            if group.count > 0 { Text("\(group.count)").monospacedDigit() }
                         }
-                        Button { withAnimation(Tokens.warm) { phone.panelFolded.formSymmetricDifference([group.id]) } } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "chevron.down").font(Tokens.font(9, .semibold)).rotationEffect(.degrees(folded ? 180 : 0))
-                                Spacer(minLength: 4)
-                                if folded && group.needs > 0 { Circle().fill(Tokens.needs).frame(width: 6, height: 6) }
-                                // A kind's open tasks, as his panel counts them.
-                                if group.count > 0 { Text("\(group.count)").monospacedDigit() }
-                            }
-                            .padding(.trailing, 12).frame(minHeight: 44).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(folded ? "Show" : "Hide") \(group.label)")
-                        .accessibilityValue(group.count > 0 ? "\(group.count) \(group.countLabel)" : "")
-                        // The group's header to VoiceOver: its name, or this chevron where it has no page.
-                        .accessibilityAddTraits(group.type == nil ? .isHeader : [])
+                        .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.label)
+                        .padding(.horizontal, 12).frame(minHeight: 44).contentShape(Rectangle())
                     }
-                    .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.label)
+                    .accessibilityLabel("\(folded ? "Show" : "Hide") \(group.label)")
+                    .accessibilityValue(group.count > 0 ? "\(group.count) \(group.countLabel)" : "")
+                    .accessibilityAddTraits(.isHeader)
                     if !folded {
-                        ForEach(WorkList.shown(group, more: false).rows) { item in
-                            Button { open(.task(item.id)) } label: { PanelTaskRow(item: item) }.buttonStyle(.plain)
+                        ForEach(shown.rows) { item in
+                            Button { open(.task(item.id)) } label: { PanelTaskRow(item: item) }
+                        }
+                        if shown.hidden > 0 {
+                            Button(more.contains(group.id) ? "Show less" : "Show \(shown.hidden) more") {
+                                if more.contains(group.id) { more.remove(group.id) } else { more.insert(group.id) }
+                            }
+                            .font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
+                            .padding(.horizontal, 12).frame(minHeight: 36)
                         }
                     }
                 }
-                // What needs you with no task on Home, and every task: only when there's some.
+                // What needs you with no task to show it on: only when there's some.
                 if !phone.loose.isEmpty {
                     Button { open(.inbox) } label: {
                         HStack {
@@ -231,16 +276,13 @@ private struct TasksColumn: View {
                     }
                     .padding(.horizontal, 12).padding(.top, 16)
                 }
-                if !groups.isEmpty {
-                    Button("Every task") { open(.all) }.padding(.horizontal, 12).padding(.top, phone.loose.isEmpty ? 16 : 8)
-                }
             }
             .font(Tokens.font(Tokens.textBase)).foregroundStyle(Tokens.item)
             .buttonStyle(.plain)
             .padding(.bottom, 24)
         }
         .refreshable { await phone.reload() }
-        // Home's foot, as on the Mac: the done tasks that left Home, once there are some.
+        // The panel's foot: the done tasks that left the lists, once there are some.
         if !phone.archived.isEmpty {
             ArchivedFoot(count: phone.archived.count) { open(.archived) }
         }

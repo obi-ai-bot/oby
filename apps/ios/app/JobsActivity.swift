@@ -20,6 +20,10 @@ enum JobsActivity {
     private static var watched: Set<String> = []
 
     static func sync(_ jobs: [Job]) async {
+        #if DEBUG
+        // `-ObySampleQuiet YES`: a Live Activity's first start asks for notifications too.
+        if UserDefaults.standard.bool(forKey: "ObySampleQuiet") { return }
+        #endif
         // A push-started activity and the app's own can meet: keep one.
         for extra in open.dropFirst() { await extra.end(nil, dismissalPolicy: .immediate) }
         let active = jobs.filter(\.isActive)

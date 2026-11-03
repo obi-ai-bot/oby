@@ -140,7 +140,7 @@ struct TaskMenuItems: View {
             switch item {
             case .openConversation:
                 if let conversation = phone.conversation(of: job) {
-                    Button("Open conversation", systemImage: "bubble.left.and.bubble.right") { push(.conversation(conversation)) }
+                    Button("Open conversation", systemImage: "bubble.left.and.bubble.right") { phone.rest(on: .conversation(conversation)) }
                 }
             case .stop: Button("Stop task", systemImage: "stop", role: .destructive) { run { try await phone.stop(job.id) } }.disabled(busy.wrappedValue)
             case .rename: Button("Rename", systemImage: "pencil", action: onRename)
@@ -676,13 +676,9 @@ private struct SessionSheet: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .onAppear {
-            let runner = phone.runner
-            let session = self.session ?? LiveSession(job: id, load: { [id] after in try await runner.transcript(id, after: after) },
-                                                      loadDetail: { [id] n in try await runner.transcriptDetail(id, n) })
-            self.session = session
-            phone.liveSession = session
+            if session == nil { session = phone.hold(session: id) }
         }
-        .onDisappear { if phone.liveSession === session { phone.liveSession = nil } }
+        .onDisappear { if session != nil { phone.letGo(session: id); session = nil } }
     }
 
     /// What you tell it goes to its agent, as from the task's page (`POST /v1/jobs/{id}/messages`).

@@ -97,17 +97,6 @@ struct DesignTests {
         #expect(WorkList.kinds(items).map(\.label) == ["Review PR", "Issues", "Tasks", "Routines"])
         #expect(WorkList.kinds(items).map(\.needs) == [0, 0, 1, 0])
         #expect(WorkList.kinds([] as [WorkList.Item<Job>]).map(\.label) == ["Review PR", "Issues", "Tasks", "Routines"])
-        // Running: up to three open tasks, what needs you before the rest; each says what it's on.
-        let rows = PhoneWork.running(items)
-        #expect(rows.map(\.id) == ["n", "q", "r"])
-        let question = InboxItem(kind: "question", id: "i", job: "n", title: "", text: "", options: [], created: now)
-        #expect(PhoneWork.step(rows[0], decision: question) == "Needs you · Question")
-        #expect(PhoneWork.step(rows[0], decision: nil) == "Needs you · Question")
-        #expect(PhoneWork.step(rows[1], decision: nil) == "Queued")
-        #expect(PhoneWork.step(rows[2], decision: nil) == "Running swift test")
-        // Recent: the three latest conversations.
-        let talk = (1...4).map { RunnerConversation(id: "c\($0)", title: "", lastActivity: now.addingTimeInterval(Double($0))) }
-        #expect(PhoneWork.recent(talk).map(\.id) == ["c4", "c3", "c2"])
     }
 
     /// A task's ⋮ (Sangam's TaskMenu.tsx, docs/oby-ux.md row 21): its conversation, Rename; Stop task

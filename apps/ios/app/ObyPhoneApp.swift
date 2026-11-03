@@ -1,13 +1,13 @@
 import SwiftUI
 
 /// Oby on iPhone: a client of the runner (docs/runner-api.md), so work goes on with the Mac closed.
-/// Sangam's design, light or dark as the system is: Home, with his side
-/// panel for the tasks and the conversations, and no tab bar (PhoneRoot).
+/// Sangam's design, light or dark as the system is: your conversation with Oby (ChatRoot), with
+/// his side panel for the chats and the tasks, and no tab bar (PhoneRoot).
 @main
 struct ObyPhoneApp: App {
     /// Holds the phone, so a notification tapped before Home appears still opens its job.
     @UIApplicationDelegateAdaptor(Notifications.self) private var notifications
-    /// Oby on Home, and on the unpaired screen: a page each, as a WebPage shows in one WebView at
+    /// Oby on the empty chat, and on the unpaired screen: a page each, as a WebPage shows in one WebView at
     /// a time and, as pairing starts or ends, both screens are up for a moment (WebKit stops the app).
     @State private var home = StageCharacter()
     @State private var unpaired = StageCharacter()
@@ -26,8 +26,8 @@ struct ObyPhoneApp: App {
                 // In the background: no connection and no drawing, so no battery spent.
                 phase == .active ? phone.start() : phone.stop()
             }
-            // Oby draws only while Home's stage shows, or the unpaired screen's.
-            .onChange(of: scenePhase == .active && phone.homePath.isEmpty && !phone.needsPairing, initial: true) { _, shown in
+            // Oby draws only while the empty chat's stage shows, or the unpaired screen's.
+            .onChange(of: scenePhase == .active && phone.homePath.isEmpty && !phone.needsPairing && phone.resting.showsStage, initial: true) { _, shown in
                 home.made?.pause(!shown)
             }
             .onChange(of: scenePhase == .active && phone.needsPairing, initial: true) { _, shown in

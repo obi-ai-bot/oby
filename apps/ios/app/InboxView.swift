@@ -421,9 +421,10 @@ struct OfferCard: View {
                 Text(ReachNotice.waiting).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted).padding(.top, 10)
             }
             if opensConversation, let conversation = offer.conversation {
-                NavigationLink(value: Route.conversation(conversation)) {
+                Button { phone.rest(on: .conversation(conversation)) } label: {
                     Text("Open conversation").font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.muted)
                 }
+                .buttonStyle(.plain)
                 .padding(.top, 10)
             }
             if let problem { Text(problem).font(Tokens.font(Tokens.textSm)).foregroundStyle(Tokens.danger).padding(.top, 8) }
