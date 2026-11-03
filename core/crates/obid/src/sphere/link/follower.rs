@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 
 use super::*;
 
+const NOT_SHARING_STATUS: &str =
+    "The room builds on telling members how your tasks are going: share that first.";
+
 /// Whether `peer` is an active member, by the directory as last read: a removed one gets nothing
 /// more from obid, and a directory obid hasn't read yet says no.
 pub(super) fn active_member(state: &State, peer: &str) -> bool {
@@ -532,10 +535,17 @@ impl Link {
     }
 
     /// `POST /v1/obid/sharing/offer`: the same card, from Settings, for an owner who said no or
-    /// removed the rule and changed their mind. Only their Confirm makes the rule.
-    pub fn offer_again(&self) -> Result<Value, ApiError> {
+    /// removed the rule and changed their mind; with `{"room": true}`, the room's, for one who shares
+    /// status. Only their Confirm makes the rule.
+    pub fn offer_again(&self, room: bool) -> Result<Value, ApiError> {
         self.sharing_reads()?;
         let now = time::now();
+        if room {
+            if !self.lock().sharing.shares_status() {
+                return Err(api(StatusCode::CONFLICT, NOT_SHARING_STATUS));
+            }
+            return Ok(self.shown(&self.add_confirm_once(inbox::share_room_item(now))));
+        }
         {
             let mut state = self.lock();
             state.sharing.offered.get_or_insert(now);
@@ -543,6 +553,17 @@ impl Link {
         }
         let item = self.add_confirm_once(inbox::share_item(now));
         Ok(self.shown(&item))
+    }
+
+    /// The owner's Confirm on the room's card (ROOMS-17).
+    pub(super) fn share_room(&self) -> Result<(), ApiError> {
+        self.sharing_reads()?;
+        let mut state = self.lock();
+        if state.sharing.share_room(time::now()).is_none() {
+            return Err(api(StatusCode::CONFLICT, NOT_SHARING_STATUS));
+        }
+        self.save_sharing(&state.sharing);
+        Ok(())
     }
 
     /// The owner's Confirm (PEER-17): the rule, and the questions waiting on them go by it, as one
@@ -613,26 +634,26 @@ impl Link {
         Ok(())
     }
 
-    /// Leaving a Sphere (PEER-19): a rule obid made, by a first join or by the owner's yes, names no
-    /// Sphere, and what they agreed to was this one's. It goes, with the card and that they were
-    /// asked, so the next Sphere asks again. Rules they wrote themselves stay.
+    /// Leaving a Sphere (PEER-19): a rule obid made on a yes (a first join's, the offer's, the room's)
+    /// names no Sphere, and what they agreed to was this one's. It goes, with the cards and that they
+    /// were asked, so the next Sphere asks again, also when the file stopped reading: what's in
+    /// memory answers in the next Sphere otherwise. Rules they wrote themselves stay.
     pub(super) fn forget_the_offer(&self) {
         let closed: Vec<Item> = {
             let mut state = self.lock();
-            if self.sharing.reads() {
-                state.sharing.rules.retain(|r| !r.starter);
-                state.sharing.offered = None;
-                self.save_sharing(&state.sharing);
-            }
+            state.sharing.rules.retain(|r| !r.for_this_sphere());
+            state.sharing.offered = None;
+            self.save_sharing(&state.sharing);
             let now = time::now();
             state
                 .inbox
                 .values_mut()
                 .filter(|i| {
                     i.done.is_none()
-                        && i.confirm
-                            .as_ref()
-                            .is_some_and(|c| c.action == inbox::action::SHARE_STATUS)
+                        && i.confirm.as_ref().is_some_and(|c| {
+                            c.action == inbox::action::SHARE_STATUS
+                                || c.action == inbox::action::SHARE_ROOM
+                        })
                 })
                 .map(|i| {
                     i.done = Some(now);

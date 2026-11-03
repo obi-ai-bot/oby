@@ -1639,7 +1639,12 @@ impl Link {
         }
     }
 
+    /// Never over a file that doesn't read, whatever changed in memory: it says what the owner chose.
     fn save_sharing(&self, sharing: &Sharing) {
+        if !self.sharing.reads() {
+            tracing::error!("home/sharing.json doesn't read, so it stays as it is");
+            return;
+        }
         if let Err(e) = self.sharing.save(sharing) {
             tracing::error!("can't keep the sharing rules: {e}");
         }

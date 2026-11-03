@@ -85,6 +85,10 @@ pub struct Rule {
     /// who asks, and opens no room, which neither agreed to.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starter: bool,
+    /// The rule of the owner's yes to posting in the room ([`Sharing::share_room`]). The room is that
+    /// Sphere's, so it goes when they leave, as [`Rule::starter`] does. Not in the API's answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub room_yes: bool,
 }
 
 impl Rule {
@@ -97,6 +101,18 @@ impl Rule {
             } else {
                 repos.iter().all(|r| self.repos.has_repo(r))
             }
+    }
+
+    /// Whether it tells every member the status of the jobs in every repository.
+    fn tells_everyone_status(&self) -> bool {
+        self.for_owners.is_every()
+            && self.repos.is_every()
+            && self.tells.iter().any(|t| t == JOB_STATUS)
+    }
+
+    /// Whether obid made it on a yes that was for one Sphere: it goes when they leave.
+    pub fn for_this_sphere(&self) -> bool {
+        self.starter || self.room_yes
     }
 
     pub fn to_json(&self) -> Value {
@@ -183,17 +199,36 @@ impl Sharing {
     /// The one rule the owner's yes to the offer means: the one they have, or a new one.
     pub fn share_job_status(&mut self, now: i64) -> Rule {
         self.offered.get_or_insert(now);
-        let every = |rule: &&Rule| {
-            rule.for_owners.is_every()
-                && rule.repos.is_every()
-                && rule.tells.iter().any(|t| t == JOB_STATUS)
-        };
-        if let Some(rule) = self.rules.iter().find(every) {
+        if let Some(rule) = self.rules.iter().find(|r| r.tells_everyone_status()) {
             return rule.clone();
         }
         let rule = answers_who_asks(now);
         self.rules.push(rule.clone());
         rule
+    }
+
+    /// Whether the owner has said members may ask how the work goes: what the room's card builds on.
+    pub fn shares_status(&self) -> bool {
+        self.rules.iter().any(Rule::tells_everyone_status)
+    }
+
+    /// The rule the owner's yes to the room's card means (ROOMS-17): the one the room goes by, or a
+    /// new one. None while they share no status, which this isn't the way to start.
+    pub fn share_room(&mut self, now: i64) -> Option<Rule> {
+        let open = |r: &&Rule| r.tells_everyone_status() && !r.starter;
+        if let Some(rule) = self.rules.iter().find(open) {
+            return Some(rule.clone());
+        }
+        if !self.shares_status() {
+            return None;
+        }
+        let rule = Rule {
+            starter: false,
+            room_yes: true,
+            ..answers_who_asks(now)
+        };
+        self.rules.push(rule.clone());
+        Some(rule)
     }
 
     /// The oldest rule that lets the Obi tell `owner` the status of its jobs in `repos`.
@@ -234,6 +269,7 @@ fn answers_who_asks(now: i64) -> Rule {
         uses: 0,
         last_used: None,
         starter: true,
+        room_yes: false,
     }
 }
 
@@ -320,6 +356,7 @@ pub fn rule_from(body: &Value, now: i64) -> Result<Rule, String> {
         uses: 0,
         last_used: None,
         starter: false,
+        room_yes: false,
     })
 }
 
@@ -642,6 +679,25 @@ mod tests {
         // Twice is still one, and the first time asked stays.
         assert_eq!(sharing.share_job_status(9).id, rule.id);
         assert_eq!((sharing.rules.len(), sharing.offered), (1, Some(5)));
+    }
+
+    #[test]
+    fn rooms_17_the_owners_yes_to_the_room_is_one_rule_on_top_of_sharing_status() {
+        let owners = ["ernesto".to_owned()];
+        let repos = ["acme/app".to_owned()];
+        let mut sharing = Sharing::default();
+        assert!(sharing.share_room(1).is_none(), "no status shared yet");
+        assert!(sharing.rules.is_empty());
+        sharing.share_job_status(1);
+        assert!(!sharing.job_status_for_all(&owners, &repos), "not yet");
+        let rule = sharing.share_room(2).unwrap();
+        assert!(sharing.job_status_for_all(&owners, &repos));
+        assert!(rule.for_this_sphere());
+        assert_eq!(rule.to_json()["starter"], false);
+        assert_eq!(sharing.share_room(3).unwrap().id, rule.id, "one");
+        assert_eq!(sharing.rules.len(), 2);
+        let kept: Sharing = serde_json::from_slice(&serde_json::to_vec(&sharing).unwrap()).unwrap();
+        assert!(kept.rules[1].room_yes, "kept across a restart");
     }
 
     #[test]

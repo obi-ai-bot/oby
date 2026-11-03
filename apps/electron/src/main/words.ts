@@ -45,9 +45,10 @@ const takeSpace = (at: number) => {
   return spaces.shift() !== undefined;
 };
 
-// A Confirm that lets this Oby answer other people by itself (PEER-17) takes the owner's own press of
+// A Confirm that lets this Oby tell other people things by itself (PEER-17, ROOMS-17) takes a press of
 // that button: the preload saw a button labelled Confirm held by a real event (`clicked`), and main
-// saw a real click or key itself. Other Confirms sign on the page's say, as they did. The ceiling is
-// the words' (docs/contracts/signed-words.md): a script that took the whole page can pass the preload.
+// saw a real click or key itself. Other Confirms sign on the page's say, as they did. It stops a script
+// acting on an input it didn't arrange, no more (docs/contracts/signed-words.md).
+const SHARING = ['share_status', 'share_room'];
 export const mayConfirm = (item: { confirm?: { action?: string } }, clicked: boolean, at = Date.now()) =>
-  item.confirm?.action !== 'share_status' || (clicked && (takeInput(at) || takeSpace(at)));
+  !SHARING.includes(item.confirm?.action ?? '') || (clicked && (takeInput(at) || takeSpace(at)));

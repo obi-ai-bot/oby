@@ -156,7 +156,7 @@ describe('sharing takes the owner\'s own press of Confirm (docs/contracts/signed
     input(at);
     expect(mayConfirm(share, true, at + WITHIN_MS + 1)).toBe(false);
   });
-  it('takes Space on the button, and a Space signs no words', () => {
+  it('words_11: takes Space on the button, and a Space signs no words', () => {
     const at = 5_100_000;
     drain(at);
     space(at);

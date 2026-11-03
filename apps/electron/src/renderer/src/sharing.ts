@@ -5,6 +5,10 @@ const TELLS: Record<string, { label: string; what: string }> = {
   sharedResults: { label: 'What it already sent them', what: 'The results of reviews they asked for' },
 };
 // members: the others in the Obysphere, since the room goes to all of them or not at all
+const toEveryone = (rule: SharingRule) => rule.for === '*' && rule.repos === '*' && rule.tells.includes('jobStatus');
+// Whether Settings offers the room: status is shared, and no rule opens the room yet
+export const canOpenRoom = (rules: SharingRule[]) => rules.some(toEveryone) && !rules.some((r) => toEveryone(r) && !r.starter);
+
 export function whatItTells(rule: SharingRule, members: string[]) {
   const known = rule.tells.map((t) => TELLS[t]).filter(Boolean);
   const who = rule.for === '*' ? 'everyone in this Obysphere who asks' : rule.for.join(', ');
@@ -14,7 +18,7 @@ export function whatItTells(rule: SharingRule, members: string[]) {
   const room = !rule.starter && everyone && rule.tells.includes('jobStatus') ? ' It can post them in the room too.' : '';
   const told = rule.uses > 0 ? ` Answered ${rule.uses === 1 ? 'once' : `${rule.uses} times`}.` : '';
   return {
-    label: known.map((k) => k.label).join(', and ') || 'Something this version doesn’t know',
+    label: (known.map((k) => k.label).join(', and ') || 'Something this version doesn’t know') + (room ? ', in the room' : ''),
     about: `${known.map((k) => k.what).join('. ')}. To ${who}, in ${where}.${room}${told}`,
   };
 }

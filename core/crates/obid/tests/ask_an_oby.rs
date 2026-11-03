@@ -932,6 +932,7 @@ async fn ask_17_a_card_swapped_after_the_pick_gets_nothing() {
     assert_eq!(click.status, 409, "{}", click.text);
     assert!(click.text.contains("nothing was sent"), "{}", click.text);
     assert!(sphere.lock().sends.is_empty(), "nothing went");
+}
 
 /// The owner's yes to sharing (docs/contracts/peer-thread.md, PEER-17) takes the questions waiting on
 /// them, but not one they're already answering: their words on its Confirm stay theirs.

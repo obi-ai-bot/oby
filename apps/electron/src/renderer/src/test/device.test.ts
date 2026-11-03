@@ -34,13 +34,19 @@ describe('obid-confirm', () => {
   const answered = () => the.calls.filter((c) => c.path.endsWith('/answer'));
   beforeEach(() => { the.calls.length = 0; the.item.confirm.action = 'share_status'; while (takeInput()) { /* other tests' */ } });
 
-  it('peer_17_no_silent_share: sharing signs nothing without a press of Confirm and an input main saw', async () => {
+  it('words_11_main_signs_sharing_only_on_a_press_of_confirm_and_an_input_it_saw', async () => {
     expect((await confirm(true)).status).toBe(403);
     input();
     expect((await confirm(false)).status).toBe(403);
     expect(answered()).toEqual([]);
     expect((await confirm(true)).status).toBe(200);
     expect(answered()[0].body?.approval).toMatchObject({ device: 'd1', action: 'Can I?' });
+  });
+  it('words_11: the room\'s card takes the same press', async () => {
+    the.item.confirm.action = 'share_room';
+    expect((await confirm(false)).status).toBe(403);
+    input();
+    expect((await confirm(true)).status).toBe(200);
   });
   it('another Confirm goes as it did', async () => {
     the.item.confirm.action = 'delete_job';

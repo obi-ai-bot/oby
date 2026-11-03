@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACCEPTS, NotThisKey, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
 } from '../../../shared/sphere';
-import { whatItTells, type SharingRule } from '../sharing';
+import { canOpenRoom, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
 // one local Obysphere) is scripts/test-sphere.mjs.
@@ -230,9 +230,18 @@ describe('what your Oby tells (docs/contracts/peer-thread.md)', () => {
     });
     expect(whatItTells({ ...rule, for: ['dana'], repos: ['acme/app'], uses: 2 }, ['dana', 'ernesto']).about).toContain('To dana, in acme/app. Answered 2 times.');
   });
+  it('rooms_17: offers the room once status is shared, and not once a rule opens it', () => {
+    const own = { ...rule, starter: false };
+    expect(canOpenRoom([])).toBe(false);
+    expect(canOpenRoom([{ ...rule, for: ['dana'] }])).toBe(false);
+    expect(canOpenRoom([rule])).toBe(true);
+    expect(canOpenRoom([rule, own])).toBe(false);
+  });
   it('says the room only for a rule the owner made that covers everyone', () => {
     const own = { ...rule, starter: false };
     expect(whatItTells(own, ['dana']).about).toContain('in the room');
+    expect(whatItTells(own, ['dana']).label).toBe('How your tasks are going, in the room');
+    expect(whatItTells(rule, ['dana']).label).toBe('How your tasks are going');
     expect(whatItTells(rule, ['dana']).about).not.toContain('room');
     expect(whatItTells({ ...own, for: ['dana'] }, ['dana', 'ernesto']).about).not.toContain('room');
     expect(whatItTells({ ...own, for: ['dana', 'ernesto'] }, ['dana', 'ernesto']).about).toContain('in the room');

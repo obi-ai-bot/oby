@@ -120,7 +120,7 @@ export const api = {
   // rules, taking one out, and the card that asks, which only a Confirm above answers
   sharing: () => call<{ rules: SharingRule[] }>('GET', '/v1/obid/sharing'),
   removeSharingRule: (r: string) => call<null>('DELETE', `/v1/obid/sharing/rules/${id(r)}`),
-  offerSharing: () => call<InboxItem>('POST', '/v1/obid/sharing/offer'),
+  offerSharing: (room = false) => call<InboxItem>('POST', '/v1/obid/sharing/offer', room ? { room } : undefined),
   // Settings › Remote access: pairing an iPhone through obid's Obysphere (main signs the invitation), the
   // paired ones, and Revoke
   pairInvite: () => call<Invitation>('POST', '/v1/pairing/invite', undefined, (b) => b.pairInvite()),

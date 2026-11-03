@@ -1096,11 +1096,17 @@ async fn peer_19_leaving_takes_the_offers_rule_and_the_next_sphere_asks_again() 
     let (_sphere, obid, _ernesto) = setup_with_starter(&folder).await;
     tokio::task::block_in_place(|| {
         assert_eq!(rules(&obid)[0]["starter"], true, "a first join's seed");
+        // The room's yes was that Sphere's too.
+        let room = post(&obid, "/v1/obid/sharing/offer", &json!({"room": true}));
+        assert_eq!(room.status, 201, "{}", room.text);
+        let yes = confirm(&obid, room.body["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        assert_eq!(rules(&obid).len(), 2);
         let opened = post(&obid, "/v1/obid/sharing/offer", &json!({}));
         assert_eq!(opened.status, 201, "{}", opened.text);
         let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
         assert_eq!(left.status, 200, "{}", left.text);
-        assert!(rules(&obid).is_empty(), "it was for that Sphere");
+        assert!(rules(&obid).is_empty(), "they were for that Sphere");
         assert!(offers(&obid).is_empty(), "and so was the card");
     });
     let next = FakeSphere::start().await;
@@ -1123,6 +1129,23 @@ async fn peer_19_leaving_takes_the_offers_rule_and_the_next_sphere_asks_again() 
     });
 }
 
+/// Leaving with a file that stopped reading: what's in memory goes all the same, or it would answer in
+/// the next Sphere, and the file stays as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_19_leaving_forgets_the_rule_though_the_file_stopped_reading() {
+    let folder = Folder::new("peer-19-bad");
+    let (_sphere, obid, _ernesto) = setup_with_starter(&folder).await;
+    let file = obid.home.join("sharing.json");
+    std::fs::write(&file, "not json").unwrap();
+    tokio::task::block_in_place(|| {
+        assert_eq!(rules(&obid).len(), 1, "still in memory");
+        let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
+        assert_eq!(left.status, 200, "{}", left.text);
+        assert!(rules(&obid).is_empty());
+    });
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
+}
+
 /// Leaving keeps the rules the owner wrote themselves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_19_leaving_keeps_the_rules_the_owner_wrote() {
@@ -1138,6 +1161,45 @@ async fn peer_19_leaving_keeps_the_rules_the_owner_wrote() {
         let kept = rules(&obid);
         assert_eq!(kept.len(), 1, "{kept:?}");
         assert_eq!(kept[0]["tells"], json!(["sharedResults"]));
+    });
+}
+
+/// Leaving during the run an owner's yes began: the exchange is settled as declined, and that isn't
+/// said to them as the secret scan's doing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_17_a_leave_during_the_answer_isnt_said_as_the_scans_no() {
+    let folder = Folder::new("peer-17-leave");
+    let (_sphere, obid, ernesto) = old_member(&folder).await;
+    let cid = waiting_question(&obid, &ernesto, "slow-case: what's going on?").await;
+    tokio::task::block_in_place(|| {
+        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        let told = |obid: &Obid, words: &str| {
+            let list = get(obid, "/v1/conversations");
+            let asks = list
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["title"] == "Questions from other Obys")?["id"]
+                .as_str()?
+                .to_owned();
+            let thread = get(obid, &format!("/v1/conversation?id={asks}"));
+            thread
+                .as_array()?
+                .iter()
+                .find(|t| t["text"].as_str().is_some_and(|x| x.contains(words)))
+                .map(|_| ())
+        };
+        within(20, "the owner told", || told(&obid, "only you can answer"));
+        let yes = confirm(&obid, card["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
+        assert_eq!(left.status, 200, "{}", left.text);
+        assert_eq!(exchange(&obid, &cid)["state"], "declined");
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        assert!(
+            told(&obid, "secret scan").is_none(),
+            "it wasn't the scan that said no"
+        );
     });
 }
 

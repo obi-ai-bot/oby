@@ -296,8 +296,8 @@ impl Link {
                         && e.kind == "question"
                         && ((e.state == "inbox" && !told("owner"))
                             || ((matches!(e.state.as_str(), "cancelled" | "expired")
-                                || (matches!(e.state.as_str(), "done" | "declined")
-                                    && e.decided_by.as_deref() == Some("sharing")))
+                                || (e.decided_by.as_deref() == Some("sharing")
+                                    && (e.state == "done" || e.scan_stopped())))
                                 && told("owner")
                                 && !told("over"))))
             })
