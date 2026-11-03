@@ -182,6 +182,22 @@ async function deviceOf(who, state) {
   save(state);
 }
 
+// Dana's click on Confirm on the card that lists a job's step and report line (docs/contracts/peer-thread.md,
+// PEER-23), once, so that what Dana's Oby answers is real progress and Dana's inbox stays empty.
+async function danaSaysYes(state) {
+  if (state.danaSaidYes) return;
+  const offered = await api("dana").call("POST", "/v1/obid/sharing/offer", {});
+  if (offered.status >= 300) fail(`Dana's card: ${offered.status} ${offered.text}`);
+  const { id: item, title } = JSON.parse(offered.text);
+  const { id: device, key } = state.devices.dana;
+  const signedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const signature = sign("sha256", Buffer.from(`oby-confirm\n${item}\n${title}\n${signedAt}`), createPrivateKey(key)).toString("base64");
+  const yes = await api("dana").call("POST", `/v1/inbox/${encodeURIComponent(item)}/answer`, { answer: "Confirm", approval: { device, action: title, signedAt, signature } });
+  if (yes.status >= 300) fail(`Dana's yes: ${yes.status} ${yes.text}`);
+  state.danaSaidYes = true;
+  save(state);
+}
+
 // ---- the Sphere
 
 function sphereCall(state) {
@@ -376,6 +392,7 @@ async function start(flags) {
       state.policyWritten = true;
       save(state);
     }
+    await danaSaysYes(state);
     say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other.");
     say(`Dana's sharing: ${JSON.stringify((await api("dana").get("/v1/obid/sharing")).rules?.map((r) => ({ for: r.for, tells: r.tells, starter: r.starter })))}`);
     await keepDanaWorking(state);

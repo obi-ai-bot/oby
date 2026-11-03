@@ -505,7 +505,7 @@ impl Link {
         }
         self.save_exchange(&exchange);
         self.outbox.notify_one();
-        if kind == "question" && exchange.state == "inbox" {
+        if kind == "question" && matches!(exchange.state.as_str(), "inbox" | "answering") {
             self.offer_to_share();
         }
         if let Some(rule) = answer_by_itself {
@@ -517,12 +517,13 @@ impl Link {
         }
     }
 
-    /// A question waits on an owner who shares nothing and was never asked: one card asks whether
-    /// obid may answer by itself (PEER-16). It shares nothing until their Confirm. A file that doesn't
-    /// read says nothing of what they chose, and stays as it is.
+    /// A question comes to an owner who was never asked and shares nothing (it waits on them), or
+    /// only how their tasks are going (it's answered with that): one card asks whether obid may answer
+    /// by itself, or tell each job's progress too (PEER-16, PEER-23). Nothing changes until their
+    /// Confirm. A file that doesn't read says nothing of what they chose, and stays as it is.
     fn offer_to_share(&self) {
         let now = time::now();
-        {
+        let only_status = {
             let mut state = self.lock();
             if !state.sharing.to_offer() || !self.sharing.reads() {
                 return;
@@ -530,8 +531,9 @@ impl Link {
             state.sharing.offered = Some(now);
             // Kept under the lock, so an older copy never overwrites a newer one.
             self.save_sharing(&state.sharing);
-        }
-        self.add_confirm_once(inbox::share_item(now));
+            state.sharing.shares_only_status()
+        };
+        self.add_confirm_once(inbox::share_item(now, only_status));
     }
 
     /// `POST /v1/obid/sharing/offer`: the same card, from Settings, for an owner who said no or
@@ -546,12 +548,13 @@ impl Link {
             }
             return Ok(self.shown(&self.add_confirm_once(inbox::share_room_item(now))));
         }
-        {
+        let only_status = {
             let mut state = self.lock();
             state.sharing.offered.get_or_insert(now);
             self.save_sharing(&state.sharing);
-        }
-        let item = self.add_confirm_once(inbox::share_item(now));
+            state.sharing.shares_only_status()
+        };
+        let item = self.add_confirm_once(inbox::share_item(now, only_status));
         Ok(self.shown(&item))
     }
 

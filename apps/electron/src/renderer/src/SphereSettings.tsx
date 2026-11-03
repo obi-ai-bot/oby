@@ -6,7 +6,7 @@ import SphereTile from './SphereTile';
 import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
 import type { InboxItem } from '../../shared/obid-wire';
-import { canOpenRoom, whatItTells, type SharingRule } from './sharing';
+import { canAddProgress, canOpenRoom, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
 import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 
@@ -189,6 +189,11 @@ function WhatItTells({ sphere }: { sphere: Sphere }) {
       {rules?.length === 0 && (
         <Row label="Nothing yet" about="Every question waits for you.">
           <button className="set-button set-member-action" onClick={() => open()}>Share how my tasks are going</button>
+        </Row>
+      )}
+      {rules && canAddProgress(rules) && (
+        <Row label="Also tell what each task is doing" about="Its current step and latest report line, when someone asks.">
+          <button className="set-button set-member-action" onClick={() => open()}>Tell them too</button>
         </Row>
       )}
       {rules && canOpenRoom(rules) && roomOpens(room, sphere) && (

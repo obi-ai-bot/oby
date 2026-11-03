@@ -188,18 +188,35 @@ pub fn confirm_item(
 
 /// Oby's one ask whether it may answer members' questions by itself (PEER-16): obid's own fixed words
 /// and nothing a member chose, so nothing another Oby wrote shapes what the owner's device signs.
-pub fn share_item(now: i64) -> Item {
-    let title =
-        "Can I tell people in your Obysphere how your tasks are going, in every repository?"
-            .to_owned();
-    // Short enough that Home's card, which shows three lines, shows all of it.
-    let text = "I'd answer whoever asks, starting with the questions waiting now, with each task's \
-                title, repository, stage, state and pull request. Never logs, diffs, prompts or files."
-        .to_owned();
+/// With `only_status`, they share status already, and it asks only what a yes adds (PEER-23). Its
+/// `Confirm` is the same either way ([`Sharing::share_job_status`](super::sharing::Sharing::share_job_status)).
+pub fn share_item(now: i64, only_status: bool) -> Item {
+    // Short enough that Home's card, which shows three lines, shows all of the text.
+    let (title, text, details) = if only_status {
+        (
+            "Can I also tell people in your Obysphere each task's current step and latest report line?",
+            "You let them ask how your tasks are going, and this adds an agent's own words about it. \
+             I leave out a line with a possible secret. Never logs, diffs, prompts or files.",
+            [
+                "I add them to what I answer, until you remove it in the Obysphere's settings.",
+                "I keep answering with what you share now, and I don't ask again. You can still add them from the Obysphere's settings.",
+            ],
+        )
+    } else {
+        (
+            "Can I tell people in your Obysphere how your tasks are going, in every repository?",
+            "I'd answer whoever asks, waiting questions first: each task's title, repository, stage, \
+             state, pull request, current step and latest report line. Never logs, diffs, prompts or files.",
+            [
+                "I answer members' questions about your tasks by myself, the ones waiting now first, until you remove it in the Obysphere's settings. A step or a report line is an agent's own words: I leave out one with a possible secret.",
+                "Every question keeps waiting for you, and I don't ask again. You can still share from the Obysphere's settings.",
+            ],
+        )
+    };
     let mut item = confirm_item(
         "",
-        title,
-        text,
+        title.to_owned(),
+        text.to_owned(),
         Confirmed {
             action: action::SHARE_STATUS.into(),
             target: String::new(),
@@ -207,10 +224,7 @@ pub fn share_item(now: i64) -> Item {
         },
         now,
     );
-    item.details = Some(vec![
-        "I answer members' questions about your tasks by myself, the ones waiting now first, until you remove it in the Obysphere's settings.".into(),
-        "Every question keeps waiting for you, and I don't ask again. You can still share from the Obysphere's settings.".into(),
-    ]);
+    item.details = Some(details.map(str::to_owned).to_vec());
     item
 }
 
