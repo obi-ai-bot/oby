@@ -21,6 +21,8 @@
 //                    turn; resumed, says what it heard
 //   FS               asks obid to read a file (`fs/read_text_file`) and says what came back
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
+//   QUIET            says nothing until it is ended, then in the prompt obid continues says "Carried on."
+//   DIE              exits with no result, then in the prompt obid continues says "Carried on."
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is cancelled
 //   FAIL             answers the prompt with an error
 //   REFUSE           ends with stopReason `refusal`
@@ -200,6 +202,15 @@ async function prompt(id, text) {
     const answer = await ask("fs/read_text_file", { sessionId: session, path: "/etc/hosts" });
     say(`fs: ${answer.error ? `error ${answer.error.code}` : "read"}`);
     return answered(id);
+  }
+  if (task.includes("QUIET") || task.includes("DIE")) {
+    if (text.includes("Your run was cut")) {
+      say("Carried on.");
+      return answered(id);
+    }
+    if (task.includes("DIE")) process.exit(1);
+    cancelled = () => answered(id, "cancelled");
+    return;
   }
   if (task.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });

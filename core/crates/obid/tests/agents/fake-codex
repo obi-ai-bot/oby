@@ -17,6 +17,8 @@
 //   ASK OWNER        asks the owner with Oby's `oby_ask_owner` (approved first, as Codex does),
 //                    then ends its turn; resumed, says what it heard
 //   ESCAPE           writes a file outside the worktree without asking, and says how that went
+//   QUIET            says nothing until it is ended, then in the turn obid continues says "Carried on."
+//   DIE              exits with no result, then in the turn obid continues says "Carried on."
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
 //   FAIL             the turn fails with the API's error inside its message
 //   TWICE            round one says it isn't done; round two (a resumed thread) writes `twice` in its HOME
@@ -174,6 +176,11 @@ async function runTurn(turnId, prompt) {
     if (!listed.result.tools.some((t) => t.name === "oby_ask_owner")) return complete(turnId, `no oby_ask_owner in ${JSON.stringify(listed)}`);
     const answer = await post("tools/call", { name: "oby_ask_owner", arguments: args });
     return complete(turnId, `Asked: ${answer.result.content[0].text}`);
+  }
+  if (task.includes("QUIET") || task.includes("DIE")) {
+    if (prompt.includes("Your run was cut")) return complete(turnId, "Carried on.");
+    if (task.includes("DIE")) process.exit(1);
+    return;
   }
   if (task.includes("SLEEP")) {
     mkdirSync(".obi", { recursive: true });

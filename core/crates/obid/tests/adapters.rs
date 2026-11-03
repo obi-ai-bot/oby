@@ -1568,3 +1568,30 @@ fn a_codex_turn_that_ends_waiting_goes_on_or_needs_you() {
         "{job}"
     );
 }
+
+/// RECOVERY-1: Codex and Cursor alike: a run that ends with no result goes on in its session.
+#[test]
+fn recovery_1_codex_and_cursor_continue_after_a_cut() {
+    let folder = Folder::new("recovery-1-tools");
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
+    for agent in ["codex", "cursor"] {
+        let id = dispatch(&obid, json!({"agent": agent, "task": "DIE"}));
+        let job = ended(&obid, &id);
+        assert_eq!(job["status"], "done", "{job}");
+        assert_eq!(job["summary"], "Carried on.", "{job}");
+    }
+}
+
+/// RECOVERY-3: Codex and Cursor alike: a job gone quiet goes on in its session.
+#[test]
+fn recovery_3_codex_and_cursor_continue_when_quiet() {
+    let folder = Folder::new("recovery-3-tools");
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
+    for agent in ["codex", "cursor"] {
+        let id = dispatch(&obid, json!({"agent": agent, "task": "QUIET"}));
+        let job = ended(&obid, &id);
+        assert_eq!(job["status"], "done", "{job}");
+        assert_eq!(job["summary"], "Carried on.", "{job}");
+        assert!(job["stalled"].is_null(), "{job}");
+    }
+}

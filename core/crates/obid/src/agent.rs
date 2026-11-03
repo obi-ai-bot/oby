@@ -413,6 +413,19 @@ pub async fn turn_on(
                     .map(|t| text_of(t, "description"))
                     .collect();
             }
+            // Claude Code retrying an API call by itself (claude 2.1.302): any line is progress
+            // ([`Conn::next`]), and the person sees it try again (RECOVERY-6).
+            Some("system")
+                if message.get("subtype").and_then(Value::as_str) == Some("api_retry") =>
+            {
+                on_event(Event::Step(crate::jobs::trying_again(
+                    &text_of(&message, "error"),
+                    Duration::from_millis(message["retry_delay_ms"].as_u64().unwrap_or(0))
+                        .max(Duration::from_secs(1)),
+                    message["attempt"].as_u64().unwrap_or(1) as usize,
+                    message["max_retries"].as_u64().unwrap_or(0) as usize,
+                )));
+            }
             Some("system") if message.get("subtype").and_then(Value::as_str) == Some("init") => {
                 idle = false;
                 if let Some(session) = message.get("session_id").and_then(Value::as_str) {

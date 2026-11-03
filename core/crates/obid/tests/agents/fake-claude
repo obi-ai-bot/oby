@@ -70,10 +70,17 @@
 //                    the `tetrix` server's search_entities, get_entity, save_session and
 //                    resume_session, and commits tetrix.txt with a Tetrix-Session trailer naming
 //                    the session save_session answered
-//   QUIET            says nothing and writes nothing until it is ended (a stalled job)
+//   QUIET            says nothing and writes nothing until it is ended (a stalled job), again in
+//                    each turn obid continues by itself; QUIET ONCE, only this turn (RECOVERY-3)
+//   DIE              says it's working and exits with no result; DIE ALWAYS in each turn after;
+//                    DIE LOGIN says on stderr that it isn't logged in (RECOVERY-1)
+//   DIE FLAKY        exits with no result in every turn but those obid continues (RECOVERY-1)
+//   API RETRY: <n>   for <n> ms says only what Claude Code says while it retries an API call,
+//                    then ends the turn with "Retried." (RECOVERY-6)
 //   CHATTY: <ms>     streams a word every 100 ms for that long, then ends the turn with "Chatted."
 //   LOOP             runs the same failing command 6 times, then waits until it is ended
-//   MAXTURNS         ends the turn as Claude Code's --max-turns does (error_max_turns)
+//   MAXTURNS         ends the turn as Claude Code's --max-turns does (error_max_turns), again in
+//                    each turn obid continues by itself; MAXTURNS ONCE, only this turn (RECOVERY-4)
 //   TRANSIENT        ends the turn with an overloaded API's error; TRANSIENT ALWAYS every turn after
 //                    too
 //   SPEND: <n>       ends the turn saying it used n input tokens
@@ -239,6 +246,14 @@ rl.on("line", (line) => {
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
+  // What obid cut, it does again when obid continues its session (its marked message).
+  const stuck = prompt.match(/QUIET|MAXTURNS|SLEEP|STDERR TOKEN|BACKGROUND: \d+ (?:SILENT|FOREVER)/)?.[0];
+  if (prompt.includes("Your run was cut")) {
+    if (existsSync(".obi/stuck")) prompt += ` ${readFileSync(".obi/stuck", "utf8")}`;
+  } else if (stuck && !prompt.includes("ONCE")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/stuck", stuck);
+  }
   if (prompt.includes("STDERR TOKEN")) {
     return process.stderr.write(`Authorization failed for token ${"gh"}p_${"Z".repeat(36)}\n`, () => process.exit(1));
   }
@@ -281,6 +296,25 @@ rl.on("line", (line) => {
   if (prompt.includes("TRANSIENT ALWAYS")) {
     mkdirSync(".obi", { recursive: true });
     writeFileSync(".obi/always-transient", "");
+  }
+  if (prompt.includes("DIE ALWAYS")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/always-die", "");
+  }
+  if (prompt.includes("DIE FLAKY")) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/flaky", "");
+  }
+  const flaky = existsSync(".obi/flaky") && !prompt.includes("Your run was cut");
+  if (prompt.match(/\bDIE\b/) || existsSync(".obi/always-die") || flaky) {
+    if (prompt.includes("DIE LOGIN")) process.stderr.write("Not logged in: please run /login\n");
+    emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "text", text: "Working on it." }] } });
+    return process.stdout.end(() => process.exit(1));
+  }
+  if (prompt.match(/API RETRY: (\d+)/)) {
+    let attempt = 0;
+    const tick = setInterval(() => emit({ type: "system", subtype: "api_retry", attempt: ++attempt, max_retries: 10, retry_delay_ms: 8000, error_status: 529, error: "overloaded", session_id: session }), 500);
+    return void setTimeout(() => (clearInterval(tick), result("Retried.")), Number(prompt.match(/API RETRY: (\d+)/)[1]));
   }
   if (existsSync(".obi/always-transient")) return result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
   // LIMITED ON: <word>, this turn and every later one of the job: limited on an account whose

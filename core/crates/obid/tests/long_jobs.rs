@@ -284,7 +284,7 @@ fn a_permanent_error_is_not_retried() {
         name == "job"
             && job["step"]
                 .as_str()
-                .is_some_and(|s| s.starts_with("Retrying"))
+                .is_some_and(|s| s.starts_with("Trying again"))
     });
     assert!(!retried);
 }
@@ -302,14 +302,294 @@ fn retries_run_out() {
     let steps: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
         .filter(|(name, _)| name == "job")
         .filter_map(|(_, job)| job["step"].as_str().map(str::to_owned))
-        .filter(|step| step.starts_with("Retrying after"))
+        .filter(|step| step.starts_with("Trying again"))
         .collect();
     for n in 1..=3 {
         assert!(
-            steps.iter().any(|s| s.ends_with(&format!("({n} of 3)"))),
+            steps.iter().any(|s| s.contains(&format!("({n} of 3)"))),
             "{steps:?}"
         );
     }
+}
+
+/// Every prompt job `id`'s agent got, with KEEP PROMPTS in its task.
+fn prompts(job: &Value) -> Vec<String> {
+    let log = Path::new(job["worktree"].as_str().unwrap()).join(".obi/prompts.log");
+    std::fs::read_to_string(log)
+        .unwrap()
+        .split("<<<end of prompt>>>\n")
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// RECOVERY-1: a passing error, or a CLI that ends with no result, leaves the job running in its
+/// session: the marked message quotes the error as data and says to check what ran.
+#[test]
+fn recovery_1_a_passing_error_continues_the_same_session() {
+    let (_folder, obid) = obid("recovery-1");
+    let id = post_job(&obid, "TRANSIENT KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("not the owner's words"), "{told:?}");
+    assert!(told[1].contains("> API Error: 529"), "{told:?}");
+    assert!(told[1].contains("check what really ran"), "{told:?}");
+
+    let id = post_job(&obid, "DIE KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("stopped without finishing"), "{told:?}");
+}
+
+/// RECOVERY-1: tries count together: 3, then today's end with the real reason. Only the owner's
+/// own words start them again, never a good turn in between.
+#[test]
+fn recovery_1_three_tries_then_the_real_reason() {
+    let (_folder, obid) = obid("recovery-1-out");
+    let id = post_job(&obid, "DIE ALWAYS KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    let reason = job["reason"].as_str().unwrap();
+    assert!(reason.contains("stopped without finishing"), "{job}");
+    assert_eq!(prompts(&job).len(), 4, "{job}");
+    // Words that aren't the owner's own take it on, but give it no more tries.
+    let answer = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": TRY_AGAIN})),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(prompts(&job).len(), 5, "no retry of its own: {job}");
+    // The owner's own press gives it 3 tries again.
+    let answer = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": TRY_AGAIN}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(prompts(&job).len(), 9, "{job}");
+}
+
+/// RECOVERY-1: a good turn between two cuts gives no more tries: the 3 are the job's, so a
+/// worker's retries can't multiply.
+#[test]
+fn recovery_1_a_good_turn_gives_no_more_tries() {
+    let (_folder, obid) = obid("recovery-1-flaky");
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 9,
+                     "check": "false", "task": "DIE FLAKY KEEP PROMPTS"});
+    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["status"], "interrupted", "{job}");
+    let reason = job["reason"].as_str().unwrap();
+    assert!(reason.contains("stopped without finishing"), "{job}");
+    // Cut, continued, cut, continued, cut, continued, cut: no more.
+    assert_eq!(prompts(&job).len(), 7, "{job}");
+}
+
+/// RECOVERY-1: a login and an unknown error aren't tried again, and a usage limit goes to its own
+/// decision (#1563), whatever cut the turn.
+#[test]
+fn recovery_1_a_login_or_a_limit_is_not_retried() {
+    let (_folder, obid) = obid("recovery-1-login");
+    let id = post_job(&obid, "DIE LOGIN KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(
+        job["reason"].as_str().unwrap().contains("Not logged in"),
+        "{job}"
+    );
+    assert_eq!(prompts(&job).len(), 1, "{job}");
+
+    let id = post_job(&obid, "LIMITED: 3600 KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(prompts(&job).len(), 1, "{job}");
+    assert!(!job["accountLimit"].is_null(), "{job}");
+}
+
+/// RECOVERY-2: a run obid went down with goes on in its session when obid starts again, told what
+/// happened; at most 3 times, then it stays for the owner. A job the owner stopped never does.
+#[test]
+fn recovery_2_a_run_cut_by_a_restart_continues_at_most_three_times() {
+    let job = |id: &str, restarts: usize, status: obid::job::Status| {
+        let mut job = obid::job::Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "investigate".into(),
+            "KEEP PROMPTS".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.branch = format!("oby/investigate-{id}");
+        job.status = status;
+        job.started = Some(obi_protocol::time::now() - 200);
+        job.session = Some("00000000-0000-4000-8000-000000000001".into());
+        job.recovery.restarts = restarts;
+        job
+    };
+    let (_folder, obid) = obid_with(
+        "recovery-2",
+        json!({}),
+        &[
+            job("eeee0001", 2, obid::job::Status::Running),
+            job("eeee0002", 3, obid::job::Status::Running),
+            job("eeee0003", 0, obid::job::Status::Stopped),
+        ],
+    );
+    let left = call(&obid, "GET", "/v1/jobs/eeee0002", None).body;
+    assert_eq!(left["status"], "interrupted", "{left}");
+    assert_eq!(left["reason"], obid::job::RESTARTS_SPENT, "{left}");
+    assert_eq!(left["nextStep"], "Try again", "{left}");
+    let stopped = call(&obid, "GET", "/v1/jobs/eeee0003", None).body;
+    assert_eq!(stopped["status"], "stopped", "{stopped}");
+    let job = wait(&obid, "eeee0001");
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("Your run was cut"), "{told:?}");
+    assert!(told[0].contains("went down"), "{told:?}");
+    assert!(told[0].contains("check what really ran"), "{told:?}");
+    assert!(
+        job.get("recovery").is_none(),
+        "never in the API, which stays add-only: {job}"
+    );
+}
+
+/// RECOVERY-3: a job gone quiet is stopped and continued in its session, with no model asked.
+#[test]
+fn recovery_3_a_quiet_job_continues_in_its_session() {
+    let (_folder, obid) = obid("recovery-3");
+    let events = follow_events(&obid);
+    let id = post_job(&obid, "QUIET ONCE KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(job["stalled"].is_null(), "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("no progress for 3 seconds"), "{told:?}");
+    assert!(told[1].contains("check what really ran"), "{told:?}");
+    let seen: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+    assert!(!seen.iter().any(|(name, _)| name == "stalled"), "{seen:?}");
+}
+
+/// RECOVERY-3: after 5 tries, today's stalled path, where its parent decides.
+#[test]
+fn recovery_3_five_tries_then_it_stalls() {
+    let (_folder, obid) = obid("recovery-3-out");
+    let id = post_job(&obid, "QUIET KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["stalled"]["why"], "quiet", "{job}");
+    let told = prompts(&job);
+    // Its first turn, 5 continued, and the handoff note's.
+    assert_eq!(told.len(), 7, "{told:?}");
+    assert!(told[6].contains("handoff note"), "{told:?}");
+}
+
+/// RECOVERY-4: the turn limit continues the same session, and counts with a quiet job's tries.
+#[test]
+fn recovery_4_the_turn_limit_continues_and_counts_with_quiet() {
+    let (_folder, obid) = obid("recovery-4");
+    let id = post_job(&obid, "MAXTURNS ONCE KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("200 turns in one round"), "{told:?}");
+
+    let id = post_job(&obid, "MAXTURNS KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["stalled"]["why"], "turns", "{job}");
+    assert_eq!(prompts(&job).len(), 7, "{job}");
+}
+
+/// RECOVERY-5: while it's tried again it stays running, its step says so and when, the real error
+/// only from the third try; nothing says it failed, and Stop works during a wait.
+#[test]
+fn recovery_5_a_retry_shows_as_running_with_the_error_held_back() {
+    let (_folder, obid) = obid("recovery-5");
+    let events = follow_events(&obid);
+    let id = post_job(&obid, "TRANSIENT ALWAYS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    let seen: Vec<(String, Value)> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+    let retrying: Vec<&Value> = seen
+        .iter()
+        .filter(|(name, job)| {
+            name == "job"
+                && job["step"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("Trying again"))
+        })
+        .map(|(_, job)| job)
+        .collect();
+    assert!(!retrying.is_empty(), "{seen:?}");
+    for job in &retrying {
+        assert_eq!(job["status"], "running", "{job}");
+        assert!(job["finished"].is_null(), "{job}");
+        let step = job["step"].as_str().unwrap();
+        assert!(step.contains(" in 3 seconds "), "{step}");
+        assert_eq!(step.contains("529"), step.contains("(3 of 3)"), "{step}");
+    }
+    assert!(
+        retrying
+            .iter()
+            .any(|j| j["step"].as_str().unwrap().contains("(3 of 3)")),
+        "{retrying:?}"
+    );
+
+    let (_folder, obid) = obid_with("recovery-5-stop", json!({"stallAfter": 600}), &[]);
+    let id = post_job(&obid, "TRANSIENT ALWAYS");
+    within(30, "its wait to try again", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["step"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("Trying again in 1 minute (1 of 3)"))
+            .then_some(())
+    });
+    let answer = call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "stopped", "{job}");
+}
+
+/// RECOVERY-6: Claude Code retrying an API call by itself is activity: past the quiet window with
+/// nothing else said, the job runs on and shows it.
+#[test]
+fn recovery_6_claude_codes_own_retrying_is_activity() {
+    let (_folder, obid) = obid("recovery-6");
+    let events = follow_events(&obid);
+    let id = post_job(&obid, "API RETRY: 5000");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "Retried.", "{job}");
+    let steps: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|(_, job)| job["step"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "Trying again in 8 seconds (1 of 10)"),
+        "{steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "Trying again in 8 seconds (3 of 10): overloaded"),
+        "{steps:?}"
+    );
 }
 
 /// The token budget stalls a job. Past it, Try again or other words through the API (what oby-mcp

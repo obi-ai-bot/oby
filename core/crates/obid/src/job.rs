@@ -48,6 +48,31 @@ pub const CRASHED: &str = "obid hit a bug while running this job, so it stopped 
 pub const COULDNT_REVIEW: &str = "Oby couldn't review ";
 /// The reason of a job obid kept going down with (#915): it isn't picked up again by itself.
 pub const LOOPED: &str = "obid went down 3 times in 30 minutes while this ran, so Oby left it here. Try again carries it on.";
+/// Why a job obid or the Mac kept going down with stays `interrupted`, past RECOVERY-2's tries.
+pub const RESTARTS_SPENT: &str = "obid or the Mac went down 4 times while this ran, so Oby left it here. Try again carries it on.";
+
+/// What obid did by itself to carry a job's cut run on (docs/contracts/recovery.md). Only the
+/// owner's own words start the counts again: no good turn, restart, follow-on or automatic retry
+/// does, so one kind of retry never multiplies another. Kept in its file, never in the API.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Recovery {
+    /// Turns cut by a passing error (RECOVERY-1).
+    pub errors: usize,
+    /// Runs gone quiet or at the turn limit (RECOVERY-3, RECOVERY-4).
+    pub stalls: usize,
+    /// Runs cut by obid or the Mac going down, or obid's own bug (RECOVERY-2).
+    pub restarts: usize,
+    /// What cut its run, for the next run's marked message; taken when that run starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<String>,
+}
+
+impl Recovery {
+    fn is_unused(&self) -> bool {
+        *self == Recovery::default()
+    }
+}
 
 /// The Review stage once Oby's review approved the pull request's head.
 pub const APPROVED_BY_OBY: &str = "Approved by Oby";
@@ -369,6 +394,9 @@ pub struct Job {
     /// ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crash_resumes: Vec<i64>,
+    /// What obid did by itself to carry it on (docs/contracts/recovery.md).
+    #[serde(default, skip_serializing_if = "Recovery::is_unused")]
+    pub recovery: Recovery,
     pub dismissed: Option<i64>,
     /// The job's worktree, an absolute path, once it exists.
     pub worktree: Option<String>,
@@ -921,6 +949,7 @@ impl Job {
             phase: None,
             cut: None,
             crash_resumes: Vec::new(),
+            recovery: Recovery::default(),
             dismissed: None,
             worktree: None,
             obi: None,
