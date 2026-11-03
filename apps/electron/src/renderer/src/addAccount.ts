@@ -20,10 +20,10 @@ export async function stopAdding(account: string) {
   await api.removeAccount(account).catch(() => { /* gone already, or Settings shows it signed out */ });
 }
 
-export async function startAdding(agent: Agent): Promise<{ account: string; page: SignIn }> {
+export async function startAdding(agent: Agent, chatgpt = false): Promise<{ account: string; page: SignIn }> {
   const { id: account } = await api.addAccount({ agent });
   try {
-    const page = await api.signIn(account);
+    const page = await (chatgpt ? api.signInChatGpt(account) : api.signIn(account));
     window.app?.openExternal(page.url);
     return { account, page };
   } catch (e) {

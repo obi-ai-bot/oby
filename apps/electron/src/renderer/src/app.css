@@ -2197,3 +2197,9 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 .asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; max-height: calc(100% - var(--bar)); overflow-y: auto; scrollbar-width: none; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }
 .asks-over .asks { pointer-events: auto; }
 .asks-over .ask-card { background: var(--surface); box-shadow: 0 0 0 1px var(--surface-edge); }
+
+/* Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md): its mark in its button, OpenAI's links */
+.chatgpt-logo { vertical-align: -2px; margin-right: 6px; }
+.chatgpt-link { padding: 0; background: none; border: 0; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }
+.chatgpt-link:hover { color: var(--ink); }
+.wl-alt { align-self: flex-start; font-size: var(--text-sm); }

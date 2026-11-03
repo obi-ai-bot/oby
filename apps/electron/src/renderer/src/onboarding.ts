@@ -4,9 +4,10 @@ import { addTask } from './tasks';
 import { wait } from './stream';
 import { onObid } from './lean';
 import { CAN_CREATE } from './spheres';
-import { ApiError, api, type TetrixTarget } from './obid';
+import { ApiError, api, type Status, type TetrixTarget } from './obid';
 import { ask, liveState, useLive } from './live';
 import { UNFINISHED, signInSaid, signInWhy } from './signInWhy';
+import { MOCK_WELCOME, accountNow, waitingOver } from './chatgpt';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -98,8 +99,11 @@ async function unmake(t: Try) {
 // the row's button again, with why if it failed
 const back = (a: Agent, why?: string) => set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined }, problems: { ...x.problems, [a]: why } }));
 const reason = (a: Agent, e: unknown) => signInWhy(AGENTS[a].name, e);
-export async function signInAgent(a: Agent) {
-  if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v));
+// chatgpt: Codex through Continue with ChatGPT, obid's own page with no code to type. The account of
+// the Mac's own login can't take it (`ownLogin`), so one of its own is added; how it ended comes on the
+// account, as signed in or as a `label`, at the next look (docs/contracts/chatgpt-sign-in.md).
+export async function signInAgent(a: Agent, chatgpt = false) {
+  if (!onObid) return signIn((s) => s.agents[a], (v) => agentSign(a, v)).then(() => { if (chatgpt) dispatchEvent(new CustomEvent(MOCK_WELCOME)); });
   if (setup.agents[a] !== 'out' || signedIn(a)) return;
   // (one before it still being undone: undone first)
   const old = tries[a];
@@ -121,18 +125,34 @@ export async function signInAgent(a: Agent) {
     } else {
       t.account = s?.accounts.find((x) => x.agent === a)?.id ?? (t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id);
       if (gone()) return void unmake(t);
-      const page = await api.signIn(t.account);
+      const page = !chatgpt ? await api.signIn(t.account) : await api.signInChatGpt(t.account).catch(async (e) => {
+        if (!(e instanceof ApiError && e.reason === 'ownLogin')) throw e;
+        t.account = t.made = (await api.addAccount({ agent: a, name: 'Personal' })).id;
+        return api.signInChatGpt(t.account);
+      });
       if (gone()) return void unmake(t);
       open(page.url);
       set((x) => ({ codes: { ...x.codes, [a]: { userCode: page.userCode, paste: page.pasteCode ? t.account : undefined } } }));
     }
     // (a code, even none: under way, so Cancel is on)
     set((x) => ({ codes: { ...x.codes, [a]: x.codes[a] ?? {} } }));
-    const done = await until(async () => signedIn(a) || gone());
+    // (ChatGPT's: its callback's answer on the account, as obid has it now)
+    let tried: Status['accounts'][number] | undefined;
+    const done = await until(async () => {
+      if (signedIn(a) || gone()) return true;
+      if (chatgpt) {
+        tried = t.account ? await accountNow(t.account) : undefined;
+        return !!tried && waitingOver(tried, { chatgpt });
+      }
+      return false;
+    });
     if (gone()) return;
     delete tries[a];
     // signed in: obid says so (useSetup); the row's own state back to rest under that
-    if (done) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
+    if (done && (!tried || tried.signedIn)) set((x) => ({ ...agentSign(a, 'out'), codes: { ...x.codes, [a]: undefined } }));
+    // a sign-in kept with plan use off keeps its account, and says so
+    else if (done && tried?.login === 'chatgpt') back(a, tried.label ?? UNFINISHED);
+    else if (done) { const why = tried?.label ?? UNFINISHED; await unmake(t); back(a, why); }
     else { await unmake(t); back(a, UNFINISHED); }
   } catch (e) {
     // (cancelled: Cancel undid it)
