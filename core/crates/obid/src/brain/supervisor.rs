@@ -207,6 +207,9 @@ pub fn refused(session: &Session, tool: &str, args: &serde_json::Value) -> Optio
         // The inbox is what waits for the owner: an unattended turn answers none of it, and adds
         // no offer to it.
         "oby_answer" => Some("A turn nobody watches answers nothing in the inbox."),
+        "oby_members" | "oby_ask" | "oby_asks" => Some(
+            "A turn nobody watches asks no other Oby: say what should be asked, and the owner can ask.",
+        ),
         "oby_merge" | "oby_github_write" | "oby_settings" => Some(
             "A turn nobody watches merges nothing, writes nothing on GitHub and changes no setting: say what should happen, and the owner can ask.",
         ),
@@ -629,6 +632,16 @@ mod tests {
 
     /// MERGING-18 (#1659): what a turn nobody watches tells a job is obid's, never the owner's
     /// words: it reaches the job as an event's, which the job doesn't keep as theirs.
+    #[test]
+    fn ask_14_a_turn_nobody_watches_asks_no_one() {
+        let unattended = session(Some(Arc::new(Watch::new("j1", "t1"))));
+        let owners = session(None);
+        for tool in ["oby_members", "oby_ask", "oby_asks"] {
+            assert!(refused(&unattended, tool, &serde_json::json!({})).is_some());
+            assert!(refused(&owners, tool, &serde_json::json!({})).is_none());
+        }
+    }
+
     #[test]
     fn merging_18_a_supervisor_turns_words_are_never_the_owners() {
         use crate::jobs::Source;

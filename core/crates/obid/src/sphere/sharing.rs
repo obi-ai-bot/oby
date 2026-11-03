@@ -182,6 +182,25 @@ impl Sharing {
     }
 }
 
+/// What an obid shares once it first joins a Sphere (ASK-11, docs/contracts/ask-an-oby.md): with every
+/// member, the title, stage and state of its owner's jobs, the repository each is in and the pull
+/// request it opened, so their Obys can ask how the work goes without bothering them. Never logs,
+/// diffs, prompts or files. The owner removes it like any rule, and it doesn't come back.
+fn starter(now: i64) -> Sharing {
+    Sharing {
+        rules: vec![Rule {
+            id: new_id(),
+            for_owners: Scope::every(),
+            repos: Scope::every(),
+            tells: vec![JOB_STATUS.to_owned()],
+            created: now,
+            uses: 0,
+            last_used: None,
+        }],
+        limits: Limits::default(),
+    }
+}
+
 /// A new rule id: `s-` and 12 lower-case hex.
 pub fn new_id() -> String {
     let mut bytes = [0u8; 6];
@@ -292,8 +311,8 @@ impl Kept {
         }
     }
 
-    /// The rules and limits kept, or none and the defaults. A file that doesn't read shares
-    /// nothing.
+    /// The rules and limits kept, or none. A file that doesn't read, or can't be read, shares
+    /// nothing, and stays as it is.
     pub fn load(&self) -> Sharing {
         match std::fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
@@ -303,7 +322,45 @@ impl Kept {
                 );
                 Sharing::default()
             }),
-            Err(_) => Sharing::default(),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::error!(
+                        "{} can't be read, so nothing is shared: {e}",
+                        self.path.display()
+                    );
+                }
+                Sharing::default()
+            }
+        }
+    }
+
+    /// Whether there is no file yet, for certain: a file that can't be read is one.
+    fn missing(&self) -> bool {
+        matches!(std::fs::symlink_metadata(&self.path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    }
+
+    /// The owner's first Sphere: the starter rule, kept, when they have no file yet (ASK-11).
+    pub fn seed_at_joining(&self) -> Option<Sharing> {
+        if !self.missing() {
+            return None;
+        }
+        let sharing = starter(time::now());
+        match self.save(&sharing) {
+            Ok(()) => Some(sharing),
+            Err(e) => {
+                tracing::warn!("can't keep {}: {e}", self.path.display());
+                None
+            }
+        }
+    }
+
+    /// A membership from before the starter rule: it never agreed to share, and an upgrade doesn't
+    /// start to. No rules, kept, so that a later join doesn't seed one either.
+    pub fn keep_none_when_missing(&self) {
+        if self.missing()
+            && let Err(e) = self.save(&Sharing::default())
+        {
+            tracing::warn!("can't keep {}: {e}", self.path.display());
         }
     }
 
@@ -437,6 +494,45 @@ mod tests {
         let shown = made.to_json();
         assert_eq!(shown["repos"], "*");
         assert_eq!(shown["for"], json!(["ernesto"]));
+    }
+
+    #[test]
+    fn ask_11_the_first_join_shares_job_status_until_the_owner_says_otherwise() {
+        let home = std::env::temp_dir().join(format!("obid-ask-11-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let kept = Kept::open(&home);
+        assert!(kept.load().rules.is_empty(), "nothing before joining");
+        assert!(!home.join("sharing.json").exists(), "and nothing kept");
+        let first = kept.seed_at_joining().unwrap();
+        assert_eq!(first.rules.len(), 1);
+        let rule = &first.rules[0];
+        assert_eq!(rule.tells, vec![JOB_STATUS.to_owned()], "status only");
+        assert!(rule.covers("anyone", &[]) && rule.covers("anyone", &["a/b".to_owned()]));
+        assert_eq!(kept.load(), first, "the same rule, under the same id");
+        assert_eq!(kept.seed_at_joining(), None, "once");
+        // Removed by the owner: it stays removed, across a restart and another join.
+        kept.save(&Sharing {
+            rules: vec![],
+            ..first
+        })
+        .unwrap();
+        assert_eq!(kept.seed_at_joining(), None);
+        assert!(Kept::open(&home).load().rules.is_empty());
+        // A file that doesn't read shares nothing, and is never replaced by the starter.
+        std::fs::write(home.join("sharing.json"), "not json").unwrap();
+        assert!(Kept::open(&home).load().rules.is_empty());
+        assert_eq!(kept.seed_at_joining(), None);
+        assert_eq!(
+            std::fs::read_to_string(home.join("sharing.json")).unwrap(),
+            "not json"
+        );
+        std::fs::remove_file(home.join("sharing.json")).unwrap();
+        // A membership from before: no rules, kept, so that no later join seeds one.
+        kept.keep_none_when_missing();
+        assert!(kept.load().rules.is_empty());
+        assert_eq!(kept.seed_at_joining(), None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

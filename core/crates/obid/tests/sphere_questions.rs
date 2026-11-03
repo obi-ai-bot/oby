@@ -23,6 +23,24 @@ fn answerer() -> PathBuf {
 /// obid A (wellington), its card accepting questions, joined to a new fake Sphere with the fake
 /// answerer as Claude Code; obi-ernesto joined too, accepting questions.
 async fn setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
+    let (sphere, obid, ernesto) = setup_with_starter(folder).await;
+    tokio::task::block_in_place(|| {
+        for rule in get(&obid, "/v1/obid/sharing")["rules"].as_array().unwrap() {
+            let id = rule["id"].as_str().unwrap();
+            let gone = call(
+                &obid,
+                "DELETE",
+                &format!("/v1/obid/sharing/rules/{id}"),
+                None,
+            );
+            assert_eq!(gone.status, 204, "{}", gone.text);
+        }
+    });
+    (sphere, obid, ernesto)
+}
+
+/// [`setup`], with the rule an obid's first join makes (ASK-11).
+async fn setup_with_starter(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
     let sphere = FakeSphere::start().await;
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote, &answerer()), None);
@@ -39,6 +57,16 @@ async fn setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
     )
     .await;
     (sphere, obid, ernesto)
+}
+
+/// The next `count` replies but the `status` a question sends when it goes to the owner (ASK-12).
+async fn replies_past_status(ernesto: &TestObi, count: usize) -> Vec<Value> {
+    let mut got = Vec::new();
+    while got.len() < count {
+        let more = ernesto.receive(1, 30).await;
+        got.extend(more.into_iter().filter(|e| e["type"] != "status"));
+    }
+    got
 }
 
 fn get(obid: &Obid, target: &str) -> Value {
@@ -259,7 +287,7 @@ async fn a_question_no_rule_answers_waits_for_the_owner_who_answers_in_words() {
         assert_eq!(answered.body["state"], "done");
         assert_eq!(answered.body["answer"], "No");
     });
-    let replies = ernesto.receive(1, 30).await;
+    let replies = replies_past_status(&ernesto, 1).await;
     assert_eq!(replies[0]["type"], "answer");
     assert_eq!(
         replies[0]["body"],
@@ -304,7 +332,7 @@ async fn a_question_no_rule_answers_waits_for_the_owner_who_answers_in_words() {
             json!(rule)
         );
     });
-    let replies = ernesto.receive(1, 30).await;
+    let replies = replies_past_status(&ernesto, 1).await;
     assert_eq!(
         replies[0]["body"],
         json!({"by": "owner", "text": "Yes,\nfrom Monday."})
@@ -340,7 +368,7 @@ async fn a_remembered_decline_covers_questions_repository_by_repository() {
         answer_item(&obid, &item, json!({"answer": DECLINE_REMEMBER}))
     });
     assert_eq!(answered.status, 200, "{}", answered.text);
-    let replies = ernesto.receive(1, 30).await;
+    let replies = replies_past_status(&ernesto, 1).await;
     assert_eq!(replies[0]["type"], "decline");
     assert_eq!(replies[0]["body"], json!({"reason": "owner_declined"}));
     let decisions = tokio::task::block_in_place(|| get(&obid, "/v1/obid/decisions"));
@@ -358,7 +386,7 @@ async fn a_remembered_decline_covers_questions_repository_by_repository() {
     ] {
         let again = ask(covered.clone());
         ernesto.send(&again).await;
-        let replies = ernesto.receive(1, 30).await;
+        let replies = replies_past_status(&ernesto, 1).await;
         assert_eq!(
             replies[0]["body"],
             json!({"reason": "owner_declined", "by_rule": d1}),
@@ -387,7 +415,7 @@ async fn a_remembered_decline_covers_questions_repository_by_repository() {
         let settled =
             tokio::task::block_in_place(|| answer_item(&obid, &item, json!({"answer": "Decline"})));
         assert_eq!(settled.status, 200, "{uncovered}: {}", settled.text);
-        let replies = ernesto.receive(1, 30).await;
+        let replies = replies_past_status(&ernesto, 1).await;
         assert_eq!(
             replies[0]["body"],
             json!({"reason": "owner_declined"}),
@@ -443,7 +471,7 @@ async fn each_sender_is_limited() {
     // 3: the same question again while it is open: busy, though the inbox has room.
     let mut repeat = ask(&ernesto, "What is running now?");
     ernesto.send(&repeat).await;
-    let replies = ernesto.receive(1, 30).await;
+    let replies = replies_past_status(&ernesto, 1).await;
     assert_eq!(replies[0]["body"], json!({"reason": "busy"}));
     assert_eq!(replies[0]["in_reply_to"], repeat["id"]);
     // 4: another question: to the owner, the inbox's second of ernesto's.
@@ -454,14 +482,14 @@ async fn each_sender_is_limited() {
     // 5: the inbox holds two of ernesto's already: busy, and nothing more in the inbox.
     repeat = ask(&ernesto, "And on Friday?");
     ernesto.send(&repeat).await;
-    let replies = ernesto.receive(1, 30).await;
+    let replies = replies_past_status(&ernesto, 1).await;
     assert_eq!(replies[0]["body"], json!({"reason": "busy"}));
     let open = tokio::task::block_in_place(|| get(&obid, "/v1/inbox"));
     assert_eq!(open.as_array().unwrap().len(), 2, "{open}");
     // Requests of every type count: a review request from ernesto now is busy too.
     let review = ernesto.request("obi-wellington", "review_request", brief(), 3600);
     ernesto.send(&review).await;
-    let replies = ernesto.receive(1, 30).await;
+    let replies = replies_past_status(&ernesto, 1).await;
     assert_eq!(replies[0]["in_reply_to"], review["id"]);
     assert_eq!(replies[0]["body"], json!({"reason": "busy"}));
     let busy = tokio::task::block_in_place(|| exchange(&obid, repeat["id"].as_str().unwrap()));
@@ -661,4 +689,112 @@ async fn an_answer_ends_the_exchange_obid_asked_in() {
         .map(|m| m["envelope"]["type"].as_str().unwrap())
         .collect();
     assert_eq!(kinds, ["question", "answer"]);
+}
+
+/// A new obid's own starter rule answers a member's question about what its owner is doing, from
+/// the status of its jobs alone, without its owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_11_a_new_obid_answers_a_members_question_by_itself() {
+    let folder = Folder::new("ask-11");
+    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
+    tokio::task::block_in_place(|| a_job(&obid, "Billing retries"));
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "What is Wellington working on?"}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    let answer = ernesto.receive_reply_to(&question, 30).await;
+    assert_eq!(answer["type"], "answer", "{answer}");
+    assert_eq!(answer["body"]["by"], "obi");
+    assert!(
+        answer["body"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Billing retries"),
+        "{answer}"
+    );
+    let cid = question["id"].as_str().unwrap();
+    let e = tokio::task::block_in_place(|| exchange(&obid, cid));
+    assert_eq!(e["decidedBy"], "sharing");
+    let inbox = tokio::task::block_in_place(|| get(&obid, "/v1/inbox"));
+    assert_eq!(inbox, json!([]), "its owner wasn't bothered");
+}
+
+/// When only its owner can answer, the asker hears so at once, and the owner hears the question in
+/// a conversation of its own, its words quoted; their words there go back as theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_12_a_question_only_the_person_can_answer_says_it_waits_and_reaches_them() {
+    let folder = Folder::new("ask-12");
+    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "need-owner: which account does staging deploy to?"}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    let status = ernesto.receive_reply_to(&question, 30).await;
+    assert_eq!(status["type"], "status", "{status}");
+    assert_eq!(status["body"], json!({"state": "waiting_on_owner"}));
+    let cid = question["id"].as_str().unwrap().to_owned();
+    let item = tokio::task::block_in_place(|| wait_item(&obid, &cid));
+    let said = tokio::task::block_in_place(|| {
+        within(20, "the owner told", || {
+            let list = get(&obid, "/v1/conversations");
+            list.as_array()?.iter().find_map(|c| {
+                let id = c["id"].as_str()?;
+                let thread = get(&obid, &format!("/v1/conversation?id={id}"));
+                let text = thread[0]["text"].as_str()?.to_owned();
+                text.contains("only you can answer").then_some(text)
+            })
+        })
+    });
+    let asks = tokio::task::block_in_place(|| {
+        let list = get(&obid, "/v1/conversations");
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["title"] == "Questions from other Obys")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    });
+    let kept =
+        std::fs::read_to_string(obid.home.join(format!("conversations/{asks}.json"))).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&kept).unwrap()["foreign"],
+        "what ernesto's Oby said",
+        "it marks that conversation"
+    );
+    assert_eq!(
+        said,
+        "ernesto's Oby asks something only you can answer:\n\n> need-owner: which account does staging deploy to?\n\nTell me what to say back, or say no."
+    );
+    let answered = tokio::task::block_in_place(|| {
+        answer_item(&obid, &item, json!({"answer": "The Deskree one."}))
+    });
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let answer = replies_past_status(&ernesto, 1).await;
+    assert_eq!(answer[0]["type"], "answer", "{answer:?}");
+    assert_eq!(answer[0]["body"]["by"], "owner");
+}
+
+/// A membership from before the starter rule shares nothing on upgrade: no file becomes no rules,
+/// and its members' questions keep going to its owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_11_an_existing_membership_starts_sharing_nothing() {
+    let folder = Folder::new("ask-11-old");
+    let (_sphere, mut obid, _ernesto) = setup_with_starter(&folder).await;
+    let file = obid.home.join("sharing.json");
+    let status = obid.stop();
+    assert!(status.success(), "obid exited {status}");
+    std::fs::remove_file(&file).unwrap();
+    let remote = folder.0.join("fixture/remote.git");
+    let obid = start(&folder.0, &config(&folder.0, &remote, &answerer()), None);
+    let rules = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sharing"));
+    assert_eq!(rules["rules"], json!([]), "{rules}");
+    assert!(file.is_file(), "kept, so that no later join seeds one");
 }

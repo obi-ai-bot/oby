@@ -512,6 +512,7 @@ pub async fn serve(
     tokio::spawn(accounts::read_identities(shared.clone(), None));
     // A job a conversation started tells it how it ended (#351).
     conversation::report_job_ends(shared.clone());
+    brain::ask::report(shared.clone());
     // What Home asks the owner about a job that's merged, closed, let go or gone settles (TASKS-13).
     settle_stale_items(shared.clone());
     // Each repository's spare tree for the conversations' rooms, so a new one

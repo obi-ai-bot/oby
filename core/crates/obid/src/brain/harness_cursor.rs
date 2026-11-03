@@ -33,8 +33,16 @@ const ON_CURSOR: &str = "\n\nYou run on Cursor here. Your own shell is refused: 
 
 /// The first prompt of a Cursor session: what its session has no other way of being told, then
 /// `first`.
-pub(super) fn first_prompt(shared: &Shared, tetrix: bool, first: &str) -> Result<String, String> {
-    let told = crate::vault::for_agent(&format!("{}{ON_CURSOR}", orientation(shared, tetrix)))?;
+pub(super) fn first_prompt(
+    shared: &Shared,
+    tetrix: bool,
+    watched: bool,
+    first: &str,
+) -> Result<String, String> {
+    let told = crate::vault::for_agent(&format!(
+        "{}{ON_CURSOR}",
+        orientation(shared, tetrix, watched)
+    ))?;
     Ok(format!("{told}\n\n{first}"))
 }
 

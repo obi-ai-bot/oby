@@ -13,6 +13,7 @@ macro_rules! owners_words {
 }
 
 pub mod actions;
+pub mod ask;
 pub mod briefing;
 pub mod calls;
 pub mod find;
@@ -758,6 +759,7 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
             routine: None,
             asked: None,
             attachments: vec![],
+            relayed: false,
         });
     }
     Ok(Some(out))

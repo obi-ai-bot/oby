@@ -74,6 +74,7 @@ pub(super) async fn launch(
     token: &str,
     resume: &Option<String>,
     web: bool,
+    watched: bool,
 ) -> Result<(Launch, Option<crate::codex::Options>), String> {
     // Oby's server and Tetrix's as a job's are given ([`crate::codex::argv`]: its `-c` settings).
     let argv = crate::codex::argv(Default::default(), Some((url, token)), tetrix);
@@ -111,7 +112,7 @@ pub(super) async fn launch(
         model: (!model.is_empty()).then(|| model.to_owned()),
         effort: None,
         plan: false,
-        instructions: Some(orientation(shared, tetrix.is_some())),
+        instructions: Some(orientation(shared, tetrix.is_some(), watched)),
         no_commands: true,
         usage: false,
         priced: None,

@@ -525,7 +525,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let token = new_token();
     let (mcp, url, tetrix) = mcp_config(shared, &place, id);
     write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
-    let mut flags = claude_flags(shared, tetrix.is_some());
+    let mut flags = claude_flags(shared, tetrix.is_some(), true);
     let key = flags_key(&flags);
     flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
     let launch = shared.jobs.conversation_launch(
@@ -605,7 +605,7 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
 /// session gets Tetrix's server.
-fn claude_flags(shared: &Shared, tetrix: bool) -> Vec<OsString> {
+fn claude_flags(shared: &Shared, tetrix: bool, watched: bool) -> Vec<OsString> {
     [
         "-p",
         "--input-format",
@@ -629,7 +629,7 @@ fn claude_flags(shared: &Shared, tetrix: bool) -> Vec<OsString> {
         "--model",
         shared.config.conversation.model_for(Tool::Claude),
         "--append-system-prompt",
-        orientation(shared, tetrix).as_str(),
+        orientation(shared, tetrix, watched).as_str(),
     ]
     .iter()
     .map(OsString::from)
@@ -1305,7 +1305,12 @@ async fn session(
         control: control.clone(),
         jobs: Mutex::new(vec![]),
         nonce: super::briefing::nonce(),
-        web: AtomicBool::new(resumed.as_ref().is_some_and(|k| k.web) || kept_taint(&place)),
+        // The conversation of other Obys' questions: every turn there starts untrusted (ASK-16).
+        web: AtomicBool::new(
+            resumed.as_ref().is_some_and(|k| k.web)
+                || kept_taint(&place)
+                || shared.conversations.is_from_obys(&control.conversation),
+        ),
         shared: Arc::downgrade(shared),
         dispatched: AtomicUsize::new(0),
         acted: AtomicBool::new(false),
@@ -1566,7 +1571,7 @@ async fn attempts(
     let words = crate::vault::for_agent(&with(said.trim().to_owned()))?;
     let first = crate::vault::for_agent(&with(first_prompt(said.trim(), given)))?;
     let first = if tool == Tool::Cursor {
-        super::harness_cursor::first_prompt(shared, tetrix.is_some(), &first)?
+        super::harness_cursor::first_prompt(shared, tetrix.is_some(), !session.unwatched(), &first)?
     } else {
         first
     };
@@ -1580,7 +1585,7 @@ async fn attempts(
             Some(_) => words.clone(),
             None => first.clone(),
         };
-        let mut flags = claude_flags(shared, tetrix.is_some());
+        let mut flags = claude_flags(shared, tetrix.is_some(), !session.unwatched());
         if session.unwatched()
             && let Some(at) = flags.iter().position(|f| f == TOOLS)
         {
@@ -1639,6 +1644,7 @@ async fn attempts(
                         tetrix.as_deref(),
                         token,
                         &resume,
+                        !session.unwatched(),
                         !session.unwatched(),
                     )
                     .await
@@ -1983,7 +1989,7 @@ fn first_prompt(words: &str, given: &[Turn]) -> String {
             format!(
                 "{}: {}",
                 if t.who == "user" { "Owner" } else { "Oby" },
-                super::briefing::line(&t.text, 500)
+                super::briefing::line(&super::ask::heard(t), 500)
             )
         })
         .collect();
@@ -2001,7 +2007,7 @@ fn first_prompt(words: &str, given: &[Turn]) -> String {
 
 /// [`ORIENTATION`], with the repositories the room holds, and [`TETRIX`] when the session gets
 /// Tetrix's server (`tetrix`).
-pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
+pub(super) fn orientation(shared: &Shared, tetrix: bool, watched: bool) -> String {
     let repos: Vec<String> = shared
         .config
         .repos
@@ -2038,6 +2044,7 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
     if tetrix {
         orientation += TETRIX;
     }
+    orientation += &super::ask::orientation(shared, watched);
     orientation
 }
 
@@ -2569,6 +2576,9 @@ fn step_text(name: &str, input: &Value) -> String {
         Some("oby_inbox") => "Looking at the inbox".into(),
         Some("oby_github") => "Looking at GitHub".into(),
         Some("oby_answer") => "Answering an inbox item".into(),
+        Some("oby_members") => "Looking at who's in the Obysphere".into(),
+        Some("oby_ask") => "Asking another Oby".into(),
+        Some("oby_asks") => "Reading what other Obys said".into(),
         Some("oby_conversations") => "Going over past conversations".into(),
         Some("oby_room_read") => "Reading the Obysphere's room".into(),
         Some("oby_room_post") => "Posting in the Obysphere's room".into(),

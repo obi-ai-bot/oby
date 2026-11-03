@@ -41,6 +41,8 @@ use crate::sandbox::Sandbox;
 use crate::scan;
 use obi_protocol::identity::takes_card_runtime;
 
+mod asking;
+pub use asking::{AskMember, Picked, pick};
 mod follower;
 mod inbox_actions;
 mod reviews;
@@ -139,6 +141,8 @@ const REVOKED: &str = "obid's membership was revoked: settled here, and its peer
 #[derive(Debug, Clone)]
 struct Member {
     owner: String,
+    /// The name its card gives it, as [`shown_name`] takes it.
+    name: Option<String>,
     active: bool,
     accepts: Vec<String>,
     /// The key its words are sealed for, from its trusted card (protocol.md section 9.1), and that
@@ -547,6 +551,34 @@ fn api(status: StatusCode, message: impl Into<String>) -> ApiError {
 
 /// A client error as the API answers it: `502` with the Sphere's code and message, `504` when it
 /// couldn't be reached.
+/// A person's name from the Oby's name on its card (`Dima's Oby`), to put in obid's own words about
+/// them: none unless the card says it that way and it is plainly a name, never a sentence, since
+/// the card is what another Oby says of itself. It proves nothing: [`asking`] shows the owner id
+/// instead when it could be mistaken for someone else.
+fn shown_name(card: &str) -> Option<String> {
+    let card = card.trim();
+    let name = ["'s Oby", "\u{2019}s Oby"]
+        .iter()
+        .find_map(|end| card.strip_suffix(end))?
+        .trim();
+    // One writing system, so that no letter passes for another's (a Cyrillic i in "Dima").
+    let script = |c: char| match c as u32 {
+        0x370..=0x3FF => 1,
+        0x400..=0x52F => 2,
+        0..=0x24F => 0,
+        _ => 3,
+    };
+    let mut letters = name.chars().filter(|c| c.is_alphabetic()).map(script);
+    let first = letters.next();
+    let plain = (1..=40).contains(&name.chars().count())
+        && name.split_whitespace().count() <= 3
+        && letters.all(|s| Some(s) == first)
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '\'' | '\u{2019}'));
+    plain.then(|| name.to_owned())
+}
+
 fn from_client(error: &ClientError) -> ApiError {
     match error {
         ClientError::Unreachable(_) => api(StatusCode::GATEWAY_TIMEOUT, error.to_string()),
@@ -736,6 +768,9 @@ impl Link {
         let inbox = Inbox::open(&config.home);
         let decisions = Decisions::open(&config.home);
         let sharing = sharing::Kept::open(&config.home);
+        if membership.is_some() {
+            sharing.keep_none_when_missing();
+        }
         let pins = super::pins::Pins::open(&config.home);
         let triage = crate::triage::Kept::open(&config.home);
         let chain = ChainKept::open(&config.home);
@@ -2082,6 +2117,9 @@ impl Link {
         {
             let mut state = self.lock();
             state.membership = Some(membership);
+            if let Some(seeded) = self.sharing.seed_at_joining() {
+                state.sharing = seeded;
+            }
             state.delegation = Some(delegation);
             state.client = Some(client);
             state.token = None;
@@ -2358,6 +2396,7 @@ impl Link {
                 obi.to_owned(),
                 Member {
                     owner: owner.to_owned(),
+                    name: shown_name(member["card"]["name"].as_str().unwrap_or_default()),
                     active: member["status"] == "active",
                     accepts: params
                         .and_then(|p| p.get("accepts"))
@@ -3382,6 +3421,7 @@ mod tests {
             )
         );
         let member = |owner: &str| Member {
+            name: None,
             owner: owner.into(),
             active: true,
             accepts: vec!["review_request".into()],
@@ -3919,6 +3959,7 @@ mod tests {
         link.lock().directory.members.insert(
             "obi-ernesto".into(),
             Member {
+                name: None,
                 owner: "ernesto".into(),
                 active: true,
                 accepts: vec!["review_request".into()],

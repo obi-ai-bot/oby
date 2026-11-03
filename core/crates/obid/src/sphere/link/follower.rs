@@ -687,6 +687,14 @@ impl Link {
         exchange.rule = None;
         exchange.inbox_item = Some(made.id.clone());
         state.inbox.insert(made.id.clone(), made.clone());
+        // Only its owner can answer: the asker's Oby can say so (ASK-7, protocol.md section 11).
+        let waiting = self.reply_locked(
+            state,
+            exchange,
+            "status",
+            json!({"state": "waiting_on_owner"}),
+        );
+        exchange.outbox.extend(waiting);
         Some(made)
     }
 
