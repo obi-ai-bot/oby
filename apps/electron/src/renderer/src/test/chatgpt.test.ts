@@ -116,6 +116,27 @@ describe('Continue with ChatGPT', () => {
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
   });
 
+  it('CHATGPT-6: signing in again, the label the account already had ends no wait: only its sign-in’s end does', async () => {
+    const { onboarding, chatgpt } = await load();
+    say('POST /v1/accounts', { status: 201, body: { id: 'c2', agent: 'codex', name: 'Personal' } });
+    say('GET /v1/accounts/c2/sign-in?with=chatgpt', { status: 200, body: page });
+    const off = { login: 'chatgpt', label: 'ChatGPT plan use is off' };
+    say('GET /v1/status',
+      { status: 200, body: { accounts: [row({ ...off, signingIn: true })] } },
+      { status: 200, body: { accounts: [row({ login: 'chatgpt', signedIn: true })] } });
+    await onboarding.signInAgent('codex', true);
+    expect(onboarding.dev!.get().problems.codex, 'it waited for the browser').toBeUndefined();
+    expect(calls.filter((c) => c.path === '/v1/status').length).toBe(2);
+
+    // Settings' row: its waiting state stays while the page is open, whatever else the account says.
+    const open = { chatgpt: true } as never;
+    expect(chatgpt.waitingOver(row({ ...off, signingIn: true }) as never, open)).toBe(false);
+    expect(chatgpt.waitingOver(row(off) as never, open)).toBe(true);
+    expect(chatgpt.waitingOver(row({ signedIn: true, signingIn: true }) as never, open), 'signed in').toBe(true);
+    // Not a ChatGPT one: only signing in ends it, as ever.
+    expect(chatgpt.waitingOver(row(off) as never, {} as never)).toBe(false);
+  });
+
   it('CHATGPT-13: the limit’s card has OpenAI’s words, Manage usage first, and no reset time', async () => {
     const { live, chatgpt } = await load();
     const onPlan = { accounts: [row({ signedIn: true, login: 'chatgpt', fullUntil: '2030-01-01T00:00:00Z' })] };

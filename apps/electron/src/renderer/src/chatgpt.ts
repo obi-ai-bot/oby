@@ -21,6 +21,13 @@ export function offersChatGpt(status: Pick<Status, 'accounts' | 'availableLogins
   return !status.accounts.some((a) => a.agent === 'codex' && (a.signedIn || (!a.login && !!a.label)));
 }
 
+// A sign-in's end is obid's `signingIn` going, not a `label`: an account can have one already (plan
+// use off, too old). What a sign-in that's waiting takes as over, on an account as obid says it.
+export const waitingOver = (account: { signedIn?: boolean; signingIn?: boolean }, signing: { chatgpt?: boolean }) =>
+  !!account.signedIn || (!!signing.chatgpt && !account.signingIn);
+// The account as obid has it right now: an `accounts` event sent before the sign-in began can still arrive.
+export const accountNow = async (id: string) => (await api.status()).accounts.find((x) => x.id === id);
+
 // The first sign-in's welcome, once: obid keeps that it was shown, so emptied browser storage doesn't
 // bring it back.
 export const welcomeDue = async (status: Pick<Status, 'accounts'> | null | undefined) =>

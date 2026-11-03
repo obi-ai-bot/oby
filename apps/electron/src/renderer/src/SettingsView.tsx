@@ -12,7 +12,7 @@ import { ApiError, api, qrText, type Invitation, type PairedDevice, type ModelOp
 import Connectors, { ConfirmWindow, Window, readConnectors } from './Connectors';
 import { again, sameAs, startAdding, stopAdding, toolRows, whoseAgain, type Found } from './addAccount';
 import { UNFINISHED, signInWhy } from './signInWhy';
-import { CONTINUE, LIMIT_REACHED, USING_PLAN, offersChatGpt } from './chatgpt';
+import { CONTINUE, LIMIT_REACHED, USING_PLAN, accountNow, offersChatGpt, waitingOver } from './chatgpt';
 import { ChatGptLogo, ManageUsage } from './ChatGptPlan';
 import { Menu } from './Menu';
 import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
@@ -277,7 +277,7 @@ function MockRemote() {
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
 // chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
-export type Account = { chatgpt?: boolean; id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean };
+export type Account = { chatgpt?: boolean; signingIn?: boolean; id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -303,6 +303,7 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
   return {
     id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
     chatgpt: a.login === 'chatgpt',
+    signingIn: a.signingIn,
     resets: !a.signedIn ? a.label ?? 'Not signed in' : a.login === 'chatgpt' && a.fullUntil ? LIMIT_REACHED : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')
       : a.sevenDayResets ? `Resets ${resetDay(a.sevenDayResets, now)}` : 'No reset reported',
     session,
@@ -393,11 +394,14 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   });
   const cancel = (id: string) => { put(id); void tried(id, () => api.endSignIn(id)); };
   // signed in (Codex and Cursor end by themselves; obid's `accounts` event says so)
-  // (and a ChatGPT sign-in that ended without: its row says why)
+  // (and a ChatGPT sign-in that ended without, as obid says now: its row says why)
   useEffect(() => {
     for (const a of accounts) {
       const s = signing[a.id];
-      if (s && (a.signedIn || (s !== 'opening' && s.chatgpt && a.label))) put(a.id);
+      if (!s) continue;
+      if (a.signedIn) { put(a.id); continue; }
+      if (s === 'opening' || !waitingOver(a, s)) continue;
+      void accountNow(a.id).then((now) => { if (!now || waitingOver(now, s)) put(a.id); }, () => { /* the next event says */ });
     }
   }, [accounts]);
   // a sign-in whose page ran out (15 minutes) without signing in: Sign In again
@@ -934,9 +938,13 @@ function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
       if (seen !== account) setSeen(account);
       if (signing && live.signedIn) setStep({ at: 'named', agent: signing.agent, account });
       // ChatGPT's page said no: why, on the tools again. Signed in with plan use off, it stays.
-      else if (signing?.chatgpt && live.label) {
-        if (live.chatgpt) setStep({ at: 'tools', why: live.label });
-        else void stop(live.label);
+      else if (signing?.chatgpt && signing.page && waitingOver(live, signing)) {
+        void accountNow(account).then((now) => {
+          if (now && !waitingOver(now, signing)) return;
+          const why = now?.label ?? UNFINISHED;
+          if (now?.login === 'chatgpt') setStep({ at: 'tools', why });
+          else void stop(why);
+        }, () => { /* the next event says */ });
       }
     } else if (seen === account && onObid) {
       const agent = (step as { agent: Agent }).agent;

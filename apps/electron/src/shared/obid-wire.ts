@@ -180,6 +180,8 @@ export type Account = {
   // (docs/contracts/chatgpt-sign-in.md)
   login?: string;
   loginEmail?: string;
+  // obid only: a sign-in of it is under way, its `label` not yet about that one
+  signingIn?: boolean;
   // obid only: the model and efforts its jobs run on, each only when the owner chose it (#1574)
   model?: string;
   effort?: string;

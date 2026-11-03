@@ -7,7 +7,7 @@ import { CAN_CREATE } from './spheres';
 import { ApiError, api, type Status, type TetrixTarget } from './obid';
 import { ask, liveState, useLive } from './live';
 import { UNFINISHED, signInSaid, signInWhy } from './signInWhy';
-import { MOCK_WELCOME } from './chatgpt';
+import { MOCK_WELCOME, accountNow, waitingOver } from './chatgpt';
 import { AGENTS, type Agent, type SetupStep } from './mock';
 
 // Setting up, in Oby's first conversation: no wizard, Oby talks you through it
@@ -141,8 +141,8 @@ export async function signInAgent(a: Agent, chatgpt = false) {
     const done = await until(async () => {
       if (signedIn(a) || gone()) return true;
       if (chatgpt) {
-        tried = (await api.status()).accounts.find((x) => x.id === t.account);
-        return !!tried && (tried.signedIn || !!tried.label);
+        tried = t.account ? await accountNow(t.account) : undefined;
+        return !!tried && waitingOver(tried, { chatgpt });
       }
       return false;
     });
