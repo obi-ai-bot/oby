@@ -5,12 +5,11 @@ import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
-import { registerLexicalTextEntity } from '@lexical/text';
 import {
   $createLineBreakNode, $createParagraphNode, $createTextNode, $getRoot, $getSelection, $isRangeSelection, $isTextNode, $setSelection, COMMAND_PRIORITY_HIGH,
   KEY_ARROW_DOWN_COMMAND, KEY_ARROW_UP_COMMAND, KEY_ENTER_COMMAND, KEY_ESCAPE_COMMAND, KEY_TAB_COMMAND, PASTE_COMMAND, type LexicalCommand,
 } from 'lexical';
-import { $createTokenNode, findToken, TokenNode } from './textTokens';
+import { registerTokens, TokenNode } from './textTokens';
 import { useScrollThumb } from './useScrollThumb';
 
 // The message box's text, as Lexical (an open-source editor) keeps it: plain
@@ -120,7 +119,7 @@ function Behaviour({ autoFocus, onText, onEnter, onHeight, onPasteFiles, onMenti
 
   useEffect(() => {
     const offs = [
-      ...registerLexicalTextEntity(editor, findToken, TokenNode, (node) => $createTokenNode(node.getTextContent())),
+      ...registerTokens(editor),
       editor.registerCommand(KEY_ENTER_COMMAND, (e: KeyboardEvent | null) => {
         if (!e || e.isComposing) return false;
         if (!e.shiftKey && cb.current.onMentionKey?.('pick')) { e.preventDefault(); return true; }

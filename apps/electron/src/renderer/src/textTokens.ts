@@ -1,4 +1,5 @@
-import { $applyNodeReplacement, TextNode, type EditorConfig } from 'lexical';
+import { registerLexicalTextEntity } from '@lexical/text';
+import { $applyNodeReplacement, TextNode, type EditorConfig, type LexicalEditor } from 'lexical';
 import { OBYS } from './mock';
 
 // What the message box recognises in plain text as you type, and the node it
@@ -76,7 +77,22 @@ export class TokenNode extends TextNode {
   canInsertTextBefore(): boolean { return false; }
   isTextEntity(): true { return true; }
 }
-export const $createTokenNode = (text = '') => $applyNodeReplacement(new TokenNode(text));
+const $createTokenNode = (text = '') => $applyNodeReplacement(new TokenNode(text));
+
+// The text after a token joining it (src/app. then t). Lexical's own transform does this too, but
+// leaves the cursor where the token ended before it grew, so the next keys land inside the word.
+// Merging keeps the cursor between the same two letters, and Lexical's then finds nothing to join.
+function $growToken(node: TextNode) {
+  const token = node.getPreviousSibling();
+  if (!node.isSimpleText() || !(token instanceof TokenNode)) return;
+  const had = token.getTextContentSize(), match = findToken(token.getTextContent() + node.getTextContent());
+  if (match && match.end > had) token.mergeWithSibling(node.splitText(match.end - had)[0]);
+}
+// Spotting tokens in an editor as its text changes. $growToken first: transforms run as registered.
+export const registerTokens = (editor: LexicalEditor) => [
+  editor.registerNodeTransform(TextNode, $growToken),
+  ...registerLexicalTextEntity(editor, findToken, TokenNode, (node) => $createTokenNode(node.getTextContent())),
+];
 
 // While the app runs, a change here reloads the page instead of swapping this
 // class under an open editor (which would leave it broken until a reload anyway).
