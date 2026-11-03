@@ -39,6 +39,8 @@ until the next login (launchd exits 78: `copy_bundle_path … not a bundle`); th
 then runs the same obid as a job of this login session only. In development
 (`npm run dev`) it starts nothing; `OBID_PORT` and `OBID_HOME` point it at a
 scratch obid run by hand instead of 7777 (a packaged app ignores them).
+`node e2e/rig.mjs app` opens it on a test rig's obid, with a second Oby to talk to
+(docs/contracts/test-rig.md).
 
 Oby alerts on the Mac as the Swift app did (`src/main/notify.ts`): main follows
 obid's event stream by itself, from launch until Oby quits, window closed or not,

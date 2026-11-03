@@ -105,7 +105,7 @@ The answerer's side:
 
 ### Test it when it's done
 
-Two Obys on one Obysphere whose admin has written the rule above, on real Macs or as two scratch obids through a local obi-sphere:
+Two Obys on one Obysphere whose admin has written the rule above, on real Macs or as two scratch obids through a local obi-sphere (`node e2e/rig.mjs start` is exactly that: [test-rig.md](test-rig.md)):
 
 1. With an empty policy, ask "What's Dima working on?": it says the Obysphere's rules don't allow questions yet, and that an admin can change that.
 2. With the rule written and a job running on Dima's Oby, ask again: "I asked Dima's Oby", then the job quoted and "Asked Dima's Oby. Dima wasn't bothered." Dima's inbox stays empty.
