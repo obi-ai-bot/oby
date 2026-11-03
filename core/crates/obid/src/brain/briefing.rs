@@ -308,14 +308,14 @@ impl Briefing {
         for turn in &self.turns[skip..] {
             // How a job ended (#351): obid's own first line only; its agent's words stay quoted.
             let text = if turn.ended {
-                turn.text.split('\n').next().unwrap_or_default()
+                turn.text.split('\n').next().unwrap_or_default().to_owned()
             } else {
-                &turn.text
+                super::ask::heard(turn)
             };
             lines.push(format!(
                 "{}: {}",
                 if turn.who == "user" { "User" } else { "Oby" },
-                line(text, TURN_CAP)
+                line(&text, TURN_CAP)
             ));
         }
         lines.extend([
@@ -1118,6 +1118,7 @@ mod tests {
             routine: None,
             asked: None,
             attachments: vec![],
+            relayed: false,
         };
         Briefing {
             turns: vec![turn("user", "how is it going?"), turn("oby", "Fine.")],
@@ -1485,6 +1486,7 @@ mod tests {
                 routine: None,
                 asked: None,
                 attachments: vec![],
+                relayed: false,
             })
             .collect();
         let text = briefing.text();

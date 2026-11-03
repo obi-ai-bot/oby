@@ -547,11 +547,15 @@ nonisolated struct RunnerConversation: Decodable, Identifiable, Equatable, Senda
     var talkAccount: String?
     var talkedOn: String?
     var movedOff: String?
+    /// The one conversation that says what other Obys ask (docs/contracts/ask-an-oby.md): the app
+    /// never opens on it.
+    var fromObys: Bool
 
-    private enum Keys: String, CodingKey { case id, title, pinned, created, lastActivity, deleted, turn, talkAccount, talkedOn, movedOff }
+    private enum Keys: String, CodingKey { case id, title, pinned, created, lastActivity, deleted, turn, talkAccount, talkedOn, movedOff, fromObys }
 
     init(id: String, title: String, pinned: Bool = false, created: Date? = nil, lastActivity: Date? = nil,
-         deleted: Bool = false, turn: Match? = nil, talkAccount: String? = nil, talkedOn: String? = nil, movedOff: String? = nil) {
+         deleted: Bool = false, turn: Match? = nil, talkAccount: String? = nil, talkedOn: String? = nil, movedOff: String? = nil,
+         fromObys: Bool = false) {
         self.id = id
         self.title = title
         self.pinned = pinned
@@ -562,6 +566,7 @@ nonisolated struct RunnerConversation: Decodable, Identifiable, Equatable, Senda
         self.talkAccount = talkAccount
         self.talkedOn = talkedOn
         self.movedOff = movedOff
+        self.fromObys = fromObys
     }
 
     init(from decoder: any Decoder) throws {
@@ -570,6 +575,7 @@ nonisolated struct RunnerConversation: Decodable, Identifiable, Equatable, Senda
         talkAccount = (try? keys.decodeIfPresent(String.self, forKey: .talkAccount)) ?? nil
         talkedOn = (try? keys.decodeIfPresent(String.self, forKey: .talkedOn)) ?? nil
         movedOff = (try? keys.decodeIfPresent(String.self, forKey: .movedOff)) ?? nil
+        fromObys = (try? keys.decodeIfPresent(Bool.self, forKey: .fromObys)) ?? false
         title = (try? keys.decodeIfPresent(String.self, forKey: .title)) ?? ""
         pinned = (try? keys.decodeIfPresent(Bool.self, forKey: .pinned)) ?? false
         created = try? keys.decodeIfPresent(Date.self, forKey: .created)

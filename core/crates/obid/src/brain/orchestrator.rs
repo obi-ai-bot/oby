@@ -226,7 +226,7 @@ impl Seen {
             || item.done.is_some()
             || item.id.starts_with(ESCALATION)
             // Already the owner's to decide: escalating would only leave a second item for it.
-            || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | "limit" | crate::sphere::inbox::QUESTION_KIND)
+            || matches!(item.kind.as_str(), "confirm" | "start" | "permission" | "plan" | "question" | "github" | "merge" | "limit" | "obiRequest" | crate::sphere::inbox::QUESTION_KIND)
             // obid's own bug's item is the owner's too (#914): an answer from Oby would loop it.
             || crate::sphere::inbox::is_crash_item(item)
             // So is a review no reviewer could give: obid fell back already.
@@ -1143,6 +1143,8 @@ mod tests {
         // An offer of GitHub work is the owner's to start (crate::github_work).
         assert!(seen.item(&item("github-1", "github")).is_empty());
         assert!(seen.item(&item("confirm-1", "confirm")).is_empty());
+        // ASK-12: another Oby's request is its owner's: no turn of the brain's, no second item.
+        assert!(seen.item(&item("ask-1", "obiRequest")).is_empty());
         // A merge card is the owner's to answer (#853): no event, nothing for the brain.
         assert!(seen.item(&item("merge-j1-abc", "merge")).is_empty());
         // A usage-limit choice is already for the owner; do not create another escalation.

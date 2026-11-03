@@ -20,7 +20,7 @@ type Ask = { question: string; options: string[] };
 // at: when it last moved (minutes ago), when that's known apart from what's loaded of it (obid's)
 // about: its line in Conversations while none of it is loaded (obid's)
 // local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {
@@ -113,7 +113,8 @@ export const lastAgo = (c: Chat) => Math.min(c.at ?? Infinity, ...c.said.map((m)
 // the one that moved last: where the app opens (docs/contracts/chat-first.md, CHATFIRST-1). By when
 // obid says it did (at), where it says: a card still open in it reads as just now, however old
 const movedAgo = (c: Chat) => c.at ?? lastAgo(c);
-export const latestChat = (all: Chat[]) => all.reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
+// Never the one of what other Obys ask you (ASK-18): a question doesn't decide where the app opens.
+export const latestChat = (all: Chat[]) => all.filter((c) => !c.fromObys).reduce<Chat | undefined>((best, c) => (!best || movedAgo(c) < movedAgo(best) ? c : best), undefined);
 // Where back comes to rest, chat first (CHATFIRST-9, CHATFIRST-12): the conversation you were last
 // in, or the empty chat (null) if that's where you were; one since deleted, your latest
 export const restingChat = (rest: string | null, all: Chat[]) =>

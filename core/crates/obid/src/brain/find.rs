@@ -66,6 +66,7 @@ mod tests {
                         routine: None,
                         asked: None,
                         attachments: vec![],
+                        relayed: false,
                     },
                 )
             })

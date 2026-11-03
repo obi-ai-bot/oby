@@ -55,7 +55,7 @@ nonisolated enum PhoneWork {
     /// moved last, or the empty chat with none; a runner that lists none has its one thread.
     static func resting(_ conversations: [RunnerConversation]?) -> Resting {
         guard let conversations else { return .conversation(nil) }
-        return conversations.filter { !$0.deleted }.max { $0.latest < $1.latest }.map { .conversation($0.id) } ?? .empty
+        return conversations.filter { !$0.deleted && !$0.fromObys }.max { $0.latest < $1.latest }.map { .conversation($0.id) } ?? .empty
     }
 
     /// The panel's Chats under Oby (IOSNEW-3): pinned ones first, then the latest, `recent` of them

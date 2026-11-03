@@ -607,6 +607,24 @@ impl Link {
                 .map(|_| ())
                 .map_err(|why| api(StatusCode::CONFLICT, why))
             }
+            inbox::action::ASK_OBY => self
+                .ask(
+                    target,
+                    confirmed.payload["question"].as_str().unwrap_or_default(),
+                    confirmed.payload["conversation"]
+                        .as_str()
+                        .unwrap_or_default(),
+                    // The name its card showed.
+                    confirmed.payload["name"].as_str().unwrap_or_default(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    api(
+                        StatusCode::CONFLICT,
+                        crate::brain::ask::refusal(&self.owner_of_obi(target), &e),
+                    )
+                }),
             inbox::action::GITHUB_WRITE => {
                 let asked: crate::brain::owners_word::Write =
                     serde_json::from_value(confirmed.payload["write"].clone())

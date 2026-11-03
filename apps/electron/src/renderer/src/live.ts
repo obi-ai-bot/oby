@@ -171,7 +171,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   for (const offer of offers.filter((o) => !placed.has(o.id))) said.push({ who: 'oby', text: '', ago: 0, offer });
   confirm({ who: 'oby', text: '', ago: 0 });
   return {
-    id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
+    id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, fromObys: c.fromObys, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
     about: c.tasks?.length ? `Started ${c.tasks.length} task${c.tasks.length === 1 ? '' : 's'}` : '',
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,

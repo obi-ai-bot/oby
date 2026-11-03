@@ -61,6 +61,10 @@ pub struct Turn {
     /// `attachments`), for the tags under them. Left out when none were.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    /// On Oby's turn about another Oby (crate::brain::ask): what that Oby wrote, or the name it
+    /// gave itself, is in it, so its text reaches the owner and never a model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relayed: bool,
 }
 
 /// The question an Oby turn asked, and its options.
@@ -104,6 +108,10 @@ struct Thread {
     /// conversation that read it (TASKCONV-6).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     read_untrusted: bool,
+    /// The one conversation that says what other Obys ask its owner (crate::brain::ask): the app
+    /// never opens on it, and no owner's words go to it unless they name it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    from_obys: bool,
     /// The folders its work is in (crate::folders): canonical paths, in the order picked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     folders: Vec<String>,
@@ -264,6 +272,9 @@ impl Thread {
         }
         if let Some(account) = &self.moved_off {
             summary["movedOff"] = json!(account);
+        }
+        if self.from_obys {
+            summary["fromObys"] = json!(true);
         }
         summary
     }
@@ -511,6 +522,7 @@ impl Conversations {
                     tasks_tainted: false,
                     foreign: kept_before_marks(),
                     read_untrusted: false,
+                    from_obys: false,
                     folders: vec![],
                     uploads: vec![],
                     talk_account: None,
@@ -633,6 +645,7 @@ impl Conversations {
                 tasks_tainted: false,
                 foreign: None,
                 read_untrusted: false,
+                from_obys: false,
                 folders: vec![],
                 uploads: vec![],
                 talk_account: None,
@@ -674,6 +687,7 @@ impl Conversations {
             foreign,
             None,
             names,
+            false,
         );
         let turn = match added {
             Ok(turn) => turn.id,
@@ -761,6 +775,37 @@ impl Conversations {
             None,
             asked,
             vec![],
+            false,
+        )
+    }
+
+    /// Oby's turn in the conversation `id` about another Oby, which never reaches a model
+    /// ([`Turn::relayed`]). `foreign` as in [`Self::append`].
+    pub fn append_relayed(
+        &self,
+        id: &str,
+        text: String,
+        foreign: Option<String>,
+    ) -> Result<Turn, Error> {
+        let mut threads = self.lock();
+        let index = threads
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        self.add_asking(
+            &mut threads,
+            index,
+            "oby",
+            text,
+            vec![],
+            false,
+            vec![],
+            None,
+            None,
+            foreign,
+            None,
+            vec![],
+            true,
         )
     }
 
@@ -791,6 +836,7 @@ impl Conversations {
             tasks_tainted: false,
             foreign: None,
             read_untrusted: false,
+            from_obys: false,
             folders: vec![],
             uploads: vec![],
             talk_account: None,
@@ -805,6 +851,45 @@ impl Conversations {
         // (crate::brain::UPLOADS); only words the owner sent start one with files.
         let _ = self.prune(&mut threads);
         Ok(id)
+    }
+
+    /// The one conversation that says what other Obys ask the owner, made the first time. Making
+    /// it prunes nothing, so no question ever pushes out a conversation of theirs, however many
+    /// members ask.
+    pub fn from_obys(&self) -> Result<String, Error> {
+        let mut threads = self.lock();
+        if let Some(found) = threads.iter().find(|t| t.from_obys) {
+            return Ok(found.id.clone());
+        }
+        let thread = Thread {
+            id: new_id(),
+            title: titled("Questions from other Obys"),
+            pinned: false,
+            created: obi_protocol::time::format(obi_protocol::time::now()),
+            sequence: next_sequence(&threads),
+            turns: vec![],
+            tasks: vec![],
+            tasks_tainted: false,
+            foreign: None,
+            // Every turn there hears another Oby's words.
+            read_untrusted: true,
+            from_obys: true,
+            folders: vec![],
+            uploads: vec![],
+            talk_account: None,
+            talked_on: None,
+            moved_off: None,
+        };
+        self.write(&thread).map_err(Error::Io)?;
+        self.events.send("conversation", thread.summary());
+        let id = thread.id.clone();
+        threads.push(thread);
+        Ok(id)
+    }
+
+    /// Whether `id` is [`Self::from_obys`]'s.
+    pub fn is_from_obys(&self, id: &str) -> bool {
+        self.lock().iter().any(|t| t.id == id && t.from_obys)
     }
 
     /// Oby's turn in the conversation `id` for a routine's run (crate::routines): `routine` is
@@ -990,6 +1075,7 @@ impl Conversations {
             foreign,
             None,
             vec![],
+            false,
         )
     }
 
@@ -1009,6 +1095,7 @@ impl Conversations {
         foreign: Option<String>,
         asked: Option<Asked>,
         attachments: Vec<String>,
+        relayed: bool,
     ) -> Result<Turn, Error> {
         let sequence = next_sequence(threads);
         let thread = &mut threads[index];
@@ -1034,6 +1121,7 @@ impl Conversations {
             routine,
             asked,
             attachments,
+            relayed,
         };
         thread.turns.push(turn.clone());
         let excess = thread.turns.len().saturating_sub(KEPT);
@@ -1049,15 +1137,16 @@ impl Conversations {
         Ok(turn)
     }
 
-    /// Past [`CONVERSATIONS`], forgets the oldest that are neither pinned nor the latest.
+    /// Past [`CONVERSATIONS`] of the owner's, forgets the oldest that are neither pinned nor the
+    /// latest. [`Self::from_obys`]'s doesn't count and isn't forgotten: it takes no room of theirs.
     fn prune(&self, threads: &mut Vec<Thread>) -> Vec<String> {
         let mut uploads = vec![];
-        while threads.len() > CONVERSATIONS {
+        while threads.iter().filter(|t| !t.from_obys).count() > CONVERSATIONS {
             let newest = threads.iter().map(|t| t.sequence).max().unwrap_or(0);
             let Some(oldest) = threads
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| !t.pinned && t.sequence != newest)
+                .filter(|(_, t)| !t.pinned && !t.from_obys && t.sequence != newest)
                 .min_by_key(|(_, t)| t.sequence)
                 .map(|(i, _)| i)
             else {
@@ -1551,7 +1640,9 @@ pub fn excerpt(text: &str, words: &[String]) -> String {
 
 /// The conversation with the latest turn.
 fn latest(threads: &[Thread]) -> Option<usize> {
-    (0..threads.len()).max_by_key(|&i| threads[i].sequence)
+    (0..threads.len())
+        .filter(|&i| !threads[i].from_obys)
+        .max_by_key(|&i| threads[i].sequence)
 }
 
 fn next_sequence(threads: &[Thread]) -> u64 {
@@ -1963,6 +2054,53 @@ mod tests {
         dismissed["dismissed"] = json!("2026-10-17T00:00:00Z");
         assert_eq!(job_report(&dismissed), None);
         crate::secrets::known().forget("vault TEST_351");
+    }
+
+    /// What other Obys ask keeps to one conversation, which takes no room of the owner's and is
+    /// never where their words go unless they name it (ASK-12, ASK-18).
+    #[test]
+    fn ask_12_other_obys_questions_never_push_out_a_conversation_of_the_owners() {
+        let home = std::env::temp_dir().join(format!("obid-from-obys-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let conversations = super::Conversations::open(&home, crate::events::Events::new());
+        let mine: Vec<String> = (0..super::CONVERSATIONS)
+            .map(|i| conversations.start_for(&format!("Mine {i}")).unwrap())
+            .collect();
+        let asks = conversations.from_obys().unwrap();
+        assert_eq!(
+            conversations.from_obys().unwrap(),
+            asks,
+            "one, however many ask"
+        );
+        assert!(conversations.is_from_obys(&asks));
+        assert!(!conversations.is_from_obys(&mine[0]));
+        conversations
+            .append_relayed(
+                &asks,
+                "> Words.".into(),
+                Some("what another Oby said".into()),
+            )
+            .unwrap();
+        assert!(
+            mine.iter().all(|id| conversations.has(id)),
+            "none pushed out"
+        );
+        assert_ne!(
+            conversations.latest_id(),
+            Some(asks.clone()),
+            "and it isn't the latest"
+        );
+        // Theirs still makes room as it did, and never with this one.
+        let newer = conversations.start_for("One more").unwrap();
+        assert!(conversations.has(&newer) && conversations.has(&asks));
+        assert!(
+            !conversations.has(&mine[0]),
+            "the oldest of theirs goes, as before"
+        );
+        // Kept across a restart.
+        let reopened = super::Conversations::open(&home, crate::events::Events::new());
+        assert_eq!(reopened.from_obys().unwrap(), asks);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// What a conversation reads off obid's allowlist marks it for good, and the first reason

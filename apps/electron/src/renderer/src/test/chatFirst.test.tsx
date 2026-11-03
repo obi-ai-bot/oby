@@ -69,6 +69,16 @@ describe('chat first', () => {
     expect(latestChat([talked, open])?.id).toBe('five-minutes');
   });
 
+  it('ASK-18: a question from another Oby never decides where the app opens', async () => {
+    await flag('');
+    const { latestChat, restingChat } = await import('../chats');
+    const asked = { id: 'asked', title: 'Questions from other Obys', said: [{ who: 'oby' as const, text: 'x', ago: 0 }], at: 0, fromObys: true };
+    const talked = { id: 'mine', title: 'Talked', said: [{ who: 'you' as const, text: 'x', ago: 50 }], at: 50 };
+    expect(latestChat([asked, talked])?.id).toBe('mine');
+    expect(latestChat([asked])).toBeUndefined();
+    expect(restingChat('gone', [asked, talked])).toBe('mine');
+  });
+
   it('CHATFIRST-2: with none, Home is the empty chat: the character and its box, no chips', async () => {
     const html = await home('');
     expect(html).not.toContain('data-chat');

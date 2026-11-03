@@ -130,6 +130,9 @@ pub mod action {
     /// Post in the Sphere's room (`oby_room_post`, docs/contracts/rooms.md): `payload` `{"kind",
     /// "text", "about", "replyTo"}`.
     pub const ROOM_POST: &str = "room_post";
+    /// Ask another Oby a question (`oby_ask`, docs/contracts/ask-an-oby.md): `target` its Oby's id,
+    /// `payload` `{"question", "conversation"}`.
+    pub const ASK_OBY: &str = "ask_oby";
     /// Change Settings (`oby_settings`, TASKCONV-10): `target` empty, `payload` `{"settings":
     /// {"maxRunning", "accountFailover", "defaultMode"}}`.
     pub const SET_SETTINGS: &str = "set_settings";

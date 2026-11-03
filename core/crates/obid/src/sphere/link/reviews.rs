@@ -173,6 +173,7 @@ impl Link {
             &self.sandbox,
             &dir,
             &owner,
+            &self.own_name(),
             &question,
             &material,
         )

@@ -2237,6 +2237,9 @@ async fn words_between_two_sealing_obis_cross_the_sphere_sealed_and_their_owners
     });
     assert_eq!(asked["obi"]["quoted"]["text"], "Is #251 landing Thursday?");
     tokio::task::block_in_place(|| answer(&obid, &asked, "Yes,\nfrom Monday."));
+    // It says first that it waits for its owner (ASK-12).
+    let waits = ernesto.receive_reply_to(&question, 20).await;
+    assert_eq!(waits["type"], "status");
     let answered = ernesto.receive_reply_to(&question, 20).await;
     assert_eq!(answered["type"], "answer");
     assert!(!answered.to_string().contains("from Monday"));

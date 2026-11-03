@@ -143,7 +143,9 @@ export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; 
 // tasks: the jobs it started; folders: the working folders its work is in (an obid that takes folders)
 export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[]; folders?: string[];
   // obid only (docs/contracts/conversation-agent.md): the account it talks through as the owner chose it here (an id or auto; none: the setting's), where its last answer came from, and the account its turns have moved off
-  talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
+  talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null;
+  // what other Obys ask you: never where the app opens (docs/contracts/ask-an-oby.md, ASK-18)
+  fromObys?: boolean };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.

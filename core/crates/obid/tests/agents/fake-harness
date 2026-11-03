@@ -33,6 +33,7 @@
 //   GREP <w>       searches the room with no path (repos/ in it, taints the turn), then does <w>
 //   TOOLSEARCH     makes a ToolSearch tool call (the deferred-tool lookup), then says "searched"
 //   LINGER <ms>    waits that long, then says "waited" (not WAIT: a bare "wait" is a cancel word)
+//   PAUSE <ms> <w> waits that long, then does <w>
 //   FILES          says "files: <each attachments/<turn>/<name> in its room> named=<whether the
 //                  prompt names each, quoted>"
 //   SLOWFAIL <ms>  waits that long, then ends the turn with an error result
@@ -339,6 +340,10 @@ async function act(words, prompt = "", before = resumed) {
       { tool: "mcp__elsewhere__run", input: {} },
     );
     askNext();
+  } else if (words.startsWith("PAUSE ")) {
+    const [, ms, ...rest] = words.split(" ");
+    await new Promise((done) => setTimeout(done, Number(ms)));
+    await act(rest.join(" "));
   } else if (words.startsWith("LINGER ")) {
     await new Promise((done) => setTimeout(done, Number(words.split(" ")[1])));
     say("waited");
