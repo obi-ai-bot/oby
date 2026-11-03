@@ -1582,6 +1582,24 @@ fn recovery_1_codex_and_cursor_continue_after_a_cut() {
     }
 }
 
+/// RECOVERY-1: a Cursor that can't load its session isn't told to carry on in a new one that
+/// wouldn't know the task: the job ends with why.
+#[test]
+fn recovery_1_a_cursor_that_cant_load_its_session_starts_no_new_one() {
+    let folder = Folder::new("recovery-1-no-load");
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "DIE NO LOAD"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Cursor can't load its session"),
+        "{job}"
+    );
+}
+
 /// RECOVERY-3: Codex and Cursor alike: a job gone quiet goes on in its session.
 #[test]
 fn recovery_3_codex_and_cursor_continue_when_quiet() {

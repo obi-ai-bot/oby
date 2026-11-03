@@ -274,14 +274,32 @@ fn continue_message(what: &str, error: Option<&str>) -> String {
         )
     });
     format!(
-        "[From Oby, by itself: not the owner's words] Your run was cut: {what}.{error} Before you repeat anything, check what really ran: a command may have finished without you seeing its answer, and a call that reads as refused or lost may only have been cut. Then carry on with the task where you left off."
+        "[From Oby, by itself: not the owner's words] Your run was cut: {what}.{error} Before you repeat anything, check what really ran: a command may have finished without you seeing its answer, and a call that reads as refused or lost may only have been cut. Then carry on with the task where you left off. End of Oby's note."
     )
+}
+
+/// What a cut turn's next try is told: obid's `note`, then all it was `sent`, which the cut may
+/// have lost: a CLI can die before reading it, or a tool can have a session and no prompt yet.
+fn after_cut(note: &str, sent: &str) -> String {
+    match sent.is_empty() {
+        true => note.to_owned(),
+        false => format!(
+            "{note}\n\nWhat you were last sent, which may not have reached you (check before acting on it again):\n\n{sent}"
+        ),
+    }
 }
 
 /// What a turn that ended with no result said that trying again won't mend (RECOVERY-1): a login,
 /// or a session that's gone.
 fn retrying_wont_mend(said: &str) -> bool {
-    let said = said.to_lowercase();
+    // Whole words only: `.401Z` in a timestamp or `log info` says nothing of a login.
+    let said: String = said
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = format!(" {said} ");
     [
         "not logged in",
         "log in",
@@ -297,7 +315,7 @@ fn retrying_wont_mend(said: &str) -> bool {
         "no conversation found",
     ]
     .iter()
-    .any(|w| said.contains(w))
+    .any(|w| said.contains(&format!(" {w} ")))
 }
 
 /// What obid tells an agent that ended its turn to wait for something still running.
@@ -403,9 +421,7 @@ fn clean_note(text: &str) -> Option<String> {
 
 /// Whether obid's own bug ended `job` (a panic in its task), or obid kept going down with it.
 fn crashed(job: &Job) -> bool {
-    job.reason
-        .as_deref()
-        .is_some_and(|r| r.starts_with(crate::job::CRASHED) || r == crate::job::LOOPED)
+    job.reason.as_deref().is_some_and(crate::job::obids_doing)
 }
 
 /// What [`Jobs::onto_base`] did: nothing to do; rebased, its commits starting at this base commit
@@ -511,8 +527,14 @@ enum Gate<'a> {
     ObiReview,
     /// The owner's own job, with its MCP permission rules (Tetrix's tools, the broker's), and
     /// whether a call that waits for the owner past `parkAfter` parks it ([`Jobs::park`]): never in
-    /// a stall's handoff turn, whose end needs the owner anyway.
-    Owner { mcp: &'a [String], park: bool },
+    /// a stall's handoff turn, whose end needs the owner anyway. And whether only its own session
+    /// will do: a turn that carries a cut run on tells it to go on, so a new session wouldn't know
+    /// the task (docs/contracts/recovery.md).
+    Owner {
+        mcp: &'a [String],
+        park: bool,
+        session_only: bool,
+    },
 }
 
 /// One boxed run that isn't a job's ([`Jobs::brain_launch`], [`Jobs::conversation_launch`]).
@@ -1047,7 +1069,7 @@ impl Jobs {
             // Its agent's run was cut, and its session can take it on with a marked message
             // (RECOVERY-2): a job cut checking or publishing has no agent to tell ("After any
             // restart"), and #915's guard above comes first.
-            let continues = at_work
+            let continues = job.status == Status::Running
                 && !waited
                 && job.obi.is_none()
                 && left_here.is_none()
@@ -1411,7 +1433,10 @@ impl Jobs {
             .lock()
             .jobs
             .values()
-            .filter(|j| j.dismissed.is_none() && j.reason.as_deref() == Some(crate::job::LOOPED))
+            .filter(|j| {
+                j.dismissed.is_none()
+                    && j.reason.as_deref().is_some_and(crate::job::kept_going_down)
+            })
             .map(|j| j.id.clone())
             .collect();
         for id in looped {
@@ -6497,7 +6522,18 @@ impl Jobs {
     /// flags) before it is cut, so a token or header the CLI printed never reaches the job's
     /// `reason` (#1648).
     fn agent_note(&self, id: &str) -> String {
-        let text = std::fs::read_to_string(self.log_path(id, "agent.log")).unwrap_or_default();
+        self.agent_note_from(id, 0)
+    }
+
+    /// [`Self::agent_note`], of what the log holds past its first `from` bytes: `agent.log` keeps
+    /// every run of the job, and an earlier run's line says nothing of why this one died.
+    fn agent_note_from(&self, id: &str, from: u64) -> String {
+        let bytes = std::fs::read(self.log_path(id, "agent.log")).unwrap_or_default();
+        let text = usize::try_from(from)
+            .ok()
+            .and_then(|from| bytes.get(from..))
+            .unwrap_or_default();
+        let text = String::from_utf8_lossy(text);
         let text = text.trim();
         if text.is_empty() {
             return String::new();
@@ -7395,9 +7431,13 @@ impl Jobs {
         ran_secs: Option<&(dyn Fn() -> u64 + Sync)>,
     ) -> Result<agent::Turn, String> {
         let prompt = &crate::vault::for_agent(prompt)?;
-        let (obi_review, mcp_rules, parks) = match gate {
-            Gate::ObiReview => (true, &[][..], false),
-            Gate::Owner { mcp, park } => (false, mcp, park),
+        let (obi_review, mcp_rules, parks, session_only) = match gate {
+            Gate::ObiReview => (true, &[][..], false, false),
+            Gate::Owner {
+                mcp,
+                park,
+                session_only,
+            } => (false, mcp, park, session_only),
         };
         let worktree = launch.cwd.clone();
         let job = self.get(id).ok_or("the job is gone")?;
@@ -7601,8 +7641,10 @@ impl Jobs {
                         tool: tool.name().into(),
                         account,
                         resume: job.session.clone(),
-                        // The answer to a call it was parked for goes to its own session only.
-                        resume_only: job.parked.as_ref().is_some_and(|p| p.answered),
+                        // The answer to a call it was parked for goes to its own session only, as
+                        // does a cut run's continuation.
+                        resume_only: session_only
+                            || job.parked.as_ref().is_some_and(|p| p.answered),
                         model: job.model.clone(),
                         plan,
                         plan_mode: "plan".into(),
@@ -7710,7 +7752,11 @@ impl Jobs {
                         launch,
                         &prompt,
                         signal,
-                        Gate::Owner { mcp, park: false },
+                        Gate::Owner {
+                            mcp,
+                            park: false,
+                            session_only: false,
+                        },
                         crate::conn::Limit {
                             most: HANDOFF_LIMIT,
                             quiet: Some(self.config.stall_after),
@@ -9444,6 +9490,11 @@ impl Jobs {
         if was_cut.is_some() {
             self.update(id, |job| job.recovery.cut = None);
         }
+        // Its first turn goes to its own session only, when it's told to carry on there.
+        let mut session_only = was_cut.is_some();
+        // What obid says first on the next turn when it carries a cut run on by itself
+        // (RECOVERY-1 to 3): `message` stays what was last sent, since the cut may have lost it.
+        let mut cut_note: Option<String> = None;
         let mut message = if picks_up {
             String::new()
         } else if !words.is_empty() && job.session.is_some() {
@@ -9456,9 +9507,19 @@ impl Jobs {
                 None => words,
             };
             match &was_cut {
-                Some(what) => format!("{}\n\n{words}", continue_message(what, None)),
+                Some(what) => {
+                    let note = continue_message(what, None);
+                    match job.recovery.sent.as_deref() {
+                        Some(sent) => format!("{}\n\n{words}", after_cut(&note, sent)),
+                        None => format!("{note}\n\n{words}"),
+                    }
+                }
                 None => words,
             }
+        } else if let Some(sent) = job.recovery.sent.clone().filter(|_| was_cut.is_some()) {
+            // What the run obid went down with was sent: the owner's words among it are nowhere else.
+            cut_note = was_cut.as_deref().map(|what| continue_message(what, None));
+            sent
         } else {
             let mut message = owner_prompt(&job);
             if rules_quoted {
@@ -9776,12 +9837,31 @@ impl Jobs {
                 if spent(&job) >= job.budget_from.unwrap_or(0) + self.config.job_token_budget {
                     return Err(stall(Stall::Budget).await);
                 }
+                // Words that came while it was cut go with its next try.
+                let told = match cut_note.take() {
+                    Some(note) => {
+                        session_only = true;
+                        let (words, owners) = self.take_words(id);
+                        if !words.is_empty() {
+                            message = [message.as_str(), &words.join("\n\n")]
+                                .into_iter()
+                                .filter(|m| !m.is_empty())
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+                            noted = true;
+                            steered = steered || owners;
+                        }
+                        after_cut(&note, &message)
+                    }
+                    None => message.clone(),
+                };
                 let launch =
                     self.launch(&job, &spec, tool, flags.clone(), &account, broker.as_ref())?;
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
                 }
                 self.update(id, |job| {
+                    job.recovery.sent = Some(message.clone());
                     job.stalled = None;
                     job.ran_secs = Some(ran());
                     if job.status == Status::Queued {
@@ -9813,16 +9893,20 @@ impl Jobs {
                 if round == 1 {
                     self.transcribed(id, self.transcripts.asked(id, &job.request));
                 }
+                // `agent.log` keeps every run: only what this one prints says why it ended.
+                let log_from =
+                    std::fs::metadata(self.log_path(id, "agent.log")).map_or(0, |log| log.len());
                 let turn = self
                     .turn(
                         id,
                         tool,
                         launch,
-                        &message,
+                        &told,
                         signal,
                         Gate::Owner {
                             mcp: &mcp_rules,
                             park: true,
+                            session_only: std::mem::take(&mut session_only),
                         },
                         crate::conn::Limit {
                             most: left,
@@ -9852,7 +9936,7 @@ impl Jobs {
                     let Some(next) = self.stall_try(id, &text) else {
                         return Err(stall(Stall::Quiet).await);
                     };
-                    message = next;
+                    cut_note = Some(next);
                     opening = Some(format!("Oby continued {}: {text}", tool.name()));
                     continue;
                 }
@@ -9867,12 +9951,17 @@ impl Jobs {
                         let Some(next) = self.stall_try(id, &text) else {
                             return Err(stall(Stall::Turns).await);
                         };
-                        message = next;
+                        // 200 turns in, what it was sent reached it.
+                        message.clear();
+                        cut_note = Some(next);
                         opening = Some(format!("Oby continued {}: {text}", tool.name()));
                         continue;
                     }
-                    // Masked as the stderr note is (#1648): it goes into the job's step and reason.
-                    let first = crate::detail::mask(said.lines().next().unwrap_or("").trim());
+                    // What the CLI said ended the turn, never the agent's own last words, which can
+                    // quote anyone. Masked as the stderr note is (#1648): it goes into the job's step
+                    // and reason.
+                    let error = crate::secrets::known().redact(&turn.text());
+                    let first = crate::detail::mask(error.lines().next().unwrap_or("").trim());
                     // Claude Code and Codex retry these themselves first; one that still ends the
                     // turn gets the round again in its session, after a wait.
                     // As its windows are now: one past its reset is empty again.
@@ -9891,13 +9980,14 @@ impl Jobs {
                         "{} stopped without finishing ({}).{}",
                         tool.name(),
                         turn.exit,
-                        self.agent_note(id)
+                        self.agent_note_from(id, log_from)
                     );
                     let limit_said = turn.resets.is_some()
                         || full
                         || crate::limits::is_limit(&ended)
                         || crate::limits::is_limit(&first);
-                    let passing = transient(&said, full)
+                    // A limit the account's usage or the tool reports is #1563's, whatever cut it.
+                    let passing = (!full && turn.resets.is_none() && transient(&error, full))
                         || (no_result && !limit_said && !retrying_wont_mend(&ended));
                     let tries = self.get(id).map_or(0, |j| j.recovery.errors);
                     if passing && tries < CUT_WAITS.len() {
@@ -9913,19 +10003,34 @@ impl Jobs {
                         self.update(id, |job| job.recovery.errors = attempt);
                         tracing::info!("job {id}: {error}: trying again in {wait:?}");
                         let mut left = wait;
-                        while !left.is_zero() {
+                        let heard = || self.get(id).is_some_and(|j| !j.heard.is_empty());
+                        'wait: while !left.is_zero() && !heard() {
                             let step = trying_again(error, left, attempt, CUT_WAITS.len());
-                            self.update(id, |job| job.step = step.clone());
+                            self.update(id, |job| {
+                                job.step = step.clone();
+                                job.ran_secs = Some(ran());
+                            });
                             let tick = left.min(Duration::from_secs(60));
-                            let mut stop = signal.clone();
-                            tokio::select! {
-                                () = tokio::time::sleep(tick) => {}
-                                _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(()),
+                            let sleep = tokio::time::sleep(tick);
+                            tokio::pin!(sleep);
+                            loop {
+                                let mut stop = signal.clone();
+                                tokio::select! {
+                                    () = &mut sleep => break,
+                                    _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(()),
+                                    // Words for it end the wait: they're its next try's.
+                                    () = self.changed.notified() => {
+                                        if heard() {
+                                            break 'wait;
+                                        }
+                                    }
+                                }
                             }
                             left -= tick;
                         }
                         if session {
-                            message = continue_message("an error ended your turn", Some(error));
+                            cut_note =
+                                Some(continue_message("an error ended your turn", Some(error)));
                             opening = Some(format!(
                                 "Oby continued {}: an error cut its run",
                                 tool.name()
@@ -9933,12 +10038,7 @@ impl Jobs {
                         }
                         continue;
                     }
-                    let mut reason =
-                        if first.is_empty() || (no_result && !crate::limits::is_limit(&first)) {
-                            ended
-                        } else {
-                            first
-                        };
+                    let mut reason = if first.is_empty() { ended } else { first };
                     // OpenAI refused the Codex login, as Codex itself says (never the agent's own
                     // words): no run on it starts again until the owner signs in, and the job says
                     // so in words they can act on.
@@ -9988,6 +10088,7 @@ impl Jobs {
                     });
                 }
                 self.update(id, |job| {
+                    job.recovery.sent = None;
                     // A turn that said nothing (its last message a tool call, say) keeps the
                     // earlier round's summary and adds no empty one to the rounds' (#764).
                     if said.trim().is_empty() {
@@ -13268,6 +13369,7 @@ fn hear(job: &mut Job, text: &str) {
 fn owner_spoke(job: &mut Job) {
     job.recovery = crate::job::Recovery {
         cut: job.recovery.cut.take(),
+        sent: job.recovery.sent.take(),
         ..Default::default()
     };
 }
@@ -17248,9 +17350,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A job whose task panics ends `failed`, saying so with the panic's words (every secret obid
-    /// knows taken out), gives its slot back, and leaves no claim on publishing it (a panic
-    /// mid-publish); Try again carries it on, a fresh run when it had no session (#914).
     /// RECOVERY-2: obid's bug before anything went out: its session goes on, with no card and no
     /// failed end, up to 3 times; then today's end, as after one when publishing began.
     #[tokio::test]
@@ -17319,6 +17418,97 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// RECOVERY-2: a real panic in a job's task gives its worker and slot back and schedules it
+    /// again, its session told why; `long_jobs::recovery_2_the_run_after_a_panic_hears_of_it` picks
+    /// it up from there. With no sandbox here, that run gets no further than starting.
+    #[tokio::test]
+    async fn recovery_2_a_real_panic_is_scheduled_again() {
+        let root = std::env::temp_dir().join(format!("obid-panic-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        let mut job = Job::new(
+            "dddd0002".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        job.status = Status::Stopped;
+        job.session = Some("s1".into());
+        std::fs::write(
+            home.join("jobs/dddd0002.json"),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        jobs.update("dddd0002", |job| {
+            job.status = Status::Running;
+            job.phase = Some(Phase::Work);
+        });
+        let (sender, _) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("dddd0002".into(), sender);
+        jobs.spawn_worker("dddd0002".into(), async move { panic!("boom") });
+        for _ in 0..100 {
+            if jobs
+                .get("dddd0002")
+                .is_some_and(|j| j.recovery.restarts == 1)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let job = jobs.get("dddd0002").unwrap();
+        assert_eq!(job.recovery.restarts, 1, "{job:?}");
+        assert_eq!(job.session.as_deref(), Some("s1"), "{job:?}");
+        assert!(
+            !job.reason
+                .is_some_and(|r| r.starts_with(crate::job::CRASHED)),
+            "not today's end"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// RECOVERY-1: only a login's or a lost session's own words stop a try, never a number or a
+    /// word inside another.
+    #[test]
+    fn recovery_1_only_whole_words_say_trying_again_wont_mend() {
+        use super::retrying_wont_mend;
+        for said in [
+            "Not logged in: please run /login",
+            "Invalid API key",
+            "HTTP 401",
+            "got 403 from the API",
+            "x-api-key was refused",
+            "No conversation found with session ID",
+        ] {
+            assert!(retrying_wont_mend(said), "{said}");
+        }
+        for said in [
+            "2026-11-03T01:04:00.401Z segfault",
+            "id 7f403a2e crashed",
+            "log info: died",
+            "design in progress",
+            "killed by signal 9",
+        ] {
+            assert!(!retrying_wont_mend(said), "{said}");
+        }
+    }
+
+    /// A job whose task panics ends `failed`, saying so with the panic's words (every secret obid
+    /// knows taken out), gives its slot back, and leaves no claim on publishing it (a panic
+    /// mid-publish); Try again carries it on, a fresh run when it had no session (#914).
     #[tokio::test]
     async fn a_job_whose_task_panics_ends_failed_and_gives_its_slot_back() {
         let root = std::env::temp_dir().join(format!("obid-panic-{}", uuid::Uuid::new_v4()));

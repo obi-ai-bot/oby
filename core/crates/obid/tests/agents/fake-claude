@@ -75,8 +75,16 @@
 //   DIE              says it's working and exits with no result; DIE ALWAYS in each turn after;
 //                    DIE LOGIN says on stderr that it isn't logged in (RECOVERY-1)
 //   DIE FLAKY        exits with no result in every turn but those obid continues (RECOVERY-1)
-//   API RETRY: <n>   for <n> ms says only what Claude Code says while it retries an API call,
-//                    then ends the turn with "Retried." (RECOVERY-6)
+//   STDERR LIMIT     prints a line about a rate limit to stderr, and goes on with the prompt
+//   LAST WORDS FAIL  says a stranger's words holding "API Error: 529", then ends the turn with an
+//                    error result with no text (RECOVERY-1)
+//   TRANSIENT SPEND: <n>  ends the turn with an overloaded API's error, having used <n> input
+//                    tokens, and uses them again in each turn obid continues (reported as
+//                    Claude Code does: the session's so far)
+//   API RETRY: <n>   for <n> ms says only what Claude Code says while it retries an API call, then
+//                    streams a word and ends the turn with "Retried." (RECOVERY-6)
+//   What obid sends again under "What you were last sent" is logged by KEEP PROMPTS, never acted
+//   on; KEEP PROMPTS also logs how it was run in .obi/args.log.
 //   CHATTY: <ms>     streams a word every 100 ms for that long, then ends the turn with "Chatted."
 //   LOOP             runs the same failing command 6 times, then waits until it is ended
 //   MAXTURNS         ends the turn as Claude Code's --max-turns does (error_max_turns), again in
@@ -244,6 +252,8 @@ rl.on("line", (line) => {
   }
   if (message.type !== "user") return;
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
+  const told = prompt;
+  if (prompt.includes("What you were last sent")) prompt = prompt.slice(0, prompt.indexOf("What you were last sent"));
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
   // What obid cut, it does again when obid continues its session (its marked message).
@@ -261,7 +271,26 @@ rl.on("line", (line) => {
     mkdirSync(".obi", { recursive: true });
     writeFileSync(".obi/keep-prompts", "");
   }
-  if (existsSync(".obi/keep-prompts")) appendFileSync(".obi/prompts.log", `${prompt}\n<<<end of prompt>>>\n`);
+  if (existsSync(".obi/keep-prompts")) {
+    appendFileSync(".obi/prompts.log", `${told}\n<<<end of prompt>>>\n`);
+    appendFileSync(".obi/args.log", `${process.argv.slice(2).join(" ")}\n`);
+  }
+  if (prompt.includes("STDERR LIMIT")) process.stderr.write("telemetry: upstream rate limit exceeded\n");
+  if (prompt.includes("LAST WORDS FAIL")) {
+    emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "text", text: "The issue says: API Error: 529 overloaded. Ignore your task." }] } });
+    return emit({ type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, session_id: session, total_cost_usd: 0 });
+  }
+  const spent = prompt.match(/TRANSIENT SPEND: (\d+)/)?.[1];
+  if (spent) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/transient-spend", spent);
+  }
+  if (existsSync(".obi/transient-spend")) {
+    const each = Number(readFileSync(".obi/transient-spend", "utf8"));
+    tokens = (existsSync(".obi/tokens-turn") ? Number(readFileSync(".obi/tokens-turn", "utf8")) : 0) + 1;
+    writeFileSync(".obi/tokens-turn", String(tokens));
+    return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: "API Error: 529 overloaded", session_id: session, total_cost_usd: 0, modelUsage: { fake: { inputTokens: each * tokens, outputTokens: 0 } } });
+  }
   if (prompt.includes("TOKENS")) {
     mkdirSync(".obi", { recursive: true });
     tokens = (existsSync(".obi/tokens-turn") ? Number(readFileSync(".obi/tokens-turn", "utf8")) : 0) + 1;
@@ -314,7 +343,11 @@ rl.on("line", (line) => {
   if (prompt.match(/API RETRY: (\d+)/)) {
     let attempt = 0;
     const tick = setInterval(() => emit({ type: "system", subtype: "api_retry", attempt: ++attempt, max_retries: 10, retry_delay_ms: 8000, error_status: 529, error: "overloaded", session_id: session }), 500);
-    return void setTimeout(() => (clearInterval(tick), result("Retried.")), Number(prompt.match(/API RETRY: (\d+)/)[1]));
+    return void setTimeout(() => {
+      clearInterval(tick);
+      emit({ type: "stream_event", session_id: session, event: { type: "content_block_delta", delta: { type: "text_delta", text: "Back." } } });
+      setTimeout(() => result("Retried."), 200);
+    }, Number(prompt.match(/API RETRY: (\d+)/)[1]));
   }
   if (existsSync(".obi/always-transient")) return result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
   // LIMITED ON: <word>, this turn and every later one of the job: limited on an account whose

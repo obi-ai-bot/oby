@@ -51,6 +51,16 @@ pub const LOOPED: &str = "obid went down 3 times in 30 minutes while this ran, s
 /// Why a job obid or the Mac kept going down with stays `interrupted`, past RECOVERY-2's tries.
 pub const RESTARTS_SPENT: &str = "obid or the Mac went down 4 times while this ran, so Oby left it here. Try again carries it on.";
 
+/// Whether `reason` says obid kept going down with a job: one item for the owner, a `crash` record.
+pub fn kept_going_down(reason: &str) -> bool {
+    reason == LOOPED || reason == RESTARTS_SPENT
+}
+
+/// Whether `reason` says obid's own bug ended a job, or obid kept going down with it.
+pub fn obids_doing(reason: &str) -> bool {
+    reason.starts_with(CRASHED) || kept_going_down(reason)
+}
+
 /// What obid did by itself to carry a job's cut run on (docs/contracts/recovery.md). Only the
 /// owner's own words start the counts again: no good turn, restart, follow-on or automatic retry
 /// does, so one kind of retry never multiplies another. Kept in its file, never in the API.
@@ -66,6 +76,10 @@ pub struct Recovery {
     /// What cut its run, for the next run's marked message; taken when that run starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,
+    /// What its turn under way was sent, until that turn ends well: a restart's next run hears it
+    /// again, since the words it holds are no longer anywhere else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent: Option<String>,
 }
 
 impl Recovery {
