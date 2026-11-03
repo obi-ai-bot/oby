@@ -644,8 +644,7 @@ impl Link {
     pub(super) fn forget_the_offer(&self) {
         let closed: Vec<Item> = {
             let mut state = self.lock();
-            state.sharing.rules.retain(|r| !r.for_this_sphere());
-            state.sharing.offered = None;
+            state.sharing.forget_the_offer();
             self.save_sharing(&state.sharing);
             let now = time::now();
             state

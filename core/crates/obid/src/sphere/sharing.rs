@@ -93,6 +93,11 @@ pub struct Rule {
     /// Sphere's, so it goes when they leave, as [`Rule::starter`] does. Not in the API's answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub room_yes: bool,
+    /// [`JOB_PROGRESS`] is on it by the owner's yes to the offer, not their own list: that yes was for
+    /// one Sphere too, so it comes off when they leave ([`Sharing::forget_the_offer`]). Not in the
+    /// API's answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub progress_yes: bool,
 }
 
 impl Rule {
@@ -221,6 +226,7 @@ impl Sharing {
         for rule in self.rules.iter_mut().filter(|r| r.has(JOB_STATUS)) {
             if !rule.has(JOB_PROGRESS) {
                 rule.tells.push(JOB_PROGRESS.to_owned());
+                rule.progress_yes = true;
             }
         }
         self.rules
@@ -228,6 +234,17 @@ impl Sharing {
             .find(|r| r.tells_everyone_status())
             .expect("made above")
             .clone()
+    }
+
+    /// Leaving a Sphere (PEER-19): what obid made on a yes goes, and that they were asked, so the next
+    /// Sphere asks again. Rules they wrote stay, as they wrote them.
+    pub fn forget_the_offer(&mut self) {
+        self.rules.retain(|r| !r.for_this_sphere());
+        self.offered = None;
+        for rule in self.rules.iter_mut().filter(|r| r.progress_yes) {
+            rule.tells.retain(|t| t != JOB_PROGRESS);
+            rule.progress_yes = false;
+        }
     }
 
     /// Whether the owner has said members may ask how the work goes: what the room's card builds on.
@@ -294,6 +311,7 @@ fn answers_who_asks(now: i64) -> Rule {
         last_used: None,
         starter: true,
         room_yes: false,
+        progress_yes: false,
     }
 }
 
@@ -384,6 +402,7 @@ pub fn rule_from(body: &Value, now: i64) -> Result<Rule, String> {
         last_used: None,
         starter: false,
         room_yes: false,
+        progress_yes: false,
     })
 }
 
@@ -756,6 +775,22 @@ mod tests {
         new.offered = None;
         assert!(!new.to_offer(), "it has it already");
         assert_eq!(new.rules[0].tells, [JOB_STATUS, JOB_PROGRESS]);
+        // Leaving takes back the yes, off a rule they wrote too, and their own list stays theirs.
+        let mine = rule(json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}));
+        let listed =
+            rule(json!({"for": ["ernesto"], "repos": "*", "tells": ["jobStatus", "jobProgress"]}));
+        let mut left = Sharing {
+            rules: vec![mine, listed],
+            ..Sharing::default()
+        };
+        left.share_job_status(1);
+        assert!(left.rules[0].has(JOB_PROGRESS));
+        let kept: Sharing = serde_json::from_slice(&serde_json::to_vec(&left).unwrap()).unwrap();
+        assert!(kept.rules[0].progress_yes, "across a restart");
+        left.forget_the_offer();
+        assert_eq!(left.rules[0].tells, [JOB_STATUS]);
+        assert_eq!(left.rules[1].tells, [JOB_STATUS, JOB_PROGRESS]);
+        assert!(left.offered.is_none());
         // A first join's rule doesn't have it.
         assert_eq!(starter(0).rules[0].tells, [JOB_STATUS]);
         // Nor the room's, on top of status: a post goes to everyone unasked.

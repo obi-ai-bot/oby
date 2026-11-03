@@ -1275,6 +1275,35 @@ async fn peer_19_leaving_keeps_the_rules_the_owner_wrote() {
     });
 }
 
+/// A yes added a job's progress to a rule the owner wrote: leaving keeps the rule and takes the yes
+/// back, so the next Sphere isn't told more than they wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_23_leaving_takes_a_yes_back_off_a_rule_the_owner_wrote() {
+    let folder = Folder::new("peer-23-leave");
+    let (_sphere, obid, _ernesto) = old_member(&folder).await;
+    tokio::task::block_in_place(|| {
+        let id = share(
+            &obid,
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
+        );
+        let card = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(card.status, 201, "{}", card.text);
+        assert!(card.text.contains("Can I also tell"), "{}", card.text);
+        let yes = confirm(&obid, card.body["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        assert_eq!(
+            rules(&obid)[0]["tells"],
+            json!(["jobStatus", "jobProgress"])
+        );
+        let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
+        assert_eq!(left.status, 200, "{}", left.text);
+        let kept = rules(&obid);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0]["id"], id.as_str());
+        assert_eq!(kept[0]["tells"], json!(["jobStatus"]));
+    });
+}
+
 /// Leaving during the run an owner's yes began: the exchange is settled as declined, and that isn't
 /// said to them as the secret scan's doing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
