@@ -2,7 +2,8 @@
 //! choice for it (`talkAccount` on `PATCH /v1/conversations/{id}`), else the setting's (on `PUT
 //! /v1/settings/jobs`), else Auto, whichever connected account has room. When that one can't run a
 //! turn, the turn moves to another account of any tool, and says so; `accountFailover` off keeps it
-//! to one. `conversation.agent` in the configuration is only the tool Auto looks at first.
+//! to one. A ChatGPT login stays out of that: no turn moves on to or off one without the owner's
+//! click ([`Apart`]). `conversation.agent` in the configuration is only the tool Auto looks at first.
 
 use axum::http::StatusCode;
 
@@ -76,7 +77,7 @@ pub(super) fn accounts(
     {
         tools.sort_by_key(|t| *t != tool);
     }
-    let apart = chatgpt_apart(shared, &tools, chosen, on);
+    let apart = chatgpt_apart(shared, chosen, on);
     let lists = tools
         .into_iter()
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
@@ -108,7 +109,7 @@ fn on_chatgpt(id: &str, shared: &Shared) -> Option<bool> {
     Some(crate::chatgpt::marker_of(&account).is_some())
 }
 
-fn chatgpt_apart(shared: &Shared, tools: &[Tool], chosen: Option<&str>, on: Option<&str>) -> Apart {
+fn chatgpt_apart(shared: &Shared, chosen: Option<&str>, on: Option<&str>) -> Apart {
     // The owner's choice is their click; else the session's, full or not, as it stands now.
     if let Some((id, chatgpt)) = chosen
         .into_iter()
@@ -121,17 +122,18 @@ fn chatgpt_apart(shared: &Shared, tools: &[Tool], chosen: Option<&str>, on: Opti
             Apart::Off
         };
     }
-    nothing_else(shared, tools)
+    nothing_else(shared)
 }
 
-/// With no account chosen or under way: whether anything but a ChatGPT login is signed in, full or
-/// not. A full one is still there: its limit isn't the owner's word to use their plan.
-fn nothing_else(shared: &Shared, tools: &[Tool]) -> Apart {
+/// With no account chosen or under way: whether anything but a ChatGPT login is on this Mac, of any
+/// tool, whether or not it can run now. A full one, or one whose token is ending, is still there:
+/// that isn't the owner's word to use their plan.
+fn nothing_else(shared: &Shared) -> Apart {
     let home = crate::jobs::login_home();
-    let another = tools.iter().any(|tool| {
-        shared.jobs.signed_in_accounts(*tool).iter().any(|account| {
+    let another = Tool::ALL.into_iter().any(|tool| {
+        shared.jobs.accounts(tool).iter().any(|account| {
             crate::chatgpt::marker_of(account).is_none()
-                && crate::jobs::signed_in(*tool, account, home.as_deref())
+                && crate::jobs::has_login(tool, account, home.as_deref())
         })
     });
     if another {
@@ -219,7 +221,7 @@ pub fn next(shared: &Shared) -> Option<String> {
 /// turn reads only its job.
 pub(super) fn unattended(shared: &Shared) -> Option<(Tool, Account)> {
     let tools = unwatched(tools(shared));
-    let apart = nothing_else(shared, &tools);
+    let apart = nothing_else(shared);
     let lists = tools
         .into_iter()
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))

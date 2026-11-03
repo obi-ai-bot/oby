@@ -330,7 +330,10 @@ async fn relay(
         let retry_after = response.headers().get(header::RETRY_AFTER).cloned();
         let body_said = response.bytes().await.unwrap_or_default();
         let said = said_in(&body_said);
-        if status == StatusCode::UNAUTHORIZED && !renewed && me.ends_within(account, NEAR_ITS_END) {
+        if status == StatusCode::UNAUTHORIZED
+            && !renewed
+            && me.may_replace(account, &access, NEAR_ITS_END)
+        {
             renewed = true;
             match me.replacing(account, &access).await {
                 Ok(fresh) => {
@@ -500,8 +503,9 @@ fn refusal_of(status: Option<u16>, said: &Value, request: Option<&str>) -> Refus
         }
         _ => match status {
             // Direct admission's own, before a stream opens: the identity or permission wasn't
-            // accepted. A 401 comes here only after a refresh couldn't help (`relay`).
-            Some(401) => stop(format!(
+            // accepted. A 401 comes here only after a refresh couldn't help (`relay`). One with no
+            // word of OpenAI's is an edge's page, like a 403's below.
+            Some(401) if !said.is_string() => stop(format!(
                 "ChatGPT didn't accept this account's login: {}",
                 words_of(said)
             )),
@@ -556,6 +560,11 @@ fn streamed(
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let events = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|kind| kind.starts_with("text/event-stream"));
     struct Reading {
         response: reqwest::Response,
         held: Vec<u8>,
@@ -564,6 +573,21 @@ fn streamed(
         account: String,
         run: String,
         request: Option<String>,
+        /// A stream of events, which says itself how it ended (a model list's JSON doesn't).
+        events: bool,
+        /// It said so.
+        settled: bool,
+    }
+    impl Reading {
+        /// The connection ended and the stream hadn't: no answer, and nothing OpenAI said of why.
+        fn gone_short(&self) {
+            if self.events && !self.settled {
+                let said = json!("its stream stopped before it ended.");
+                let refusal = refusal_of(None, &said, self.request.as_deref());
+                tracing::warn!("run {}: ChatGPT's stream stopped short", self.run);
+                self.shared.chatgpt.runs.refused(&self.run, refusal);
+            }
+        }
     }
     let frames = futures_util::stream::unfold(
         Reading {
@@ -574,12 +598,14 @@ fn streamed(
             account,
             run,
             request,
+            events,
+            settled: false,
         },
         |mut reading| async move {
             loop {
                 if let Some(end) = frame_end(&reading.held) {
                     let frame: Vec<u8> = reading.held.drain(..end).collect();
-                    notice(
+                    reading.settled |= notice(
                         &reading.shared,
                         &reading.account,
                         &reading.run,
@@ -597,10 +623,14 @@ fn streamed(
                 }
                 match reading.response.chunk().await {
                     Ok(Some(chunk)) => reading.held.extend_from_slice(&chunk),
-                    Ok(None) => reading.ended = true,
+                    Ok(None) => {
+                        reading.ended = true;
+                        reading.gone_short();
+                    }
                     Err(e) => {
                         reading.ended = true;
                         reading.held.clear();
+                        reading.gone_short();
                         return Some((Err(std::io::Error::other(e.without_url())), reading));
                     }
                 }
@@ -625,18 +655,22 @@ fn frame_end(held: &[u8]) -> Option<usize> {
 /// What a stream's event means, going by its own `type`: a model's words may name any of them. A
 /// failure's meaning is kept for the run; a plain `error` event says the same as a `response.failed`,
 /// though real Codex ignores it (spike, 2026-11-03), so a usage limit that comes that way is caught
-/// only here. A response that completed lifts the hour obid inferred from a limit.
-fn notice(shared: &Shared, account: &str, run: &str, frame: &[u8], request: Option<&str>) {
+/// only here. A response that completed lifts the hour obid inferred from a limit. Says whether the
+/// event told how the stream ended.
+fn notice(shared: &Shared, account: &str, run: &str, frame: &[u8], request: Option<&str>) -> bool {
     let contains = |needle: &[u8]| frame.windows(needle.len()).any(|w| w == needle);
-    if !contains(b"response.failed") && !contains(b"response.completed") && !contains(b"\"error\"")
+    if !contains(b"response.failed")
+        && !contains(b"response.completed")
+        && !contains(b"response.incomplete")
+        && !contains(b"\"error\"")
     {
-        return;
+        return false;
     }
     let Some(event) = String::from_utf8_lossy(frame)
         .lines()
         .find_map(|line| serde_json::from_str::<Value>(line.strip_prefix("data:")?.trim()).ok())
     else {
-        return;
+        return false;
     };
     let error = match event["type"].as_str() {
         Some("response.failed") => event["response"]["error"].clone(),
@@ -644,9 +678,10 @@ fn notice(shared: &Shared, account: &str, run: &str, frame: &[u8], request: Opti
         Some("error") => event.clone(),
         Some("response.completed") => {
             shared.jobs.limit_passed(account);
-            return;
+            return true;
         }
-        _ => return,
+        Some("response.incomplete") => return true,
+        _ => return false,
     };
     let said = json!({"error": error});
     let refusal = refusal_of(None, &said, request);
@@ -655,6 +690,7 @@ fn notice(shared: &Shared, account: &str, run: &str, frame: &[u8], request: Opti
         code_of(&said).unwrap_or_default()
     );
     shared.chatgpt.runs.refused(run, refusal);
+    true
 }
 
 impl ChatGpt {

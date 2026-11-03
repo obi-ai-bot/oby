@@ -155,13 +155,15 @@ async function relayed() {
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ store: false, stream: true }),
     });
-    const body = await response.text();
+    const body = await response.text().catch(() => null);
+    if (body === null) { last = "stream disconnected before completion: error sending request"; continue; }
     if (response.status === 400) return { failed: body };
     if (response.status === 429) return { failed: "exceeded retry limit, last status: 429 Too Many Requests" };
     if (!response.ok) { last = `unexpected status ${response.status}: ${body}`; continue; }
     const events = body.split("\n").filter((l) => l.startsWith("data:")).map((l) => JSON.parse(l.slice(5)));
     const failed = events.find((e) => e.type === "response.failed");
     if (failed) { last = `stream disconnected before completion: ${failed.response.error.message}`; continue; }
+    if (!events.some((e) => e.type === "response.completed")) { last = "stream closed before response.completed"; continue; }
     return { said: events.flatMap((e) => e.item?.content ?? []).map((c) => c.text).join("") };
   }
   return { failed: last };
@@ -282,6 +284,7 @@ async function act(turnId, words) {
     return say(turnId, "used");
   }
   if (words.startsWith("RELAY")) {
+    if (words.startsWith("RELAY SAID ")) event("item/completed", turnId, { item: { type: "agentMessage", id: randomUUID(), text: words.slice(11), phase: "commentary" } });
     const { said, failed } = await relayed();
     return failed === undefined ? say(turnId, said) : complete(turnId, null, "failed", { message: failed });
   }

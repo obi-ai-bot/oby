@@ -18,6 +18,7 @@ In the message box, by send, on Home and in a conversation: the chosen account's
 
 - **obid** decides which account each turn runs on, moves it, keeps the choice and says what happened. Everything here is obid's.
 - **The Electron app** shows obid's accounts and figures, and sends the owner's choice. It decides nothing: which account the picker names follows `talkAccount`, `talkedOn`, `movedOff`, `fullUntil` and `talkNext`.
+- **A ChatGPT login stays apart** from everything below (docs/contracts/chatgpt-sign-in.md): no turn moves on to or off one without the owner's click, Auto picks one only with no other login of any tool on the Mac, and a turn on one that hits its limit says so and stays.
 - **`conversation.agent`** in `config.json` stays the fallback: the tool Auto looks at first, Claude Code when it's left out. It still takes `claude` or `codex` only.
 
 ### What a turn runs on
@@ -70,7 +71,7 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 
 - **CONVERSATION-AGENT-1:** The setting (Auto or an account) and a conversation's choice outlive a restart. An account there isn't is `422`. A conversation with no choice follows the setting; `auto` is Auto whatever the setting says.
 - **CONVERSATION-AGENT-2:** A choice takes effect at the next turn, on another tool in a new session with the earlier turns handed over, saying nothing of moving. Auto then stays where the session is while it has room.
-- **CONVERSATION-AGENT-3:** The chosen account fills, can't run, or was full when chosen: the turn is answered on another account, any tool, with a line that says so, once, until it answers on that account again or the owner chooses again. The choice stays. Cursor moves off the same way. A turn that already did anything but read stays where it is: nothing runs twice.
+- **CONVERSATION-AGENT-3:** The chosen account fills, can't run, or was full when chosen: the turn is answered on another account, any tool (not a ChatGPT login, on or off, without the owner's click), with a line that says so, once, until it answers on that account again or the owner chooses again. The choice stays. Cursor moves off the same way. A turn that already did anything but read stays where it is: nothing runs twice.
 - **CONVERSATION-AGENT-4:** `accountFailover` off: one account only, across tools too, and the turn says why.
 - **CONVERSATION-AGENT-5:** What a conversation read goes with it to another agent: its work starts marked untrusted there.
 - **CONVERSATION-AGENT-6:** Cursor talks: in its box, one session per conversation picked up with `session/load`, its words streaming and never what a load replays, told what it is in its first prompt, with Oby's tools, and the turn's token only in `session/new`. One that can't load gets a new session with the earlier turns handed over.

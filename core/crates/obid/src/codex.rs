@@ -107,6 +107,7 @@ pub async fn run_turn(
         reasoning: HashMap::new(),
         ended: None,
         resets: None,
+        chatgpt: options.chatgpt,
     };
     let mut turn = Turn::default();
     match run.turn(prompt, options).await {
@@ -248,6 +249,8 @@ struct Run<D, E> {
     ended: Option<(String, bool)>,
     /// When Codex's own limit resets, once it said it's full (crate::limits).
     resets: Option<i64>,
+    /// On a ChatGPT login ([`Options::chatgpt`]).
+    chatgpt: bool,
     /// The helper threads that spoke this turn, each said once as a tool call.
     helpers: std::collections::HashSet<String>,
 }
@@ -539,7 +542,14 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 ));
             }
             Some("turn/completed") => {
-                self.ended = Some(finished(&params["turn"], self.said.as_deref()));
+                let turn = &params["turn"];
+                // On a ChatGPT login nothing is read out of a failed turn's words, so they're
+                // Codex's: the model's can say anything (docs/contracts/chatgpt-sign-in.md).
+                self.ended = Some(if self.chatgpt && turn["status"] == "failed" {
+                    why_failed(turn)
+                } else {
+                    finished(turn, self.said.as_deref())
+                });
             }
             _ => {}
         }
@@ -1068,6 +1078,11 @@ pub fn finished(turn: &Value, said: Option<&str>) -> (String, bool) {
     if status == "interrupted" {
         return ("Stopped.".into(), true);
     }
+    why_failed(turn)
+}
+
+/// A failed turn's reason, in Codex's words, whatever the agent said before it.
+fn why_failed(turn: &Value) -> (String, bool) {
     // The API's own error arrives as JSON inside the message.
     let message = turn["error"]["message"].as_str().unwrap_or("");
     let reason = serde_json::from_str::<Value>(message)

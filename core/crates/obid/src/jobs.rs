@@ -2566,7 +2566,7 @@ impl Jobs {
 
     /// `tool`'s accounts: the configured ones, or its own default login (Claude Code's and
     /// Codex's; a Cursor account always has a folder of its own).
-    fn accounts(&self, tool: Tool) -> Vec<crate::config::Account> {
+    pub(crate) fn accounts(&self, tool: Tool) -> Vec<crate::config::Account> {
         let Some(agent) = self.agent_config(tool) else {
             return Vec::new();
         };
@@ -10189,8 +10189,14 @@ impl Jobs {
                         || crate::limits::is_limit(&first);
                     // A limit the account's usage or the tool reports is #1563's, whatever cut it.
                     use crate::chatgpt_relay::After;
+                    // On a ChatGPT login only the relay's refusal says it's a limit: a usage read
+                    // doesn't exist, and OpenAI's limit names no time (the contract).
+                    let chatgpt = crate::chatgpt::marker_of(&account).is_some();
                     let passing = match &refusal {
                         Some(refusal) => refusal.after == After::TryAgain,
+                        None if chatgpt => {
+                            transient(&error, false) || (no_result && !retrying_wont_mend(&ended))
+                        }
                         None => {
                             (!full && turn.resets.is_none() && transient(&error, full))
                                 || (no_result && !limit_said && !retrying_wont_mend(&ended))
@@ -10270,6 +10276,7 @@ impl Jobs {
                     let now = obi_protocol::time::now();
                     let limited = match &refusal {
                         Some(refusal) => refusal.after == After::Limit,
+                        None if chatgpt => false,
                         None => turn.resets.is_some() || full || crate::limits::is_limit(&reason),
                     };
                     let reset = turn
@@ -10282,7 +10289,7 @@ impl Jobs {
                         // Else when the account's own usage says it's full until (#745). OpenAI's
                         // limit names no time, and an hour obid inferred never reaches the card.
                         .or_else(|| limited.then(|| usage.full_until_at(now)).flatten())
-                        .filter(|_| crate::chatgpt::marker_of(&account).is_none());
+                        .filter(|_| !chatgpt);
                     // The account is full whatever the tool said, so nothing else is routed there
                     // until it resets; and while another of the tool has room, the job goes on there.
                     if limited {

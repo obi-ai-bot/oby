@@ -37,7 +37,7 @@ OpenAI's words below were re-read from the pages themselves on 2026-11-03 (https
 
 - `signedIn` depends on the refresh token and a marker, never on the access token's expiry.
 - Switching kinds removes the old login only after the new one succeeds.
-- Nobody moves without the owner's click. A conversation the owner put on a ChatGPT account, or whose session is on one, stays on it: at its limit the turn says so and goes nowhere else, on that turn or the next. One on anything else never lands on one, however full it is. Auto picks one only on a Mac with nothing else signed in, full or not. A turn nobody watches follows the same rule. Offered at a limit (#1563), it moves only on the owner's click.
+- Nobody moves without the owner's click. A conversation the owner put on a ChatGPT account, or whose session is on one, stays on it: at its limit the turn says so and goes nowhere else, on that turn or the next. One on anything else never lands on one, however full it is. Auto picks one only on a Mac with no other login of any tool, whether or not that login can run now: a full one, or a Codex one whose token is ending, is still there. A turn nobody watches follows the same rule, though it won't run on Cursor. Offered at a limit (#1563), it moves only on the owner's click.
 - New jobs on Auto do route to a ChatGPT account, as unknown (`Jobs::pick`): it's in the owner's list.
 
 ### Words
@@ -63,18 +63,18 @@ The page names no address for "ChatGPT usage settings"; `https://chatgpt.com/set
 | Returning sign-in with a different `sub`, or an issued `client_id` already on another account | Nothing replaced. The same `sub` under a new client is a separate account: one person with Personal and Team is two valid registrations. |
 | Scope `chatgpt.tokens.use.direct` missing | Sign-in kept, plan use off, no run starts on it. Choosing again repeats OAuth with `prompt=consent`, which OpenAI's page still supports; never on an ordinary sign-in. |
 | `invalid_grant` on the code's exchange | The code is discarded; the next try reuses the issued client. |
-| 401, token near its end (within 10 minutes) | The relay refreshes and sends the same request again. Codex never sees it, no process restarts, none of its tries spent. |
-| 401 on a token at least 10 minutes from expiry, or a second 401 straight after a refresh | The job ends with the request id. No sign-in prompt unless a refresh failed terminally. |
+| 401, token near its end (within 10 minutes), or one another run has already replaced | The relay refreshes, or takes the token that replaced it, and sends the same request again. Codex never sees it, no process restarts, none of its tries spent. |
+| 401 in OpenAI's JSON on the account's current token, at least 10 minutes from expiry, or a second one straight after a refresh | The job ends with the request id. No sign-in prompt unless a refresh failed terminally. |
 | `invalid_grant`, `invalid_refresh_token`, `token_expired`, `refresh_token_expired`, `refresh_token_invalidated`, `refresh_token_reused` | Tokens cleared, record kept so the client id survives. Sign in again. On `refresh_token_reused`, the vault is read again first and cleared only if it still holds that token. |
 | `invalid_client` | Reported as Oby's configuration, no sign-in prompt. |
-| 429 `subscription_sharing_usage_limit_exceeded`, before or after the stream began, in a `response.failed` or a plain `error` event | #1563's flow unchanged, with no reset time. Resume follows LIMITS-1 and says no time. An inferred hold is never a decision's `resetAt`. A response that completes through the relay afterwards lifts the hold. |
+| 429 `subscription_sharing_usage_limit_exceeded`, before or after the stream began, in a `response.failed` or a plain `error` event | #1563's flow unchanged, with no reset time. Resume follows LIMITS-1 and says no time. An inferred hold is never a decision's `resetAt`. A response that completes through the relay afterwards lifts the hold. Nothing else on a ChatGPT login says it's a limit: not a turn's words, which can be the model's, and there's no usage read. A failed turn's reason is Codex's error, never what the model said last. |
 | `subscription_sharing_user_not_eligible`, `chatpass_v2_*`, `subscription_sharing_route_not_supported`, `subscription_sharing_unsupported_capability`, `subscription_sharing_invalid_user`, wherever they come; a 403 with admission's `{"detail":…}` | Stated with the request id, no retry, no OAuth loop, no billing switch. These are what OpenAI's page calls final. |
-| 503, `subscription_sharing_usage_unavailable`, `subscription_sharing_user_unavailable`, a network failure, and **anything the page doesn't call final**: another status (408, 409, a 403 with no word of OpenAI's), another code, a stream's `server_error` | Credentials kept. It goes to Codex as it came, for Codex's own retries, then the job's bounded tries (RECOVERY-1). The page says its list isn't exhaustive. |
+| 503, `subscription_sharing_usage_unavailable`, `subscription_sharing_user_unavailable`, a network failure, and **anything the page doesn't call final**: another status (408, 409, a 401 or 403 with no word of OpenAI's, which is an edge's page), another code, a stream's `server_error`, a stream cut or ending with no `response.completed`, `response.failed` or `response.incomplete` | Credentials kept. It goes to Codex as it came, for Codex's own retries, then the job's bounded tries (RECOVERY-1). The page says its list isn't exhaustive. |
 | Revoke | Only a 200 counts. A network failure or 5xx gets at most three tries within 10 seconds, then removal completes with `revoked:false`. |
 | A token set obid won't keep (mismatch, account removed mid-exchange or mid-refresh) | Revoked best effort, then dropped. |
 | A refresh that fails for now (a network failure, a 5xx, a 429, anything unlisted) | No other POST until its wait ends: `Retry-After` when it says, else 30 seconds doubling to 5 minutes. A token that still works goes on being used. |
 | A refresh answer of 200 that isn't whole (a bad `expires_in`, no access token) | Its rotated refresh token is kept anyway, and the next use refreshes with it. |
-| A refresh in flight when a new sign-in or a device login takes the account | It writes nothing. Over a new sign-in it's only dropped, since revoking might end that session too (S8); over a device login it's revoked. A terminal answer about a token already replaced ends nothing. |
+| A refresh in flight when a new sign-in or a device login takes the account | It writes nothing. Over a new sign-in it's only dropped, since revoking might end that session too (S8); over a device login it's revoked. A terminal answer about a token already replaced ends nothing, and brings no marker back beside a device login. |
 | `accounts.json` doesn't read at start, an entry its checks leave out, a seeded account taken out of `config.json` | No login is revoked or deleted: mending the file brings them back. Only an entry whose account the owner removed is taken back at start. |
 
 **Refresh tries not to lose a rotated token, and can't always.** Each account's refresh runs in one spawned task callers wait on, so stopping a job can't cancel it. A new token is held for the scrub the moment it comes, and written at once. If the write fails, the record stays in memory and is retried, with no other refresh meanwhile, and runs use the token it holds. The answer itself can be lost: after a timeout or a dropped connection the same refresh token is sent again. If OpenAI hadn't rotated it, that works. If it had, the answer is `refresh_token_reused`, the login is over and the person signs in again, since OpenAI's pages describe no grace period. A crash between the answer and the write ends the same way.
@@ -114,13 +114,13 @@ All add-only.
 - **CHATGPT-5:** A returning sign-in with a different `sub`, or a client already on another account, replaces nothing.
 - **CHATGPT-6:** Scope missing keeps the sign-in, with plan use off and no run.
 - **CHATGPT-7:** Access token expired, refresh token valid: `signedIn` stays true.
-- **CHATGPT-8:** Two runs at once with an expiring token cause one refresh.
+- **CHATGPT-8:** Two runs at once with an expiring token cause one refresh. A 401 on a token already replaced goes on with the new one.
 - **CHATGPT-9:** A terminal refresh error clears tokens, asks for sign-in, and keeps the client id.
 - **CHATGPT-10:** While a job runs, no process of the owner's user finds an OpenAI token in any pid's environment, or in `CODEX_HOME`. (Measured from outside the boxes: S0 showed a box reads what an unboxed reader does.)
 - **CHATGPT-11:** Every token generation is scrubbed from a `/v1` answer, `for_agent` and the scan, each checked again after a restart.
 - **CHATGPT-12:** A job outlives its token and finishes on the same thread, none of its tries spent.
-- **CHATGPT-13:** A usage limit shows the #1563 card with no reset time, Manage usage first, and an inferred hold is never `resetAt`.
-- **CHATGPT-14:** A 503 keeps credentials and backs off; a 403 not-eligible doesn't retry; a repeated 401 ends the job.
+- **CHATGPT-13:** A usage limit shows the #1563 card with no reset time, Manage usage first, and an inferred hold is never `resetAt`. A turn that failed for any other reason holds nothing, whatever the model said in it.
+- **CHATGPT-14:** A 503 keeps credentials and backs off; a 403 not-eligible doesn't retry; a repeated 401 ends the job; a cut stream gets the job's bounded tries, and its reason is never the model's words.
 - **CHATGPT-15:** Removal revokes; a failed revoke completes with `revoked:false`; an exchange or refresh in flight writes nothing afterwards and revokes.
 - **CHATGPT-16:** Switching kinds removes the old login only after success.
 - **CHATGPT-17:** The welcome shows once, even with `localStorage` emptied.

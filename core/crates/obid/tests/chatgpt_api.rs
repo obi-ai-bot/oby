@@ -1563,6 +1563,17 @@ fn chatgpt_14_what_openai_doesnt_call_final_never_stops_a_run() {
     let (got, _, text) = post_as_codex(&base, &broker);
     assert_eq!((got, text.as_str()), (403, "<html>blocked</html>"));
     then_goes_on(&world, &base, &broker, "a 403 with no word of OpenAI's");
+    // The same for a 401: OpenAI's own say so in JSON, and this says nothing of the login.
+    world.openai.with(|s| {
+        s.responses
+            .push_back(Reply::Text(401, "<html>sign in to the proxy</html>".into()))
+    });
+    let (got, _, text) = post_as_codex(&base, &broker);
+    assert_eq!(
+        (got, text.as_str()),
+        (401, "<html>sign in to the proxy</html>")
+    );
+    then_goes_on(&world, &base, &broker, "a 401 with no word of OpenAI's");
     std::fs::write(
         world.obid.home.join("worktrees").join(&job).join(".obi/go"),
         "",
@@ -1999,6 +2010,282 @@ fn chatgpt_talk_a_turn_nobody_watches_keeps_off_chatgpt() {
     assert_eq!(posts(&world), 0);
 }
 
+/// A conversation on a ChatGPT login, nothing else signed in.
+fn talk_on_chatgpt(name: &str) -> (World, String) {
+    let folder = Folder::new(name);
+    let openai = OpenAi::start();
+    let mut config = configured(&folder.0);
+    config["agents"]["codex"]["bin"] = json!(agent("fake-codex-harness"));
+    config["conversation"] = json!({"agent": "codex"});
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    (world, id)
+}
+
+fn talk(world: &World, said: &str) -> String {
+    within(15, "a turn", || {
+        let answer = call(
+            &world.obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": said, "new": true})),
+        );
+        (answer.status == 200).then_some(answer.text)
+    })
+}
+
+/// On a ChatGPT login only the relay's refusal says it's a usage limit (CHATGPT-13). A turn that
+/// failed for another reason holds nothing, and the next one goes to OpenAI.
+fn a_failed_turn_holds_nothing(name: &str, code: &str, words: &str, said: &str) {
+    let (world, id) = talk_on_chatgpt(name);
+    for _ in 0..6 {
+        world
+            .openai
+            .with(|s| s.responses.push_back(Reply::Sse(failed(code, words))));
+    }
+    let first = talk(&world, said);
+    assert!(!first.contains("usage limit"), "{first}");
+    let account = account(&world.obid, &id).unwrap();
+    assert!(account["fullUntil"].is_null(), "{account}");
+    let before = posts(&world);
+    let next = talk(&world, "RELAY");
+    assert!(next.contains("From the stand-in."), "{next}");
+    assert!(posts(&world) > before);
+}
+
+/// OpenAI's per-minute rate limit, in its own words, is no usage limit.
+#[test]
+fn chatgpt_13_a_rate_limit_in_a_stream_doesnt_hold_a_conversation() {
+    a_failed_turn_holds_nothing(
+        "chatgpt-13-rate-limit",
+        "rate_limit_exceeded",
+        "Rate limit reached for gpt-x on tokens per min. Please try again in 1.2s.",
+        "RELAY",
+    );
+}
+
+/// The model's words on a failed turn are the model's: they can say anything about limits.
+#[test]
+fn chatgpt_13_a_models_words_on_a_failed_turn_dont_hold_a_conversation() {
+    a_failed_turn_holds_nothing(
+        "chatgpt-13-words",
+        "server_error",
+        "The server had an error.",
+        "RELAY SAID The rate limit handling looks fine so far.",
+    );
+}
+
+/// Nor can they name how long a hold lasts.
+#[test]
+fn chatgpt_13_a_models_words_dont_name_a_holds_end() {
+    a_failed_turn_holds_nothing(
+        "chatgpt-13-words-end",
+        "server_error",
+        "The server had an error.",
+        "RELAY SAID usage limit reached|4102444799",
+    );
+}
+
+/// CHATGPT-14: a stream with no end gets the job's bounded tries (RECOVERY-1), and then the job
+/// says what happened: never the model's words, whatever they say, and no hold on the account.
+#[test]
+fn chatgpt_14_a_cut_stream_gets_the_jobs_bounded_tries() {
+    let created = || vec![json!({"type": "response.created", "response": {"id": "r"}})];
+    let unterminated = Reply::Sse(created());
+    let cut = Reply::Cut(created());
+    for (name, task, stream) in [
+        (
+            "chatgpt-14-cut-words",
+            "RELAY\nSAID: The rate limit handling looks fine so far.",
+            &unterminated,
+        ),
+        (
+            "chatgpt-14-cut-commentary",
+            "RELAY\nSAID: Looking at the code now.",
+            &unterminated,
+        ),
+        ("chatgpt-14-cut-silent", "RELAY", &unterminated),
+        ("chatgpt-14-cut-dropped", "RELAY", &cut),
+    ] {
+        let folder = Folder::new(name);
+        let openai = OpenAi::start();
+        let mut config = configured(&folder.0);
+        // (recovery's waits are at most this long)
+        config["stallAfter"] = json!(2);
+        let obid = start_with(
+            &folder.0,
+            &config,
+            None,
+            &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+        );
+        let world = World {
+            _folder: folder,
+            openai,
+            obid,
+        };
+        let id = new_account(&world.obid);
+        signed_in(&world, &id);
+        for _ in 0..30 {
+            world.openai.with(|s| s.responses.push_back(stream.clone()));
+        }
+        let job = job(&world, &id, task);
+        within(30, "it waits to try again", || {
+            let j = call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
+            j["step"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("Trying again in"))
+                .then_some(())
+        });
+        let done = ended(&world, &job);
+        assert_eq!(done["status"], "interrupted", "{name}: {done}");
+        assert_eq!(posts(&world), 24, "{name}: four runs of Codex's six");
+        let reason = done["reason"].as_str().unwrap_or("");
+        assert!(reason.contains("part way"), "{name}: {reason}");
+        assert!(!reason.contains("rate limit"), "{name}: {reason}");
+        assert!(!reason.contains("Looking at"), "{name}: {reason}");
+        let account = account(&world.obid, &id).unwrap();
+        assert!(account["fullUntil"].is_null(), "{name}: {account}");
+    }
+}
+
+/// Auto lands on a ChatGPT login only with nothing else on the Mac: a device login whose token is
+/// ending ("Run codex once") is still there, and it's the owner's to mend.
+#[test]
+fn chatgpt_talk_a_device_login_whose_token_is_ending_keeps_auto_off_chatgpt() {
+    let world = talk_world("chatgpt-talk-ending", false, false);
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    use base64::Engine;
+    let expired = format!(
+        "x.{}.y",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"exp": 1000}).to_string())
+    );
+    std::fs::write(
+        world.obid.home.join("accounts/device/auth.json"),
+        json!({"tokens": {"access_token": expired, "refresh_token": "r"}}).to_string(),
+    )
+    .unwrap();
+    assert_ne!(account(&world.obid, "device").unwrap()["signedIn"], true);
+    assert_ne!(talk_next(&world), json!(id));
+    talk(&world, "RELAY");
+    assert_eq!(posts(&world), 0, "no words reached OpenAI");
+}
+
+/// Nor does a turn nobody watches land on one with Cursor signed in, though it won't run on Cursor.
+#[test]
+fn chatgpt_talk_a_turn_nobody_watches_keeps_off_chatgpt_beside_cursor() {
+    let folder = Folder::new("chatgpt-talk-unattended-cursor");
+    let openai = OpenAi::start();
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = agent("fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["orchestratorDelay"] = json!(6);
+    config["conversation"] = json!({"agent": "codex"});
+    config["agents"]["codex"] = json!({"bin": agent("fake-codex-harness"), "accounts": []});
+    let cursor = folder.0.join("home/accounts/cur");
+    for file in [".cursor/auth.json", ".config/cursor/auth.json"] {
+        let file = cursor.join(file);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, json!({"apiKey": "fake"}).to_string()).unwrap();
+    }
+    config["agents"]["cursor"] = json!({"bin": agent("fake-cursor-harness"),
+        "accounts": [{"id": "cur", "name": "Cur", "configDir": cursor}]});
+    let stub = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&stub).unwrap();
+    std::fs::write(stub.join(".credentials.json"), "{}").unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let posted = within(10, "the job was taken", || {
+        let posted = call(
+            &world.obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "JOB-FAILS",
+                "title": "Flaky thing", "rounds": 1, "agent": "claude", "account": "stub"}}),
+            ),
+        );
+        (posted.status == 201).then_some(posted)
+    });
+    let job = posted.body["id"].as_str().unwrap();
+    ended(&world, job);
+    // Only now does Claude Code leave: what's signed in when the event's turn comes is Cursor and
+    // the ChatGPT login.
+    std::fs::remove_file(stub.join(".credentials.json")).unwrap();
+    assert_ne!(account(&world.obid, "stub").unwrap()["signedIn"], true);
+    let turns = world
+        .obid
+        .home
+        .join("conversations/orchestrator/config/turns.jsonl");
+    let mut seen = String::new();
+    for _ in 0..12 {
+        seen = std::fs::read_to_string(&turns).unwrap_or_default();
+        if !seen.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    assert!(
+        !seen.contains("app-server"),
+        "the event turn ran on Codex, the ChatGPT login: {seen}"
+    );
+    assert!(!seen.contains("/v1/agent/chatgpt/"), "{seen}");
+    assert_eq!(posts(&world), 0);
+}
+
+/// CHATGPT-8: a 401 on a token another run has already replaced says nothing of the login, however
+/// far the new one is from its end: the request goes again on the new one.
+#[test]
+fn chatgpt_8_a_401_on_a_token_already_replaced_goes_on_with_the_new_one() {
+    let world = world("chatgpt-8-replaced");
+    let id = new_account(&world.obid);
+    world.openai.with(|s| s.expires_in = 400);
+    signed_in(&world, &id);
+    let (_, base_a, broker_a) = held_job(&world, &id);
+    let (_, base_b, broker_b) = held_job(&world, &id);
+    world.openai.with(|s| {
+        let access = s
+            .tokens
+            .iter()
+            .find(|t| t.contains("access"))
+            .cloned()
+            .unwrap();
+        s.refused.insert(access);
+        s.expires_in = 3600;
+        s.response_holds.push_back(Duration::from_millis(1500));
+        s.response_holds.push_back(Duration::ZERO);
+    });
+    let slow = std::thread::spawn(move || post_as_codex(&base_b, &broker_b));
+    std::thread::sleep(Duration::from_millis(300));
+    let (status, _, text) = post_as_codex(&base_a, &broker_a);
+    assert_eq!(status, 200, "{text}");
+    let (status, _, text) = slow.join().unwrap();
+    assert_eq!(status, 200, "the other run goes on: {text}");
+    assert_eq!(world.openai.with(|s| s.refreshes.len()), 1);
+}
+
 #[allow(dead_code)]
 mod stand_in_openai {
     //! A stand-in OpenAI on loopback for the ChatGPT tests (docs/contracts/chatgpt-sign-in.md):
@@ -2031,6 +2318,8 @@ mod stand_in_openai {
         Json(u16, Value),
         /// A stream that ends with these events.
         Sse(Vec<Value>),
+        /// A stream the connection drops under after these events.
+        Cut(Vec<Value>),
         /// A page that isn't JSON.
         Text(u16, String),
     }
@@ -2054,6 +2343,8 @@ mod stand_in_openai {
         pub token_errors: VecDeque<(u16, Value)>,
         pub revoke_statuses: VecDeque<u16>,
         pub responses: VecDeque<Reply>,
+        /// How long the next `/responses` takes before it looks at anything.
+        pub response_holds: VecDeque<Duration>,
         pub models: Value,
         /// Saw: each authorize request's parameters.
         pub authorized: Vec<HashMap<String, String>>,
@@ -2112,6 +2403,7 @@ mod stand_in_openai {
                 token_errors: VecDeque::new(),
                 revoke_statuses: VecDeque::new(),
                 responses: VecDeque::new(),
+                response_holds: VecDeque::new(),
                 models: json!({"models": [
                     {"slug": "gpt-stand-in", "display_name": "Stand-in", "visibility": "list"},
                     {"slug": "gpt-hidden", "display_name": "Hidden", "visibility": "hide"},
@@ -2455,6 +2747,14 @@ mod stand_in_openai {
     }
 
     async fn responses(State(shared): State<Shared>, headers: HeaderMap, body: String) -> Response {
+        let hold = shared
+            .script
+            .lock()
+            .unwrap()
+            .response_holds
+            .pop_front()
+            .unwrap_or_default();
+        tokio::time::sleep(hold).await;
         let mut script = shared.script.lock().unwrap();
         script.bodies.push(body);
         let token = bearer(&headers);
@@ -2477,6 +2777,22 @@ mod stand_in_openai {
             )
                 .into_response(),
             Some(Reply::Sse(events)) => sse(&events),
+            Some(Reply::Cut(events)) => {
+                use futures_util::StreamExt;
+                // (the answer's start goes out first: an error at once would be no answer at all)
+                let pieces = futures_util::stream::iter([Ok(sse_text(&events))]).chain(
+                    futures_util::stream::once(async {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        Err(std::io::Error::other("the connection dropped"))
+                    }),
+                );
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    axum::body::Body::from_stream(pieces),
+                )
+                    .into_response()
+            }
             Some(Reply::Text(status, text)) => (
                 StatusCode::from_u16(status).unwrap(),
                 [(header::CONTENT_TYPE, "text/html")],
@@ -2487,15 +2803,18 @@ mod stand_in_openai {
         }
     }
 
-    fn sse(events: &[Value]) -> Response {
-        let text: String = events
+    fn sse_text(events: &[Value]) -> String {
+        events
             .iter()
             .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap_or("")))
-            .collect();
+            .collect()
+    }
+
+    fn sse(events: &[Value]) -> Response {
         (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "text/event-stream")],
-            text,
+            sse_text(events),
         )
             .into_response()
     }

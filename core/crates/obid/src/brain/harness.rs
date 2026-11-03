@@ -1828,8 +1828,11 @@ async fn attempts(
             }
         }
         // A usage limit: the account is marked full, as a job's is, and isn't tried again; the
-        // turn moves on to another account (`run`, #874).
-        if turn.resets.is_some() || crate::limits::is_limit(&why) {
+        // turn moves on to another account (`run`, #874). On a ChatGPT login only the relay's
+        // refusal, above, says it's one.
+        if crate::chatgpt::marker_of(account).is_none()
+            && (turn.resets.is_some() || crate::limits::is_limit(&why))
+        {
             let now = obi_protocol::time::now();
             let reset = turn.resets.or_else(|| crate::limits::reset_in(&why, now));
             shared.jobs.mark_full(&account.id, reset, now);

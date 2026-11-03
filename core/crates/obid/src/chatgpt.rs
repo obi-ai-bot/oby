@@ -329,12 +329,14 @@ impl ChatGpt {
     }
 
     /// Whether the account's access token ends within `seconds`.
-    pub(crate) fn ends_within(&self, account: &str, seconds: i64) -> bool {
+    pub(crate) fn may_replace(&self, account: &str, sent: &str, seconds: i64) -> bool {
         self.record(account)
             .ok()
             .flatten()
             .and_then(|r| r.tokens)
-            .is_some_and(|t| t.expires_at <= obi_protocol::time::now() + seconds)
+            .is_some_and(|t| {
+                t.access != sent || t.expires_at <= obi_protocol::time::now() + seconds
+            })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Memory> {
