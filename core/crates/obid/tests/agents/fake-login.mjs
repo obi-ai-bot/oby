@@ -9,12 +9,15 @@
 //   fake-cursor login                                               prints the link, then after
 //       2 seconds writes its login where Cursor's file store keeps it ($HOME/.cursor/auth.json on
 //       macOS, $XDG_CONFIG_HOME/cursor/auth.json elsewhere) and exits 0
+//   fake-claude auth status --json, fake-cursor status --format json    say who the account is, from
+//       who.json in its folder ({"email", "plan", "org"}), with a made-up secret obid must not keep;
+//       with no who.json, signed in with nothing to say (fake-codex's `account/read` too)
 // Each login file holds a made-up token and what the login saw (its arguments, folders and
 // environment), so the tests can check how obid ran it. Each also prints a made-up secret obid
 // must never repeat, and refuses to run with a Claude Code, Anthropic or GitHub variable.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -38,10 +41,26 @@ const saw = () => ({
 
 const write = (path) => {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ token: `${SECRET}-token`, saw: saw() }), { mode: 0o600 });
+  writeFileSync(path, JSON.stringify({ token: `${SECRET}-token`, accessToken: `${SECRET}-token`, saw: saw() }), { mode: 0o600 });
 };
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+// who.json in the account's folder: what its tool says of it.
+export const who = (folder) => {
+  try { return JSON.parse(readFileSync(join(folder, "who.json"), "utf8")); } catch { return {}; }
+};
+
+export function status(tool) {
+  if (tool === "claude") {
+    const { email, plan, org } = who(process.env.CLAUDE_CONFIG_DIR ?? join(process.env.HOME, ".claude"));
+    process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", orgId: SECRET, email, orgName: org, subscriptionType: plan }));
+  } else {
+    const { email, org } = who(process.env.CURSOR_CONFIG_DIR ?? process.env.HOME);
+    process.stdout.write(JSON.stringify({ status: "authenticated", isAuthenticated: true, hasAccessToken: true, userInfo: email ? { email, userId: SECRET, teamName: org } : undefined }));
+  }
+  process.exit(0);
+}
 
 export async function login(tool) {
   if (leaked.length) {

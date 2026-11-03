@@ -44,6 +44,10 @@ if (process.argv[2] === "login") {
   await (await import(new URL("./fake-login.mjs", import.meta.url))).login("cursor");
 }
 
+if (process.argv[2] === "status") {
+  (await import(new URL("./fake-login.mjs", import.meta.url))).status("cursor");
+}
+
 if (process.argv.slice(2).join(" ") !== "--sandbox disabled acp") {
   process.stderr.write(`fake-cursor: run as \`fake-cursor --sandbox disabled acp\`, not ${process.argv.slice(2).join(" ")}\n`);
   process.exit(2);

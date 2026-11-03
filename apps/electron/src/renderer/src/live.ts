@@ -170,7 +170,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   for (const offer of offers.filter((o) => !placed.has(o.id))) said.push({ who: 'oby', text: '', ago: 0, offer });
   confirm({ who: 'oby', text: '', ago: 0 });
   return {
-    id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said,
+    id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
     about: c.tasks?.length ? `Started ${c.tasks.length} task${c.tasks.length === 1 ? '' : 's'}` : '',
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
@@ -604,7 +604,14 @@ export function connect() {
     const e = parseEvent(name, data);
     if (!e || mine !== generation) return;
     if (syncing) pending.push(e);
-    else take(e);
+    else {
+      take(e);
+      // what a first turn would use (TalkPill) changed once the one obid named can't run
+      if (e.kind === 'accounts') {
+        const next = e.accounts.find((a) => a.id === state.status?.talkNext);
+        if (next && (!next.signedIn || (next.fullUntil && Date.parse(next.fullUntil) > Date.now()))) lookAtUsage();
+      }
+    }
   });
   let first = true;
   unfollow?.();
@@ -848,6 +855,14 @@ export async function renameConversation(shown: string, title: string) {
   if (!t) return;
   try { const c = await api.editConversation(realId(shown), { title: t }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
+// The account a conversation talks through from its next turn (TalkPill). One obid hasn't named yet
+// keeps its choice until it has: TalkPill isn't shown for it.
+export async function chooseTalk(shown: string, talkAccount: string) {
+  const c = realId(shown);
+  if (c.startsWith('new:')) return;
+  try { take({ kind: 'conversation', conversation: await api.editConversation(c, { talkAccount }) }); } catch (e) { say(e); }
+}
+export const talkReady = (shown: string) => !realId(shown).startsWith('new:');
 export async function pinConversation(shown: string, pinned: boolean) {
   try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }

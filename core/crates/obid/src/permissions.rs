@@ -1770,6 +1770,7 @@ pub const SECRET_VARIABLES: &[&str] = &[
     "CLAUDE_CONFIG_DIR",
     "CODEX_HOME",
     "CURSOR_CONFIG_DIR",
+    "CURSOR_DATA_DIR",
     "GH_TOKEN",
     "GITHUB_TOKEN",
 ];

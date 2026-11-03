@@ -3294,9 +3294,7 @@ fn a_full_account_hands_the_turn_to_another() {
     let answer = said(&obid, json!({"said": "FULL ON stub", "new": true}));
     let text = oby_said(&answer);
     assert!(
-        text.starts_with(
-            "answered\n(Oby answered on Claude Code · Second: Claude Code · Stub hit its usage limit until "
-        ),
+        text.starts_with("answered\nStub hit its limit, so I moved to Claude Code · Second."),
         "{}",
         answer.text
     );

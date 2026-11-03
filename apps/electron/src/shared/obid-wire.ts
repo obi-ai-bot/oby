@@ -130,7 +130,9 @@ export type LimitDecision = {
 export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[] };
 // obid only: conversations
 // tasks: the jobs it started; folders: the working folders its work is in (an obid that takes folders)
-export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[]; folders?: string[] };
+export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[]; folders?: string[];
+  // obid only (docs/contracts/conversation-agent.md): the account it talks through as the owner chose it here (an id or auto; none: the setting's), where its last answer came from, and the account its turns have moved off
+  talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.
@@ -154,7 +156,13 @@ export type Account = {
   sevenDay: number | null;
   sevenDayResets: string | null;
   fiveHourResets?: string | null;
+  // obid only: full until then (a usage limit it hit)
+  fullUntil?: string | null;
   running: number;
+  // obid only: who it is, as its tool says, each only when it did (docs/contracts/accounts.md)
+  email?: string;
+  plan?: string;
+  org?: string;
   // obid only: the model and efforts its jobs run on, each only when the owner chose it (#1574)
   model?: string;
   effort?: string;
@@ -163,6 +171,9 @@ export type Account = {
 export type Status = {
   runner: { version: string; host: string; engine?: string };
   accounts: Account[];
+  // obid only: the account conversations talk through (none: Auto), and the one a new one's first turn would
+  talkAccount?: string | null;
+  talkNext?: string | null;
   // obid only: the tools' own logins found on this Mac that aren't accounts yet
   availableLogins?: { agent: Agent; id: string; name: string }[];
   models: Record<string, { model: string }>;

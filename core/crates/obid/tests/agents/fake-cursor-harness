@@ -1,0 +1,197 @@
+#!/usr/bin/env node
+// A stand-in for `cursor-agent --sandbox disabled acp` as a conversation's agent
+// (docs/contracts/conversation-agent.md): ACP over stdio as docs/cursor.md describes it, signed in
+// when its login file is where Cursor's file store keeps it. Sessions are kept in
+// $CURSOR_CONFIG_DIR/sessions, so `session/load` works across processes; loading one replays its
+// words, as ACP says an agent does. Each prompt is one line of $CURSOR_CONFIG_DIR/turns.jsonl: argv,
+// cwd, HOME, the proxy it was given, the session it resumed, the MCP servers it was given and
+// the prompt. A file `no-load-session` in its room: it doesn't offer `session/load`; `no-session`:
+// it can't start a session. What a prompt does comes from its last line:
+//   HELLO              reads a file (no request, as Cursor's reads go), streams "Hello there."
+//   REMEMBER           says "resume=<the session it resumed, or none>"
+//   TOOLS              says "tools: <the oby tools, by name>"
+//   OBY <tool> <json>  asks to call the oby tool, calls it, says "oby: <what it answered>"
+//   SHELL <command>    asks to run the command, says "shell: <the option obid chose>"
+//   REACH <host>       asks its proxy to tunnel to <host>:443, says "reach: <the proxy's status>";
+//                      "reach: no proxy" with none. DIRECT <ip> says "direct: open|refused" of a
+//                      connection to it straight
+//   PLANT              leaves Cursor's settings, hooks, rules and a shell's start-up file in its
+//                      room and its HOME
+//   LOOK               says "look: <which of those are still there>"
+//   FULL               fails with a usage limit
+//   FAIL               fails with something else
+//   anything else      "Nothing to do."
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { connect } from "node:net";
+import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
+
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+const home = process.env.HOME || "/nonexistent";
+const config = process.env.CURSOR_CONFIG_DIR || join(home, ".cursor");
+const sessions = join(config, "sessions");
+const loginFile = process.platform === "darwin"
+  ? join(home, ".cursor", "auth.json")
+  : join(process.env.XDG_CONFIG_HOME || "/nonexistent", "cursor", "auth.json");
+// As cursor-agent 2026.10.01: an access token with no refresh token is "partially authenticated".
+const login = existsSync(loginFile) ? JSON.parse(readFileSync(loginFile, "utf8")) : null;
+const signedIn = login && (!login.accessToken || !!login.refreshToken);
+
+let nextId = 100;
+const waiting = new Map();
+const ask = (method, params) => new Promise((done) => {
+  const id = nextId++;
+  waiting.set(id, done);
+  send({ id, method, params });
+});
+const options = [
+  { optionId: "allow-always", name: "Always", kind: "allow_always" },
+  { optionId: "allow-once", name: "Once", kind: "allow_once" },
+  { optionId: "reject-once", name: "No", kind: "reject_once" },
+];
+let session = null;
+let resumed = null;
+let servers = [];
+const update = (sessionUpdate, fields) =>
+  send({ method: "session/update", params: { sessionId: session, update: { sessionUpdate, ...fields } } });
+const words = (text) => update("agent_message_chunk", { content: { type: "text", text } });
+const sessionFile = (id) => join(sessions, `${id}.json`);
+const saved = (id) => JSON.parse(readFileSync(sessionFile(id), "utf8"));
+function keep(said) {
+  mkdirSync(sessions, { recursive: true });
+  const before = existsSync(sessionFile(session)) ? saved(session) : { said: [] };
+  writeFileSync(sessionFile(session), JSON.stringify({ said: [...before.said, said] }));
+}
+const answered = (id, stopReason = "end_turn") => send({ id, result: { stopReason } });
+function say(id, text) {
+  // In pieces, as it streams.
+  const cut = Math.ceil(text.length / 2);
+  words(text.slice(0, cut));
+  words(text.slice(cut));
+  keep(text);
+  answered(id);
+}
+
+const PLANTED = [".cursor/hooks.json", ".cursor/mcp.json", ".cursorrules", "AGENTS.md", ".grok/skills/x.md"];
+const HOME_PLANTED = ["hooks.json", "mcp.json", ".cursor/hooks.json", ".cursor/rules", ".zshrc", ".cursor/cli.json",
+  ".cursor/skills-cursor/x.md", ".cursor/cloud-skills/x.md", ".cursor/sandbox.json", ".cursor/settings.json", ".grok/skills/x.md"];
+function planted(root, list) {
+  return list.filter((name) => existsSync(join(root, name)));
+}
+function plant(root, list) {
+  for (const name of list) {
+    const path = join(root, name);
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, "{}");
+  }
+}
+
+// What a tunnel through its proxy is told.
+const reach = (host) => new Promise((done) => {
+  const proxy = process.env.HTTPS_PROXY;
+  if (!proxy) return done("no proxy");
+  const { hostname, port, username, password } = new URL(proxy);
+  const socket = connect(Number(port), hostname, () => {
+    const login = Buffer.from(`${username}:${password}`).toString("base64");
+    socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\nProxy-Authorization: Basic ${login}\r\n\r\n`);
+  });
+  socket.once("data", (data) => { socket.destroy(); done(String(data).split(" ")[1]); });
+  socket.once("error", (e) => done(`error ${e.code}`));
+});
+const direct = (ip) => new Promise((done) => {
+  const socket = connect(443, ip, () => { socket.destroy(); done("open"); });
+  socket.setTimeout(3000, () => { socket.destroy(); done("timed out"); });
+  socket.once("error", () => done("refused"));
+});
+
+// An MCP call of the `oby` server it was given, as an MCP client's.
+async function mcp(method, params) {
+  const server = servers.find((s) => s.name === "oby");
+  const headers = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
+  for (const { name, value } of server.headers) headers[name] = value;
+  const answer = await fetch(server.url, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params }) });
+  return JSON.parse(await answer.text());
+}
+
+async function prompt(id, text) {
+  const last = text.trim().split("\n").at(-1).trim();
+  appendFileSync(join(config, "turns.jsonl"), JSON.stringify({
+    at: Date.now(), argv: process.argv.slice(2), cwd: process.cwd(), home, config, proxy: process.env.HTTPS_PROXY ?? null,
+    resumed, servers: servers.map((s) => s.name), serverHeaders: servers.flatMap((s) => s.headers.map((h) => h.name)), prompt: text,
+    env: Object.keys(process.env).filter((name) => name.includes("TOKEN")),
+  }) + "\n");
+  if (last.startsWith("HELLO")) {
+    const call = randomUUID();
+    update("tool_call", { toolCallId: call, kind: "read", title: "Read note", status: "in_progress", locations: [{ path: join(process.cwd(), "note.md") }] });
+    update("tool_call_update", { toolCallId: call, status: "completed" });
+    return say(id, "Hello there.");
+  }
+  if (last.startsWith("REMEMBER")) return say(id, `resume=${resumed ?? "none"}`);
+  if (last.startsWith("TOOLS")) {
+    const listed = await mcp("tools/list", {});
+    return say(id, `tools: ${listed.result.tools.map((t) => t.name).join(",")}`);
+  }
+  if (last.startsWith("OBY ")) {
+    const [, tool, ...rest] = last.split(" ");
+    const call = randomUUID();
+    const title = `oby-${tool}: ${tool}`; // as cursor-agent 2026.10.01 titles it
+    update("tool_call", { toolCallId: call, kind: "other", title, status: "pending" });
+    const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: call, kind: "other", title }, options });
+    if (answer.outcome?.optionId !== "allow-once") return say(id, `oby: declined ${answer.outcome?.optionId}`);
+    const result = await mcp("tools/call", { name: tool, arguments: JSON.parse(rest.join(" ")) });
+    update("tool_call_update", { toolCallId: call, status: "completed" });
+    const words = result.result?.content?.[0]?.text ?? JSON.stringify(result);
+    return say(id, `oby: ${result.result?.isError ? "refused: " : ""}${words}`);
+  }
+  if (last.startsWith("SHELL ")) {
+    const call = randomUUID();
+    const command = last.slice("SHELL ".length);
+    update("tool_call", { toolCallId: call, kind: "execute", title: command, status: "pending", rawInput: { command } });
+    const answer = await ask("session/request_permission", { sessionId: session, toolCall: { toolCallId: call, kind: "execute", title: command, rawInput: { command } }, options });
+    return say(id, `shell: ${answer.outcome?.optionId ?? answer.outcome?.outcome}`);
+  }
+  if (last.startsWith("REACH ")) return say(id, `reach: ${await reach(last.slice("REACH ".length))}`);
+  if (last.startsWith("DIRECT ")) return say(id, `direct: ${await direct(last.slice("DIRECT ".length))}`);
+  if (last.startsWith("PLANT")) {
+    plant(process.cwd(), PLANTED);
+    plant(home, HOME_PLANTED);
+    return say(id, "planted");
+  }
+  if (last.startsWith("LOOK")) {
+    return say(id, `look: ${[...planted(process.cwd(), PLANTED).map((n) => `room/${n}`), ...planted(home, HOME_PLANTED).map((n) => `home/${n}`)].join(",") || "nothing"}`);
+  }
+  if (last === "FULL") return send({ id, error: { code: -32603, message: "You've hit your usage limit." } });
+  if (last.startsWith("FAIL")) return send({ id, error: { code: -32603, message: "it broke" } });
+  return say(id, "Nothing to do.");
+}
+
+createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", async (line) => {
+  const message = JSON.parse(line);
+  if (message.id !== undefined && !message.method) {
+    const done = waiting.get(message.id);
+    waiting.delete(message.id);
+    return done?.(message.result ?? {});
+  }
+  const { id, method, params } = message;
+  if (method === "initialize") {
+    return send({ id, result: { protocolVersion: 1, agentCapabilities: { loadSession: !existsSync("no-load-session"), mcpCapabilities: { http: true, sse: true } }, authMethods: [] } });
+  }
+  if (method === "session/new" || method === "session/load") {
+    if (!signedIn) return send({ id, error: { code: -32000, message: "Authentication required" } });
+    if (existsSync("no-session")) return send({ id, error: { code: -32603, message: "Failed to initialize session services" } });
+    servers = params.mcpServers ?? [];
+    if (method === "session/load") {
+      if (!existsSync(sessionFile(params.sessionId))) return send({ id, error: { code: -32603, message: "no such session" } });
+      session = params.sessionId;
+      resumed = session;
+      for (const said of saved(session).said) words(`REPLAYED ${said}`);
+    } else {
+      session = randomUUID();
+    }
+    return send({ id, result: { sessionId: session, modes: { currentModeId: "agent", availableModes: [{ id: "agent" }, { id: "plan" }, { id: "ask" }] } } });
+  }
+  if (method === "session/prompt") return prompt(id, params.prompt.map((p) => p.text).join("\n"));
+  if (method === "session/cancel") return;
+  if (id !== undefined) send({ id, error: { code: -32601, message: "no such method" } });
+});

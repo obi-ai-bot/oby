@@ -14,6 +14,7 @@ What a Cursor job does in the launch build, on obid:
 - It shows no usage meter: Cursor reports no usage, so routing gives it work last
   (docs/runner-api.md, "Routing").
 - It doesn't review: Oby's review of a finished job never runs on Cursor.
+- A conversation can talk on it too, under stricter rules, since none of this gates its reads or edits (docs/contracts/conversation-agent.md).
 - Its questions reach the owner and wait for the answer (#1456), its Plan mode waits for the
   owner's OK (#1452), and a repository's hooks ask before Cursor starts (#1454, "A repository's
   hooks", below).
@@ -27,6 +28,7 @@ showed, and what Oby does about each.
 | Fact | Result | What Oby does |
 | --- | --- | --- |
 | Where the login lives | A plain file, `~/.config/cursor/auth.json` (0600): the runner has no keyring. | Oby never reads it. |
+| Who it is | `cursor-agent status --format json` (2026.10.01's own code): `userInfo` `{email, userId, firstName, lastName, teamId, teamName, createdAt}` when it reaches Cursor, none with `message` `Logged in (unable to fetch user details)` otherwise. | obid keeps `userInfo.email` and `.teamName` (docs/contracts/accounts.md). Not yet seen in a live answer: this Mac's login has ended. |
 | Login isolation | With `CURSOR_CONFIG_DIR` alone, both throwaway homes showed the user's real login. With `HOME`, `XDG_CONFIG_HOME` **and** `CURSOR_CONFIG_DIR` each of its own, account A was signed in and B stayed signed out (the user has one Cursor account, which shows per-folder isolation). | `separateLogins = true`. Every Cursor start, status, models and sign-in sets all three to the account's home (`CursorStatus.environment`). |
 | Commands | `session/request_permission` arrives, kind `execute`. | Commands ask Oby. |
 | **Edits** | With every permission rejected, `probe.txt` was **written, with no `session/request_permission` at all.** | `editsAsk = false`. See below: edits can't be gated through ACP. |
@@ -175,3 +177,10 @@ assumes they do:
   stays disabled (bubblewrap can't nest); Oby answers every command.
 - Sign-in is the tool's own command in Terminal: `cursor-agent login` with the three variables
   (`NO_OPEN_BROWSER=1` on the runner).
+
+## What real Cursor needs (cursor-agent 2026.10.01, proven 2026-11-02)
+
+- **A refresh token in its login file.** With an access token and none, `status` says "Partially authenticated (missing refresh token)" and ACP's `session/new` answers -32000 "Authentication required". A run's copy has a stand-in, `CURSOR_NO_REFRESH`, never the real one: Cursor then logs in and opens a session.
+- **Room for its sockets.** `CURSOR_DATA_DIR` (or `~/.cursor`), then `projects`, must fit in 84 characters, or it uses `/tmp/.cursor`, which the box denies, and it dies at once. `acp::cursor::data_dir` keeps it short.
+- **An MCP tool's title** is `<server>-<tool>: <tool>` (`oby-oby_jobs: oby_jobs`), of kind `other`.
+- **A turn takes 30 to 40 seconds** in Oby's box, where Claude Code and Codex take 4 to 6. The proxy refuses nothing in that time: only `api2.cursor.sh` and `agentn.global.api5.cursor.sh` are asked for. Why isn't known.

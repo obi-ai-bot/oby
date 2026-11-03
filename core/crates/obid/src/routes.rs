@@ -876,6 +876,7 @@ fn job_settings_json(shared: &Shared) -> Value {
         "maxRunning": shared.jobs.max_running(),
         "accountFailover": shared.jobs.account_failover(),
         "defaultAccount": crate::settings::load(&shared.config.home).default_account,
+        "talkAccount": crate::settings::load(&shared.config.home).talk_account,
         "limits": crate::settings::limits().to_json(),
     })
 }
@@ -887,7 +888,7 @@ pub async fn job_settings(State(shared): State<Arc<Shared>>) -> Response {
 }
 
 /// `PUT /v1/settings/jobs`: `{"maxRunning": 1…20, "accountFailover": true|false, "defaultAccount":
-/// "<account id>"|null, "limits": {"rounds", "maxRunning", "folders", "routines", "accounts"}}`,
+/// "<account id>"|null, "talkAccount": "<account id>"|null (null is Auto), "limits": {"rounds", "maxRunning", "folders", "routines", "accounts"}}`,
 /// any of them, kept across restarts. Each limit is a whole number from 1, or null for its
 /// default (crate::settings::Limits); a lower `limits.maxRunning` lowers `maxRunning` with it.
 /// Raising `maxRunning` starts waiting jobs at once; lowering it stops nothing.
@@ -900,7 +901,7 @@ pub async fn set_job_settings(
     let bad = || {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"defaultAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
+            "The body is {\"maxRunning\": 1 to 20, \"accountFailover\": true or false, \"defaultAccount\": an account's id or null, \"talkAccount\": an account's id or null, \"limits\": {\"rounds\", \"maxRunning\", \"folders\", \"routines\", \"accounts\"}, each 1 or more, or null}, any of them.",
         )
     };
     let max = match value.get("maxRunning") {
@@ -928,6 +929,16 @@ pub async fn set_job_settings(
                 ));
             }
             Some(Some(id.to_owned()))
+        }
+    };
+    // Some(None), or `auto`: Auto.
+    let talk_account = match value.get("talkAccount") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(id) => {
+            let id = id.as_str().ok_or_else(bad)?;
+            crate::brain::talk::check(&shared, id)?;
+            Some((id != crate::brain::talk::AUTO).then(|| id.to_owned()))
         }
     };
     // The owner's own ceilings, each a whole number from 1, or null for its default.
@@ -968,7 +979,12 @@ pub async fn set_job_settings(
         }
         Some(_) => return Err(bad()),
     };
-    if max.is_none() && failover.is_none() && default_account.is_none() && limits.is_none() {
+    if max.is_none()
+        && failover.is_none()
+        && default_account.is_none()
+        && talk_account.is_none()
+        && limits.is_none()
+    {
         return Err(bad());
     }
     // Every value checked before anything is kept: a 422 changes nothing.
@@ -1011,6 +1027,11 @@ pub async fn set_job_settings(
     })
     .and_then(|()| match default_account {
         Some(id) => crate::settings::update(&shared.config.home, |s| s.default_account = id)
+            .map_err(SettingsError::Unkept),
+        None => Ok(()),
+    })
+    .and_then(|()| match talk_account {
+        Some(id) => crate::settings::update(&shared.config.home, |s| s.talk_account = id)
             .map_err(SettingsError::Unkept),
         None => Ok(()),
     });

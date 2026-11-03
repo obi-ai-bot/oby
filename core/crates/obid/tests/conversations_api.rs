@@ -104,7 +104,9 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys.len(), 8, "{conversation}");
+        // With `talkedOn`, once it has answered (docs/contracts/conversation-agent.md).
+        assert_eq!(keys.len(), 9, "{conversation}");
+        assert_eq!(conversation["talkedOn"], "stub");
         assert_eq!(conversation["tasks"], json!([]));
         assert_eq!(conversation["folders"], json!([]));
         assert_eq!(conversation["pinned"], false);

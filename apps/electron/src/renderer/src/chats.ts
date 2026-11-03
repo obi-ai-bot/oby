@@ -4,6 +4,8 @@ import { addTask, conversationOfTask, relay } from './tasks';
 import { streamWords, wait } from './stream';
 import { everything, onObid } from './lean';
 import * as live from './live';
+import { useKeptSetting } from './SettingsView';
+import { TALK_DEFAULT } from './talk';
 import { box as draftBox, forget } from './drafts';
 
 // A conversation with Oby: what you asked, its answers, and the tasks they
@@ -18,7 +20,7 @@ type Ask = { question: string; options: string[] };
 // at: when it last moved (minutes ago), when that's known apart from what's loaded of it (obid's)
 // about: its line in Conversations while none of it is loaded (obid's)
 // local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; at?: number; about?: string; local?: boolean };
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {
@@ -124,7 +126,7 @@ export const chatOfTask = (taskId: string) => {
 
 const update = (id: string, fn: (c: Chat) => Partial<Chat>) => set(chats.map((c) => (c.id === id ? { ...c, ...fn(c) } : c)));
 // dev only (dev/ControlCenter.tsx): the conversations as they are, and one changed in place
-export const dev = import.meta.env.DEV ? { get: () => chats, patch: update } : undefined;
+export const dev = import.meta.env.DEV ? { get: () => chats, patch: update, add: (c: Chat) => set([c, ...chats]) } : undefined;
 
 // Oby's first conversation (onboarding.ts): Oby opens it, not you; your picks in
 // it go in as your words, and Oby's words land as any of its answers do
@@ -145,6 +147,10 @@ export function renameChat(id: string, title: string) {
   const t = title.trim();
   if (t) update(id, () => ({ title: t }));
 }
+// The account it talks through (TalkPill): obid's from its next turn; the mock's, here.
+export const chooseTalk = (id: string, account: string) => (ofObid(id) ? void live.chooseTalk(id, account) : update(id, () => ({ talkAccount: account })));
+export const useTalkSetting = () => { const s = live.useLive().status; const [kept] = useKeptSetting<string | null>(TALK_DEFAULT, null); return onObid ? { account: s?.talkAccount ?? null, next: s?.talkNext ?? null } : { account: kept, next: null }; };
+export const lookAtUsage = () => { if (onObid) live.lookAtUsage(); };
 export const pinChat = (id: string, pinned: boolean) => (ofObid(id) ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));
 export const deleteChat = (id: string) => {
   forget(draftBox.conversation(id));  // its unsent words go with it

@@ -466,6 +466,8 @@ struct Boxed<'a> {
     /// (`Sandbox::wrap_reading_only_its_own`), and its account's folder is its own copy of the
     /// login, never the account's shared one: a conversation's session.
     confined: bool,
+    /// The egress door of a run that gets one: a conversation's Cursor's.
+    door: Option<&'a str>,
 }
 
 /// A job the owner describes whole (`POST /v1/jobs`), checked. A `start` or `confirm` inbox
@@ -1943,6 +1945,7 @@ impl Jobs {
             flags,
             stderr: dir.0.join("stderr.log"),
             confined: false,
+            door: None,
         })?;
         match tool {
             Tool::Claude if !login_copy_lasts_past(&login, now_ms() + USAGE_LOGIN_MARGIN_MS) => {
@@ -2379,6 +2382,15 @@ impl Jobs {
         self.accounts(tool)
             .into_iter()
             .find(|a| signed_in(tool, a, home.as_deref()))
+    }
+
+    /// `tool`'s accounts that are [`signed_in`].
+    pub fn signed_in_accounts(&self, tool: Tool) -> Vec<crate::config::Account> {
+        let home = login_home();
+        self.accounts(tool)
+            .into_iter()
+            .filter(|a| signed_in(tool, a, home.as_deref()))
+            .collect()
     }
 
     /// Why `tool` has no [`signed_in`] account for conversations: a login that's there but can't
@@ -4392,6 +4404,19 @@ impl Jobs {
     /// else, and anything more for another Obi's review (it only reads, and never asks), don't.
     /// None for a site the job decides ([`Jobs::ask_about`]).
     pub(crate) fn reach_now(&self, id: &str, host: &str, port: u16) -> Option<Result<(), String>> {
+        // A conversation's Cursor: its tool's own services, and nothing else ever.
+        if id.starts_with(crate::brain::harness_cursor::DOOR) {
+            return Some(
+                crate::egress::tools_own(Tool::Cursor, host, port)
+                    .then_some(())
+                    .ok_or_else(|| {
+                        format!(
+                            "A conversation on Cursor reaches only Cursor's own services, not {}.",
+                            crate::egress::site(host, port)
+                        )
+                    }),
+            );
+        }
         let Some(job) = self.get(id) else {
             return Some(Err("The job is gone.".into()));
         };
@@ -6705,27 +6730,7 @@ impl Jobs {
             // Cursor's own login (`~/.cursor`), copied as an account's is: never the person's folder.
             (None, Tool::Cursor) => {
                 let login = self.login_path(&job.id);
-                let home = login_home().ok_or_else(|| {
-                    "obid can't find the home Cursor's own login is in.".to_owned()
-                })?;
-                let own = own_cursor_login(&home);
-                // A Keychain login macOS didn't give: say why, not that it's signed out (#1679).
-                if own.is_none()
-                    && let Some(why) = CURSOR_ITEMS
-                        .iter()
-                        .find_map(|(_, service)| keychain_unread(Tool::Cursor, service))
-                {
-                    return Err(why);
-                }
-                // A copy can't refresh it: only the Mac's own cursor-agent does.
-                if own
-                    .as_deref()
-                    .is_some_and(|login| !cursor_login_live(login))
-                {
-                    return Err(CURSOR_ENDED.into());
-                }
-                copy_cursor(own, &home.join(".cursor/cli-config.json"), &home, &login)
-                    .map_err(|e| format!("obid can't copy Cursor's login for this job: {e}"))?;
+                copy_own_cursor(&login)?;
                 acp::cursor::warn_if_long(&login);
                 extra.extend(acp::cursor::environment(&login));
                 spec.accounts.push(login);
@@ -6891,6 +6896,7 @@ impl Jobs {
             flags,
             stderr: dir.join("stderr.log"),
             confined: false,
+            door: None,
         })
     }
 
@@ -6924,7 +6930,44 @@ impl Jobs {
             flags,
             stderr,
             confined: true,
+            door: None,
         })
+    }
+
+    /// A conversation's Cursor (crate::brain::harness_cursor), boxed as [`Jobs::conversation_launch`]
+    /// boxes the others, and its only way off the Mac obid's egress proxy, by the door `door`
+    /// ([`Jobs::reach_now`]): Cursor's own reads and edits never ask, so what it read must have
+    /// nowhere to go. Throws why it can't run: where the box can't hold it to the proxy, it doesn't.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conversation_cursor_launch(
+        &self,
+        account: &crate::config::Account,
+        room: &Path,
+        temp: &Path,
+        login: &Path,
+        frozen: Vec<PathBuf>,
+        stderr: PathBuf,
+        door: &str,
+    ) -> Result<Launch, String> {
+        self.boxed_launch(Boxed {
+            tool: Tool::Cursor,
+            account,
+            dir: room,
+            temp,
+            login,
+            frozen,
+            flags: Vec::new(),
+            stderr,
+            confined: true,
+            door: Some(door),
+        })
+    }
+
+    /// A conversation's Cursor's turn ended: its door lets nothing through any more.
+    pub(crate) fn close_door(&self, door: &str) {
+        if let Some(egress) = self.egress.get() {
+            egress.close(door);
+        }
     }
 
     /// A command of a conversation's shell (docs/runner-api.md, "obid only: the conversation's
@@ -7011,6 +7054,7 @@ impl Jobs {
             flags,
             stderr,
             confined,
+            door,
         } = boxed;
         let sandbox = self
             .sandbox
@@ -7054,6 +7098,25 @@ impl Jobs {
         };
         let mut extra: Vec<(&str, OsString)> = Vec::new();
         match &account.config_dir {
+            // Its own folder with a copy of the login, never the account's, and the proxy.
+            _ if confined && tool == Tool::Cursor => {
+                let egress = self
+                    .egress
+                    .get()
+                    .filter(|_| sandbox.confines_egress())
+                    .zip(door)
+                    .ok_or("obid can't hold Cursor to its egress proxy here, so a conversation doesn't run on it")?;
+                extra.extend(crate::egress::env(&egress.0.open(egress.1)));
+                spec.proxied = true;
+                match &account.config_dir {
+                    Some(from) => copy_account_folder(tool, from, login)
+                        .map_err(|e| format!("obid can't copy Cursor's login: {e}"))?,
+                    None => copy_own_cursor(login)?,
+                }
+                acp::cursor::warn_if_long(login);
+                extra.extend(acp::cursor::environment(login));
+                spec.accounts.push(login.to_path_buf());
+            }
             // A conversation never sees the account's own folder (every job's and conversation's
             // transcripts are in it): `login` is its own, with a copy of the login and nothing else.
             // Codex's is its `CODEX_HOME` for any account: none of the person's `~/.codex` either
@@ -7121,6 +7184,7 @@ impl Jobs {
                 .chain(flags)
                 .chain(["app-server".into()])
                 .collect(),
+            Tool::Cursor => acp::cursor::argv(bin),
             _ => std::iter::once(bin.into_os_string()).chain(flags).collect(),
         };
         let argv = if confined {
@@ -7415,6 +7479,7 @@ impl Jobs {
                             .filter_map(|(name, server)| server.map(|(url, token)| json!({"type": "http", "name": name, "url": url,
                                 "headers": [{"name": "Authorization", "value": format!("Bearer {token}")}]})))
                             .collect(),
+                        quiet_load: false,
                     };
                     acp::run_turn(
                         launch,

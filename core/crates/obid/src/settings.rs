@@ -116,6 +116,10 @@ pub struct Settings {
     /// tries it first while it's signed in with room ([`crate::jobs::Jobs`]'s `pick`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_account: Option<String>,
+    /// The account conversations talk through unless one chose another (`talkAccount`,
+    /// docs/contracts/conversation-agent.md), by id; none (or `auto`) is Auto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talk_account: Option<String>,
     /// Each account's model and efforts (Settings › Agents, #1574), by account id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tuning: BTreeMap<String, Tuning>,
@@ -261,6 +265,7 @@ impl Default for Settings {
         Settings {
             default_agent: default_agent(),
             default_account: None,
+            talk_account: None,
             tuning: BTreeMap::new(),
             max_running: default_max_running(),
             check_in: None,

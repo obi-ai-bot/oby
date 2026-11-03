@@ -12,6 +12,9 @@
 //! reads or copies what it writes. obid passes on only the link to open and the code to type,
 //! both read from what the login prints and checked, and the code the person pastes back goes to
 //! the login's stdin. Nothing else the login prints is kept, shown or logged.
+//!
+//! Who an account is (its [`Identity`]) is what the tool's own status says of it, run the way its
+//! sign-in is: only the email, plan and org are taken from the answer (docs/contracts/accounts.md).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -55,6 +58,9 @@ const LINK_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a pasted code may take to sign the login in.
 const CODE_WITHIN: Duration = Duration::from_secs(60);
+
+/// How long a tool's own status may take to say who the account is.
+const STATUS_WITHIN: Duration = Duration::from_secs(15);
 
 /// The longest line of a login's output obid reads; the rest of a longer line is dropped.
 const LONGEST_LINE: usize = 4096;
@@ -107,6 +113,22 @@ struct Saved {
     /// removed too (`removed` says so), so the tool's own login can come back.
     #[serde(default)]
     own: Vec<String>,
+    /// Who each account is, as its tool last said, by id ([`Live::learn`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    identities: BTreeMap<String, Identity>,
+}
+
+/// What a tool says of the account it's signed in to, and all obid keeps of what it says: each
+/// value only when the tool gave one. Never a token.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Identity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// The tool's own word for the plan (`max`, `plus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
 }
 
 /// An account the API added: its folder is obid's own, `home/accounts/<id>`.
@@ -119,6 +141,13 @@ struct Added {
     #[serde(default)]
     payer: Option<String>,
     config_dir: PathBuf,
+    /// Added and never signed in yet: its first sign-in may turn out to be another account's login
+    /// (ACCOUNTS-7). An account from before this key isn't.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    fresh: bool,
+    /// obid picked its name: its first sign-in fills it from the org or plan (ACCOUNTS-2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    auto_name: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +277,66 @@ impl Live {
         })
     }
 
+    /// Who the account `id` is, as its tool last said.
+    pub fn identity(&self, id: &str) -> Identity {
+        self.read()
+            .saved
+            .identities
+            .get(id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Whether the account `id` was added and never signed in.
+    fn fresh(&self, id: &str) -> bool {
+        self.read()
+            .saved
+            .added
+            .iter()
+            .any(|a| a.id == id && a.fresh)
+    }
+
+    /// What the tool said of a signed-in account: kept, and a name obid picked filled from the
+    /// plan, unique per tool: never the org, a name someone else chose that would reach agents
+    /// unquoted with the account's. `signed_in_now`: a new sign-in, after which saying nothing forgets
+    /// who it was before; a look at a login that didn't change keeps it. Nothing for an account
+    /// gone meanwhile.
+    fn learn(&self, tool: Tool, id: &str, identity: Identity, signed_in_now: bool) {
+        let kept = self.change(|agents, saved| {
+            if find(agents, id).is_none() {
+                return Ok(());
+            }
+            if let Some(added) = saved.added.iter_mut().find(|a| a.id == id) {
+                added.fresh = false;
+                let base = identity.plan.as_deref().and_then(|plan| {
+                    let mut letters = plan.chars();
+                    Some(
+                        letters
+                            .next()?
+                            .to_uppercase()
+                            .chain(letters)
+                            .collect::<String>(),
+                    )
+                });
+                if added.auto_name
+                    && let Some(name) = base.and_then(|b| free_name(agents, tool, &b, Some(id)))
+                {
+                    added.name = name;
+                    added.auto_name = false;
+                }
+            }
+            if identity != Identity::default() {
+                saved.identities.insert(id.to_owned(), identity);
+            } else if signed_in_now {
+                saved.identities.remove(id);
+            }
+            Ok(())
+        });
+        if let Err(e) = kept {
+            tracing::warn!("account {id}: who it is wasn't kept: {}", e.message);
+        }
+    }
+
     /// The tools' own logins obid found on this Mac that aren't listed: `POST /v1/accounts`
     /// `{"agent", "default": true}` lists one on the owner's word ([`restore_default`]).
     pub fn available(&self) -> Vec<(Tool, Account)> {
@@ -356,6 +445,13 @@ fn checked(seed: &Agents, saved: Saved, home: &Path) -> Saved {
             _ => drop("account", &added.id),
         }
     }
+    let agents = merged(seed, &kept);
+    kept.identities = saved
+        .identities
+        .into_iter()
+        .filter(|(id, _)| find(&agents, id).is_some())
+        .map(|(id, who)| (id, who.cleaned()))
+        .collect();
     kept
 }
 
@@ -616,6 +712,24 @@ fn name(agents: &Agents, tool: Tool, text: &str, except: Option<&str>) -> Result
     Ok(name)
 }
 
+/// `base` as a name no other account of the tool has: as it is, else `<base> 2`, `<base> 3`… None
+/// when nothing of `base` can be a name.
+fn free_name(agents: &Agents, tool: Tool, base: &str, except: Option<&str>) -> Option<String> {
+    // Room for the number, and what isn't one line goes.
+    let base: String = base
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(LONGEST - 4)
+        .collect();
+    let base = base.trim();
+    std::iter::once(base.to_owned())
+        .chain((2..1000).map(|n| format!("{base} {n}")))
+        // (its own login's stays free for it: taken, that login could no longer be listed)
+        .filter(|text| !text.eq_ignore_ascii_case(&own_login(tool).name))
+        .find_map(|text| name(agents, tool, &text, except).ok())
+        .filter(|_| !base.is_empty())
+}
+
 /// A payer, or none for empty or null.
 fn payer(value: Option<&Value>) -> Result<Option<String>, ApiError> {
     match value {
@@ -713,12 +827,12 @@ pub async fn send_accounts(shared: &Arc<Shared>) {
 // ---------------------------------------------------------------------------------------------
 // POST /v1/accounts, PATCH and DELETE /v1/accounts/{id}
 
-const NEW_SHAPE: &str =
-    "{\"agent\": \"claude\" | \"codex\" | \"cursor\", \"name\": \"…\", \"payer\": \"…\"}";
+const NEW_SHAPE: &str = "{\"agent\": \"claude\" | \"codex\" | \"cursor\", \"name\": \"…\" (optional), \"payer\": \"…\"}";
 const DEFAULT_SHAPE: &str = "{\"agent\": \"claude\" | \"codex\" | \"cursor\", \"default\": true}";
 
 /// `POST /v1/accounts`: a new account for Claude Code, Codex or Cursor, in a folder obid makes,
-/// `home/accounts/<id>` (0700). `201` with the Account.
+/// `home/accounts/<id>` (0700), under the name given, else the tool's own until its first sign-in
+/// fills it (ACCOUNTS-1, ACCOUNTS-2). `201` with the Account.
 pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
     let map = object(&body, &["agent", "name", "payer", "default"], NEW_SHAPE)?;
     let agent = text_field(&map, "agent")?
@@ -734,8 +848,7 @@ pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Respo
         }
         return restore_default(shared, tool).await;
     }
-    let text = text_field(&map, "name")?
-        .ok_or_else(|| unprocessable(format!("name is missing: the body is {NEW_SHAPE}.")))?;
+    let text = text_field(&map, "name")?;
     let payer = payer(map.get("payer"))?;
     let home = shared.config.home.clone();
     let added = shared.config.agents.change(|agents, saved| {
@@ -745,7 +858,11 @@ pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Respo
                 most_accounts()
             )));
         }
-        let name = name(agents, tool, text, None)?;
+        let name = match text {
+            Some(text) => name(agents, tool, text, None)?,
+            None => free_name(agents, tool, tool.name(), None)
+                .ok_or_else(|| unprocessable("name is missing and the tool's own is taken."))?,
+        };
         let id = new_id(agents, saved);
         let config_dir = own_folder(&home, &id).expect("obid's own id");
         make_folder(&config_dir).map_err(|e| {
@@ -760,6 +877,8 @@ pub async fn add(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Respo
             name,
             payer,
             config_dir,
+            fresh: true,
+            auto_name: text.is_none(),
         };
         saved.added.push(added.clone());
         Ok(added)
@@ -829,6 +948,7 @@ async fn restore_default(shared: Arc<Shared>, tool: Tool) -> Result<Response, Ap
     // Alone, an empty list is the tool's own login again, with nothing listed for it.
     let (tool, account) = find(&shared.config.agents.get(), &own.id).unwrap_or((tool, own.clone()));
     tracing::info!("account {}: the tool's own login is back", own.id);
+    tokio::spawn(read_identities(shared.clone(), Some(own.id.clone())));
     send_accounts(&shared).await;
     Ok(answer(
         StatusCode::CREATED,
@@ -878,6 +998,7 @@ pub async fn change(
             }
             match saved.added.iter_mut().find(|a| a.id == id) {
                 Some(added) => {
+                    added.auto_name &= text.is_none();
                     added.name = account.name.clone();
                     added.payer = account.payer.clone();
                 }
@@ -999,7 +1120,6 @@ pub async fn remove(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    let home = shared.config.home.clone();
     find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
     // One change of the account at a time: a sign-in can't start while it's removed. Looked up
     // again once held: it may have gone meanwhile.
@@ -1019,11 +1139,22 @@ pub async fn remove(
         .jobs
         .begin_change(&id)
         .ok_or_else(|| busy(&account))?;
+    forget_account(&shared, &account)?;
+    send_accounts(&shared).await;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Takes `account` off, its [`crate::jobs::Changing`] held: its login copy, its folder when obid
+/// made it, its usage and its settings. What the tool itself keeps stays.
+fn forget_account(shared: &Shared, account: &Account) -> Result<(), ApiError> {
+    let home = shared.config.home.clone();
+    let id = account.id.clone();
     // No conversation's Claude Code waits on its login copy any more (none keeps one meanwhile:
     // [`Jobs::being_changed`]).
     shared.harness.end_warm_on(&id);
     let made = shared.config.agents.change(|agents, saved| {
         find(agents, &id).ok_or_else(|| no_account(&id))?;
+        saved.identities.remove(&id);
         let made = match saved.added.iter().position(|a| a.id == id) {
             Some(at) => {
                 let added = saved.added.remove(at);
@@ -1034,7 +1165,7 @@ pub async fn remove(
                 None
             }
         };
-        retire(saved, &account);
+        retire(saved, account);
         Ok(made)
     })?;
     // Never through a link in the folder's place: only a real folder is removed, and what's in it
@@ -1056,11 +1187,12 @@ pub async fn remove(
     if let Err(e) = crate::settings::update(&shared.config.home, |s| {
         s.tuning.remove(&id);
         s.default_account.take_if(|d| *d == id);
+        s.talk_account.take_if(|d| *d == id);
     }) {
         tracing::warn!("account {id}: its settings stay: {e}");
     }
-    send_accounts(&shared).await;
-    Ok(StatusCode::NO_CONTENT.into_response())
+    shared.conversations.forget_account(&id);
+    Ok(())
 }
 
 /// `DELETE /v1/accounts/{id}/sign-in`: ends the account's sign-in under way, if any, so an
@@ -1119,6 +1251,10 @@ pub struct SignIns {
     running: Mutex<HashMap<String, Arc<SignIn>>>,
     /// One change of an account at a time (a sign-in starting, the account removed).
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The accounts a sign-in took off as another's login again, with that other's id, so the app
+    /// that was waiting on one can ask (ACCOUNTS-7). ponytail: kept until obid restarts; at most
+    /// one short entry per account added.
+    same: Mutex<HashMap<String, String>>,
 }
 
 /// One sign-in under way: the tool's own login, waiting for the person.
@@ -1170,6 +1306,15 @@ impl SignIns {
             .is_ok()
     }
 
+    /// The account `id` was another's login again: said here until obid restarts.
+    fn same_as(&self, id: &str) -> Option<String> {
+        self.same
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+
     /// Forgets the account's lock (the account is gone).
     fn forget(&self, id: &str) {
         self.locks
@@ -1219,6 +1364,9 @@ pub async fn sign_in(
     State(shared): State<Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
+    if let Some(other) = shared.sign_ins.same_as(&id) {
+        return Ok(same_account(&shared, &other));
+    }
     find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
     // One change of the account at a time; looked up again once held (it may have been removed).
     let lock = shared.sign_ins.lock_for(&id);
@@ -1289,6 +1437,17 @@ pub async fn sign_in(
     Ok(answer(StatusCode::OK, sign_in.to_json()))
 }
 
+/// `409` for an account a sign-in took off as `other`'s login again (ACCOUNTS-7): `sameAs` is the
+/// account it was.
+fn same_account(shared: &Shared, other: &str) -> Response {
+    let name = find(&shared.config.agents.get(), other)
+        .map_or_else(|| "another account".to_owned(), |(_, account)| account.name);
+    answer(
+        StatusCode::CONFLICT,
+        json!({"error": format!("That's {name} again."), "reason": "sameAccount", "sameAs": other}),
+    )
+}
+
 /// Whether what a tool's login writes in the account's folder `dir` is the person's own: the
 /// folder, and the login file, its locks and the folders on the way to it, where they're there,
 /// each a real file or folder (not a link) owned by the person. Else why not.
@@ -1339,6 +1498,9 @@ pub async fn sign_in_code(
     UrlPath(id): UrlPath<String>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    if let Some(other) = shared.sign_ins.same_as(&id) {
+        return Ok(same_account(&shared, &other));
+    }
     let (tool, account) = find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
     let map = object(&body, &["code"], "{\"code\": \"…\"}")?;
     let code = text_field(&map, "code")?.unwrap_or_default().trim();
@@ -1381,6 +1543,9 @@ pub async fn sign_in_code(
         .and_then(|r| r.ok().and_then(|e| *e));
     match signed {
         Some(true) => {
+            if let Some(other) = shared.sign_ins.same_as(&id) {
+                return Ok(same_account(&shared, &other));
+            }
             let account = find(&shared.config.agents.get(), &id)
                 .map(|(_, a)| a)
                 .unwrap_or(account);
@@ -1405,6 +1570,21 @@ pub async fn sign_in_code(
     }
 }
 
+/// A new folder for one run of a tool's login or status, in `home/tmp`, swept at every start
+/// ([`sweep`]).
+fn scratch_folder(shared: &Shared) -> Result<PathBuf, String> {
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch = shared
+        .config
+        .home
+        .join("tmp")
+        .join(format!("{SCRATCH_PREFIX}{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    make_folder(&scratch).map_err(|e| format!("obid can't make a folder for the sign-in: {e}"))?;
+    Ok(scratch)
+}
+
 /// Starts the tool's own login in the account's folder `dir` and waits for its link. No box ever
 /// gets that folder (#655), so nothing a job wrote there steers the login, and the login writes
 /// its sign-in where the tool keeps it, read by nobody but the tool itself and the copies obid
@@ -1427,15 +1607,7 @@ async fn start(
     dir: &Path,
     changing: crate::jobs::Changing,
 ) -> Result<Arc<SignIn>, String> {
-    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let scratch = shared
-        .config
-        .home
-        .join("tmp")
-        .join(format!("{SCRATCH_PREFIX}{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
-    make_folder(&scratch).map_err(|e| format!("obid can't make a folder for the sign-in: {e}"))?;
+    let scratch = scratch_folder(shared)?;
     let child = command(tool, bin, dir, &scratch).and_then(|mut c| {
         c.spawn()
             .map_err(|e| format!("obid couldn't start {}'s sign-in: {e}", tool.name()))
@@ -1564,6 +1736,8 @@ async fn start(
         }
         if signed {
             shared.jobs.usage.forget_priced(&account.id);
+            // Before jobs may use it: it may be another account's login again.
+            settle_sign_in(&shared, tool, &account).await;
         }
         drop(changing);
         let _ = ended_tx.send(Some(signed));
@@ -1575,6 +1749,235 @@ async fn start(
         send_accounts(&shared).await;
     });
     Ok(sign_in)
+}
+
+/// A sign-in took: who the account is, from its tool. One just added with the email, org and plan
+/// of another signed-in account of the tool is that account again: taken off, and said at its sign-in routes
+/// (ACCOUNTS-7). A tool that doesn't say keeps the account; so does signing an account in again.
+async fn settle_sign_in(shared: &Arc<Shared>, tool: Tool, account: &Account) {
+    let agents = &shared.config.agents;
+    let who = read_identity(shared, tool, account)
+        .await
+        .unwrap_or_default();
+    if agents.fresh(&account.id)
+        && who.email.is_some()
+        && let Some(other) = same_login(shared, tool, &account.id, &who).await
+    {
+        // Said before it's gone: an app that sees it gone asks at once.
+        let same = || {
+            shared
+                .sign_ins
+                .same
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+        };
+        same().insert(account.id.clone(), other);
+        match forget_account(shared, account) {
+            Ok(()) => {
+                return tracing::info!("account {}: another's login again, removed", account.id);
+            }
+            Err(e) => tracing::warn!("account {}: stayed: {}", account.id, e.message),
+        }
+        same().remove(&account.id);
+    }
+    agents.learn(tool, &account.id, who, true);
+}
+
+/// Another signed-in account of `tool` that is `who`, asking the tool of any that hasn't said yet.
+/// One email can hold a personal plan and a team's seat, so its org and plan must match too: a plan
+/// that's changed since gives an extra account, never a lost one.
+async fn same_login(shared: &Arc<Shared>, tool: Tool, id: &str, who: &Identity) -> Option<String> {
+    let agents = &shared.config.agents;
+    let others = agent_of(&agents.get(), tool).as_ref()?.accounts.clone();
+    for other in others.into_iter().filter(|a| a.id != id) {
+        if !signed_in_now(tool, &other).await {
+            continue;
+        }
+        if agents.identity(&other.id).email.is_none()
+            && let Some(who) = read_identity(shared, tool, &other).await
+        {
+            agents.learn(tool, &other.id, who, false);
+        }
+        let known = agents.identity(&other.id);
+        let same_email = known
+            .email
+            .as_deref()
+            .zip(who.email.as_deref())
+            .is_some_and(|(known, email)| known.eq_ignore_ascii_case(email));
+        if same_email && known.org == who.org && known.plan == who.plan {
+            return Some(other.id);
+        }
+    }
+    None
+}
+
+/// Whether the account's login can run, off obid's async runtime: it can ask the macOS Keychain.
+async fn signed_in_now(tool: Tool, account: &Account) -> bool {
+    let account = account.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::jobs::signed_in(tool, &account, crate::jobs::login_home().as_deref())
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Asks the tools who each signed-in account is (`only`: that one), as obid starts and when a
+/// tool's own login is listed. A login the person changed outside Oby shows at the next start.
+pub async fn read_identities(shared: Arc<Shared>, only: Option<String>) {
+    let agents = &shared.config.agents;
+    let mut said = false;
+    for (tool, account) in all(&agents.get()) {
+        // Whether a login is there asks for no value of the Keychain; the tool says if it's over.
+        let (looked, home) = (account.clone(), crate::jobs::login_home());
+        let there = tokio::task::spawn_blocking(move || {
+            crate::jobs::has_login(tool, &looked, home.as_deref())
+        });
+        if only.as_ref().is_some_and(|id| *id != account.id)
+            || shared.jobs.being_changed(&account.id)
+            || !there.await.unwrap_or(false)
+        {
+            continue;
+        }
+        if let Some(who) = read_identity(&shared, tool, &account).await {
+            agents.learn(tool, &account.id, who, false);
+            said = true;
+        }
+    }
+    if said {
+        send_accounts(&shared).await;
+    }
+}
+
+/// What the tool says of the account, from its own status run the way its sign-in is, or None when
+/// it didn't answer. Nothing but [`identity_from`]'s values is kept or logged of the answer.
+async fn read_identity(shared: &Shared, tool: Tool, account: &Account) -> Option<Identity> {
+    let bin = agent_of(&shared.config.agents.get(), tool)
+        .as_ref()
+        .and_then(|agent| crate::process::resolve_bin(&agent.bin))
+        .filter(|bin| bin.is_absolute())?;
+    let scratch = scratch_folder(shared).ok()?;
+    let dir = account.config_dir.as_deref();
+    let said = match tool {
+        Tool::Codex => read_codex_account(&bin, dir, &scratch).await,
+        _ => read_status(tool, &bin, dir, &scratch).await,
+    };
+    let _ = std::fs::remove_dir_all(&scratch);
+    said.map(|said| identity_from(tool, &said))
+}
+
+/// `claude auth status --json` or `cursor-agent status --format json`, parsed.
+async fn read_status(tool: Tool, bin: &Path, dir: Option<&Path>, scratch: &Path) -> Option<Value> {
+    let mut command = tool_command(bin, scratch);
+    command
+        .args(match tool {
+            Tool::Claude => ["auth", "status", "--json"].as_slice(),
+            _ => ["status", "--format", "json"].as_slice(),
+        })
+        .envs(account_env(tool, dir, scratch).ok()?)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let child = command.spawn().ok()?;
+    let group = child.id();
+    match tokio::time::timeout(STATUS_WITHIN, child.wait_with_output()).await {
+        // ponytail: its whole answer in memory: it's the tool's own, a few lines.
+        Ok(output) => serde_json::from_slice(&output.ok()?.stdout).ok(),
+        Err(_) => {
+            if let Some(group) = group {
+                crate::process::signal_group(group, nix::sys::signal::Signal::SIGKILL);
+            }
+            None
+        }
+    }
+}
+
+/// Codex's `account/read`, from a server started for that alone, never refreshing a token.
+async fn read_codex_account(bin: &Path, dir: Option<&Path>, scratch: &Path) -> Option<Value> {
+    let mut argv: Vec<std::ffi::OsString> = vec![bin.into()];
+    if dir.is_some() {
+        argv.extend(["-c".into(), CODEX_FILE_STORE.into()]);
+    }
+    argv.extend([
+        "-c".into(),
+        "features.plugins=false".into(),
+        "app-server".into(),
+    ]);
+    let mut env = crate::process::kept(|name| std::env::var_os(name));
+    env.push(("PATH".into(), login_path(bin).into()));
+    env.push(("TMPDIR".into(), scratch.into()));
+    env.extend(
+        account_env(Tool::Codex, dir, scratch)
+            .ok()?
+            .into_iter()
+            .map(|(k, v)| (k.into(), v)),
+    );
+    let launch = crate::agent::Launch {
+        argv,
+        env,
+        cwd: scratch.to_path_buf(),
+        stderr: scratch.join("stderr.log"),
+        own_sandbox: false,
+        group: None,
+    };
+    let params = json!({"refreshToken": false});
+    crate::codex::ask_once(&launch, STATUS_WITHIN, "account/read", params)
+        .await
+        .ok()
+}
+
+/// A character that breaks a line or turns text around without showing: never in a tool's word.
+fn hides(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// One value of a tool's answer: one line of some length, or none.
+fn said(value: &Value, longest: usize) -> Option<String> {
+    let text = value.as_str()?.trim();
+    let fine = !text.is_empty() && text.chars().count() <= longest && !text.chars().any(hides);
+    fine.then(|| text.to_owned())
+}
+
+/// The email, plan and org in a tool's answer, and nothing else of it:
+///
+/// - Claude Code: `email`, `subscriptionType`, `orgName`, while `loggedIn`. A personal login's
+///   `<someone>'s Organization` is no org anybody named.
+/// - Codex: `account.email`, `account.planType`, its `unknown` being none.
+/// - Cursor: `userInfo.email`, `userInfo.teamName`: it says no plan, and no `userInfo` at all when
+///   it can't reach Cursor.
+fn identity_from(tool: Tool, answer: &Value) -> Identity {
+    let (email, plan, org) = match tool {
+        Tool::Claude if answer["loggedIn"] != true => (&Value::Null, &Value::Null, &Value::Null),
+        Tool::Claude => (
+            &answer["email"],
+            &answer["subscriptionType"],
+            &answer["orgName"],
+        ),
+        Tool::Codex => (
+            &answer["account"]["email"],
+            &answer["account"]["planType"],
+            &Value::Null,
+        ),
+        Tool::Cursor => (
+            &answer["userInfo"]["email"],
+            &Value::Null,
+            &answer["userInfo"]["teamName"],
+        ),
+    };
+    Identity {
+        email: said(email, 254),
+        plan: said(plan, LONGEST).filter(|plan| plan != "unknown"),
+        org: said(org, 120)
+            .filter(|org| !(org.ends_with("'s Organization") || org.ends_with("’s Organization"))),
+    }
+    .cleaned()
+}
+
+impl Identity {
+    /// Only an email that looks like one: a tool's words or a hand-edited file aren't.
+    fn cleaned(mut self) -> Identity {
+        self.email.take_if(|email| !email.contains('@'));
+        self
+    }
 }
 
 /// A login started and not yet registered as a sign-in: dropped armed (its request ended), its
@@ -1632,6 +2035,31 @@ fn command(
     dir: &Path,
     scratch: &Path,
 ) -> Result<tokio::process::Command, String> {
+    let mut command = tool_command(bin, scratch);
+    command
+        .stdin(std::process::Stdio::piped())
+        .envs(account_env(tool, Some(dir), scratch)?);
+    match tool {
+        Tool::Claude => {
+            command.args(["auth", "login"]);
+        }
+        Tool::Codex => {
+            command.args(["login", "--device-auth", "-c", CODEX_FILE_STORE]);
+        }
+        Tool::Cursor => {
+            crate::acp::cursor::rewrite_config(dir)
+                .map_err(|e| format!("obid can't write Cursor's settings for the sign-in: {e}"))?;
+            command.arg("login").env("NO_OPEN_BROWSER", "1");
+        }
+    }
+    Ok(command)
+}
+
+/// Keeps Codex's login in a file in its folder, for an account with one.
+const CODEX_FILE_STORE: &str = r#"cli_auth_credentials_store="file""#;
+
+/// A tool's command as [`command`] says, whatever it's asked.
+fn tool_command(bin: &Path, scratch: &Path) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(bin);
     command
         .env_clear()
@@ -1640,43 +2068,39 @@ fn command(
         .env("TMPDIR", scratch)
         .env("BROWSER", "true")
         .current_dir(scratch)
-        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .process_group(0);
-    match tool {
-        Tool::Claude => {
-            let home = crate::jobs::login_home()
-                .ok_or("obid can't find the person's home for Claude Code's sign-in.")?;
-            command
-                .args(["auth", "login"])
-                .env("HOME", home)
-                .env("CLAUDE_CONFIG_DIR", dir);
+    command
+}
+
+/// The variables that point a tool at the account: its folder `dir`, or for the tool's own login
+/// (no folder) the person's home, as the tool itself would run.
+fn account_env(
+    tool: Tool,
+    dir: Option<&Path>,
+    scratch: &Path,
+) -> Result<Vec<(&'static str, std::ffi::OsString)>, String> {
+    let home = || {
+        crate::jobs::login_home()
+            .map(|home| ("HOME", home.into_os_string()))
+            .ok_or_else(|| format!("obid can't find the person's home for {}.", tool.name()))
+    };
+    Ok(match (tool, dir) {
+        (Tool::Claude, Some(dir)) => vec![home()?, ("CLAUDE_CONFIG_DIR", dir.into())],
+        (Tool::Codex, Some(dir)) => vec![("HOME", dir.into()), ("CODEX_HOME", dir.into())],
+        (Tool::Cursor, dir) => {
+            let mut env = match dir {
+                Some(dir) => crate::acp::cursor::environment(dir),
+                None => vec![home()?],
+            };
+            env.push(("NODE_COMPILE_CACHE", scratch.into()));
+            env.push(("XDG_CACHE_HOME", scratch.into()));
+            env
         }
-        Tool::Codex => {
-            command
-                .args([
-                    "login",
-                    "--device-auth",
-                    "-c",
-                    r#"cli_auth_credentials_store="file""#,
-                ])
-                .env("HOME", dir)
-                .env("CODEX_HOME", dir);
-        }
-        Tool::Cursor => {
-            crate::acp::cursor::rewrite_config(dir)
-                .map_err(|e| format!("obid can't write Cursor's settings for the sign-in: {e}"))?;
-            command
-                .arg("login")
-                .envs(crate::acp::cursor::environment(dir))
-                .env("NO_OPEN_BROWSER", "1")
-                .env("NODE_COMPILE_CACHE", scratch)
-                .env("XDG_CACHE_HOME", scratch);
-        }
-    }
-    Ok(command)
+        (_, None) => vec![home()?],
+    })
 }
 
 /// [`SYSTEM_PATH`], then the folder the tool's binary is in (links followed: Cursor's runs the
@@ -1768,6 +2192,99 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
+    #[test]
+    fn accounts_3_only_the_email_plan_and_org_are_taken_from_what_a_tool_says() {
+        let who = identity_from(
+            Tool::Claude,
+            &json!({"loggedIn": true, "email": "me@deskree.com", "orgName": "Deskree",
+                    "subscriptionType": "team", "accessToken": "never", "orgId": "never"}),
+        );
+        assert_eq!(
+            serde_json::to_value(&who).unwrap(),
+            json!({"email": "me@deskree.com", "plan": "team", "org": "Deskree"})
+        );
+        let who = identity_from(
+            Tool::Codex,
+            &json!({"account": {"type": "chatgpt", "email": "me@x.dev", "planType": "plus"},
+                    "requiresOpenaiAuth": true}),
+        );
+        assert_eq!(who.email.as_deref(), Some("me@x.dev"));
+        assert_eq!(who.plan.as_deref(), Some("plus"));
+        assert_eq!(who.org, None);
+        // Signed out, or a key's account: nothing to say.
+        assert_eq!(
+            identity_from(
+                Tool::Claude,
+                &json!({"loggedIn": false, "email": "me@x.dev"})
+            ),
+            Identity::default()
+        );
+        assert_eq!(
+            identity_from(Tool::Codex, &json!({"account": {"type": "apiKey"}})),
+            Identity::default()
+        );
+        // What isn't one line, or isn't an email, isn't taken.
+        assert_eq!(
+            identity_from(
+                Tool::Codex,
+                &json!({"account": {"email": "a@b\nc", "planType": "unknown"}})
+            ),
+            Identity::default()
+        );
+        assert_eq!(
+            identity_from(Tool::Codex, &json!({"account": {"email": "nobody"}})),
+            Identity::default()
+        );
+    }
+
+    #[test]
+    fn accounts_3_a_word_that_breaks_a_line_or_turns_text_around_is_no_word() {
+        for word in [
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{200B}b",
+            "a\u{202E}b",
+            "a\u{2066}b",
+            "a\nb",
+        ] {
+            assert_eq!(said(&json!(word), 60), None, "{word:?}");
+        }
+        assert_eq!(said(&json!(" Déskree "), 60).as_deref(), Some("Déskree"));
+    }
+
+    #[test]
+    fn accounts_4_a_personal_logins_own_organization_is_no_org() {
+        for org in ["me@x.dev's Organization", "Wellington’s Organization"] {
+            let who = identity_from(
+                Tool::Claude,
+                &json!({"loggedIn": true, "email": "me@x.dev", "orgName": org, "subscriptionType": "max"}),
+            );
+            assert_eq!(who.org, None, "{org}");
+            assert_eq!(who.plan.as_deref(), Some("max"));
+        }
+    }
+
+    #[test]
+    fn accounts_5_cursor_says_its_email_and_team_under_user_info_or_nothing() {
+        let who = identity_from(
+            Tool::Cursor,
+            &json!({"status": "authenticated", "isAuthenticated": true,
+                    "userInfo": {"email": "me@x.dev", "userId": 7, "firstName": "Me", "teamName": "Deskree"}}),
+        );
+        assert_eq!(who.email.as_deref(), Some("me@x.dev"));
+        assert_eq!(who.org.as_deref(), Some("Deskree"));
+        assert_eq!(who.plan, None);
+        // What cursor-agent 2026.10.01 says when it can't reach Cursor.
+        assert_eq!(
+            identity_from(
+                Tool::Cursor,
+                &json!({"status": "authenticated", "isAuthenticated": true,
+                        "message": "Logged in (unable to fetch user details)"}),
+            ),
+            Identity::default()
+        );
+    }
+
     /// The environment variables a sign-in's command names.
     fn env_of(command: &tokio::process::Command) -> HashMap<String, Option<OsString>> {
         command
@@ -1799,6 +2316,8 @@ mod tests {
 
     fn added(id: &str, agent: &str) -> Added {
         Added {
+            fresh: false,
+            auto_name: false,
             id: id.into(),
             agent: agent.into(),
             name: format!("Name {id}"),
@@ -1848,6 +2367,7 @@ mod tests {
                 },
             )]),
             removed: vec!["work".into()],
+            identities: BTreeMap::new(),
         };
         let agents = merged(&seed, &saved);
         let claude = agents.claude.unwrap().accounts;

@@ -45,6 +45,9 @@ pub struct Options {
     /// The MCP servers `session/new` (or `session/load`) gives it, when it takes HTTP ones: Oby's
     /// Tetrix server only (crate::tetrix).
     pub mcp: Vec<Value>,
+    /// What a loaded session replays isn't reported: a conversation's agent, whose words stream
+    /// to the owner, who has them already.
+    pub quiet_load: bool,
 }
 
 /// Runs one turn: starts the agent, sends `prompt`, answers its requests with `decide`, reports with
@@ -77,6 +80,7 @@ pub async fn run_turn(
         plan_approved: false,
         owners_words: None,
         tokens: crate::usage::Tokens::default(),
+        loading: false,
     };
     let mut turn = Turn::default();
     let ended = match run.turn(prompt).await {
@@ -306,11 +310,14 @@ impl ToolCall {
     }
 
     /// The calls obid's policy decides on: `execute` is `Bash`, file changes `Edit` (one per
-    /// file), reads and searches `Read`, fetches `WebFetch`, a title shaped as an MCP tool that
-    /// tool. Anything else is `None`: obid doesn't know what it does.
+    /// file), reads and searches `Read`, fetches `WebFetch`, a call of no such kind titled as an MCP
+    /// tool that tool (a command's title is its text, whatever the agent wrote: never that).
+    /// Anything else is `None`: obid doesn't know what it does.
     pub fn calls(&self) -> Option<Vec<(String, Value)>> {
         let title = self.title.as_deref().unwrap_or("");
-        if let Some(mcp) = mcp_name(title) {
+        if matches!(self.kind.as_deref(), None | Some("other"))
+            && let Some(mcp) = mcp_name(title)
+        {
             return Some(vec![(mcp, json!({}))]);
         }
         let per_path = |tool: &str| -> Vec<(String, Value)> {
@@ -416,6 +423,17 @@ fn todos(list: &Value) -> Vec<crate::transcript::Todo> {
 
 /// `mcp__tetrix__get_entity`, `mcp:tetrix:get_entity` or `mcp.tetrix.get_entity` as the first form.
 pub fn mcp_name(title: &str) -> Option<String> {
+    // cursor-agent 2026.10.01's own: "<server>-<tool>: <tool>" (`oby-oby_jobs: oby_jobs`)
+    static CURSOR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let cursor = CURSOR.get_or_init(|| {
+        regex::Regex::new(r"^([A-Za-z0-9_]+)-([A-Za-z0-9_.-]+): ([A-Za-z0-9_.-]+)$")
+            .expect("a regex")
+    });
+    if let Some(c) = cursor.captures(title)
+        && c[2] == c[3]
+    {
+        return Some(format!("mcp__{}__{}", &c[1], &c[2]));
+    }
     static MCP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let mcp = MCP.get_or_init(|| {
         regex::Regex::new(r"^mcp(?:__|[:.])([A-Za-z0-9_-]+?)(?:__|[:.])([A-Za-z0-9_.-]+)$")
@@ -558,6 +576,8 @@ struct Run<D, E> {
     owners_words: Option<String>,
     /// What this turn's prompts used, when the agent reports it (crate::usage::acp_tokens).
     tokens: crate::usage::Tokens,
+    /// `session/load` is under way, and what it replays goes unreported ([`Options::quiet_load`]).
+    loading: bool,
 }
 
 impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
@@ -621,7 +641,10 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             }
             _ => ("session/new", json!({"cwd": cwd, "mcpServers": servers})),
         };
-        let answer = match self.call(method, params).await? {
+        self.loading = self.options.quiet_load && method == "session/load";
+        let answer = self.call(method, params).await?;
+        self.loading = false;
+        let answer = match answer {
             Ok(answer) => answer,
             Err(e) if is_auth(&e) => return Err(Stop::Failed(self.signed_out())),
             Err(e) => {
@@ -792,6 +815,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         }
         let params = &message["params"];
         match message["method"].as_str() {
+            Some("session/update") if self.loading => {}
             Some("session/update") => {
                 let update = &params["update"];
                 if update["sessionUpdate"] != "agent_thought_chunk" {
@@ -800,6 +824,10 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 match update["sessionUpdate"].as_str() {
                     Some("agent_message_chunk") if update["content"]["type"] == "text" => {
                         let chunk = update["content"]["text"].as_str().unwrap_or("");
+                        // Its first words after a tool call start a new paragraph on screen.
+                        if !chunk.is_empty() && self.current.is_empty() && !self.before.is_empty() {
+                            (self.on_event)(Event::Delta("\n\n".to_owned()));
+                        }
                         self.current.push_str(chunk);
                         if !chunk.is_empty() {
                             (self.on_event)(Event::Delta(chunk.to_owned()));
@@ -1029,6 +1057,7 @@ pub mod cursor {
     pub fn environment(home: &Path) -> Vec<(&'static str, OsString)> {
         vec![
             ("CURSOR_CONFIG_DIR", home.as_os_str().to_owned()),
+            ("CURSOR_DATA_DIR", data_dir(home).into_os_string()),
             ("HOME", home.as_os_str().to_owned()),
             ("XDG_CONFIG_HOME", home.join(".config").into_os_string()),
             // Its login in a file under its HOME ([`crate::jobs::cursor_login_file`]), never the
@@ -1037,15 +1066,30 @@ pub mod cursor {
         ]
     }
 
-    /// The longest config folder Cursor keeps its sockets in (cursor-agent 2026.05.15: a socket's
-    /// name has room for about 84 characters of folder); past it, Cursor uses `/tmp/.cursor`, which
-    /// the job sandbox doesn't let it write, and it stops.
+    /// Where Cursor keeps its sockets: its usual `~/.cursor`, or `d` where a long home (a long user
+    /// name) leaves that no room. `SHORT_DATA` is the one name [`crate::brain::harness`] clears too.
+    pub fn data_dir(home: &Path) -> PathBuf {
+        let usual = home.join(".cursor");
+        if usual.as_os_str().len() > SOCKET_ROOM {
+            home.join(SHORT_DATA)
+        } else {
+            usual
+        }
+    }
+
+    /// See [`data_dir`].
+    pub const SHORT_DATA: &str = "d";
+
+    /// The longest data folder Cursor keeps its sockets in (cursor-agent 2026.10.01, `CURSOR_DATA_DIR`
+    /// or `~/.cursor`: a socket's name has room for about 84 characters of folder); past it, Cursor
+    /// uses `/tmp/.cursor`, which the job sandbox doesn't let it write, and it stops.
     pub const SOCKET_ROOM: usize = 84;
 
     /// Says in obid's log when a Cursor job's folder (its own login folder, under obid's home) is too
     /// long for Cursor's sockets.
     pub fn warn_if_long(home: &Path) {
-        let real = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+        let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+        let real = data_dir(&home);
         let length = real.as_os_str().len();
         if length > SOCKET_ROOM {
             tracing::warn!(
@@ -1197,6 +1241,54 @@ pub mod cursor {
 }
 
 #[cfg(test)]
+mod mcp_title_tests {
+    use super::mcp_name;
+
+    // CONVERSATION-AGENT-6: as real Cursor titles a tool of an MCP server, not only as others do.
+    #[test]
+    fn conversation_agent_6_cursors_own_title_for_an_mcp_tool_is_that_tool() {
+        assert_eq!(
+            mcp_name("oby-oby_jobs: oby_jobs").as_deref(),
+            Some("mcp__oby__oby_jobs")
+        );
+        assert_eq!(
+            mcp_name("tetrix-get_entity: get_entity").as_deref(),
+            Some("mcp__tetrix__get_entity")
+        );
+        // The same shape naming two tools isn't one.
+        assert_eq!(mcp_name("oby-oby_jobs: oby_merge"), None);
+        assert_eq!(mcp_name("Run: rm -rf x"), None);
+    }
+}
+
+#[cfg(test)]
+mod cursor_folder_tests {
+    use super::cursor::{SOCKET_ROOM, data_dir, environment};
+    use std::path::Path;
+
+    // CONVERSATION-AGENT-6: a long user name is no reason for Cursor not to start (its sockets past
+    // the room go to /tmp/.cursor, which its box denies, and it dies at once).
+    #[test]
+    fn conversation_agent_6_cursors_data_folder_fits_a_long_user_name() {
+        let runner = |user: &str| format!("/Users/{user}/Library/Application Support/Oby/Runner");
+        for user in ["wellprado", "wellingtonprado", "an-18-char-name-xx"] {
+            let home = crate::conversation::cursor_folder(
+                Path::new(&runner(user)),
+                "c4756325-6b41-4471-a95e-b5acb16cd325",
+            );
+            let data = data_dir(&home);
+            assert!(data.as_os_str().len() <= SOCKET_ROOM, "{}", data.display());
+            assert!(environment(&home).contains(&("CURSOR_DATA_DIR", data.into_os_string())));
+        }
+    }
+
+    #[test]
+    fn conversation_agent_6_a_home_with_room_keeps_cursors_own_folder() {
+        assert_eq!(data_dir(Path::new("/h")), Path::new("/h/.cursor"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1292,6 +1384,10 @@ mod tests {
             mcp.calls(),
             Some(vec![("mcp__tetrix__get_entity".into(), json!({}))])
         );
+        // A command's title is its text: whatever it looks like, it's a command.
+        let mut titled = ToolCall::default();
+        titled.merge(&json!({"kind": "execute", "title": "mcp__oby__anything"}));
+        assert_eq!(titled.calls().unwrap()[0].0, "Bash");
         let mut other = ToolCall::default();
         other.merge(&json!({"kind": "other", "title": "Something new"}));
         assert_eq!(other.calls(), None);

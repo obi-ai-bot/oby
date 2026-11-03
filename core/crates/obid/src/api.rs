@@ -594,6 +594,10 @@ pub struct Status {
     pub default_agent: String,
     /// The account new tasks go to (#1573), or null for routing's own order.
     pub default_account: Option<String>,
+    /// The account conversations talk through unless one chose another, or null for Auto.
+    pub talk_account: Option<String>,
+    /// The account a new conversation's first turn would talk through now, or null when none can.
+    pub talk_next: Option<String>,
     pub running: u32,
     pub cleared_at: Option<String>,
     pub github: &'static str,
@@ -673,6 +677,9 @@ pub struct AccountJson {
     /// Its `model`, `effort` and `complexEffort`, each only when the owner chose it (#1574).
     #[serde(flatten)]
     pub tuning: crate::settings::Tuning,
+    /// Its `email`, `plan` and `org`, each only when its tool said (docs/contracts/accounts.md).
+    #[serde(flatten)]
+    pub identity: crate::accounts::Identity,
 }
 
 #[derive(Serialize)]
@@ -807,6 +814,7 @@ pub fn account_json(
             .tuning
             .remove(&account.id)
             .unwrap_or_default(),
+        identity: shared.config.agents.identity(&account.id),
     }
 }
 
@@ -842,6 +850,13 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
     // in the `accounts` event.
     shared.jobs.want_usage();
     let accounts = crate::accounts::list_now(&shared).await;
+    // Off the runtime as the list is: whether an account can run can ask the macOS Keychain.
+    let talk_next = {
+        let shared = shared.clone();
+        tokio::task::spawn_blocking(move || crate::brain::talk::next(&shared))
+            .await
+            .unwrap_or(None)
+    };
     let cleaned = shared.jobs.cleaned();
     Ok(axum::Json(Status {
         runner: RunnerJson {
@@ -861,6 +876,8 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
         max_running: shared.jobs.max_running() as u32,
         default_agent: crate::settings::load(&shared.config.home).default_agent,
         default_account: crate::settings::load(&shared.config.home).default_account,
+        talk_account: crate::settings::load(&shared.config.home).talk_account,
+        talk_next,
         running: shared.jobs.running() as u32,
         cleared_at: shared.cleared.at().map(obi_protocol::time::format),
         // obid has no GitHub app: its own GitHub calls, once it makes any, go as the owner.

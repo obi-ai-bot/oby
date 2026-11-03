@@ -1574,10 +1574,16 @@ pub(crate) fn cursor_login_file() -> &'static str {
     }
 }
 
+/// What stands in a copy for Cursor's refresh token: cursor-agent 2026.10.01 calls a login with an
+/// access token and no refresh token "partially authenticated", and won't start (ACP's
+/// "Authentication required"). It's no secret, and a refresh with it does nothing to the account.
+pub(super) const CURSOR_NO_REFRESH: &str = "oby-keeps-the-refresh-token";
+
 /// Cursor's `auth.json` as obid copies it for a job: only what calls Cursor's API, its
 /// `accessToken` and `apiKey`, and nothing else the file holds (never the refresh token, which a
-/// refresh inside a box would rotate away from the account, #651, nor Bedrock's keys). Its tokens
-/// are learned as secrets obid knows. `None` when it isn't a JSON object.
+/// refresh inside a box would rotate away from the account, #651, nor Bedrock's keys; a stand-in
+/// takes its place, [`CURSOR_NO_REFRESH`]). Its tokens are learned as secrets obid knows. `None`
+/// when it isn't a JSON object.
 pub(super) fn cursor_without_refresh(bytes: &[u8], account: &Path) -> Option<Vec<u8>> {
     let login: Value = serde_json::from_slice(bytes).ok()?;
     let fields = login.as_object()?;
@@ -1590,10 +1596,13 @@ pub(super) fn cursor_without_refresh(bytes: &[u8], account: &Path) -> Option<Vec
             crate::secrets::known().learn(&format!("Cursor {} {key}", account.display()), token);
         }
     }
-    let kept: serde_json::Map<String, Value> = ["accessToken", "apiKey"]
+    let mut kept: serde_json::Map<String, Value> = ["accessToken", "apiKey"]
         .into_iter()
         .filter_map(|key| Some((key.to_owned(), fields.get(key)?.clone())))
         .collect();
+    if kept.contains_key("accessToken") {
+        kept.insert("refreshToken".to_owned(), CURSOR_NO_REFRESH.into());
+    }
     serde_json::to_vec(&kept).ok()
 }
 
@@ -1849,6 +1858,31 @@ pub(super) fn own_cursor_login(home: &Path) -> Option<Vec<u8>> {
     cursor_keychain_login()
 }
 
+/// Cursor's own login (`~/.cursor`, an account with no `configDir`) copied into `login`, a job's or
+/// a conversation's: refused, saying why, when macOS didn't give its Keychain item or it has ended.
+pub(super) fn copy_own_cursor(login: &Path) -> Result<(), String> {
+    let home = login_home()
+        .ok_or_else(|| "obid can't find the home Cursor's own login is in.".to_owned())?;
+    let own = own_cursor_login(&home);
+    // A Keychain login macOS didn't give: say why, not that it's signed out (#1679).
+    if own.is_none()
+        && let Some(why) = CURSOR_ITEMS
+            .iter()
+            .find_map(|(_, service)| keychain_unread(Tool::Cursor, service))
+    {
+        return Err(why);
+    }
+    // A copy can't refresh it: only the Mac's own cursor-agent does.
+    if own
+        .as_deref()
+        .is_some_and(|login| !cursor_login_live(login))
+    {
+        return Err(CURSOR_ENDED.into());
+    }
+    copy_cursor(own, &home.join(".cursor/cli-config.json"), &home, login)
+        .map_err(|e| format!("obid can't copy Cursor's login: {e}"))
+}
+
 /// A Cursor job's own folder (`login`, its `HOME`) from the login file's bytes `from` and the
 /// settings `settings` (`cli-config.json`), an account's or Cursor's own (`~/.cursor`, its login
 /// file or Keychain item, [`own_cursor_login`]): the login as only its access token and API key
@@ -1870,6 +1904,15 @@ pub(super) fn copy_cursor(
             .then(|| std::fs::read(from).ok())
             .flatten()
     };
+    // What a run approved for itself goes before the next start: a job's edits are ungated, and an
+    // approval of an `mcp.json` it wrote would start that server with no card, under Tetrix's name.
+    if let Ok(projects) = std::fs::read_dir(acp::cursor::data_dir(login).join("projects")) {
+        for project in projects.flatten() {
+            if project.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let _ = std::fs::remove_file(project.path().join("mcp-approvals.json"));
+            }
+        }
+    }
     let file = cursor_login_file();
     if let Some(copy) = from.and_then(|bytes| cursor_without_refresh(&bytes, account)) {
         let mut folder = login.to_path_buf();
@@ -2710,6 +2753,18 @@ attributes:
     /// refreshed would rotate the account's own login away, as #651 found for Claude Code. They're
     /// learned as secrets obid knows, and the account's `mcp.json` isn't copied.
     #[test]
+    fn a_cursor_run_starts_with_no_mcp_approval_of_its_own() {
+        let root = std::env::temp_dir().join(format!("oby-approvals-{}", std::process::id()));
+        let login = root.join("login");
+        let planted = login.join(".cursor/projects/a-project/mcp-approvals.json");
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        std::fs::write(&planted, "[]").unwrap();
+        copy_cursor(None, &root.join("cli-config.json"), &root, &login).unwrap();
+        assert!(!planted.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_cursor_login_copy_has_no_refresh_token() {
         let root = std::env::temp_dir().join(format!("obid-cursor-copy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -2733,8 +2788,11 @@ attributes:
         copy_account_folder(Tool::Cursor, &account, &login).unwrap();
         let copied: Value =
             serde_json::from_slice(&std::fs::read(login.join(file)).unwrap()).unwrap();
-        // Only what calls Cursor's API: no refresh token, no Bedrock keys.
-        assert_eq!(copied, json!({"accessToken": access, "apiKey": null}));
+        // Only what calls Cursor's API: no refresh token, a stand-in for it, no Bedrock keys.
+        assert_eq!(
+            copied,
+            json!({"accessToken": access, "apiKey": null, "refreshToken": CURSOR_NO_REFRESH})
+        );
         // Never the account's MCP servers.
         assert!(!login.join("mcp.json").exists());
         assert!(
@@ -2773,7 +2831,10 @@ attributes:
         let copied: Value =
             serde_json::from_slice(&std::fs::read(login.join(cursor_login_file())).unwrap())
                 .unwrap();
-        assert_eq!(copied, json!({"accessToken": access}));
+        assert_eq!(
+            copied,
+            json!({"accessToken": access, "refreshToken": CURSOR_NO_REFRESH})
+        );
         assert!(
             !crate::secrets::known().redact(&access).contains(&access),
             "not learned"

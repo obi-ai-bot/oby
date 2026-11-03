@@ -29,6 +29,8 @@ The business behavior contract for why a sign-in didn't take, shown under its ow
 | `badAddress` | a Tetrix address that isn't HTTPS (or loopback HTTP), one with a login, a fragment or a query other than `?org=<uuid>` (the organization a login in several answers for, #1667), or an unknown preset | `422` | `That isn’t a Tetrix address Oby can use.` |
 | `noSignIn` | that Tetrix's metadata, sign-in server or client can't be found or used | `502` | `That Tetrix doesn’t say where to sign in.` |
 
+One more `reason` isn't a failure to start: `sameAccount` with `sameAs` (`409`), a new account whose sign-in turned out to be another's login again (docs/contracts/accounts.md, ACCOUNTS-7). Settings' sheet says `That’s Personal again`.
+
 A sign-in that started and then ended without signing in (its page closed, gh or the Tetrix exchange failing, 15 minutes for an agent or GitHub, 10 for Tetrix) puts Connect back with `Didn’t finish signing in. Try again.` The app knows it ended when `GET /v1/github` or `GET /v1/tetrix` says no sign-in is under way and nothing is signed in. obid makes that answer true only once it is: `GET /v1/github` reads the sign-in before gh's status, and a sign-in's end forgets the status before it shows as ended, so a status read that began before the end keeps nothing.
 
 ### Invariants
