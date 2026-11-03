@@ -532,6 +532,10 @@ pub struct Link {
     room: Mutex<Room>,
     /// Woken when a post waits to be sent.
     room_outbox: Notify,
+    /// Woken when an API call wants the room looked at now.
+    room_wake: Notify,
+    /// Whether the room's follower runs: one at a time, so a post is read once.
+    room_following: AtomicBool,
     /// One room send at a time, so posts go in order; apart from `sending`, so a rate-limited room
     /// never holds a reply back.
     room_sending: tokio::sync::Mutex<()>,
@@ -862,6 +866,8 @@ impl Link {
             owner: Mutex::new(owner),
             room: Mutex::new(room),
             room_outbox: Notify::new(),
+            room_wake: Notify::new(),
+            room_following: AtomicBool::new(false),
             room_sending: tokio::sync::Mutex::new(()),
         });
         // The inbox hears of the permissions jobs wait on. Jobs tells it with none of its own
@@ -943,13 +949,10 @@ impl Link {
                 .collect();
             let needs: Vec<(String, i64)> = self
                 .room_lock()
-                .posts
+                .self_answers
                 .iter()
-                .filter_map(|p| {
-                    p.self_answered
-                        .filter(|at| *at > since)
-                        .map(|at| (p.owner.clone(), at))
-                })
+                .filter(|(_, at)| *at > since)
+                .cloned()
                 .collect();
             for (owner, at) in started.into_iter().chain(needs) {
                 state.self_answers.entry(owner).or_default().push(at);
@@ -1698,7 +1701,7 @@ impl Link {
         // Its file went with `home/sphere`, and what waits was for this Sphere.
         {
             let _sending = self.room_sending.lock().await;
-            *self.room_lock() = Room::default();
+            self.room_lock().close();
         }
         // The phone relay's socket stops serving phones now.
         if let Some(relay) = self.relay.get() {

@@ -51,12 +51,12 @@ pub(super) async fn post(
     if let Some(why) = asked.problem() {
         return Err(why);
     }
-    if owners_word(session).is_none() {
+    if owners_word(shared, session).is_none() {
         return confirm_card(
             shared,
             session,
             "Post in the Obysphere's room".into(),
-            Some(&asked.text),
+            Some(&asked.shown()),
             crate::sphere::inbox::Confirmed {
                 action: crate::sphere::inbox::action::ROOM_POST.into(),
                 target: String::new(),
@@ -67,10 +67,9 @@ pub(super) async fn post(
     let post = Box::pin(shared.link.post_asked(&asked)).await?;
     Ok(match post.state.as_str() {
         crate::sphere::room::SENT => "Posted in the Obysphere's room.".to_owned(),
+        // obid's words only: this turn may still be the owner's word, and what a Sphere says isn't.
         crate::sphere::room::REFUSED => {
-            return Err(post
-                .error
-                .unwrap_or_else(|| "The Sphere refused it.".into()));
+            return Err("The Obysphere refused it: nothing was posted.".into());
         }
         _ => "It waits to go: the Sphere isn't answering. Oby sends it when it does.".to_owned(),
     })

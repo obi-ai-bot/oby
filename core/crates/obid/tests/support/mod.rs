@@ -1130,6 +1130,17 @@ pub struct SphereState {
     pub room_off: bool,
     /// A Sphere that doesn't answer for now: `503` on the room's paths.
     pub room_down: bool,
+    /// How long a read of the room is held before it's answered.
+    pub room_hold: Duration,
+    /// Reads of the room under way, and the most there ever were at once.
+    pub room_readers: usize,
+    pub room_readers_most: usize,
+    /// What a read of the room answers instead, whatever its `after`.
+    pub room_serves: Option<Vec<(u64, String, Value)>>,
+    /// A post is stored, and its answer comes only after this long.
+    pub room_post_hold: Duration,
+    /// What a post is answered instead, its status, code and message; stored too with `true`.
+    pub room_refuses: Option<(u16, String, String, bool)>,
 }
 
 pub type RelaySender = tokio::sync::mpsc::UnboundedSender<axum::extract::ws::Message>;
@@ -2221,28 +2232,40 @@ async fn room_post(
     State(state): State<Arc<Mutex<SphereState>>>,
     axum::Json(post): axum::Json<Value>,
 ) -> Response {
-    let mut state = state.lock().unwrap();
-    if state.room_off {
-        return sphere_error(StatusCode::NOT_FOUND, "not_found", "no room here");
-    }
-    state.room_tries.push(post.clone());
-    if state.room_down {
-        return sphere_error(StatusCode::SERVICE_UNAVAILABLE, "internal", "down for now");
-    }
     let answer = |seq: u64, at: &str| json!({"id": post["id"], "seq": seq, "recorded_at": at});
-    if let Some((seq, at, stored)) = state.room.iter().find(|p| p.2["id"] == post["id"]) {
-        if *stored != post {
-            return sphere_error(
-                StatusCode::CONFLICT,
-                "duplicate",
-                "another post has that id",
-            );
+    let (held, stored, refuses) = {
+        let mut state = state.lock().unwrap();
+        if state.room_off {
+            return sphere_error(StatusCode::NOT_FOUND, "not_found", "no room here");
         }
-        return axum::Json(answer(*seq, at)).into_response();
+        state.room_tries.push(post.clone());
+        if state.room_down {
+            return sphere_error(StatusCode::SERVICE_UNAVAILABLE, "internal", "down for now");
+        }
+        if let Some((seq, at, stored)) = state.room.iter().find(|p| p.2["id"] == post["id"]) {
+            if *stored != post {
+                return sphere_error(
+                    StatusCode::CONFLICT,
+                    "duplicate",
+                    "another post has that id",
+                );
+            }
+            return axum::Json(answer(*seq, at)).into_response();
+        }
+        let refuses = state.room_refuses.clone();
+        if refuses.as_ref().is_none_or(|r| r.3) {
+            let seq = state.room.last().map_or(0, |p| p.0) + 1;
+            let at = time::format(time::now());
+            state.room.push((seq, at, post.clone()));
+        }
+        let stored = state.room.last().map(|p| (p.0, p.1.clone()));
+        (state.room_post_hold, stored, refuses)
+    };
+    tokio::time::sleep(held).await;
+    if let Some((status, code, message, _)) = refuses {
+        return sphere_error(StatusCode::from_u16(status).unwrap(), &code, &message);
     }
-    let seq = state.room.last().map_or(0, |p| p.0) + 1;
-    let at = time::format(time::now());
-    state.room.push((seq, at.clone(), post.clone()));
+    let (seq, at) = stored.unwrap();
     (StatusCode::ACCEPTED, axum::Json(answer(seq, &at))).into_response()
 }
 
@@ -2250,12 +2273,25 @@ async fn room_posts(
     State(state): State<Arc<Mutex<SphereState>>>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    let state = state.lock().unwrap();
+    let held = {
+        let mut state = state.lock().unwrap();
+        state.room_readers += 1;
+        state.room_readers_most = state.room_readers_most.max(state.room_readers);
+        state.room_hold
+    };
+    tokio::time::sleep(held).await;
+    let mut state = state.lock().unwrap();
+    state.room_readers -= 1;
     if state.room_off {
         return sphere_error(StatusCode::NOT_FOUND, "not_found", "no room here");
     }
     if state.room_down {
         return sphere_error(StatusCode::SERVICE_UNAVAILABLE, "internal", "down for now");
+    }
+    let shown = |p: &(u64, String, Value)| json!({"seq": p.0, "recorded_at": p.1, "post": p.2});
+    if let Some(served) = &state.room_serves {
+        let posts: Vec<Value> = served.iter().map(shown).collect();
+        return axum::Json(json!({"posts": posts})).into_response();
     }
     let after: u64 = query.get("after").and_then(|a| a.parse().ok()).unwrap_or(0);
     let limit: usize = query
@@ -2267,7 +2303,7 @@ async fn room_posts(
         .iter()
         .filter(|p| p.0 > after)
         .take(limit)
-        .map(|p| json!({"seq": p.0, "recorded_at": p.1, "post": p.2}))
+        .map(shown)
         .collect();
     axum::Json(json!({"posts": posts})).into_response()
 }

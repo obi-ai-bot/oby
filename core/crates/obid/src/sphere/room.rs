@@ -65,10 +65,20 @@ pub struct Post {
     /// The post as signed, while it waits: a retry sends these same bytes. Never in the API's answer.
     #[serde(default)]
     pub wire: Option<Value>,
-    /// When obid took this `need` on to answer by itself: what the self-answer limits count, also
-    /// after a restart. Never in the API's answer.
+    /// The sharing rule it went out by itself under, none for what the owner said or asked for: it
+    /// must still hold when it's sent. Never in the API's answer.
     #[serde(default)]
-    pub self_answered: Option<i64>,
+    pub under: Option<Under>,
+}
+
+/// Which sharing rule a post obid wrote by itself goes under.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Under {
+    /// The repositories it tells of.
+    pub repos: Vec<String>,
+    /// Whose `need` it answers: none for a job's post.
+    #[serde(default)]
+    pub asker: Option<String>,
 }
 
 impl Post {
@@ -100,12 +110,20 @@ pub struct Room {
     pub after: u64,
     #[serde(default)]
     pub posts: Vec<Post>,
+    /// Whose `need` obid took on to answer by itself, and when, for the last hour: what the
+    /// self-answer limits count, also after a restart, whatever posts have gone since.
+    #[serde(default)]
+    pub self_answers: Vec<(String, i64)>,
     /// Whether the Sphere has a room (`404`: it doesn't), once obid asked.
     #[serde(skip)]
     pub available: Option<bool>,
-    /// When a Sphere with no room was last asked.
+    /// Which membership this is for: a read or a post under way when obid left its Sphere finds
+    /// another here, and keeps nothing.
     #[serde(skip)]
-    pub asked: i64,
+    pub epoch: u64,
+    /// obid left its Sphere, and hasn't joined another: nothing is written.
+    #[serde(skip)]
+    pub closed: bool,
 }
 
 fn path(home: &Path) -> PathBuf {
@@ -122,8 +140,22 @@ impl Room {
             .unwrap_or_default()
     }
 
+    /// It's for no membership now: `home/sphere` went, and nothing brings it back.
+    pub fn close(&mut self) {
+        *self = Room {
+            epoch: self.epoch + 1,
+            closed: true,
+            ..Room::default()
+        };
+    }
+
     /// Keeps it, the oldest posts past [`KEPT`] gone, never one still waiting.
     pub fn save(&mut self, home: &Path) {
+        if self.closed {
+            return;
+        }
+        let since = time::now() - 3600;
+        self.self_answers.retain(|(_, at)| *at > since);
         let over = self.posts.len().saturating_sub(KEPT);
         if over > 0 {
             let mut left = over;
@@ -581,7 +613,7 @@ mod tests {
             error: None,
             job: None,
             wire: None,
-            self_answered: None,
+            under: None,
         };
         let mut room = Room::default();
         room.posts.push(one(0, WAITING));
@@ -595,6 +627,12 @@ mod tests {
         assert_eq!(kept.posts.len(), KEPT);
         assert_eq!(kept.posts[0].id, "p0");
         assert_eq!(kept.posts[1].id, "p6");
+        // Leaving: nothing is written, whatever was under way.
+        room.close();
+        std::fs::remove_dir_all(&home).unwrap();
+        room.save(&home);
+        assert!(!home.exists());
+        let mut kept = kept;
         // In the Sphere's order, what's not sent last.
         let since = kept.since((KEPT + 3) as u64);
         assert_eq!(
@@ -605,6 +643,19 @@ mod tests {
                 "p0".into()
             ]
         );
+        // What the self-answer limits count outlives the posts, for its hour.
+        let now = time::now();
+        kept.self_answers = vec![("old".into(), now - 4000), ("ernesto".into(), now - 10)];
+        for n in KEPT + 5..KEPT + 20 {
+            kept.posts.push(one(n, SENT));
+        }
+        kept.save(&home);
+        let reopened = Room::open(&home);
+        assert_eq!(
+            reopened.self_answers,
+            vec![("ernesto".to_owned(), now - 10)]
+        );
+        assert_eq!(reopened.posts.len(), KEPT);
         let _ = std::fs::remove_dir_all(home);
     }
 }

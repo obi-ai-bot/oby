@@ -17,6 +17,8 @@ impl Link {
 
     /// Starts the follower, once.
     pub(super) fn follow(self: &Arc<Self>) {
+        // The room has a task of its own: whatever a Sphere serves there, deliveries don't wait.
+        self.follow_room();
         if self.following.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -62,9 +64,6 @@ impl Link {
         if stale {
             self.read_directory().await?;
         }
-        // The room, before the long poll: a post reads within a poll's wait at most. Whatever comes
-        // of it, deliveries go on.
-        Box::pin(self.follow_room()).await;
         let token = self.token().await?;
         let client = self.client()?;
         let deliveries = match client.deliveries(&token, 50, POLL_WAIT).await {

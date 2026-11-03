@@ -1,25 +1,42 @@
-//! The room as the link follows and posts in it (docs/contracts/rooms.md): reading it in the follower's
-//! loop, each post checked and its copy opened (crate::sphere::room); a queue of posts with its own
-//! sender; a `need` answered by itself under the owner's sharing rules only; a job's `working_on` and
+//! The room as the link follows and posts in it (docs/contracts/rooms.md): reading it in a task of its
+//! own, each post checked and its copy opened (crate::sphere::room), so nothing a Sphere serves there
+//! holds deliveries up; a queue of posts with its own sender; a `need` answered by itself under the owner's sharing rules only; a job's `working_on` and
 //! `done`; and what the API and the brain's tools ask of it.
 //!
 //! A post's words are data: logged never, a model's only in a quoted file. Nothing a post says starts,
 //! changes or publishes anything.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
-use obi_protocol::client::ClientError;
+use obi_protocol::client::{ClientError, MAX_ROOM_SEQ};
 use obi_protocol::time;
 use serde_json::{Value, json};
 
 use super::*;
 use crate::job::Status;
-use crate::sphere::room::{New, Post};
+use crate::sphere::room::{New, Post, Under};
 
 /// How many posts one read asks for.
 const PAGE: u32 = 50;
+/// How many reads one look makes: a long backlog takes several looks.
+const PAGES: usize = 4;
+/// How long the Sphere may hold a read while there are no new posts, once obid knows it has a room.
+const LOOK_WAIT: u32 = 25;
+/// The shortest time between looks when there's nothing new, whether the Sphere held the read or not.
+const LOOK_IDLE: Duration = Duration::from_secs(5);
+/// The time between looks while there's more to read.
+const LOOK_MORE: Duration = Duration::from_secs(1);
+/// How long a look waits at most after trouble: a Sphere serving nonsense isn't asked every second.
+const LOOK_BACKOFF_MAX: Duration = Duration::from_secs(300);
+/// The most `seq` may jump past the cursor. ponytail: a reader of a Sphere past a million posts, whose
+/// oldest kept one is this far on, stalls with its why in the log; a page from any lower `seq` otherwise
+/// jams the cursor for good. Ask the Sphere for its lowest if a room ever gets there.
+const MOST_SEQ_JUMP: u64 = 1_000_000;
+/// How long an API call waits for the room's first look.
+const FIRST_LOOK: Duration = Duration::from_secs(5);
 /// How many of the newest posts the brain's read shows.
 const BRAIN_READS: usize = 50;
 /// How long a route waits for its post to reach the Sphere before it answers "not sent yet".
@@ -69,6 +86,20 @@ fn words_problem(text: &str, about: &[Value], reply_to: Option<&str>) -> Option<
     room::about_problem(about).map(str::to_owned)
 }
 
+/// What a post calls a job: its own title, or `<Kind> <repo name> #<number>`. Never the task's words
+/// (`Job::short_title`'s last resort), which aren't for the whole room.
+fn job_name(job: &Job) -> String {
+    let named = job.title.as_deref().is_some_and(|t| !t.trim().is_empty());
+    if named || job.pr.or(job.issue).is_some() {
+        job.short_title()
+    } else {
+        "A task".to_owned()
+    }
+}
+
+/// Why a post obid wrote by itself doesn't go.
+const NO_RULE: &str = "No sharing rule covers every member now: nothing was sent.";
+
 /// What a job's post says: its title, its repository and its pull request, nothing else.
 fn job_words(job: &Job) -> (String, Value) {
     let pr = job
@@ -76,7 +107,7 @@ fn job_words(job: &Job) -> (String, Value) {
         .as_deref()
         .and_then(|url| crate::github::pull_request_number(url, &job.repo))
         .or(job.pr);
-    let title = job.short_title();
+    let title = job_name(job);
     match pr {
         Some(pr) => (
             format!("{title} ({}#{pr})", job.repo),
@@ -100,6 +131,33 @@ fn seal_members(state: &State) -> Vec<(String, [u8; 32])> {
         .collect();
     members.sort();
     members
+}
+
+/// What a look at the room came to.
+enum Look {
+    /// There may be more to read.
+    More,
+    /// Nothing new.
+    Idle,
+    /// The Sphere has no room (`404`).
+    NoRoom,
+    /// It couldn't be read, or what it served can't be right.
+    Trouble,
+}
+
+impl Asked {
+    /// What its Confirm card shows: all that goes, not only the words.
+    pub fn shown(&self) -> String {
+        let mut shown = format!("Kind: {}", self.kind);
+        if !self.about.is_empty() {
+            shown.push_str(&format!("\nAbout: {}", json!(self.about)));
+        }
+        if let Some(reply_to) = &self.reply_to {
+            shown.push_str(&format!("\nAnswers the post: {reply_to}"));
+        }
+        shown.push_str(&format!("\n\n{}", self.text));
+        shown
+    }
 }
 
 impl Link {
@@ -135,22 +193,71 @@ impl Link {
     // -----------------------------------------------------------------------------------------
     // Following
 
-    /// One look at the room, in the follower's loop: every post above the cursor, read in order. A
-    /// Sphere with no room answers `404`, and is asked again every 10 minutes. Whatever goes wrong here
-    /// is the room's alone: deliveries go on, and `lastError` doesn't hear of it.
-    pub(super) async fn follow_room(self: &Arc<Self>) {
-        let now = time::now();
-        {
-            let room = self.room_lock();
-            if room.available == Some(false) && now - room.asked < FEATURES_EVERY {
+    /// Starts the room's follower, once: the only reader, so a post is read once. Its task is apart
+    /// from the deliveries', which never wait on it, and a call of the API only wakes it.
+    pub(super) fn follow_room(self: &Arc<Self>) {
+        self.room_lock().closed = false;
+        self.room_wake.notify_one();
+        if self.room_following.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let link = self.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = link.clone().run_room_follower() => {}
+                () = stopped(link.stopping.clone()) => return,
+            }
+            // Left or revoked: a later join follows again, also one that came while this ended.
+            link.room_following.store(false, Ordering::SeqCst);
+            if link.is_joined() {
+                link.follow_room();
+            }
+        });
+    }
+
+    async fn run_room_follower(self: Arc<Self>) {
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            if !self.is_joined() {
                 return;
             }
+            let began = Instant::now();
+            let look = Box::pin(self.look_at_room()).await;
+            let wait = match look {
+                Look::More => LOOK_MORE,
+                Look::Idle => LOOK_IDLE.saturating_sub(began.elapsed()),
+                // Asked again every 10 minutes, or when it joins another Sphere.
+                Look::NoRoom => Duration::from_secs(FEATURES_EVERY.unsigned_abs()),
+                Look::Trouble => {
+                    let wait = backoff;
+                    backoff = (backoff * 2).min(LOOK_BACKOFF_MAX);
+                    wait
+                }
+            };
+            if !matches!(look, Look::Trouble) {
+                backoff = Duration::from_secs(1);
+            }
+            tokio::select! {
+                () = self.room_wake.notified() => {}
+                () = tokio::time::sleep(wait) => {}
+            }
         }
-        loop {
+    }
+
+    /// One look at the room: at most [`PAGES`] reads above the cursor, each post read in order, and
+    /// `seq` must go up: one that doesn't, or can't be real, stops the look with the cursor before it.
+    /// Whatever goes wrong here is the room's alone: `lastError` doesn't hear of it.
+    async fn look_at_room(self: &Arc<Self>) -> Look {
+        let (epoch, known) = {
+            let room = self.room_lock();
+            (room.epoch, room.available == Some(true))
+        };
+        for read in 0..PAGES {
             let after = self.room_lock().after;
+            let wait = if known && read == 0 { LOOK_WAIT } else { 0 };
             let page = match self.token().await {
                 Ok(token) => match self.client() {
-                    Ok(client) => client.room_posts(&token, after, PAGE).await,
+                    Ok(client) => client.room_posts(&token, after, PAGE, wait).await,
                     Err(e) => Err(e),
                 },
                 Err(e) => Err(e),
@@ -159,41 +266,75 @@ impl Link {
                 Ok(page) => page,
                 Err(ClientError::Refused { status: 404, .. }) => {
                     let mut room = self.room_lock();
-                    room.available = Some(false);
-                    room.asked = now;
-                    return;
+                    if room.epoch == epoch {
+                        room.available = Some(false);
+                    }
+                    return Look::NoRoom;
                 }
                 Err(e) => {
                     self.refused_token(&e);
                     tracing::debug!("sphere: the room wasn't read: {e}");
-                    return;
+                    return Look::Trouble;
                 }
             };
-            self.room_lock().available = Some(true);
+            {
+                let mut room = self.room_lock();
+                if room.epoch != epoch {
+                    return Look::Idle;
+                }
+                room.available = Some(true);
+            }
             if page.is_empty() {
-                return;
+                return Look::Idle;
             }
             let full = page.len() == PAGE as usize;
-            let mut done = true;
+            let mut cursor = after;
+            let mut trouble = false;
             for (seq, at, post) in page {
-                if !self.read_room_post(seq, &at, &post).await {
-                    done = false;
+                if seq <= cursor || seq > MAX_ROOM_SEQ || seq - cursor > MOST_SEQ_JUMP {
+                    tracing::warn!("sphere: the room served {seq} past {cursor}: read no further");
+                    trouble = true;
                     break;
                 }
+                if !self.read_room_post(seq, &at, &post, epoch).await {
+                    trouble = true;
+                    break;
+                }
+                cursor = seq;
                 let mut room = self.room_lock();
-                room.after = room.after.max(seq);
+                if room.epoch != epoch {
+                    return Look::Idle;
+                }
+                room.after = cursor;
             }
             self.room_lock().save(&self.config.home);
-            if !full || !done {
-                return;
+            if trouble {
+                return Look::Trouble;
+            }
+            if !full {
+                return Look::More;
             }
         }
+        Look::More
     }
 
     /// One post the Sphere served: kept when it passes and has a copy for this Obi, dropped and logged
     /// when it doesn't pass, skipped when it has none. `false` when the directory that judges it
     /// couldn't be read: it's read again later, the cursor still before it.
-    async fn read_room_post(self: &Arc<Self>, seq: u64, at: &str, post: &Value) -> bool {
+    async fn read_room_post(
+        self: &Arc<Self>,
+        seq: u64,
+        at: &str,
+        post: &Value,
+        epoch: u64,
+    ) -> bool {
+        // The Sphere's own date, kept with the post: one that isn't a date goes no further.
+        if !obi_protocol::schema::is_valid("common#/$defs/timestamp", &json!(at)) {
+            tracing::warn!(
+                "sphere: dropped the room's post at {seq}: its recorded_at isn't a date"
+            );
+            return true;
+        }
         let text = |key: &str| post[key].as_str().unwrap_or("");
         let (id, from, key_id) = (text("id"), text("from"), text("key_id"));
         // Already here. Its own, read back before its answer came: that's its answer. A retry the
@@ -271,10 +412,16 @@ impl Link {
             error: None,
             job: None,
             wire: None,
-            self_answered: None,
+            under: None,
         };
-        self.room_lock().posts.push(kept.clone());
-        self.events.send("roomPost", kept.to_json());
+        {
+            let mut room = self.room_lock();
+            if room.epoch != epoch {
+                return true;
+            }
+            room.posts.push(kept.clone());
+        }
+        self.events.send("roomPost", self.post_json(&kept));
         if kept.kind == "need" && kept.from != me {
             let link = self.clone();
             tokio::spawn(async move { link.answer_need(kept).await });
@@ -292,6 +439,16 @@ impl Link {
         (others.iter().any(|o| o == owner) && state.sharing.job_status_for_all(&others, repos))
             .then(|| state.sharing.job_status_rule(owner, repos).cloned())
             .flatten()
+    }
+
+    /// Whether what `under` says a post went under still holds, by the rules and the directory now.
+    fn rule_holds(&self, state: &State, under: &Under) -> bool {
+        match &under.asker {
+            Some(asker) => self.need_rule(state, asker, &under.repos).is_some(),
+            None => state
+                .sharing
+                .job_status_for_all(&self.other_owners(state), &under.repos),
+        }
     }
 
     /// A `need` from another member: one `found`, as a question is answered (crate::sphere::answering:
@@ -322,9 +479,7 @@ impl Link {
         };
         {
             let mut room = self.room_lock();
-            if let Some(kept) = room.get_mut(&need.id) {
-                kept.self_answered = Some(now);
-            }
+            room.self_answers.push((need.owner.clone(), now));
             room.save(&self.config.home);
         }
         let Ok(_run) = self.answering.acquire().await else {
@@ -348,7 +503,7 @@ impl Link {
         };
         let jobs = self.jobs.list(usize::MAX);
         // No results of reviews: they were sent to one owner, and a post goes to everyone.
-        let material = answering::material(
+        let mut material = answering::material(
             &rule,
             &need.owner,
             &repos,
@@ -359,6 +514,13 @@ impl Link {
         );
         if material.is_empty() {
             return;
+        }
+        // What a post may call a job, whatever a question's answer may.
+        for item in &mut material {
+            let id = item["ref"]["job"].as_str().unwrap_or_default();
+            if let Some(job) = jobs.iter().find(|j| j.id == id) {
+                item["title"] = json!(job_name(job));
+            }
         }
         let dir = self.config.home.join("answers").join(&need.id);
         let question = json!({"text": need.text, "about": need.about});
@@ -380,17 +542,6 @@ impl Link {
                 return;
             }
         };
-        // The rule may have gone while the model ran, or a member come whom it doesn't cover: then
-        // nothing it wrote goes.
-        let _ = self.directory_now().await;
-        let still = {
-            let state = self.lock();
-            self.need_rule(&state, &need.owner, &repos)
-                .is_some_and(|r| r.id == rule.id)
-        };
-        if !still {
-            return;
-        }
         let new = New {
             kind: "found",
             by: "obi",
@@ -398,7 +549,13 @@ impl Link {
             about: &written.refs,
             reply_to: Some(&need.id),
         };
-        if let Err(why) = self.post_in_room(&new, None).await {
+        // The rule may have gone while the model ran, or a member come whom it doesn't cover: then
+        // nothing it wrote goes.
+        let under = Under {
+            repos,
+            asker: Some(need.owner.clone()),
+        };
+        if let Err(why) = self.post_in_room(&new, None, Some(under)).await {
             tracing::warn!("sphere: the room's need wasn't answered: {why}");
             return;
         }
@@ -415,15 +572,19 @@ impl Link {
 
     /// A new post, sealed for each active member with a seal key and signed, in the queue: every
     /// outgoing word through the secret scan first, so a finding, or a scan that can't run, sends
-    /// nothing. `job` is the job it's about, once for each kind. `Err` says why, never quoting words.
+    /// nothing. `job` is the job it's about, once for each kind; `under` the sharing rule it goes
+    /// under, checked against the members it's sealed for, as it's sealed. `Err` says why in obid's
+    /// own words: never the post's, and never a Sphere's, which a model may read.
     pub(crate) async fn post_in_room(
         &self,
         new: &New<'_>,
         job: Option<&str>,
+        under: Option<Under>,
     ) -> Result<Post, String> {
         if let Some(why) = words_problem(new.text, new.about, new.reply_to) {
             return Err(why);
         }
+        let epoch = self.room_lock().epoch;
         let text = answering::clean(new.text);
         let scratch = self.config.home.join("tmp");
         let _ = std::fs::create_dir_all(&scratch);
@@ -443,7 +604,10 @@ impl Link {
                 ));
             }
         }
-        self.directory_now().await.map_err(|e| e.to_string())?;
+        self.directory_now().await.map_err(|e| {
+            tracing::warn!("sphere: a room post didn't go: {e}");
+            "The Obysphere can't be reached now: nothing was posted.".to_owned()
+        })?;
         let new = New {
             text: &text,
             ..new.clone()
@@ -457,6 +621,11 @@ impl Link {
                 .filter(|m| m.state == "joined")
                 .ok_or("This Oby isn't in an Obysphere.")?;
             let key = state.key.as_ref().ok_or("This Oby has no key.")?;
+            if let Some(under) = &under
+                && !self.rule_holds(&state, under)
+            {
+                return Err(NO_RULE.into());
+            }
             let members = seal_members(&state);
             if members.is_empty() {
                 return Err(
@@ -497,10 +666,13 @@ impl Link {
             error: None,
             job: job.map(str::to_owned),
             wire: Some(wire),
-            self_answered: None,
+            under,
         };
         {
             let mut room = self.room_lock();
+            if room.epoch != epoch {
+                return Err("This Oby isn't in that Obysphere any more.".into());
+            }
             if let Some(job) = job
                 && room.job_posted(job, new.kind)
             {
@@ -509,7 +681,7 @@ impl Link {
             room.posts.push(post.clone());
             room.save(&self.config.home);
         }
-        self.events.send("roomPost", post.to_json());
+        self.events.send("roomPost", self.post_json(&post));
         self.room_outbox.notify_one();
         Ok(post)
     }
@@ -539,7 +711,8 @@ impl Link {
     /// Sends what waits, oldest first: `true` once nothing waits to be tried again. A `429` waited
     /// as `Retry-After` says (the client's), a Sphere that doesn't answer or answers 5xx: it stays
     /// queued. A key that rotated while it waited: signed again, once. A Sphere that won't take it,
-    /// now or later: refused, and said on the post.
+    /// now or later: refused, and said on the post. What it went under must still hold: with its rule
+    /// gone, or a `found` past the hour its need had, it's refused and never sent.
     pub(super) async fn send_room(&self) -> bool {
         let _one = self.room_sending.lock().await;
         let mut resigned: Option<String> = None;
@@ -552,10 +725,32 @@ impl Link {
                 .posts
                 .iter()
                 .filter(|p| p.state == room::WAITING)
-                .find_map(|p| Some((p.id.clone(), p.wire.clone()?)));
-            let Some((id, wire)) = next else {
+                .find_map(|p| Some((p.clone(), p.wire.clone()?)));
+            let Some((post, wire)) = next else {
                 return true;
             };
+            let id = post.id;
+            // After a restart, who's a member is unknown until it's read: no rule can be judged.
+            if post.under.is_some()
+                && self.lock().directory_read == 0
+                && self.read_directory().await.is_err()
+            {
+                return false;
+            }
+            let gone = post
+                .under
+                .as_ref()
+                .is_some_and(|under| !self.rule_holds(&self.lock(), under));
+            if gone {
+                self.room_post_refused(&id, NO_RULE.into());
+                continue;
+            }
+            let stale = post.kind == "found"
+                && time::parse(&post.created_at).is_none_or(|t| t <= time::now() - REPLY_LIFETIME);
+            if stale {
+                self.room_post_refused(&id, "It waited too long to go: nothing was sent.".into());
+                continue;
+            }
             let sent = match self.token().await {
                 Ok(token) => match self.client() {
                     Ok(client) => client.room_post(&token, &wire).await,
@@ -584,15 +779,18 @@ impl Link {
                     self.room_lock().available = Some(false);
                     self.room_post_refused(&id, "This Obysphere has no room.".into());
                 }
-                Err(ClientError::Refused {
-                    status,
-                    code,
-                    message,
-                }) if status < 500 && !matches!(status, 401 | 408 | 429) => {
-                    self.room_post_refused(
-                        &id,
-                        format!("The Sphere refused it: {code}: {message}"),
-                    );
+                Err(ClientError::Refused { status, code, .. })
+                    if status < 500 && !matches!(status, 401 | 408 | 429) =>
+                {
+                    // Its code, when it looks like one; never what the Sphere chose to say.
+                    let plain = (1..=40).contains(&code.len())
+                        && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+                    let why = if plain {
+                        format!("The Obysphere refused it ({code}).")
+                    } else {
+                        "The Obysphere refused it.".to_owned()
+                    };
+                    self.room_post_refused(&id, why);
                 }
                 Err(e) => {
                     self.refused_token(&e);
@@ -603,11 +801,12 @@ impl Link {
         }
     }
 
-    /// The Sphere has it: its place kept, the job's `outgoing` told.
+    /// The Sphere has it: its place kept, the job's `outgoing` told. Once: its answer and reading it
+    /// back may both say so.
     fn room_post_sent(&self, id: &str, seq: u64, at: &str) {
         let post = {
             let mut room = self.room_lock();
-            let Some(post) = room.get_mut(id) else {
+            let Some(post) = room.get_mut(id).filter(|p| p.state == room::WAITING) else {
                 return;
             };
             post.seq = Some(seq);
@@ -619,17 +818,18 @@ impl Link {
             room.save(&self.config.home);
             post
         };
-        self.events.send("roomPost", post.to_json());
+        self.events.send("roomPost", self.post_json(&post));
         if let Some(job) = &post.job {
             self.jobs.room_posted(job, id);
         }
     }
 
+    /// It won't go, unless the Sphere has it already: that stands.
     fn room_post_refused(&self, id: &str, why: String) {
         tracing::warn!("sphere: a room post went nowhere: {why}");
         let post = {
             let mut room = self.room_lock();
-            let Some(post) = room.get_mut(id) else {
+            let Some(post) = room.get_mut(id).filter(|p| p.state == room::WAITING) else {
                 return;
             };
             post.state = room::REFUSED.into();
@@ -639,7 +839,20 @@ impl Link {
             room.save(&self.config.home);
             post
         };
-        self.events.send("roomPost", post.to_json());
+        self.events.send("roomPost", self.post_json(&post));
+    }
+
+    /// A post as the API and the `roomPost` event show it: with `verified`, whether its owner's key
+    /// is one this owner compared with that person, or their own.
+    fn post_json(&self, post: &Post) -> Value {
+        let mine = self
+            .lock()
+            .membership
+            .as_ref()
+            .is_some_and(|m| m.obi_id == post.from);
+        let mut shown = post.to_json();
+        shown["verified"] = json!(mine || self.pins.verified(&post.owner));
+        shown
     }
 
     // -----------------------------------------------------------------------------------------
@@ -680,17 +893,18 @@ impl Link {
         if kind == "working_on" && !job.status.is_active() {
             return;
         }
-        if let Err(e) = self.directory_now().await {
+        if self.lock().directory_read == 0
+            && let Err(e) = self.read_directory().await
+        {
             tracing::warn!("sphere: job {id} wasn't posted in the room: {e}");
             return;
         }
-        let allowed = {
-            let state = self.lock();
-            state
-                .sharing
-                .job_status_for_all(&self.other_owners(&state), std::slice::from_ref(&job.repo))
+        let under = Under {
+            repos: vec![job.repo.clone()],
+            asker: None,
         };
-        if !allowed {
+        // No rule, no scan to run for nothing; `post_in_room` looks again at who's a member now.
+        if !self.rule_holds(&self.lock(), &under) {
             return;
         }
         let (text, about) = job_words(&job);
@@ -702,7 +916,7 @@ impl Link {
             about: &about,
             reply_to: None,
         };
-        if let Err(why) = self.post_in_room(&new, Some(id)).await {
+        if let Err(why) = self.post_in_room(&new, Some(id), Some(under)).await {
             tracing::warn!("sphere: job {id} wasn't posted in the room: {why}");
         }
     }
@@ -710,10 +924,15 @@ impl Link {
     // -----------------------------------------------------------------------------------------
     // The API's and the brain's
 
-    /// Whether the Sphere has a room, asked at once if obid hasn't yet.
-    async fn room_known(self: &Arc<Self>) -> bool {
-        if self.room_lock().available.is_none() {
-            Box::pin(self.follow_room()).await;
+    /// Whether the Sphere has a room, as the follower found. Before its first look, a few seconds'
+    /// wait for it: never the look itself, which a Sphere could hold for as long as it likes.
+    async fn room_known(&self) -> bool {
+        if self.room_lock().available.is_none() && self.is_joined() {
+            self.room_wake.notify_one();
+            let give_up = Instant::now() + FIRST_LOOK;
+            while self.room_lock().available.is_none() && Instant::now() < give_up {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
         self.room_lock().available != Some(false)
     }
@@ -735,19 +954,19 @@ impl Link {
     }
 
     /// `GET /v1/spheres/{sphere}/room?after=`: the room's posts above `after`, and those not sent yet.
-    pub async fn room_json(self: &Arc<Self>, sphere: &str, after: u64) -> Result<Value, ApiError> {
+    pub async fn room_json(&self, sphere: &str, after: u64) -> Result<Value, ApiError> {
         self.sphere_is(sphere)?;
         if !self.room_known().await {
             return Ok(json!({"room": "unavailable", "posts": []}));
         }
-        let room = self.room_lock();
-        let posts: Vec<Value> = room.since(after).iter().map(|p| p.to_json()).collect();
+        let posts: Vec<Post> = self.room_lock().since(after).into_iter().cloned().collect();
+        let posts: Vec<Value> = posts.iter().map(|p| self.post_json(p)).collect();
         Ok(json!({"room": "available", "posts": posts}))
     }
 
     /// `POST /v1/spheres/{sphere}/room`: the owner's own `say`, which their app signed (the route
     /// checks). The post, sent if the Sphere took it in a few seconds, else `waiting`.
-    pub async fn room_say(self: &Arc<Self>, sphere: &str, body: &[u8]) -> Result<Value, ApiError> {
+    pub async fn room_say(&self, sphere: &str, body: &[u8]) -> Result<Value, ApiError> {
         self.sphere_is(sphere)?;
         let map = object(body, &["text", "about", "replyTo"])?;
         let text = text_field(&map, "text")?;
@@ -782,14 +1001,15 @@ impl Link {
             reply_to,
         };
         let post = self
-            .post_in_room(&new, None)
+            .post_in_room(&new, None, None)
             .await
             .map_err(|why| api(StatusCode::UNPROCESSABLE_ENTITY, why))?;
-        Ok(self.sent_soon(post).await.to_json())
+        let post = self.sent_soon(post).await;
+        Ok(self.post_json(&post))
     }
 
     /// What the brain asked to post (`oby_room_post`, or its Confirm): `need` or `found`, by Oby.
-    pub async fn post_asked(self: &Arc<Self>, asked: &Asked) -> Result<Post, String> {
+    pub async fn post_asked(&self, asked: &Asked) -> Result<Post, String> {
         if let Some(why) = asked.problem() {
             return Err(why);
         }
@@ -803,7 +1023,7 @@ impl Link {
             about: &asked.about,
             reply_to: asked.reply_to.as_deref(),
         };
-        let post = self.post_in_room(&new, None).await?;
+        let post = self.post_in_room(&new, None, None).await?;
         Ok(self.sent_soon(post).await)
     }
 
@@ -819,7 +1039,7 @@ impl Link {
     }
 
     /// The newest posts for a model's quoted file, oldest first (`oby_room_read`).
-    pub async fn room_for_model(self: &Arc<Self>) -> Result<Vec<Post>, String> {
+    pub async fn room_for_model(&self) -> Result<Vec<Post>, String> {
         if !self.is_joined() {
             return Err("This Oby isn't in an Obysphere.".into());
         }

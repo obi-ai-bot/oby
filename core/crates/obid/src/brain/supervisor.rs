@@ -611,6 +611,7 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(true),
+            shared: std::sync::Weak::new(),
             dispatched: AtomicUsize::new(0),
             acted: std::sync::atomic::AtomicBool::new(false),
             told: AtomicUsize::new(0),

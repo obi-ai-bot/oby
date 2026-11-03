@@ -349,7 +349,7 @@ async fn call(
     }
     // A turn that isn't the owner's own word asks for their OK at most so many times: what it read
     // can't flood their inbox with cards.
-    if CONFIRMS.contains(&name) && owners_word(session).is_none() {
+    if CONFIRMS.contains(&name) && owners_word(shared, session).is_none() {
         capped(&session.asked, "asks for the owner's OK", false)?;
     }
     match name {
@@ -373,7 +373,7 @@ async fn call(
             capped(
                 &session.told,
                 "tells jobs something",
-                owners_word(session).is_some(),
+                owners_word(shared, session).is_some(),
             )?;
             let Tell { id, words, title } = parse(args)?;
             tell(shared, session, id, &words, title).await
@@ -388,7 +388,7 @@ async fn call(
             capped(
                 &session.told,
                 "tells jobs something",
-                owners_word(session).is_some(),
+                owners_word(shared, session).is_some(),
             )?;
             continue_job(shared, session, args)
         }
@@ -595,15 +595,21 @@ fn waits(session: &Session, job: &crate::job::Job) -> Option<&'static str> {
 /// When the turn began, if what it does at once is the owner's own word (TASKCONV-6): their words this
 /// turn were signed by an app of theirs, it read nothing untrusted, and someone watches it. Then
 /// the decisions only they make are made as they said; otherwise each is a Confirm.
-pub(super) fn owners_word(session: &Session) -> Option<i64> {
-    (session.control.signed() && !session.web.load(Ordering::SeqCst) && !session.unwatched())
-        .then_some(session.control.begun)
+pub(super) fn owners_word(shared: &Shared, session: &Session) -> Option<i64> {
+    (session.control.signed()
+        && !session.web.load(Ordering::SeqCst)
+        && !session.unwatched()
+        // The conversation's own mark: `web` is the session's, whose file may not have kept it.
+        && !shared.conversations.read_untrusted(&session.conversation))
+    .then_some(session.control.begun)
 }
 
 /// Why what the owner asked waits for their Confirm, when it isn't their own word this turn.
 fn not_their_word(session: &Session) -> &'static str {
     if session.web.load(Ordering::SeqCst) {
         "this turn read text Oby didn't write"
+    } else if session.control.signed() {
+        "this conversation read text Oby didn't write"
     } else {
         "no app of yours signed these words"
     }
@@ -619,7 +625,13 @@ async fn answer_item(
     problems(shared, session, &plan)?;
     outcome_answer(
         session,
-        actions::answer_inbox(shared, &plan, &session.conversation, owners_word(session)).await,
+        actions::answer_inbox(
+            shared,
+            &plan,
+            &session.conversation,
+            owners_word(shared, session),
+        )
+        .await,
     )
 }
 
@@ -676,7 +688,7 @@ async fn merge(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<S
         Ok(open) => open,
         Err(why) => return refused(why),
     };
-    if owners_word(session).is_none() {
+    if owners_word(shared, session).is_none() {
         let title = asked.title(&open, job.is_some());
         // The click goes over whatever's still open, so the card says what is (MERGING-27).
         let still_open = match &job {
@@ -730,7 +742,7 @@ async fn github_write(
             Err(why) => return refused(&asked.action, why),
         }
     }
-    if owners_word(session).is_none() {
+    if owners_word(shared, session).is_none() {
         return confirm_card(
             shared,
             session,
@@ -769,7 +781,9 @@ fn settings(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<Stri
         ));
     }
     asked.mode()?;
-    if asked.widens(&super::owners_word::Now::of(&shared.jobs)) && owners_word(session).is_none() {
+    if asked.widens(&super::owners_word::Now::of(&shared.jobs))
+        && owners_word(shared, session).is_none()
+    {
         return confirm_card(
             shared,
             session,
@@ -1873,7 +1887,7 @@ async fn tell(
     capped(
         &session.dispatched,
         "starts jobs",
-        owners_word(session).is_some(),
+        owners_word(shared, session).is_some(),
     )?;
     let name = job.short_title();
     let followed = session
@@ -1907,7 +1921,7 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
     capped(
         &session.dispatched,
         "starts jobs",
-        owners_word(session).is_some(),
+        owners_word(shared, session).is_some(),
     )?;
     let start: Start = parse(args)?;
     // A supervisor turn splits what's left of its stalled job into new jobs by itself, within
@@ -2055,7 +2069,7 @@ async fn offer(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<S
     capped(
         &session.dispatched,
         "starts or offers jobs",
-        owners_word(session).is_some(),
+        owners_word(shared, session).is_some(),
     )?;
     let mut plan = Plan::of(Action::Dispatch, "");
     plan.dispatches = vec![planned(parse(args)?)?];

@@ -18,6 +18,8 @@ pub const TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchang
 /// The token type of both assertions.
 pub const JWT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:jwt";
 
+/// The highest `seq` a room's post may have: the most a Sphere takes back as `after`.
+pub const MAX_ROOM_SEQ: u64 = (1 << 53) - 1;
 /// How many times a `429` is retried before the client answers it.
 const RATE_LIMIT_TRIES: u32 = 5;
 /// The longest answer from a Sphere an Obi reads (an audit page of 1,000 entries is far less).
@@ -485,8 +487,8 @@ impl Client {
     }
 
     /// Posts a signed room post (sphere-api.md section 6.5). A retry of one already stored answers
-    /// its first place (`200`); the answer is the post's only when it names it. Its `(seq,
-    /// recorded_at)`.
+    /// its first place (`200`); the answer is the post's only when it names it, with a `seq` and a
+    /// `recorded_at` that can be one. Its `(seq, recorded_at)`.
     pub async fn room_post(&self, token: &str, post: &Value) -> Result<(u64, String), ClientError> {
         let url = self.sphere_path("/room/posts");
         let (status, body) = self
@@ -500,7 +502,11 @@ impl Client {
             body["seq"].as_u64(),
             body["recorded_at"].as_str(),
         ) {
-            (Some(id), Some(seq), Some(at)) if post["id"].as_str() == Some(id) => {
+            (Some(id), Some(seq), Some(at))
+                if post["id"].as_str() == Some(id)
+                    && (1..=MAX_ROOM_SEQ).contains(&seq)
+                    && schema::is_valid("common#/$defs/timestamp", &json!(at)) =>
+            {
                 Ok((seq, at.to_owned()))
             }
             _ => Err(ClientError::Protocol(
@@ -509,15 +515,19 @@ impl Client {
         }
     }
 
-    /// The room's posts above `after`, lowest first, each `(seq, recorded_at, post)`: the post
-    /// unchecked, the reader's to judge. A Sphere without the room answers `404`.
+    /// The room's posts above `after`, lowest first, each `(seq, recorded_at, post)`: all of it
+    /// unchecked, the reader's to judge. The Sphere may hold the call up to `wait` seconds (0 to 25)
+    /// while there are none. A Sphere without the room answers `404`.
     pub async fn room_posts(
         &self,
         token: &str,
         after: u64,
         limit: u32,
+        wait: u32,
     ) -> Result<Vec<(u64, String, Value)>, ClientError> {
-        let url = self.sphere_path(&format!("/room/posts?after={after}&limit={limit}&wait=0"));
+        let url = self.sphere_path(&format!(
+            "/room/posts?after={after}&limit={limit}&wait={wait}"
+        ));
         let (status, body) = self.call(|| self.http.get(&url).bearer_auth(token)).await?;
         if status != 200 {
             return Err(Client::refused(status, &body));

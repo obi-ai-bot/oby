@@ -92,6 +92,8 @@ pub struct Session {
     /// jobs its tools start, follow-ups too, are marked untrusted (the owner's decision of
     /// 2026-10-27: still in the owner's mode, inside Oby's box).
     pub web: AtomicBool,
+    /// Where else that's kept: the conversation, whatever becomes of `session.json`.
+    pub shared: std::sync::Weak<Shared>,
     /// How many times this turn's tools started a job, and told one something.
     pub dispatched: AtomicUsize,
     /// This turn did something beyond reading ([`super::tools`]): another agent, given the same
@@ -183,6 +185,9 @@ impl Session {
     pub fn taint(&self) {
         if !self.web.swap(true, Ordering::SeqCst) {
             self.keep(None);
+            if let Some(shared) = self.shared.upgrade() {
+                shared.conversations.note_read_untrusted(&self.conversation);
+            }
         }
     }
 
@@ -1301,6 +1306,7 @@ async fn session(
         jobs: Mutex::new(vec![]),
         nonce: super::briefing::nonce(),
         web: AtomicBool::new(resumed.as_ref().is_some_and(|k| k.web) || kept_taint(&place)),
+        shared: Arc::downgrade(shared),
         dispatched: AtomicUsize::new(0),
         acted: AtomicBool::new(false),
         told: AtomicUsize::new(0),
@@ -1318,6 +1324,12 @@ async fn session(
         shell_out: Mutex::default(),
         written: Mutex::default(),
     });
+    // One that read something before the conversation kept that too.
+    if session.web.load(Ordering::SeqCst) {
+        shared
+            .conversations
+            .note_read_untrusted(&session.conversation);
+    }
     // A turn nobody watches is about what an agent wrote: nothing it does counts as the owner's
     // own words, except what super::supervisor or super::orchestrator lets it do by itself.
     if session.unwatched() {
@@ -3311,6 +3323,7 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(false),
+            shared: std::sync::Weak::new(),
             dispatched: AtomicUsize::new(0),
             acted: AtomicBool::new(false),
             told: AtomicUsize::new(0),
@@ -3352,6 +3365,7 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(false),
+            shared: std::sync::Weak::new(),
             dispatched: AtomicUsize::new(0),
             acted: AtomicBool::new(false),
             told: AtomicUsize::new(0),
@@ -3670,6 +3684,7 @@ mod tests {
             jobs: Mutex::new(vec![]),
             nonce: "n".into(),
             web: AtomicBool::new(false),
+            shared: std::sync::Weak::new(),
             dispatched: AtomicUsize::new(0),
             acted: AtomicBool::new(false),
             told: AtomicUsize::new(0),
