@@ -23,8 +23,11 @@
 //!   said is kept in `home/push/notices.json` and `home/push/said.json`, so a restart doesn't say
 //!   it again; the first time, what is already there isn't news. The phone's half of the rule
 //!   (nothing while Oby is in front) is the phone's: apps/ios/app/Notifications.swift.
-//! - **What goes out.** Every alert's title and body pass the secret scan first: a finding, or a
-//!   scan that can't run, sends nothing for it. The send never holds up the API.
+//! - **What goes out.** Every builder reads the jobs and the inbox with the vault's secrets already
+//!   taken out ([`for_alerts`]): an alert keeps a first line and 100 or 200 characters, and a value
+//!   cut there is no value the scan knows. A vault that can't be read says nothing, and the next
+//!   look says it. Every alert's title and body then pass the secret scan: a finding, or a scan
+//!   that can't run, sends nothing for it. The send never holds up the API.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -113,6 +116,23 @@ pub fn notice(job: &Job) -> Option<Notice> {
         Status::Failed => Some(Notice::Failed),
         Status::Interrupted => Some(Notice::Interrupted),
         _ => None,
+    }
+}
+
+/// What every alert is built from: `jobs` and `inbox` with the vault's secrets, plain or encoded,
+/// taken out of every string, whole, before a builder cuts anything. Fails when the vault can't be
+/// read, as an answer does (`crate::vault::answers`).
+// ponytail: the vault's only, like an answer's. obid's own secrets (the API token, a push key) still
+// rely on the scan, which knows them whole only; give `known()` a walk over the JSON if that matters.
+pub fn for_alerts(jobs: &[Job], inbox: &[Value]) -> Result<(Vec<Job>, Vec<Value>), String> {
+    let as_they_are = || (jobs.to_vec(), inbox.to_vec());
+    let Some(vault) = crate::vault::shared() else {
+        return Ok(as_they_are());
+    };
+    let bytes = serde_json::to_vec(&(jobs, inbox)).map_err(|e| e.to_string())?;
+    match vault.scrubbed(&bytes)? {
+        None => Ok(as_they_are()),
+        Some(clean) => serde_json::from_slice(&clean).map_err(|e| e.to_string()),
     }
 }
 
@@ -955,9 +975,11 @@ impl Push {
                             .get(conversation)
                             .is_some_and(|at| at.elapsed() < ANSWERING);
                         if !answering {
-                            let text = turn["text"].as_str().unwrap_or_default();
+                            // Whole, as [`for_alerts`] says: the alert cuts it.
+                            let text = crate::secrets::known()
+                                .redact(turn["text"].as_str().unwrap_or_default());
                             talk.messages
-                                .insert(conversation.into(), message_alert(conversation, text));
+                                .insert(conversation.into(), message_alert(conversation, &text));
                         }
                     }
                     _ => {}
@@ -970,7 +992,7 @@ impl Push {
 
     /// Looks at the jobs and the open inbox (`GET /v1/inbox`'s items): remembers what each needs,
     /// and tells the phones what changed: only devices still `paired`, and what came with the API
-    /// token.
+    /// token. Nothing is said or remembered while the vault can't be read: the next look says it.
     pub async fn look(
         &self,
         jobs: &[Job],
@@ -978,8 +1000,15 @@ impl Push {
         paired: &HashSet<String>,
         scratch: &Path,
     ) {
-        self.look_fcm(jobs, paired, scratch).await;
-        self.look_relay(jobs, inbox, paired, scratch).await;
+        let (jobs, inbox) = match for_alerts(jobs, inbox) {
+            Ok(clean) => clean,
+            Err(why) => {
+                tracing::warn!("no push for now: {why}");
+                return;
+            }
+        };
+        self.look_fcm(&jobs, paired, scratch).await;
+        self.look_relay(&jobs, &inbox, paired, scratch).await;
     }
 
     /// The relay's part of [`Push::look`]: [`wanted`] against what was said, then Oby's messages
@@ -2318,6 +2347,23 @@ mod tests {
         let relay = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (relay, heard, answers)
+    }
+
+    /// Oby's message is cut to fit: a secret goes first, or a piece of it would be left. The gate
+    /// keeps these from going today ([`notifies`]).
+    #[test]
+    fn a_message_alert_holds_no_piece_of_a_secret() {
+        let secret = "cgp5-stand-in-".repeat(30);
+        crate::secrets::known().learn("vault PUSH_MESSAGE", &secret);
+        let home = std::env::temp_dir().join(format!("obid-push-message-{}", std::process::id()));
+        let push = Push::open(&home, RELAY);
+        assert!(push.heard(&turn("c", "t", "oby", &format!("Use {secret}"))));
+        let talk = push.talk.lock().unwrap();
+        assert_eq!(
+            talk.messages["c"].body,
+            "Use [redacted: vault PUSH_MESSAGE]"
+        );
+        crate::secrets::known().forget("vault PUSH_MESSAGE");
     }
 
     fn turn(conversation: &str, id: &str, who: &str, text: &str) -> Event {
