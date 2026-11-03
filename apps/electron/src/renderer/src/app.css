@@ -1002,7 +1002,8 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .talk-choice-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .talk-choice-name { color: var(--ink); font-size: var(--text-md); line-height: 18px; }
 .talk-choice-about { overflow: hidden; color: var(--muted); font-size: var(--text-sm); line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
-.talk-choice-used { flex: none; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.talk-choice-usage { flex: none; display: flex; flex-direction: column; align-items: flex-end; }
+.talk-choice-used { flex: none; line-height: 16px; color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .talk-choice-used.is-high { color: var(--full); }
 .talk-choice-used.is-over { color: var(--over); }
 .talk-choice-check { flex: none; color: var(--ink); }
