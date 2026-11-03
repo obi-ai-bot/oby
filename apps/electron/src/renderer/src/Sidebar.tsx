@@ -1,14 +1,14 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { BookOpen, Check, Mail, UserPlus, ChevronDown, EllipsisVertical, Plus, Search, type LucideIcon } from 'lucide-react';
 // the icon strip uses Phosphor: it has outline and filled versions of each icon
-import { ChatsCircleIcon, GearSixIcon, HouseIcon, PlusIcon } from '@phosphor-icons/react';
+import { ChatsCircleIcon, GearSixIcon, HouseIcon, ListChecksIcon, PlusIcon } from '@phosphor-icons/react';
 import { BrandMark } from './brands';
-import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, useTasks, type Task } from './tasks';
+import { ARCHIVE_AFTER, TYPES, archivedTasks, asksWaiting, countOf, getArchiveAfter, hasFresh, markSeen, openOf, renameTask, setArchiveAfter, tasksOf, tasksWith, toDoOf, useTasks, type Task } from './tasks';
 import { OBYS, ago } from './mock';
-import { OwnerAvatar } from './ObyFace';
+import { ObyFace, OwnerAvatar } from './ObyFace';
 import { useScrollThumb } from './useScrollThumb';
 import { Menu } from './Menu';
-import { SETTINGS_PAGES } from './SettingsView';
+import { SETTINGS_PAGES, fullness, useAccounts } from './SettingsView';
 import InviteModal from './InviteModal';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
@@ -17,31 +17,40 @@ import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import StatusDot from './StatusDot';
 import { convosWith, hasUnread, useConvos } from './peers';
-import { lastAgo, renameChat, useChats, type Chat } from './chats';
-import { everything } from './lean';
+import { lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
+import { chatFirst, everything } from './lean';
+import { lookAtUsage } from './live';
+import { usageRows } from './talk';
 import { WELCOME, sampleDid, sampleOut, useSetup } from './onboarding';
 import { SAMPLE_TALK } from './Welcome';
 import { plain } from './Said';
 
-type Section = 'home' | 'conversations' | 'obysphere' | 'settings';
+type Section = 'oby' | 'home' | 'conversations' | 'obysphere' | 'settings';
 type StripIcon = (p: { size?: number; weight?: 'regular' | 'fill' }) => React.ReactNode;
 // sections with something new get a blue dot on their icon: Home, a task not opened yet
-const SECTIONS: { id: Section; label: string; icon: StripIcon }[] = [
+const SECTIONS: { id: Section; label: string; icon: StripIcon }[] = chatFirst ? [
+  // chat first (docs/contracts/chat-first.md): your Oby and the other Obys, then the tasks
+  { id: 'oby', label: 'Oby', icon: ChatsCircleIcon },
+  { id: 'home', label: 'Tasks', icon: ListChecksIcon },
+] : [
   { id: 'home', label: 'Home', icon: HouseIcon },
   // your conversations with Oby
   { id: 'conversations', label: 'Conversations', icon: ChatsCircleIcon },
 ];
 // each section's name over it (an Obysphere's is its own)
 const TITLES: Record<Exclude<Section, 'obysphere'>, string> = {
-  home: 'Home', conversations: 'Conversations', settings: 'Settings',
+  // (Chats: proposed, the canvas's word; Sangam's to change)
+  oby: 'Chats', home: chatFirst ? 'Tasks' : 'Home', conversations: 'Conversations', settings: 'Settings',
 };
+// how many of your conversations show under Oby before Show more
+const RECENT = 5;
 
 // What each tab can start, first thing under its title; and which tabs can be searched.
 const NEW_ACTION: Partial<Record<Section, { label: string; icon: LucideIcon }>> = {
   home: { label: 'New task', icon: Plus },
   ...(everything ? {} : { conversations: { label: 'New conversation', icon: Plus } }),
 };
-const SEARCHABLE: Section[] = ['conversations'];
+const SEARCHABLE: Section[] = ['oby', 'conversations'];
 // a conversation's line under its name: the tasks it started, else Oby's last words
 const convoAbout = (c: Chat) => {
   if (!c.said.length && c.about !== undefined) return c.about;
@@ -56,12 +65,14 @@ const convoAbout = (c: Chat) => {
 // Settings from your account picture at the foot), the column beside
 // them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenTask, onOpenChat, onOpenOby, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenOwn, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
   onHome: () => void;  // back to Home's own page, closing whatever is open over it
   atHome: boolean;  // on Home's own page, nothing open over it
+  onOpenOwn: () => void;  // chat first: your Oby's row, your latest conversation
+  onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
   onOpenOby: (name: string) => void;  // someone else's Oby, from the Obysphere: its conversations
@@ -102,6 +113,9 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const chats = useChats();
   // Home's dot turns orange while any task needs you
   const needsYou = countOf('needs') + asksWaiting().length > 0;
+  // and chat first, with Home's chips gone from sight: GitHub's work waiting on you too (a review
+  // asked of you, an issue of yours), as the chips' own dots said
+  const tasksNeedYou = needsYou || (chatFirst && TYPES.some((t) => toDoOf(t.id).length > 0));
   const [section, setSection] = useState<Section>(SECTIONS[0].id);
   // the Obyspheres you're in (spheres.ts), under the line in the icon strip:
   // an Obysphere (a focused workspace: your Oby with other people's, sharing
@@ -135,7 +149,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   const [creating, setCreating] = useState(false);
   const inSettings = section === 'settings';
   // a Settings page opened from elsewhere (the message box's usage gear): the panel follows
-  useEffect(() => { if (activeSetting) setSection('settings'); }, [activeSetting]);
+  // (chat first, back from it, the panel goes back to the chats too)
+  useEffect(() => {
+    if (activeSetting) setSection('settings');
+    else if (chatFirst) setSection((s) => (s === 'settings' ? SECTIONS[0].id : s));
+  }, [activeSetting]);
   // and an Obysphere's settings or knowledge: the panel shows that Obysphere
   useEffect(() => {
     const id = activeSphereSetting ?? activeKnowledge;
@@ -210,7 +228,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     // Home again, while it's showing: back to Home's own page if something's open over it,
     // else (already there) the panel closes; any other tab again, while it's showing: the
     // panel closes, as its toggle does
-    if (id === 'home' && section === 'home' && !atHome) onHome();
+    if (id === 'home' && section === 'home' && !atHome && !chatFirst) onHome();
     else if (id === section) { onClose(); return; }
     setSection(id); setSearching(false); setQuery('');
     if (list.current) list.current.scrollTop = 0;
@@ -239,6 +257,14 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // Pinned, the rest under Recent (no headings while nothing's pinned)
   const talks = chats.filter((c) => matches(c.title, ...c.said.map((m) => m.text)));
   const pinned = talks.filter((c) => c.pinned);
+  // chat first, under your Oby: the latest few, the one showing always among them, searching all
+  const latest = latestChat(chats);
+  const inOrder = [...pinned, ...talks.filter((c) => !c.pinned)];
+  const recent = q || more.has('talks') ? inOrder : inOrder.filter((c, i) => i < RECENT || c.id === activeTalk);
+  const [accounts] = useAccounts();
+  const usage = usageRows(accounts);
+  // what the usage rows read: fresh while they show (as the message box's panel does)
+  useEffect(() => { if (open && section === 'oby') lookAtUsage(); }, [open, section]);
   const convoRow = (c: Chat) => (
     // a row with its own menu button, so the row itself isn't a <button>
     <div
@@ -284,6 +310,34 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     </div>
   );
 
+  // An Obysphere's people: on its own page by their names, under Chats as their Obys
+  const memberRows = (s: Sphere, asObys = false) => (s.sample || s.live ? s.members.map((name) => ({ name })) : OBYS.filter((o) => s.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
+    // in the sample: the tour's conversations, the one showing lit, the one it calls dotted
+    const n = s.sample ? (SAMPLE_TALK[o.name] ? 1 : 0) : convosWith(convos, o.name).length;
+    const unread = s.sample ? tour.call === o.name : hasUnread(convos, o.name);
+    const lit = s.sample ? tour.member === o.name : activeOby === o.name;
+    const shownName = asObys ? `${o.name}’s Oby` : o.name;
+    // a live Obysphere's: just who's in it (spheres.ts, canChat)
+    if (!canChat(s)) return (
+      <div key={o.name} className="connector oby-row">
+        <OwnerAvatar name={o.name} size={22} />
+        <span className="connector-text"><span className="connector-name">{shownName}</span></span>
+      </div>
+    );
+    return (
+      <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (s.sample ? tourDid(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${o.name}’s Oby${s.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
+        <OwnerAvatar name={o.name} size={22} />
+        <span className="connector-text">
+          <span className="connector-name">{shownName}</span>
+        </span>
+        {/* something new from it: a blue dot, just before the count */}
+        {unread && <span className={`status-dot is-new${s.sample ? ' is-calling' : ''}`} role="img" aria-label="New messages" />}
+        {/* how many conversations with it, if any */}
+        {n > 0 && <span className="connector-count" aria-label={`${n} conversations`}>{n}</span>}
+      </button>
+    );
+  });
+
   return (
     <>
     <div className="sidebar-slot" inert={!open}>
@@ -291,11 +345,11 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         <div className="rail">
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <Fragment key={id}>
-              <button className={`rail-button${section === id ? ' is-on' : ''}${id === 'home' && tasks.some((t) => t.fresh) ? ' has-dot' : ''}${id === 'home' && needsYou ? ' has-dot is-needs' : ''}`} data-tip={label} aria-label={label} aria-pressed={section === id} onClick={() => pick(id)}>
+              <button className={`rail-button${section === id ? ' is-on' : ''}${id === 'home' && tasks.some((t) => t.fresh) ? ' has-dot' : ''}${id === 'home' && tasksNeedYou ? ' has-dot is-needs' : ''}`} data-tip={label} aria-label={label} aria-pressed={section === id} onClick={() => pick(id)}>
                 <Icon size={20} weight={section === id ? 'fill' : 'regular'} />
               </button>
               {/* your own places above the line; the Obyspheres (there can be several) below */}
-              {id === 'conversations' && (everything || CAN_CREATE || strip.length > 0) && <span className="rail-sep" role="separator" />}
+              {id === SECTIONS.at(-1)!.id && (everything || CAN_CREATE || strip.length > 0) && <span className="rail-sep" role="separator" />}
             </Fragment>
           ))}
           {strip.map((x) => (
@@ -419,6 +473,55 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
           </button>
         )}
 
+        {/* chat first: Oby first, then your conversations with it; under them each Obysphere, with
+            its teammates' Obys (reachable, though your own chat is where you'd be) */}
+        {section === 'oby' && (
+          <div className="sidebar-plain">
+            <button className={`connector chat-own${atHome ? ' is-active' : ''}`} aria-current={atHome || undefined} onClick={onOpenOwn}>
+              <ObyFace size={32} />
+              <span className="connector-text">
+                <span className="connector-name">Oby</span>
+                <span className="connector-about">{latest ? convoAbout(latest) : 'No conversations yet'}</span>
+              </span>
+              <span className="chat-own-end">
+                {latest && <span className="sidebar-item-ago">{latest.typing ? 'now' : ago(lastAgo(latest))}</span>}
+                {needsYou && <span className="status-dot is-needs" role="img" aria-label="Needs you" />}
+              </span>
+            </button>
+            <button className="sidebar-new chat-new" onClick={onNewChat}>
+              <Plus size={16} strokeWidth={1.6} />
+              <span className="sidebar-new-label">New conversation</span>
+            </button>
+            {recent.map(convoRow)}
+            {!q && inOrder.length > RECENT && (
+              <button className="sidebar-more" onClick={() => toggleMore('talks')}>
+                {more.has('talks') ? 'Show less' : `Show ${inOrder.length - recent.length} more`}
+              </button>
+            )}
+            {q && !talks.length && <p className="sidebar-empty">{`No conversations match “${query.trim()}”`}</p>}
+            {strip.map((s) => (
+              <Fragment key={s.id}>
+                <span className="chat-sep" role="separator" />
+                <button className="connector chat-sphere" onClick={() => { setSphereId(s.id); pick('obysphere'); if (s.sample) tourDid('tile'); }}>
+                  <SphereTile name={s.name} brand={s.brand} image={s.image} />
+                  <span className="connector-text">
+                    <span className="connector-name">{s.name}</span>
+                    <span className="connector-about">{memberCount(s)} member{memberCount(s) === 1 ? '' : 's'}</span>
+                  </span>
+                </button>
+                {memberRows(s, true)}
+              </Fragment>
+            ))}
+          </div>
+        )}
+        {/* chat first: the kinds of work, Home's chips, first thing under Tasks */}
+        {chatFirst && section === 'home' && TYPES.map((c) => (
+          <button key={c.id} className="sidebar-item chat-kind" onClick={() => onOpenGroup(c.id)}>
+            <span className="sidebar-item-title">{c.label}</span>
+            {hasFresh(c.id) && <span className="status-dot is-new" role="img" aria-label="New" />}
+            {(countOf('needs', c.id) > 0 || toDoOf(c.id).length > 0) && <span className="status-dot is-needs" role="img" aria-label="Needs you" />}
+          </button>
+        ))}
         {/* your conversations with Oby, newest first, ones still going included */}
         {section === 'conversations' && (
           <div className="sidebar-plain">
@@ -528,31 +631,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                 in Members), each folding as Home's groups do */}
             <SphereGroup id={`members:${sphere.id}`} label="Members" folded={folded} onToggle={toggleGroup}>
             {!sphere.members.length && <p className="sidebar-empty">Just you so far</p>}
-            {(sphere.sample || sphere.live ? sphere.members.map((name) => ({ name })) : OBYS.filter((o) => sphere.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
-              // in the sample: the tour's conversations, the one showing lit, the one it calls dotted
-              const n = sphere.sample ? (SAMPLE_TALK[o.name] ? 1 : 0) : convosWith(convos, o.name).length;
-              const unread = sphere.sample ? tour.call === o.name : hasUnread(convos, o.name);
-              const lit = sphere.sample ? tour.member === o.name : activeOby === o.name;
-              // a live Obysphere's: just who's in it (spheres.ts, canChat)
-              if (!canChat(sphere)) return (
-                <div key={o.name} className="connector oby-row">
-                  <OwnerAvatar name={o.name} size={22} />
-                  <span className="connector-text"><span className="connector-name">{o.name}</span></span>
-                </div>
-              );
-              return (
-                <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (sphere.sample ? tourDid(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${o.name}’s Oby${sphere.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
-                  <OwnerAvatar name={o.name} size={22} />
-                  <span className="connector-text">
-                    <span className="connector-name">{o.name}</span>
-                  </span>
-                  {/* something new from it: a blue dot, just before the count */}
-                  {unread && <span className={`status-dot is-new${sphere.sample ? ' is-calling' : ''}`} role="img" aria-label="New messages" />}
-                  {/* how many conversations with it, if any */}
-                  {n > 0 && <span className="connector-count" aria-label={`${n} conversations`}>{n}</span>}
-                </button>
-              );
-            })}
+            {memberRows(sphere)}
             </SphereGroup>
             {sphere.invited.length > 0 && (
               <SphereGroup id={`invited:${sphere.id}`} label="Invited" count={sphere.invited.length} folded={folded} onToggle={toggleGroup}>
@@ -599,6 +678,18 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
         </div>
         <div {...thumbProps} />
         </div>
+        {/* chat first, Chats' foot: how much of each tool is used; a click, its accounts */}
+        {section === 'oby' && usage.length > 0 && (
+          <button className="panel-usage" aria-label="Accounts and how much of each is used" onClick={() => onOpenSetting(everything ? 'accounts' : 'agents')}>
+            {usage.map((u) => (
+              <span key={u.agent} className="panel-usage-row">
+                <span>{u.name}</span>
+                <span className="set-meter"><span className={u.used == null ? '' : fullness(u.used)} style={{ width: `${u.used ?? 0}%` }} /></span>
+                <span className="panel-usage-pct">{u.used == null ? '–' : `${u.used}%`}</span>
+              </span>
+            ))}
+          </button>
+        )}
         {/* Home's foot, held at the bottom under a line, however it's grouped:
             the archive, done tasks that have left Home; it opens as a page */}
         {/* there from the start, its count 0 till something's archived (Sangam, 2026-10-28) */}

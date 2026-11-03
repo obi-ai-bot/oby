@@ -8,5 +8,10 @@ export const everything = new URLSearchParams(location.search).has('everything')
 // or with it, the mock's.
 // A dev scenario (?dev=, dev/ControlCenter.tsx) plays on the mock, never on the real obid.
 export const onObid = !everything && !!window.app?.obid && !(import.meta.env.DEV && new URLSearchParams(location.search).has('dev'));
+// The app opens on your own conversation with Oby, a chat, not on Home (the owner's word of
+// 2026-11-02, docs/contracts/chat-first.md). Sangam's Home stays to compare: ?home, or the oby.home
+// default; ?everything is his whole design as it was, and with ?chat, this on its demo data.
+const homeKept = () => { try { return localStorage.getItem('oby.home') === '1'; } catch { return false; } };
+export const chatFirst = !new URLSearchParams(location.search).has('home') && !homeKept() && (!everything || new URLSearchParams(location.search).has('chat'));
 // ?welcome: set up again (onboarding.ts)
 export const welcome = new URLSearchParams(location.search).has('welcome');

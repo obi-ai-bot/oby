@@ -48,6 +48,13 @@ export const groups = (accounts: Account[]) => TOOLS
   .map((agent) => ({ agent, accounts: accounts.filter((a) => a.agent === agent && a.signedIn !== false) }))
   .filter((g) => g.accounts.length);
 
+// The side panel's usage rows: each tool with a connected account, by the one with the most room
+// (the one new work would go to). None reports usage: no number is made up
+export const usageRows = (accounts: Account[]) => groups(accounts).map((g) => {
+  const known = g.accounts.map((a) => (a.full ? 100 : percent(a))).filter((p) => p != null);
+  return { agent: g.agent, name: AGENTS[g.agent].name, used: known.length ? Math.min(...known) : null };
+});
+
 // Settings' choice of who a new conversation talks through: the menu's, in a Select's shape. The
 // words are proposed: Sangam's to change.
 export const talkChoices = (accounts: Account[]) => [

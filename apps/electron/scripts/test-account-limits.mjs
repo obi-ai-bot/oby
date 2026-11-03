@@ -24,6 +24,16 @@ const now = () => Math.floor(Date.now() / 1000);
 const json = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
+// the Tasks cards, Home's chip's, from the side panel's Tasks icon (docs/contracts/chat-first.md)
+async function openTasks(page) {
+  const kind = page.locator('.chat-kind').filter({ hasText: /^Tasks/ });
+  // (the side panel opens by itself only where it fits beside the chat)
+  const show = page.getByRole('button', { name: 'Show sidebar' });
+  if (await show.isVisible()) await show.click();
+  if (!(await kind.isVisible())) await page.locator('.rail-button[aria-label="Tasks"]').click();
+  await kind.click();
+}
+
 async function until(label, f, ms = 45_000) {
   const deadline = Date.now() + ms;
   let last;
@@ -153,7 +163,7 @@ async function close(s, app) {
 }
 
 async function noRepeatedInterruption(page) {
-  await page.locator('button.chip').filter({ hasText: /^Tasks$/ }).click();
+  await openTasks(page);
   for (const tab of ['Running', 'Completed']) {
     await page.getByRole('tab', { name: new RegExp(`^${tab}`) }).click();
     assert.equal(await page.locator('.group-layer:not(.is-leaving) .tc-ask-head').filter({ hasText: /^It was interrupted$/ }).count(), 0,
@@ -217,14 +227,14 @@ try {
         task: 'ASK: {"tool":"Bash","input":{"command":"curl https://example.invalid"}}' } });
       await until('unrelated permission waits for the owner', async () => (await s.call('GET', `/v1/jobs/${posted.id}`)).permission);
       const opened = await openApp(s); app = opened.app;
-      await opened.page.locator('button.chip').filter({ hasText: /^Tasks$/ }).click();
+      await openTasks(opened.page);
       await opened.page.getByRole('tab', { name: /^Running/ }).click();
       await opened.page.locator('.group-layer:not(.is-leaving) .tc-ask-kind').filter({ hasText: /^Permission$/ }).waitFor();
       await opened.page.keyboard.press('Escape');
       await opened.page.locator('.group-layer').waitFor({ state: 'detached' });
       await opened.card.getByRole('button', { name: 'Keep stopped' }).click();
       await opened.card.waitFor({ state: 'detached' });
-      await opened.page.locator('button.chip').filter({ hasText: /^Tasks$/ }).click();
+      await openTasks(opened.page);
       await opened.page.getByRole('tab', { name: /^Running/ }).click();
       await opened.page.locator('.group-layer:not(.is-leaving) .tc-ask-kind').filter({ hasText: /^Permission$/ }).waitFor();
       assert.equal(await opened.page.locator('.group-layer:not(.is-leaving) .tc-ask-head').filter({ hasText: /^It was interrupted$/ }).count(), 0);

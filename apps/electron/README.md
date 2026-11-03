@@ -53,6 +53,12 @@ the same tap in the window does, never from a locked Mac; a Confirm only opens t
 window. Settings › Notifications turns them off (`settings.json` in the app's own
 folder). macOS delivers no notification from the unsigned development build.
 
+It opens on your own conversation with Oby, a chat, not on Home
+(`docs/contracts/chat-first.md`, the owner's decision of 2026-11-02): the side panel lists Oby,
+then each Obysphere with its teammates' Obys, then usage; Review PR, Issues and Tasks are under its
+Tasks icon. Sangam's Home stays to compare: `?home`, or `oby.home` = `1` in the window's local
+storage; `?everything&chat` shows this on his demo data.
+
 It shows only the conversation: a new user starts empty, Oby sets them up in
 its first conversation (the tools on this Mac, GitHub, then Tetrix and the
 Obysphere, both optional), and a task shows as a card in the conversation
