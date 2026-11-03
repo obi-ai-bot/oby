@@ -5,7 +5,7 @@ import { Menu } from './Menu';
 import { everything } from './lean';
 import { useAccounts, useTalkDefault } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
-import { AUTO, TOOL_NAME, chosenOf, dot, list, percent, rowTitle, shownAccount, usageWords } from './talk';
+import { AUTO, TOOL_NAME, chosenOf, dot, list, percent, rowTitle, shownAccount, usageLines } from './talk';
 import type { Agent } from './mock';
 
 const MARKS: Record<Agent, Brand> = { claude: BRANDS.claude, codex: BRANDS.openai, cursor: BRANDS.cursor };
@@ -41,7 +41,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
         className={`talk-pick${at ? ' is-on' : ''}`}
         aria-haspopup="menu"
         aria-expanded={!!at}
-        title={on ? `${chosen ? '' : 'Auto · '}${rowTitle(on, accounts)}${on.full ? ' · Full' : used == null ? '' : ` · ${used}%`}` : 'Add an account'}
+        title={on ? `${chosen ? '' : 'Auto · '}${rowTitle(on, accounts)} · ${usageLines(on).map((l) => l.words).join(' · ')}` : 'Add an account'}
         aria-label={on ? `Talking through ${rowTitle(on, accounts)}${on.full ? ', full' : used == null ? '' : `, ${used}% used`}. Change` : 'Choose who Oby talks through'}
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => setAt(at ? null : e.currentTarget.getBoundingClientRect())}
@@ -70,7 +70,9 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
                   <span className="talk-choice-name">{rowTitle(a, accounts)}</span>
                   <span className="talk-choice-about">{a.who || TOOL_NAME[a.agent]}</span>
                 </span>
-                <span className={`talk-choice-used ${dot(a)}`.trim()}>{usageWords(a)}</span>
+                <span className="talk-choice-usage">
+                  {usageLines(a).map((l) => <span key={l.words} className={`talk-choice-used ${l.cls}`.trim()}>{l.words}</span>)}
+                </span>
                 {chosen === a.id && <Check size={15} strokeWidth={1.8} className="talk-choice-check" />}
               </button>
             ))}

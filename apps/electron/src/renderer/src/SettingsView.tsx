@@ -292,9 +292,11 @@ const resetDay = (at: string, now: number) => new Date(at).toLocaleDateString([]
 // 0) and when it starts over, and what to say when there's no figure ("No usage" for Cursor, whose
 // figure comes from its plan and goes when a read fails)
 export function accountRow(a: Status['accounts'][number], now: number): Account {
-  const used = a.sevenDay ?? a.fiveHour;
+  // an Ultra plan has no 5-hour window, only the week, whatever an older reading left behind
+  const ultra = a.agent === 'claude' && /ultra/i.test(a.plan ?? '');
+  const used = a.sevenDay ?? (ultra ? null : a.fiveHour);
   const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
-  const session = !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
+  const session = ultra || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
   return {
     id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
     resets: !a.signedIn ? a.label ?? 'Not signed in' : used == null ? (a.agent === 'cursor' ? 'No usage' : 'No use reported yet')

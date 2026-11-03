@@ -22,6 +22,16 @@ export const TOOL_NAME: Record<Agent, string> = { claude: 'Claude', codex: 'Code
 // An account by its tool; by its name too once its tool has more than one
 export const rowTitle = (a: Account, accounts: Account[]) =>
   accounts.filter((x) => x.agent === a.agent && x.signedIn !== false).length > 1 ? `${TOOL_NAME[a.agent]} · ${a.name}` : TOOL_NAME[a.agent];
+// What the picker's list says of an account: each window it has, the 5-hour session and the week
+// (an Ultra plan has only the week; Cursor's period may not be a week, so its figure has no name).
+// Full when obid holds it full; "No usage" with no figure, never a made-up one.
+export const usageLines = (a: Account) => {
+  if (a.full) return [{ words: 'Full', cls: 'is-over' }];
+  const lines = [];
+  if (a.session != null) lines.push({ words: `5h ${a.session}%`, cls: fullness(a.session) });
+  if (a.used != null && (a.weekly || a.session == null)) lines.push({ words: a.weekly ? `Week ${a.used}%` : `${a.used}%`, cls: fullness(a.used) });
+  return lines.length ? lines : [{ words: 'No usage', cls: '' }];
+};
 // the dot: past 80% yellow, past 90% red, as the message box's gauge; red when obid holds it full
 export const dot = (a: Account) => (a.full ? 'is-over' : fullness(percent(a) ?? 0));
 

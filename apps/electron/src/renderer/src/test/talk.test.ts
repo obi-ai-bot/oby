@@ -15,6 +15,21 @@ const wire = (id: string, agent: string, name: string, more: Record<string, unkn
   ({ id, agent, name, signedIn: true, fiveHour: null, sevenDay: null, sevenDayResets: null, running: 0, ...more }) as never;
 
 describe('talking on any agent', () => {
+  it('CONVERSATION-AGENT-15: the list shows the 5-hour session and the week, and an Ultra plan only its week', async () => {
+    const { accountRow, usageLines } = await load();
+    const words = (a: Parameters<typeof usageLines>[0]) => usageLines(a).map((l) => l.words);
+    const soon = new Date(now + 3_600_000).toISOString();
+    expect(words(accountRow(wire('m', 'claude', 'Max', { fiveHour: 0.12, fiveHourResets: soon, sevenDay: 0.59 }), now))).toEqual(['5h 12%', 'Week 59%']);
+    const ultra = accountRow(wire('u', 'claude', 'Ultra', { plan: 'ultra', fiveHour: 0.4, fiveHourResets: soon, sevenDay: 0.59 }), now);
+    expect(words(ultra)).toEqual(['Week 59%']);
+    expect(ultra.session).toBeNull();
+    expect(words(accountRow(wire('o', 'codex', 'Only session', { fiveHour: 0.3, fiveHourResets: soon }), now))).toEqual(['5h 30%']);
+    expect(words(accountRow(wire('c', 'cursor', 'Cursor', { sevenDay: 0.5 }), now))).toEqual(['50%']);
+    expect(words(accountRow(wire('n', 'cursor', 'None'), now))).toEqual(['No usage']);
+    expect(usageLines(accountRow(wire('h', 'claude', 'High', { fiveHour: 0.95, fiveHourResets: soon, sevenDay: 0.2 }), now))[0].cls).toBe('is-over');
+    expect(words(accountRow(wire('f', 'claude', 'Full', { fullUntil: soon, sevenDay: 0.2 }), now))).toEqual(['Full']);
+  });
+
   it('CONVERSATION-AGENT-12: the pill and the menu show each account’s percentage, Cursor’s too, and “No usage” with none', async () => {
     const { accountRow, usageWords, percent, dot, groups } = await load();
     const personal = accountRow(wire('p', 'claude', 'Personal', { fiveHour: 0.2, sevenDay: 0.38 }), now);
