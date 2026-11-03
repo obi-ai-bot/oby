@@ -111,8 +111,7 @@ struct Thread {
     /// The account its last answer came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     talked_on: Option<String>,
-    /// The account its turns have moved off and said so ([`Conversations::moved_off`]): obid's own,
-    /// never in the API.
+    /// The account its turns have moved off and said so ([`Conversations::moved_off`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     moved_off: Option<String>,
 }
@@ -120,6 +119,9 @@ struct Thread {
 /// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
 /// job's is, since Cursor's sockets go in that folder and a socket's path has room for
 /// [`crate::acp::cursor::SOCKET_ROOM`] characters of it.
+///
+/// ponytail: 32 bits of a random id, so about 1 in 2,000 for 2,000 Cursor conversations sharing a
+/// folder (a turn fails and moves on); a hash in base62 if that ever matters.
 pub(crate) fn cursor_folder(home: &Path, id: &str) -> PathBuf {
     let short: String = id
         .chars()

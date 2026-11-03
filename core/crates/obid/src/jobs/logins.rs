@@ -1904,6 +1904,15 @@ pub(super) fn copy_cursor(
             .then(|| std::fs::read(from).ok())
             .flatten()
     };
+    // What a run approved for itself goes before the next start: a job's edits are ungated, and an
+    // approval of an `mcp.json` it wrote would start that server with no card, under Tetrix's name.
+    if let Ok(projects) = std::fs::read_dir(acp::cursor::data_dir(login).join("projects")) {
+        for project in projects.flatten() {
+            if project.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let _ = std::fs::remove_file(project.path().join("mcp-approvals.json"));
+            }
+        }
+    }
     let file = cursor_login_file();
     if let Some(copy) = from.and_then(|bytes| cursor_without_refresh(&bytes, account)) {
         let mut folder = login.to_path_buf();
@@ -2743,6 +2752,18 @@ attributes:
     /// A Cursor job's copy of its account's login is only its access token and API key: a box that
     /// refreshed would rotate the account's own login away, as #651 found for Claude Code. They're
     /// learned as secrets obid knows, and the account's `mcp.json` isn't copied.
+    #[test]
+    fn a_cursor_run_starts_with_no_mcp_approval_of_its_own() {
+        let root = std::env::temp_dir().join(format!("oby-approvals-{}", std::process::id()));
+        let login = root.join("login");
+        let planted = login.join(".cursor/projects/a-project/mcp-approvals.json");
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        std::fs::write(&planted, "[]").unwrap();
+        copy_cursor(None, &root.join("cli-config.json"), &root, &login).unwrap();
+        assert!(!planted.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_cursor_login_copy_has_no_refresh_token() {
         let root = std::env::temp_dir().join(format!("obid-cursor-copy-{}", std::process::id()));

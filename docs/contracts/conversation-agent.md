@@ -5,7 +5,7 @@ The business behavior contract for which account a conversation talks through.
 ## Feature and status
 
 - **Outcome:** The owner connects any number of accounts, sees each one's percentage in the chat window, picks which one Oby talks through with one click (or leaves it on Auto), and when that one fills Oby moves by itself, says so in a line, and the chat keeps going.
-- **Status:** **Implemented**, on obid and in the Electron app, proven against stand-in agents. **Not yet run against a real `cursor-agent`** (CONVERSATION-AGENT-6 to 9): the login on the Mac it was built on had ended (`cursor-agent models`: "Authentication failed"). The owner's decision of 2026-11-02, in his words: "Oby should use any of the connected agents to talk. Show a way for people to click and select the conversation agent, like on MausBot. Put that on the chat window so we can choose which agent we want to use for talking. What I need is to easily connect my accounts, to connect any amount of them, to choose which to use, and to easily see the percentage. Easy to see, easy to use, easy to change, proactive to act." Replaces docs/conversation-harness.md's one configured agent, and #874's failover within one tool.
+- **Status:** **Implemented**, on obid and in the Electron app, proven in the real app on real Claude Code, Codex 0.162 and cursor-agent 2026.10.01 (2026-11-02): each answers, knows the earlier turns and keeps its session; Cursor's `oby_jobs` runs, its own shell is refused, a job started from it runs; a full account moves. The Mac it ran on is one, on a debug build.
 - **Scope:** A conversation's turns, and the turns nobody watches (a supervisor's, an event's). **Out of scope:** where jobs run (`defaultAccount`, routing, #1563), saying "talk on Codex" in words.
 
 ## What the design shows (proposed: Sangam's to change)
@@ -62,15 +62,15 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 ## Interfaces and dependencies
 
 - `PUT`/`GET /v1/settings/jobs`: `talkAccount` (an id, or null for Auto; `auto` on `PUT` is null). `422` for an account there isn't, or one that can't talk here (`reason: talk-needs-egress-box`).
-- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. A conversation's JSON gains them once there's something to say: `talkAccount`, `talkedOn`, the account its last answer came from, and `movedOff`, the account its turns have moved off, gone when one answers from it again or the owner chooses again. Each goes out in the `conversation` event, `talkedOn` with the answer's. Which account it has said it moved off is obid's own, in its file, never in the API.
+- `PATCH /v1/conversations/{id}`: `talkAccount` (an id, `auto`, or null to follow the setting), same `422`s. A conversation's JSON gains them once there's something to say: `talkAccount`, `talkedOn`, the account its last answer came from, and `movedOff`, the account its turns have moved off, gone when one answers from it again or the owner chooses again. Each goes out in the `conversation` event, `talkedOn` with the answer's.
 - `GET /v1/status`: `talkAccount`, and `talkNext`, the account a new conversation's first turn would use now. obid works it out off its runtime, since whether an account can run can ask the macOS Keychain.
-- Kept in `home/settings.json` and the conversation's own file, across restarts. Cursor's folder: `home/logins/talk-<12 of its id>`, short for its sockets, gone with the conversation.
+- Kept in `home/settings.json` and the conversation's own file, across restarts. Cursor's folder: `home/logins/t-<8 of its id>`, short for its sockets, gone with the conversation.
 
 ## Acceptance scenarios
 
 - **CONVERSATION-AGENT-1:** The setting (Auto or an account) and a conversation's choice outlive a restart. An account there isn't is `422`. A conversation with no choice follows the setting; `auto` is Auto whatever the setting says.
 - **CONVERSATION-AGENT-2:** A choice takes effect at the next turn, on another tool in a new session with the earlier turns handed over, saying nothing of moving. Auto then stays where the session is while it has room.
-- **CONVERSATION-AGENT-3:** The chosen account fills, can't run, or was full when chosen: the turn is answered on another account, any tool, with a line that says so, once, until it answers on that account again. The choice stays. Cursor moves off the same way. A turn that already did anything but read stays where it is: nothing runs twice.
+- **CONVERSATION-AGENT-3:** The chosen account fills, can't run, or was full when chosen: the turn is answered on another account, any tool, with a line that says so, once, until it answers on that account again or the owner chooses again. The choice stays. Cursor moves off the same way. A turn that already did anything but read stays where it is: nothing runs twice.
 - **CONVERSATION-AGENT-4:** `accountFailover` off: one account only, across tools too, and the turn says why.
 - **CONVERSATION-AGENT-5:** What a conversation read goes with it to another agent: its work starts marked untrusted there.
 - **CONVERSATION-AGENT-6:** Cursor talks: in its box, one session per conversation picked up with `session/load`, its words streaming and never what a load replays, told what it is in its first prompt, with Oby's tools, and the turn's token only in `session/new`. One that can't load gets a new session with the earlier turns handed over.
