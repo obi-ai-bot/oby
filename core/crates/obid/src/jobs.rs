@@ -1479,6 +1479,7 @@ impl Jobs {
             if for_room {
                 self.schedule();
             }
+            self.resume_limit_waits();
             self.run_approved_limit_decisions().await;
         }
     }
@@ -3205,6 +3206,8 @@ impl Jobs {
                 .values()
                 .filter(|j| j.status == Status::Queued && !state.workers.contains_key(&j.id))
                 .filter(|j| !j.waiting.as_ref().is_some_and(Waiting::for_room))
+                // Nor one a five-hour limit's reset holds ([`Jobs::resume_limit_waits`]).
+                .filter(|j| j.resumes_at.is_none())
                 .map(|j| (j.created, j.id.clone()))
                 .collect();
             queued.sort();
@@ -3449,6 +3452,7 @@ impl Jobs {
             job.status = Status::Stopped;
             job.step = String::new();
             job.waiting = None;
+            job.resumes_at = None;
             job.finished = Some(obi_protocol::time::now());
         });
         // A review that never started: its exchange still gets its answer, and Oby's review of
@@ -6703,7 +6707,20 @@ impl Jobs {
                     self.update(id, |job| job.review_result = review.clone());
                     self.review_ended(id, false).await;
                 }
+                // A five-hour limit's job waits for its reset by itself (LIMITS-5).
+                let resume_at = match &end {
+                    End::AccountLimit { reset, .. } => self.limit_resume_at(id, *reset),
+                    _ => None,
+                };
                 self.update(id, |job| {
+                    if let Some(at) = resume_at {
+                        job.recovery.limit_resumes += 1;
+                        job.asked = false;
+                        job.publish_step = None;
+                        account_limits::wait_for_reset(job, at);
+                        job.changed(format!("A five-hour limit stopped it. {}", job.step));
+                        return;
+                    }
                     let (reason, next, resumes) = match &end {
                         End::AccountLimit { reason, reset } => {
                             job.account_limit_blocked = true;
@@ -6754,7 +6771,7 @@ impl Jobs {
                         job.review_result = review;
                     }
                 });
-                if matches!(end, End::AccountLimit { .. }) {
+                if matches!(end, End::AccountLimit { .. }) && resume_at.is_none() {
                     self.record_account_limit(id);
                 }
                 // What the conversation supervises: continue, split or restart (docs/runner-api.md).
@@ -9430,19 +9447,16 @@ impl Jobs {
         let temp = self.temp_path(id);
         let (tool, account) = self.job_account(&job)?;
         // An account already reported full needs an owner decision before this job runs.
+        let usage = self.usage.get(&account.id);
         if job.obi.is_none()
-            && self
-                .usage
-                .get(&account.id)
-                .full_until_at(obi_protocol::time::now())
-                .is_some()
+            && let Some(until) = usage.full_until_at(obi_protocol::time::now())
         {
             return Err(End::AccountLimit {
                 reason: format!(
                     "{} hit its usage limit. Choose what Oby should do with the affected jobs.",
                     account.name
                 ),
-                reset: None,
+                reset: (!usage.full_until_inferred).then_some(until),
             });
         }
         let job = self.get(id).ok_or("the job is gone")?;

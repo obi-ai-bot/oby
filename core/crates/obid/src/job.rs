@@ -73,6 +73,8 @@ pub struct Recovery {
     pub stalls: usize,
     /// Runs cut by obid or the Mac going down, or obid's own bug (RECOVERY-2).
     pub restarts: usize,
+    /// Times a five-hour limit's wait was armed for it (docs/contracts/account-limits.md, LIMITS-9).
+    pub limit_resumes: usize,
     /// What cut its run, for the next run's marked message; taken when that run starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,
@@ -534,8 +536,9 @@ pub struct Job {
     /// own words, or Dismiss, can take it on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_step: Option<String>,
-    /// When obid tries a job its account's usage limit stopped again by itself (`interrupted`),
-    /// in seconds since the epoch: a minute after the reset its tool named. None otherwise.
+    /// When a job a five-hour limit stopped resumes by itself (`queued`, LIMITS-5), in seconds since
+    /// the epoch: 90 seconds after the reset its tool named. None otherwise. On an `interrupted`
+    /// job, an older release's wait, made a pending decision when obid starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes_at: Option<i64>,
     /// This job stopped at an account limit and awaits an owner decision (#1563).

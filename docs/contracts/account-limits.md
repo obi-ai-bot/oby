@@ -4,16 +4,22 @@ The business behavior contract for what happens when an account reaches its usag
 
 ## Feature and status
 
-- **Outcome:** When an account hits its limit, the owner decides once for the jobs it stopped: move them to another connected account with room, resume them when room returns, or keep them stopped. Whatever they choose ends: a Resume runs again, a Move moves what can move.
-- **Status:** **Implemented** (#1563; #1645 for LIMITS-1 to 4).
-- **Scope:** Claude Code, Codex and Cursor accounts on this Mac's obid. The owner's signed choice covers the exact jobs shown and the destination they picked.
+- **Outcome:** A job a five-hour limit stopped resumes by itself in its same session once the limit resets, the way Claude's desktop app does (the owner's decision of 2026-11-02). For any other limit the owner decides once for the jobs it stopped: move them to another connected account with room, resume them when room returns, or keep them stopped. Whatever they choose ends: a Resume runs again, a Move moves what can move.
+- **Status:** **Implemented** (#1563; #1645 for LIMITS-1 to 4; the owner's decision of 2026-11-02 for LIMITS-5 to 13). The words on the job's line are proposed, and Sangam's to change.
+- **Scope:** Jobs on Claude Code, Codex and Cursor accounts on this Mac's obid. The owner's signed choice covers the exact jobs shown and the destination they picked. A conversation turn isn't in it: it moves to another account already (`accountFailover`).
+
+## The owner's decision of 2026-11-02
+
+Wellington, the owner, decided on 2026-11-02 that jobs at a five-hour limit resume by themselves, the way Claude's desktop app does, replacing #1563's ask for that limit. He was told the catch and accepted it: Claude's app skips unattended sessions and most Oby jobs are unattended, so a fresh window gets spent with nobody watching.
+
+What's borrowed, from reading Claude.app 4.4212.0: armed by default, 90 seconds after the reset, five-hour limit only, 3 attempts. What differs: Oby doesn't skip unattended jobs (the decision above), and needs no app page open; its stagger is a tick of its clock (15 seconds) where the app's is 12 seconds plus 2 to 8.
 
 ## Behavior
 
 ### Actors and ownership
 
-- **obid** stops the jobs, groups them per account and limit episode, offers the options, checks the owner's signed answer and carries it out.
-- **The apps** show the decision and sign the owner's click; they decide nothing.
+- **obid** stops the jobs, tells a five-hour limit from any other, waits out the first by itself, groups the rest per account and limit episode, offers the options, checks the owner's signed answer and carries it out.
+- **The apps** show the decision and sign the owner's click; they decide nothing. A job waiting for its reset needs no change in them: it's `queued` with a `waiting` of a kind they decode and its `step` on its line, and `askOf` and `notify.ts` ask or alert only for `failed` and `interrupted`.
 
 ### Scenarios
 
@@ -22,9 +28,24 @@ The business behavior contract for what happens when an account reaches its usag
 - **LIMITS-3** A review stopped by the same limit as a task doesn't take Move away from the task: Move is offered while any job in the group can move; chosen, the tasks move and the review alone comes back as a fresh decision with Resume and Stop, on its own account. `account_limit_flow::limits_3_a_review_in_the_group_leaves_the_task_its_move`.
 - **LIMITS-4** Options that change after the owner looked (a usage read landing, an account connected or gone) don't refuse their answer: the revision they sign follows the jobs shown, and only a choice no longer offered is refused (`That option is no longer available; refresh and choose again.`). `account_limit_flow::limits_4_an_answer_stands_when_only_other_options_changed`.
 
+- **LIMITS-5** A job a five-hour limit stops (a reset its tool said, no more than five hours off, with its week under 95% and out of its reserve; a job that starts on an account so held too, and Oby's review of published work) waits, `queued` and with no slot, no card and no alert, until 90 seconds after that reset. Its line says when (`Resuming at 3:40 PM`, proposed words). Then it goes on in its same session, worktree, branch and account, told by a marked note what cut it, with all the cut turn was sent. `account_limit_flow::limits_5_a_five_hour_limit_resumes_by_itself_in_its_session`, `account_limit_flow::limits_5_a_job_that_starts_on_a_full_account_waits_too`, `account_limit_flow::limits_5_a_waiting_job_takes_no_slot`, `publish_api::limits_5_a_review_waits_for_the_reset_with_its_job`, `usage::tests::limits_5_only_a_five_hour_limit_is_waited_out`, `jobs::account_limits::tests::limits_5_the_line_says_the_time_in_the_macs_zone`.
+- **LIMITS-6** Stop works during the wait, and is final: nothing resumes it. `account_limit_flow::limits_6_stop_ends_the_wait`.
+- **LIMITS-7** The wait survives an obid restart: the same time on its line, and no restart counted against the job (RECOVERY-2), since nothing was running. A Mac that slept through the time resumes it on waking. `account_limit_flow::limits_7_the_wait_survives_a_restart`.
+- **LIMITS-8** Jobs whose time came resume one at a time, a tick of obid's clock apart (15 seconds, `RESET_TICK`), then wait for a slot like any queued job. `account_limit_flow::limits_8_jobs_resume_one_at_a_time`.
+- **LIMITS-9** A job waits out at most 3 five-hour limits. The next limit asks the owner, as below. The count lives on the job, survives restarts, and starts again only on the owner's own words, as RECOVERY's do. A signed Resume or Move isn't such words: the job's next limit asks again (LIMITS-1). `account_limit_flow::limits_9_three_tries_then_the_owner_is_asked`.
+- **LIMITS-10** A weekly limit, a limit with no known reset (obid's own guess at one isn't known), a reset further off than five hours, or a week in its reserve: the owner's decision, unchanged, with its signed choice of account and exact jobs. `account_limit_flow::limits_10_any_other_limit_asks_as_before`, `account_limit_flow::owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool`.
+- **LIMITS-11** At its time, an account a later five-hour reset holds gets a new wait, with no try counted. A week that filled or reached its reserve meanwhile, or an account that's gone, turns the wait into the owner's decision. `account_limit_flow::limits_11_an_account_still_held_at_the_reset`.
+- **LIMITS-12** Resuming changes nothing else: the token budget, the 12-hour ceiling (the wait isn't counted toward it), the untrusted mark, the mode and the box hold as for any run, and a limit isn't a passing error (RECOVERY-1's tries aren't touched). The owner's words during the wait don't end it, since the account is still full: they go with the resume. `account_limit_flow::limits_12_resuming_keeps_everything_else`.
+- **LIMITS-13** A wait an older installed release left a pending decision stays one; one older still (`interrupted` with a `resumesAt`) becomes one when obid starts, as it did. `account_limit_flow::limits_13_an_older_wait_stays_the_owners`, `resets::old_automatic_retries_become_one_pending_decision_after_restart`.
+
 ### Invariants
 
-- No job moves or resumes from a limit without the owner's signed answer; the answer covers exactly the jobs shown.
+- A job resumes from a limit by itself only under LIMITS-5, at most 3 times (LIMITS-9). Otherwise no job resumes from a limit without the owner's signed answer, and no job ever moves without it; the answer covers exactly the jobs shown. `account_limit_blocked` marks exactly those waiting on the owner: a job armed under LIMITS-5 doesn't carry it, and the refusals of unsigned words and retries stay as they were for every job that does.
 - The worktree and branch are kept, whatever is chosen.
 
-**Test it when it's done (real Mac):** a task and Oby's review on one Claude account at its limit offer Move to a Codex account with room; Move moves the task, and the review asks again on its own.
+### Open
+
+- A job on a reset read from a tool's words: `Try again in 4 days 2 hours` is read as 2 hours (`limits::reset_in` knows hours and minutes). It would wake early and hit the limit again, at most 3 times, then ask.
+- Run on a real CLI: `claude` 2.1.302 only, with a local API answering 429 with the limit's headers, then the real login (the pull request says what ran). No real account has hit a real limit under this code. Codex's shape is checked against an answer `codex app-server` 0.163 gave; a Codex or a Cursor run hasn't been waited out for real.
+
+**Test it when it's done (real Mac):** a task and Oby's review on one Claude account at its weekly limit offer Move to a Codex account with room; Move moves the task, and the review asks again on its own. A task on an account at its five-hour limit says `Resuming at …`, shows no card, and goes on by itself 90 seconds after the reset; Stop during the wait ends it.

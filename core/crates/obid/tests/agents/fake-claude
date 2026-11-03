@@ -18,7 +18,13 @@
 //   STDERR TOKEN     prints "Authorization failed for token " and a made-up GitHub token
 //                    (ghp_ and 36 Zs) to stderr and exits 1 without a result, as a CLI that dies does
 //   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
-//                    seconds from now), then ends the turn with Claude Code's usage-limit error
+//                    seconds from now), then ends the turn with Claude Code's usage-limit error:
+//                    both as claude 2.1.302 printed them for a 429 with its unified headers
+//   LIMITED WEEK: <s> the same, with the week the full window (it resets <s> seconds from now)
+//   LIMITED ONCE: <s> as LIMITED: <s> on its first turn; on the next ends the turn with
+//                    "went on: resume=<the session it resumed> marked=<whether Oby's note came first>"
+//   LIMITED AGAIN: <s> as LIMITED: <s>, this turn and every later one of the job
+//   LIMITED NO RESET ends the turn with a usage-limit error and no rate_limit_event
 //   LIMITED ON: <w>  this turn and every later one: as LIMITED: 3600 on an account whose login's
 //                    access token holds <w>, else ends the turn with "went on: resume=<the session
 //                    it resumed, or none> told=<whether it heard that an account hit its limit>"
@@ -187,6 +193,17 @@ if (process.argv[2] === "auth" && process.argv[3] === "login") {
 const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
 const session = "00000000-0000-4000-8000-000000000001";
 let tokens = 0;
+// A session limit, as claude 2.1.302 says one: `resetsAt` is when it resets.
+const fiveHourLimit = (resetsAt) => {
+  emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour", overageStatus: "rejected", isUsingOverage: false,
+    unifiedWindows: { five_hour: { utilization: 1, resetsAt }, seven_day: { utilization: 0.4, resetsAt: resetsAt + 86400 } } } });
+  limitEnds("You've hit your session limit · resets 4:36am (America/Sao_Paulo)");
+};
+
+// A limit's result line, as claude 2.1.302 ends the turn: `success`, and an error.
+const limitEnds = (text) =>
+  emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: text, terminal_reason: "api_error", api_error_status: 429, stop_reason: "stop_sequence", session_id: session, total_cost_usd: 0 });
+
 const result = (text, error = false) =>
   emit({ type: "result", subtype: error ? "error_during_execution" : "success", is_error: error, num_turns: 1, result: text, session_id: session, total_cost_usd: 0.25 * tokens,
     ...(tokens && { usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 50 },
@@ -350,6 +367,16 @@ rl.on("line", (line) => {
     }, Number(prompt.match(/API RETRY: (\d+)/)[1]));
   }
   if (existsSync(".obi/always-transient")) return result('API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', true);
+  if (existsSync(".obi/limited-once")) {
+    const at = process.argv.indexOf("--resume");
+    return result(`went on: resume=${at >= 0 ? process.argv[at + 1] : "none"} marked=${told.startsWith("[From Oby, by itself")}`);
+  }
+  const limitedAgain = prompt.match(/LIMITED AGAIN: (\d+)/)?.[1] ?? (existsSync(".obi/limited-again") ? readFileSync(".obi/limited-again", "utf8") : null);
+  if (limitedAgain) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/limited-again", limitedAgain);
+    return fiveHourLimit(Math.floor(Date.now() / 1000) + Number(limitedAgain));
+  }
   // LIMITED ON: <word>, this turn and every later one of the job: limited on an account whose
   // login copy's access token holds <word>, else goes on.
   const limitedOn = prompt.match(/LIMITED ON: (\S+)/)?.[1] ?? (existsSync(".obi/limited-on") ? readFileSync(".obi/limited-on", "utf8") : null);
@@ -361,10 +388,7 @@ rl.on("line", (line) => {
       token = JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).claudeAiOauth?.accessToken ?? "";
     } catch {}
     if (token.includes(limitedOn)) {
-      const resetsAt = Math.floor(Date.now() / 1000) + 3600;
-      emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt,
-        unifiedWindows: { five_hour: { utilization: 1.0, resetsAt }, seven_day: { utilization: 0.5, resetsAt: resetsAt + 86400 } } } });
-      return result("Claude AI usage limit reached.", true);
+      return fiveHourLimit(Math.floor(Date.now() / 1000) + 3600);
     }
     const at = process.argv.indexOf("--resume");
     return result(`went on: resume=${at >= 0 ? process.argv[at + 1] : "none"} told=${prompt.includes("hit its usage limit")}`);
@@ -602,10 +626,18 @@ rl.on("line", (line) => {
     let beats = 0;
     writeFileSync(".obi/beat", String(beats));
     setInterval(() => writeFileSync(".obi/beat", String(++beats)), 50);
-  } else if (prompt.match(/LIMITED: (-?\d+)/)) {
-    const resetsAt = Math.floor(Date.now() / 1000) + Number(prompt.match(/LIMITED: (-?\d+)/)[1]);
-    emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt,
-      unifiedWindows: { five_hour: { utilization: 1.0, resetsAt }, seven_day: { utilization: 0.5, resetsAt: resetsAt + 86400 } } } });
+  } else if (prompt.match(/LIMITED(?: ONCE)?: (-?\d+)/)) {
+    if (prompt.includes("LIMITED ONCE")) {
+      mkdirSync(".obi", { recursive: true });
+      writeFileSync(".obi/limited-once", "");
+    }
+    fiveHourLimit(Math.floor(Date.now() / 1000) + Number(prompt.match(/LIMITED(?: ONCE)?: (-?\d+)/)[1]));
+  } else if (prompt.match(/LIMITED WEEK: (-?\d+)/)) {
+    const resetsAt = Math.floor(Date.now() / 1000) + Number(prompt.match(/LIMITED WEEK: (-?\d+)/)[1]);
+    emit({ type: "rate_limit_event", session_id: session, rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "seven_day", overageStatus: "rejected", isUsingOverage: false,
+      unifiedWindows: { five_hour: { utilization: 0.2, resetsAt: resetsAt - 3600 }, seven_day: { utilization: 1, resetsAt } } } });
+    limitEnds("You've hit your weekly limit · resets Nov 6 at 3:36am (America/Sao_Paulo)");
+  } else if (prompt.includes("LIMITED NO RESET")) {
     result("Claude AI usage limit reached.", true);
   } else if (prompt.includes("QUIET")) {
     if (prompt.includes("NO NOTE")) {
