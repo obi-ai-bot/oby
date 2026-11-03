@@ -29,6 +29,14 @@ describe('BYPASS-5: the agent’s question is Sangam’s Question card', () => {
     expect(live.itemAsk(item('agentQuestion', { text: 'What should the button say?' })).options).toEqual(['Tell it something']);
   });
 
+  it('permissions_12_a_card_says_what_always_saves', () => {
+    const s = live.liveState();
+    s.jobs.j1 = { id: 'j1', status: 'running', permission: { id: 'p1', detail: 'rm -rf build', always: "Yes, and don't ask again for rm -rf build in o/r" } } as unknown as Job;
+    s.inbox = [item('permission', { text: 'Run rm -rf build', options: ['Allow', 'Always allow', 'Deny'] })];
+    expect(live.askOf(s, s.jobs.j1)?.always).toBe("Yes, and don't ask again for rm -rf build in o/r");
+    s.inbox = [];
+  });
+
   it('bypass_5_leaves_a_permission_a_permission', () => {
     const ask = live.itemAsk(item('permission', { text: 'Run npm install', options: ['Allow', 'Deny'] }), 'npm install');
     expect(ask.kind).toBe('permission');

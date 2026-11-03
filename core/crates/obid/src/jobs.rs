@@ -4738,7 +4738,7 @@ impl Jobs {
         self.rules_for(&job.repo)
             .into_iter()
             .find(|r| r.decision == "deny" && permissions::covers(&r.rule, &call, &worktree, false))
-            .map(|r| format!("The owner's rule {} refuses this in {}.", r.rule, r.repo))
+            .map(|r| permissions::rule_refuses(&r.rule, &r.repo))
     }
 
     /// The sites the owner's yes to `call` lets the job's agent reach through the egress proxy
@@ -13323,7 +13323,7 @@ fn owners_answer(
         Decision::Deny if permission.is_question() => {
             Answer::Deny(words.unwrap_or(permissions::QUESTION_DECLINED).to_owned())
         }
-        Decision::Deny => Answer::Deny(words.unwrap_or(permissions::SAID_NO).to_owned()),
+        Decision::Deny => Answer::Deny(permissions::said_no(words)),
         _ => Answer::Allow,
     };
     (said, answer)

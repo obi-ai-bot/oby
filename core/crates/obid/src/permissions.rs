@@ -328,7 +328,7 @@ pub fn after_park(parked: &Parked, answer: &crate::agent::Answer) -> String {
         parked.tool,
     );
     match answer {
-        Answer::Deny(why) => format!("{paused}\nThe owner said no: {why}"),
+        Answer::Deny(why) => format!("{paused}\n{why}"),
         _ => format!(
             "{paused}\nThe owner allowed it: you may now run it. Make that same call again, exactly as it was, then carry on."
         ),
@@ -637,9 +637,10 @@ const QUIET: [&str; 12] = [
     "Agent",
 ];
 
-/// git's commands that only read, as [`only_reads`] takes them: what a review runs to see the
-/// change (`git diff origin/dev...HEAD`, `git ls-tree HEAD x`, `git cat-file -p HEAD:x`).
-const GIT_READS: [&str; 17] = [
+/// git's commands that only read whatever follows them, as [`only_reads`] takes them: what a review
+/// runs to see the change (`git diff origin/dev...HEAD`, `git ls-tree HEAD x`, `git cat-file -p
+/// HEAD:x`). Those that also write are read form by form ([`git_reads`]).
+const GIT_READS: [&str; 18] = [
     "status",
     "diff",
     "log",
@@ -657,6 +658,64 @@ const GIT_READS: [&str; 17] = [
     "show-ref",
     "for-each-ref",
     "name-rev",
+    "grep",
+];
+
+/// What `git branch` or `git tag` may be given and still only list, whatever else: their sort and
+/// format, each followed by its value or with it after `=`, and the choices that list by themselves
+/// ([`GIT_LISTING`]).
+const GIT_LIST_VALUES: &[&str] = &["--sort", "--format"];
+/// Options that make them list, so a word after is a pattern. Without one it's a new branch's name,
+/// even after `-v` or `--sort` (`git branch -v x` makes `x`).
+const GIT_LISTING: &[&str] = &[
+    "--list",
+    "--contains",
+    "--no-contains",
+    "--merged",
+    "--no-merged",
+    "--points-at",
+];
+const GIT_LIST_FLAGS: &[&str] = &[
+    "--all",
+    "--remotes",
+    "--verbose",
+    "--show-current",
+    "--ignore-case",
+    "--omit-empty",
+    "--color",
+    "--no-color",
+    "--column",
+    "--no-column",
+    "--abbrev",
+    "--no-abbrev",
+];
+
+/// Scopes and shapes of `git config`'s answer, which change what it prints and write nothing.
+const GIT_CONFIG_SHAPES: &[&str] = &[
+    "--global",
+    "--local",
+    "--system",
+    "--worktree",
+    "--includes",
+    "--no-includes",
+    "--show-origin",
+    "--show-scope",
+    "--null",
+    "-z",
+];
+
+/// What in a setting's name says it may hold a login: `git config` reading one asks.
+const GIT_SECRET_KEYS: &[&str] = &[
+    "credential",
+    "token",
+    "pass",
+    "secret",
+    "key",
+    "auth",
+    "header",
+    "cookie",
+    "proxy",
+    "insteadof",
 ];
 
 /// File edits: allowed in Accept edits, refused in Plan.
@@ -665,11 +724,29 @@ const EDITS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 /// How much of a plan its card keeps.
 const PLAN_CAP: usize = 20_000;
 
-/// What an agent in Plan hears when it tries to change something.
-pub const PLAN_ONLY: &str = "Plan mode: read only, change nothing yet. Finish with your plan; the owner approves it before you go on.";
+/// What an agent in Plan hears when it tries to change something. (Sangam's to change, as every
+/// refusal's words here: proposed, PERMISSIONS-11.)
+pub const PLAN_ONLY: &str = "Plan mode: this call did not run, and changed nothing. It's read only for now, so don't reach the same result another way. Finish with your plan; the owner approves it before you go on.";
 
-/// What the agent hears when the owner says no without words.
-pub const SAID_NO: &str = "The owner said no. Don't do that; do the rest of the work another way, or say in your summary what you needed.";
+/// What a refused call left undone, and how the agent goes on from it.
+const NOT_RUN: &str = "This call did not run, and changed nothing.";
+const GO_ON: &str = "do the rest of the work, don't try to reach the same result another way, and say in your summary what you needed.";
+
+/// What the agent hears when the owner says no, with their words or none: what happened, and that
+/// a no isn't to be gone around.
+pub fn said_no(words: Option<&str>) -> String {
+    match words {
+        None => format!("The owner said no. {NOT_RUN} Go on from there: {GO_ON}"),
+        Some(words) => format!(
+            "The owner said no. {NOT_RUN} Their words: “{words}”. Go on as they say; where they don't say, {GO_ON}"
+        ),
+    }
+}
+
+/// What the agent hears when an owner's saved rule refuses a call.
+pub fn rule_refuses(rule: &str, repo: &str) -> String {
+    format!("The owner's rule {rule} refuses this in {repo}. {NOT_RUN} Go on from there: {GO_ON}")
+}
 
 /// Tools whose second word names what they do (`swift test`, `git status`): their rules keep it.
 const SUBCOMMANDS: [&str; 22] = [
@@ -699,7 +776,7 @@ const SUBCOMMANDS: [&str; 22] = [
 
 /// Shells, interpreters and wrappers: what follows them is any program at all, so a rule for them
 /// would allow anything. They're allowed once at a time, never always.
-const RUNS_ANYTHING: [&str; 50] = [
+const RUNS_ANYTHING: [&str; 51] = [
     "noglob",
     "nocorrect",
     "repeat",
@@ -743,6 +820,7 @@ const RUNS_ANYTHING: [&str; 50] = [
     "watch",
     "stdbuf",
     "caffeinate",
+    "setsid",
     "script",
     "ssh",
     "parallel",
@@ -904,8 +982,12 @@ const WRAPPER_VALUES: &[(&str, &[&str])] = &[
         ],
     ),
     ("doas", &["-u", "-C"]),
-    ("timeout", &["-k", "-s"]),
-    ("nice", &["-n"]),
+    ("timeout", &["-k", "-s", "--kill-after", "--signal"]),
+    ("nice", &["-n", "--adjustment"]),
+    (
+        "stdbuf",
+        &["-i", "-o", "-e", "--input", "--output", "--error"],
+    ),
     ("ionice", &["-c", "-n", "-p"]),
     ("time", &["-f", "-o"]),
     ("watch", &["-n"]),
@@ -1015,6 +1097,9 @@ struct Simple {
     nested: bool,
     /// Part of a pipeline, or run in the background: a shell may run it in a subshell of its own.
     piped: bool,
+    /// What it runs may not be what obid read: it has a `<<` taken for a shift, or a here-document
+    /// that never ended. It's no read (PERMISSIONS-8); being `redirected`, no allow rule covers it.
+    unsure: bool,
 }
 
 /// Where code read by [`read_until`] runs: how deep in code inside code, in which subshells, and
@@ -1045,8 +1130,14 @@ struct Reader {
     redirect: bool,
     /// The command being read has a redirect or a here-document.
     redirected: bool,
-    /// Inside `(( … ))`, where `<<` shifts: over at its `))`, or at the end of the line.
-    arithmetic: bool,
+    /// Inside `(( … ))` or `$(( … ))`, where `<<` shifts, with how many parentheses were open
+    /// outside it: over when the count is back there, however many lines or `((` it holds.
+    arithmetic: Option<usize>,
+    /// The `$[`, `${` and subscripts (`a[1`, as a command's first word) open here, where `<<`
+    /// shifts or is plain text too.
+    open: Vec<char>,
+    /// The command being read has a `<<` taken for a shift ([`Simple::unsure`]).
+    unsure: bool,
     /// Here-documents waiting for the end of the line: the word that ends one, whether its lines'
     /// tabs are stripped (`<<-`), whether that word was quoted (the lines are then plain text; if
     /// not, what `$(…)` and backticks in them say runs), and the command it feeds.
@@ -1085,11 +1176,13 @@ impl Reader {
                 subshells: self.subshells.clone(),
                 nested: self.nested,
                 piped: self.piped || piped,
+                unsure: self.unsure,
             });
         }
         self.piped = false;
         self.redirect = false;
         self.redirected = false;
+        self.unsure = false;
     }
 
     /// Reads a `$(…)` or a backtick, a subshell of its own, from `*i` up to `stop`.
@@ -1274,10 +1367,11 @@ fn read_until(
             ' ' | '\t' => r.end_word(),
             '\n' => {
                 r.end_command(false);
-                r.arithmetic = false;
                 // The lines of each here-document the line opened, up to the word that ends it.
                 for (end, strip, quoted, command) in std::mem::take(&mut r.heredocs) {
                     let mut body = String::new();
+                    let mut ended = false;
+                    let stop_at = stop;
                     while *i + 1 < chars.len() {
                         let start = *i + 1;
                         let stop = chars[start..]
@@ -1292,10 +1386,25 @@ fn read_until(
                             &line
                         };
                         if line == end {
+                            ended = true;
+                            break;
+                        }
+                        // `$(cat <<EOF⏎…⏎EOF)`: bash and sh end it there, at the `)`.
+                        if stop_at == Some(')')
+                            && line
+                                .strip_prefix(end.as_str())
+                                .is_some_and(|l| l.starts_with(')'))
+                        {
+                            ended = true;
+                            *i = stop - (line.chars().count() - end.chars().count()) - 1;
                             break;
                         }
                         body.push_str(line);
                         body.push('\n');
+                    }
+                    // A shell may have ended it where obid didn't, and run what obid took for text.
+                    if !ended && let Some(last) = r.commands.last_mut() {
+                        last.unsure = true;
                     }
                     if !quoted {
                         ok &= r.substitute_in(&body, within, next);
@@ -1304,7 +1413,11 @@ fn read_until(
                 }
             }
             '(' => {
-                r.arithmetic |= chars.get(*i + 1) == Some(&'(');
+                // `((`, and the second `(` of a `$((`, read as a `$(` up to here.
+                let after_dollar = *i >= 2 && chars[*i - 1] == '(' && chars[*i - 2] == '$';
+                if chars.get(*i + 1) == Some(&'(') || after_dollar {
+                    r.arithmetic = r.arithmetic.or(Some(parens));
+                }
                 parens += 1;
                 r.end_command(false);
                 *next += 1;
@@ -1312,10 +1425,12 @@ fn read_until(
             }
             ')' => {
                 r.end_command(false);
-                r.arithmetic &= chars.get(*i + 1) != Some(&')');
                 if parens > 0 {
                     parens -= 1;
                     r.subshells.pop();
+                }
+                if r.arithmetic == Some(parens) {
+                    r.arithmetic = None;
                 }
             }
             // `&> file` sends output somewhere.
@@ -1342,7 +1457,13 @@ fn read_until(
                 }
                 r.end_word();
                 r.redirected = true;
-                if c == '<' && chars.get(*i + 1) == Some(&'<') && !r.arithmetic {
+                // `$((1<<2))`, `$[1<<2]`, `${x:1<<2}`, `a[1<<2]=3`: a shift, and the next line is a
+                // command. obid reads on as the shell does, and trusts the line no further.
+                let shifts = r.arithmetic.is_some() || !r.open.is_empty();
+                if c == '<' && chars.get(*i + 1) == Some(&'<') && shifts {
+                    r.unsure = true;
+                }
+                if c == '<' && chars.get(*i + 1) == Some(&'<') && !shifts {
                     if chars.get(*i + 2) == Some(&'<') {
                         r.here_string = true;
                         *i += 3;
@@ -1356,17 +1477,28 @@ fn read_until(
                     while chars.get(*i).is_some_and(|c| *c == ' ' || *c == '\t') {
                         *i += 1;
                     }
+                    // The word that ends it, read as a word: `<<'E F'` ends at the line `E F`,
+                    // `<<E\ F` too, and `<<$'E'` at the line `E`.
                     let mut end = String::new();
                     let mut quoted = false;
+                    let mut quote = None;
                     while let Some(&d) = chars.get(*i) {
-                        if d.is_whitespace() || matches!(d, '|' | ';' | '&' | '(' | ')' | '<' | '>')
-                        {
-                            break;
-                        }
-                        if matches!(d, '\'' | '"' | '\\') {
-                            quoted = true;
-                        } else {
-                            end.push(d);
+                        match (quote, d) {
+                            (Some(q), _) if d == q => quote = None,
+                            (Some(_), _) => end.push(d),
+                            (None, '\'' | '"') => {
+                                quoted = true;
+                                quote = Some(d);
+                            }
+                            (None, '\\') => {
+                                quoted = true;
+                                *i += 1;
+                                end.extend(chars.get(*i));
+                            }
+                            (None, '$') if matches!(chars.get(*i + 1), Some('\'' | '"')) => {}
+                            (None, '|' | ';' | '&' | '(' | ')' | '<' | '>') => break,
+                            (None, _) if d.is_whitespace() => break,
+                            (None, _) => end.push(d),
                         }
                         *i += 1;
                     }
@@ -1380,6 +1512,20 @@ fn read_until(
                 }
             }
             other => {
+                match other {
+                    '[' | '{'
+                        if !r.open.is_empty()
+                            || r.word.ends_with('$')
+                            || (other == '['
+                                && r.words.iter().all(|w| is_assignment(w))
+                                && is_assignment(&format!("{}=", r.word))) =>
+                    {
+                        r.open.push(other);
+                    }
+                    ']' if r.open.last() == Some(&'[') => drop(r.open.pop()),
+                    '}' if r.open.last() == Some(&'{') => drop(r.open.pop()),
+                    _ => {}
+                }
                 r.in_word = true;
                 r.word.push(other);
             }
@@ -1473,6 +1619,7 @@ fn read_until(
                 subshells: command.subshells.clone(),
                 nested: true,
                 piped: command.piped,
+                unsure: command.unsure,
             });
         out.push(command);
         out.extend(coprocess);
@@ -1518,6 +1665,13 @@ fn shell_grammar(words: &[String]) -> usize {
     words.len()
 }
 
+/// `5`, `1.5`, `30s`: a number or a `timeout`'s duration.
+fn is_duration(word: &str) -> bool {
+    let digits = word.trim_end_matches(['s', 'm', 'h', 'd']);
+    digits.starts_with(|c: char| c.is_ascii_digit())
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
 /// Where the program of a simple command is, after the shell's grammar ([`shell_grammar`]: a
 /// command runs the same inside `{ }`, `if` or `!`), assignments (`FOO=1`) and wrappers (`sudo`,
 /// `timeout 5s`, `env -i`, `env -C dir`) with their options and numbers.
@@ -1534,10 +1688,11 @@ fn program_index(words: &[String]) -> Option<usize> {
         {
             return None;
         }
-        let digits = w.trim_end_matches(['s', 'm', 'h', 'd']);
-        let number = digits.starts_with(|c: char| c.is_ascii_digit())
-            && digits.chars().all(|c| c.is_ascii_digit() || c == '.');
-        if !(is_assignment(w) || w.starts_with('-') || number || WRAPPERS.contains(&base(w))) {
+        if !(is_assignment(w)
+            || w.starts_with('-')
+            || is_duration(w)
+            || WRAPPERS.contains(&base(w)))
+        {
             return Some(i);
         }
         // `env -C dir`, `sudo -u root`: the value isn't the program.
@@ -2064,8 +2219,30 @@ fn prints_the_environment(args: &[String]) -> bool {
         "printenv" | "export" | "declare" | "typeset" => given(|w| w.starts_with('-')),
         // Alone it prints every variable; `set -e` turns an option on.
         "set" => given(|_| false),
+        "ps" => ps_prints_environments(rest),
         _ => false,
     }
+}
+
+/// `ps e`, `ps auxe`, `ps -E`: BSD's letters and macOS's option add each process's environment.
+/// `-e` alone only lists every process, and a word after an option that takes one (`-o user`,
+/// `-eo user`, `-u someone`) is its value.
+fn ps_prints_environments(args: &[String]) -> bool {
+    args.iter()
+        .enumerate()
+        .any(|(i, word)| match word.strip_prefix('-') {
+            Some(letters) => !letters.starts_with('-') && letters.contains('E'),
+            None => {
+                let a_value = i > 0
+                    && args[i - 1].starts_with('-')
+                    && !args[i - 1].starts_with("--")
+                    && args[i - 1]
+                        .ends_with(['o', 'O', 'p', 'u', 'U', 'g', 'G', 't', 'k', 'q', 'C']);
+                !a_value
+                    && word.chars().all(|c| c.is_ascii_alphabetic())
+                    && word.contains(['e', 'E'])
+            }
+        })
 }
 
 /// Whether a simple command touches secrets or a login: it prints a keychain's passwords, asks for
@@ -2305,6 +2482,91 @@ fn reads_outside(command: &str, bounds: &Bounds) -> bool {
     })
 }
 
+/// Whether `git` given `rest` (its subcommand first) only reads: one of [`GIT_READS`], or the forms
+/// of a subcommand that also writes that are read exactly, so anything else asks. No network: `git
+/// ls-remote` and `git remote show` aren't here. No setting that may hold a login.
+fn git_reads(rest: &[String]) -> bool {
+    let Some((sub, args)) = rest.split_first() else {
+        return false;
+    };
+    let first = args.first().map(String::as_str);
+    match sub.as_str() {
+        "branch" => git_only_lists(args, "arvi", false),
+        "tag" => git_only_lists(args, "il", true),
+        "remote" => {
+            matches!(first, None | Some("-v" | "--verbose" | "get-url")) && {
+                first == Some("get-url") || args.len() <= 1
+            }
+        }
+        // Not `expire`, `delete` or `drop`; any other word is a ref only git knows the fate of.
+        "reflog" => first
+            .is_none_or(|w| w.starts_with('-') || matches!(w, "show" | "list" | "exists" | "HEAD")),
+        "stash" => matches!(first, Some("list" | "show")),
+        "worktree" => first == Some("list"),
+        "config" => git_config_reads(args),
+        sub => GIT_READS.contains(&sub),
+    }
+}
+
+/// Whether `git branch` or `git tag` given `args` only lists: only the options that do, and a word
+/// only after one that makes it a pattern ([`GIT_LISTING`]). `letters` are its short options that
+/// only list, and `tag` has `-l` and `-n` too.
+fn git_only_lists(args: &[String], letters: &str, tag: bool) -> bool {
+    let mut listing = false;
+    let mut named = false;
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        let (option, attached) = word
+            .split_once('=')
+            .map_or((word.as_str(), false), |(option, _)| (option, true));
+        if GIT_LISTING.contains(&option) {
+            listing = true;
+        } else if GIT_LIST_VALUES.contains(&option) {
+            if !attached {
+                words.next();
+            }
+        } else if word.starts_with("--") {
+            if !GIT_LIST_FLAGS.contains(&option) {
+                return false;
+            }
+        } else if let Some(short) = word.strip_prefix('-') {
+            let notes = tag
+                && short
+                    .strip_prefix('n')
+                    .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()));
+            if !notes && (short.is_empty() || !short.chars().all(|c| letters.contains(c))) {
+                return false;
+            }
+            listing |= tag && short.contains('l');
+        } else {
+            named = true;
+        }
+    }
+    listing || !named
+}
+
+/// Whether `git config` given `args` reads one setting that can't hold a login: `--get key`,
+/// `--get-all key`, `get key` or `key` alone, a word with a section. Nothing else: `--list` and
+/// `--get-regexp` can print a login, and `git config edit` opens an editor.
+fn git_config_reads(args: &[String]) -> bool {
+    let words: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|w| !GIT_CONFIG_SHAPES.contains(w))
+        .collect();
+    let key = match words.as_slice() {
+        ["--get" | "--get-all" | "get", key] | ["get", "--all", key] | [key] => *key,
+        _ => return false,
+    };
+    let lower = key.to_ascii_lowercase();
+    !key.starts_with('-')
+        && key.contains('.')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+        && !GIT_SECRET_KEYS.iter().any(|k| lower.contains(k))
+}
+
 /// Whether `command` only reads, as Read and Grep do, so it asks in no mode, Plan too: Codex reads
 /// through its shell (`cat`, `rg`, `git diff`). Each simple command is a program the conversation's
 /// shell runs as a read (crate::brain::shell::reads_only), one of git's [`GIT_READS`] from the
@@ -2320,6 +2582,7 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
         return false;
     };
     !writes_a_file(command)
+        && !commands.iter().any(|c| c.unsure)
         && with_folders(&commands, bounds).iter().all(|(words, at)| {
             let keywords = ["if", "then", "elif", "else", "!"];
             let words: Vec<String> = words
@@ -2337,14 +2600,19 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
                         1
                     }..];
                     at.as_deref() == Some(bounds.worktree.as_path())
-                        && rest
-                            .first()
-                            .is_some_and(|w| GIT_READS.contains(&w.as_str()))
+                        && git_reads(rest)
                         && rest.iter().all(|w| {
-                            // `--filters` has `cat-file` run the repository's smudge programs.
-                            !["--output", "--ext-diff", "-O", "--open-files", "--filters"]
-                                .iter()
-                                .any(|o| w.starts_with(o))
+                            // `--filters` and `--textconv` have git run the repository's programs.
+                            ![
+                                "--output",
+                                "--ext-diff",
+                                "-O",
+                                "--open-files",
+                                "--filters",
+                                "--textconv",
+                            ]
+                            .iter()
+                            .any(|o| w.starts_with(o))
                         })
                         && system_program("git")
                 }
@@ -2439,10 +2707,7 @@ pub fn decide(call: &Call, mode: Mode, rules: &[Rule], bounds: &Bounds) -> Verdi
         .iter()
         .find(|r| r.decision == "deny" && matches(&r.rule, call, worktree, false))
     {
-        return Verdict::Deny(format!(
-            "The owner's rule {} refuses this in {}. Do it another way, or say in your summary what you'd have done.",
-            deny.rule, deny.repo
-        ));
+        return Verdict::Deny(rule_refuses(&deny.rule, &deny.repo));
     }
     // The agent's question is the owner's to answer, in every mode (#858): no allow answers it.
     if call.tool == ASK_USER_QUESTION {
@@ -2502,6 +2767,124 @@ fn is_chained(command: &str) -> bool {
                 c.piped || c.redirected || !c.subshells.is_empty() || shell_grammar(&c.words) > 0
             })
     })
+}
+
+/// Whether what `command` runs may not be what obid read ([`Simple::unsure`]): it's no read.
+pub fn unsure(command: &str) -> bool {
+    simple_commands(command).is_none_or(|commands| commands.iter().any(|c| c.unsure))
+}
+
+/// Variables set before a command that a saved rule reads past: they say how it logs, formats or
+/// which platform it builds for. An allow list on purpose: `PATH` or `IFS` change what runs, a
+/// `*_TOKEN` or `ANTHROPIC_API_KEY` is a login, `LD_*`, `DYLD_*` and `NODE_OPTIONS` load code.
+const SAFE_VARIABLES: &[&str] = &[
+    "RUST_LOG",
+    "RUST_BACKTRACE",
+    "NODE_ENV",
+    "GOOS",
+    "GOARCH",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "CI",
+];
+
+/// Wrappers a saved rule reads past: they change how long or how nicely a program runs, never what
+/// runs. Not `env`, `sudo`, `xargs`, `watch` or a shell, which stay what [`RUNS_ANYTHING`] says.
+const HARMLESS_WRAPPERS: &[&str] = &["timeout", "time", "nice", "nohup", "stdbuf"];
+
+/// The first word of `text`, on one line, and what follows it.
+fn next_word(text: &str) -> (&str, &str) {
+    let blank = [' ', '\t'];
+    text.split_once(blank).map_or((text, ""), |(word, rest)| {
+        (word, rest.trim_start_matches(blank))
+    })
+}
+
+/// A word with nothing a shell reads in it: no quote, variable, glob or new line.
+fn plain_word(word: &str) -> bool {
+    !word.is_empty()
+        && word.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '=' | ',' | '+' | '/')
+        })
+}
+
+/// `text` past the wrapper it starts with and that wrapper's options, when it's one of
+/// [`HARMLESS_WRAPPERS`] given only options known to change nothing else (`time -o f` writes a
+/// file, so it isn't) and something to run.
+fn past_a_wrapper(text: &str) -> Option<&str> {
+    let (wrapper, mut rest) = next_word(text);
+    if !HARMLESS_WRAPPERS.contains(&wrapper) {
+        return None;
+    }
+    let values = WRAPPER_VALUES
+        .iter()
+        .find(|(name, _)| *name == wrapper && wrapper != "time")
+        .map_or(&[][..], |(_, values)| *values);
+    while rest.starts_with('-') {
+        let (word, after) = next_word(rest);
+        if !plain_word(word) {
+            return None;
+        }
+        let flag = match wrapper {
+            "time" => word == "-p",
+            "timeout" => matches!(
+                word,
+                "--foreground" | "--preserve-status" | "--verbose" | "-f" | "-p" | "-v"
+            ),
+            "nice" => word[1..].chars().all(|c| c.is_ascii_digit()) && word.len() > 1,
+            _ => false,
+        };
+        rest = if flag {
+            after
+        } else if values.contains(&word) {
+            let (value, after) = next_word(after);
+            if !plain_word(value) {
+                return None;
+            }
+            after
+        } else if values.iter().any(|v| match word.strip_prefix(v) {
+            Some(attached) => !v.starts_with("--") || attached.starts_with('='),
+            None => false,
+        }) {
+            after
+        } else {
+            return None;
+        };
+    }
+    if wrapper == "timeout" {
+        let (duration, after) = next_word(rest);
+        if !is_duration(duration) {
+            return None;
+        }
+        rest = after;
+    }
+    (!rest.is_empty()).then_some(rest)
+}
+
+/// What a saved allow rule reads of `command`, and what Always offers: past [`SAFE_VARIABLES`], then
+/// past [`HARMLESS_WRAPPERS`]. The whole command when what's left isn't plainly one command (`time !
+/// x`, `timeout 5 { x; }`), so it stays as refused as it was.
+fn past_harmless(command: &str) -> &str {
+    let whole = command.trim();
+    let mut rest = whole;
+    loop {
+        let (word, after) = next_word(rest);
+        match word.split_once('=') {
+            Some((name, _)) if SAFE_VARIABLES.contains(&name) && plain_word(word) => rest = after,
+            _ => break,
+        }
+    }
+    while let Some(after) = past_a_wrapper(rest) {
+        rest = after;
+    }
+    if rest.is_empty() || is_chained(rest) {
+        whole
+    } else {
+        rest
+    }
 }
 
 /// `Bash(swift test:*)` is (`Bash`, `swift test:*`); `Edit` is (`Edit`, none).
@@ -2583,7 +2966,7 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
     let bash = family(&call.tool) == "Bash";
     // No allow rule covers what runs whatever follows it, even one saved before: it would allow
     // anything.
-    if allowing && bash && runs_any_program(call.command.as_deref().unwrap_or("")) {
+    if allowing && bash && runs_any_program(past_harmless(call.command.as_deref().unwrap_or(""))) {
         return false;
     }
     let Some(content) = content else {
@@ -2624,7 +3007,12 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
         {
             return true;
         }
-        return !is_chained(command) && fits(command);
+        return !is_chained(command)
+            && fits(if allowing {
+                past_harmless(command)
+            } else {
+                command
+            });
     }
     if family(&call.tool) == "Edit" {
         let files: Vec<String> = call.paths.iter().map(|p| relative(p, worktree)).collect();
@@ -2665,11 +3053,25 @@ fn matches(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
     )
 }
 
-/// The words a command's rule keeps: `swift test` for `swift test --filter X`, `ls` for `ls -la`;
-/// none for a chained command, one that starts by setting a variable or with a quote, or one that
-/// runs whatever follows it.
+/// Whether a command's words start with a tool and its subcommand (`swift test`, `git status`): a
+/// rule for those two may cover what follows them. Nothing else may: `rm` alone would be every `rm`.
+fn has_a_subcommand(words: &[&str]) -> bool {
+    SUBCOMMANDS.contains(&words[0])
+        && words.get(1).is_some_and(|second| {
+            second.starts_with(|c: char| c.is_ascii_lowercase())
+                && second.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, ':' | '_' | '-')
+                })
+        })
+}
+
+/// The words a command's rule keeps, past what a rule reads past ([`past_harmless`]): `swift test`
+/// for `RUST_LOG=x swift test --filter X`, the exact command for a tool with no subcommand (`rm -rf
+/// build`, `ls -la`); none for a chained command, one that starts by setting a variable or with a
+/// quote, one that runs whatever follows it, or an exact one a rule can't keep: over more than one
+/// line, one that ends in `*` (read as a prefix), one holding a token or a login.
 pub fn prefix(command: &str) -> Option<String> {
-    let command = command.trim();
+    let command = past_harmless(command);
     if command.is_empty() || is_chained(command) || runs_any_program(command) {
         return None;
     }
@@ -2678,16 +3080,22 @@ pub fn prefix(command: &str) -> Option<String> {
     if first.contains(['=', '"', '\'']) {
         return None;
     }
-    if SUBCOMMANDS.contains(&first)
-        && let Some(second) = words.get(1)
-        && second.starts_with(|c: char| c.is_ascii_lowercase())
-        && second
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, ':' | '_' | '-'))
-    {
-        return Some(format!("{first} {second}"));
+    if has_a_subcommand(&words) {
+        return Some(format!("{first} {}", words[1]));
     }
-    Some(first.to_owned())
+    (!command.contains('\n') && !command.ends_with('*') && scrubbed(command) == command)
+        .then(|| command.to_owned())
+}
+
+/// The rule that keeps `words`, as [`prefix`] gives them: what follows a subcommand too, or only
+/// that very command.
+fn command_rule(words: &str) -> String {
+    let split: Vec<&str> = words.split(' ').collect();
+    if has_a_subcommand(&split) {
+        format!("Bash({words}:*)")
+    } else {
+        format!("Bash({words})")
+    }
 }
 
 /// The card for the `index`th (from 0) of an `AskUserQuestion` call's `questions`: a fixed title,
@@ -2746,12 +3154,19 @@ pub fn card(call: &Call, id: &str, repo: &str, bounds: &Bounds) -> Permission {
         ),
         "Bash" => {
             let command = call.command.clone().unwrap_or_default();
-            let detail: String = command.chars().take(2000).collect();
-            match prefix(&command) {
+            use crate::brain::shell::CARD_CHARS;
+            let mut detail: String = command.chars().take(CARD_CHARS).collect();
+            // What the card can't show is said, and never saved as a rule: the owner reads what
+            // they allow always (PERMISSIONS-8). Proposed words, Sangam's to change.
+            let hidden = command.chars().count().saturating_sub(CARD_CHARS);
+            if hidden > 0 {
+                detail.push_str(&format!("… ({hidden} more characters not shown)"));
+            }
+            match prefix(&command).filter(|_| hidden == 0) {
                 Some(prefix) => (
                     format!("Run {}", line(&prefix, 60)),
                     detail,
-                    Some(format!("Bash({prefix}:*)")),
+                    Some(command_rule(&prefix)),
                     Some(prefix),
                 ),
                 // Allowed only once at a time, so the owner reads all of it (#634).
@@ -3305,8 +3720,11 @@ mod tests {
             prefix("swift test --filter SpeechTests").as_deref(),
             Some("swift test")
         );
-        assert_eq!(prefix("ls -la").as_deref(), Some("ls"));
-        assert_eq!(prefix("cat Package.swift").as_deref(), Some("cat"));
+        assert_eq!(prefix("ls -la").as_deref(), Some("ls -la"));
+        assert_eq!(
+            prefix("cat Package.swift").as_deref(),
+            Some("cat Package.swift")
+        );
         assert_eq!(prefix("swift build && swift test"), None);
         assert_eq!(prefix("FOO=1 swift test"), None);
         for command in [
@@ -4295,8 +4713,8 @@ mod tests {
             "obid paused you while this call of yours waited for the owner, so it got no reply:\nBash {\"command\":\"npm test\"}\nThe owner allowed it: you may now run it. Make that same call again, exactly as it was, then carry on."
         );
         assert!(
-            after_park(&run, &Answer::Deny("Not on main.".into()))
-                .ends_with("\nThe owner said no: Not on main.")
+            after_park(&run, &Answer::Deny(said_no(Some("Not on main."))))
+                .contains("\nThe owner said no. This call did not run, and changed nothing. Their words: “Not on main.”")
         );
         let write = Parked {
             tool: "Write".into(),
@@ -4532,7 +4950,7 @@ mod tests {
             assert_eq!(prefix(command), None, "{command}");
         }
         for (command, rule, offered) in [
-            ("echo \"(hi)\"", "Bash(echo:*)", "echo"),
+            ("echo \"(hi)\"", "Bash(echo:*)", "echo \"(hi)\""),
             (
                 "git commit -m \"fix(obid): x\"",
                 "Bash(git commit:*)",
@@ -4695,8 +5113,12 @@ mod tests {
         let worktree = Path::new(WORKTREE);
         for (command, rule, offered) in [
             ("git log --format='%h > x'", "Bash(git log:*)", "git log"),
-            ("grep -r \"a > b\" src", "Bash(grep:*)", "grep"),
-            ("echo \"a; b\"", "Bash(echo:*)", "echo"),
+            (
+                "grep -r \"a > b\" src",
+                "Bash(grep:*)",
+                "grep -r \"a > b\" src",
+            ),
+            ("echo \"a; b\"", "Bash(echo:*)", "echo \"a; b\""),
         ] {
             assert!(matches(rule, &bash(command), worktree, true), "{command}");
             assert_eq!(prefix(command).as_deref(), Some(offered), "{command}");
@@ -4719,6 +5141,714 @@ mod tests {
             assert!(!matches(rule, &bash(command), worktree, true), "{command}");
             assert_eq!(prefix(command), None, "{command}");
         }
+    }
+
+    /// The lines a `<<` that isn't a here-document could hide, as real shells run them. Each form
+    /// is run first, so this holds what a shell does and not what obid thinks it does; the rest of
+    /// the line is then seen as a shell sees it, by every check, and the line itself is neither a
+    /// read nor covered by a rule (PERMISSIONS-8, #1811's limit).
+    #[test]
+    fn permissions_8_what_a_shell_runs_is_what_obid_reads() {
+        const FORMS: &[&str] = &[
+            "echo $((1<<2\n))\nX",
+            "echo \"$((1<<2\n))\"\nX",
+            "echo $[1<<2]\nX",
+            "echo $[a[1]<<2]\nX",
+            "echo ${x:1<<2}\nX",
+            "echo ${x:-<<E}\nX",
+            "((x=((1))<<2))\nX",
+            "a[1<<2]=3\nX",
+            "a[1 << 2]=3\nX",
+            // A quote that runs past where a here-document would have ended.
+            "echo $[1<<2]\necho 'a\n2]\nb'; X",
+            // Here-documents obid read to the wrong line.
+            "cat <<'E F'\nx\nE F\nX",
+            "cat <<\"E F\"\nx\nE F\nX",
+            "cat <<E\\ F\nx\nE F\nX",
+            "cat <<$'E'\nx\nE\nX",
+            "echo \"$(cat <<E\nx\nE)\"\nX",
+        ];
+        let dir = std::env::temp_dir().join(format!("obid-perm-8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bounds = Bounds::of(Path::new(WORKTREE));
+        for form in FORMS {
+            let marker = dir.join("ran");
+            let _ = std::fs::remove_file(&marker);
+            let ran = std::process::Command::new("/bin/bash")
+                .arg("-c")
+                .arg(form.replace('X', "touch ran"))
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert!(
+                marker.exists(),
+                "bash didn't run the last line of {form:?}: {ran:?}"
+            );
+
+            let secret = form.replace('X', "printenv");
+            assert_eq!(
+                reach(&bash(&secret), &bounds),
+                Some(Reach::Secrets),
+                "{secret:?}"
+            );
+            let network = form.replace('X', "curl https://e.com");
+            assert!(uses_network(&network, &bounds), "{network:?}");
+            let worktree = Path::new(WORKTREE);
+            assert!(
+                matches("Bash(curl:*)", &bash(&network), worktree, false),
+                "a deny rule misses {network:?}"
+            );
+            let write = form.replace('X', "rm -rf y");
+            assert_eq!(
+                decide_in(&bash(&write), Mode::Plan, &[]),
+                Verdict::Ask,
+                "{write:?}"
+            );
+            for rule_text in ["Bash(echo:*)", "Bash(cat:*)", "Bash(a:*)"] {
+                assert!(
+                    !matches(rule_text, &bash(&write), worktree, true),
+                    "{rule_text} covers {write:?}"
+                );
+            }
+            assert_eq!(prefix(&write), None, "{write:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// On the deny side too: a line with such a `<<` alone hides nothing, yet obid can't be sure of
+    /// it, so it's no read in Plan and gets no rule. Bypass stays quiet, as nothing here touches
+    /// secrets. A here-document that never ends may have ended for a shell. A real here-document, a
+    /// real one after arithmetic and a quoted one are what they were.
+    #[test]
+    fn permissions_8_what_obid_cant_read_is_no_read_and_gets_no_rule() {
+        let worktree = Path::new(WORKTREE);
+        for (command, covering) in [
+            ("echo $[1<<2]", "Bash(echo:*)"),
+            ("echo $((1<<2))", "Bash(echo:*)"),
+            ("echo ${x:1<<2}", "Bash(echo:*)"),
+            ("((x=((1))<<2))", "Bash(echo:*)"),
+            ("cat <<EOF\nnever ended", "Bash(cat:*)"),
+            ("cat <<$'E'\nnever ended", "Bash(cat:*)"),
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Plan, &[]),
+                Verdict::Ask,
+                "{command}"
+            );
+            assert!(
+                !matches(covering, &bash(command), worktree, true),
+                "{command}"
+            );
+            assert_eq!(prefix(command), None, "{command}");
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+        // A here-document's lines stay text, whatever came before it on other lines.
+        for command in [
+            "cat <<EOF\nprintenv\nEOF",
+            "cat <<'EOF'\nprintenv\nEOF",
+            "cat <<'E F'\nprintenv\nE F",
+            "((x=1<<2)); cat <<EOF\nprintenv\nEOF",
+            "echo $((1<<2)); cat <<EOF\nprintenv\nEOF",
+            "echo $[1<<2] ${y}; cat <<EOF\nprintenv\nEOF",
+            "for ((i=0;i<1;i++)); do cat <<EOF\nprintenv\nEOF\ndone",
+            "x=$(cat <<EOF\nprintenv\nEOF\n)",
+            "git commit -m \"$(cat <<'EOF'\nprintenv\nEOF\n)\"",
+            "echo \"$(cat <<EOF\nprintenv\nEOF)\"",
+            // A glob's `[` is no subscript: it's a here-document for the shell too.
+            "ls a[1 <<EOF\nprintenv\nEOF",
+            "declare a[1<<EOF\nprintenv\nEOF",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Allow,
+                "{command:?}"
+            );
+        }
+        // A read with a here-document that ends is still a read.
+        assert_eq!(
+            decide_in(&bash("cat <<'E F'\nx\nE F"), Mode::Plan, &[]),
+            Verdict::Allow
+        );
+        // And past where it ends, a line is read.
+        assert_eq!(
+            decide_in(&bash("cat <<'E F'\nx\nE F\nrm y"), Mode::Plan, &[]),
+            Verdict::Ask
+        );
+        // The conversation's shell takes it the same way (crate::brain::shell).
+        assert!(unsure("echo $[1<<2]"));
+        assert!(!unsure("echo $[1+2]; cat <<EOF\nx\nEOF"));
+    }
+
+    /// A command longer than its card says how much is hidden, and no Always is offered: the owner
+    /// doesn't save what they didn't read. One that fits keeps its rule.
+    #[test]
+    fn permissions_8_a_cut_command_says_what_is_hidden_and_offers_no_always() {
+        let bounds = Bounds::of(Path::new(WORKTREE));
+        let cap = crate::brain::shell::CARD_CHARS;
+        for head in ["swift test --filter ", "echo ", "rm "] {
+            let long = format!("{head}{}", "a".repeat(cap + 345 - head.len()));
+            let card = card(&bash(&long), "p1", "o/r", &bounds);
+            assert_eq!((card.rule, card.always), (None, None), "{head}");
+            assert!(
+                card.detail.ends_with("… (345 more characters not shown)"),
+                "{}",
+                card.detail
+            );
+            assert!(
+                card.title.ends_with("… (345 more characters not shown)"),
+                "{}",
+                card.title
+            );
+            assert_eq!(card.title, format!("Run {}", card.detail));
+        }
+        let fits = format!("swift test --filter {}", "a".repeat(cap - 20));
+        assert_eq!(fits.chars().count(), cap);
+        let card = card(&bash(&fits), "p1", "o/r", &bounds);
+        assert_eq!(card.rule.as_deref(), Some("Bash(swift test:*)"));
+        assert_eq!(card.detail, fits);
+    }
+
+    /// `ps` with its letter for the environment prints every process's, as `printenv` prints its
+    /// own (macOS's `-E`, BSD's and procps' `e`). `-e` alone lists every process, and a word after
+    /// an option that takes a value is that value.
+    #[test]
+    fn permissions_8_ps_with_e_prints_environments() {
+        let bounds = Bounds::of(Path::new(WORKTREE));
+        for command in [
+            "ps e",
+            "ps eww",
+            "ps E",
+            "ps auxe",
+            "ps auxE",
+            "ps -E",
+            "ps -aE",
+            "ps -Ewww",
+            "ps -A e",
+            "ps -p 12 e",
+            "ps -o pid e",
+            "/bin/ps eww",
+            "sudo ps eww",
+            "ps eww | grep TOKEN",
+            "{ ps eww; }",
+            "ps eww > o.txt",
+        ] {
+            assert_eq!(
+                reach(&bash(command), &bounds),
+                Some(Reach::Secrets),
+                "{command}"
+            );
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
+        for command in [
+            "ps",
+            "ps aux",
+            "ps -ef",
+            "ps -e",
+            "ps -o user",
+            "ps -eo user,pid",
+            "ps -axo user",
+            "ps -u someone",
+            "ps -p 12",
+            "ps --sort=-rss",
+            "echo ps eww",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Bypass, &[]),
+                Verdict::Allow,
+                "{command}"
+            );
+        }
+    }
+
+    /// Git's read-only forms never ask, Plan too, and what looks like one and isn't still does: a
+    /// word after `git branch` makes a branch (`git branch -v x` too, on real git), `git tag x` a
+    /// tag, and `git stash` stashes.
+    #[test]
+    fn permissions_9_gits_read_only_forms_never_ask() {
+        for command in [
+            "git branch",
+            "git branch -a",
+            "git branch -vv",
+            "git branch -avv",
+            "git branch -r",
+            "git branch --show-current",
+            "git branch --list",
+            "git branch --list 'feat/*'",
+            "git branch --contains HEAD",
+            "git branch --contains=HEAD other",
+            "git branch --merged origin/dev",
+            "git branch --no-merged",
+            "git branch --points-at HEAD",
+            "git branch --sort=-committerdate",
+            "git branch --sort -committerdate",
+            "git branch --format='%(refname:short)'",
+            "git --no-pager branch -a",
+            "git tag",
+            "git tag -l",
+            "git tag -l 'v*'",
+            "git tag --list 'v*'",
+            "git tag -n",
+            "git tag -n5",
+            "git tag --sort=-v:refname",
+            "git tag --points-at HEAD",
+            "git remote",
+            "git remote -v",
+            "git remote --verbose",
+            "git remote get-url origin",
+            "git remote get-url --push origin",
+            "git reflog",
+            "git reflog -n 5",
+            "git reflog --date=iso",
+            "git reflog show HEAD",
+            "git reflog list",
+            "git reflog exists HEAD",
+            "git stash list",
+            "git stash show",
+            "git stash show -p stash@{0}",
+            "git worktree list",
+            "git worktree list --porcelain",
+            "git config --get user.name",
+            "git config --get-all remote.origin.fetch",
+            "git config --global --get user.email",
+            "git config get user.name",
+            "git config user.name",
+            "git config --show-origin --get core.autocrlf",
+            "git grep -n needle",
+            "git grep -n needle -- src",
+        ] {
+            for mode in Mode::ALL {
+                assert_eq!(
+                    decide_in(&bash(command), mode, &[]),
+                    Verdict::Allow,
+                    "{mode:?}: {command}"
+                );
+            }
+        }
+        for command in [
+            // Each writes, or runs something, on real git.
+            "git branch new",
+            "git branch -v new",
+            "git branch -a new",
+            "git branch --sort=x new",
+            "git branch --format=%(refname) new",
+            "git branch -d old",
+            "git branch -D old",
+            "git branch -m a b",
+            "git branch -f main HEAD",
+            "git branch -u origin/dev",
+            "git branch --set-upstream-to=origin/dev",
+            "git branch --unset-upstream",
+            "git branch --edit-description",
+            "git branch --edit",
+            "git branch --track x",
+            "git branch --create-reflog x",
+            "git branch -",
+            "git tag v1",
+            "git tag -a v1 -m x",
+            "git tag -d v1",
+            "git tag -s v1",
+            "git tag -f v1",
+            "git tag -v v1",
+            "git tag -n v1",
+            "git tag --sort=x v1",
+            "git remote add x y",
+            "git remote remove x",
+            "git remote rename x y",
+            "git remote set-url x y",
+            "git remote -v add x y",
+            "git remote -v update",
+            "git remote update",
+            "git remote show origin",
+            "git remote prune origin",
+            "git reflog expire --all",
+            "git reflog delete HEAD@{0}",
+            "git reflog drop HEAD",
+            "git reflog main",
+            "git stash",
+            "git stash push",
+            "git stash pop",
+            "git stash drop",
+            "git stash clear",
+            "git stash apply",
+            "git stash show --output=x",
+            "git worktree",
+            "git worktree add x",
+            "git worktree remove x",
+            "git worktree prune",
+            "git config user.name me",
+            "git config --add a.b c",
+            "git config --unset a.b",
+            "git config set a.b c",
+            "git config edit",
+            "git config --edit",
+            "git config -e",
+            "git config list",
+            "git config --list",
+            "git config -l",
+            "git config --get-regexp .",
+            "git config --file x --get a.b",
+            "git config -f x --get a.b",
+            "git config --get a.b c",
+            "git config --get --file",
+            // A login may be in these, on real git.
+            "git config --get credential.helper",
+            "git config credential.https://github.com.username",
+            "git config --get http.https://github.com.extraheader",
+            "git config --get HTTP.EXTRAHEADER",
+            "git config --get github.token",
+            "git config --get sendemail.smtppass",
+            "git config --get user.signingkey",
+            "git config --get http.proxy",
+            "git config --get url.https://x@github.com/.insteadof",
+            "git config $K.helper",
+            "git config --get \"$K\".helper",
+            // The network, and programs run for it.
+            "git ls-remote origin",
+            "git fetch",
+            "git grep -O less needle",
+            "git grep --open-files-in-pager=less needle",
+            "git grep --textconv needle",
+            "git cat-file --textconv HEAD:x",
+            "git diff --textconv",
+            // Past a folder, or where a `cd` led, it's another repository's.
+            "git -C sub branch",
+            "cd sub && git branch",
+            "git branch > o.txt",
+            "git branch; rm x",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Plan, &[]),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
+    }
+
+    /// A saved allow rule, and what Always offers, read past variables and wrappers that don't
+    /// change what runs (`timeout`, `time`, `nice`, `nohup`, `stdbuf`), and past nothing else.
+    #[test]
+    fn permissions_10_a_saved_rule_reads_past_harmless_wrappers_and_safe_variables() {
+        let worktree = Path::new(WORKTREE);
+        for command in [
+            "cargo test",
+            "RUST_LOG=debug cargo test",
+            "RUST_LOG=obid=debug,tower=info RUST_BACKTRACE=1 cargo test -p obid",
+            "NODE_ENV=test LANG=C cargo test",
+            "timeout 60 cargo test",
+            "timeout 1.5m cargo test",
+            "timeout -k 5 -s KILL 60 cargo test",
+            "timeout --signal=KILL --kill-after=5 60 cargo test",
+            "timeout --signal KILL 60 cargo test",
+            "timeout --foreground 60 cargo test",
+            "time cargo test",
+            "time -p cargo test",
+            "nice cargo test",
+            "nice -n 5 cargo test",
+            "nice -n5 cargo test",
+            "nice -5 cargo test",
+            "nice --adjustment=5 cargo test",
+            "nohup cargo test",
+            "stdbuf -oL cargo test",
+            "stdbuf -o L -e L cargo test",
+            "TZ=UTC nice -n 5 timeout 60 time cargo test --all",
+        ] {
+            assert!(
+                matches("Bash(cargo test:*)", &bash(command), worktree, true),
+                "{command}"
+            );
+            assert_eq!(prefix(command).as_deref(), Some("cargo test"), "{command}");
+            assert_eq!(
+                decide_in(
+                    &bash(command),
+                    Mode::Ask,
+                    &[rule("Bash(cargo test:*)", "allow")]
+                ),
+                Verdict::Allow,
+                "{command}"
+            );
+            let saved = card(&bash(command), "p1", "o/r", &Bounds::of(worktree));
+            assert_eq!(
+                saved.rule.as_deref(),
+                Some("Bash(cargo test:*)"),
+                "{command}"
+            );
+        }
+        // The exact rule reads past them too, and only that very command.
+        for command in [
+            "rm -rf build",
+            "timeout 5 rm -rf build",
+            "LANG=C rm -rf build",
+        ] {
+            assert!(
+                matches("Bash(rm -rf build)", &bash(command), worktree, true),
+                "{command}"
+            );
+        }
+        assert!(!matches(
+            "Bash(rm -rf build)",
+            &bash("timeout 5 rm -rf build x"),
+            worktree,
+            true
+        ));
+
+        for command in [
+            // What follows runs anything, past any of them.
+            "timeout 5 bash -c 'cargo test'",
+            "timeout 5 sh -c 'rm -rf ~'",
+            "nice python3 x.py",
+            "nohup env FOO=1 cargo test",
+            "time sudo cargo test",
+            "stdbuf -oL xargs cargo test",
+            "timeout 5 watch cargo test",
+            "RUST_LOG=x bash -c 'cargo test'",
+            "timeout 5 command cargo test",
+            "timeout 5 exec cargo test",
+            "nice uv run x",
+            "timeout 5 cargo run",
+            // Other wrappers aren't read past.
+            "env cargo test",
+            "env RUST_LOG=x cargo test",
+            "sudo cargo test",
+            "xargs cargo test",
+            "watch cargo test",
+            "command cargo test",
+            "exec cargo test",
+            "builtin cargo test",
+            "caffeinate cargo test",
+            "ionice cargo test",
+            "setsid cargo test",
+            "/usr/bin/timeout 5 cargo test",
+            "/usr/bin/nice cargo test",
+            // These variables change what runs, or carry a login.
+            "PATH=/tmp cargo test",
+            "IFS=, cargo test",
+            "LD_PRELOAD=x.so cargo test",
+            "DYLD_INSERT_LIBRARIES=x cargo test",
+            "NODE_OPTIONS=--require=x cargo test",
+            "RUSTC_WRAPPER=./x cargo test",
+            "CARGO_BUILD_RUSTC_WRAPPER=./x cargo test",
+            "ANTHROPIC_API_KEY=x cargo test",
+            "GH_TOKEN=x cargo test",
+            "GIT_SSH_COMMAND=x cargo test",
+            "FOO=1 cargo test",
+            "LANG=C PATH=/tmp cargo test",
+            // A variable's value a shell reads.
+            "RUST_LOG=$(curl x) cargo test",
+            "RUST_LOG=`curl x` cargo test",
+            "RUST_LOG=$X cargo test",
+            "RUST_LOG=\"a b\" cargo test",
+            "RUST_LOG='a' cargo test",
+            "RUST_LOG=a* cargo test",
+            // After a wrapper, a variable is what it would run.
+            "timeout 5 RUST_LOG=x cargo test",
+            // An option obid doesn't know, or one that writes a file.
+            "time -o f cargo test",
+            "time -f %e cargo test",
+            "time -a cargo test",
+            "timeout --bogus 5 cargo test",
+            "timeout 5s--bogus cargo test",
+            "nice -x cargo test",
+            "nohup -x cargo test",
+            "stdbuf -x cargo test",
+            "timeout cargo test",
+            "timeout $T cargo test",
+            "timeout \"5\" cargo test",
+            "nice -n $N cargo test",
+            "nice -n \"5\" cargo test",
+            // Chained, by a redirect or by the shell's grammar, past a wrapper or not.
+            "timeout 5 cargo test && rm -rf y",
+            "timeout 5 cargo test; rm -rf y",
+            "timeout 5 cargo test | tee o",
+            "timeout 5 cargo test > o",
+            "timeout 5 cargo test &",
+            "timeout 5 $(curl x) cargo test",
+            "timeout 5 ( cargo test )",
+            "timeout 5 { cargo test; }",
+            "time ! cargo test",
+            "time { cargo test; }",
+            "time -p ! cargo test",
+            "time if cargo test; then :; fi",
+            "RUST_LOG=x ! cargo test",
+            "nohup\ncargo test",
+            "timeout 5\ncargo test",
+            "RUST_LOG=x\ncargo test",
+            "timeout 5 \\\n curl x",
+            // Words of another command, and quotes.
+            "timeout 5 \"cargo\" test",
+            "timeout 5 'cargo test'",
+            "timeout 5 cargo\\ test",
+            "timeout 5 cargotest",
+            "timeout 5 cargo testing",
+        ] {
+            assert!(
+                !matches("Bash(cargo test:*)", &bash(command), worktree, true),
+                "{command}"
+            );
+            assert_eq!(
+                decide_in(
+                    &bash(command),
+                    Mode::Ask,
+                    &[rule("Bash(cargo test:*)", "allow")]
+                ),
+                Verdict::Ask,
+                "{command}"
+            );
+            assert_ne!(prefix(command).as_deref(), Some("cargo test"), "{command}");
+            assert!(
+                !prefix(command).is_some_and(|words| words.ends_with("cargo test")),
+                "{command}"
+            );
+        }
+        // What obid reads as a wrapper runs whatever follows it, so no rule covers it by name.
+        assert!(WRAPPERS.iter().all(|w| RUNS_ANYTHING.contains(w)));
+        // A rule's bare `Bash` was never for what runs anything, past them too.
+        let old = rule("Bash", "allow");
+        for command in [
+            "timeout 5 bash -c x",
+            "nice sudo x",
+            "time ! bash -c x",
+            "nohup env x",
+        ] {
+            assert_eq!(
+                decide_in(&bash(command), Mode::Ask, std::slice::from_ref(&old)),
+                Verdict::Ask,
+                "{command}"
+            );
+        }
+        // A deny rule holds as it did.
+        for command in [
+            "timeout -k 5 60 curl x",
+            "stdbuf -o L curl x",
+            "timeout --signal KILL 5 curl x",
+            "nice --adjustment 5 curl x",
+        ] {
+            assert!(
+                matches("Bash(curl:*)", &bash(command), worktree, false),
+                "{command}"
+            );
+            assert!(uses_network(command, &Bounds::of(worktree)), "{command}");
+        }
+    }
+
+    /// Every refusal says the call did not run and doesn't invite a way around it; a no with words
+    /// gives them, and what the owner says goes (a redirect of the work is theirs to give).
+    #[test]
+    fn permissions_11_a_refusal_says_what_happened_and_invites_no_way_around() {
+        let rule_said = rule_refuses("Bash(curl:*)", "o/r");
+        for said in [
+            said_no(None),
+            said_no(Some("Not now")),
+            rule_said.clone(),
+            PLAN_ONLY.to_owned(),
+        ] {
+            assert!(said.contains("did not run, and changed nothing"), "{said}");
+            assert!(said.contains("don't"), "{said}");
+            assert!(said.contains("reach the same result another way"), "{said}");
+            assert!(!said.contains("Do it another way"), "{said}");
+            assert!(!said.contains("work another way"), "{said}");
+        }
+        assert!(said_no(None).starts_with("The owner said no."));
+        assert!(said_no(None).ends_with("say in your summary what you needed."));
+        assert!(rule_said.starts_with("The owner's rule Bash(curl:*) refuses this in o/r."));
+        let words = said_no(Some("use the lockfile"));
+        assert!(
+            words.contains("Their words: “use the lockfile”."),
+            "{words}"
+        );
+        assert!(words.contains("Go on as they say;"), "{words}");
+        assert_eq!(
+            decide_in(
+                &bash("curl x"),
+                Mode::Bypass,
+                &[rule("Bash(curl:*)", "deny")]
+            ),
+            Verdict::Deny(rule_refuses("Bash(curl:*)", "deskree-inc/oby"))
+        );
+        assert_eq!(
+            decide_in(&tool("Edit", &["/tmp/oby/jobs/abc/a.rs"]), Mode::Plan, &[]),
+            Verdict::Deny(PLAN_ONLY.into())
+        );
+    }
+
+    /// Always keeps a tool's subcommand and what follows it, and for anything else that very
+    /// command, never the whole program, and the card names what it saves. A rule saved before
+    /// keeps its reach until the owner removes it.
+    #[test]
+    fn permissions_12_always_saves_something_narrow_and_says_what() {
+        let bounds = Bounds::of(Path::new(WORKTREE));
+        let worktree = Path::new(WORKTREE);
+        for (command, saved, named) in [
+            ("rm -rf build", "Bash(rm -rf build)", "rm -rf build"),
+            ("chmod +x y", "Bash(chmod +x y)", "chmod +x y"),
+            ("mv a b", "Bash(mv a b)", "mv a b"),
+            ("curl https://x", "Bash(curl https://x)", "curl https://x"),
+            ("ls -la", "Bash(ls -la)", "ls -la"),
+            ("git", "Bash(git)", "git"),
+            ("make", "Bash(make)", "make"),
+            ("make -j4", "Bash(make -j4)", "make -j4"),
+            ("git -C sub log", "Bash(git -C sub log)", "git -C sub log"),
+            ("./script.sh a", "Bash(./script.sh a)", "./script.sh a"),
+            ("swift test --filter X", "Bash(swift test:*)", "swift test"),
+            ("git status", "Bash(git status:*)", "git status"),
+            ("make lint", "Bash(make lint:*)", "make lint"),
+            ("npm test -- x", "Bash(npm test:*)", "npm test"),
+        ] {
+            let card = card(&bash(command), "p1", "o/r", &bounds);
+            assert_eq!(card.rule.as_deref(), Some(saved), "{command}");
+            assert_eq!(
+                card.always,
+                Some(format!("Yes, and don't ask again for {named} in o/r")),
+                "{command}"
+            );
+            assert_eq!(card.title, format!("Run {named}"), "{command}");
+            assert!(matches(saved, &bash(command), worktree, true), "{command}");
+        }
+        let exact = "Bash(rm -rf build)";
+        for other in [
+            "rm -rf build2",
+            "rm -rf build x",
+            "rm -rf /",
+            "rm -rf build; rm -rf /",
+            "rm -rf build && curl x",
+            "rm -rf build > o",
+            "rm  -rf build",
+            "rm",
+        ] {
+            assert!(!matches(exact, &bash(other), worktree, true), "{other}");
+        }
+        assert!(!matches("Bash(git)", &bash("git push"), worktree, true));
+        assert!(!matches(
+            "Bash(make -j4)",
+            &bash("make -j4 x"),
+            worktree,
+            true
+        ));
+        // A line a rule can't keep whole offers none: a glob it would read as a prefix, more than
+        // one line, a token or a login.
+        for command in [
+            "rm -rf *",
+            "rm build/*",
+            "ls a:*",
+            "echo \"a\nb\"",
+            "curl https://user:hunter2@example.com/r.git",
+        ] {
+            let card = card(&bash(command), "p1", "o/r", &bounds);
+            assert_eq!((card.rule, card.always), (None, None), "{command}");
+        }
+        let token = format!("ghp_{}", "a".repeat(36));
+        let carrying = card(&bash(&format!("./deploy {token}")), "p1", "o/r", &bounds);
+        assert_eq!(carrying.rule, None);
+        // What was saved before still covers what it did.
+        assert!(matches("Bash(rm:*)", &bash("rm -rf build"), worktree, true));
+        assert!(matches("Bash(make:*)", &bash("make -j4"), worktree, true));
     }
 
     /// What touches secrets asks in Bypass too, but only what does: `printenv NAME` prints only

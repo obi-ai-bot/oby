@@ -1405,7 +1405,7 @@ fn codex_and_cursor_park_and_resume_with_the_answer() {
     for (job, answers) in [codex_no, cursor_no] {
         assert!(
             summary(job).starts_with("heard: obid paused you")
-                && summary(job).ends_with("The owner said no: Not here."),
+                && summary(job).contains("Their words: “Not here.”"),
             "{job}"
         );
         assert_eq!(answers, "", "{job}");

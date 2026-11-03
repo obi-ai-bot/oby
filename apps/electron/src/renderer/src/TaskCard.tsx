@@ -250,6 +250,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
               // a Confirm looks preferred only when Oby recommends it (obid never does), and a
               // check's Use it is one
               className={`tc-option${i === (ask.kind === 'confirm' || ask.kind === 'check' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
+              title={o === 'Always allow' ? ask.always : undefined}
               onClick={() => (ask.kind === 'check' && o === 'Edit' ? setEditing(ask.detail ?? '') : ask.kind === 'question' && o === TELL ? setEditing('') : pick(o))}
             >
               {o}

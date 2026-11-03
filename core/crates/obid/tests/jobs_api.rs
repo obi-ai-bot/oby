@@ -3465,7 +3465,8 @@ fn a_parked_job_survives_a_restart_and_words_are_its_no() {
     assert!(
         summary.starts_with("heard: obid paused you")
             && summary.contains(r#"Bash {"command":"npm install left-pad"}"#)
-            && summary.ends_with("The owner said no: Not now: use the lockfile."),
+            && summary.contains("\nThe owner said no. This call did not run")
+            && summary.contains("Their words: “Not now: use the lockfile.”"),
         "{done}"
     );
 }

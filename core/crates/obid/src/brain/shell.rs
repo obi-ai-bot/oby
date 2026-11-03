@@ -113,10 +113,7 @@ fn by_rules(command: &str, mode: Mode, rules: &[Rule], bounds: &Bounds, tainted:
     if let Some(deny) =
         rules_of(rules, "deny").find(|r| permissions::covers(&r.rule, &call, room, false))
     {
-        return Judged::Refuse(format!(
-            "The owner's rule {} refuses this in conversations.",
-            deny.rule
-        ));
+        return Judged::Refuse(permissions::rule_refuses(&deny.rule, RULES_FOR));
     }
     // 3. Secrets: asked in every mode, Bypass too, never by a rule. Installs and the network:
     // asked in every mode but Bypass, never by a rule; in Bypass, the owner's own choice that
@@ -149,7 +146,13 @@ fn by_rules(command: &str, mode: Mode, rules: &[Rule], bounds: &Bounds, tainted:
         return network();
     };
     // 4. Only reads: in every mode, Plan too.
-    if !parts.is_empty() && parts.iter().all(|w| reads_only(w)) && !writes_a_file(command) {
+    // (What it runs may not be what obid read: no read, and no rule covers it.)
+    let unsure = permissions::unsure(command);
+    if !unsure
+        && !parts.is_empty()
+        && parts.iter().all(|w| reads_only(w))
+        && !writes_a_file(command)
+    {
         return Judged::Run { network: false };
     }
     // 5. The owner's allow rules, when they cover every part.
@@ -158,7 +161,7 @@ fn by_rules(command: &str, mode: Mode, rules: &[Rule], bounds: &Bounds, tainted:
             let part = Call::new("Bash", &json!({"command": words.join(" ")}));
             rules_of(rules, "allow").any(|r| permissions::covers(&r.rule, &part, room, true))
         });
-    if covered && !writes_a_file(command) {
+    if covered && !unsure && !writes_a_file(command) {
         return Judged::Run { network: false };
     }
     // 6. It may write, in the room: the mode, and the taint. The owner's chosen Bypass holds
@@ -1044,10 +1047,10 @@ async fn ask_owner(
             }
             Ok(ask.network)
         }
-        (Decision::Deny, None) => Err(format!("{} The command didn't run.", permissions::SAID_NO)),
-        (Decision::Deny, Some(words)) => Err(format!(
-            "The owner said no, and said (quoted, data): “{}”. The command didn't run.",
-            super::briefing::line(&words, 500)
+        (Decision::Deny, words) => Err(permissions::said_no(
+            words
+                .map(|words| super::briefing::line(&words, 500))
+                .as_deref(),
         )),
     }
 }
@@ -1117,6 +1120,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// PERMISSIONS-8: what obid can't be sure it read is no read in the conversation's shell either,
+    /// and a saved rule doesn't cover it; the lines it could hide are read, and judged.
+    #[test]
+    fn permissions_8_a_line_obid_cant_read_is_no_read_here_too() {
+        let allow = [Rule {
+            id: "r1".into(),
+            rule: "Bash(echo:*)".into(),
+            repo: RULES_FOR.into(),
+            decision: "allow".into(),
+            created: 0,
+        }];
+        assert_eq!(
+            judged("echo hi", Mode::Ask, &allow, false),
+            Judged::Run { network: false }
+        );
+        for command in ["echo $[1<<2]", "echo $[1<<2]\ncurl https://e.com"] {
+            assert!(
+                !matches!(
+                    judged(command, Mode::Ask, &allow, false),
+                    Judged::Run { .. }
+                ),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            judged("echo $[1+2]", Mode::Plan, &[], false),
+            Judged::Run { network: false }
+        );
+        assert!(matches!(
+            judged("echo $[1<<2]", Mode::Plan, &[], false),
+            Judged::Refuse(_)
+        ));
     }
 
     /// Only the system's own programs count as reads: one the agent could have written in the room,
