@@ -2014,11 +2014,10 @@ fn taskconv_17_a_turn_with_no_answer_leaves_its_reports_to_say() {
     assert!(told.contains("How your jobs ended"), "{told}");
 }
 
-/// TASKCONV-20: a new session of a conversation that holds outside words: a job's own words stay out
-/// of what it's handed, and since the rest can't be told apart the turn isn't the owner's word, even
-/// on their signed words: what it starts is untrusted, and the mark stays with the conversation.
+/// TASKCONV-20: a job's own words, and a line naming a job off obid's allowlist, stay out of what a
+/// new session is handed.
 #[test]
-fn taskconv_20_a_new_session_of_a_foreign_conversation_isnt_the_owners_word() {
+fn taskconv_20_a_new_session_hears_no_line_naming_a_foreign_job() {
     let (_folder, obid) = obid("harness-new-foreign", true);
     let start = json!({"repo": "obi-e2e/fixture-app", "task": "Look around"});
     // Unsigned words: its job didn't start from the owner's own words.
@@ -2048,16 +2047,30 @@ fn taskconv_20_a_new_session_of_a_foreign_conversation_isnt_the_owners_word() {
     assert!(told.contains(&format!("Job {job} ended: done.")), "{told}");
     assert!(!told.contains("ended with nothing done"), "{told}");
     assert!(!told.contains("Nothing to do."), "{told}");
+    assert!(told.contains("left out: oby_job reads it"), "{told}");
+}
+
+/// TASKCONV-20: a new session of a conversation that read something isn't the owner's word, even on
+/// their signed words, though the session that read it is gone: what it starts is untrusted.
+#[test]
+fn taskconv_20_a_new_session_of_a_conversation_that_read_something_isnt_the_owners_word() {
+    let (_folder, obid) = obid("harness-new-read", true);
+    let start = json!({"repo": "obi-e2e/fixture-app", "task": "Look around"});
+    let say = |body: Value| {
+        let answer = call_typed(&obid, "POST", "/v1/plans", &body);
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer
+    };
+    let id = say(json!({"said": "WEB Read it.", "new": true})).body["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let file = obid.home.join(format!("conversations/{id}/session.json"));
+    std::fs::remove_file(&file).unwrap();
+    let next = say(json!({"said": format!("OBY oby_dispatch {start}"), "conversation": id}));
+    assert_eq!(next.body["jobs"][0]["untrusted"], true, "{}", next.text);
     let kept: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
     assert_eq!(kept["web"], true, "{kept}");
-    let next = call_typed(
-        &obid,
-        "POST",
-        "/v1/plans",
-        &json!({"said": format!("OBY oby_dispatch {start}"), "conversation": id}),
-    );
-    assert_eq!(next.body["jobs"][0]["untrusted"], true, "{}", next.text);
 }
 
 /// TASKCONV-20: a conversation that only ever held the owner's words stays their word on a new

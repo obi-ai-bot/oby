@@ -1637,15 +1637,10 @@ async fn attempts(
         }
         if resume.is_none() {
             sent = &first;
-            // Earlier turns can hold words from outside that a session going on never heard: a
-            // job's, words on its page, a line naming it. They're quoted now, and which they are
-            // can't be told from here, so this turn isn't the owner's word (TASKCONV-20).
-            if !given.is_empty()
-                && shared
-                    .conversations
-                    .foreign(&control.conversation)
-                    .is_some()
-            {
+            // A new session of a conversation that read something hears what came of it, so this
+            // turn isn't the owner's word (TASKCONV-20). A mark that carries no one else's words
+            // leaves it theirs (ASK-16).
+            if !given.is_empty() && shared.conversations.read_untrusted(&control.conversation) {
                 session.taint();
             }
         }
@@ -2133,6 +2128,14 @@ fn job_reports(shared: &Shared, given: &[Turn], nonce: &str) -> Option<String> {
     ))
 }
 
+/// Whether a job's title and reason may hold someone else's words; one obid no longer has may too.
+fn job_off_allowlist(shared: &Shared, id: &str) -> bool {
+    shared
+        .jobs
+        .get(id)
+        .is_none_or(|job| job.check_refuses_secrets().is_some())
+}
+
 /// What a session is told of a turn that reports a job's end (TASKCONV-17): the first line, obid's
 /// own words; only the id and status of a job off obid's allowlist, whose title and reason may hold
 /// someone else's words.
@@ -2160,6 +2163,8 @@ fn first_prompt(shared: &Shared, words: &str, given: &[Turn]) -> String {
                 if t.who == "user" { "Owner" } else { "Oby" },
                 if t.ended {
                     super::briefing::line(&job_end_line(shared, t), 500)
+                } else if t.jobs.iter().any(|id| job_off_allowlist(shared, id)) {
+                    "[a line about a job, left out: oby_job reads it, quoted]".to_owned()
                 } else {
                     super::briefing::line(&super::ask::heard(t), 500)
                 }

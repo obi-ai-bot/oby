@@ -540,7 +540,8 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
     let kept: Value = serde_json::from_slice(&std::fs::read(&aside).unwrap()).unwrap();
     assert_eq!(kept, old_thread());
 
-    // An app from before carries it on, and the brain reads it, each turn on one line.
+    // An app from before carries it on, and the brain reads it, each turn on one line; but for one
+    // naming a job obid no longer has, which may have held someone else's words (TASKCONV-20).
     let answer = plan(&obid, json!({"said": "hello"}));
     assert_eq!(answer["conversation"], id);
     let recorded =
@@ -549,7 +550,9 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
     let turn: Value = serde_json::from_str(recorded.lines().next().unwrap()).unwrap();
     let prompt = turn["prompt"].as_str().unwrap();
     assert!(
-        prompt.contains("Owner: review oby PR #33 please\nOby: On it.\nOwner: and the vault one?"),
+        prompt.contains(
+            "Owner: review oby PR #33 please\nOby: [a line about a job, left out: oby_job reads it, quoted]\nOwner: and the vault one?"
+        ),
         "{prompt}"
     );
     assert_eq!(turns(&obid, "").len(), 5);
