@@ -316,6 +316,42 @@ mod tests {
     }
 
     /// ReadJobTests.theSectionHasTheVerdictTheAppleCheckAndThePostMortem, for what obid keeps.
+    /// TASKCONV-16: `oby_job` says what the orientation promises: what was asked, the files changed,
+    /// the real verdict, why reviewing or merging stopped, and a note where anything was cut.
+    #[test]
+    fn taskconv_16_oby_job_says_what_the_orientation_promises() {
+        let mut told = failed("aaaa1111", "Vault secrets");
+        told.request = "Fix the parser".into();
+        told.review = Some(crate::job::Review {
+            verdict: "changesRequested".into(),
+            job: "rev1".into(),
+            agent: "Codex".into(),
+            account: "Work".into(),
+            same_account: false,
+            round: 2,
+            date: 0,
+            commit: "abc123".into(),
+            two_reviews: Some("an untrusted task".into()),
+        });
+        told.review_error = Some("The review found a problem.".into());
+        told.merge_error = Some("GitHub refused: a required review is missing.".into());
+        told.diffs = vec![crate::facts::numstat("3\t1\tsrc/a.rs\0")];
+        told.summary = "r".repeat(3100);
+        let text = section(&told, Path::new("/nonexistent"));
+        for part in [
+            "Fix the parser",
+            "changesRequested, by Codex on Work, round 2, of commit abc123",
+            "It needs two approving reviews: an untrusted task",
+            "Reviewing stopped: The review found a problem.",
+            "Merging stopped: GitHub refused: a required review is missing.",
+            "- src/a.rs (+3 -1)",
+            "(cut: this is the first 3000 of 3100 characters)",
+        ] {
+            assert!(text.contains(part), "{part}\n\n{text}");
+        }
+        assert!(!text.contains("(no verdict yet)"), "{text}");
+    }
+
     #[test]
     fn the_section_has_the_report_and_the_mac_checks() {
         let mut job = failed("aaaa1111", "Vault secrets");
@@ -362,38 +398,6 @@ mod tests {
             "{pushed}"
         );
         assert!(!pushed.contains("(nothing went out)"), "{pushed}");
-        // TASKCONV-16: what its orientation promises: the real verdict, why reviewing or merging
-        // stopped, what was asked, the files it changed, and a note where anything was cut.
-        let mut told = bare.clone();
-        told.request = "Fix the parser".into();
-        told.review = Some(crate::job::Review {
-            verdict: "changesRequested".into(),
-            job: "rev1".into(),
-            agent: "Codex".into(),
-            account: "Work".into(),
-            same_account: false,
-            round: 2,
-            date: 0,
-            commit: "abc123".into(),
-            two_reviews: Some("an untrusted task".into()),
-        });
-        told.review_error = Some("The review found a problem.".into());
-        told.merge_error = Some("GitHub refused: a required review is missing.".into());
-        told.diffs = vec![crate::facts::numstat("3\t1\tsrc/a.rs\0")];
-        told.summary = "r".repeat(3100);
-        let text = section(&told, Path::new("/nonexistent"));
-        for part in [
-            "Fix the parser",
-            "changesRequested, by Codex on Work, round 2, of commit abc123",
-            "It needs two approving reviews: an untrusted task",
-            "Reviewing stopped: The review found a problem.",
-            "Merging stopped: GitHub refused: a required review is missing.",
-            "- src/a.rs (+3 -1)",
-            "(cut: this is the first 3000 of 3100 characters)",
-        ] {
-            assert!(text.contains(part), "{part}\n\n{text}");
-        }
-        assert!(!text.contains("(no verdict yet)"), "{text}");
         // A job that needs the owner says why apart from its report, with its handoff note (#725).
         bare.status = crate::job::Status::Interrupted;
         bare.reason = Some("Stalled: no progress for 15 minutes.".into());

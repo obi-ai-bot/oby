@@ -484,7 +484,7 @@ struct Kept {
     tasks: HashMap<String, Vec<Arc<Task>>>,
     /// Each conversation's turn that ended last: a command of it that comes after never starts.
     ended: HashMap<String, String>,
-    /// What a conversation's turn left running, until its next turn is told (TASKCONV-19). In memory:
+    /// What a conversation's turns left running, until a turn that heard it answers (TASKCONV-19). In memory:
     // ponytail: a restart loses them; keep them in the conversation's folder if that ever matters.
     cut: HashMap<String, Vec<String>>,
 }
@@ -634,9 +634,14 @@ impl Tasks {
         });
     }
 
-    /// What `conversation`'s last turn left running, once: its next turn hears it (TASKCONV-19).
-    pub fn take_cut(&self, conversation: &str) -> Option<Vec<String>> {
-        self.lock().cut.remove(conversation)
+    /// What `conversation`'s turns left running that no answered turn has heard (TASKCONV-19).
+    pub fn cut(&self, conversation: &str) -> Option<Vec<String>> {
+        self.lock().cut.get(conversation).cloned()
+    }
+
+    /// A turn answered, having heard what [`Tasks::cut`] said.
+    pub fn forget_cut(&self, conversation: &str) {
+        self.lock().cut.remove(conversation);
     }
 
     /// obid stops: every conversation's commands end.

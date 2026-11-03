@@ -460,6 +460,26 @@ fn recovery_7_a_429_is_read_from_its_status() {
     assert!(told[1].contains("Request rejected (429)"), "{told:?}");
 }
 
+/// RECOVERY-7: a 429 past its tries ends as any passing error does, with the tool's words and Try
+/// again: its words say "rate limit", and no account is full, so nothing asks about one.
+#[test]
+fn recovery_7_a_429_past_its_tries_is_no_limit() {
+    let (_folder, obid) = obid("recovery-7-429-out");
+    let id = post_job(&obid, "REJECTED 429 ALWAYS KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    assert!(job["accountLimit"].is_null(), "{job}");
+    assert_eq!(prompts(&job).len(), 4, "{job}");
+    assert!(
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("API Error: Request rejected (429)"),
+        "{job}"
+    );
+}
+
 /// RECOVERY-7: words of the agent's that name a limit, before an error of the tool's own, mark no
 /// account full: the tool's error decides.
 #[test]
@@ -495,6 +515,44 @@ fn recovery_8_a_session_too_long_goes_on_in_a_new_one() {
             .unwrap();
     assert_eq!(args.matches("--max-turns").count(), 2, "{args}");
     assert!(!args.contains("--resume"), "{args}");
+    assert_eq!(
+        told[1].matches("What the user asked for").count(),
+        1,
+        "{told:?}"
+    );
+}
+
+/// RECOVERY-8: a new session hears all a job's first message said, whatever its last message was:
+/// here Try again's, with the owner's memories and the repository's rules nowhere else.
+#[test]
+fn recovery_8_a_new_session_hears_all_it_was_first_told() {
+    let (_folder, obid) = obid("recovery-8-told");
+    let memories = obid.home.join("memory/user");
+    std::fs::create_dir_all(&memories).unwrap();
+    std::fs::write(
+        memories.join("m0000000a.md"),
+        "---\nid: m0000000a\nscope: user\nkind: preference\nsource: found\ntitle: Short answers\nfrom: You said it in 2 conversations\ncreated: 2026-10-22T10:00:00Z\nupdated: 2026-10-22T10:00:00Z\nused: 0\n---\nAnswer in one sentence.\n",
+    )
+    .unwrap();
+    let id = post_job(&obid, "LONG WHEN TOLD KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    let answer = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": TRY_AGAIN}),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 3, "{told:?}");
+    let new = &told[2];
+    assert!(new.contains("grew too long"), "{new}");
+    assert!(new.contains("What the user asked for"), "{new}");
+    assert!(new.contains(".obi/inputs/memories.md"), "{new}");
+    assert!(new.contains(TRY_AGAIN), "{new}");
 }
 
 /// RECOVERY-8: one new session a job, until the owner's words: too long in that one too, it ends

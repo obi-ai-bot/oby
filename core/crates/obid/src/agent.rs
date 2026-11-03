@@ -355,6 +355,16 @@ impl Turn {
         self.failure.as_ref().map(|f| f.cause)
     }
 
+    /// Whether `words`, the tool's, say a usage limit ended the turn: its own fields decide, and only
+    /// where they can't do the words count. A real 429's words hold "rate limit", and it's passing.
+    pub fn says_limit(&self, words: &str) -> bool {
+        match self.cause() {
+            Some(Cause::Limit) => true,
+            Some(Cause::Busy | Cause::Passing | Cause::TooLong | Cause::SessionGone) => false,
+            Some(Cause::Other) | None => crate::limits::is_limit(words),
+        }
+    }
+
     /// What the agent said last: [`Turn::text`], or when that has no words (its last message was
     /// a tool call), the last words it wrote this turn (#764). A conversation shows what it
     /// streamed instead.
@@ -1150,6 +1160,26 @@ mod tests {
             "Looking for **/*.js"
         );
         assert_eq!(step("Mystery", &json!({})), "Using Mystery");
+    }
+
+    /// RECOVERY-7: a 429's words say "rate limit", and that's no usage limit: the tool's fields
+    /// decide, and the words count only where they can't.
+    #[test]
+    fn recovery_7_a_rate_limit_is_no_usage_limit() {
+        let words = "API Error: Request rejected (429) · This request would exceed your rate limit";
+        let ended = |failure: Option<Failure>| Turn {
+            failure,
+            ..Turn::default()
+        };
+        let busy = ended(Some(Failure::with_status(words, Some(429))));
+        assert_eq!(busy.cause(), Some(Cause::Busy));
+        assert!(!busy.says_limit(words));
+        assert!(ended(Some(Failure::said("You've hit your limit"))).says_limit(""));
+        // Nothing to go on but the words: an older CLI's, or a stderr line.
+        assert!(ended(None).says_limit("telemetry: rate limit exceeded"));
+        assert!(
+            ended(Some(Failure::said("rate limit exceeded"))).says_limit("rate limit exceeded")
+        );
     }
 
     /// What claude 2.1.302 really ended its turns with, against a stand-in API (RECOVERY-7).

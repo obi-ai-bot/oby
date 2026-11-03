@@ -311,6 +311,32 @@ fn taskconv_19_a_cut_command_is_mentioned_in_the_next_turn() {
     );
 }
 
+/// TASKCONV-19: a turn that got no answer heard nothing: the mention is still to say.
+#[test]
+fn taskconv_19_a_turn_with_no_answer_leaves_the_mention() {
+    let (_folder, obid) = obid("shell-cut-unheard");
+    let marker = format!("sleep 6{}.5", std::process::id() % 10);
+    let (_, conversation) = shell(&obid, None, json!({"command": marker, "timeout": 1500}));
+    let failed = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "FAIL", "conversation": conversation})),
+    );
+    assert!(
+        failed.body["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("I couldn't answer:"),
+        "{}",
+        failed.text
+    );
+    let (_, _) = shell(&obid, Some(&conversation), json!({"command": "echo after"}));
+    let prompts = recorded_prompts(&obid);
+    let next = prompts.iter().rfind(|p| p.contains("echo after")).unwrap();
+    assert!(next.contains(&marker), "{next}");
+}
+
 /// Every prompt the stand-in recorded, oldest first.
 fn recorded_prompts(obid: &Obid) -> Vec<String> {
     let mut turns = vec![];

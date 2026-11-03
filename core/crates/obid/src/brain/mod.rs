@@ -775,6 +775,10 @@ const OBY_ASKED: &str = "\n\n(Oby asked: ";
 /// help.
 pub const TOO_LONG: &str = "That's more than Oby's model can read at once, so nothing was started. Attach long text as a file (+) instead, or send it in parts; if this conversation has grown long, start a new one.";
 
+/// [`TOO_LONG`] for a turn that had already done something, so a new session would do it again and
+/// "nothing was started" isn't true (proposed: Sangam's to change).
+pub const TOO_LONG_PARTWAY: &str = "This conversation grew too long for Oby's model partway through that, so it stopped there. What it had already done stands, and anything it started keeps going, so don't send the same words again. Start a new conversation to go on.";
+
 /// Whether a tool's own words say the prompt didn't fit its model: Claude Code's result's
 /// `Prompt is too long` (2.1.302), Codex's `Codex ran out of room in the model's context window`
 /// (0.162.1). For a CLI whose fields don't say so ([`crate::agent::Cause::TooLong`]).

@@ -1541,53 +1541,61 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
 /// it falls behind (TASKCONV-18).
 pub fn report_job_ends(shared: std::sync::Arc<Shared>) {
     let since = report_since(&shared.config.home);
-    tell_unreported(&shared, since);
+    // Subscribed first: a job that ends from here on is an event, or found by the sweep, or both.
     let bus = shared.events.subscribe();
     let stopping = shared.stopping.clone();
-    let active_jobs = |shared: &Shared| -> std::collections::HashMap<String, bool> {
-        shared
-            .jobs
-            .list(usize::MAX)
-            .iter()
-            .map(|j| (j.id.clone(), j.status.is_active()))
-            .collect()
-    };
-    let mut active = active_jobs(&shared);
-    tokio::spawn(follow(bus, stopping, move |next| {
-        let Some(event) = next else {
-            tell_unreported(&shared, since);
-            // Whatever was reported just now isn't reported again by a late event.
-            active = active_jobs(&shared);
-            return;
-        };
-        let Some(id) = event.data["id"].as_str().filter(|_| event.name == "job") else {
-            return;
-        };
-        let now = matches!(event.data["status"].as_str(), Some("queued" | "running"));
-        if active.insert(id.to_owned(), now) != Some(true) || now {
-            return;
-        }
-        tell(&shared, id, &event.data);
-    }));
+    let (jobs, told, reports) = (shared.clone(), shared.clone(), shared.clone());
+    tokio::spawn(follow_ends(
+        bus,
+        stopping,
+        move || {
+            jobs.jobs
+                .list(usize::MAX)
+                .iter()
+                .map(|j| (j.id.clone(), j.status.is_active()))
+                .collect()
+        },
+        move || tell_unreported(&shared, since),
+        move |id| told.jobs.get(id).is_some_and(|job| job.told_of_end()),
+        move |id, data| tell(&reports, id, data),
+    ));
 }
 
-/// Hands `bus`'s events to `next` until it closes or obid stops, and none when it went on without
-/// us: events were missed.
-async fn follow<T: Clone>(
-    mut bus: tokio::sync::broadcast::Receiver<T>,
+/// Tells each job's end as `bus` says it, and `sweep`s at the start and whenever `bus` went on
+/// without us: events were missed. Which jobs are at work is read before each sweep, so one that
+/// ends after it is still an event. An event late for a job already told (`told`) tells nothing.
+async fn follow_ends(
+    mut bus: tokio::sync::broadcast::Receiver<crate::events::Event>,
     mut stopping: tokio::sync::watch::Receiver<bool>,
-    mut next: impl FnMut(Option<T>),
+    at_work: impl Fn() -> std::collections::HashMap<String, bool>,
+    sweep: impl Fn(),
+    told: impl Fn(&str) -> bool,
+    tell: impl Fn(&str, &Value),
 ) {
     use tokio::sync::broadcast::error::RecvError;
+    let mut active = at_work();
+    sweep();
     loop {
-        tokio::select! {
+        let event = tokio::select! {
             got = bus.recv() => match got {
-                Ok(event) => next(Some(event)),
-                Err(RecvError::Lagged(_)) => next(None),
+                Ok(event) => event,
+                Err(RecvError::Lagged(_)) => {
+                    active = at_work();
+                    sweep();
+                    continue;
+                }
                 Err(RecvError::Closed) => return,
             },
             _ = stopping.changed() => return,
+        };
+        let Some(id) = event.data["id"].as_str().filter(|_| event.name == "job") else {
+            continue;
+        };
+        let now = matches!(event.data["status"].as_str(), Some("queued" | "running"));
+        if active.insert(id.to_owned(), now) != Some(true) || now || told(id) {
+            continue;
         }
+        tell(id, &event.data);
     }
 }
 
@@ -1944,19 +1952,61 @@ pub async fn remove(
 
 #[cfg(test)]
 mod tests {
-    use super::{Cursor, Error, FolderChange, Task, checked_tasks, follow, job_report, titled};
+    use super::{
+        Cursor, Error, FolderChange, Task, checked_tasks, follow_ends, job_report, titled,
+    };
 
-    /// TASKCONV-18: a bus that went on without its reader says so, so what it missed is looked for.
-    #[tokio::test]
-    async fn taskconv_18_events_missed_are_said() {
-        let (sender, bus) = tokio::sync::broadcast::channel(1);
+    /// How many sweeps, and which jobs' ends were told, following `events` with room for `room`
+    /// on the bus, of jobs `told` already told; every job is at work when it starts.
+    async fn followed(
+        events: &[(&str, &str)],
+        room: usize,
+        told: &'static [&str],
+    ) -> (usize, Vec<String>) {
+        let (sender, bus) = tokio::sync::broadcast::channel(room);
         let (_stopping, stop) = tokio::sync::watch::channel(false);
-        sender.send("first").unwrap();
-        sender.send("second").unwrap();
+        for (id, status) in events {
+            sender
+                .send(crate::events::Event {
+                    name: "job",
+                    data: serde_json::json!({"id": id, "status": status}),
+                })
+                .unwrap();
+        }
         drop(sender);
-        let mut seen = vec![];
-        follow(bus, stop, |next| seen.push(next)).await;
-        assert_eq!(seen, vec![None, Some("second")]);
+        let sweeps = std::cell::Cell::new(0);
+        let tells = std::cell::RefCell::new(vec![]);
+        follow_ends(
+            bus,
+            stop,
+            || {
+                ["a", "b"]
+                    .into_iter()
+                    .map(|id| (id.to_owned(), true))
+                    .collect()
+            },
+            || sweeps.set(sweeps.get() + 1),
+            |id| told.contains(&id),
+            |id, _| tells.borrow_mut().push(id.to_owned()),
+        )
+        .await;
+        (sweeps.get(), tells.into_inner())
+    }
+
+    /// TASKCONV-18: a bus that went on without its reader is swept, as the start is.
+    #[tokio::test]
+    async fn taskconv_18_events_missed_are_looked_for() {
+        let events = [("a", "running"), ("a", "running"), ("a", "running")];
+        assert_eq!(followed(&events, 1, &[]).await.0, 2);
+        assert_eq!(followed(&events, 8, &[]).await.0, 1);
+    }
+
+    /// TASKCONV-18: an end told already, by a sweep after the bus went on without its reader, isn't
+    /// told again by the events still on the bus.
+    #[tokio::test]
+    async fn taskconv_18_a_late_event_doesnt_tell_it_twice() {
+        let events = [("a", "running"), ("a", "done"), ("b", "done")];
+        assert_eq!(followed(&events, 8, &["a"]).await.1, vec!["b".to_owned()]);
     }
 
     /// A PATCH merged against the folders as they are under the lock: one taken off meanwhile

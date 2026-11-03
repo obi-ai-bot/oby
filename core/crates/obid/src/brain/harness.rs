@@ -67,6 +67,8 @@ pub const READ_WAIT: Duration = Duration::from_secs(5);
 const MCP_FILE: &str = "oby-mcp.json";
 /// Why a turn couldn't answer when its session failed twice.
 pub const FAILED_TWICE: &str = "its agent session failed twice";
+/// How a turn that got no answer starts.
+const NO_ANSWER: &str = "I couldn't answer:";
 /// What a turn's step says while it carries on in a new session (proposed: Sangam's to change).
 const NEW_SESSION: &str = "This conversation grew too long, so Oby is carrying on in a new session";
 /// The most earlier turns a new session is handed, quoted.
@@ -793,7 +795,7 @@ pub async fn run(
     let why = placed(&crate::secrets::known().redact(&why), &homes(shared));
     tracing::info!("conversation {}: no answer: {why}", control.conversation);
     Answered {
-        talk: Talk::reply(format!("I couldn't answer: {}.", why.trim_end_matches('.'))),
+        talk: Talk::reply(format!("{NO_ANSWER} {}.", why.trim_end_matches('.'))),
         details: None,
         end: End::BrainFailed,
     }
@@ -1373,6 +1375,7 @@ async fn session(
         conversation: &control.conversation,
         turn: &control.turn,
     };
+    let on = resumed.map(|k| k.session);
     let ran = attempts(
         shared,
         tool,
@@ -1380,7 +1383,7 @@ async fn session(
         &place,
         &session,
         &token,
-        resumed.map(|k| k.session),
+        on.clone(),
         warm,
         given,
         control,
@@ -1388,6 +1391,14 @@ async fn session(
     )
     .await;
     watch.mark("ended");
+    match (&ran, &on) {
+        // A new session this turn tried holds nothing the one it was on doesn't: an API or a login
+        // that failed it never costs the conversation that one (CONVERSATION-AGENT-15).
+        (Err(_), Some(on)) => session.keep(Some(on)),
+        // Told, so said no more (TASKCONV-19). A turn that got no answer heard nothing.
+        (Ok(_), _) if !unattended => shared.harness.shell.forget_cut(&control.conversation),
+        _ => {}
+    }
     if tool == Tool::Cursor {
         shared
             .jobs
@@ -1550,7 +1561,8 @@ async fn attempts(
         session.taint();
     }
     // What came of its work since its last turn (TASKCONV-17, TASKCONV-19): what its commands wrote
-    // is untrusted, as every command is; of its jobs, only obid's own words are told.
+    // is untrusted, and the turn that ran them left that mark on the conversation (`super::shell`); of
+    // its jobs, only obid's own words are told.
     let reports = if session.unwatched() {
         None
     } else {
@@ -1559,10 +1571,9 @@ async fn attempts(
     let commands = if session.unwatched() {
         None
     } else {
-        shared.harness.shell.take_cut(&control.conversation)
+        shared.harness.shell.cut(&control.conversation)
     };
     let commands = commands.map(|lines| {
-        session.taint();
         format!(
             "Commands of yours that were still running when your last turn ended, so obid ended them:\n{}\n{}",
             super::briefing::fence_rule(&session.nonce, "what those commands wrote"),
@@ -1605,24 +1616,38 @@ async fn attempts(
         None => said.trim().to_owned(),
     };
     let words = crate::vault::for_agent(&with(words))?;
-    let first = crate::vault::for_agent(&with(first_prompt(said.trim(), given)))?;
+    let first = crate::vault::for_agent(&with(first_prompt(shared, said.trim(), given)))?;
     let first = if tool == Tool::Cursor {
         super::harness_cursor::first_prompt(shared, tetrix.is_some(), !session.unwatched(), &first)?
     } else {
         first
     };
     let mut failures = vec![];
-    // What the first attempt sends, and what a try after a cut says first (CONVERSATION-AGENT-15).
-    let sent = if resume.is_some() { &words } else { &first };
+    // What a try after a cut says first, and all it was sent (CONVERSATION-AGENT-15).
+    let mut sent = &words;
     let mut cut: Option<String> = None;
-    // The one new session a conversation too long for its model gets (CONVERSATION-AGENT-16).
-    let mut renewed = false;
+    // The one new session a turn gets when the one it's on won't do (CONVERSATION-AGENT-15, 16).
+    let mut renewed = resume.is_none();
     let mut attempt = 0;
     while attempt < 2 {
         attempt += 1;
         let limit = deadline.saturating_duration_since(Instant::now());
         if limit.is_zero() {
             return Ok((turn::AS_FAR_AS.to_owned(), End::BudgetSpent));
+        }
+        if resume.is_none() {
+            sent = &first;
+            // Earlier turns can hold words from outside that a session going on never heard: a
+            // job's, words on its page, a line naming it. They're quoted now, and which they are
+            // can't be told from here, so this turn isn't the owner's word (TASKCONV-20).
+            if !given.is_empty()
+                && shared
+                    .conversations
+                    .foreign(&control.conversation)
+                    .is_some()
+            {
+                session.taint();
+            }
         }
         let prompt = match (&resume, &cut) {
             (Some(_), Some(note)) => crate::vault::for_agent(&crate::jobs::after_cut(note, sent))?,
@@ -1847,7 +1872,10 @@ async fn attempts(
         // More than the model can read at once: a session grown that long goes on in a new one,
         // once, if nothing but reading happened yet; a turn that did something would do it again.
         if turn.cause() == Some(agent::Cause::TooLong) {
-            if resume.is_none() || renewed || session.acted.load(Ordering::SeqCst) {
+            if session.acted.load(Ordering::SeqCst) {
+                return Ok((super::TOO_LONG_PARTWAY.to_owned(), End::BrainFailed));
+            }
+            if renewed {
                 return Err(super::TOO_LONG.into());
             }
             renewed = true;
@@ -1880,9 +1908,7 @@ async fn attempts(
         // turn moves on to another account (`run`, #874). On a ChatGPT login only the relay's
         // refusal, above, says it's one.
         if crate::chatgpt::marker_of(account).is_none()
-            && (turn.resets.is_some()
-                || turn.cause() == Some(agent::Cause::Limit)
-                || crate::limits::is_limit(&why))
+            && (turn.resets.is_some() || turn.says_limit(&why))
         {
             let now = obi_protocol::time::now();
             let reset = turn.resets.or_else(|| crate::limits::reset_in(&why, now));
@@ -1896,7 +1922,10 @@ async fn attempts(
         // A session the tool says can't be picked up: a new one, the earlier turns handed over.
         // Any other stays on its session, which holds what its tools did, and hears what happened.
         resume = match turn.cause() {
-            Some(agent::Cause::SessionGone) => None,
+            Some(agent::Cause::SessionGone) => {
+                renewed = true;
+                None
+            }
             _ => turn.session.clone().or(resume.take()),
         };
         let error = crate::detail::mask(&why);
@@ -1904,6 +1933,17 @@ async fn attempts(
             "your last try at this turn ended before it finished",
             Some(error.as_str()).filter(|e| !e.is_empty()),
         ));
+        // Failed twice on its session for no reason that passes: the session may be what's wrong (an
+        // image the API refuses, a broken history). A new one, once, if nothing but reading happened.
+        if attempt == 2
+            && !renewed
+            && matches!(turn.cause(), Some(agent::Cause::Other) | None)
+            && !session.acted.load(Ordering::SeqCst)
+        {
+            renewed = true;
+            resume = None;
+            attempt -= 1;
+        }
     }
     tracing::warn!(
         "conversation {}: its session failed twice: {}",
@@ -2067,23 +2107,21 @@ fn tasks_line(tasks: &[crate::conversation::Task], nonce: &str) -> Option<String
 /// A job that isn't on obid's allowlist (crate::secretspec) may have someone else's words in its
 /// title and reason too, so only its id and status are said.
 fn job_reports(shared: &Shared, given: &[Turn], nonce: &str) -> Option<String> {
-    let since = given
-        .iter()
-        .rposition(|t| t.who == "user")
+    // A turn that got no answer heard nothing: what it was to hear is still to say.
+    let answered = |at: usize| {
+        !given[at + 1..]
+            .iter()
+            .take_while(|t| t.who != "user")
+            .any(|t| t.text.starts_with(NO_ANSWER) || t.text == super::TOO_LONG)
+    };
+    let since = (0..given.len())
+        .rev()
+        .find(|at| given[*at].who == "user" && answered(*at))
         .map_or(0, |at| at + 1);
     let lines: Vec<String> = given[since..]
         .iter()
         .filter(|t| t.ended)
-        .map(|t| {
-            let id = t.jobs.first().map_or("", String::as_str);
-            match shared.jobs.get(id) {
-                Some(job) if job.check_refuses_secrets().is_none() => {
-                    t.text.lines().next().unwrap_or("").to_owned()
-                }
-                Some(job) => format!("Job {id} ended: {}.", job.status.as_str()),
-                None => format!("Job {id} ended, and obid no longer has it."),
-            }
-        })
+        .map(|t| job_end_line(shared, t))
         .collect();
     if lines.is_empty() {
         return None;
@@ -2095,8 +2133,22 @@ fn job_reports(shared: &Shared, given: &[Turn], nonce: &str) -> Option<String> {
     ))
 }
 
+/// What a session is told of a turn that reports a job's end (TASKCONV-17): the first line, obid's
+/// own words; only the id and status of a job off obid's allowlist, whose title and reason may hold
+/// someone else's words.
+fn job_end_line(shared: &Shared, turn: &Turn) -> String {
+    let id = turn.jobs.first().map_or("", String::as_str);
+    match shared.jobs.get(id) {
+        Some(job) if job.check_refuses_secrets().is_none() => {
+            turn.text.lines().next().unwrap_or("").to_owned()
+        }
+        Some(job) => format!("Job {id} ended: {}.", job.status.as_str()),
+        None => format!("Job {id} ended, and obid no longer has it."),
+    }
+}
+
 /// The first prompt of a session: the conversation so far, quoted, before the owner's words.
-fn first_prompt(words: &str, given: &[Turn]) -> String {
+fn first_prompt(shared: &Shared, words: &str, given: &[Turn]) -> String {
     let earlier: Vec<String> = given
         .iter()
         .rev()
@@ -2106,7 +2158,11 @@ fn first_prompt(words: &str, given: &[Turn]) -> String {
             format!(
                 "{}: {}",
                 if t.who == "user" { "Owner" } else { "Oby" },
-                super::briefing::line(&super::ask::heard(t), 500)
+                if t.ended {
+                    super::briefing::line(&job_end_line(shared, t), 500)
+                } else {
+                    super::briefing::line(&super::ask::heard(t), 500)
+                }
             )
         })
         .collect();

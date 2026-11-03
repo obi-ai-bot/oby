@@ -7874,6 +7874,85 @@ impl Jobs {
         Some(continue_message(text, None))
     }
 
+    /// What a job's agent is first told: its task, and what obid found for it (the repository's
+    /// rules, the owner's memories, teammates, Tetrix). The worktree's files it names are written
+    /// afresh; a new session (RECOVERY-8) needs all of it again.
+    async fn first_message(
+        &self,
+        id: &str,
+        job: &Job,
+        worktree: &Path,
+        base: &str,
+        rules_quoted: bool,
+    ) -> Result<String, String> {
+        let mut message = owner_prompt(job);
+        if rules_quoted {
+            message = format!("{message}\n\n{}", review::rules_line(base));
+        }
+        // The owner's memories about them and the job's repository, quoted (#378). Never on a
+        // teammate's Mac: only the job's code goes there, never its inputs.
+        if let Some(text) =
+            crate::memory::for_agent(&self.config.home, &[job.repo.as_str()]).await?
+        {
+            // A memory found in words that weren't the owner's alone (crate::secretspec).
+            if let Some(why) = crate::memory::foreign_among(&self.config.home, &[job.repo.as_str()])
+            {
+                self.unvet(id, &format!("it read {why}"));
+            }
+            // One known to come from someone else's words: two reviews merge its pull
+            // request (MERGING-14).
+            if crate::memory::someone_elses_among(&self.config.home, &[job.repo.as_str()]) {
+                self.mark_line(id, |job| job.memory_from_others = true);
+            }
+            let written = crate::obi_dir::folder(worktree, "inputs").and_then(|dir| {
+                crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
+            });
+            match written {
+                Ok(_) => {
+                    let path = format!(".obi/inputs/{}", crate::memory::FILE);
+                    message = format!("{message}\n\n{}", crate::memory::prompt_line(&path));
+                }
+                Err(e) => tracing::warn!("job {id}: the owner's memories weren't quoted: {e}"),
+            }
+        }
+        let mut context = Vec::new();
+        // Teammates' open pull requests on the files it claimed (crate::teammates).
+        if let Some(found) = self
+            .teammates_on(&job, job.files.as_deref().unwrap_or_default())
+            .await
+        {
+            let prs: Vec<_> = found.iter().map(|(pr, _)| pr.clone()).collect();
+            if let Some(line) = crate::teammates::prompt_line(&prs) {
+                message = format!("{message}\n\n{line}");
+                context.push(("teammates", crate::teammates::context_items(&found)));
+            }
+            self.update(id, |job| {
+                if !job.teammates.as_ref().is_some_and(|t| t.rechecked) {
+                    job.teammates = Some(crate::teammates::Teammates {
+                        prs,
+                        rechecked: false,
+                    });
+                }
+            });
+        }
+        // What Tetrix knows about the job, asked with Oby's login (crate::tetrix).
+        if let (Some(tetrix), Some(connections)) = (self.tetrix_for(job), self.connections.get()) {
+            let (items, seen) = tetrix.context(connections, job).await;
+            self.tetrix_used(id, |used| used.absorb(seen));
+            if !items.is_empty() {
+                context.push(("tetrix", items));
+            }
+        }
+        // What they gave, quoted as data in `.obi/context/`: the prompt names only the files.
+        if let Some(note) = self.quote_context(id, worktree, &context) {
+            message = format!("{message}\n\n{note}");
+        }
+        if self.tetrix_for(job).is_some() {
+            message = format!("{message}\n\n{}", tetrix_line(job));
+        }
+        Ok(message)
+    }
+
     /// Its conversation was told of how it ended (TASKCONV-18).
     pub fn mark_told(&self, id: &str) {
         self.update(id, |job| job.told = job.finished);
@@ -9687,6 +9766,8 @@ impl Jobs {
         // What obid says first on the next turn when it carries a cut run on by itself
         // (RECOVERY-1 to 3): `message` stays what was last sent, since the cut may have lost it.
         let mut cut_note: Option<String> = None;
+        // The first message, when this run built it: a new session needs it (RECOVERY-8).
+        let mut first_built: Option<String> = None;
         let mut message = if picks_up {
             String::new()
         } else if !words.is_empty() && job.session.is_some() {
@@ -9713,74 +9794,11 @@ impl Jobs {
             cut_note = was_cut.as_deref().map(|what| continue_message(what, None));
             sent
         } else {
-            let mut message = owner_prompt(&job);
-            if rules_quoted {
-                message = format!("{message}\n\n{}", review::rules_line(&base));
-            }
-            // The owner's memories about them and the job's repository, quoted (#378). Never on a
-            // teammate's Mac: only the job's code goes there, never its inputs.
-            if let Some(text) =
-                crate::memory::for_agent(&self.config.home, &[job.repo.as_str()]).await?
-            {
-                // A memory found in words that weren't the owner's alone (crate::secretspec).
-                if let Some(why) =
-                    crate::memory::foreign_among(&self.config.home, &[job.repo.as_str()])
-                {
-                    self.unvet(id, &format!("it read {why}"));
-                }
-                // One known to come from someone else's words: two reviews merge its pull
-                // request (MERGING-14).
-                if crate::memory::someone_elses_among(&self.config.home, &[job.repo.as_str()]) {
-                    self.mark_line(id, |job| job.memory_from_others = true);
-                }
-                let written = crate::obi_dir::folder(&worktree, "inputs").and_then(|dir| {
-                    crate::obi_dir::write_new(&dir, crate::memory::FILE, text.as_bytes())
-                });
-                match written {
-                    Ok(_) => {
-                        let path = format!(".obi/inputs/{}", crate::memory::FILE);
-                        message = format!("{message}\n\n{}", crate::memory::prompt_line(&path));
-                    }
-                    Err(e) => tracing::warn!("job {id}: the owner's memories weren't quoted: {e}"),
-                }
-            }
-            let mut context = Vec::new();
-            // Teammates' open pull requests on the files it claimed (crate::teammates).
-            if let Some(found) = self
-                .teammates_on(&job, job.files.as_deref().unwrap_or_default())
-                .await
-            {
-                let prs: Vec<_> = found.iter().map(|(pr, _)| pr.clone()).collect();
-                if let Some(line) = crate::teammates::prompt_line(&prs) {
-                    message = format!("{message}\n\n{line}");
-                    context.push(("teammates", crate::teammates::context_items(&found)));
-                }
-                self.update(id, |job| {
-                    if !job.teammates.as_ref().is_some_and(|t| t.rechecked) {
-                        job.teammates = Some(crate::teammates::Teammates {
-                            prs,
-                            rechecked: false,
-                        });
-                    }
-                });
-            }
-            // What Tetrix knows about the job, asked with Oby's login (crate::tetrix).
-            if let (Some(tetrix), Some(connections)) =
-                (self.tetrix_for(&job), self.connections.get())
-            {
-                let (items, seen) = tetrix.context(connections, &job).await;
-                self.tetrix_used(id, |used| used.absorb(seen));
-                if !items.is_empty() {
-                    context.push(("tetrix", items));
-                }
-            }
-            // What they gave, quoted as data in `.obi/context/`: the prompt names only the files.
-            if let Some(note) = self.quote_context(id, &worktree, &context) {
-                message = format!("{message}\n\n{note}");
-            }
-            if self.tetrix_for(&job).is_some() {
-                message = format!("{message}\n\n{}", tetrix_line(&job));
-            }
+            let first = self
+                .first_message(id, &job, &worktree, &base, rules_quoted)
+                .await?;
+            first_built = Some(first.clone());
+            let mut message = first;
             if job.session.is_some() {
                 let what = was_cut.as_deref().unwrap_or(WENT_DOWN);
                 message = format!("{}\n\n{message}", continue_message(what, None));
@@ -10175,12 +10193,20 @@ impl Jobs {
                     if turn.cause() == Some(agent::Cause::TooLong)
                         && let Some(note) = self.new_session(id)
                     {
-                        // It has heard nothing: obid's note, all of its task, what it was last sent.
-                        let task = owner_prompt(&job);
-                        message = if message.contains(&task) {
+                        // It has heard nothing: obid's note, all it's first told, what it was last sent.
+                        let first = match first_built.take() {
+                            Some(first) => first,
+                            None => {
+                                self.first_message(id, &job, &worktree, &base, rules_quoted)
+                                    .await?
+                            }
+                        };
+                        message = if message.contains(&first) {
                             format!("{note}\n\n{message}")
                         } else {
-                            format!("{note}\n\n{task}\n\n{message}")
+                            format!("{note}\n\n{first}\n\n{message}")
+                                .trim_end()
+                                .to_owned()
                         };
                         opening = Some(format!(
                             "Oby started {} in a new session: its last was too long for its model",
@@ -10209,12 +10235,10 @@ impl Jobs {
                         turn.exit,
                         self.agent_note_from(id, log_from)
                     );
-                    let tool_says_limit = turn.cause() == Some(agent::Cause::Limit);
                     let limit_said = turn.resets.is_some()
                         || full
-                        || tool_says_limit
-                        || crate::limits::is_limit(&ended)
-                        || crate::limits::is_limit(&first);
+                        || turn.says_limit(&ended)
+                        || turn.says_limit(&first);
                     // A limit the account's usage or the tool reports is #1563's, whatever cut it.
                     use crate::chatgpt_relay::After;
                     // On a ChatGPT login only the relay's refusal says it's a limit: a usage read
@@ -10308,17 +10332,12 @@ impl Jobs {
                     let limited = match &refusal {
                         Some(refusal) => refusal.after == After::Limit,
                         None if chatgpt => false,
-                        None => {
-                            turn.resets.is_some()
-                                || full
-                                || tool_says_limit
-                                || crate::limits::is_limit(&reason)
-                        }
+                        None => turn.resets.is_some() || full || turn.says_limit(&reason),
                     };
                     let reset = turn
                         .resets
                         .or_else(|| {
-                            crate::limits::is_limit(&reason)
+                            turn.says_limit(&reason)
                                 .then(|| crate::limits::reset_in(&reason, now))
                                 .flatten()
                         })

@@ -375,6 +375,11 @@ async function act(words, prompt = "", before = resumed) {
     } else {
       say("answered");
     }
+  } else if (words.startsWith("TOOLONG THEN FAIL")) {
+    // Too long on its session; the new one dies before it reads its prompt.
+    if (prompt.includes("Your run was cut")) say(`retried: ${prompt.includes("earlier turns") ? "with" : "without"} the earlier turns`);
+    else if (before) toolong();
+    else result("it broke", true);
   } else if (words.startsWith("TOOLONG OLD")) {
     // An older Claude Code: only its words say so.
     emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, result: "Prompt is too long", session_id: session });
@@ -392,6 +397,14 @@ async function act(words, prompt = "", before = resumed) {
     }
   } else if (words.startsWith("TOOLONG")) {
     toolong();
+  } else if (words.startsWith("REFUSED ALWAYS") || (words.startsWith("REFUSED") && before)) {
+    // What 2.1.302 ends with when the API refuses what's in the session, an image say.
+    emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "api_error", api_error_status: 400, result: "API Error: 400 messages.0.content: Could not process image", session_id: session });
+  } else if (words.startsWith("REFUSED")) {
+    say(`new session: ${prompt.includes("earlier turns") ? "with" : "without"} the earlier turns`);
+  } else if (words.startsWith("RATE LIMITED")) {
+    // What 2.1.302 ends with on an API that answers 429.
+    emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "api_error", api_error_status: 429, result: "API Error: Request rejected (429) · This request would exceed your rate limit", session_id: session });
   } else if (words.startsWith("FAIL ONCE")) {
     // What 2.1.302 ends with on an API that keeps failing, its error nowhere but its result.
     if (prompt.includes("Your run was cut")) {
