@@ -12,6 +12,7 @@ import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
+import { lookAgain, takeRoomPost } from './room';
 
 // What obid has (docs/runner-api.md), kept live by its event stream, as apps/web/src/live.ts does
 // it: the stream first, then the status, jobs, inbox and conversations, with the events that came
@@ -524,6 +525,10 @@ function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine
       return { ...s, conversations: s.conversations.filter((c) => c.id !== e.id), turns: without(s.turns, e.id) };
     case 'github':
       return { ...s, github: e.work };
+    // the room keeps its own (room.ts); taking one twice changes nothing
+    case 'roomPost':
+      takeRoomPost(e.post);
+      return s;
   }
 }
 
@@ -679,6 +684,8 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     if (complete) keepFoldersOf(new Set(next.conversations.map((c) => c.id)));
     set(next);
     onSynced();
+    // what the room missed while the stream was away
+    lookAgain();
     // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
     void moveKeptChoices(status).then((moved) => { if (moved && mine === generation) lookAtUsage(); });
     // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it

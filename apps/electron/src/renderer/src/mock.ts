@@ -1,5 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { onObid } from './lean';
+import type { RoomPost } from '../../shared/obid-wire';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
 // app on dev (Engine/Jobs.swift Job, Engine/Conversation.swift Turn,
@@ -869,3 +870,31 @@ export const PEER_CONVOS: PeerConvo[] = [
 
 // how long ago: now, minutes under an hour, hours under a day, then days
 export const ago = (min: number) => (min < 1 ? 'now' : min < 60 ? `${Math.round(min)}m` : min < 24 * 60 ? `${Math.floor(min / 60)}h` : `${Math.floor(min / 1440)}d`);
+
+// The Sphere's room on the mock (?everything&chat, Deskree's row): what obid's GET would answer, in
+// words only obid could have sent; ?room=empty, waiting, refused or unavailable shows that state
+const ROOM_SCENE = new URLSearchParams(location.search).get('room');
+const roomPost = (seq: number, ago: number, owner: string, kind: RoomPost['kind'], text: string, more: Partial<RoomPost> = {}): RoomPost => {
+  const at = new Date(Date.now() - ago * 60_000).toISOString();
+  return { id: `mock-post-${seq}`, seq, recordedAt: at, from: `obi-${owner.toLowerCase()}`, owner, kind, by: kind === 'say' ? 'owner' : 'obi', createdAt: at, replyTo: null, text, about: [], state: 'sent', error: null, ...more };
+};
+const unsent = (state: 'waiting' | 'refused', error: string | null) =>
+  roomPost(0, 1, 'Doti', 'say', 'I’ll look at the Tetrix graph next.', { id: `mock-post-${state}`, seq: null, recordedAt: null, state, error });
+const tetrixEe = [{ kind: 'repo', repo: 'deskree-inc/tetrix-ee' }];
+export const MOCK_ROOM: { sphere: string; status: 'available' | 'unavailable'; posts: RoomPost[] } = {
+  sphere: 'deskree',
+  status: ROOM_SCENE === 'unavailable' ? 'unavailable' : 'available',
+  posts: ROOM_SCENE === 'empty' || ROOM_SCENE === 'unavailable' ? [] : [
+    roomPost(1, 310, 'Dima', 'working_on', 'Billing retries (deskree-inc/tetrix-ee)', { about: tetrixEe }),
+    roomPost(2, 296, 'Ernesto', 'working_on', 'Webhooks (deskree-inc/tetrix-ee)', { about: tetrixEe }),
+    roomPost(3, 240, 'Doti', 'working_on', 'Raise the iOS deployment target (deskree-inc/oby)', { about: [{ kind: 'repo', repo: 'deskree-inc/oby' }] }),
+    roomPost(4, 184, 'Ernesto', 'need', 'Who’s changing the billing queue this week?', { about: tetrixEe }),
+    roomPost(5, 182, 'Dima', 'found', 'Billing retries does. It’s at Check, and it goes out first.', { replyTo: 'mock-post-4' }),
+    roomPost(6, 180, 'Ernesto', 'say', 'Thanks. I’ll rebase webhooks after that.'),
+    roomPost(7, 42, 'Dima', 'done', 'Billing retries (deskree-inc/tetrix-ee#1790)', { about: [{ kind: 'pr', repo: 'deskree-inc/tetrix-ee', pr: 1790 }] }),
+    roomPost(8, 12, 'Doti', 'say', 'Nice. Ernesto, it’s all yours.'),
+    ...(ROOM_SCENE === 'waiting' ? [unsent('waiting', null)] : []),
+    ...(ROOM_SCENE === 'refused' ? [unsent('refused', 'The Sphere refused it: forbidden: You’re no longer an active member of Deskree.')] : []),
+  ],
+};
+export const mockRoomScene = ROOM_SCENE;

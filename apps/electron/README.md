@@ -57,7 +57,8 @@ It opens on your own conversation with Oby, a chat, not on Home
 (`docs/contracts/chat-first.md`, the owner's decision of 2026-11-02): the side panel lists Oby,
 then each Obysphere with its teammates' Obys; Review PR, Issues and Tasks are under its
 Tasks icon. Sangam's Home stays to compare: `?home`, or `oby.home` = `1` in the window's local
-storage; `?everything&chat` shows this on his demo data.
+storage; `?everything&chat` shows this on his demo data. A Sphere's row opens its room when obid has one
+(`docs/contracts/room-app.md`); on the mock, Deskree's, with `&room=empty`, `waiting`, `refused` or `unavailable`.
 
 It shows only the conversation: a new user starts empty, Oby sets them up in
 its first conversation (the tools on this Mac, GitHub, then Tetrix and the

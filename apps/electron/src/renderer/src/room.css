@@ -1,0 +1,9 @@
+/* The Sphere's room (RoomView): the chat's own parts, and these few for what only a post has. */
+.room-by { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; margin-bottom: -4px; }
+.room-by .peer-by { margin-bottom: 0; min-width: 0; overflow-wrap: anywhere; }
+.room-did { color: var(--muted); font-size: var(--text-sm); line-height: 16px; user-select: none; }
+.room-about, .room-state { margin: 3px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 16px; overflow-wrap: anywhere; }
+.room-state.is-refused { color: var(--danger); }
+.msg.is-waiting .msg-bubble { opacity: 0.6; }
+.room-problem { width: 100%; max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; color: var(--danger); font-size: var(--text-md); line-height: 18px; overflow-wrap: anywhere; }
+.room-under { margin: -6px 0 10px; padding: 0 var(--gutter); color: var(--muted); font-size: 11px; line-height: 14px; text-align: center; user-select: none; }

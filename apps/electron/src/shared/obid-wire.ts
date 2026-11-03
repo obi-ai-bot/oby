@@ -240,7 +240,28 @@ export type Step = { turn: string; conversation?: string; index: number; text: s
 export type Delta = { turn: string; conversation: string; text: string };
 
 // The events this app follows; any other is ignored.
+// obid only: the Sphere's room (docs/contracts/rooms.md, docs/runner-api.md). text and about are other
+// people's words: data, shown as such (RoomView). seq and recordedAt are null until the Sphere has it.
+export type RoomRef = { kind: string; repo?: string; pr?: number; issue?: number; job?: string };
+export type RoomPost = {
+  id: string; seq: number | null; recordedAt: string | null; from: string; owner: string;
+  kind: 'working_on' | 'done' | 'found' | 'need' | 'say'; by: 'obi' | 'owner'; createdAt: string; replyTo: string | null;
+  text: string; about: RoomRef[]; state: 'sent' | 'waiting' | 'refused'; error: string | null;
+};
+export type RoomAnswer = { room: 'available' | 'unavailable'; posts: unknown[] };
+// One post as this app can show it, or null: a field that isn't what the API says would take the
+// page down, in a place others write to.
+export function roomPostOf(value: unknown): RoomPost | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  const text = (k: string) => typeof v[k] === 'string', orNull = (k: string, t: string) => v[k] === null || typeof v[k] === t;
+  if (!['id', 'from', 'owner', 'kind', 'by', 'createdAt', 'text', 'state'].every(text)) return null;
+  if (!orNull('seq', 'number') || !orNull('recordedAt', 'string') || !orNull('replyTo', 'string') || !orNull('error', 'string')) return null;
+  return { ...v, about: Array.isArray(v.about) ? v.about.filter((r) => r && typeof r === 'object') : [] } as RoomPost;
+}
+
 export type Event =
+  | { kind: 'roomPost'; post: RoomPost }
   | { kind: 'job'; job: Job }
   | { kind: 'jobGone'; id: string }
   | { kind: 'inbox'; item: InboxItem }
@@ -298,6 +319,7 @@ export function parseEvent(name: string, data: string): Event | null {
     // a step of the turn, and its brain's thinking: both say what it's on
     case 'step': case 'thinking': return typeof v.text === 'string' && typeof v.turn === 'string' ? { kind: 'step', step: value as Step } : null;
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
+    case 'roomPost': { const post = roomPostOf(value); return post ? { kind: 'roomPost', post } : null; }
     case 'accounts': return Array.isArray(value) ? { kind: 'accounts', accounts: value as Account[] } : null;
     case 'conversation':
       if (typeof v.id !== 'string') return null;

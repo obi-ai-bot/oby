@@ -38,6 +38,11 @@ export function numbered(name: string, taken: Set<string>) {
   return next;
 }
 
+// What stays in the box once words that could be refused are answered: all of it when they didn't
+// go; when they did, what was typed after them while they went
+export const leftInBox = (sent: string, now: string, went: boolean) =>
+  !went ? now : now.startsWith(sent) ? now.slice(sent.length).trimStart() : now;
+
 // The message box: Home's, and the one at the foot of a conversation (or a
 // task's or an Oby's page): tags for what's attached over one row of +, the
 // text and send; once the text runs past one line, the text over a row of +
@@ -57,12 +62,15 @@ export function numbered(name: string, taken: Set<string>) {
 // there's something to send), as does Enter; Shift+Enter starts a new line.
 // Words typed and not sent stay (drafts.ts): back in the box, the cursor at
 // their end, when it shows again, after a relaunch too.
-export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft }: {
+export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say }: {
   placeholder?: string;
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
   label: string;
-  onSend: (text: string, attached: Attachments) => void;  // its words, and what went with them
+  onSend?: (text: string, attached: Attachments) => void;  // its words, and what went with them
+  // Words alone, which can be refused (the Sphere's room): no +, no @ list, no usage, no files pasted.
+  // The box keeps them until they're answered, and for good on false
+  say?: (text: string) => Promise<boolean>;
   home?: boolean;    // Home's: 480px wide, steps aside (hidden) while a page is open over it
   // words to Oby (Home's, a conversation's): the repository the work is in, as a tag, the
   // conversation's last one until another is picked or it's taken out (+ › Choose a repository)
@@ -76,6 +84,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   style?: React.CSSProperties;
 }) {
   const prompt = usePrompt(prompts, hidden);
+  const wordsOnly = !!say;
   const [filled, setFilled] = useState(false);
   // One row (+, text, send) until the text no longer fits on one line; from
   // then on, stacked (the text over a row with + and send) until it's sent,
@@ -129,7 +138,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   const [atClosed, setAtClosed] = useState(false);
   // a name typed out in full is done: the list goes, and Enter sends
   const fullName = at !== null && OBYS.some((o) => o.name.toLowerCase() === at.toLowerCase());
-  const matches = at === null || atClosed || view || fullName ? [] : obysFor(at);
+  const matches = wordsOnly || at === null || atClosed || view || fullName ? [] : obysFor(at);
   useClicksEverywhere(matches.length > 0);
   const pickOby = (name: string) => { setView(null); box.current?.mention(name); box.current?.focus(); };
   const onMentionKey = (key: MentionKey) => {
@@ -226,7 +235,17 @@ export default function Composer({ placeholder, prompts = false, note, label, on
       const files = await uploadFiles(attached.flatMap((a) => (a.kind === 'file' ? [{ name: a.name, preview: a.preview, file: a.file }] : [])));
       sending.current = false;
       if (!files) return;
-      onSend(b.text(), {
+      if (say) {
+        const sent = b.text();
+        sending.current = true;
+        const went = await say(sent);
+        sending.current = false;
+        const left = leftInBox(sent, b.text(), went);
+        if (left !== b.text()) b.setText(left);
+        if (!left) { setFilled(false); setStacked(false); }
+        return;
+      }
+      onSend?.(b.text(), {
         files,
         obys: mentioned(b.text()),
         jobs: attached.flatMap((a) => (a.kind === 'task' ? [a.id] : [])),
@@ -306,7 +325,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
           </div>
         )}
         {/* no talking (v1): send before the usage gauge, which keeps the end */}
-        <div className={`composer-grid${everything ? '' : ' is-send-first'}`}>
+        <div className={`composer-grid${everything && !wordsOnly ? '' : ' is-send-first'}`}>
           {(attached.length > 0 || repo || folders.length > 0) && (
             <div ref={tagRow} className={`composer-tags${hiddenAbove ? ' is-scrolled' : ''}`} onScroll={(e) => setHiddenAbove(e.currentTarget.scrollTop > 0)}>
               {folders.map((f) => (
@@ -337,7 +356,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
               })}
             </div>
           )}
-          <button
+          {!wordsOnly && <button
             ref={plus}
             type="button"
             className={`composer-button${view && view !== 'usage' ? ' is-on' : ''}`}
@@ -349,7 +368,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onClick={() => (view && view !== 'usage' ? closePanel() : setView('root'))}
           >
             <Plus size={18} strokeWidth={1.6} />
-          </button>
+          </button>}
           <input
             ref={files}
             type="file"
@@ -372,21 +391,21 @@ export default function Composer({ placeholder, prompts = false, note, label, on
             onEnter={() => form.current?.requestSubmit()}
             // past one line (32px: 22 of text, 10 of padding) it stacks
             onHeight={(h) => setStacked((was) => was || h > 33)}
-            onPasteFiles={(list) => addFiles(list, true)}
+            onPasteFiles={wordsOnly ? undefined : (list) => addFiles(list, true)}
           />
           {talk && <div className="composer-talk"><TalkPill chat={talk === true ? undefined : talk} /></div>}
           {/* how much of the agents' accounts is used, session and week (UsagePanel on a click) */}
-          <UsageGauge ref={gauge} open={view === 'usage'} onClick={() => (view === 'usage' ? closePanel() : setView('usage'))} />
+          {!wordsOnly && <UsageGauge ref={gauge} open={view === 'usage'} onClick={() => (view === 'usage' ? closePanel() : setView('usage'))} />}
           {/* at the end: talk instead of typing while the box is empty; once there's
               something to send, send takes its place. Talking comes back later, with Voice in
               Settings › General (only with ?everything): till then send is there all along, dim till
               there's something to send */}
-          {everything && <button type="button" className={`composer-button composer-voice${filled || attached.length ? ' is-away' : ''}`} aria-label="Talk to Oby" aria-hidden={filled || attached.length > 0 || undefined} tabIndex={filled || attached.length ? -1 : 0}>
+          {everything && !wordsOnly && <button type="button" className={`composer-button composer-voice${filled || attached.length ? ' is-away' : ''}`} aria-label="Talk to Oby" aria-hidden={filled || attached.length > 0 || undefined} tabIndex={filled || attached.length ? -1 : 0}>
             <svg width="18" height="16" viewBox="0 0 20 18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
               <path d="M2 7v4M6 4v10M10 1v16M14 4v10M18 7v4" />
             </svg>
           </button>}
-          <button type="submit" className={`composer-button composer-send${everything ? '' : ' is-always'}${filled || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!filled && !attached.length} aria-hidden={(everything && !filled && !attached.length) || undefined}>
+          <button type="submit" className={`composer-button composer-send${everything && !wordsOnly ? '' : ' is-always'}${filled || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!filled && !attached.length} aria-hidden={(everything && !wordsOnly && !filled && !attached.length) || undefined}>
             <ArrowUp size={18} strokeWidth={1.8} />
           </button>
         </div>
