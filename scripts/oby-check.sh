@@ -107,6 +107,9 @@ done <<< "$changed"
 each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 
 if [[ -n "$rust" ]]; then
+    # A job's check has no network (above): use the crates the agent already fetched into HOME.
+    # Without this, cargo still tries to refresh index.crates.io and fails DNS before the cache.
+    export CARGO_NET_OFFLINE=true
     cargo=(cargo --quiet)
     manifest=(--manifest-path core/Cargo.toml)
     step "${cargo[@]}" fmt "${manifest[@]}" --all -- --check
