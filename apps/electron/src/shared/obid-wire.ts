@@ -100,6 +100,10 @@ export type Job = {
 };
 
 // "Inbox item"
+// An owner id with anything but plain ASCII shows those characters as codes, so a Cyrillic i in "dima"
+// or a reversing mark shows for what it is. A Sphere's operator names ids. ASCII look-alikes (`dirna`) still pass.
+export const plainId = (id: string) => id.replace(/[^\x21-\x7e]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+
 export type InboxItem = {
   id: string;
   kind: string;
@@ -123,13 +127,12 @@ export type InboxItem = {
   // task it planned, and whether the turn had read something untrusted first
   conversation?: string | null;
   offer?: { id: string; what: string; task: string; untrusted: boolean } | null;
-  // obid only, an obiRequest: what another Oby asks (a question goes in "Questions from other Obys")
-  obi?: { type?: string } | null;
   // obid only: what a confirm item's Confirm carries out; set_check's target is the repository,
   // its payload the command (null: take `was` out) and the check it has now (Oby's ask, #1062)
   confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null; offered?: string[]; repos?: string[] } | null } | null;
-  // obid only: an obiRequest: who asks and, quoted, what they wrote: someone else's words, read by
-  // shape (questionOf), shown as text and never as instructions
+  // obid only, an obiRequest: what another Oby asks (a question goes in "Questions from other Obys"):
+  // who asks and, quoted, what they wrote: someone else's words, read by shape (questionOf), shown as
+  // text and never as instructions
   obi?: { type?: unknown; fromOwner?: unknown; repos?: unknown; quoted?: { text?: unknown; choices?: unknown } | null } | null;
 };
 

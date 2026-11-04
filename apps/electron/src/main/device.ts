@@ -153,7 +153,7 @@ export function confirming(trusted: Trusted) {
       if (inbox.status !== 200) return inbox;
       const item = (JSON.parse(inbox.text) as Item[]).find((i) => i.id === id && i.kind === 'confirm' && i.state !== 'done');
       if (!item) return { status: 409, text: JSON.stringify({ error: 'That isn’t waiting for a Confirm anymore.' }) };
-      if (!mayConfirm(item, clicked === true)) return { status: 403, text: JSON.stringify({ error: 'Sharing takes your own click.' }) };
+      if (!mayConfirm(item, clicked === true)) return { status: 403, text: JSON.stringify({ error: 'That takes your own click.' }) };
       const device = await register(), signedAt = now();
       const signature = signed(`oby-confirm\n${item.id}\n${item.title}\n${signedAt}`);
       return obid('POST', `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: 'Confirm', approval: { device, action: item.title, signedAt, signature } });

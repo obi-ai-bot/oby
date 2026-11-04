@@ -45,10 +45,11 @@ const takeSpace = (at: number) => {
   return spaces.shift() !== undefined;
 };
 
-// A Confirm that lets this Oby tell other people things by itself (PEER-17, ROOMS-17) takes a press of
-// that button: the preload saw a button labelled Confirm held by a real event (`clicked`), and main
-// saw a real click or key itself. Other Confirms sign on the page's say, as they did. It stops a script
-// acting on an input it didn't arrange, no more (docs/contracts/signed-words.md).
-const SHARING = ['share_status', 'share_room'];
+// A Confirm that tells other people something takes a press of that button: letting this Oby tell them
+// by itself (PEER-17, ROOMS-17), or answering another Oby's question as the owner (PEER-33). The preload
+// saw a button labelled Confirm held by a real event (`clicked`), and main saw a real click or key
+// itself. Other Confirms sign on the page's say, as they did. It stops a script acting on an input it
+// didn't arrange, no more (docs/contracts/signed-words.md).
+const PRESSED = ['share_status', 'share_room', 'answer_question', 'decline_remember'];
 export const mayConfirm = (item: { confirm?: { action?: string } }, clicked: boolean, at = Date.now()) =>
-  !SHARING.includes(item.confirm?.action ?? '') || (clicked && (takeInput(at) || takeSpace(at)));
+  !PRESSED.includes(item.confirm?.action ?? '') || (clicked && (takeInput(at) || takeSpace(at)));

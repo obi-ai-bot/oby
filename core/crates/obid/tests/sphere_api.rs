@@ -127,6 +127,25 @@ async fn a_request_its_sender_cancels_leaves_the_inbox_and_gets_nothing_more() {
     assert!(ernesto.waiting_after(1).await.is_empty());
 }
 
+/// PEER-33 is about another Oby's question: a review request is answered with obid's token, as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_33_a_review_request_still_takes_the_token_alone() {
+    let folder = Folder::new("peer-33-review");
+    let (_sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let request = ernesto.request("obi-wellington", "review_request", brief(), 3600);
+    ernesto.send(&request).await;
+    let item = tokio::task::block_in_place(|| wait_item(&obid));
+    let id = item["id"].as_str().unwrap();
+    let no = tokio::task::block_in_place(|| {
+        let target = format!("/v1/inbox/{id}/answer");
+        call(&obid, "POST", &target, Some(&json!({"answer": "Decline"})))
+    });
+    assert_eq!(no.status, 200, "{}", no.text);
+    assert_eq!(no.body["answeredBy"], Value::Null, "nothing signed it");
+    let replies = ernesto.receive(1, 30).await;
+    assert_eq!(replies[0]["body"], json!({"reason": "owner_declined"}));
+}
+
 /// Only a request's own sender calls it off: a cancel from the receiver of a request obid sent is
 /// dropped, and the exchange goes on. obid sends no introduction and no follow-up in this version
 /// (protocol.md section 5: one goes only once every active member takes it).

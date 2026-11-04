@@ -249,7 +249,7 @@ async fn ask_3_a_possible_secret_stays_on_this_mac() {
             .lock()
             .sends
             .iter()
-            .all(|(body, _, _)| !body.contains(&secret))
+            .all(|(_, text, _)| !text.contains(&secret))
     );
     // On words no app signed too, which would make a card: none shows it.
     let words = format!(
@@ -302,7 +302,7 @@ async fn ask_4_words_no_app_signed_wait_for_the_owners_confirm() {
             .lock()
             .sends
             .iter()
-            .all(|(body, _, _)| !body.contains("\"question\"")),
+            .all(|(_, text, _)| !text.contains("\"question\"")),
         "nothing goes before the click"
     );
     let id = item["id"].as_str().unwrap();
@@ -653,6 +653,90 @@ async fn ask_12_every_members_questions_keep_to_one_conversation_and_say_when_ca
         text,
         "ernesto's Oby called this question off:\n\n> First question?"
     );
+}
+
+/// PEER-35: words said in the conversation wait on a Confirm; answered on the card meanwhile, that
+/// Confirm closes on every device, and its click sends nothing. A decline's Confirm, and one for a
+/// question called off, close the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_35_a_confirm_for_a_settled_question_closes() {
+    let folder = Folder::new("peer-35-confirm");
+    let (_sphere, obid, ernesto) = setup(&folder).await;
+    let waits_on_a_confirm = |question: &Value, answer: &str| {
+        let cid = question["id"].as_str().unwrap().to_owned();
+        let words = question["body"]["text"].as_str().unwrap().to_owned();
+        let conversation = asks_conversation(&obid, &words);
+        let said = format!(r#"OBY oby_answer {{"item": "obi-{cid}", "answer": "{answer}"}}"#);
+        let body = json!({"said": said, "conversation": conversation});
+        let turn = call(&obid, "POST", "/v1/plans", Some(&body));
+        assert!(turn.status < 300, "{}", turn.text);
+        within(30, "its Confirm", || {
+            let open = call(&obid, "GET", "/v1/inbox", None).body;
+            let target = format!("obi-{cid}");
+            open.as_array()?
+                .iter()
+                .find(|i| i["confirm"]["target"] == target.as_str())
+                .cloned()
+        })
+    };
+    let closes = |confirm: &Value| {
+        let id = confirm["id"].as_str().unwrap();
+        let done = within(30, "the Confirm closed", || {
+            let done = call(&obid, "GET", "/v1/inbox?state=done", None).body;
+            done.as_array()?.iter().find(|i| i["id"] == id).cloned()
+        });
+        assert!(
+            done["text"].as_str().unwrap().starts_with("Closed by Oby"),
+            "{done}"
+        );
+        let target = format!("/v1/inbox/{id}/answer");
+        let body = json!({"answer": "Confirm", "approval": confirm_approval(&obid, id)});
+        let click = call(&obid, "POST", &target, Some(&body));
+        assert_eq!(click.status, 409, "{}", click.text);
+    };
+    let ask =
+        |text: &str| ernesto.request("obi-wellington", "question", json!({"text": text}), 3600);
+
+    // Answered on its card.
+    let first = ask("need-owner: which account?");
+    ernesto.send(&first).await;
+    tokio::task::block_in_place(|| {
+        let confirm = waits_on_a_confirm(&first, "The Deskree one.");
+        let cid = first["id"].as_str().unwrap();
+        let target = format!("/v1/inbox/obi-{cid}/answer");
+        let card = call_typed(&obid, "POST", &target, &json!({"answer": "Mine."}));
+        assert_eq!(card.status, 200, "{}", card.text);
+        closes(&confirm);
+    });
+    let replies = ernesto.receive(2, 30).await;
+    let words: Vec<_> = replies.iter().filter(|r| r["type"] == "answer").collect();
+    assert_eq!(words.len(), 1, "one answer: {replies:?}");
+    assert_eq!(words[0]["body"]["text"], "Mine.");
+
+    // Its Decline, on the card's Decline.
+    let second = ask("need-owner: and the second?");
+    ernesto.send(&second).await;
+    tokio::task::block_in_place(|| {
+        let confirm = waits_on_a_confirm(&second, "Decline");
+        let cid = second["id"].as_str().unwrap();
+        let target = format!("/v1/inbox/obi-{cid}/answer");
+        let card = call_typed(&obid, "POST", &target, &json!({"answer": "Decline"}));
+        assert_eq!(card.status, 200, "{}", card.text);
+        closes(&confirm);
+    });
+
+    // Called off.
+    let third = ask("need-owner: and the third?");
+    ernesto.send(&third).await;
+    let confirm = tokio::task::block_in_place(|| waits_on_a_confirm(&third, "Sure."));
+    let cid = third["id"].as_str().unwrap();
+    let now = obi_protocol::time::now();
+    let cancel = ernesto.sign(json!({"protocol": "obi/0.1", "id": uuid::Uuid::new_v4().to_string(),
+        "type": "cancel", "from": "obi-ernesto", "to": "obi-wellington", "sphere": third["sphere"],
+        "correlation_id": cid, "in_reply_to": cid, "created_at": obi_protocol::time::format(now),
+        "expires_at": obi_protocol::time::format(now + 3600), "key_id": ernesto.key.key_id(), "body": {}}));
+    ernesto.send(&cancel).await;
+    tokio::task::block_in_place(|| closes(&confirm));
 }
 
 /// Who a request reaches, on the real obid: an Obi id named after a colleague takes nothing, and a

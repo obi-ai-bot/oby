@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { PEER_CONVOS, hasAttachments, type Attachments, type PeerConvo, type PeerMessage } from './mock';
+import { plainId } from '../../shared/obid-wire';
 import { ApiError, api, peerThreadOf, type AskMark, type PeerExchange, type PeerPost, type PeerThread } from './obid';
 import { draft, keep, leftInBox } from './drafts';
 import { streamWords, wait } from './stream';
@@ -11,9 +12,7 @@ export const memberOpens = (s: { live?: true; sample?: true }) => (s.live ? 'thr
 // the mock's conversations with someone, for their row: a live member has none of them, whatever their name
 export const mockConvosWith = (s: { live?: true; sample?: true }, all: Convo[], name: string) => (memberOpens(s) === 'mock' ? convosWith(all, name) : []);
 
-// An owner id with anything but plain ASCII shows those characters as codes, so a Cyrillic i in "dima"
-// or a reversing mark shows for what it is. A Sphere's operator names ids. ASCII look-alikes (`dirna`) still pass.
-export const plainId = (id: string) => id.replace(/[^\x21-\x7e]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+export { plainId };
 // Who a thread is with, as obid's whose_oby (brain/ask.rs): a name is what a card says of itself, so
 // its owner id goes beside any name that differs. An ask has no Confirm: this is where the owner sees who.
 export const whoseOby = (name: string, owner: string) => (name === owner ? `${plainId(owner)}’s Oby` : `${name}’s Oby (${plainId(owner)})`);

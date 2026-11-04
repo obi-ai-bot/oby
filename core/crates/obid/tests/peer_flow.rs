@@ -618,7 +618,7 @@ async fn peer_4_a_question_goes_typed_and_sealed() {
             .lock()
             .sends
             .iter()
-            .all(|(body, _, _)| !body.contains(words)),
+            .all(|(_, text, _)| !text.contains(words)),
         "the Sphere has none of the words"
     );
 

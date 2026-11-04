@@ -2085,16 +2085,15 @@ async fn on_its_card(obid: &Obid, ernesto: &TestObi, words: &str, seconds: i64) 
     (question, item)
 }
 
-/// What the Sphere was given to take back to the asker, but the status that says it waits.
+/// What obid gave the Sphere to take back to the asker, but the status that says it waits.
 fn replies_sent(sphere: &FakeSphere) -> usize {
     sphere
         .lock()
         .sends
         .iter()
-        .filter(|(body, _, _)| {
-            ["\"type\":\"answer\"", "\"type\":\"decline\""]
-                .iter()
-                .any(|kind| body.contains(kind))
+        .filter(|(from, text, _)| {
+            let kind = serde_json::from_str::<Value>(text).unwrap_or_default()["type"].clone();
+            from == "obi-wellington" && (kind == "answer" || kind == "decline")
         })
         .count()
 }
@@ -2188,14 +2187,16 @@ async fn peer_32_a_decline_goes_back_as_their_no() {
 }
 
 /// PEER-33: obid's token isn't the owner's hand. Unsigned, nothing goes and the card stays; a
-/// signature holds once and for that item; putting it off takes none.
+/// signature holds for those words, that item and once; putting it off takes none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_33_only_the_owners_hand_answers() {
     let folder = Folder::new("peer-33");
     let (sphere, obid, ernesto) = setup(&folder).await;
     let (_, item) = on_its_card(&obid, &ernesto, ONLY_THEM, 3600).await;
+    let (_, other) = on_its_card(&obid, &ernesto, "need-owner: and the other?", 3600).await;
     let id = item["id"].as_str().unwrap().to_owned();
     let target = format!("/v1/inbox/{id}/answer");
+    let other_target = format!("/v1/inbox/{}/answer", other["id"].as_str().unwrap());
     tokio::task::block_in_place(|| {
         for body in [
             json!({"answer": "Forged words."}),
@@ -2207,20 +2208,32 @@ async fn peer_33_only_the_owners_hand_answers() {
             assert_eq!(refused.status, 403, "{body}: {}", refused.text);
             assert!(refused.text.contains("Only you answer this one"));
         }
-        // A signature for other words, or from before, signs nothing here.
         let body = json!({"answer": "Words of mine."});
         let header = words_header(&obid, "POST", &target, Some(&body));
-        let other = json!({"answer": "Other words."});
         let words = [("X-Oby-Words", header.as_str())];
-        let swapped = call_with_headers(&obid, TOKEN, "POST", &target, Some(&other), &words);
+        // Not for other words, and not for another question: the same words, a real item.
+        let other_words = json!({"answer": "Other words."});
+        let swapped = call_with_headers(&obid, TOKEN, "POST", &target, Some(&other_words), &words);
         assert_eq!(swapped.status, 403, "{}", swapped.text);
-        let elsewhere = "/v1/inbox/obi-elsewhere/answer";
-        let moved = call_with_headers(&obid, TOKEN, "POST", elsewhere, Some(&body), &words);
-        assert_ne!(moved.status, 200, "{}", moved.text);
+        let moved = call_with_headers(&obid, TOKEN, "POST", &other_target, Some(&body), &words);
+        assert_eq!(moved.status, 403, "{}", moved.text);
+        // Once: words the scan stopped use their signature up, so the same request again isn't
+        // the owner's.
+        let leak = json!({"answer": format!("use {}{}", "AKIA", "ABCDEFGHIJKLMNOP")});
+        let spent = words_header(&obid, "POST", &target, Some(&leak));
+        let spent = [("X-Oby-Words", spent.as_str())];
+        let scanned = call_with_headers(&obid, TOKEN, "POST", &target, Some(&leak), &spent);
+        assert_eq!(scanned.status, 422, "{}", scanned.text);
+        let again = call_with_headers(&obid, TOKEN, "POST", &target, Some(&leak), &spent);
+        assert_eq!(again.status, 403, "used already: {}", again.text);
         assert_eq!(replies_sent(&sphere), 0, "nothing went");
         let open = get(&obid, "/v1/inbox");
-        assert_eq!(open[0]["id"], json!(id), "the card stays: {open}");
-        assert_eq!(open[0]["answeredBy"], Value::Null);
+        let card = open
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == json!(id));
+        assert_eq!(card.unwrap()["state"], "open", "the card stays: {open}");
         // Put off: no answer, so no hand needed.
         let later = post(&obid, &target, &json!({"later": "2099-01-01T09:00:00Z"}));
         assert_eq!(later.status, 200, "{}", later.text);
@@ -2228,18 +2241,32 @@ async fn peer_33_only_the_owners_hand_answers() {
         let first = call_with_headers(&obid, TOKEN, "POST", &target, Some(&body), &words);
         assert_eq!(first.status, 200, "{}", first.text);
         assert!(first.body["answeredBy"].is_string(), "{}", first.text);
+        // The other question was refused for the signature, not for being gone.
+        let its_own = call_typed(&obid, "POST", &other_target, &body);
+        assert_eq!(its_own.status, 200, "{}", its_own.text);
     });
-    let reply = replies_past_status(&ernesto, 1).await;
-    assert_eq!(reply[0]["body"]["text"], "Words of mine.");
+    let replies = replies_past_status(&ernesto, 2).await;
+    assert!(
+        replies
+            .iter()
+            .all(|r| r["body"]["text"] == "Words of mine."),
+        "{replies:?}"
+    );
+    tokio::task::block_in_place(|| {
+        within(20, "the Sphere given them", || {
+            (replies_sent(&sphere) == 2).then_some(())
+        });
+    });
 }
 
 /// PEER-34: a possible secret, or words the protocol doesn't take, send nothing, repeat nothing and
-/// leave the card open for the same person to fix.
+/// leave the card open for the same person to fix, naming no one as having answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_34_a_secret_in_the_answer_sends_nothing() {
     let folder = Folder::new("peer-34");
     let (sphere, obid, ernesto) = setup(&folder).await;
     let (_, item) = on_its_card(&obid, &ernesto, ONLY_THEM, 3600).await;
+    let id = item["id"].as_str().unwrap();
     tokio::task::block_in_place(|| {
         let token = format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP");
         let leaked = answer_item(&obid, &item, json!({"answer": format!("use {token}")}));
@@ -2249,6 +2276,17 @@ async fn peer_34_a_secret_in_the_answer_sends_nothing() {
             "The secret scan found a possible secret in the answer: nothing was sent."
         );
         assert!(!leaked.text.contains(&token));
+        // The device that signed that sent nothing, so it isn't kept as who answered.
+        let kept = std::fs::read_to_string(obid.home.join(format!("inbox/{id}.json"))).unwrap();
+        let kept: Value = serde_json::from_str(&kept).unwrap();
+        assert_eq!(kept["answeredBy"], Value::Null, "{kept}");
+        let reversed = answer_item(&obid, &item, json!({"answer": "left\u{202E}right"}));
+        assert_eq!(reversed.status, 422, "{}", reversed.text);
+        assert!(
+            reversed.text.contains("nothing was sent"),
+            "{}",
+            reversed.text
+        );
         assert_eq!(replies_sent(&sphere), 0, "nothing went");
         assert_eq!(
             get(&obid, "/v1/inbox")[0]["id"],
@@ -2262,6 +2300,64 @@ async fn peer_34_a_secret_in_the_answer_sends_nothing() {
     });
     let reply = replies_past_status(&ernesto, 1).await;
     assert_eq!(reply[0]["body"]["text"], "Staging.");
+    tokio::task::block_in_place(|| {
+        within(20, "the Sphere given it", || {
+            (replies_sent(&sphere) == 1).then_some(())
+        });
+    });
+}
+
+/// PEER-34: a scan that can't run stops an answer as a finding does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_34_a_scan_that_cant_run_sends_nothing() {
+    let folder = Folder::new("peer-34-broken");
+    let sphere = FakeSphere::start().await;
+    let remote = fixture(&folder.0.join("fixture"));
+    let broken = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/bin-broken-gitleaks");
+    let obid = start(
+        &folder.0,
+        &config(&folder.0, &remote, &answerer()),
+        Some(&broken),
+    );
+    let wellington = Owner::new("wellington");
+    tokio::task::block_in_place(|| {
+        join_a_accepting(&obid, &sphere, &wellington, &["question"]);
+        for rule in get(&obid, "/v1/obid/sharing")["rules"].as_array().unwrap() {
+            let id = rule["id"].as_str().unwrap();
+            call(
+                &obid,
+                "DELETE",
+                &format!("/v1/obid/sharing/rules/{id}"),
+                None,
+            );
+        }
+    });
+    let ernesto = TestObi::join_accepting(&sphere, "obi-ernesto", "ernesto", &["question"]).await;
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": ONLY_THEM}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    let cid = question["id"].as_str().unwrap().to_owned();
+    tokio::task::block_in_place(|| {
+        let item = wait_item(&obid, &cid);
+        let stopped = answer_item(&obid, &item, json!({"answer": "Staging."}));
+        assert_eq!(stopped.status, 422, "{}", stopped.text);
+        assert!(stopped.text.contains("couldn't run"), "{}", stopped.text);
+        assert!(
+            stopped.text.contains("nothing was sent"),
+            "{}",
+            stopped.text
+        );
+        assert_eq!(replies_sent(&sphere), 0, "nothing went");
+        assert_eq!(
+            get(&obid, "/v1/inbox")[0]["id"],
+            item["id"],
+            "the card stays"
+        );
+    });
 }
 
 /// PEER-35: settled anywhere, a card closes everywhere, with an event each app hears; the asker

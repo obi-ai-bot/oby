@@ -3105,6 +3105,23 @@ pub(crate) const CONFIRM_CLOSED: &str = "Closed by Oby: that pull request was cl
 pub(crate) const CONFIRM_MOVED: &str =
     "Closed by Oby: that pull request's head moved since. Ask Oby again.";
 
+pub(crate) const CONFIRM_SETTLED: &str = "Closed by Oby: that request was settled since.";
+
+/// Whether this open Confirm answers another Obi's request that's no longer open, among `open`: it
+/// was answered on its card or another device, called off, or ran out (PEER-35).
+pub(crate) fn settled_request(item: &Item, open: &[Item]) -> bool {
+    use inbox::action;
+    item.confirm.as_deref().is_some_and(|c| {
+        matches!(
+            c.action.as_str(),
+            action::ACCEPT
+                | action::ACCEPT_REMEMBER
+                | action::DECLINE_REMEMBER
+                | action::ANSWER_QUESTION
+        ) && !open.iter().any(|i| i.id == c.target)
+    })
+}
+
 /// The plain note an open Confirm settles with because what it does can no longer happen
 /// (TASKS-13), or none while it still can: an action on a task that's gone, or a merge of the pull
 /// request of one of `jobs` (this Mac's) that obid read merged, or closed or at another head than

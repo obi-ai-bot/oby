@@ -122,11 +122,14 @@ describe('the card', () => {
     await event(item('obi-30d', { state: 'done' }));
   });
 
-  it('peer_30_the_mac_notification_says_their_words_as_plain_text', async () => {
+  it('peer_30_the_mac_alert_says_who_and_their_words_as_plain_text', async () => {
     vi.doMock('electron', () => ({ app: { getPath: () => '', isPackaged: false }, BrowserWindow: {}, Notification: {}, ipcMain: {}, powerMonitor: {}, shell: {} }));
-    const { questionWords } = await import('../../../main/notify');
-    expect(questionWords(item('n', { obi: { type: 'question', quoted: { text: 'Which‮ one?\n\nThis?' } } }))).toBe('Which one?\nThis?');
-    expect(questionWords(item('n', { kind: 'confirm' }))).toBeNull();
+    const { wanted } = await import('../../../main/notify');
+    const alert = wanted([item('n', { title: 'Question from dіma', obi: { type: 'question', fromOwner: 'dіma', quoted: { text: 'Which‮ one?\n\nThis?' } } })]).get('item:n');
+    expect(alert).toMatchObject({ needs: true, title: 'Question from d\\u{456}ma', body: 'Which one?\nThis?', buttons: [] });
+    // obid's words on anything else, and nothing for an item obid sorted as not needing them
+    expect(wanted([item('r', { title: 'Review request from alex', text: 'Have a look.', obi: { type: 'review_request', fromOwner: 'alex', quoted: { text: 'x' } } })]).get('item:r')).toMatchObject({ title: 'Review request from alex', body: 'Have a look.' });
+    expect(wanted([item('f', { triage: 'fyi' })]).size).toBe(0);
   });
 });
 
@@ -211,12 +214,10 @@ describe('answering', () => {
     expect(page.calls.filter((c) => c.method === 'POST')).toEqual([]);
   });
 
-  it('peer_35_put_off_it_comes_back_at_its_time', async () => {
-    const later = new Date(Date.now() + 3600_000).toISOString();
-    await event(item('obi-35b', { state: 'later', later }));
+  it('peer_35_put_off_it_comes_back_at_its_time_with_no_event', async () => {
+    await event(item('obi-35b', { state: 'later', later: new Date(Date.now() + 200).toISOString() }));
     expect(stack()).not.toContain('Only you can answer');
-    await event(item('obi-35b', { later: new Date(Date.now() - 1000).toISOString() }));
-    expect(stack()).toContain('Only you can answer');
-    await event(item('obi-35b', { state: 'done' }));
+    // obid sends nothing when its time comes: the app's own clock brings it back
+    await vi.waitFor(() => expect(stack()).toContain('Only you can answer'), { timeout: 5000, interval: 50 });
   });
 });

@@ -48,6 +48,22 @@ describe('obid-confirm', () => {
     input();
     expect((await confirm(true)).status).toBe(200);
   });
+  it('peer_33_a_confirm_that_answers_for_the_owner_takes_their_press', async () => {
+    for (const action of ['answer_question', 'decline_remember']) {
+      while (takeInput()) { /* inputs from other tests */ }
+      the.calls.length = 0;
+      the.item.confirm.action = action;
+      // a script's call, with no input of the owner's: nothing reaches obid
+      expect((await confirm(undefined)).status, action).toBe(403);
+      expect((await confirm(true)).status, action).toBe(403);
+      input();
+      expect((await confirm(false)).status, action).toBe(403);
+      expect(answered(), action).toEqual([]);
+      input();
+      expect((await confirm(true)).status, action).toBe(200);
+      expect(answered(), action).toHaveLength(1);
+    }
+  });
   it('another Confirm goes as it did', async () => {
     the.item.confirm.action = 'delete_job';
     expect((await confirm(undefined)).status).toBe(200);
