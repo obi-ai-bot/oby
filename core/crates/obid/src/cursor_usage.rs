@@ -44,12 +44,13 @@ async fn read_from(host: &str, token: &str, limit: Duration) -> Result<Asked, St
         .build()
         .map_err(|_| "obid has no HTTP client".to_owned())?;
     let current = ask(&client, host, CURRENT, token).await?;
-    if cursor(&current, &Value::Null).is_none() {
+    let Some(mut usage) = cursor(&current, &Value::Null) else {
         return Ok(Asked::Silent);
-    }
+    };
     // The plan only says when its included usage resets: without it, the billing cycle's end.
     let plan = ask(&client, host, PLAN, token).await.unwrap_or(Value::Null);
-    Ok(cursor(&current, &plan).map_or(Asked::Silent, Asked::Said))
+    usage.seven_day_resets = crate::usage::cursor_reset(&current, &plan);
+    Ok(Asked::Said(usage))
 }
 
 /// One Connect call over JSON, its answer read up to [`crate::tetrix::small_json`]'s size. The
@@ -200,10 +201,12 @@ pub(crate) mod tests {
         let read = |used| cursor(&current(used), &Value::Null).unwrap().seven_day;
         assert_eq!(
             read(serde_json::json!({"limit": 2000, "includedSpend": 500, "totalPercentUsed": 99})),
-            Some(0.25)
+            Some(0.99)
         );
-        // Protobuf's JSON leaves a zero out: a limit with none spent yet is 0%.
-        assert_eq!(read(serde_json::json!({"limit": 2000})), Some(0.0));
+        assert_eq!(
+            cursor(&current(serde_json::json!({"limit": 2000})), &Value::Null),
+            None
+        );
         assert_eq!(
             read(serde_json::json!({"limit": 0, "totalPercentUsed": 40})),
             Some(0.4)
@@ -225,6 +228,87 @@ pub(crate) mod tests {
             cursor(&serde_json::json!({"planUsage": {}}), &Value::Null),
             None
         );
+    }
+
+    #[test]
+    fn usage_7_the_highest_reported_share_wins_including_auto_only() {
+        for (used, expected) in [
+            (
+                serde_json::json!({"limit": 2000, "includedSpend": 0, "autoPercentUsed": 72}),
+                Some(0.72),
+            ),
+            (
+                serde_json::json!({"limit": 2000, "autoPercentUsed": 72}),
+                Some(0.72),
+            ),
+            (serde_json::json!({"autoPercentUsed": 72}), Some(0.72)),
+            (
+                serde_json::json!({"limit": 2000, "includedSpend": "bad", "totalPercentUsed": "99", "autoPercentUsed": 72}),
+                Some(0.72),
+            ),
+            (
+                serde_json::json!({"apiPercentUsed": 81, "totalPercentUsed": 20, "autoPercentUsed": 30}),
+                Some(0.81),
+            ),
+            (
+                serde_json::json!({"includedSpend": 90, "limit": 100, "totalPercentUsed": 20}),
+                Some(0.9),
+            ),
+            (
+                serde_json::json!({"limit": 100, "includedSpend": "90", "totalPercentUsed": null, "autoPercentUsed": false, "apiPercentUsed": "81"}),
+                None,
+            ),
+            (serde_json::json!({"limit": 0, "includedSpend": 90}), None),
+            (serde_json::json!({"autoPercentUsed": 0}), Some(0.0)),
+        ] {
+            let current = serde_json::json!({"planUsage": used});
+            assert_eq!(
+                cursor(&current, &Value::Null).and_then(|usage| usage.seven_day),
+                expected,
+                "{current}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_7_one_info_line_has_only_numbers_and_the_winning_field() {
+        #[derive(Clone, Default)]
+        struct Logged(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Logged {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let logged = Logged::default();
+        let writer = logged.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        let _logging = tracing::subscriber::set_default(subscriber);
+        let usage = figure(read(|_| body(200,
+            r#"{"planUsage":{"limit":2000,"includedSpend":0,"autoPercentUsed":72},"displayMessage":"ANSWER-WORDS"}"#
+        )).await);
+        assert_eq!(usage.seven_day, Some(0.72));
+        let said = String::from_utf8(logged.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(said.lines().count(), 1, "{said}");
+        assert!(
+            said.contains("INFO") && said.contains("winner=\"autoPercentUsed\""),
+            "{said}"
+        );
+        assert!(
+            said.contains("Some(72.0)") && said.contains("Some(2000.0)"),
+            "{said}"
+        );
+        for words in [TOKEN, "ANSWER-WORDS", "displayMessage"] {
+            assert!(!said.contains(words), "{said}");
+        }
     }
 
     #[tokio::test]

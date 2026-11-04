@@ -534,23 +534,49 @@ pub fn codex_read(result: &Value) -> Option<Usage> {
 }
 
 /// Cursor's `GetCurrentPeriodUsage` answer, with its `GetPlanInfo` answer (null when that failed):
-/// a figure only when `planUsage` says one, as Cursor's own code reads it: its included spend over
-/// a `limit` above 0, else `totalPercentUsed`. The reset is the included usage's (a weekly plan's
+/// the highest reported share: included spend over a positive limit, total, Auto or API percent.
+/// The reset is the included usage's (a weekly plan's
 /// week), else the billing cycle's end. A number and a time are all that's taken from either.
 pub fn cursor(current: &Value, plan: &Value) -> Option<Usage> {
-    let used = current.get("planUsage").filter(|used| used.is_object())?;
-    let seven_day = match number(&used["limit"]).filter(|limit| *limit > 0.0) {
-        Some(limit) => share(&used["includedSpend"], limit).unwrap_or(0.0),
-        None => share(&used["totalPercentUsed"], 100.0)?,
-    };
-    let at = |value: &Value| epoch(value).or_else(|| utc(value));
+    let used = &current["planUsage"];
+    let included_spend = used["includedSpend"].as_f64();
+    let limit = used["limit"].as_f64();
+    let total = used["totalPercentUsed"].as_f64();
+    let auto = used["autoPercentUsed"].as_f64();
+    let api = used["apiPercentUsed"].as_f64();
+    let included = included_spend
+        .zip(limit.filter(|limit| *limit > 0.0))
+        .map(|(spend, limit)| spend / limit);
+    let winner = [
+        ("includedSpend", included),
+        ("totalPercentUsed", total.map(|n| n / 100.0)),
+        ("autoPercentUsed", auto.map(|n| n / 100.0)),
+        ("apiPercentUsed", api.map(|n| n / 100.0)),
+    ]
+    .into_iter()
+    .filter_map(|(field, share)| share.map(|share| (field, share)))
+    .max_by(|a, b| a.1.total_cmp(&b.1));
+    tracing::info!(
+        ?included_spend,
+        ?limit,
+        ?total,
+        ?auto,
+        ?api,
+        winner = winner.map(|(field, _)| field),
+        "Cursor usage"
+    );
+    let seven_day = winner?.1.clamp(0.0, 1.0);
     Some(Usage {
         seven_day: Some(seven_day),
-        seven_day_resets: at(&plan["planInfo"]["includedUsageResetsAt"])
-            .or_else(|| at(&current["billingCycleEnd"])),
+        seven_day_resets: cursor_reset(current, plan),
         advisory: true,
         ..Usage::default()
     })
+}
+
+pub(crate) fn cursor_reset(current: &Value, plan: &Value) -> Option<i64> {
+    let at = |value: &Value| epoch(value).or_else(|| utc(value));
+    at(&plan["planInfo"]["includedUsageResetsAt"]).or_else(|| at(&current["billingCycleEnd"]))
 }
 
 /// What a job's turns used, summed as the tools reported them (#731). A count no tool reported
