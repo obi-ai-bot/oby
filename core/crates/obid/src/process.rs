@@ -245,17 +245,27 @@ pub fn rust_reads(hidden: &[PathBuf], never: &[PathBuf]) -> Vec<PathBuf> {
 /// environment and, when the person's cargo `bin` isn't on `PATH` (so their cargo looks there
 /// first), its `cargo-*` subcommands in the job's own cargo home, where the box's cargo looks first
 /// ([`link_cargo_subcommands`]). When it is on `PATH`, the box's `PATH`, the person's, decides as
-/// theirs does.
+/// theirs does; and so it does when another cargo comes first on `PATH` (Homebrew's), whose own
+/// subcommands go with it: a rustup clippy beside it builds with another rustc (E0514).
 pub fn show_rust(temp: &Path) -> Vec<(&'static str, OsString)> {
     let [rustup, cargo_bin] = rust_homes();
     if let Some(from) = cargo_bin {
-        let on_path = std::env::split_paths(&tools_path()).any(|dir| dir == from);
-        link_cargo_subcommands(&from, temp, !on_path);
+        let path = tools_path();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        link_cargo_subcommands(&from, temp, links_cargo_subcommands(&dirs, &from));
     }
     rustup
         .map(|dir| ("RUSTUP_HOME", dir.into_os_string()))
         .into_iter()
         .collect()
+}
+
+/// Whether the box's cargo needs the person's subcommands linked: only when `PATH` (`dirs`) holds
+/// neither their cargo `bin` (`from`) nor another folder with a cargo of its own.
+fn links_cargo_subcommands(dirs: &[PathBuf], from: &Path) -> bool {
+    !dirs
+        .iter()
+        .any(|dir| dir == from || dir.join("cargo").is_file())
 }
 
 /// A link to each `cargo-*` in `from` in `temp/.cargo/bin`, or, without `link`, none (one an
@@ -700,6 +710,27 @@ mod claude_tmpdir_tests {
     /// A job's cargo home gets links to the person's `cargo-*` (only those), a link the job left
     /// at one's name is replaced, they go when they no longer apply, and nothing is written
     /// through a link the job put in place of `.cargo` or its `bin`.
+    #[test]
+    fn one_toolchain_homebrews_cargo_on_path_gets_no_rustup_subcommands() {
+        let root = std::env::temp_dir().join(format!("obid-one-rust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (brew, from, empty) = (root.join("brew"), root.join("from"), root.join("empty"));
+        for dir in [&brew, &from, &empty] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(brew.join("cargo"), "").unwrap();
+        assert!(!links_cargo_subcommands(
+            &[brew.clone(), empty.clone()],
+            &from
+        ));
+        assert!(!links_cargo_subcommands(
+            &[empty.clone(), from.clone()],
+            &from
+        ));
+        assert!(links_cargo_subcommands(std::slice::from_ref(&empty), &from));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_persons_cargo_subcommands_are_linked_never_through_a_link() {
         let root = std::env::temp_dir().join(format!("obid-cargo-links-{}", std::process::id()));
