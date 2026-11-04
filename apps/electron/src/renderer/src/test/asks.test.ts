@@ -73,6 +73,19 @@ describe('TASKS-14: obid’s own question says why under its title', () => {
     const ask = live.itemAsk(item('question', { id: 'orchestrator-1', title: 'Fix the login needs your decision', text: 'Oby looked at it. Its pull request conflicts with main. Oby recommends: Rebase it.', options: ['Done'] }));
     expect(ask).toMatchObject({ kind: 'question', headline: 'Fix the login needs your decision', text: 'Oby looked at it. Its pull request conflicts with main. Oby recommends: Rebase it.', options: ['Done'] });
   });
+
+  it('tasks_17_askOf_marks_a_running_tasks_escalation_for_the_steer_box', () => {
+    const s = live.liveState();
+    s.jobs.j1 = { id: 'j1', status: 'running', title: 'Fix the login', request: 'Fix it', summary: '', step: 'Working' } as never;
+    s.inbox = [item('question', { id: 'orchestrator-1', title: 'Fix the login needs your decision', text: 'Oby recommends: Rebase it.', options: ['Done'] })];
+    expect(live.askOf(s, s.jobs.j1)).toMatchObject({
+      headline: 'Fix the login needs your decision', text: 'Oby recommends: Rebase it.', options: ['Done'], fullText: true, steer: true,
+    });
+    s.inbox = [item('question', { id: 'orchestrator-2', job: '', title: 'Oby needs your decision', text: 'Something went wrong.', options: ['Done'] })];
+    const alone = live.homeAsk(s.inbox[0]);
+    expect(alone).toMatchObject({ options: ['Done'], fullText: true, text: 'Something went wrong.' });
+    expect(alone.steer).toBeUndefined();
+  });
 });
 
 describe('BYPASS-6: a task’s Mode menu', () => {

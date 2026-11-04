@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
 import { MODES } from './modes';
-import { AGENTS, ASK_LABEL, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './mock';
+import { AGENTS, ASK_LABEL, STEER, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './mock';
 import { api, type PublishChoices } from './obid';
 import { answer, changeCheck, changeMode, markSeen, openOnGitHub, type Task } from './tasks';
 import { prName, prUrl } from './jobPage';
@@ -234,7 +234,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
   const [hold, setHold] = useState(false);
   const pick = (o: string, words?: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o, words); onAnswer?.(o); };
   return (
-    <div className="tc-ask">
+    <div className={`tc-ask${ask.fullText ? ' is-full' : ''}${ask.steer ? ' is-steer' : ''}`}>
       <span className={`tc-ask-kind is-${ask.kind}`}>{ask.label ?? ASK_LABEL[ask.kind] ?? ask.kind}</span>
       <p className="tc-ask-head">{ask.headline}</p>
       <p className="tc-ask-text">{ask.text}</p>
@@ -248,22 +248,29 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
           ? <CheckField initial="" label="Your answer" use="Send" max={2000} onUse={(words) => words && pick(TELL, words)} onCancel={() => setEditing(null)} />
           : <CheckField initial={editing} onUse={(check) => check && pick('Edit', check)} onCancel={() => setEditing(null)} />
       ) : (
-        <div className="tc-options">
-          {ask.options.map((o, i) => (
-            <button
-              key={o}
-              // a Confirm looks preferred only when Oby recommends it (obid never does), and a
-              // check's Use it is one
-              className={`tc-option${i === (ask.kind === 'confirm' || ask.kind === 'check' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
-              title={o === 'Always allow' ? ask.always : undefined}
-              disabled={o === 'Confirm' && confirmIsOff(ask.repos, hold)}
-              onClick={() => (ask.kind === 'check' && o === 'Edit' ? setEditing(ask.detail ?? '') : ask.kind === 'question' && o === TELL ? setEditing('') : pick(o))}
-            >
-              {o}
-            </button>
-          ))}
-          <button className="tc-option is-quiet" onClick={() => pick('Later')}>Later</button>
-        </div>
+        <>
+          {ask.steer && (
+            // Oby's escalation: the box that steers the task, as its page's (TASKS-17); Done stays
+            // a settle-only, never a button of what the model recommended
+            <CheckField initial="" label={STEER} use="Send" max={2000} onUse={(words) => words && pick(STEER, words)} />
+          )}
+          <div className="tc-options">
+            {ask.options.map((o, i) => (
+              <button
+                key={o}
+                // a Confirm looks preferred only when Oby recommends it (obid never does), and a
+                // check's Use it is one
+                className={`tc-option${i === (ask.kind === 'confirm' || ask.kind === 'check' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
+                title={o === 'Always allow' ? ask.always : undefined}
+                disabled={o === 'Confirm' && confirmIsOff(ask.repos, hold)}
+                onClick={() => (ask.kind === 'check' && o === 'Edit' ? setEditing(ask.detail ?? '') : ask.kind === 'question' && o === TELL ? setEditing('') : pick(o))}
+              >
+                {o}
+              </button>
+            ))}
+            <button className="tc-option is-quiet" onClick={() => pick('Later')}>Later</button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -271,20 +278,22 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
 
 // A check's command in Settings' field, in place of the choices: Use it keeps what's typed; with
 // empty (Change check's) an empty field is allowed, that button its label, and gives null. A
-// question's own answer takes the same field (label, use, max).
+// question's own answer takes the same field (label, use, max). onCancel left out: no Cancel (the
+// escalation's Tell it what to do box stays on the card, TASKS-17).
 export function CheckField({ initial, empty, label = 'The check’s command', use = 'Use it', max = 200, onUse, onCancel }: {
-  initial: string; empty?: string; label?: string; use?: string; max?: number; onUse: (check: string | null) => void; onCancel: () => void;
+  initial: string; empty?: string; label?: string; use?: string; max?: number; onUse: (check: string | null) => void; onCancel?: () => void;
 }) {
   const [value, setValue] = useState(initial);
   const typed = value.trim();
   return (
     <form className="tc-options" onSubmit={(e) => { e.preventDefault(); if (typed || empty) onUse(typed || null); }}>
       <input
-        className="set-field" autoFocus value={value} maxLength={max} spellCheck={false} aria-label={label}
-        onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
+        className="set-field" autoFocus={!!onCancel} value={value} maxLength={max} spellCheck={false} aria-label={label}
+        placeholder={onCancel ? undefined : label}
+        onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') onCancel?.(); }}
       />
       <button type="submit" className="tc-option" disabled={!typed && !empty}>{typed || !empty ? use : empty}</button>
-      <button type="button" className="tc-option is-quiet" onClick={onCancel}>Cancel</button>
+      {onCancel && <button type="button" className="tc-option is-quiet" onClick={onCancel}>Cancel</button>}
     </form>
   );
 }

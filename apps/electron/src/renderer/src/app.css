@@ -176,8 +176,16 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .ask-card { position: relative; z-index: 3; padding: 16px 18px; border-radius: 22px; background: var(--chip); text-align: left; user-select: text; }
 .ask-card .tc-ask { margin-top: 12px; padding-top: 12px; }
 /* Home keeps it short: what happened in 3 lines at most, the command or plan in
-   2 (it scrolls); the task’s page has all of it */
+   2 (it scrolls); the task’s page has all of it. Oby's escalation shows whole,
+   scrolling inside the card (TASKS-17) */
 .ask-card .tc-ask-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ask-card .tc-ask.is-full .tc-ask-text {
+  display: block;
+  -webkit-line-clamp: unset;
+  max-height: calc(19px * 12);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
 .ask-card .tc-code { max-height: 56px; overflow-y: auto; scrollbar-width: none; }
 /* where it is in the stack ("2/5"), always there, between the arrows that go
    round it; then the way to its page, at the head's end */
@@ -225,6 +233,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
   .stage:has(.asks) .oby-frame { display: none; }
   .stage:has(.asks) .attention { margin-top: 0; }
   .ask-card .tc-ask-text { -webkit-line-clamp: 2; }
+  .ask-card .tc-ask.is-full .tc-ask-text { -webkit-line-clamp: unset; max-height: calc(19px * 8); }
 }
 @media (prefers-reduced-motion: reduce) {
   .asks, .ask-peek { transition: none; }

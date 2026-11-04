@@ -608,6 +608,19 @@ describe('obid\'s answers over the events that came meanwhile', () => {
         ]);
         expect(owners('POST', calls[0].path, calls[0].body, ['Rebase it first'], [])).toEqual([0]);
       });
+      it('tasks_17_tell_it_what_to_do_messages_the_job_then_settles_done', async () => {
+        // a task still running: Done alone only settles it; the box steers as the task page's box
+        const { tasks, live, event } = await asked();
+        event('job', job({ status: 'running', step: 'Working', session: 's1', revision: 3 }));
+        expect(ask(tasks)).toMatchObject({ options: ['Done'], steer: true, fullText: true });
+        await live.answerJob('j1', 'Tell it what to do', 'Rebase onto main, then merge');
+        expect(sent()).toEqual([
+          ['/v1/jobs/j1/messages', { text: 'Rebase onto main, then merge', conversation: true }],
+          ['/v1/inbox/orchestrator-1/answer', { answer: 'Done' }],
+        ]);
+        expect(owners('POST', calls[0].path, calls[0].body, ['Rebase onto main, then merge'], [])).toEqual([0]);
+        expect(ask(tasks)).toBeUndefined();
+      });
       it('Stop here lets the task go and sends no Done, which obid would refuse: it settled the question itself', async () => {
         const { tasks, live } = await asked();
         answers['POST /v1/inbox/orchestrator-1/answer'] = { status: 409, body: { error: 'That item is done already.' } };

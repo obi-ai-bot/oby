@@ -3,7 +3,7 @@ import { knownUpTo, withEntries, withLine } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
 import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
-import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
+import { AGENTS, STEER, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { repoTicks } from './sharing';
 import { replaceTasks, type Asking, type PersonQuestion, type Task } from './tasks';
@@ -245,6 +245,10 @@ const itemOf = (s: Live, job: string) => {
 // Oby's own question: its escalation takes an answer that settles it. A stalled task's
 // (supervisor-) takes none: only obid can settle it, so it means something only while it's stopped.
 const takesNoAnswer = (i: InboxItem) => i.id.startsWith('supervisor-');
+const isEscalation = (i: InboxItem) => i.id.startsWith('orchestrator-');
+// Escalation on the stack: whole text, and with a job the box that steers it (TASKS-17)
+const escalationAsk = (ask: Ask, item: InboxItem, steer: boolean): Ask =>
+  isEscalation(item) ? { ...ask, fullText: true, ...(steer && item.job ? { steer: true } : {}) } : ask;
 
 // Sangam's failed card: another round tells its agent to try again where it left off (obid's
 // words, docs/runner-api.md), or, for one that never started and has no session to pick up, asks
@@ -272,9 +276,14 @@ export function askOf(s: Live, j: Job): Ask | undefined {
     // Oby's own question about a task that stopped: a lone Done would only settle it, so it answers
     // as his failed card does, and his question card's Tell it something (#1795). What Oby
     // recommends is in its text, so no button looks recommended
-    if (stopped && item.kind === 'question') return { ...ask, options: [ANOTHER_ROUND, TELL, STOP_HERE], recommended: -1 };
+    if (stopped && item.kind === 'question') {
+      return escalationAsk({ ...ask, options: [ANOTHER_ROUND, TELL, STOP_HERE], recommended: -1 }, item, false);
+    }
     // (a task let go: obid settles its question by itself, TASKS-13)
-    return item.kind === 'question' && (j.dismissed || takesNoAnswer(item)) ? undefined : ask;
+    if (item.kind === 'question' && (j.dismissed || takesNoAnswer(item))) return undefined;
+    // still running or done: Done alone only settles it, so the card also has Tell it what to do
+    // (TASKS-17), signed as the task page's box; Later stays; the headline stays
+    return escalationAsk(ask, item, item.kind === 'question');
   }
   if (stopped) {
     return { kind: 'failed', headline: j.status === 'failed' ? 'It failed' : 'It was interrupted', text: (j.reason || j.summary).split('\n')[0] || j.step, options: [ANOTHER_ROUND, STOP_HERE], recommended: 0 };
@@ -341,7 +350,9 @@ const ON_HOME = new Set(['github', 'confirm', 'start', 'failed', 'failure']);
 // On Home, obid's words under the headline, unless they are the headline (a failure's)
 export const homeAsk = (i: InboxItem): Ask => {
   const ask = itemAsk(i);
-  return { ...ask, text: ask.headline === i.text ? '' : i.text };
+  const text = ask.headline === i.text ? '' : i.text;
+  // Oby's escalation with no task: whole text, Done and Later only (TASKS-17)
+  return { ...escalationAsk({ ...ask, text }, i, false), text };
 };
 // Another Oby's question, by its shape: all but obid's own words are what that Oby wrote
 const texts = (list: unknown) => (Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : []);
@@ -350,16 +361,18 @@ export const questionOf = (i: InboxItem): PersonQuestion | undefined => {
   if (i.kind !== 'obiRequest' || o?.type !== 'question' || typeof words !== 'string' || typeof o.fromOwner !== 'string') return undefined;
   return { id: i.id, from: o.fromOwner, words, choices: texts(o.quoted?.choices), repos: texts(o.repos) };
 };
+// An escalation with no job still reaches the stack (TASKS-17): Done and Later, whole text
+const onHome = (i: InboxItem) => ON_HOME.has(i.kind) || !!questionOf(i) || (isEscalation(i) && i.kind === 'question' && !i.job);
 function asksOf(s: Live): Asking[] {
   const now = Date.now();
-  const open = s.inbox.filter((i) => (ON_HOME.has(i.kind) || questionOf(i)) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
+  const open = s.inbox.filter((i) => onHome(i) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
     && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id));
   return [
     ...open.filter((i) => !i.offer).map((i) => {
       const question = questionOf(i);
       if (question) return { id: i.id, title: `Question from ${plainId(question.from)}`, question };
       // over it a GitHub item's own title, as on To do; obid's words under Oby's headline, or under
-      // the title till one comes (clamped: they can be long)
+      // the title till one comes (clamped: they can be long; an escalation's is whole, TASKS-17)
       const g = i.github;
       return {
         id: i.id, ask: homeAsk(i), title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title, talk: i.conversation ? shownId(i.conversation) : undefined,
@@ -1092,7 +1105,7 @@ export async function answerJob(id: string, option: string, words?: string) {
   const j = state.jobs[id], item = itemOf(state, id) ?? state.inbox.find((i) => i.id === id), ask = j && askOf(state, j);
   // a card drawn before the limit came: this click would sign past its grouped choice (#1563)
   if (j && option === ANOTHER_ROUND && limitHolds(state, j)) return;
-  const shown = option === 'Edit' && words ? `Use ${words}` : option === TELL && words ? words : option;
+  const shown = option === 'Edit' && words ? `Use ${words}` : (option === TELL || option === STEER) && words ? words : option;
   if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id, ...(option === 'Later' ? { until: Date.now() + 3600_000 } : {}) } } });
   else if (item) answering(item.id, true);
   try {
@@ -1116,16 +1129,17 @@ export async function answerJob(id: string, option: string, words?: string) {
     else if (item?.kind === 'permission' && j?.permission && DECISIONS[option]) {
       const next = await api.permission(id, { id: j.permission.id, decision: DECISIONS[option] });
       take({ kind: 'job', job: next });
-    } else if (item?.kind === 'question' && j && (option === ANOTHER_ROUND || option === TELL || option === STOP_HERE)) {
+    } else if (item?.kind === 'question' && j && (option === ANOTHER_ROUND || option === TELL || option === STEER || option === STOP_HERE)) {
       // let go, obid settles the question by itself (TASKS-13). On, it leaves it open while the task
-      // runs, so it's settled here; refused, it's still asked
+      // runs, so it's settled here; refused, it's still asked. Tell it what to do (TASKS-17) is the
+      // task page's shape: conversation true, then Done
       if (option === STOP_HERE) take({ kind: 'job', job: await api.dismiss(id) });
-      else if (await tellJob(id, option === TELL ? words! : againWords(j))) await settleQuestion(item);
+      else if (await tellJob(id, option === ANOTHER_ROUND ? againWords(j) : words!, [], option === STEER)) await settleQuestion(item);
       set({ answered: without(state.answered, id) });
     } else if (item) {
       // (an agent's question by its own item, never the job's permission, which can lag behind the
       // inbox: Tell it something sends the owner's words as its answer)
-      const said = option === TELL && words ? words : option;
+      const said = (option === TELL || option === STEER) && words ? words : option;
       const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
       take({ kind: 'inbox', item: await api.answer(item.id, body) });
     } else if (option === STOP_HERE) {
