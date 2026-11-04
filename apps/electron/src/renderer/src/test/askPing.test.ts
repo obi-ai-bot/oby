@@ -21,4 +21,14 @@ describe('the ping', () => {
     const { pingOf } = await import('../../../main/notify');
     expect(pingOf({ text: 'Hi', asks: [{ ...card('answered'), name: 'Dаna' }] })?.title).not.toBe('Dana’s Oby answered');
   });
+
+  it('notify_refused_bounces_the_dock_and_the_badge_counts_what_waits', async () => {
+    const { refused, waiting } = await import('../../../main/notify');
+    const bounce = vi.fn();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    refused('UNErrorDomain error 1', { bounce });
+    expect(bounce).toHaveBeenCalledWith('critical');
+    expect(waiting(new Map([['a', { needs: true }], ['b', { needs: false }], ['c', { needs: true }]]))).toBe('2');
+    expect(waiting(new Map([['b', { needs: false }]]))).toBe('');
+  });
 });

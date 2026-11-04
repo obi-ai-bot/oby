@@ -52,9 +52,10 @@ const SEARCHABLE: Section[] = ['oby', 'conversations'];
 // a conversation's line under its name: the tasks it started, else Oby's last words
 const convoAbout = (c: Chat) => {
   if (!c.said.length && c.about !== undefined) return c.about;
-  const n = c.said.flatMap((m) => m.jobs ?? []).length;
-  if (n) return `Started ${n} task${n === 1 ? '' : 's'}`;
   const said = [...c.said].reverse().find((m) => m.who === 'oby' && (m.text || m.askCard));
+  const n = c.said.flatMap((m) => m.jobs ?? []).length;
+  // its tasks' count while nothing newer was said; once one reports, what it said
+  if (n && !said?.text) return `Started ${n} task${n === 1 ? '' : 's'}`;
   // a question's card: what it says, which is all its turns are now
   if (said?.askCard) return askCardLine(said.askCard, Date.now()) ?? said.askCard.question;
   return said ? plain(said.text) : 'Oby is on it';

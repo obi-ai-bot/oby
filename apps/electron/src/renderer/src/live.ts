@@ -83,6 +83,14 @@ const take = (e: Event) => {
 };
 // a job that waits on you, however old: past the latest 100, its ask would show nowhere (obid
 // keeps every open item's job, and an item can come with no event for its job; a start item's isn't one until it starts)
+// A conversation's line before its words load: its tasks, and once they've all ended, that they have
+const ENDED = ['done', 'failed', 'stopped', 'interrupted'];
+const tasksLine = (s: Pick<Live, 'jobs'>, tasks?: string[]) => {
+  if (!tasks?.length) return '';
+  const n = tasks.length, of = `${n} task${n === 1 ? '' : 's'}`;
+  return tasks.every((id) => ENDED.includes(s.jobs[id]?.status ?? '')) ? `Finished ${of}` : `Started ${of}`;
+};
+
 const lookUpJobOf = (i: Pick<InboxItem, 'job' | 'kind' | 'state'>) => {
   if (i.job && i.kind !== 'start' && i.state !== 'done' && !state.jobs[i.job] && !state.gone.has(i.job)) void api.job(i.job).then((job) => take({ kind: 'job', job }), () => {});
 };
@@ -203,7 +211,7 @@ export function chatOf(s: Live, c: Conversation): Chat {
   confirm({ who: 'oby', text: '', ago: 0 });
   return {
     id: s.alias[c.id] ?? c.id, title: c.title, pinned: c.pinned, at: minutesAgo(c.lastActivity), said, fromObys: c.fromObys, talkAccount: c.talkAccount, talkedOn: c.talkedOn, movedOff: c.movedOff,
-    about: c.tasks?.length ? `Started ${c.tasks.length} task${c.tasks.length === 1 ? '' : 's'}` : '',
+    about: tasksLine(s, c.tasks),
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
     // waiting on you with no task to say so (a task's says it itself, Sidebar.tsx): Oby's question back,

@@ -103,6 +103,11 @@ const questionOf = ({ kind, obi: o }: InboxItem) => (kind === 'obiRequest' && o?
   ? { title: `Question from ${plainId(o.fromOwner)}`, body: plain(o.quoted.text) } : null);
 const id = encodeURIComponent;
 
+export const waiting = (want: Map<string, { needs: boolean }>) => {
+  const n = [...want.values()].filter((a) => a.needs).length;
+  return n ? String(n) : '';
+};
+
 export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string, Alert> {
   const want = new Map<string, Alert>();
   for (const j of jobs.values()) {
@@ -187,6 +192,12 @@ export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string,
   return want;
 }
 
+// A refused alert still gets the owner's attention: the Dock's icon bounces until they look.
+export function refused(why: string, dock: { bounce?: (kind: 'critical') => unknown } | undefined = app.dock) {
+  console.error(`Oby: macOS refused an alert: ${why}`);
+  dock?.bounce?.('critical');
+}
+
 // --- the gate
 
 // The one gate every alert passes (the owner's rule of 2026-10-28): nothing while the window is
@@ -245,6 +256,8 @@ function post(key: string, a: Alert) {
     actions: a.buttons.map((b) => ({ type: 'button' as const, text: b.text })),
   });
   const done = () => { if (shown.get(key)?.n === n) shown.delete(key); };
+  // macOS can refuse (notifications off for Oby, or never allowed): the Dock still says so, and the log why
+  n.on('failed', (_e, why) => refused(why));
   n.on('click', () => { done(); open(a.place); });
   n.on('action', async ({ actionIndex }) => {
     done();
@@ -285,6 +298,8 @@ function look() {
   }
   for (const [key, s] of said) if (s.needs && !next.has(key)) withdraw(key);
   said = next;
+  // How many things wait on the owner, on the Dock's icon, whether or not macOS lets alerts through
+  app.dock?.setBadge(waiting(want));
   for (const [c, p] of pings) {
     if (notifies(true, focused())) post(`ask:${p.id}`, { what: '', needs: true, title: p.title, subtitle: titles.get(c), body: plain(p.body), place: { conversation: c }, thread: `conversation-${c}`, buttons: [] });
   }
