@@ -292,14 +292,15 @@ export const weekWords = (a: Account) => (a.weekly && a.used != null ? `This wee
 const resetDay = (at: string, now: number) => new Date(at).toLocaleDateString([], Date.parse(at) - now < 7 * 86_400_000 ? { weekday: 'long' } : { month: 'short', day: 'numeric' });
 // an account as obid's status says it (docs/contracts/usage.md, USAGE-1 and USAGE-6): its week's
 // share (else its session's), its 5-hour session (signed in only; a session past its reset reads
-// 0) and when it starts over, and what to say when there's no figure ("No usage" for Cursor, whose
+// 0 with no week, and with one isn't shown) and when it starts over, and what to say when there's no figure ("No usage" for Cursor, whose
 // figure comes from its plan and goes when a read fails)
 export function accountRow(a: Status['accounts'][number], now: number): Account {
   // an Ultra plan has no 5-hour window, only the week, whatever an older reading left behind
   const ultra = a.agent === 'claude' && /ultra/i.test(a.plan ?? '');
   const used = a.sevenDay ?? (ultra ? null : a.fiveHour);
   const over = !!a.fiveHourResets && Date.parse(a.fiveHourResets) <= now;
-  const session = ultra || !a.signedIn || a.fiveHour == null ? null : over ? 0 : Math.round(a.fiveHour * 100);
+  // a session that ended says nothing beside a week (an old reading, or a plan with no 5-hour window): the week is what's left
+  const session = ultra || !a.signedIn || a.fiveHour == null ? null : over ? (a.sevenDay != null ? null : 0) : Math.round(a.fiveHour * 100);
   return {
     id: a.id, agent: a.agent, name: a.name, payer: a.payer ?? 'You', who: [a.email, a.org, a.plan && a.plan[0].toUpperCase() + a.plan.slice(1)].filter(Boolean).join(' · ') || undefined, signedIn: a.signedIn, label: a.label ?? null, used: used == null ? null : Math.round(used * 100),
     chatgpt: a.login === 'chatgpt',
