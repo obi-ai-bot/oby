@@ -24,14 +24,9 @@ const now = () => Math.floor(Date.now() / 1000);
 const json = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
-// the Tasks cards, Home's chip's, from the side panel's Tasks icon (docs/contracts/chat-first.md)
+// the Tasks cards, Home's chip's: hidden chat first (docs/contracts/chat-first.md), so as the control center opens a page
 async function openTasks(page) {
-  const kind = page.locator('.chat-kind').filter({ hasText: /^Tasks/ });
-  // (the side panel opens by itself only where it fits beside the chat)
-  const show = page.getByRole('button', { name: 'Show sidebar' });
-  if (await show.isVisible()) await show.click();
-  if (!(await kind.isVisible())) await page.locator('.rail-button[aria-label="Tasks"]').click();
-  await kind.click();
+  await page.evaluate(() => dispatchEvent(new CustomEvent('oby:open', { cancelable: true, detail: { kind: 'group', id: 'tasks', tab: 'running' } })));
 }
 
 async function until(label, f, ms = 45_000) {

@@ -57,7 +57,12 @@ vi.mock('react', async (original) => {
     },
     useState: (first: unknown) => {
       const hooks = page.hooks;
-      if (!hooks) { const [now] = real.useState(first); return [now, () => {}]; }
+      if (!hooks) {
+        // the side panel as the live Sphere's tile leaves it: its column, not Chats (a server render keeps no click)
+        const value = typeof first === 'function' ? first() : first;
+        const [now] = real.useState(value === 'oby' ? 'obysphere' : value === 'deskree' ? 'live:rig' : value);
+        return [now, () => {}];
+      }
       const slot = (hooks.kept[hooks.at++] ??= { value: first });
       return [slot.value, (change: unknown) => {
         const next = typeof change === 'function' ? change(slot.value) : change;
@@ -108,7 +113,7 @@ async function opened(answer: () => { status: number; text: string }) {
 }
 const handlers = { onOpenMember: vi.fn(), onOpenOby: vi.fn() };
 const row = () => renderToStaticMarkup(
-  <m.Sidebar open atHome={false} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenOwn={none} onOpenGroup={none}
+  <m.Sidebar open atHome={false} width={362} onResize={none} onClose={none} onNewChat={none} onHome={none} onOpenGroup={none}
     onOpenTask={none} onOpenChat={none} {...handlers} onOpenTalk={none} onOpenArchive={none} onOpenSetting={none} onOpenSphereSetting={none} onOpenKnowledge={none} onOpenRoom={none} />,
 ).replaceAll('<!-- -->', '');
 
@@ -129,6 +134,7 @@ describe('the row', () => {
     const html = row();
     expect(html).toContain('aria-label="Chat with dana’s Oby"');
     expect(html.match(/aria-label="Chat with dana’s Oby"/g)).toHaveLength(1);
+    expect(html).toContain('<span class="connector-name">dana’s Oby</span>');
     page.clicks['Chat with dana’s Oby']();
     expect(handlers.onOpenMember).toHaveBeenCalledWith('dana');
     expect(handlers.onOpenOby).not.toHaveBeenCalled();

@@ -207,28 +207,28 @@ async function main() {
   const unheld = await until('the follow-up the script’s words start', async () => kept(s, JSON.parse(told.text).id));
   assert.notEqual(unheld.vetted, true, 'WORDS-7: words no keystroke or click held go unsigned');
 
-  // 8. Delete from the side panel, on a task whose work isn't committed: obid's Confirm first, and
-  // on the owner's Confirm it leaves the side panel at once, with no reload (TASKS-11)
+  // 8. Delete from its page's menu, on a task whose work isn't committed: obid's Confirm first, and
+  // on the owner's Confirm its card leaves at once, with no reload (TASKS-11)
   const draft = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'research', title: 'Draft task', task: 'DRAFT: notes.md' } });
   await until('the draft task ends', async () => ended(await s.call('GET', `/v1/jobs/${draft.id}`)), 120_000);
-  // (chat first, the side panel's tasks are under its Tasks icon: docs/contracts/chat-first.md)
-  await page.locator('.rail-button[aria-label="Tasks"]').evaluate((el) => el.click());
-  const row = page.locator('.task-row', { hasText: 'Draft task' });
-  await until('its row in the side panel', async () => (await row.count()) === 1);
-  // (the side panel may be folded away: its row's own right-click and menu, as a person's)
-  await row.dispatchEvent('contextmenu');
+  await page.locator('.convo-row', { hasText: 'Draft task' }).evaluate((el) => el.click());
+  const row = page.locator('.msg-task.is-link', { hasText: 'Draft task' });
+  await until('its card in its conversation', async () => (await row.count()) === 1);
+  await row.evaluate((el) => el.click());
+  await page.getByRole('button', { name: 'Open the task’s page', exact: true }).evaluate((el) => el.click());
+  await page.getByRole('button', { name: 'Task options', exact: true }).evaluate((el) => el.click());
   await page.getByRole('menuitem', { name: 'Delete task' }).evaluate((el) => el.click());
   await until('obid’s Confirm', async () => (await s.call('GET', '/v1/inbox')).some((i) => i.job === draft.id && i.state === 'open'));
+  // over the conversation, once its page is left
+  await page.getByRole('button', { name: 'Back', exact: true }).evaluate((el) => el.click());
   assert.equal(await row.count(), 1, 'TASKS-11: nothing is deleted before the Confirm');
-  // Home's stack: its Confirm, once the pages the steps above opened are closed (New task)
-  await page.getByRole('button', { name: 'New task', exact: true }).first().evaluate((el) => el.click());
-  const confirm = page.locator('.ask-card.is-up', { hasText: 'Delete Draft task' }).getByRole('button', { name: 'Confirm', exact: true });
-  await until('its Confirm on Home', async () => (await confirm.count()) === 1 && await confirm.evaluate((el) => !el.closest('[inert]')));
+  const confirm = page.locator('.asks-over .ask-card.is-up', { hasText: 'Delete Draft task' }).getByRole('button', { name: 'Confirm', exact: true });
+  await until('its Confirm on the stack', async () => (await confirm.count()) === 1 && await confirm.evaluate((el) => !el.closest('[inert]')));
   // (a card takes no click in its first half second: TaskCard's pick)
   await sleep(600);
   await confirm.evaluate((el) => el.click());
   await until('obid deleted it', async () => !(await jobs(s)).some((j) => j.id === draft.id));
-  await until('it left the side panel', async () => (await row.count()) === 0, 5000);
+  await until('its card left', async () => (await row.count()) === 0, 5000);
   await sleep(1000);
   assert.equal(await row.count(), 0, 'gone for good: the Confirm’s answer doesn’t bring it back');
   await shot(page, '8-deleted-on-its-confirm');

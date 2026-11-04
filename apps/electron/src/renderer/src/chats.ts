@@ -20,7 +20,7 @@ type Ask = { question: string; options: string[] };
 // at: when it last moved (minutes ago), when that's known apart from what's loaded of it (obid's)
 // about: its line in Conversations while none of it is loaded (obid's)
 // local: the app's own, not obid's (Oby's first conversation, onboarding.ts): kept as obid's change
-export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
+export type Chat = { id: string; title: string; said: Message[]; typing?: boolean; step?: string; waiting?: Ask; needs?: boolean; pinned?: boolean; fromObys?: boolean; at?: number; about?: string; local?: boolean; talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null };
 
 // named after its first line, as Oby would title it
 const titled = (text: string) => {

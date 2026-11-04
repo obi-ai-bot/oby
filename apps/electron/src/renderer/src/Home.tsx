@@ -46,6 +46,9 @@ function attention(running: number, needs: number, fresh = false) {
   return fresh ? 'I’m all set.\nGive me a task whenever you’re ready.' : 'All quiet. Give me something to work on';
 }
 
+// chat first, the empty chat's line (the canvas's words; Sangam's to change)
+const HELLO = 'What do you want me to work on?';
+
 // side panel width limits, icons (48px) included
 // (the default: halfway between the narrowest and widest, 362px)
 const SIDEBAR_MIN = 252, SIDEBAR_MAX = 472, SIDEBAR_DEFAULT = (SIDEBAR_MIN + SIDEBAR_MAX) / 2;
@@ -318,8 +321,6 @@ export default function Home() {
   // (the box can't take the focus while a page is still over it)
   const [focusHome, setFocusHome] = useState(false);
   const newChat = useCallback(() => { closeAll(); setFocusHome(true); }, [closeAll]);
-  // the side panel's Oby: your latest conversation, or with none, the empty chat
-  const openOwn = () => { const c = latestChat(chats); if (c) start({ kind: 'talk', id: c.id }); else newChat(); };
   useEffect(() => {
     if (!focusHome || layers.length) return;
     document.querySelector<HTMLElement>('.composer .composer-input')?.focus();
@@ -360,7 +361,6 @@ export default function Home() {
         onClose={() => { lent.current = false; setSidebar(false); }}
         onNewChat={newChat}
         onHome={home}
-        onOpenOwn={openOwn}
         onOpenGroup={(id) => start({ kind: 'group', id, tab: firstTab(id) })}
         onOpenTask={(id) => start({ kind: 'task', id })}
         onOpenChat={(id) => start({ kind: 'task', id }, conversationOf(id))}
@@ -375,7 +375,6 @@ export default function Home() {
         onOpenKnowledge={(id) => start({ kind: 'knowledge', id })}
         activeKnowledge={top?.kind === 'knowledge' ? top.id : null}
         onOpenRoom={(id) => start({ kind: 'room', id })}
-        activeRoom={top?.kind === 'room' ? top.id : null}
         active={rootTask}
         activeTalk={top?.kind === 'talk' ? top.id : null}
         activeOby={firstOby?.id ?? null}
@@ -480,13 +479,13 @@ export default function Home() {
         {TYPES.length > 0 && (
           <section className="attention" aria-label="Your tasks">
             {/* coming in from setting up: it waits till Oby has hopped up, then rises in (app.css) */}
-            <span className={`attention-label${running || needsYou ? '' : ' is-idle'}${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`}>{attention(running, needsYou, tasks.length === 0)}</span>
+            <span className={`attention-label${chatFirst || !(running || needsYou) ? ' is-idle' : ''}${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`}>{chatFirst ? HELLO : attention(running, needsYou, tasks.length === 0)}</span>
             {/* what Oby is asking you, answered here; opening one goes to its task's page */}
             {(!chatFirst || !away) && <AskStack active={!away} onOpen={openTask} onOpenTalk={(id) => start({ kind: 'talk', id })} />}
             {/* every kind of work, in its usual order, whatever's going on in it (a
                 kind with nothing open opens on its completed ones), so the kinds
                 show here even while the side panel groups by status */}
-            {/* chat first, this stage is the empty chat: the kinds of work are in the side panel, under Tasks */}
+            {/* chat first, this stage is the empty chat: the kinds of work are behind ?home, and with ?everything&chat under Tasks */}
             {!chatFirst && <div className={`chips${enterIn ? (arriving ? ' is-waiting' : ' is-arrival') : ''}`} onPointerEnter={() => setOnChips(true)} onPointerLeave={() => setOnChips(false)}>
                 {TYPES.map((c) => {
                   // blue: holds a new task; orange: something in it needs you (a task's decision, or
@@ -517,7 +516,9 @@ export default function Home() {
         home
         hidden={away}
         className={enterIn ? (arriving ? 'is-waiting' : 'is-arrival') : ''}
-        prompts
+        // (chat first, the line over it asks already: the canvas's words, Sangam's to change)
+        prompts={!chatFirst}
+        placeholder={chatFirst ? 'Message Oby…' : undefined}
         // the tip bar over the box (SettingsTip.tsx, its look kept for tips to come): the Settings tip is
         // off for now (Sangam, 2026-10-28: not needed)
         note={SETTINGS_TIP && tipShown && <SettingsTip onOpen={() => start({ kind: 'settings', id: 'general' })} />}

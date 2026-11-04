@@ -1498,6 +1498,9 @@ button.connector { width: 100%; text-align: left; }
 /* on hover (or with its menu open) the time gives way to the ⋮, in the same spot */
 .convo-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) > .sidebar-item-ago { opacity: 0; }
 .convo-row:is(:hover, :focus-visible, :has(:focus-visible), .is-menu-open) .sidebar-item-more { opacity: 1; }
+.convo-row > .status-dot { position: absolute; right: 12px; bottom: 11px; }  /* under when it moved, as on the canvas */
+.convo-row:has(.connector-about:empty) > .sidebar-item-ago { align-self: center; margin-top: 0; }  /* a line of its own, beside its name */
+.convo-row:has(.connector-about:empty) > .status-dot { bottom: 6px; }
 .convo-row.is-menu-open { background: var(--hover); }
 .convo-row.is-menu-open .connector-name { color: var(--ink); }
 /* renaming: the name becomes a field in place, the line under it stays */
@@ -2186,12 +2189,8 @@ button.sphere-logo-badge:hover { color: var(--ink); background: #3a3a39; }
 /* Chat first (docs/contracts/chat-first.md): the side panel's Oby, Obysphere and usage rows
    (the canvas's), and what Oby is asking you, over your conversation */
 .connector.chat-own { min-height: 52px; }
-.connector.chat-own .connector-name, .connector.chat-sphere .connector-name { color: var(--ink); font-weight: 500; }
-.chat-own-end { flex: none; align-self: flex-start; margin-top: 2px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.connector.chat-own .connector-name { color: var(--ink); font-weight: 500; }
 .sidebar-new.chat-new { margin: 4px 0 2px; }
-.chat-sep { display: block; height: 1px; margin: 8px 10px; background: var(--line); }
-.connector.chat-sphere { min-height: 44px; }
-.connector.oby-row + .connector.chat-sphere { margin-top: 6px; }
 .sidebar-item.chat-kind { gap: 6px; }
 .sidebar-item.chat-kind:last-of-type { margin-bottom: 8px; }
 .asks-over { position: absolute; z-index: 5; top: var(--bar); left: 0; right: 0; max-height: calc(100% - var(--bar)); overflow-y: auto; scrollbar-width: none; padding: 8px var(--gutter) 0; display: flex; justify-content: center; pointer-events: none; }

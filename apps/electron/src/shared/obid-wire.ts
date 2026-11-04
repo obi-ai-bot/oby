@@ -123,6 +123,8 @@ export type InboxItem = {
   // task it planned, and whether the turn had read something untrusted first
   conversation?: string | null;
   offer?: { id: string; what: string; task: string; untrusted: boolean } | null;
+  // obid only, an obiRequest: what another Oby asks (a question goes in "Questions from other Obys")
+  obi?: { type?: string } | null;
   // obid only: what a confirm item's Confirm carries out; set_check's target is the repository,
   // its payload the command (null: take `was` out) and the check it has now (Oby's ask, #1062)
   confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null } | null } | null;

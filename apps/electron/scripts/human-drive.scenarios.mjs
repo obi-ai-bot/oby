@@ -18,10 +18,10 @@ const taskName = `Oby drive ${stamp.slice(11)}`;
 // the empty chat, Home's stage, where words start a new conversation (docs/contracts/chat-first.md)
 async function home(t) {
   if (await t.page.getByRole('button', { name: 'Show sidebar' }).isVisible()) await t.click('Show sidebar');
-  const oby = t.page.locator('.rail-button[aria-label="Oby"]');
+  const oby = t.page.locator('.rail-button[aria-label="Chats"]');
   if ((await oby.getAttribute('aria-pressed')) !== 'true') await oby.click();
   await t.click('New conversation');
-  await t.see(/Fix a bug|What should I work on|need you|All caught up/, { label: 'Home' });
+  await t.see('What do you want me to work on?', { label: 'the empty chat' });
 }
 
 // the task the words just said started: its job (obid's evidence, which says which one: only ever
@@ -88,14 +88,17 @@ async function answerCards(t, { done, ms = 25 * MIN, mine = () => false }) {
   throw new Error(`not done in ${ms / MIN} minutes`);
 }
 
-// a task's page, from the side panel, as the owner opens it
+// a task's page, as the owner opens it: its card in its conversation, then its detail view. Its
+// conversation is the latest few: they go down the list until its card shows
 async function openTask(t, title) {
   await home(t);
-  await t.page.locator('.rail-button[aria-label="Tasks"]').click();
-  const panel = t.page.locator('nav[aria-label="Side panel"]'), row = panel.getByText(title, { exact: true }).first();
-  // Completed shows its latest 5: an older task (one its follow-up and reviews came after) is under Show N more
-  if (!(await row.isVisible())) for (const more of await panel.getByRole('button', { name: /^Show \d+ more$/ }).all()) await more.click();
-  await row.click();
+  const card = t.page.locator('.msg-task.is-link', { hasText: title }).first(), rows = t.page.locator('.convo-row');
+  for (let i = 0; i < Math.min(20, await rows.count()) && !(await card.isVisible()); i++) {
+    await rows.nth(i).click();
+    await sleep(500);
+  }
+  await card.click();
+  await t.click('Open the task’s page');
   await t.see('Tell Oby about this task…', { label: 'its page' });
 }
 
