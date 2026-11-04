@@ -550,10 +550,12 @@ impl Link {
             about: &written.refs,
             reply_to: Some(&need.id),
         };
-        // The rule may have gone while the model ran, or a member come whom it doesn't cover: then
-        // nothing it wrote goes.
+        // The rule may have gone while the model ran, stopped covering a repository the run was told
+        // of (PEER-37), or a member come whom it doesn't cover: then nothing it wrote goes.
+        let mut told = answering::told_repos(&material);
+        told.extend(repos);
         let under = Under {
-            repos,
+            repos: told,
             asker: Some(need.owner.clone()),
         };
         if let Err(why) = self.post_in_room(&new, None, Some(under)).await {

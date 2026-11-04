@@ -67,6 +67,7 @@ export type Ask = {
   detail?: string;    // the command, the diff stat, the plan
   label?: string;     // over the headline, in place of the kind's (a merge card's own: Ready to merge)
   always?: string;    // what Always allow saves, in obid's words: on its button's hover (proposed, Sangam's to change)
+  repos?: { offered: string[]; chosen: string[] };  // the repositories to tick, on the card that asks to share (PEER-38)
 };
 // a Question's own words for the agent, in place of its options (as on his "Go with this plan?")
 export const TELL = 'Tell it something';

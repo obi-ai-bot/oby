@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACCEPTS, NotThisKey, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
 } from '../../../shared/sphere';
-import { canAddProgress, canOpenRoom, whatItTells, type SharingRule } from '../sharing';
+import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, tickRepo, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
 // one local Obysphere) is scripts/test-sphere.mjs.
@@ -247,6 +247,33 @@ describe('what your Oby tells (docs/contracts/peer-thread.md)', () => {
     expect(canOpenRoom([{ ...rule, for: ['dana'] }])).toBe(false);
     expect(canOpenRoom([rule])).toBe(true);
     expect(canOpenRoom([rule, own])).toBe(false);
+  });
+  it('peer_38: the card lists what obid offers, ticked only as obid says, and a tick keeps the list order', () => {
+    const card = (payload: unknown) => ({ confirm: { action: 'share_status', payload } }) as Parameters<typeof repoTicks>[0];
+    expect(repoTicks(card({ offered: ['acme/app', 'me/taxes'], repos: [] }))).toEqual({ offered: ['acme/app', 'me/taxes'], chosen: [] });
+    expect(repoTicks(card(null)), 'the card that only adds progress has no ticks').toBeUndefined();
+    expect(repoTicks({ confirm: { action: 'share_room', payload: { offered: ['a/b'] } } })).toBeUndefined();
+    const offered = ['a/a', 'b/b', 'c/c'];
+    expect(tickRepo(offered, [], 'c/c')).toEqual(['c/c']);
+    expect(tickRepo(offered, ['c/c'], 'a/a')).toEqual(['a/a', 'c/c']);
+    expect(tickRepo(offered, ['a/a', 'c/c'], 'a/a')).toEqual(['c/c']);
+    // Confirm: off with nothing ticked as obid has it, a tick on its way, or one refused
+    expect(confirmIsOff({ chosen: [] }, false)).toBe(true);
+    expect(confirmIsOff({ chosen: ['a/a'] }, true)).toBe(true);
+    expect(confirmIsOff({ chosen: ['a/a'] }, false)).toBe(false);
+    expect(confirmIsOff(undefined, true), 'a card with no ticks is as it was').toBe(false);
+  });
+  it('peer_42: Settings lists the chosen repositories, with Change only on the rule the owner’s yes made', () => {
+    const chosen = { ...rule, repos: ['acme/app', 'acme/web'], tells: ['jobStatus', 'jobProgress'] };
+    expect(whatItTells(chosen, ['dana']).about).toContain('in acme/app, acme/web.');
+    expect(canChangeRepos(chosen)).toBe(true);
+    expect(canChangeRepos({ ...chosen, starter: false }), 'a rule they wrote stays as they wrote it').toBe(false);
+    expect(canChangeRepos(rule), 'nothing to tick on one for every repository').toBe(false);
+    // the card already listed progress, and the room's card builds on it
+    expect(canAddProgress([chosen])).toBe(false);
+    expect(canAddProgress([{ ...chosen, tells: ['jobStatus'] }]), 'a rule of theirs for some repositories asks nothing').toBe(false);
+    expect(canOpenRoom([chosen])).toBe(true);
+    expect(canOpenRoom([chosen, { ...chosen, starter: false }])).toBe(false);
   });
   it('says the room only for a rule the owner made that covers everyone', () => {
     const own = { ...rule, starter: false };

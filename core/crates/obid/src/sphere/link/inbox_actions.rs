@@ -652,7 +652,7 @@ impl Link {
                     .map(|_| ())
                     .map_err(|why| api(StatusCode::CONFLICT, why))
             }
-            inbox::action::SHARE_STATUS => self.share_status(),
+            inbox::action::SHARE_STATUS => self.share_status(&confirmed.payload),
             inbox::action::SHARE_ROOM => self.share_room(),
             inbox::action::SET_SETTINGS => {
                 let asked: crate::brain::owners_word::Settings =
@@ -1142,6 +1142,16 @@ impl Link {
                 && approved.map(|(title, _)| title) != Some(open.title.as_str())
             {
                 return Err(api(StatusCode::FORBIDDEN, NEEDS_YOUR_TAP));
+            }
+            // Sharing with nothing ticked: there's nothing to do, and the card stays (PEER-38).
+            if let Some(open) = &item
+                && confirming
+                && open.confirm.as_ref().is_some_and(|c| {
+                    c.action == inbox::action::SHARE_STATUS
+                        && c.payload["repos"].as_array().is_some_and(Vec::is_empty)
+                })
+            {
+                return Err(api(StatusCode::CONFLICT, CHOOSE_REPOS_FIRST));
             }
             if item.is_some()
                 && confirming

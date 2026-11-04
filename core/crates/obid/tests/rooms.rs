@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use support::*;
 
 const REPO: &str = "obi-e2e/fixture-app";
+const SECOND: &str = "wellington/second";
 const ROOM: &str = "/v1/spheres/e2e/room";
 
 fn answerer() -> PathBuf {
@@ -49,6 +50,10 @@ async fn on_sphere(
 ) -> (FakeSphere, Obid, Owner, TestObi) {
     let remote = fixture(&folder.0.join("fixture"));
     let mut settings = config(&folder.0, &remote, agent);
+    // A second repository of the owner's: the same remote is enough.
+    let mine = settings["repos"][0].clone();
+    settings["repos"].as_array_mut().unwrap().push(json!({
+        "repo": SECOND, "remote": mine["remote"], "defaultBranch": "main", "pullRequests": false}));
     if agent == harness() {
         settings["conversation"] = json!({"agent": "claude"});
         let account = folder.0.join("home/accounts/stub");
@@ -136,6 +141,21 @@ fn share(obid: &Obid, rule: Value) -> String {
     let made = call_signed(obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
     assert_eq!(made.status, 201, "{}", made.text);
     made.body["id"].as_str().unwrap().to_owned()
+}
+
+/// The card that asks to share opened, `repos` ticked on it and the owner's Confirm.
+fn say_yes(obid: &Obid, repos: &[&str]) {
+    let open = call(obid, "POST", "/v1/obid/sharing/offer", Some(&json!({})));
+    assert_eq!(open.status, 201, "{}", open.text);
+    let ticked = call(
+        obid,
+        "POST",
+        "/v1/obid/sharing/offer",
+        Some(&json!({"repos": repos})),
+    );
+    assert_eq!(ticked.status, 201, "{}", ticked.text);
+    let yes = confirm(obid, ticked.body["id"].as_str().unwrap());
+    assert_eq!(yes.status, 200, "{}", yes.text);
 }
 
 fn everyone() -> Value {
@@ -489,7 +509,7 @@ async fn rooms_10_the_self_answer_limit_holds() {
     tokio::task::block_in_place(|| {
         a_job(&obid, "Land the fix");
         share(&obid, everyone());
-        let limits = call(
+        let limits = call_signed(
             &obid,
             "PUT",
             "/v1/obid/sharing/limits",
@@ -518,7 +538,7 @@ async fn rooms_10_the_self_answer_limit_holds() {
         assert_eq!(found, 1);
         // It says so where a question's would, on the sharing rule that made it.
         let sharing = call(&obid, "GET", "/v1/obid/sharing", None).body;
-        assert_eq!(sharing["rules"][1]["uses"], 1, "{sharing}");
+        assert_eq!(sharing["rules"][0]["uses"], 1, "{sharing}");
     });
     // A restart keeps counting.
     let status = obid.stop();
@@ -1564,11 +1584,8 @@ async fn rooms_17_a_signed_yes_on_its_card_opens_the_room_and_remove_closes_it()
     let (sphere, obid, _, _ernesto) = setup(&folder, false).await;
     let rules = |obid: &Obid| call(obid, "GET", "/v1/obid/sharing", None).body["rules"].clone();
     let card = tokio::task::block_in_place(|| {
-        assert_eq!(
-            rules(&obid)[0]["starter"],
-            true,
-            "status shared, by the seed"
-        );
+        say_yes(&obid, &[REPO]);
+        assert_eq!(rules(&obid)[0]["starter"], true, "status shared, by a yes");
         let opened = call(
             &obid,
             "POST",
@@ -1577,6 +1594,11 @@ async fn rooms_17_a_signed_yes_on_its_card_opens_the_room_and_remove_closes_it()
         );
         assert_eq!(opened.status, 201, "{}", opened.text);
         assert_eq!(opened.body["confirm"]["action"], "share_room");
+        assert!(
+            opened.body["title"].as_str().unwrap().contains(REPO),
+            "it names how far it goes: {}",
+            opened.text
+        );
         let id = opened.body["id"].as_str().unwrap().to_owned();
         let unsigned = call(
             &obid,
@@ -1600,6 +1622,7 @@ async fn rooms_17_a_signed_yes_on_its_card_opens_the_room_and_remove_closes_it()
         let list = all.as_array().unwrap();
         assert_eq!(list.len(), 2, "{list:?}");
         assert_eq!(list[1]["starter"], false);
+        assert_eq!(list[1]["repos"], json!([REPO]), "as far as the yes goes");
         a_job(&obid, "After the yes");
         within(30, "its post", || {
             let done = posts(&obid);
@@ -1634,15 +1657,6 @@ async fn rooms_17_the_rooms_card_needs_status_shared_first() {
     let folder = Folder::new("room-17b");
     let (_sphere, obid, _, _ernesto) = setup(&folder, false).await;
     tokio::task::block_in_place(|| {
-        let all = call(&obid, "GET", "/v1/obid/sharing", None).body;
-        let id = all["rules"][0]["id"].as_str().unwrap();
-        let gone = call(
-            &obid,
-            "DELETE",
-            &format!("/v1/obid/sharing/rules/{id}"),
-            None,
-        );
-        assert_eq!(gone.status, 204, "{}", gone.text);
         let opened = call(
             &obid,
             "POST",
@@ -1650,5 +1664,76 @@ async fn rooms_17_the_rooms_card_needs_status_shared_first() {
             Some(&json!({"room": true})),
         );
         assert_eq!(opened.status, 409, "{}", opened.text);
+    });
+}
+
+/// PEER-37: Change repositories while a run writes a `found` to a need naming no repository: the post
+/// tells of what the run read, so a repository taken off stops it, in the queue too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_37_a_change_during_the_run_posts_nothing_of_what_was_unticked() {
+    let folder = Folder::new("peer-37-room");
+    let (sphere, obid, _, ernesto) = setup(&folder, false).await;
+    tokio::task::block_in_place(|| {
+        a_job(&obid, "Land the fix");
+        let other = call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": SECOND, "kind": "investigate", "task": "Look", "title": "Second thing"}}),
+            ),
+        );
+        assert_eq!(other.status, 201, "{}", other.text);
+        let id = other.body["id"].as_str().unwrap();
+        assert_eq!(
+            call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).status,
+            200
+        );
+        say_yes(&obid, &[REPO, SECOND]);
+        let room = call(
+            &obid,
+            "POST",
+            "/v1/obid/sharing/offer",
+            Some(&json!({"room": true})),
+        );
+        assert_eq!(room.status, 201, "{}", room.text);
+        let yes = confirm(&obid, room.body["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+    });
+    stored(
+        &sphere,
+        post_by(
+            &ernesto,
+            &sphere,
+            "need",
+            "slow-case: what's going on?",
+            &[],
+        ),
+    );
+    tokio::task::block_in_place(|| {
+        shown(&obid, "slow-case: what's going on?");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        say_yes(&obid, &[REPO]);
+        std::thread::sleep(std::time::Duration::from_secs(8));
+        let sent = posts(&obid);
+        assert!(
+            !sent.iter().any(|p| p["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("Second thing"))),
+            "nothing of it goes: {sent:?}"
+        );
+    });
+    // Under what they chose now, the next need naming no repository is answered, by the room's yes,
+    // from that alone.
+    stored(&sphere, post_by(&ernesto, &sphere, "need", "And now?", &[]));
+    tokio::task::block_in_place(|| {
+        let found = within(30, "its found", || {
+            posts(&obid).into_iter().find(|p| p["kind"] == "found")
+        });
+        let text = found["text"].as_str().unwrap();
+        assert!(
+            text.contains("Land the fix") && !text.contains("Second thing"),
+            "{text}"
+        );
     });
 }

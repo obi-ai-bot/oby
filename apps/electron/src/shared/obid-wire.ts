@@ -127,7 +127,7 @@ export type InboxItem = {
   obi?: { type?: string } | null;
   // obid only: what a confirm item's Confirm carries out; set_check's target is the repository,
   // its payload the command (null: take `was` out) and the check it has now (Oby's ask, #1062)
-  confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null } | null } | null;
+  confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null; offered?: string[]; repos?: string[] } | null } | null;
 };
 
 // One owner decision for all jobs stopped by the same account's limit (#1563).

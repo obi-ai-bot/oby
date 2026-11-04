@@ -458,9 +458,11 @@ async fn peer_3_a_thread_is_only_that_member() {
         ] {
             let thread = thread_with(&obid, owner, "question");
             let list = posts(&thread);
-            assert_eq!(list.len(), 1, "{owner}: {list:?}");
-            assert_eq!(list[0]["text"], words);
-            assert_eq!(list[0]["owner"], owner);
+            // It waits on the owner, whose status back to them may be there by now.
+            let asked: Vec<_> = list.iter().filter(|p| p["kind"] == "question").collect();
+            assert_eq!(asked.len(), 1, "{owner}: {list:?}");
+            assert_eq!(asked[0]["text"], words);
+            assert_eq!(asked[0]["owner"], owner);
         }
         assert_eq!(
             thread_of(&obid, "copycat")["name"],
