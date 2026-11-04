@@ -90,7 +90,7 @@ function named(t: Pick<PeerThread, 'name' | 'owner'>) {
 }
 // Where an exchange stands, in ask-an-oby.md's words. The clock decides `quietAt`, so no event says
 // it. `by` and `reason` are what the sender says of itself: they pick obid's words here and never
-// show. A question of theirs, or a review, has only its plain state.
+// show. Past waiting, a question of theirs or a review has only its plain state.
 export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' | 'posts'>, now: number): string | null {
   const { person, oby } = named(t);
   if (x.waitingOnThem) return `It’s waiting on ${person}.`;
@@ -106,6 +106,8 @@ export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' |
         case 'busy': return `${oby} is busy with other questions and didn’t take this one. Ask again later.`;
         case 'out_of_scope': return `${oby} doesn’t take questions like this one.`;
         case 'policy': return `This Obysphere’s rules stopped ${oby} answering. An admin can change them.`;
+        // their obid saying so, once it's back: nobody said no
+        case 'expired': return `${oby} never answered: the question expired.`;
         default: return `${oby} declined without saying why.`;
       }
     }

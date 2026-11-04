@@ -14,8 +14,12 @@ const page = vi.hoisted(() => {
     box: null as null | { placeholder: string; label: string; draft: string; say: (t: string) => Promise<boolean> },
     clicks: {} as Record<string, () => void>,
     effects: [] as (() => (() => void) | void)[],
-    // how often a screen asked to show again: a server render can't, so the next out() is that
+    // how often a screen asked to show again: a server render can't, so the next render is that
     asked: 0,
+    // React's rules for the clock's test, as a server render has none: state kept between renders, an
+    // update to the same value asking for nothing, and an effect that runs only when its deps change,
+    // its last cleanup first. Slots go by call order, which only the screen's own hooks rely on.
+    hooks: null as null | { at: number; kept: { value?: unknown; deps?: unknown[]; stop?: (() => void) | void }[] },
     onSphere: (() => {}) as (s: { sphere: string; name: string }) => void,
     chunk: (() => {}) as (text: string) => void,
     kept,
@@ -43,8 +47,23 @@ vi.mock('react', async (original) => {
   return {
     ...real,
     useSyncExternalStore: (_: unknown, get: () => unknown) => get(),
-    useEffect: (f: () => (() => void) | void) => { page.effects.push(f); },
-    useState: (first: unknown) => { const [now] = real.useState(first); return [now, () => { page.asked += 1; }]; },
+    useEffect: (f: () => (() => void) | void, deps?: unknown[]) => {
+      const hooks = page.hooks;
+      if (!hooks) { page.effects.push(f); return; }
+      const slot = (hooks.kept[hooks.at++] ??= {});
+      if (slot.deps && deps?.every((d, i) => Object.is(d, slot.deps![i]))) return;
+      slot.deps = deps;
+      page.effects.push(() => { slot.stop?.(); slot.stop = f(); });
+    },
+    useState: (first: unknown) => {
+      const hooks = page.hooks;
+      if (!hooks) { const [now] = real.useState(first); return [now, () => {}]; }
+      const slot = (hooks.kept[hooks.at++] ??= { value: first });
+      return [slot.value, (change: unknown) => {
+        const next = typeof change === 'function' ? change(slot.value) : change;
+        if (!Object.is(next, slot.value)) { slot.value = next; page.asked += 1; }
+      }];
+    },
   };
 });
 vi.mock('react/jsx-dev-runtime', async (original) => {
@@ -258,6 +277,8 @@ describe('what the thread says', () => {
       // a reason is what they say: it picks words and never shows, whatever it is
       ['Dima’s Oby (dana) declined without saying why.', no('constructor')],
       ['Dima’s Oby (dana) never answered: the question expired.', [asked({ state: 'expired' })]],
+      // their obid says it expired too, once it's back: nobody said no
+      ['Dima’s Oby (dana) never answered: the question expired.', no('expired')],
     ];
     for (const [words, posts] of cases) {
       const html = await opened(ok(thread({ posts })));
@@ -268,6 +289,29 @@ describe('what the thread says', () => {
     // a decline's note is theirs, quoted, with obid's words under it
     const noted = await opened(ok(thread({ posts: said({ state: 'declined' }, { kind: 'decline', by: 'owner', reason: 'owner_declined', text: 'Heads down.' }) })));
     expect(noted.indexOf('Dima (dana) said no to this one.')).toBeGreaterThan(noted.indexOf('</blockquote>'));
+    // each exchange goes by its own posts, whichever comes first
+    const exchangeOf = (id: string, x: Partial<PeerPost['exchange']>, more: Partial<PeerPost>) => [
+      asked({ id, ...x }, { id: `${id}-q` }), came({ id, ...x }, { id: `${id}-r`, ...more }),
+    ];
+    const answers = (first: PeerPost['by'], second: PeerPost['by']) => [
+      ...exchangeOf('x1', { state: 'done' }, { kind: 'answer', by: first, text: 'One.' }),
+      ...exchangeOf('x2', { state: 'done' }, { kind: 'answer', by: second, text: 'Two.' }),
+    ];
+    const lines = (html: string) => (html.match(/<p class="room-state">[^<]*<\/p>/g) ?? []).map((l) => l.replace(/<[^>]+>/g, '')).filter((l) => l !== 'Not verified');
+    expect(lines(await opened(ok(thread({ posts: answers('owner', 'obi') }))))).toEqual(['Dima (dana) answered this one, not its Oby.', 'Dima (dana) wasn’t bothered.']);
+    expect(lines(await opened(ok(thread({ posts: answers('obi', 'owner') }))))).toEqual(['Dima (dana) wasn’t bothered.', 'Dima (dana) answered this one, not its Oby.']);
+    const declines = [
+      ...exchangeOf('x1', { state: 'declined' }, { kind: 'decline', text: null, reason: 'busy' }),
+      ...exchangeOf('x2', { state: 'declined' }, { kind: 'decline', text: null, reason: 'owner_declined' }),
+    ];
+    expect(lines(await opened(ok(thread({ posts: declines }))))).toEqual(['Dima’s Oby (dana) is busy with other questions and didn’t take this one. Ask again later.', 'Dima (dana) said no to this one.']);
+    // a review keeps its plain state, though it can wait on them as a question does
+    const review = { type: 'review_request' };
+    const reviewed = (x: Partial<PeerPost['exchange']>, more: Partial<PeerPost>) => [asked({ ...review, ...x }, { kind: 'review_request', status: null }), came({ ...review, ...x }, more)];
+    expect(lines(await opened(ok(thread({ posts: reviewed({ state: 'declined' }, { kind: 'decline', text: null, reason: 'owner_declined' }) }))))).toEqual(['Declined']);
+    expect(lines(await opened(ok(thread({ posts: reviewed({ state: 'expired' }, { kind: 'status', text: null }) }))))).toEqual(['No answer came']);
+    expect(lines(await opened(ok(thread({ posts: reviewed({ state: 'done' }, { kind: 'result', text: 'Looks right.' }) }))))).toEqual([]);
+    expect(lines(await opened(ok(thread({ posts: reviewed({ waitingOnThem: true }, { kind: 'status', text: null, status: 'waiting_on_owner' }) }))))).toEqual(['It’s waiting on Dima (dana).']);
     // someone else's question isn't said to be about them
     const theirs = { direction: 'incoming', state: 'done' };
     const incoming = await opened(ok(thread({ posts: [post('t', { kind: 'question', text: 'Your editor?', status: null, exchange: { ...exchange, waitingOnThem: false, ...theirs } }), asked(theirs, { kind: 'answer', by: 'obi', text: 'Zed.', id: 'mine' })] })));
@@ -284,47 +328,97 @@ describe('what the thread says', () => {
     await page.box!.say('Now?');
   });
 
-  afterEach(() => { vi.useRealTimers(); });
-  it('peer_15_hasn_t_answered_comes_by_the_clock_once_and_goes_with_the_answer', async () => {
-    const start = Date.now(), quietAt = new Date(start + 60_000).toISOString().replace(/\.\d+Z/, 'Z'), at = Date.parse(quietAt);
-    const open = thread({ posts: [asked({ quietAt })] });
-    await opened(ok(open));
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now: at - 1_000 });
-    const quiet = 'Dima’s Oby (dana) hasn’t answered yet.';
-    const show = () => { page.effects = []; const html = out(); return { html, stops: page.effects.map((f) => f()) }; };
-    const first = show();
-    expect(first.html).toContain('Asking…');
-    expect(first.html).not.toContain(quiet);
-    expect(vi.getTimerCount()).toBe(1);
-    // left before it passes: no timer stays behind, and nothing shows again
+  afterEach(() => { vi.useRealTimers(); page.hooks = null; });
+  const iso = (at: number) => new Date(at).toISOString();
+  const quiet = 'Dima’s Oby (dana) hasn’t answered yet.';
+  // what a screen does: a render, then its effects, whichever React would run
+  const show = () => { page.hooks!.at = 0; page.effects = []; const html = out(); page.effects.forEach((f) => f()); return html; };
+  // the screen open on this thread at this time, on a fake clock
+  async function clockedAt(now: number, posts: PeerPost[]) {
+    await opened(ok(thread({ posts })));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now });
+    page.hooks = { at: 0, kept: [] };
     page.asked = 0;
-    first.stops.forEach((stop) => stop?.());
-    expect(vi.getTimerCount()).toBe(0);
-    vi.advanceTimersByTime(2_000);
-    expect(page.asked).toBe(0);
-    vi.setSystemTime(at - 1_000);
-    // stayed: at that moment, with no event, and not a moment before
-    show();
+    return show();
+  }
+  const readAgain = async (posts: PeerPost[]) => {
+    page.routes['GET /v1/obid/sphere/peers/dana'] = ok(thread({ posts }));
+    await m.peers.lookAtThread('dana');
+  };
+
+  it('peer_15_hasn_t_answered_comes_by_the_clock_once_and_goes_with_the_answer', async () => {
+    const at = Date.now() + 60_000;
+    const first = await clockedAt(at - 1_000, [asked({ quietAt: iso(at) })]);
+    expect(first).toContain('Asking…');
+    expect(first).not.toContain(quiet);
+    expect(vi.getTimerCount()).toBe(1);
+    // not a moment before, with no event; then it shows and nothing is left to wait for
     vi.advanceTimersByTime(999);
     expect(page.asked).toBe(0);
     vi.advanceTimersByTime(1);
     expect(page.asked).toBe(1);
-    expect(vi.getTimerCount()).toBe(0);
     const said = show();
-    expect(said.html.split(quiet)).toHaveLength(2);
-    expect(said.html).not.toContain('Asking…');
-    // told once: nothing more to wait for
+    expect(said.split(quiet)).toHaveLength(2);
+    expect(said).not.toContain('Asking…');
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(600_000);
     expect(page.asked).toBe(1);
     // and the answer takes its place
     const done = { state: 'done', quietAt: null };
-    page.routes['GET /v1/obid/sphere/peers/dana'] = ok(thread({ posts: [asked(done), came(done, { kind: 'answer', text: 'On it.' })] }));
-    await m.peers.lookAtThread('dana');
-    const answered = show().html;
+    await readAgain([asked(done), came(done, { kind: 'answer', text: 'On it.' })]);
+    const answered = show();
     expect(answered).not.toContain(quiet);
     expect(answered).toContain('Dima (dana) wasn’t bothered.');
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('peer_15_a_view_that_goes_stops_its_timer', async () => {
+    const at = Date.now() + 60_000;
+    await clockedAt(at - 1_000, [asked({ quietAt: iso(at) })]);
+    expect(vi.getTimerCount()).toBe(1);
+    page.hooks!.kept.forEach((slot) => slot.stop?.());
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(2_000);
+    expect(page.asked).toBe(0);
+  });
+
+  it('peer_15_each_open_question_goes_quiet_at_its_own_time', async () => {
+    const at = Date.now() + 60_000, soon = at + 30_000, last = at + 90_000;
+    const one = (id: string, quietAt: string) => asked({ id, quietAt }, { id });
+    // oldest first, as a thread is: the next to go quiet isn't the last question
+    expect(await clockedAt(at - 1_000, [one('x1', iso(at)), one('x2', iso(soon))])).not.toContain(quiet);
+    vi.advanceTimersByTime(1_000);
+    expect(page.asked).toBe(1);
+    expect(show().split(quiet)).toHaveLength(2);
+    // that showing arms the next, by itself
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(30_000);
+    expect(page.asked).toBe(2);
+    expect(show().split(quiet)).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(0);
+    // a question that comes after every timer ended starts one, with nothing else changing
+    await readAgain([one('x1', iso(at)), one('x2', iso(soon)), one('x3', iso(last))]);
+    expect(show().split(quiet)).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(60_000);
+    expect(page.asked).toBe(3);
+    expect(show().split(quiet)).toHaveLength(4);
+  });
+
+  it('peer_15_a_quiet_time_past_what_a_timer_holds_doesn_t_spin', async () => {
+    const start = Date.now(), far = start + 40 * 24 * 3_600_000;
+    await clockedAt(start, [asked({ quietAt: iso(far) })]);
+    vi.advanceTimersByTime(60_000);
+    expect(page.asked).toBe(0);
+    // it looks again at the longest a timer holds, and still says nothing early
+    vi.advanceTimersByTime(2 ** 31 - 1 - 60_000);
+    expect(page.asked).toBe(1);
+    const html = show();
+    expect(html).toContain('Asking…');
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(far - Date.now());
+    expect(page.asked).toBe(2);
+    expect(show()).toContain(quiet);
   });
 
   it('peer_24_a_name_look_alike_shows_the_owner_id', async () => {
