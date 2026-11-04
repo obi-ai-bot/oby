@@ -171,6 +171,13 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
     setSphereId(id);
     setSection('obysphere');
   }, [activeSphereSetting, activeKnowledge]);
+  // and someone's Oby opened from elsewhere (a question's card): the panel shows them in their Obysphere
+  useEffect(() => {
+    if (!activeOby || !chatFirst) return;
+    const live = all.find((x) => x.live);
+    if (live) setSphereId(live.id);
+    setSection('obysphere');
+  }, [activeOby]);
   useEffect(() => {
     if (all.some((x) => x.id === sphereId)) return;
     if (all[0]) setSphereId(all[0].id);

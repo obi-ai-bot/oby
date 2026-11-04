@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::store;
 
 /// How long a question goes unanswered, with no word from the other Oby, before the owner hears so.
-pub const QUIET: i64 = 120;
+pub const QUIET: i64 = 20;
 
 /// One envelope sent or received in an exchange, exactly as signed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

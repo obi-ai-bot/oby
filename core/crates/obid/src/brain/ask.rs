@@ -88,6 +88,9 @@ fn not_in_a_sphere(shared: &Shared) -> Result<(), String> {
 struct Ask {
     to: String,
     question: String,
+    /// The name the owner called them, once they said which member they meant (ASK-27).
+    #[serde(default, rename = "knownAs")]
+    known_as: Option<String>,
 }
 
 /// oby_ask: the question goes on the owner's own word; on any other turn it waits for their
@@ -97,7 +100,12 @@ pub(super) async fn ask(
     session: &Session,
     args: Value,
 ) -> Result<String, String> {
-    let Ask { to, question } = parse(args)?;
+    let Ask {
+        to,
+        question,
+        known_as,
+    } = parse(args)?;
+    let known_as = known_as.filter(|name| !name.trim().is_empty());
     if session.unwatched() {
         return Err(
             "A turn nobody watches asks no other Oby: say what should be asked, and the owner can ask."
@@ -107,7 +115,9 @@ pub(super) async fn ask(
     not_in_a_sphere(shared)?;
     shared.link.refresh_members().await;
     let members = shared.link.ask_members();
-    let (member, shown) = match pick(&members, &to) {
+    // A name the owner taught Oby means that member, as their own owner id does.
+    let taught = shared.link.known_as(&to);
+    let (member, shown) = match pick(&members, taught.as_deref().unwrap_or(&to)) {
         // An exact owner id, with no one else claiming it: the owner's word is enough.
         Picked::Owner(member) => (member, None),
         // A name proves nothing: the owner sees who it means before anything goes.
@@ -127,7 +137,7 @@ pub(super) async fn ask(
             // Who is there, in the same answer: a model told only to look stopped and told the owner
             // nobody was found. Quoted, and the turn stops being the owner's word, as oby_members does.
             return Err(format!(
-                "No member goes by that name. Tell the owner who is there and ask which one they mean; don't pick for them. {}",
+                "No member goes by that name. If one of these looks like the same person under another spelling, ask the owner \"Do you mean them?\"; else ask which one they mean. Don't pick for them. Once they say, call oby_ask with that member's owner id and knownAs set to the name they used, so that name finds them next time. {}",
                 who_is_there(shared, session)
             ));
         }
@@ -146,6 +156,11 @@ pub(super) async fn ask(
         .map_err(refused)?;
     if shown.is_some() || owners_word(shared, session).is_none() {
         let title = shown.unwrap_or_else(|| format!("Ask {}'s Oby", member.owner));
+        // What this click also teaches is on the card it signs.
+        let title = match &known_as {
+            Some(name) => format!("{title}, and remember {name} means them"),
+            None => title,
+        };
         confirm_card(
             shared,
             session,
@@ -155,7 +170,7 @@ pub(super) async fn ask(
                 action: crate::sphere::inbox::action::ASK_OBY.into(),
                 target: member.obi.clone(),
                 payload: json!({"question": question, "conversation": session.conversation,
-                                "name": member.name, "owner": member.owner}),
+                                "name": member.name, "owner": member.owner, "knownAs": known_as}),
             },
         )?;
         return Ok(format!(
@@ -178,6 +193,9 @@ pub(super) async fn ask(
             let _ = shared.conversations.add_ask(&session.conversation, card);
         }
         return Err(said);
+    }
+    if let Some(name) = &known_as {
+        shared.link.remember_known_as(name, &member.owner);
     }
     Ok(format!(
         "Asked {wanted}'s Oby. What comes back posts itself in this conversation, quoted: say you asked, in one sentence, and don't guess."
@@ -430,9 +448,11 @@ fn telling(exchange: &Exchange, name: &str, now: i64) -> Option<Telling> {
             text: format!("{oby} hasn't answered. It's waiting on {name}."),
             quotes: false,
         }),
-        _ if now - exchange.created >= QUIET && !told("quiet") => {
-            said("quiet", format!("{oby} hasn't answered yet."), false)
-        }
+        _ if now - exchange.created >= QUIET && !told("quiet") => said(
+            "quiet",
+            format!("{oby} hasn't answered yet. I'll ping you as soon as it does."),
+            false,
+        ),
         _ => None,
     }
 }
@@ -627,7 +647,10 @@ mod tests {
         let quiet = telling(&e, "Dima", 1000 + QUIET).unwrap();
         assert_eq!(
             (quiet.key, quiet.text.as_str()),
-            ("quiet", "Dima's Oby hasn't answered yet.")
+            (
+                "quiet",
+                "Dima's Oby hasn't answered yet. I'll ping you as soon as it does."
+            )
         );
         e.told.push("quiet".into());
         assert_eq!(telling(&e, "Dima", 1000 + QUIET * 2), None, "once");

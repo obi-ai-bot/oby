@@ -93,7 +93,7 @@ export function named(t: Pick<PeerThread, 'name' | 'owner'>) {
 export function askedLine(state: string, t: Pick<PeerThread, 'name' | 'owner'>, by?: string | null, reason?: string | null): string | null {
   const { person, oby } = named(t);
   switch (state) {
-    case 'asking': return 'Asking…';
+    case 'asking': return 'Asked';
     case 'waiting': return `It’s waiting on ${person}.`;
     case 'quiet': return `${oby} hasn’t answered yet.`;
     case 'answered': return by === 'owner' ? `${person} answered this one, not its Oby.` : `${person} wasn’t bothered.`;
@@ -115,7 +115,12 @@ export function askedLine(state: string, t: Pick<PeerThread, 'name' | 'owner'>, 
 // Where a question's card stands (AskCard.tsx). Past its quiet by the clock: no word may have reached
 // obid, so "asking" would never end
 export const askCardState = (c: AskMark, now: number) => (c.state === 'asking' && c.quietAt && Date.parse(c.quietAt) <= now ? 'quiet' : c.state);
-export const askCardLine = (c: AskMark, now: number) => (c.state === 'refused' ? c.why ?? null : askedLine(askCardState(c, now), c, c.by, c.reason));
+export const askCardLine = (c: AskMark, now: number) => {
+  if (c.state === 'refused') return c.why ?? null;
+  const line = askedLine(askCardState(c, now), c, c.by, c.reason), state = askCardState(c, now);
+  // the promise is the card's: this conversation's turn is what alerts when the answer comes (pingOf)
+  return state === 'quiet' ? `${line} I’ll ping you as soon as it does.` : line;
+};
 // Where an exchange stands. The clock decides `quietAt`, so no event says it. Past waiting, a question
 // of theirs or a review has only its plain state.
 export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' | 'posts'>, now: number): string | null {

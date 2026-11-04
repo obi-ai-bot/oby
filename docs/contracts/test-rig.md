@@ -82,7 +82,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 - **RIG-4** With the rule and the job, `ask "What are you working on?"`: the job quoted, "Asked Dana's Oby. Dana wasn't bothered.", Dana's inbox empty.
 - **RIG-5** On stand-ins, a question holding `need-owner`: "It's waiting on Dana", and an `obiRequest` in Dana's inbox.
 - **RIG-6** `policy off` and ask: "This Obysphere's rules don't allow questions yet", no exchange kept, also with words already answered once, whose old exchange isn't this one. `policy on` restores it.
-- **RIG-7** `dana stop` and ask: after 2 minutes "Dana's Oby hasn't answered yet"; `dana start`: it answers in the same conversation.
+- **RIG-7** `dana stop` and ask: after 20 seconds "Dana's Oby hasn't answered yet"; `dana start`: it answers in the same conversation.
 - **RIG-8** `start --real` with no login: no job, a question waits on Dana, the owner's step is printed, and no login of the owner's is used.
 - **RIG-9** `stop`: no process of the rig's, no agent and no port left, an agent in a group of its own too. `start` again: still joined, the job goes on, and an ask answers.
 - **RIG-10** `app`: the dev app shows you, with the Sphere's tile and Dana's row, and its device key and settings are in the rig's folder.

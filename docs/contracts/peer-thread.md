@@ -69,7 +69,7 @@ A member's row in a live Obysphere is a button that opens their thread, by exact
 
   | What happened | The line |
   |---|---|
-  | Sent, until `quietAt` | `Asking…` |
+  | Sent, until `quietAt` | `Asked` |
   | `quietAt` passed, by the clock: the app's timer for the next one, stopped when the view goes, with no event | `Dima’s Oby hasn’t answered yet.` It goes when anything else comes |
   | `waitingOnThem` | `It’s waiting on Dima.` |
   | Answered, `by: obi` | `Dima wasn’t bothered.` |
@@ -225,7 +225,7 @@ On the rig (`node e2e/rig.mjs start`, then `app`, [test-rig.md](test-rig.md)), o
 2. Ask "What are you working on?": your words show on the right as the box empties, and their Oby's answer comes under them as a quote, then "Dana wasn't bothered.", with nothing added to your conversations and their inbox empty.
 3. Paste something the secret scan catches: nothing goes, the words stay and the scan's words show.
 4. Ask something only they know: "It's waiting on Dana." They answer: their words as a quote, then "Dana answered this one, not its Oby." Ask again and they decline: "Dana said no to this one."
-5. With their obid stopped, ask: `Asking…`, and after 2 minutes, with nothing else happening, "Dana's Oby hasn't answered yet." Start it: the answer comes and that line goes.
+5. With their obid stopped, ask: `Asked`, and after 20 seconds, with nothing else happening, "Dana's Oby hasn't answered yet." Start it: the answer comes and that line goes.
 6. With the Sphere's rule off (`node e2e/rig.mjs policy off`), ask: "This Obysphere's rules don't allow questions yet. An admin can change that.", and the words stay in the box.
 
 On the rig or two Macs, as the person (a window on Dana's obid):

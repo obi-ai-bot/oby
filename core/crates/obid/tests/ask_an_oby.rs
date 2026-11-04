@@ -228,10 +228,36 @@ async fn ask_2_the_owners_word_sends_what_they_asked_and_says_it_asked() {
         )
     });
     assert!(said.contains("No member goes by that name"), "{said}");
-    assert!(said.contains("ask which one they mean"), "{said}");
+    assert!(said.contains("Do you mean them?"), "{said}");
+    assert!(said.contains("knownAs"), "{said}");
     // ASK-25: who is there comes in the same answer, quoted as what they say of themselves.
     assert!(said.contains("ernesto"), "{said}");
     assert!(said.contains("what members say of themselves"), "{said}");
+    // ASK-27: the owner says who they meant, and that name finds them from then on.
+    let (_, said) = tokio::task::block_in_place(|| {
+        typed(
+            &obid,
+            "oby_ask",
+            json!({"to": "Ernie", "question": QUESTION}),
+        )
+    });
+    assert!(said.contains("No member goes by that name"), "{said}");
+    let (_, said) = tokio::task::block_in_place(|| {
+        typed(
+            &obid,
+            "oby_ask",
+            json!({"to": "ernesto", "question": QUESTION, "knownAs": "Ernie"}),
+        )
+    });
+    assert!(!said.contains("No member goes"), "{said}");
+    let (_, said) = tokio::task::block_in_place(|| {
+        typed(
+            &obid,
+            "oby_ask",
+            json!({"to": "ernie", "question": QUESTION}),
+        )
+    });
+    assert!(!said.contains("No member goes"), "taught: {said}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

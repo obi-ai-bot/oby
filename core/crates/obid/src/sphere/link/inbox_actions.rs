@@ -620,7 +620,14 @@ impl Link {
                     confirmed.payload["owner"].as_str(),
                 )
                 .await
-                .map(|_| ())
+                .map(|_| {
+                    if let (Some(name), Some(owner)) = (
+                        confirmed.payload["knownAs"].as_str(),
+                        confirmed.payload["owner"].as_str(),
+                    ) {
+                        self.remember_known_as(name, owner);
+                    }
+                })
                 .map_err(|e| {
                     api(
                         StatusCode::CONFLICT,

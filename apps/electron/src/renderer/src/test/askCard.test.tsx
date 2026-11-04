@@ -86,9 +86,9 @@ describe('a question to another Oby is one card', () => {
   it('ask_20_the_state_updates_in_place', () => {
     const line = (turns: Turn[]) => shown(turns).match(/ask-card-line">([^<]*)</)?.[1];
     const on = (more: Partial<AskMark>, text = 'loose') => [words([card()]), asked, told('o2', 5, text, [card({ quietAt: null, ...more })])];
-    expect(line([words([card()]), asked])).toBe('Asking…');
+    expect(line([words([card()]), asked])).toBe('Asked');
     expect(line(on({ state: 'waiting' }))).toBe('It’s waiting on dana.');
-    expect(line(on({ state: 'quiet', quietAt: QUIET }))).toBe('dana’s Oby hasn’t answered yet.');
+    expect(line(on({ state: 'quiet', quietAt: QUIET }))).toBe('dana’s Oby hasn’t answered yet. I’ll ping you as soon as it does.');
     expect(line(on({ state: 'answered', by: 'obi', said: 'Yes.' }))).toBe('dana wasn’t bothered.');
     expect(line(on({ state: 'answered', by: 'owner', said: 'Yes.' }))).toBe('dana answered this one, not its Oby.');
     expect(line(on({ state: 'declined', reason: 'owner_declined' }))).toBe('dana said no to this one.');
@@ -107,7 +107,7 @@ describe('a question to another Oby is one card', () => {
     vi.advanceTimersByTime(Date.parse(QUIET) - Date.parse(at(6)));
     expect(page.set).toContain(Date.parse(QUIET));
     vi.setSystemTime(Date.parse(QUIET));
-    expect(line([words([card()]), asked])).toBe('dana’s Oby hasn’t answered yet.');
+    expect(line([words([card()]), asked])).toBe('dana’s Oby hasn’t answered yet. I’ll ping you as soon as it does.');
   });
 
   it('ask_21_an_app_without_the_card_keeps_the_quoted_turns', () => {
@@ -181,7 +181,7 @@ describe('what else reads a conversation', () => {
     expect(row).toContain('dana wasn’t bothered.');
     expect(row).not.toContain('Oby is on it');
     // and over Oby's "I asked", while the app runs
-    expect(await panel([words([card()]), asked])).toContain('Asking…');
+    expect(await panel([words([card()]), asked])).toContain('Asked');
   });
 
   it('ask_19_the_side_panels_search_finds_what_a_card_says', async () => {

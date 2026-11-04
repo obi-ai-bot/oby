@@ -274,7 +274,7 @@ describe('what the thread says', () => {
       ['Dima (dana) wasn’t bothered.', said({ state: 'done' }, { kind: 'answer', text: 'On it.' })],
       ['Dima (dana) answered this one, not its Oby.', said({ state: 'done' }, { kind: 'answer', by: 'owner', text: 'On it.' })],
       ['It’s waiting on Dima (dana).', said({ waitingOnThem: true }, { kind: 'status', status: 'waiting_on_owner' })],
-      ['Asking…', [asked({ quietAt: new Date(Date.now() + 60_000).toISOString() })]],
+      ['Asked', [asked({ quietAt: new Date(Date.now() + 60_000).toISOString() })]],
       ['Dima’s Oby (dana) hasn’t answered yet.', [asked({ quietAt: '2020-01-01T00:00:00Z' })]],
       ['Dima (dana) said no to this one.', no('owner_declined')],
       ['Dima’s Oby (dana) is busy with other questions and didn’t take this one. Ask again later.', no('busy')],
@@ -355,7 +355,7 @@ describe('what the thread says', () => {
   it('peer_15_hasn_t_answered_comes_by_the_clock_once_and_goes_with_the_answer', async () => {
     const at = Date.now() + 60_000;
     const first = await clockedAt(at - 1_000, [asked({ quietAt: iso(at) })]);
-    expect(first).toContain('Asking…');
+    expect(first).toContain('Asked');
     expect(first).not.toContain(quiet);
     expect(vi.getTimerCount()).toBe(1);
     // not a moment before, with no event; then it shows and nothing is left to wait for
@@ -365,7 +365,7 @@ describe('what the thread says', () => {
     expect(page.asked).toBe(1);
     const said = show();
     expect(said.split(quiet)).toHaveLength(2);
-    expect(said).not.toContain('Asking…');
+    expect(said).not.toContain('Asked');
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(600_000);
     expect(page.asked).toBe(1);
@@ -420,7 +420,7 @@ describe('what the thread says', () => {
     vi.advanceTimersByTime(2 ** 31 - 1 - 60_000);
     expect(page.asked).toBe(1);
     const html = show();
-    expect(html).toContain('Asking…');
+    expect(html).toContain('Asked');
     expect(vi.getTimerCount()).toBe(1);
     vi.advanceTimersByTime(far - Date.now());
     expect(page.asked).toBe(2);
