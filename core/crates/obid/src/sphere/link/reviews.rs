@@ -172,6 +172,8 @@ impl Link {
         let scratch = self.config.home.join("tmp");
         let _ = std::fs::create_dir_all(&scratch);
         answering::add_progress(&rule, &mut material, &jobs, &scratch).await;
+        // SPH-11: the last Q&A with this member only, quoted in the material (never the prompt).
+        answering::add_last_exchange(&mut material, &shared, &owner, &cid, &scratch).await;
         let dir = self.config.home.join("answers").join(&cid);
         let written = match answering::write(
             &self.config,
