@@ -11,13 +11,15 @@
 //   - the worktree's HEAD is the request's head_sha;
 //   - no CLAUDECODE, CLAUDE_CODE_* (but obid's own), ANTHROPIC_*, GH_TOKEN or GITHUB_TOKEN in its environment;
 //   - it runs in obid's job sandbox: creating a file in the folder that holds its worktree (obid's
-//     home/worktrees/) fails. If it succeeds, the stub removes the file at once and fails the turn.
-//     OBI_STUB_NO_SANDBOX=1 skips this one check; only the harness's preflight sets it, when it runs
-//     the stub alone with no sandbox. The harness never gives it to obid, so obid's agents never have it.
+//     home/worktrees/) fails. If it succeeds, the stub removes the file at once and fails the turn,
+//     unless the person's home is also hidden (an enclosing Oby job sandbox, where Seatbelt can't
+//     nest a narrower box). OBI_STUB_NO_SANDBOX=1 skips this check; only the harness's preflight
+//     sets it, when it runs the stub alone with no sandbox. The harness never gives it to obid.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -70,6 +72,10 @@ function problems(prompt, request) {
     if (name === "CLAUDECODE" || (name.startsWith("CLAUDE_CODE_") && name !== "CLAUDE_CODE_TMPDIR" && name !== "CLAUDE_CODE_ENABLE_TODO_TOOLS") || name.startsWith("ANTHROPIC_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN") found.push(`${name} is in the agent's environment`);
   }
   if (process.env.OBI_STUB_NO_SANDBOX !== "1") {
+    // A narrower Seatbelt box can't nest inside an Oby job's (docs/runner-api.md, "obid inside a
+    // job"): the agent stays in that enclosing box, which still hides the person's home but may
+    // allow writes under the job's TMPDIR (where the inner obid's home/worktrees live). Treat a
+    // hidden person home as enough proof of a job sandbox then; otherwise the write means none.
     const probe = join(dirname(cwd), `.obi-stub-sandbox-probe-${process.pid}`);
     let wrote = false;
     try {
@@ -80,7 +86,15 @@ function problems(prompt, request) {
       try {
         unlinkSync(probe);
       } catch {}
-      found.push(`the agent could write outside its worktree (${dirname(cwd)}): no job sandbox`);
+      let personHomeHidden = false;
+      try {
+        readdirSync(userInfo().homedir);
+      } catch (err) {
+        personHomeHidden = err && (err.code === "EPERM" || err.code === "EACCES");
+      }
+      if (!personHomeHidden) {
+        found.push(`the agent could write outside its worktree (${dirname(cwd)}): no job sandbox`);
+      }
     }
   }
   if (!request) {

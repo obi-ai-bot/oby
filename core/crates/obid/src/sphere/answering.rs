@@ -952,7 +952,13 @@ mod tests {
             e.updated = updated;
             e
         };
-        let theirs = done("c-old", "ernesto", "What's first?", "Billing is running.", 10);
+        let theirs = done(
+            "c-old",
+            "ernesto",
+            "What's first?",
+            "Billing is running.",
+            10,
+        );
         let later = done(
             "c-new",
             "ernesto",
@@ -985,7 +991,13 @@ mod tests {
             items[0]
         );
         let text = items[0].to_string();
-        for never in ["What's first?", "Billing is running", "taxes", "Filing", "Say that again"] {
+        for never in [
+            "What's first?",
+            "Billing is running",
+            "taxes",
+            "Filing",
+            "Say that again",
+        ] {
             assert!(!text.contains(never), "{never} in {text}");
         }
         // Asking as another member: only that member's, never ernesto's.
@@ -1088,10 +1100,7 @@ mod tests {
         let last = items.iter().find(|i| i["kind"] == "lastExchange").unwrap();
         assert_eq!(last["question"], "What are the two tasks?");
         assert!(
-            last["answer"]
-                .as_str()
-                .unwrap()
-                .contains("Billing retries"),
+            last["answer"].as_str().unwrap().contains("Billing retries"),
             "{last}"
         );
         // The current follow-up isn't in it, and a rule without progress still gets the exchange.
