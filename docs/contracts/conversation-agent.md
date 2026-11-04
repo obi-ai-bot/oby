@@ -96,6 +96,7 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 - **CONVERSATION-AGENT-14:** Settings › Agents offers Auto and every connected account for new conversations, and a new conversation's first turn runs on that choice.
 - **CONVERSATION-AGENT-15:** The picker's list shows an account's 5-hour session and its week apart; a Claude Code Ultra plan only its week, whatever an older reading left; Cursor its figure with no name, its period not being always a week; "Full" when held full; "No usage" with no figure.
 - **CONVERSATION-AGENT-15:** Cursor with a figure and with room stays last on Auto, after every account held back, and first only when the owner chose it.
+- **CONVERSATION-AGENT-18:** A Codex conversation may start and call obid's own MCP servers, `oby` and, with Tetrix connected, `tetrix`; any other server ends the turn. Connecting Tetrix must not stop a Codex conversation (`codex::tests`, `ran_outside`).
 - **`conversation_agent_auto_goes_where_there_is_room`:** Auto takes an account with room before a held one, whatever the tool, and either before Cursor.
 - **`conversation_agent_nothing_can_run_names_what_holds_each_account`:** with nothing to try, the turn names every signed-in account's hold, of every tool.
 

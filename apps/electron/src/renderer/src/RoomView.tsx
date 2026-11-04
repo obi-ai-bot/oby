@@ -4,7 +4,7 @@ import Composer, { typingIn } from './Composer';
 import { ObyFace, PeerByline } from './ObyFace';
 import { plainId } from './peers';
 import { box as draftBox, forget } from './drafts';
-import { aboutWords, atEnd, doing, isMine, isYours, sayInRoom, useRoom } from './room';
+import { aboutWords, atEnd, doing, isMine, isYours, sayInRoom, useRoom, copyPlain } from './room';
 import { useSpheres } from './spheres';
 import { useScrollThumb } from './useScrollThumb';
 import type { RoomPost } from './obid';
@@ -24,14 +24,14 @@ const at = (p: RoomPost) => Date.parse(p.recordedAt ?? p.createdAt);
 // says where a post's exchange stands, under it, and sets their words apart as a quote (PeerThread.tsx).
 export function RoomThread({ posts, obi, standing }: { posts: RoomPost[]; obi?: string; standing?: (i: number) => string | null }) {
   return (
-    <ol className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
+    <div role="list" onCopy={(e) => copyPlain(e)} className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
       {posts.map((p, i) => {
         const prev = posts[i - 1];
         const cont = !!prev && prev.from === p.from && prev.by === p.by && prev.kind === p.kind && at(p) - at(prev) < GAP_MS;
         const mine = isMine(p, obi), you = isYours(p, obi);
         const about = aboutWords(p), did = doing(p, posts, obi), time = Number.isNaN(at(p)) ? null : clock((Date.now() - at(p)) / 60_000);
         return (
-          <li key={p.id} className={`msg ${you ? 'is-you' : 'is-oby'}${mine ? ' is-mine' : ''}${cont ? ' is-cont' : ''}${p.state === 'waiting' ? ' is-waiting' : ''}`}>
+          <div role="listitem" key={p.id} className={`msg ${you ? 'is-you' : 'is-oby'}${mine ? ' is-mine' : ''}${cont ? ' is-cont' : ''}${p.state === 'waiting' ? ' is-waiting' : ''}`}>
             {!you && !cont && (
               <div className="room-who">
                 <span className="room-by">
@@ -52,10 +52,10 @@ export function RoomThread({ posts, obi, standing }: { posts: RoomPost[]; obi?: 
               {standing?.(i) && <p className="room-state">{standing(i)}</p>}
               {time && <time className="msg-time">{time}</time>}
             </div>
-          </li>
+          </div>
         );
       })}
-    </ol>
+    </div>
   );
 }
 

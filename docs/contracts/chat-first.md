@@ -81,3 +81,4 @@ Tests: `apps/electron/src/renderer/src/test/chatFirst.test.tsx`, `test/leftPanel
 - **CHATFIRST-29:** A question only you can answer lights "Questions from other Obys" (one sorted as noise doesn't). A limit lights the conversation of each task it stopped.
 - **CHATFIRST-30:** A task with no conversation, or whose conversation was deleted, that needs you is on the stack and lights Oby's row. Done, it's in Archived.
 - **CHATFIRST-31:** Later takes a task's card off the stack, keeps its row lit, and brings the card back when its time comes, with no event and across a restart. Settled elsewhere meanwhile, its dot goes. With no row, nothing is lit until its time.
+- **CHATFIRST-32:** Copying from a conversation or a room pastes plain text, as in Claude Code: no "1." or "2." before each message (`chatCopy.test.tsx`). A list someone wrote inside a message keeps its numbers.

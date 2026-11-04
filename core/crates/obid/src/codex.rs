@@ -73,6 +73,9 @@ pub fn argv(
     argv
 }
 
+/// The MCP servers [`argv`] gives Codex, the only ones that may start or run.
+const OWN_SERVERS: [&str; 2] = ["oby", "tetrix"];
+
 /// Runs one turn: starts the server, sends `prompt`, answers approvals with `decide`, reports with
 /// `on_event`, and ends the server once the turn completes. Ends it and everything it started when
 /// `stop` turns or `limit` passes.
@@ -644,7 +647,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                 let answer = match call.cloned() {
                     // Only Oby's own server: another's (ChatGPT's apps, the person's) is never
                     // run, as before Codex asked.
-                    Some(_) if server != "oby" && server != "tetrix" => {
+                    Some(_) if !OWN_SERVERS.contains(&server) => {
                         Answer::Deny(format!("Only Oby's own tools run here, not {server}'s."))
                     }
                     Some((tool, arguments)) => {
@@ -945,8 +948,10 @@ fn ran_outside(message: &Value) -> Option<String> {
         _ if NOTICES.contains(&method) => {}
         // Codex says at start whether something remote drives it: only "nobody" passes.
         ["remoteControl", "status", "changed"] if message["params"]["status"] == "disabled" => {}
-        // Only Oby's MCP server starts: no other is given (ChatGPT's apps are off).
-        ["mcpServer", "startupStatus", "updated"] if message["params"]["name"] == "oby" => {}
+        // Only Oby's MCP servers start: obid's own, and Tetrix's reads when it's connected. No other
+        // is given (ChatGPT's apps are off).
+        ["mcpServer", "startupStatus", "updated"]
+            if OWN_SERVERS.contains(&message["params"]["name"].as_str().unwrap_or("")) => {}
         _ => return Some(format!("Codex sent {method}")),
     }
     if item["type"] == "mcpToolCall" {
@@ -959,7 +964,7 @@ fn ran_outside(message: &Value) -> Option<String> {
                 tool,
                 "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
             );
-        if server != "oby" && !own {
+        if !OWN_SERVERS.contains(&server) && !own {
             return Some(format!("Codex called {server}'s {tool}"));
         }
     }
@@ -1489,9 +1494,14 @@ exec sleep 30
         }
         let remote = |status: &str| json!({"method": "remoteControl/status/changed", "params": {"status": status}});
         assert_eq!(ran_outside(&remote("disabled")), None);
-        // Only Oby's own MCP server starts: another (ChatGPT's apps, the person's) ends the turn.
+        // Only Oby's own MCP servers start: another (ChatGPT's apps, the person's) ends the turn.
         let starting = |name: &str| json!({"method": "mcpServer/startupStatus/updated", "params": {"name": name, "status": "starting"}});
         assert_eq!(ran_outside(&starting("oby")), None);
+        // Tetrix's reads, given to a conversation when it's connected, start and run too.
+        assert_eq!(ran_outside(&starting("tetrix")), None);
+        let tetrix = json!({"method": "item/completed",
+            "params": {"item": {"type": "mcpToolCall", "server": "tetrix", "tool": "search"}}});
+        assert_eq!(ran_outside(&tetrix), None);
         for name in ["codex_apps", "elsewhere", ""] {
             assert_eq!(
                 ran_outside(&starting(name)),

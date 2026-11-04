@@ -106,3 +106,11 @@ export function aboutWords(p: RoomPost) {
 // whether the reader is at the end of the thread: then a new post follows them down; anywhere else
 // they stay put
 export const atEnd = (l: { scrollTop: number; clientHeight: number; scrollHeight: number }) => l.scrollHeight - l.scrollTop - l.clientHeight < 40;
+
+// A chat copies as plain text, as in Claude Code: with the page's markup on the clipboard too, an app
+// that pastes rich text would rebuild it (docs/contracts/chat-first.md, CHATFIRST-32)
+export const copyPlain = (e: { clipboardData: Pick<DataTransfer, 'setData'> | null; preventDefault: () => void }, words = getSelection()?.toString()) => {
+  if (!words || !e.clipboardData) return;
+  e.clipboardData.setData('text/plain', words);
+  e.preventDefault();
+};

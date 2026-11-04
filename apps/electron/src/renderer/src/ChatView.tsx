@@ -1,3 +1,4 @@
+import { copyPlain } from './room';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, File as FileIcon } from 'lucide-react';
 import { BrandMark } from './brands';
@@ -149,7 +150,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       <div className="chat-scroll">
         <section ref={list} className="chat" aria-label={task ? `Conversation about ${task.title}` : name} onScroll={(e) => { onScroll(); const el = e.currentTarget; atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           <div className="chat-column">
-            <ol className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
+            <div role="list" onCopy={(e) => copyPlain(e)} className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
               {[...thread.map((m, i) => {
                 const prev = thread[i - 1], next = thread[i + 1];
                 // A run: the same side, one after another, 4px apart (a long quiet
@@ -197,7 +198,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                 ].filter(Boolean);
                 const end = parts.pop();
                 return (
-                  <li key={i} className={`msg is-${side}${mine ? ' is-mine' : ''}${cont ? ' is-cont' : ''}${m.ago === 0 ? ' is-new' : ''}${(m as Message).streaming ? ' is-streaming' : ''}`}>
+                  <div role="listitem" key={i} className={`msg is-${side}${mine ? ' is-mine' : ''}${cont ? ' is-cont' : ''}${m.ago === 0 ? ' is-new' : ''}${(m as Message).streaming ? ' is-streaming' : ''}`}>
                     {side === 'oby' && !cont && ((m as Message).by && m.who === 'oby'
                       ? <PeerByline name={(m as Message).by!} />
                       // yours among other people's Obys: named, as theirs are
@@ -210,7 +211,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                         <time className="msg-time">{clock(m.ago)}</time>
                       </div>
                     ) : end}
-                  </li>
+                  </div>
                 );
               }),
               // Oby at work: Oby itself, melting into bouncing dots, and under it
@@ -221,22 +222,22 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
               typing && (step || !working) && (() => {
                 const cont = writer ? runOf(thread.at(-1) ?? { who: 'you', text: '', ago: 0 }) === `oby:${writer}` : working;
                 return (
-                  <li key={thread.length} className={`msg is-oby is-new${cont ? ' is-cont' : ''}`}>
+                  <div role="listitem" key={thread.length} className={`msg is-oby is-new${cont ? ' is-cont' : ''}`}>
                     {!cont && (writer ? <PeerByline name={writer} /> : <span className="msg-face"><Face live={!covered} /></span>)}
                     {step && <p className="msg-step" role="status">{step}</p>}
-                  </li>
+                  </div>
                 );
               })()]}
 
               {/* a task's agent at work: its live line, last */}
               {task && j && task.status === 'running' && !typing && (
-                <li className={`chat-live${j.status === 'queued' ? '' : ' is-working'}`}>
+                <div role="listitem" className={`chat-live${j.status === 'queued' ? '' : ' is-working'}`}>
                   <StatusDot task={task} live />
                   <span className="tc-step">{agent} · {j.step}</span>
                   {j.round && <span className="tc-round">Round {j.round[0]} of {j.round[1]}</span>}
-                </li>
+                </div>
               )}
-            </ol>
+            </div>
             {/* an account's limit stopping this work: its decision, as on Home's stack */}
             {limits.map((a) => <div key={a.id} className="msg-ask"><AskBlock task={{ id: a.id, job: { ask: a.ask! } }} inChat /></div>)}
           </div>
