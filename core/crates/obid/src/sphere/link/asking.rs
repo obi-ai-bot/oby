@@ -85,10 +85,22 @@ pub fn pick<'a>(members: &'a [AskMember], wanted: &str) -> Picked<'a> {
             None => Picked::Owner(owner),
         };
     }
-    members
-        .iter()
-        .find(|m| same(&m.name, wanted))
-        .map_or(Picked::Nobody, Picked::Name)
+    if let Some(named) = members.iter().find(|m| same(&m.name, wanted)) {
+        return Picked::Name(named);
+    }
+    // A first or last name ("Dmitry" for dmitry-grechko), when only one member fits: as any name,
+    // the owner sees who it means before anything goes.
+    let fits = |m: &&AskMember| {
+        !wanted.is_empty()
+            && [&m.name, &m.owner]
+                .iter()
+                .any(|n| n.split([' ', '-', '_', '.']).any(|w| same(w, wanted)))
+    };
+    let mut fitting = members.iter().filter(fits);
+    match (fitting.next(), fitting.next()) {
+        (Some(one), None) => Picked::Name(one),
+        _ => Picked::Nobody,
+    }
 }
 
 impl Link {
@@ -389,6 +401,20 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ASK-25: a first or last name reaches the one member it fits, by name so the owner sees who.
+    #[test]
+    fn ask_25_a_first_name_one_member_fits_waits_for_the_owner() {
+        let members = [member("dmitry-grechko", None), member("sam-lee", None)];
+        assert_eq!(pick(&members, "Dmitry"), Picked::Name(&members[0]));
+        assert_eq!(pick(&members, "grechko"), Picked::Name(&members[0]));
+        assert_eq!(pick(&members, "Dmytro"), Picked::Nobody);
+        assert_eq!(pick(&members, ""), Picked::Nobody);
+        assert_eq!(pick(&members, "  "), Picked::Nobody);
+        let two = [member("sam-lee", None), member("sam-park", None)];
+        assert_eq!(pick(&two, "Sam"), Picked::Nobody);
+        assert_eq!(pick(&[member("a--b", None)], ""), Picked::Nobody);
+    }
 
     fn member(owner: &str, card: Option<&str>) -> AskMember {
         AskMember {

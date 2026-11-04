@@ -56,6 +56,10 @@ pub(super) fn heard(turn: &crate::conversation::Turn) -> String {
 pub(super) async fn members(shared: &Shared, session: &Session) -> Result<String, String> {
     not_in_a_sphere(shared)?;
     shared.link.refresh_members().await;
+    Ok(who_is_there(shared, session))
+}
+
+fn who_is_there(shared: &Shared, session: &Session) -> String {
     let members: Vec<Value> = shared
         .link
         .ask_members()
@@ -63,14 +67,14 @@ pub(super) async fn members(shared: &Shared, session: &Session) -> Result<String
         .map(|m| json!({"name": m.name, "owner": m.owner, "takesQuestions": m.takes_questions}))
         .collect();
     if members.is_empty() {
-        return Ok("No one else is in this Obysphere yet.".into());
+        return "No one else is in this Obysphere yet.".into();
     }
     session.taint();
-    Ok(quoted(
+    quoted(
         session,
         "what members say of themselves",
         &serde_json::to_string_pretty(&members).unwrap_or_default(),
-    ))
+    )
 }
 
 fn not_in_a_sphere(shared: &Shared) -> Result<(), String> {
@@ -120,7 +124,12 @@ pub(super) async fn ask(
             (member, Some(title))
         }
         Picked::Nobody => {
-            return Err("No member goes by that name: oby_members lists who is there.".into());
+            // Who is there, in the same answer: a model told only to look stopped and told the owner
+            // nobody was found. Quoted, and the turn stops being the owner's word, as oby_members does.
+            return Err(format!(
+                "No member goes by that name. Tell the owner who is there and ask which one they mean; don't pick for them. {}",
+                who_is_there(shared, session)
+            ));
         }
     };
     if !member.takes_questions {

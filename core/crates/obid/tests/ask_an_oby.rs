@@ -228,11 +228,10 @@ async fn ask_2_the_owners_word_sends_what_they_asked_and_says_it_asked() {
         )
     });
     assert!(said.contains("No member goes by that name"), "{said}");
-    assert!(said.contains("oby_members"), "{said}");
-    assert!(
-        !said.contains("ernesto"),
-        "who is there is what they say: {said}"
-    );
+    assert!(said.contains("ask which one they mean"), "{said}");
+    // ASK-25: who is there comes in the same answer, quoted as what they say of themselves.
+    assert!(said.contains("ernesto"), "{said}");
+    assert!(said.contains("what members say of themselves"), "{said}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
