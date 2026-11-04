@@ -2112,6 +2112,31 @@ impl Bounds {
         })
     }
 
+    /// Whether `path` is Codex's own bundled skill docs under this job's login copy at
+    /// `.codex/skills/`, after links and `..`. Path tricks, a symlink out, another job's folder
+    /// and anything else in the login (auth.json included) are not.
+    fn own_codex_skill(&self, path: &Path) -> bool {
+        let Some(real) = crate::policy::real_path(path) else {
+            return false;
+        };
+        self.logins.iter().any(|login| {
+            let mut roots = vec![login.join(".codex").join("skills")];
+            // The job's temp `~/.codex` is itself listed in `logins` (a link into the login copy).
+            if login.file_name().is_some_and(|n| n == ".codex") {
+                roots.push(login.join("skills"));
+            }
+            roots.into_iter().any(|skills| {
+                let skills_real = crate::policy::real_path(&skills).or_else(|| {
+                    skills
+                        .parent()
+                        .and_then(crate::policy::real_path)
+                        .map(|parent| parent.join("skills"))
+                });
+                skills_real.is_some_and(|root| real.starts_with(&root))
+            })
+        })
+    }
+
     /// Whether the job may read `path` without asking: in its worktree or its temporary folder.
     fn holds(&self, path: &str) -> bool {
         crate::policy::path_inside(path, &self.worktree)
@@ -2124,8 +2149,10 @@ impl Bounds {
 
 /// Whether `text` (a path, an address, a word of a command) names a secret or a login: a
 /// well-known file or folder (a glob that could match one too), an `.env` file, the agent's own
-/// login folder or a variable naming it, a token variable, a process's environment.
-fn names_a_secret(text: &str, bounds: &Bounds, base_dir: &Path) -> bool {
+/// login folder or a variable naming it, a token variable, a process's environment. When
+/// `reading`, a pure read of the job's own Codex skill docs under `.codex/skills/` is not a
+/// login secret.
+fn names_a_secret(text: &str, bounds: &Bounds, base_dir: &Path, reading: bool) -> bool {
     let lower = text.to_ascii_lowercase();
     if SECRET_VARIABLES
         .iter()
@@ -2136,7 +2163,10 @@ fn names_a_secret(text: &str, bounds: &Bounds, base_dir: &Path) -> bool {
     }
     text.split(['=', ':', ',']).any(|part| {
         let path = bounds.path_of(part, base_dir);
-        if path.as_deref().is_some_and(|p| bounds.in_login(p)) {
+        if path
+            .as_deref()
+            .is_some_and(|p| bounds.in_login(p) && !(reading && bounds.own_codex_skill(p)))
+        {
             return true;
         }
         let place = path.map_or_else(|| part.to_owned(), |p| p.to_string_lossy().into_owned());
@@ -2291,11 +2321,14 @@ fn ps_prints_environments(args: &[String]) -> bool {
 }
 
 /// Whether a simple command touches secrets or a login: it prints a keychain's passwords, asks for
-/// a code host's login, or names a secret's file ([`names_a_secret`]).
-fn reads_a_secret(words: &[String], bounds: &Bounds, base_dir: &Path) -> bool {
+/// a code host's login, or names a secret's file ([`names_a_secret`]). `reading` lets a pure read
+/// of the job's own Codex skill docs under `.codex/skills/` through.
+fn reads_a_secret(words: &[String], bounds: &Bounds, base_dir: &Path, reading: bool) -> bool {
     let Some(p) = program_index(words) else {
         // `command -V "$GH_TOKEN"` says what's in one.
-        return words.iter().any(|w| names_a_secret(w, bounds, base_dir));
+        return words
+            .iter()
+            .any(|w| names_a_secret(w, bounds, base_dir, reading));
     };
     let program = base(&words[p]);
     let rest = &words[p + 1..];
@@ -2309,7 +2342,7 @@ fn reads_a_secret(words: &[String], bounds: &Bounds, base_dir: &Path) -> bool {
     }
     file_words(words)
         .into_iter()
-        .any(|w| names_a_secret(w, bounds, base_dir))
+        .any(|w| names_a_secret(w, bounds, base_dir, reading))
 }
 
 /// Each simple command of `commands` with the folder it runs from: the worktree, then where each
@@ -2379,13 +2412,21 @@ fn with_folders<'a>(
 }
 
 /// Whether `command` touches secrets, a login or the vault, in any of the simple commands it runs
-/// or anywhere in its text for a vault value. Code nested deeper than obid reads asks.
+/// or anywhere in its text for a vault value. Code nested deeper than obid reads asks. A command
+/// that only reads may open the job's own Codex skill docs under `.codex/skills/` without that
+/// counting as a login secret; a write, or any part that still names a secret, still asks.
 fn command_touches_a_secret(command: &str, bounds: &Bounds) -> bool {
+    let reading = only_reads(command, bounds);
     holds_a_vault_value(command)
         || simple_commands(command).is_none_or(|commands| {
             commands.iter().any(|c| prints_the_environment(&c.args))
                 || with_folders(&commands, bounds).iter().any(|(words, at)| {
-                    reads_a_secret(words, bounds, at.as_deref().unwrap_or(&bounds.worktree))
+                    reads_a_secret(
+                        words,
+                        bounds,
+                        at.as_deref().unwrap_or(&bounds.worktree),
+                        reading,
+                    )
                 })
         })
 }
@@ -2483,7 +2524,7 @@ fn reads_outside(command: &str, bounds: &Bounds) -> bool {
         return true;
     };
     let outside = |path: &Path| {
-        if bounds.holds(&path.to_string_lossy()) {
+        if bounds.holds(&path.to_string_lossy()) || bounds.own_codex_skill(path) {
             return false;
         }
         // A system folder as written (`..` taken out) and after links: `/home` leads into
@@ -2697,9 +2738,12 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
 pub fn reach(call: &Call, bounds: &Bounds) -> Option<Reach> {
     let tool = call.tool.as_str();
     let named = call.paths.iter().chain(&call.reads).chain(call.url.iter());
+    // A Read (or a Bash that only reads) of the job's own Codex skill docs is not a login secret.
+    let reading = READS.contains(&tool)
+        || (tool == "Bash" && call.command.as_deref().is_some_and(|c| only_reads(c, bounds)));
     let secret = named
         .clone()
-        .any(|t| names_a_secret(t, bounds, &bounds.worktree) || holds_a_vault_value(t))
+        .any(|t| names_a_secret(t, bounds, &bounds.worktree, reading) || holds_a_vault_value(t))
         || call
             .command
             .as_deref()
@@ -2734,7 +2778,12 @@ pub fn reach(call: &Call, bounds: &Bounds) -> Option<Reach> {
             .paths
             .iter()
             .chain(&call.reads)
-            .any(|p| !bounds.holds(p))
+            .any(|p| {
+                !bounds.holds(p)
+                    && !bounds
+                        .path_of(p, &bounds.worktree)
+                        .is_some_and(|path| bounds.own_codex_skill(&path))
+            })
             .then_some(Reach::Outside),
         "ExitPlanMode" | "Task" | "Agent" | "TodoWrite" | "TaskCreate" | "TaskUpdate"
         | "TaskList" | "TaskGet" => None,
@@ -6105,5 +6154,134 @@ mod tests {
                 "{command}"
             );
         }
+    }
+
+    /// PERMISSIONS-13: Codex's own bundled skill docs live under the job's login copy at
+    /// `.codex/skills/`. A read of that path is not Reach::Secrets; auth.json, path tricks, another
+    /// job's folder, a write and a compound command that still names a secret still ask.
+    #[test]
+    fn permissions_13_a_read_of_the_jobs_own_codex_skills_is_not_secrets() {
+        let (root, mut bounds) = job_folders("codex-skills");
+        let login = root.join("logins/this-job");
+        let other = root.join("logins/other-job");
+        let skills = login.join(".codex/skills/.system/openai-docs");
+        let other_skills = other.join(".codex/skills/.system/openai-docs");
+        for dir in [&skills, &other_skills, &login.join(".codex")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let skill = skills.join("SKILL.md");
+        std::fs::write(&skill, "# docs\n").unwrap();
+        std::fs::write(other_skills.join("SKILL.md"), "# other\n").unwrap();
+        std::fs::write(login.join(".codex/auth.json"), "{\"token\":\"x\"}\n").unwrap();
+        std::fs::write(login.join(".codex/config.toml"), "").unwrap();
+        // Symlink out of skills: still a secret (and not an own skill read).
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/hosts", skills.join("out")).unwrap();
+            std::os::unix::fs::symlink(
+                login.join(".codex/auth.json"),
+                skills.join("auth-link"),
+            )
+            .unwrap();
+        }
+        // The job's temp `~/.codex` points at the login copy's `.codex`, as a real Codex job's does.
+        let temp_codex = bounds.temp.clone().unwrap().join(".codex");
+        let _ = std::fs::remove_file(&temp_codex);
+        let _ = std::fs::remove_dir_all(&temp_codex);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(login.join(".codex"), &temp_codex).unwrap();
+        // Only this job's login and its temp `.codex` are the job's own (not `other-job`).
+        bounds.logins = vec![
+            login.clone(),
+            bounds.temp.clone().unwrap().join(".claude"),
+            temp_codex.clone(),
+        ];
+
+        let skill_path = skill.to_string_lossy().into_owned();
+        let via_home = format!(
+            "{}/skills/.system/openai-docs/SKILL.md",
+            temp_codex.display()
+        );
+        let read = |path: &str| Call::new("Read", &serde_json::json!({"file_path": path}));
+        let q = |path: &str| format!("'{path}'");
+        for (label, call) in [
+            ("bash absolute", bash(&format!("cat {}", q(&skill_path)))),
+            ("bash via ~/.codex", bash(&format!("cat {}", q(&via_home)))),
+            ("Read tool", read(&skill_path)),
+        ] {
+            assert_eq!(super::reach(&call, &bounds), None, "{label}");
+            assert_eq!(
+                decide(&call, Mode::Bypass, &[], &bounds),
+                Verdict::Allow,
+                "{label}"
+            );
+            assert_eq!(
+                decide(&call, Mode::Plan, &[], &bounds),
+                Verdict::Allow,
+                "{label}"
+            );
+        }
+
+        let auth = login.join(".codex/auth.json").to_string_lossy().into_owned();
+        let config = login
+            .join(".codex/config.toml")
+            .to_string_lossy()
+            .into_owned();
+        let other_skill = other_skills
+            .join("SKILL.md")
+            .to_string_lossy()
+            .into_owned();
+        // Written under this job, resolves into another job's skills: still a login secret.
+        let other_via_dotdot = login
+            .join(".codex/skills/../../../other-job/.codex/skills/.system/openai-docs/SKILL.md")
+            .to_string_lossy()
+            .into_owned();
+        let up = login
+            .join(".codex/skills/../auth.json")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            !bounds.own_codex_skill(Path::new(&other_skill)),
+            "another job's skills must not count as this job's"
+        );
+        let mut still_secret = vec![
+            format!("cat {}", q(&auth)),
+            format!("cat {}", q(&config)),
+            format!("cat {}", q(&other_via_dotdot)),
+            format!("cat {} && cat {}", q(&skill_path), q(&auth)),
+            format!("cat {}", q(&up)),
+            format!("rm {}", q(&skill_path)),
+        ];
+        #[cfg(unix)]
+        {
+            let out = skills.join("out").to_string_lossy().into_owned();
+            let auth_link = skills.join("auth-link").to_string_lossy().into_owned();
+            still_secret.push(format!("cat {}", q(&out)));
+            still_secret.push(format!("cat {}", q(&auth_link)));
+        }
+        for command in &still_secret {
+            assert_eq!(
+                super::reach(&bash(command), &bounds),
+                Some(Reach::Secrets),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            super::reach(&read(&auth), &bounds),
+            Some(Reach::Secrets),
+            "Read auth.json"
+        );
+        assert_eq!(
+            super::reach(
+                &Call::new(
+                    "Edit",
+                    &serde_json::json!({"file_path": skill_path, "old_string": "a", "new_string": "b"})
+                ),
+                &bounds
+            ),
+            Some(Reach::Secrets),
+            "Edit a skill"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }
