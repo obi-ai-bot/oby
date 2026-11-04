@@ -2740,7 +2740,11 @@ pub fn reach(call: &Call, bounds: &Bounds) -> Option<Reach> {
     let named = call.paths.iter().chain(&call.reads).chain(call.url.iter());
     // A Read (or a Bash that only reads) of the job's own Codex skill docs is not a login secret.
     let reading = READS.contains(&tool)
-        || (tool == "Bash" && call.command.as_deref().is_some_and(|c| only_reads(c, bounds)));
+        || (tool == "Bash"
+            && call
+                .command
+                .as_deref()
+                .is_some_and(|c| only_reads(c, bounds)));
     let secret = named
         .clone()
         .any(|t| names_a_secret(t, bounds, &bounds.worktree, reading) || holds_a_vault_value(t))
@@ -4213,10 +4217,11 @@ mod tests {
         std::fs::write(worktree.join("node_modules/.bin/vitest"), "").unwrap();
         std::fs::write(worktree.join(".env.test"), "PORT=1\n").unwrap();
         std::fs::write(worktree.join(".env.development"), "PORT=2\n").unwrap();
+        // Use obid's git helper so a job's GIT_OBJECT_DIRECTORY / GIT_DIR (Oby's worktree) don't
+        // leak into this throwaway repo; a bare `git -C` would inherit them and `committed` would
+        // then fail once those vars are cleared.
         let git = |args: &[&str]| {
-            let ran = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&worktree)
+            let ran = crate::git::command(&worktree, &[])
                 .args(args)
                 .output()
                 .unwrap();
@@ -4307,10 +4312,11 @@ mod tests {
     fn the_real_login_and_tokens_are_secrets() {
         let (root, bounds) = job_folders("secrets");
         let account = root.join("accounts/stub");
+        let q = |path: &std::path::Path| format!("'{}'", path.display());
         for command in [
-            format!("cat {}/auth.json", account.display()),
-            format!("ls {}", account.display()),
-            format!("cat {}/settings.json", account.display()),
+            format!("cat {}", q(&account.join("auth.json"))),
+            format!("ls {}", q(&account)),
+            format!("cat {}", q(&account.join("settings.json"))),
             "cat auth.json".into(),
             "cat ~/.claude/.cred*".into(),
             "ls ~/.claude".into(),
@@ -4353,8 +4359,9 @@ mod tests {
             "cat /etc/hosts".to_owned(),
             "ls /usr/bin".into(),
             "cargo test > /dev/null 2>&1".into(),
-            format!("cat {worktree}/src/a.js"),
-            format!("cat {temp}/out.log"),
+            // Quote: Oby's TMPDIR can hold spaces (`Application Support`).
+            format!("cat '{worktree}/src/a.js'"),
+            format!("cat '{temp}/out.log'"),
             "cat ~/out.log".into(),
             "grep -rn '/etc/passwd' src".into(),
             "git commit -m '/Users/x/notes'".into(),
@@ -6178,11 +6185,8 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("/etc/hosts", skills.join("out")).unwrap();
-            std::os::unix::fs::symlink(
-                login.join(".codex/auth.json"),
-                skills.join("auth-link"),
-            )
-            .unwrap();
+            std::os::unix::fs::symlink(login.join(".codex/auth.json"), skills.join("auth-link"))
+                .unwrap();
         }
         // The job's temp `~/.codex` points at the login copy's `.codex`, as a real Codex job's does.
         let temp_codex = bounds.temp.clone().unwrap().join(".codex");
@@ -6222,15 +6226,15 @@ mod tests {
             );
         }
 
-        let auth = login.join(".codex/auth.json").to_string_lossy().into_owned();
+        let auth = login
+            .join(".codex/auth.json")
+            .to_string_lossy()
+            .into_owned();
         let config = login
             .join(".codex/config.toml")
             .to_string_lossy()
             .into_owned();
-        let other_skill = other_skills
-            .join("SKILL.md")
-            .to_string_lossy()
-            .into_owned();
+        let other_skill = other_skills.join("SKILL.md").to_string_lossy().into_owned();
         // Written under this job, resolves into another job's skills: still a login secret.
         let other_via_dotdot = login
             .join(".codex/skills/../../../other-job/.codex/skills/.system/openai-docs/SKILL.md")
