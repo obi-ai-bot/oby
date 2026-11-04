@@ -719,7 +719,12 @@ async fn ask_11_a_new_obid_answers_a_members_question_by_itself() {
     let e = tokio::task::block_in_place(|| exchange(&obid, cid));
     assert_eq!(e["decidedBy"], "sharing");
     let inbox = tokio::task::block_in_place(|| get(&obid, "/v1/inbox"));
-    assert_eq!(inbox, json!([]), "its owner wasn't bothered");
+    let open = inbox.as_array().unwrap();
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(
+        open[0]["confirm"]["action"], "share_status",
+        "its owner wasn't bothered by the question: only the one time obid asks about progress"
+    );
 }
 
 /// When only its owner can answer, the asker hears so at once, and the owner hears the question in
@@ -942,7 +947,11 @@ async fn peer_17_no_silent_share() {
     assert_eq!(yes.status, 200, "{}", yes.text);
     let rule = tokio::task::block_in_place(|| rules(&obid)).remove(0);
     assert_eq!(rule["for"], "*");
-    assert_eq!(rule["tells"], json!(["jobStatus"]), "status only");
+    assert_eq!(
+        rule["tells"],
+        json!(["jobStatus", "jobProgress"]),
+        "what the card lists"
+    );
     assert_eq!(
         rule["starter"], true,
         "it answers who asks, and opens no room"
@@ -977,6 +986,212 @@ async fn peer_17_no_silent_share() {
         assert_eq!(open.len(), 1, "only the one left: {open:?}");
         assert_eq!(open[0]["obi"]["correlationId"], unanswerable.as_str());
     });
+}
+
+/// A first join's rule tells status, and the first question it answers asks the owner once about
+/// each job's progress, in words of its own. Only their Confirm adds it, to the rule they have: the
+/// next answer has moved on from status, and nothing asks again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_23_a_rule_from_before_tells_more_only_on_the_owners_yes() {
+    let folder = Folder::new("peer-23");
+    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
+    tokio::task::block_in_place(|| a_job(&obid, "Billing retries"));
+    let ask = async |text: &str| {
+        let question = ernesto.request("obi-wellington", "question", json!({"text": text}), 3600);
+        ernesto.send(&question).await;
+        let answer = ernesto.receive_reply_to(&question, 30).await;
+        assert_eq!(answer["body"]["by"], "obi", "{answer}");
+        answer["body"]["text"].as_str().unwrap().to_owned()
+    };
+    let first = ask("What's the progress?").await;
+    assert!(first.contains("Billing retries"), "{first}");
+    assert!(!first.contains("Nothing to do."), "not yet: {first}");
+    let card = tokio::task::block_in_place(|| {
+        let cards = offers(&obid);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        assert!(
+            cards[0]["title"]
+                .as_str()
+                .unwrap()
+                .contains("Can I also tell"),
+            "{}",
+            cards[0]
+        );
+        assert_eq!(
+            rules(&obid)[0]["tells"],
+            json!(["jobStatus"]),
+            "asking adds nothing"
+        );
+        let unsigned = answer_item(&obid, &cards[0], json!({"answer": "Confirm"}));
+        assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+        cards[0].clone()
+    });
+    let second = ask("And now?").await;
+    assert!(!second.contains("Nothing to do."), "no yes yet: {second}");
+    let id = tokio::task::block_in_place(|| {
+        assert_eq!(offers(&obid).len(), 1, "one card");
+        let before = rules(&obid).remove(0);
+        let yes = confirm(&obid, card["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        let after = rules(&obid);
+        assert_eq!(after.len(), 1, "the rule they have: {after:?}");
+        assert_eq!(after[0]["id"], before["id"]);
+        assert_eq!(after[0]["tells"], json!(["jobStatus", "jobProgress"]));
+        after[0]["id"].clone()
+    });
+    let third = ask("What's the progress now?").await;
+    assert!(third.contains("Nothing to do."), "its report line: {third}");
+    tokio::task::block_in_place(|| {
+        assert!(offers(&obid).is_empty(), "not asked twice");
+        assert_eq!(rules(&obid)[0]["id"], id);
+    });
+}
+
+/// Removed, an open card goes with it: its yes would share more than its words say. Asked again from
+/// Settings, the card says all of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_23_remove_closes_the_open_card() {
+    let folder = Folder::new("peer-23-remove");
+    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "How's it going?"}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    ernesto.receive_reply_to(&question, 30).await;
+    tokio::task::block_in_place(|| {
+        let cards = offers(&obid);
+        assert!(
+            cards[0]["title"]
+                .as_str()
+                .unwrap()
+                .contains("Can I also tell"),
+            "{cards:?}"
+        );
+        let id = rules(&obid)[0]["id"].as_str().unwrap().to_owned();
+        let gone = call(
+            &obid,
+            "DELETE",
+            &format!("/v1/obid/sharing/rules/{id}"),
+            None,
+        );
+        assert_eq!(gone.status, 204, "{}", gone.text);
+        assert!(offers(&obid).is_empty(), "the card went with the rule");
+        let confirm_it = confirm(&obid, cards[0]["id"].as_str().unwrap());
+        assert_ne!(confirm_it.status, 200, "{}", confirm_it.text);
+        assert!(rules(&obid).is_empty(), "the old card grants nothing");
+        let opened = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(opened.status, 201, "{}", opened.text);
+        let title = opened.body["title"].as_str().unwrap();
+        assert!(
+            !title.contains("also") && title.contains("current step"),
+            "{title}"
+        );
+    });
+}
+
+/// A job at work tells its program and not the command's arguments, and once its owner has spoken
+/// to it, not what its agent says, which can be its reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_22_a_running_job_tells_its_program_and_no_reply_to_its_owner() {
+    let folder = Folder::new("peer-22-running");
+    let (_sphere, obid, ernesto) = setup(&folder).await;
+    let id = tokio::task::block_in_place(|| {
+        share(
+            &obid,
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus", "jobProgress"]}),
+        );
+        let made = post(
+            &obid,
+            "/v1/jobs",
+            &json!({"job": {"repo": REPO, "kind": "investigate", "task": "keep-running", "title": "Tables"}}),
+        );
+        assert_eq!(made.status, 201, "{}", made.text);
+        let id = made.body["id"].as_str().unwrap().to_owned();
+        within(15, "the agent at work", || {
+            let job = get(&obid, &format!("/v1/jobs/{id}"));
+            job["context"].is_string().then_some(())
+        });
+        id
+    });
+    let ask = async |text: &str| {
+        let question = ernesto.request("obi-wellington", "question", json!({"text": text}), 3600);
+        ernesto.send(&question).await;
+        let answer = ernesto.receive_reply_to(&question, 30).await;
+        assert_eq!(answer["body"]["by"], "obi", "{answer}");
+        answer["body"]["text"].as_str().unwrap().to_owned()
+    };
+    let first = ask("What's the progress?").await;
+    assert!(first.contains("Running mysql"), "{first}");
+    assert!(first.contains("Looking at the tables."), "{first}");
+    assert!(
+        !first.contains("root") && !first.contains("S3cret"),
+        "{first}"
+    );
+    tokio::task::block_in_place(|| {
+        let job = get(&obid, &format!("/v1/jobs/{id}"));
+        assert!(
+            job["step"].as_str().unwrap().contains("-pS3cret"),
+            "its owner still sees it: {job}"
+        );
+        let said = post(
+            &obid,
+            &format!("/v1/jobs/{id}/messages"),
+            &json!({"text": "Leave the layoffs out."}),
+        );
+        assert!(said.status < 300, "{}", said.text);
+    });
+    let second = ask("And now?").await;
+    assert!(second.contains("Running mysql"), "{second}");
+    assert!(!second.contains("Looking at the tables."), "{second}");
+}
+
+/// A secret in a job's report never reaches the run, so the run can't retell it, and the answer still
+/// goes, with what the scan passed: not the publish gate's decline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_21_a_secret_in_a_jobs_report_never_reaches_the_answer() {
+    let folder = Folder::new("peer-21");
+    let (_sphere, obid, ernesto) = setup(&folder).await;
+    tokio::task::block_in_place(|| {
+        share(
+            &obid,
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus", "jobProgress"]}),
+        );
+        let made = post(
+            &obid,
+            "/v1/jobs",
+            &json!({"job": {"repo": REPO, "kind": "investigate", "task": "report-a-secret", "title": "Deploy keys"}}),
+        );
+        assert_eq!(made.status, 201, "{}", made.text);
+        let id = made.body["id"].as_str().unwrap();
+        assert_eq!(
+            call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).status,
+            200
+        );
+        let job = get(&obid, &format!("/v1/jobs/{id}"));
+        assert!(
+            job["summary"].as_str().unwrap().contains("ghp_"),
+            "the report does hold one: {job}"
+        );
+    });
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "What's the progress?"}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    let answer = ernesto.receive_reply_to(&question, 30).await;
+    assert_eq!(answer["type"], "answer", "{answer}");
+    assert_eq!(answer["body"]["by"], "obi");
+    let text = answer["body"]["text"].as_str().unwrap();
+    assert!(text.contains("Deploy keys"), "{answer}");
+    assert!(
+        !text.contains("ghp_") && !text.contains("Pushed"),
+        "{answer}"
+    );
 }
 
 /// A rule the owner removed stays removed: no start and no question brings it or the offer back. Only
@@ -1161,6 +1376,35 @@ async fn peer_19_leaving_keeps_the_rules_the_owner_wrote() {
         let kept = rules(&obid);
         assert_eq!(kept.len(), 1, "{kept:?}");
         assert_eq!(kept[0]["tells"], json!(["sharedResults"]));
+    });
+}
+
+/// A yes added a job's progress to a rule the owner wrote: leaving keeps the rule and takes the yes
+/// back, so the next Sphere isn't told more than they wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_23_leaving_takes_a_yes_back_off_a_rule_the_owner_wrote() {
+    let folder = Folder::new("peer-23-leave");
+    let (_sphere, obid, _ernesto) = old_member(&folder).await;
+    tokio::task::block_in_place(|| {
+        let id = share(
+            &obid,
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
+        );
+        let card = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(card.status, 201, "{}", card.text);
+        assert!(card.text.contains("Can I also tell"), "{}", card.text);
+        let yes = confirm(&obid, card.body["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        assert_eq!(
+            rules(&obid)[0]["tells"],
+            json!(["jobStatus", "jobProgress"])
+        );
+        let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
+        assert_eq!(left.status, 200, "{}", left.text);
+        let kept = rules(&obid);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0]["id"], id.as_str());
+        assert_eq!(kept[0]["tells"], json!(["jobStatus"]));
     });
 }
 

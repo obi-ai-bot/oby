@@ -15,13 +15,16 @@
 //                  its folder) and answers with what it read, or "could not read" when the system
 //                  refused it. Only the sandbox stands between it and the file: it is a process,
 //                  not Claude Code, so no permission prompt or --restricted holds it back.
-//     anything     it lists the material: "<title>: <state>; …", refs every item
+//     anything     it lists the material: "<title>: <state>; …" and any agentWrote's lines, refs
+//                  every item
 //   It fails (exit 3, nothing on stdout) when obid breaks its side: the question's words in the
 //   prompt, a flag beyond Read (or --allowedTools, which would let Read leave its folder), no
 //   --restricted or --permission-prompts none (Claude Code's own fence around its folder), a Claude
 //   Code, Anthropic or GitHub variable in its environment, no question file, or no sandbox (it can
 //   create a file next to its working folder).
-// - As a job's agent (stream-json): it ends the turn with "Nothing to do.".
+// - As a job's agent (stream-json): it ends the turn with "Nothing to do.", or, for a task that
+//   holds "report-a-secret", a report with a possible secret in it. A task that holds "keep-running"
+//   says something, runs a command with a password on it and stays at it for 20 seconds.
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -47,8 +50,19 @@ if (valueOf("--input-format") === "stream-json") {
       return;
     }
     if (message.type !== "user") return;
+    if (line.includes("keep-running")) {
+      emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: [], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
+      const content = [{ type: "text", text: "Looking at the tables." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "mysql -u root -pS3cretPassw0rd9 prod" } }];
+      emit({ type: "assistant", session_id: session, message: { role: "assistant", content } });
+      setTimeout(() => {
+        emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: "Done.", session_id: session, total_cost_usd: 0 });
+        rl.close();
+      }, 20000);
+      return;
+    }
+    const result = line.includes("report-a-secret") ? `Pushed with ghp_${"a1B2".repeat(9)} as asked.` : "Nothing to do.";
     emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: [], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
-    emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: "Nothing to do.", session_id: session, total_cost_usd: 0 });
+    emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result, session_id: session, total_cost_usd: 0 });
     rl.close();
   });
 } else {
@@ -108,7 +122,8 @@ function answer(prompt) {
   } else if (text.includes("leak-case")) {
     out = { answerable: true, text: `The key is ${"AKIA"}${"ABCDEFGHIJKLMNOP"}.`, refs: [], choice: null };
   } else {
-    const said = items.map((i) => `${i.title ?? i.type}: ${i.state ?? i.result?.outcome ?? "?"}`).join("; ");
+    const wrote = (i) => Object.values(i.agentWrote ?? {}).map((line) => ` (${line})`).join("");
+    const said = items.map((i) => `${i.title ?? i.type}: ${i.state ?? i.result?.outcome ?? "?"}${wrote(i)}`).join("; ");
     out = { answerable: true, text: said || "Nothing to tell.", refs: items.slice(0, 10).map((_, i) => i), choice: null };
   }
   process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: out }) + "\n");

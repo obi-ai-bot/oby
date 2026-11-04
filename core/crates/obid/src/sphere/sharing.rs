@@ -13,11 +13,15 @@ use serde_json::{Map, Value, json};
 use crate::store;
 
 /// What a rule may let the Obi tell. The spec's third, published pull requests as the code host
-/// shows them, needs the code host: obid offers the two it holds itself (a job's status names
-/// the pull request it opened).
-pub const TELLS: [&str; 2] = [JOB_STATUS, SHARED_RESULTS];
+/// shows them, needs the code host: obid offers what it holds itself (a job's status names the pull
+/// request it opened).
+pub const TELLS: [&str; 3] = [JOB_STATUS, JOB_PROGRESS, SHARED_RESULTS];
 /// The title, stage and state of the owner's jobs, and the pull request each opened.
 pub const JOB_STATUS: &str = "jobStatus";
+/// On top of [`JOB_STATUS`]: each job's current step and latest report line, through the secret
+/// scan (`answering::add_progress`). A rule has it only by the owner's yes to a card that lists it,
+/// or their own list: a rule from before never starts to.
+pub const JOB_PROGRESS: &str = "jobProgress";
 /// What obid already sent that person's Obis: the results of reviews they asked for.
 pub const SHARED_RESULTS: &str = "sharedResults";
 
@@ -89,6 +93,11 @@ pub struct Rule {
     /// Sphere's, so it goes when they leave, as [`Rule::starter`] does. Not in the API's answer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub room_yes: bool,
+    /// [`JOB_PROGRESS`] is on it by the owner's yes to the offer, not their own list: that yes was for
+    /// one Sphere too, so it comes off when they leave ([`Sharing::forget_the_offer`]). Not in the
+    /// API's answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub progress_yes: bool,
 }
 
 impl Rule {
@@ -103,11 +112,14 @@ impl Rule {
             }
     }
 
+    /// Whether it lets the Obi tell `what`, one of [`TELLS`].
+    pub fn has(&self, what: &str) -> bool {
+        self.tells.iter().any(|t| t == what)
+    }
+
     /// Whether it tells every member the status of the jobs in every repository.
     fn tells_everyone_status(&self) -> bool {
-        self.for_owners.is_every()
-            && self.repos.is_every()
-            && self.tells.iter().any(|t| t == JOB_STATUS)
+        self.for_owners.is_every() && self.repos.is_every() && self.has(JOB_STATUS)
     }
 
     /// Whether obid made it on a yes that was for one Sphere: it goes when they leave.
@@ -190,21 +202,49 @@ impl Sharing {
         self.rules.iter().find(|rule| rule.covers(owner, repos))
     }
 
-    /// Whether a question no rule covers should ask the owner about sharing: they share nothing, and
-    /// were never asked and never removed a rule.
+    /// Whether a question should ask the owner about sharing, the one time obid asks: they were never
+    /// asked and never removed a rule, and share nothing, or share status with everyone and not yet
+    /// each job's progress. A narrower rule is their own list, and asks nothing.
     pub fn to_offer(&self) -> bool {
-        self.rules.is_empty() && self.offered.is_none()
+        self.offered.is_none() && (self.rules.is_empty() || self.shares_only_status())
     }
 
-    /// The one rule the owner's yes to the offer means: the one they have, or a new one.
+    /// Whether they tell everyone how their tasks are going, and nobody each job's progress: the yes
+    /// asked of them is to add it.
+    pub fn shares_only_status(&self) -> bool {
+        self.shares_status() && !self.rules.iter().any(|r| r.has(JOB_PROGRESS))
+    }
+
+    /// What the owner's yes to the offer means, whose card lists it all: one rule that answers
+    /// everyone (the one they have, or a new one), and each job's progress on every rule that tells
+    /// status, since those people are among everyone.
     pub fn share_job_status(&mut self, now: i64) -> Rule {
         self.offered.get_or_insert(now);
-        if let Some(rule) = self.rules.iter().find(|r| r.tells_everyone_status()) {
-            return rule.clone();
+        if !self.shares_status() {
+            self.rules.push(answers_who_asks(now));
         }
-        let rule = answers_who_asks(now);
-        self.rules.push(rule.clone());
-        rule
+        for rule in self.rules.iter_mut().filter(|r| r.has(JOB_STATUS)) {
+            if !rule.has(JOB_PROGRESS) {
+                rule.tells.push(JOB_PROGRESS.to_owned());
+                rule.progress_yes = true;
+            }
+        }
+        self.rules
+            .iter()
+            .find(|r| r.tells_everyone_status())
+            .expect("made above")
+            .clone()
+    }
+
+    /// Leaving a Sphere (PEER-19): what obid made on a yes goes, and that they were asked, so the next
+    /// Sphere asks again. Rules they wrote stay, as they wrote them.
+    pub fn forget_the_offer(&mut self) {
+        self.rules.retain(|r| !r.for_this_sphere());
+        self.offered = None;
+        for rule in self.rules.iter_mut().filter(|r| r.progress_yes) {
+            rule.tells.retain(|t| t != JOB_PROGRESS);
+            rule.progress_yes = false;
+        }
     }
 
     /// Whether the owner has said members may ask how the work goes: what the room's card builds on.
@@ -258,7 +298,8 @@ impl Sharing {
 
 /// With every member, the title, stage and state of its owner's jobs, the repository each is in and
 /// the pull request it opened, so their Obys can ask how the work goes without bothering them. Never
-/// logs, diffs, prompts or files. The owner removes it like any rule, and it doesn't come back.
+/// logs, diffs, prompts or files. The owner removes it like any rule, and it doesn't come back. A
+/// job's progress isn't in it: only the owner's yes adds that ([`Sharing::share_job_status`]).
 fn answers_who_asks(now: i64) -> Rule {
     Rule {
         id: new_id(),
@@ -270,6 +311,7 @@ fn answers_who_asks(now: i64) -> Rule {
         last_used: None,
         starter: true,
         room_yes: false,
+        progress_yes: false,
     }
 }
 
@@ -341,6 +383,9 @@ pub fn rule_from(body: &Value, now: i64) -> Result<Rule, String> {
             .collect::<Result<_, _>>()?,
         _ => return Err(format!("tells lists some of {}.", TELLS.join(", "))),
     };
+    if tells.iter().any(|t| t == JOB_PROGRESS) && !tells.iter().any(|t| t == JOB_STATUS) {
+        return Err(format!("{JOB_PROGRESS} goes with {JOB_STATUS}."));
+    }
     let mut distinct = tells.clone();
     distinct.sort();
     distinct.dedup();
@@ -357,6 +402,7 @@ pub fn rule_from(body: &Value, now: i64) -> Result<Rule, String> {
         last_used: None,
         starter: false,
         room_yes: false,
+        progress_yes: false,
     })
 }
 
@@ -571,6 +617,10 @@ mod tests {
                 json!({"for": [], "repos": "*", "tells": ["jobStatus"]}),
                 "empty",
             ),
+            (
+                json!({"for": "*", "repos": "*", "tells": ["jobProgress"]}),
+                "progress with no job to tell it of",
+            ),
         ] {
             assert!(rule_from(&body, 0).is_err(), "{why}");
         }
@@ -653,7 +703,16 @@ mod tests {
         assert!(!asked.to_offer());
         let kept: Sharing = serde_json::from_slice(&serde_json::to_vec(&asked).unwrap()).unwrap();
         assert!(!kept.to_offer(), "across a restart");
-        assert!(!starter(0).to_offer(), "a rule to go by: nothing to ask");
+        assert!(
+            !Sharing {
+                rules: vec![rule(
+                    json!({"for": ["ernesto"], "repos": "*", "tells": ["jobStatus"]})
+                )],
+                ..Sharing::default()
+            }
+            .to_offer(),
+            "a rule of their own, for one person: nothing to ask"
+        );
 
         let home = std::env::temp_dir().join(format!("obid-peer-16-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
@@ -672,13 +731,71 @@ mod tests {
         let mut sharing = Sharing::default();
         let rule = sharing.share_job_status(5);
         assert_eq!(sharing.offered, Some(5));
-        assert_eq!(rule.tells, vec![JOB_STATUS.to_owned()], "status only");
+        assert_eq!(
+            rule.tells,
+            [JOB_STATUS, JOB_PROGRESS],
+            "what the card lists, and no more"
+        );
         assert!(sharing.job_status_rule("ernesto", &repos).is_some());
         assert!(!sharing.job_status_for_all(&owners, &repos), "not the room");
         assert_eq!(rule.to_json()["starter"], true);
         // Twice is still one, and the first time asked stays.
         assert_eq!(sharing.share_job_status(9).id, rule.id);
         assert_eq!((sharing.rules.len(), sharing.offered), (1, Some(5)));
+    }
+
+    /// A yes isn't widened silently: a rule that told status keeps telling status, whoever made it,
+    /// through a restart, until the owner's yes to the one card that lists the rest.
+    #[test]
+    fn peer_23_only_a_yes_adds_a_jobs_progress_to_a_rule_from_before() {
+        let before: Sharing = serde_json::from_value(json!({"rules": [{
+            "id": "s-000000000001", "for": "*", "repos": "*", "tells": ["jobStatus"],
+            "created": 0, "uses": 3, "lastUsed": null, "starter": true}]}))
+        .unwrap();
+        assert!(!before.rules[0].has(JOB_PROGRESS), "nothing widens it");
+        assert!(before.to_offer(), "the one time obid asks");
+        let mut no = before.clone();
+        no.offered = Some(1);
+        assert!(!no.to_offer() && !no.rules[0].has(JOB_PROGRESS), "a no");
+
+        let mut yes = before.clone();
+        let narrow = rule(json!({"for": ["ernesto"], "repos": ["a/b"], "tells": ["jobStatus"]}));
+        let results = rule(json!({"for": "*", "repos": "*", "tells": ["sharedResults"]}));
+        yes.rules.extend([narrow, results]);
+        let widened = yes.share_job_status(9);
+        assert_eq!(widened.id, "s-000000000001", "the rule they have");
+        assert_eq!(widened.uses, 3);
+        assert_eq!(yes.rules.len(), 3, "no new rule");
+        assert!(yes.rules[1].has(JOB_PROGRESS), "they're among everyone");
+        assert!(!yes.rules[2].has(JOB_PROGRESS), "it told no status");
+        assert!(!yes.to_offer(), "not asked twice");
+        // With a yes behind it, a first-time owner isn't asked a second time either.
+        let mut new = Sharing::default();
+        new.share_job_status(1);
+        new.offered = None;
+        assert!(!new.to_offer(), "it has it already");
+        assert_eq!(new.rules[0].tells, [JOB_STATUS, JOB_PROGRESS]);
+        // Leaving takes back the yes, off a rule they wrote too, and their own list stays theirs.
+        let mine = rule(json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}));
+        let listed =
+            rule(json!({"for": ["ernesto"], "repos": "*", "tells": ["jobStatus", "jobProgress"]}));
+        let mut left = Sharing {
+            rules: vec![mine, listed],
+            ..Sharing::default()
+        };
+        left.share_job_status(1);
+        assert!(left.rules[0].has(JOB_PROGRESS));
+        let kept: Sharing = serde_json::from_slice(&serde_json::to_vec(&left).unwrap()).unwrap();
+        assert!(kept.rules[0].progress_yes, "across a restart");
+        left.forget_the_offer();
+        assert_eq!(left.rules[0].tells, [JOB_STATUS]);
+        assert_eq!(left.rules[1].tells, [JOB_STATUS, JOB_PROGRESS]);
+        assert!(left.offered.is_none());
+        // A first join's rule doesn't have it.
+        assert_eq!(starter(0).rules[0].tells, [JOB_STATUS]);
+        // Nor the room's, on top of status: a post goes to everyone unasked.
+        let mut room = starter(0);
+        assert_eq!(room.share_room(1).unwrap().tells, [JOB_STATUS]);
     }
 
     #[test]

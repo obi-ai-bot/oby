@@ -321,6 +321,31 @@ async fn rooms_9_a_read_is_a_quoted_file_and_marks_the_conversation() {
     });
 }
 
+/// PEER-22: the room hears no job's step or report line, under a rule that lets a question hear them:
+/// its card lists a task's title, repository and pull request, and a post goes to everyone unasked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_22_the_room_hears_no_jobs_progress() {
+    let folder = Folder::new("room-progress");
+    let (sphere, obid, _, ernesto) = setup(&folder, false).await;
+    tokio::task::block_in_place(|| {
+        share(
+            &obid,
+            json!({"for": "*", "repos": [REPO], "tells": ["jobStatus", "jobProgress"]}),
+        );
+        a_job(&obid, "Land the fix");
+    });
+    let need = post_by(&ernesto, &sphere, "need", "What's landing?", &about_repo());
+    stored(&sphere, need.clone());
+    tokio::task::block_in_place(|| {
+        let found = within(30, "the found", || {
+            posts(&obid).into_iter().find(|p| p["kind"] == "found")
+        });
+        let text = found["text"].as_str().unwrap();
+        assert!(text.contains("Land the fix"), "{found}");
+        assert!(!text.contains("Nothing to do."), "{found}");
+    });
+}
+
 /// ROOMS-10: a need under a sharing rule gets one found; with no rule, none, and nothing asks or
 /// notifies the owner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

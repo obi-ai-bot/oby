@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACCEPTS, NotThisKey, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
 } from '../../../shared/sphere';
-import { canOpenRoom, whatItTells, type SharingRule } from '../sharing';
+import { canAddProgress, canOpenRoom, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
 // one local Obysphere) is scripts/test-sphere.mjs.
@@ -231,6 +231,15 @@ describe('what your Oby tells (docs/contracts/peer-thread.md)', () => {
       about: 'Each task’s title, repository, stage, state and pull request. To everyone in this Obysphere who asks, in every repository.',
     });
     expect(whatItTells({ ...rule, for: ['dana'], repos: ['acme/app'], uses: 2 }, ['dana', 'ernesto']).about).toContain('To dana, in acme/app. Answered 2 times.');
+  });
+  it('peer_23: offers each task\'s progress only to an owner who shares status with everyone and not that yet', () => {
+    expect(canAddProgress([])).toBe(false);
+    expect(canAddProgress([{ ...rule, for: ['dana'] }])).toBe(false);
+    expect(canAddProgress([rule])).toBe(true);
+    const yes = { ...rule, tells: ['jobStatus', 'jobProgress'] };
+    expect(canAddProgress([yes])).toBe(false);
+    expect(whatItTells(yes, ['dana']).label).toBe('How your tasks are going, and What each task is doing');
+    expect(whatItTells(yes, ['dana']).about).toContain('current step and latest report line');
   });
   it('rooms_17: offers the room once status is shared, and not once a rule opens it', () => {
     const own = { ...rule, starter: false };

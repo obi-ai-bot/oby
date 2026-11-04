@@ -5,7 +5,7 @@ The business behavior contract for `e2e/rig.mjs`, from [the template](../busines
 ## Feature and status
 
 - **Outcome:** anyone working on talking to a person's Oby ([ask-an-oby.md](ask-an-oby.md)) can have a real second Oby with real work, with one command, and throw it away with another. A milestone is tested on it before it's called done.
-- **Status:** **Implemented.** Run for real on stand-ins, and with the real Claude Code up to its missing login. **Not run yet:** a real job and a real answer, which need the owner's sign-in below.
+- **Status:** **Implemented.** Run for real on stand-ins, and with the real Claude Code up to its missing login. A real job and real answers ran on 2026-11-03, once the owner signed Dana in (peer-thread.md, PEER-20).
 - **Scope:** one Mac. **Out of scope:** the second pass on a second Mac and on the live Sphere (PEER-18), and changing obi-sphere.
 
 ## Behavior
@@ -31,7 +31,7 @@ Then `node e2e/rig.mjs stop` and `start`. The account is one Dana's obid added, 
 
 | `node e2e/rig.mjs …` | What it does |
 |---|---|
-| `start` | Builds this checkout's obid (`OBID_BIN` names another), clones the Sphere at its commit, starts all three, joins both by one private link, writes the rule, starts Dana's job if none runs, and prints what's up and any step left. Real if Dana's account is signed in. While it's all up, it only starts a job if the last one ended. |
+| `start` | Builds this checkout's obid (`OBID_BIN` names another), clones the Sphere at its commit, starts all three, joins both by one private link, writes the rule, says Dana's yes once to the card that lists a job's step and report line (peer-thread.md, PEER-23), starts Dana's job if none runs, and prints what's up and any step left. Real if Dana's account is signed in. While it's all up, it only starts a job if the last one ended. |
 | `start --stand-in` | Dana on stand-ins whatever its login: exact states, no usage, and the real tool isn't run at all. |
 | `start --real` | Dana on the real Claude Code with or without a login. Without one it starts no job, and every question waits on Dana. |
 | `status` | What's up, the checkout, obid and Sphere commit it runs, with each obid's `OBID_HOME` and `OBID_PORT`. |
@@ -78,7 +78,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 
 - **RIG-1** Pointed at the owner's real Oby, under `HOME` or the password database's home, by its folder, a folder inside it or holding it, a link (one that leads nowhere too), a firmlink, another spelling of the same name or `OBID_HOME`, every command refuses with exit 2 and changes nothing.
 - **RIG-2** Pointed at port 7777, it refuses the same way.
-- **RIG-3** `start` from nothing: the Sphere, both obids joined with sealing on, the rule written, Dana's starter rule, Dana's job running, and the owner's step printed.
+- **RIG-3** `start` from nothing: the Sphere, both obids joined with sealing on, the rule written, Dana's starter rule with Dana's signed yes to a job's progress, Dana's job running, and the owner's step printed.
 - **RIG-4** With the rule and the job, `ask "What are you working on?"`: the job quoted, "Asked Dana's Oby. Dana wasn't bothered.", Dana's inbox empty.
 - **RIG-5** On stand-ins, a question holding `need-owner`: "It's waiting on Dana", and an `obiRequest` in Dana's inbox.
 - **RIG-6** `policy off` and ask: "This Obysphere's rules don't allow questions yet", no exchange kept, also with words already answered once, whose old exchange isn't this one. `policy on` restores it.

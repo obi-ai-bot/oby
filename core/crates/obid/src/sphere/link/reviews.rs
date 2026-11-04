@@ -160,7 +160,7 @@ impl Link {
         };
         let jobs = self.jobs.list(usize::MAX);
         let shared: Vec<&Exchange> = shared.iter().collect();
-        let material = answering::material(
+        let mut material = answering::material(
             &rule,
             &owner,
             &repos,
@@ -169,6 +169,9 @@ impl Link {
             &jobs,
             &shared,
         );
+        let scratch = self.config.home.join("tmp");
+        let _ = std::fs::create_dir_all(&scratch);
+        answering::add_progress(&rule, &mut material, &jobs, &scratch).await;
         let dir = self.config.home.join("answers").join(&cid);
         let written = match answering::write(
             &self.config,
@@ -205,8 +208,6 @@ impl Link {
             self.to_owner(&cid);
             return;
         }
-        let scratch = self.config.home.join("tmp");
-        let _ = std::fs::create_dir_all(&scratch);
         let verdict = scan::scan(&every_text(&body), &scratch).await;
         let (scan_json, failure) = match &verdict {
             scan::Verdict::Clean => (json!({"ran": true, "clean": true}), None),

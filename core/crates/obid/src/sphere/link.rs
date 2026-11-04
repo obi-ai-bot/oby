@@ -208,6 +208,25 @@ struct State {
     unconfirmed: HashMap<String, Value>,
 }
 
+impl State {
+    /// Closes the owner's open Confirm cards of `actions`: the ones to save.
+    fn close_cards(&mut self, actions: &[&str], now: i64) -> Vec<Item> {
+        self.inbox
+            .values_mut()
+            .filter(|i| {
+                i.done.is_none()
+                    && i.confirm
+                        .as_ref()
+                        .is_some_and(|c| actions.contains(&c.action.as_str()))
+            })
+            .map(|i| {
+                i.done = Some(now);
+                i.clone()
+            })
+            .collect()
+    }
+}
+
 /// `sealing` in `GET /v1/obid/sphere`: `on` once the card carries obid's seal key; `card_needed`
 /// when the owner should sign a new card (to say obid reads seal keys or a card's runtime, or to add
 /// its own seal key or its runtime once every member reads them); `waiting` until the Sphere or a
@@ -2556,8 +2575,16 @@ impl Link {
             return false;
         }
         // Removed stays removed: nothing asks them again (PEER-18).
-        state.sharing.offered.get_or_insert(time::now());
+        let now = time::now();
+        state.sharing.offered.get_or_insert(now);
         self.save_sharing(&state.sharing);
+        // An open card asks about what they just took away, and its yes would share more than it
+        // says (PEER-23).
+        let closed = state.close_cards(&[inbox::action::SHARE_STATUS], now);
+        drop(state);
+        for item in closed {
+            self.save_item(&item);
+        }
         true
     }
 

@@ -5017,6 +5017,7 @@ impl Jobs {
         });
         if let Some(words) = words {
             self.update(id, |job| {
+                job.owner_spoke = true;
                 job.notes
                     .get_or_insert_with(Vec::new)
                     .push(words.to_owned());
@@ -5080,6 +5081,7 @@ impl Jobs {
                 job.mode = Some(approved.as_str().to_owned());
             }
             if let Some(words) = words {
+                job.owner_spoke = true;
                 job.notes
                     .get_or_insert_with(Vec::new)
                     .push(words.to_owned());
@@ -5217,6 +5219,7 @@ impl Jobs {
                 PermissionRefused::Refused(format!("Couldn't pass your answer on: {why}"))
             })?;
         let answer = answer.as_str();
+        self.update(id, |job| job.owner_spoke = true);
         if let Some(answered) = self.answer_kept_question(id, permission, Some(answer), signed) {
             return answered;
         }
@@ -5797,6 +5800,9 @@ impl Jobs {
     /// are the owner's own (signed, Confirmed, or a conversation's turn, whose added text is
     /// fenced after it), never obid's Try again.
     fn heard_from_owner(&self, id: &str, text: &str, source: Source) {
+        if !matches!(source, Source::Event) {
+            self.update(id, |job| job.owner_spoke = true);
+        }
         if matches!(
             source,
             Source::Owner | Source::Confirmed | Source::Untrusted
@@ -7729,7 +7735,11 @@ impl Jobs {
                     id: call,
                     name,
                     input,
-                } => looping.called(call, name, input),
+                } => {
+                    let doing = crate::agent::told_step(&name, &input);
+                    jobs.update(id, |job| job.doing = Some(doing));
+                    looping.called(call, name, input);
+                }
                 AgentEvent::ToolDone {
                     id: call, failed, ..
                 } => {

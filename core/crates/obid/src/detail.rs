@@ -138,7 +138,7 @@ pub fn masked(text: &str) -> String {
 }
 
 /// A character a token can hold (base64, hex, URL-encoded, a JWT's dots).
-fn token_char(c: char) -> bool {
+pub(crate) fn token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-' | '.' | '~' | '%')
 }
 
