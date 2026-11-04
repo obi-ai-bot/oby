@@ -167,7 +167,7 @@ fn cursor_config(login: &Path) -> Result<(), String> {
         .map_err(|_| "obid couldn't make Cursor's private settings folder")?;
     let config = json!({
         "version": 1, "editor": {"vimMode": false}, "approvalMode": "allowlist",
-        "sandbox": {"readBoundary": "workspace", "networkAccess": "deny"},
+        "sandbox": {"readBoundary": "workspace"},
         "permissions": {
             "allow": ["Read(question.json)", "Read(material.json)"],
             "deny": ["Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*:*)",

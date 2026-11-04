@@ -33,7 +33,7 @@
 //! covers (SPH-11).
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -380,7 +380,7 @@ fn refs_of(indexes: &[Value], material: &[Value]) -> Vec<Value> {
     out
 }
 
-/// Runs the model on an eligible account, in `dir` (made new, removed after):
+/// Runs the model on an eligible account, in a fresh folder beside `dir`, removed after:
 /// `Ok(None)` when it says it can't answer, `Err` when it couldn't run or said nothing usable.
 #[allow(clippy::too_many_arguments)]
 pub async fn write(
@@ -393,13 +393,44 @@ pub async fn write(
     question: &Value,
     material: &[Value],
 ) -> Result<Option<Written>, String> {
-    let _ = std::fs::remove_dir_all(dir);
+    let folder = RunFolder::new(dir)?;
     let ran = run(
-        config, sandbox, jobs, dir, owner, your_owner, question, material,
+        config, sandbox, jobs, &folder.0, owner, your_owner, question, material,
     )
     .await;
-    let _ = std::fs::remove_dir_all(dir);
     written(ran?, question, material)
+}
+
+/// A fresh sibling of the requested exchange folder. Full exchange UUIDs leave Cursor no room
+/// for its sockets on the default Mac home path. Creation is exclusive (a collision never reuses
+/// another run's files), and Drop also removes the private login if the future is cancelled.
+struct RunFolder(PathBuf);
+
+impl RunFolder {
+    fn new(requested: &Path) -> Result<Self, String> {
+        let parent = requested
+            .parent()
+            .ok_or("the answer's folder has no parent")?;
+        store::make_private_dir(parent).map_err(|_| "obid couldn't make its answers folder")?;
+        let name = format!("r{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let path = parent.join(name);
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&path)
+            .map_err(|_| "obid couldn't make a private answering folder")?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for RunFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn written(out: Value, question: &Value, material: &[Value]) -> Result<Option<Written>, String> {
@@ -620,7 +651,9 @@ fn checked(out: Value) -> Result<Value, String> {
 /// What's wrong with the model's output against [`schema`], briefly; empty when nothing is.
 fn jsonschema_problems(out: &Value) -> String {
     let ok = out["answerable"].is_boolean()
-        && out["text"].is_string()
+        && out["text"]
+            .as_str()
+            .is_some_and(|text| text.chars().count() <= MAX_TEXT)
         && out["refs"]
             .as_array()
             .is_some_and(|r| r.len() <= 10 && r.iter().all(Value::is_u64))
@@ -641,6 +674,43 @@ mod tests {
     const ASKED: &str = "Rotate the billing keys, then tell finance";
 
     #[test]
+    fn ask_31_run_folders_are_private_short_and_removed() {
+        let parent =
+            std::env::temp_dir().join(format!("obid-answer-folders-{}", uuid::Uuid::new_v4()));
+        let requested = parent.join(uuid::Uuid::new_v4().to_string());
+        let first = RunFolder::new(&requested).unwrap();
+        let second = RunFolder::new(&requested).unwrap();
+        assert_ne!(
+            first.0, second.0,
+            "two runs never share a login or input files"
+        );
+        let mac = Path::new("/Users/developer/Library/Application Support/Oby/Runner/answers")
+            .join(first.0.file_name().unwrap())
+            .join("login");
+        assert!(
+            crate::acp::cursor::data_dir(&mac).as_os_str().len() <= crate::acp::cursor::SOCKET_ROOM
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&first.0).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let file = first.0.join("login");
+        store::write_private(&file, b"private login copy").unwrap();
+        drop(first);
+        assert!(
+            !file.exists(),
+            "a cancelled or failed run leaves no private copy"
+        );
+        drop(second);
+        assert!(std::fs::read_dir(&parent).unwrap().next().is_none());
+        std::fs::remove_dir(parent).unwrap();
+    }
+
+    #[test]
     fn ask_31_answers_share_validation_and_cleaning() {
         let material = [json!({"ref": {"kind": "repo", "repo": "acme/app"}})];
         let question = json!({"choices": ["Yes", "No"]});
@@ -657,6 +727,7 @@ mod tests {
             json!({}),
             json!({"answerable": true, "text": "x", "refs": [], "extra": null}),
             json!({"answerable": true, "text": "x", "refs": ["0"], "choice": null}),
+            json!({"answerable": true, "text": "x".repeat(MAX_TEXT + 1), "refs": [], "choice": null}),
         ] {
             assert!(checked(bad).is_err());
         }
