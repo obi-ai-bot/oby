@@ -1775,6 +1775,12 @@ button.connector { width: 100%; text-align: left; }
 
 /* a modal's line on what it's for, under its title */
 .modal-lede { margin: -12px 0 20px; color: var(--muted); font-size: var(--text-base); }
+.modal .share-repos { margin: -8px 0 20px; }
+/* the card's repositories (RepoTicks): each name whole, and many scroll where they are */
+.share-repos { margin-top: 10px; max-height: 168px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.share-repo { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; color: var(--ink); font-size: var(--text-md); line-height: 19px; overflow-wrap: anywhere; }
+.share-repo input { flex: none; margin: 0; }
+.share-repo.is-none { margin: 0; color: var(--muted); }
 /* the fields: 44px, white 2% fill, 12px corners, as the invite link's */
 .modal-field { width: 100%; height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font-size: var(--text-base); outline: none; user-select: text; transition: border-color var(--fade); }
 .modal-field::placeholder { color: var(--muted); }

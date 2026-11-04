@@ -139,8 +139,10 @@ pub mod action {
     /// Turn check-ins on or change them (`oby_check_in`, TASKCONV-11): `target` the conversation they
     /// post in, `payload` `{"checkIn": <settings' checkIn>}`.
     pub const SET_CHECK_IN: &str = "set_check_in";
-    /// Answer members' questions about how the owner's work goes, by itself (PEER-16,
-    /// docs/contracts/peer-thread.md): `target` empty, `payload` null.
+    /// Answer members' questions about how the owner's work goes in the repositories they tick, by
+    /// itself (PEER-16, PEER-38, docs/contracts/peer-thread.md): `target` empty, `payload` `{"offered":
+    /// [the repositories it lists], "repos": [those ticked]}`; null on the card that only adds each
+    /// job's progress to a rule of theirs for every repository (PEER-23).
     pub const SHARE_STATUS: &str = "share_status";
     /// Post in the Sphere's room as the owner's jobs start and end (ROOMS-17,
     /// docs/contracts/rooms.md): `target` empty, `payload` null.
@@ -186,37 +188,14 @@ pub fn confirm_item(
     }
 }
 
-/// Oby's one ask whether it may answer members' questions by itself (PEER-16): obid's own fixed words
-/// and nothing a member chose, so nothing another Oby wrote shapes what the owner's device signs.
-/// With `only_status`, they share status already, and it asks only what a yes adds (PEER-23). Its
-/// `Confirm` is the same either way ([`Sharing::share_job_status`](super::sharing::Sharing::share_job_status)).
-pub fn share_item(now: i64, only_status: bool) -> Item {
-    // Short enough that Home's card, which shows three lines, shows all of the text.
-    let (title, text, details) = if only_status {
-        (
-            "Can I also tell people in your Obysphere each task's current step and latest report line?",
-            "You let them ask how your tasks are going, and this adds an agent's own words about it. \
-             I leave out a line with a possible secret. Never logs, diffs, prompts or files.",
-            [
-                "I add them to what I answer, until you remove it in the Obysphere's settings.",
-                "I keep answering with what you share now, and I don't ask again. You can still add them from the Obysphere's settings.",
-            ],
-        )
-    } else {
-        (
-            "Can I tell people in your Obysphere how your tasks are going, with each one's current step and latest report line, in every repository?",
-            "I'd answer whoever asks, waiting questions first: each task's title, repository, stage, \
-             state, pull request, current step and latest report line. Never logs, diffs, prompts or files.",
-            [
-                "I answer members' questions about your tasks by myself, the ones waiting now first, until you remove it in the Obysphere's settings. A step or a report line is an agent's own words: I leave out one with a possible secret.",
-                "Every question keeps waiting for you, and I don't ask again. You can still share from the Obysphere's settings.",
-            ],
-        )
-    };
+/// Oby's one ask whether it may answer members' questions by itself, about the repositories ticked
+/// on it (PEER-16, PEER-38): obid's own fixed words, the owner's own repositories and nothing a member
+/// chose, so nothing another Oby wrote shapes what the owner's device signs.
+pub fn share_item(now: i64, offered: Vec<String>, chosen: Vec<String>) -> Item {
     let mut item = confirm_item(
         "",
-        title.to_owned(),
-        text.to_owned(),
+        String::new(),
+        String::new(),
         Confirmed {
             action: action::SHARE_STATUS.into(),
             target: String::new(),
@@ -224,16 +203,66 @@ pub fn share_item(now: i64, only_status: bool) -> Item {
         },
         now,
     );
-    item.details = Some(details.map(str::to_owned).to_vec());
+    tick_repos(&mut item, offered, chosen);
+    item
+}
+
+/// The card with `chosen` ticked: its title, which Confirm signs, names exactly them, so a device's
+/// signature for any other ticks doesn't pass.
+pub fn tick_repos(item: &mut Item, offered: Vec<String>, chosen: Vec<String>) {
+    item.title = if chosen.is_empty() {
+        "Which repositories can I tell people in your Obysphere about?".to_owned()
+    } else {
+        format!(
+            "Can I tell people in your Obysphere how your tasks are going, with each one's current step and latest report line, in {}?",
+            super::sharing::repo_names(&chosen)
+        )
+    };
+    // Short enough that Home's card, which shows three lines, shows all of the text.
+    item.text = "Only what you tick. I'd answer whoever asks, waiting questions first: each task's title, \
+                 repository, stage, state, pull request, current step and latest report line. Never logs, \
+                 diffs, prompts or files."
+        .to_owned();
+    item.details = Some(vec![
+        "I answer members' questions about your tasks in these repositories by myself, the ones waiting now first, until you change or remove it in the Obysphere's settings. A step or a report line is an agent's own words: I leave out one with a possible secret.".to_owned(),
+        "Every question keeps waiting for you, and I don't ask again. You can still share from the Obysphere's settings.".to_owned(),
+    ]);
+    if let Some(confirm) = &mut item.confirm {
+        confirm.payload = json!({"offered": offered, "repos": chosen});
+    }
+}
+
+/// Oby's one ask of an owner whose own rule tells everyone status in every repository, what a yes adds
+/// to it (PEER-23): obid's own fixed words, like [`share_item`].
+pub fn add_progress_item(now: i64) -> Item {
+    let mut item = confirm_item(
+        "",
+        "Can I also tell people in your Obysphere each task's current step and latest report line?"
+            .to_owned(),
+        "You let them ask how your tasks are going, and this adds an agent's own words about it. \
+         I leave out a line with a possible secret. Never logs, diffs, prompts or files."
+            .to_owned(),
+        Confirmed {
+            action: action::SHARE_STATUS.into(),
+            target: String::new(),
+            payload: Value::Null,
+        },
+        now,
+    );
+    item.details = Some(vec![
+        "I add them to what I answer, until you remove it in the Obysphere's settings.".to_owned(),
+        "I keep answering with what you share now, and I don't ask again. You can still add them from the Obysphere's settings.".to_owned(),
+    ]);
     item
 }
 
 /// Oby's ask, from the Obysphere's settings, whether it may also post in the room (ROOMS-17): obid's
-/// own fixed words, like [`share_item`].
-pub fn share_room_item(now: i64) -> Item {
-    let title =
-        "Can I also post in your Obysphere's room as your tasks start and end, in every repository?"
-            .to_owned();
+/// own fixed words, like [`share_item`], and the repositories it would post about.
+pub fn share_room_item(now: i64, repos: &super::sharing::Scope) -> Item {
+    let title = format!(
+        "Can I also post in your Obysphere's room as your tasks start and end, {}?",
+        repos.in_words()
+    );
     // Short enough that Home's card, which shows three lines, shows all of it.
     let text = "Everyone there sees each task's title, repository and pull request without asking, \
                 and I'd answer what they ask for there from the same. Never logs, diffs, prompts or files."

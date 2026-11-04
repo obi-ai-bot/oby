@@ -9,6 +9,7 @@
 //   node e2e/rig.mjs ask "What are you working on?"  you ask Dana's Oby; prints what came back
 //   node e2e/rig.mjs app                           the Electron dev app, on you
 //   node e2e/rig.mjs job [task]                    one more job for Dana
+//   node e2e/rig.mjs job --personal [task]         one outside what Dana shares (PEER-15)
 //   node e2e/rig.mjs policy on|off                 the Sphere's rule written, or none (PEER-8)
 //   node e2e/rig.mjs dana stop|start               Dana's obid only (a Mac that's off, PEER-7)
 //   node e2e/rig.mjs stop [--force]                nothing left running; the folder stays
@@ -42,6 +43,8 @@ const SPHERE_REMOTE = "https://github.com/obi-ai-bot/obi-sphere.git";
 const SPHERE_PORTS = [8791, 8792, 8793]; // 8799 is often another session's
 const PEOPLE = { you: { owner: "alex", name: "Alex’s Oby", port: 8794 }, dana: { owner: "dana", name: "Dana’s Oby", port: 8795 } };
 const REPO = "obi-e2e/fixture-app";
+// A repository of its owner's that Dana's yes leaves out (PEER-15): the same remote is enough.
+const PERSONAL = "obi-e2e/personal-taxes";
 const LONG_TASK = "Add one small test file a minute, 30 times, committing each: tests/step-01.test.js, then tests/step-02.test.js and so on, with `sleep 60` between them. Each file holds one passing node:test. Nothing else.";
 const RULES = [["alex", "dana"], ["dana", "alex"]].map(([from_owner, to_owner]) => ({ id: `${from_owner}-asks-${to_owner}`, from_owner, to_owner, actions: ["question"], repos: ["*"] }));
 
@@ -149,7 +152,7 @@ function writeConfig(who, { bin, real }) {
     claudeKeychain: real, cursorKeychain: false,
     agents: { claude: { bin, accounts: own("stand-in") }, codex: { bin: "/usr/bin/false", accounts: own("no-codex") }, cursor: { bin: "/usr/bin/false", accounts: own("no-cursor") } },
     conversation: { agent: "claude" },
-    repos: [{ repo: REPO, remote: `file://${join(RIG, "fixture/remote.git")}`, defaultBranch: "main", check: "true", pullRequests: false }],
+    repos: [REPO, PERSONAL].map((repo) => ({ repo, remote: `file://${join(RIG, "fixture/remote.git")}`, defaultBranch: "main", check: "true", pullRequests: false })),
   }, null, 2), { mode: 0o600 });
 }
 
@@ -182,11 +185,12 @@ async function deviceOf(who, state) {
   save(state);
 }
 
-// Dana's click on Confirm on the card that lists a job's step and report line (docs/contracts/peer-thread.md,
-// PEER-23), once, so that what Dana's Oby answers is real progress and Dana's inbox stays empty.
+// Dana's ticks and click on Confirm on the card that lists a job's step and report line
+// (docs/contracts/peer-thread.md, PEER-38), once, so that what Dana's Oby answers is real progress in
+// the rig's repository and Dana's inbox stays empty.
 async function danaSaysYes(state) {
   if (state.danaSaidYes) return;
-  const offered = await api("dana").call("POST", "/v1/obid/sharing/offer", {});
+  const offered = await api("dana").call("POST", "/v1/obid/sharing/offer", { repos: [REPO] });
   if (offered.status >= 300) fail(`Dana's card: ${offered.status} ${offered.text}`);
   const { id: item, title } = JSON.parse(offered.text);
   const { id: device, key } = state.devices.dana;
@@ -297,8 +301,8 @@ async function danaAccount(state) {
 }
 const signInCommand = (folder) => `CLAUDE_CONFIG_DIR="${folder}" claude auth login`;
 
-async function startJob(state, task) {
-  const job = { repo: REPO, kind: "fix", title: "Billing retries", task: task ?? (state.real ? LONG_TASK : "SLEEP"), account: state.real ? state.danaAccount : "stand-in" };
+async function startJob(state, task, personal = false) {
+  const job = { repo: personal ? PERSONAL : REPO, kind: "fix", title: personal ? "File my taxes" : "Billing retries", task: task ?? (state.real ? LONG_TASK : "SLEEP"), account: state.real ? state.danaAccount : "stand-in" };
   const r = await api("dana").call("POST", "/v1/jobs", { job });
   if (r.status !== 201) fail(`Dana's job: ${r.status} ${r.text}`);
   return JSON.parse(r.text);
@@ -394,7 +398,7 @@ async function start(flags) {
     }
     await danaSaysYes(state);
     say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other.");
-    say(`Dana's sharing: ${JSON.stringify((await api("dana").get("/v1/obid/sharing")).rules?.map((r) => ({ for: r.for, tells: r.tells, starter: r.starter })))}`);
+    say(`Dana's sharing: ${JSON.stringify((await api("dana").get("/v1/obid/sharing")).rules?.map((r) => ({ for: r.for, repos: r.repos, tells: r.tells, starter: r.starter })))}`);
     await keepDanaWorking(state);
     state.ready = true;
     save(state);
@@ -481,10 +485,12 @@ async function ask(words) {
   }
 }
 
-async function job(task) {
+async function job(words) {
   const state = load();
   if (!alive(state, "dana")) fail("Dana isn't up: node e2e/rig.mjs start");
-  const made = await startJob(state, task);
+  const personal = words.startsWith("--personal");
+  const task = words.replace(/^--personal ?/, "") || undefined;
+  const made = await startJob(state, task, personal);
   say(`Dana's job: ${made.id}`);
 }
 
@@ -616,7 +622,7 @@ try {
   else if (command === "stop") await stop();
   else if (command === "status") await status();
   else if (command === "ask") await ask(args.join(" "));
-  else if (command === "job") await job(args.join(" ") || undefined);
+  else if (command === "job") await job(args.join(" "));
   else if (command === "policy") await policy(args[0]);
   else if (command === "dana") await dana(args[0]);
   else if (command === "app") await app();

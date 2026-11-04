@@ -941,17 +941,6 @@ async fn peer_17_a_yes_leaves_the_question_the_owner_is_answering() {
     let folder = Folder::new("peer-17-draft");
     let (_sphere, obid, ernesto) = setup(&folder).await;
     let words = "Which account does staging deploy to?";
-    tokio::task::block_in_place(|| {
-        let shared = call(&obid, "GET", "/v1/obid/sharing", None).body;
-        let id = shared["rules"][0]["id"].as_str().unwrap().to_owned();
-        let gone = call(
-            &obid,
-            "DELETE",
-            &format!("/v1/obid/sharing/rules/{id}"),
-            None,
-        );
-        assert_eq!(gone.status, 204, "{}", gone.text);
-    });
     let question = ernesto.request("obi-wellington", "question", json!({"text": words}), 3600);
     ernesto.send(&question).await;
     let cid = question["id"].as_str().unwrap();
@@ -974,7 +963,12 @@ async fn peer_17_a_yes_leaves_the_question_the_owner_is_answering() {
                 .find(|i| i["confirm"]["action"] == "answer_question")
                 .cloned()
         });
-        let opened = call(&obid, "POST", "/v1/obid/sharing/offer", Some(&json!({})));
+        let opened = call(
+            &obid,
+            "POST",
+            "/v1/obid/sharing/offer",
+            Some(&json!({"repos": ["obi-e2e/fixture-app"]})),
+        );
         assert_eq!(opened.status, 201, "{}", opened.text);
         let yes = confirm(&obid, opened.body["id"].as_str().unwrap());
         assert_eq!(yes.status, 200, "{}", yes.text);

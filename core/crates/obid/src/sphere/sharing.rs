@@ -36,13 +36,30 @@ pub enum Scope {
     These(Vec<String>),
 }
 
+/// `acme/app`, `acme/app and acme/web`, `acme/app, acme/web and acme/api`.
+pub fn repo_names(repos: &[String]) -> String {
+    match repos {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    }
+}
+
 impl Scope {
     fn every() -> Scope {
         Scope::Every("*".into())
     }
 
-    fn is_every(&self) -> bool {
+    pub fn is_every(&self) -> bool {
         matches!(self, Scope::Every(_))
+    }
+
+    /// The repositories it covers, as a card says them: `in every repository`, `in acme/app`.
+    pub fn in_words(&self) -> String {
+        match self {
+            Scope::Every(_) => "in every repository".into(),
+            Scope::These(list) => format!("in {}", repo_names(list)),
+        }
     }
 
     /// Whether it names `owner` exactly, or is every one.
@@ -85,8 +102,8 @@ pub struct Rule {
     /// Answers the Obi sent under it.
     pub uses: u64,
     pub last_used: Option<i64>,
-    /// The rule of a first join or of the owner's yes to the offer ([`answers_who_asks`]): it answers
-    /// who asks, and opens no room, which neither agreed to.
+    /// The rule of the owner's yes to the offer, or of a first join before SPH-8 ([`answers_who_asks`]):
+    /// it answers who asks, and opens no room, which neither agreed to.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub starter: bool,
     /// The rule of the owner's yes to posting in the room ([`Sharing::share_room`]). The room is that
@@ -101,12 +118,13 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Whether it is for `owner` and covers each of `repos` (none: only a rule for every
-    /// repository covers a question about no repository).
+    /// Whether it is for `owner` and covers each of `repos`. A question about no repository only a
+    /// rule for every repository covers, or one made on the owner's yes, which answers who asks
+    /// ("What's the progress?") from the repositories they chose ([`crate::sphere::answering::material`]).
     pub fn covers(&self, owner: &str, repos: &[String]) -> bool {
         self.for_owners.has_owner(owner)
             && if repos.is_empty() {
-                self.repos.is_every()
+                self.repos.is_every() || self.for_this_sphere()
             } else {
                 repos.iter().all(|r| self.repos.has_repo(r))
             }
@@ -120,6 +138,11 @@ impl Rule {
     /// Whether it tells every member the status of the jobs in every repository.
     fn tells_everyone_status(&self) -> bool {
         self.for_owners.is_every() && self.repos.is_every() && self.has(JOB_STATUS)
+    }
+
+    /// Whether it tells every member the status of the jobs, in whichever repositories it covers.
+    fn for_everyone(&self) -> bool {
+        self.for_owners.is_every() && self.has(JOB_STATUS)
     }
 
     /// Whether obid made it on a yes that was for one Sphere: it goes when they leave.
@@ -209,31 +232,75 @@ impl Sharing {
         self.offered.is_none() && (self.rules.is_empty() || self.shares_only_status())
     }
 
-    /// Whether they tell everyone how their tasks are going, and nobody each job's progress: the yes
-    /// asked of them is to add it.
+    /// Whether a rule of their own tells everyone how their tasks are going in every repository, and
+    /// nobody each job's progress: the yes asked of them is to add it.
     pub fn shares_only_status(&self) -> bool {
-        self.shares_status() && !self.rules.iter().any(|r| r.has(JOB_PROGRESS))
+        self.rules.iter().any(Rule::tells_everyone_status)
+            && !self.rules.iter().any(|r| r.has(JOB_PROGRESS))
     }
 
-    /// What the owner's yes to the offer means, whose card lists it all: one rule that answers
-    /// everyone (the one they have, or a new one), and each job's progress on every rule that tells
-    /// status, since those people are among everyone.
-    pub fn share_job_status(&mut self, now: i64) -> Rule {
-        self.offered.get_or_insert(now);
-        if !self.shares_status() {
-            self.rules.push(answers_who_asks(now));
+    /// The repositories the owner's yes last chose (PEER-38): none when they gave no such yes.
+    pub fn chosen_repos(&self) -> Vec<String> {
+        match self.rules.iter().find(|r| r.starter).map(|r| &r.repos) {
+            Some(Scope::These(list)) => list.clone(),
+            _ => Vec::new(),
         }
+    }
+
+    /// What the owner's yes to the card means, whose title names `chosen` and which lists all it
+    /// tells: one rule that answers everyone about exactly those repositories, the one they have or a
+    /// new one, and a room's yes never covers more than they now chose. Rules they wrote stay as they
+    /// are.
+    pub fn share_chosen(&mut self, now: i64, chosen: Vec<String>) -> Rule {
+        self.offered.get_or_insert(now);
+        for rule in self.rules.iter_mut().filter(|r| r.room_yes) {
+            if let Scope::These(list) = &mut rule.repos {
+                list.retain(|r| chosen.iter().any(|c| c.eq_ignore_ascii_case(r)));
+            }
+        }
+        self.rules
+            .retain(|r| !(r.room_yes && r.repos == Scope::These(Vec::new())));
+        let at = self
+            .rules
+            .iter()
+            .position(|r| r.starter)
+            .unwrap_or_else(|| {
+                self.rules.push(answers_who_asks(now, Scope::every()));
+                self.rules.len() - 1
+            });
+        let rule = &mut self.rules[at];
+        rule.repos = Scope::These(chosen);
+        rule.tells = vec![JOB_STATUS.to_owned(), JOB_PROGRESS.to_owned()];
+        rule.clone()
+    }
+
+    /// What their yes to the card that adds a job's progress means (PEER-23): it goes on every rule
+    /// that tells status, since those people are among everyone. None with no rule of theirs for it.
+    pub fn share_progress_too(&mut self, now: i64) -> Option<Rule> {
+        let rule = self.rules.iter().position(Rule::tells_everyone_status)?;
+        self.offered.get_or_insert(now);
         for rule in self.rules.iter_mut().filter(|r| r.has(JOB_STATUS)) {
             if !rule.has(JOB_PROGRESS) {
                 rule.tells.push(JOB_PROGRESS.to_owned());
                 rule.progress_yes = true;
             }
         }
+        Some(self.rules[rule].clone())
+    }
+
+    /// What said "every repository" goes (PEER-39): a first join's rule, which nobody clicked; the
+    /// offer's and the room's, whose yes was to those words. Each told about private work the owner
+    /// didn't pick, so neither is narrowed by a guess: it tells nothing, and they're asked once more.
+    /// Rules they wrote stay. Whether any went.
+    pub fn retire_every_repository_yes(&mut self) -> bool {
+        let before = self.rules.len();
         self.rules
-            .iter()
-            .find(|r| r.tells_everyone_status())
-            .expect("made above")
-            .clone()
+            .retain(|r| !(r.for_this_sphere() && r.repos.is_every()));
+        let retired = self.rules.len() != before;
+        if retired {
+            self.offered = None;
+        }
+        retired
     }
 
     /// Leaving a Sphere (PEER-19): what obid made on a yes goes, and that they were asked, so the next
@@ -247,25 +314,27 @@ impl Sharing {
         }
     }
 
-    /// Whether the owner has said members may ask how the work goes: what the room's card builds on.
-    pub fn shares_status(&self) -> bool {
-        self.rules.iter().any(Rule::tells_everyone_status)
+    /// The repositories members may ask about: what the room's card builds on, and names. None while
+    /// they share no status with everyone.
+    pub fn status_repos(&self) -> Option<&Scope> {
+        let everyone = self.rules.iter().filter(|r| r.for_everyone());
+        // A rule of theirs first: it's the one the room goes by.
+        let rule = everyone.min_by_key(|r| r.starter)?;
+        Some(&rule.repos)
     }
 
     /// The rule the owner's yes to the room's card means (ROOMS-17): the one the room goes by, or a
-    /// new one. None while they share no status, which this isn't the way to start.
+    /// new one over the same repositories. None while they share no status, which this isn't the way
+    /// to start.
     pub fn share_room(&mut self, now: i64) -> Option<Rule> {
-        let open = |r: &&Rule| r.tells_everyone_status() && !r.starter;
-        if let Some(rule) = self.rules.iter().find(open) {
+        if let Some(rule) = self.rules.iter().find(|r| r.for_everyone() && !r.starter) {
             return Some(rule.clone());
         }
-        if !self.shares_status() {
-            return None;
-        }
+        let repos = self.status_repos()?.clone();
         let rule = Rule {
             starter: false,
             room_yes: true,
-            ..answers_who_asks(now)
+            ..answers_who_asks(now, repos)
         };
         self.rules.push(rule.clone());
         Some(rule)
@@ -296,15 +365,15 @@ impl Sharing {
     }
 }
 
-/// With every member, the title, stage and state of its owner's jobs, the repository each is in and
-/// the pull request it opened, so their Obys can ask how the work goes without bothering them. Never
-/// logs, diffs, prompts or files. The owner removes it like any rule, and it doesn't come back. A
-/// job's progress isn't in it: only the owner's yes adds that ([`Sharing::share_job_status`]).
-fn answers_who_asks(now: i64) -> Rule {
+/// With every member, the title, stage and state of its owner's jobs in `repos`, the repository each
+/// is in and the pull request it opened, so their Obys can ask how the work goes without bothering
+/// them. Never logs, diffs, prompts or files. The owner removes it like any rule, and it doesn't come
+/// back.
+fn answers_who_asks(now: i64, repos: Scope) -> Rule {
     Rule {
         id: new_id(),
         for_owners: Scope::every(),
-        repos: Scope::every(),
+        repos,
         tells: vec![JOB_STATUS.to_owned()],
         created: now,
         uses: 0,
@@ -312,14 +381,6 @@ fn answers_who_asks(now: i64) -> Rule {
         starter: true,
         room_yes: false,
         progress_yes: false,
-    }
-}
-
-/// What an obid shares once it first joins a Sphere (ASK-11, docs/contracts/ask-an-oby.md).
-fn starter(now: i64) -> Sharing {
-    Sharing {
-        rules: vec![answers_who_asks(now)],
-        ..Sharing::default()
     }
 }
 
@@ -406,6 +467,22 @@ pub fn rule_from(body: &Value, now: i64) -> Result<Rule, String> {
     })
 }
 
+/// The repositories ticked on the card, from the body of `POST /v1/obid/sharing/offer`: none when it
+/// names none, an empty list with every tick taken off. Never `*` (`Err` says why not).
+pub fn chosen_from(body: &Value) -> Result<Option<Vec<String>>, String> {
+    let Some(map) = body.as_object().filter(|m| m.contains_key("repos")) else {
+        return Ok(None);
+    };
+    if map["repos"].as_array().is_some_and(Vec::is_empty) {
+        return Ok(Some(Vec::new()));
+    }
+    let repo = |t: &str| obi_protocol::schema::is_valid("common#/$defs/repo", &json!(t));
+    match scope(map, "repos", "repositories (owner/name)", repo)? {
+        Scope::These(list) => Ok(Some(list)),
+        Scope::Every(_) => Err("repos is the list you ticked, 1 to 50.".into()),
+    }
+}
+
 /// New limits from the body of `PUT /v1/obid/sharing/limits` (`Err` says why not).
 pub fn limits_from(body: &Value) -> Result<Limits, String> {
     let map = body.as_object().ok_or("The body is a JSON object.")?;
@@ -462,42 +539,12 @@ impl Kept {
         }
     }
 
-    /// Whether there is no file yet, for certain: a file that can't be read is one.
-    fn missing(&self) -> bool {
-        matches!(std::fs::symlink_metadata(&self.path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-    }
-
     /// Whether what's kept reads, or there's nothing kept: obid writes nothing of its own over a file
     /// that doesn't, which shares nothing and stays as it is.
     pub fn reads(&self) -> bool {
         match std::fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice::<Sharing>(&bytes).is_ok(),
             Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-        }
-    }
-
-    /// The owner's first Sphere: the starter rule, kept, when they have no file yet (ASK-11).
-    pub fn seed_at_joining(&self) -> Option<Sharing> {
-        if !self.missing() {
-            return None;
-        }
-        let sharing = starter(time::now());
-        match self.save(&sharing) {
-            Ok(()) => Some(sharing),
-            Err(e) => {
-                tracing::warn!("can't keep {}: {e}", self.path.display());
-                None
-            }
-        }
-    }
-
-    /// A membership from before the starter rule: it never agreed to share, and an upgrade doesn't
-    /// start to. No rules, kept, so that a later join doesn't seed one either.
-    pub fn keep_none_when_missing(&self) {
-        if self.missing()
-            && let Err(e) = self.save(&Sharing::default())
-        {
-            tracing::warn!("can't keep {}: {e}", self.path.display());
         }
     }
 
@@ -637,16 +684,20 @@ mod tests {
         assert_eq!(shown["for"], json!(["ernesto"]));
     }
 
+    fn chosen() -> Vec<String> {
+        vec!["acme/app".to_owned(), "acme/web".to_owned()]
+    }
+
     #[test]
-    fn ask_11_the_rule_obid_starts_with_answers_who_asks_and_opens_no_room() {
+    fn ask_11_the_owners_yes_answers_who_asks_and_opens_no_room() {
         let owners = ["ernesto".to_owned()];
         let repos = ["acme/app".to_owned()];
-        let sharing = starter(0);
+        let mut sharing = Sharing::default();
+        sharing.share_chosen(0, chosen());
         assert!(sharing.job_status_rule("ernesto", &repos).is_some());
         assert!(sharing.room_rule("ernesto", &repos).is_none());
         assert!(!sharing.job_status_for_all(&owners, &repos));
         // A rule the owner made does, and it's kept that way.
-        let mut sharing = starter(0);
         sharing.rules.push(rule(
             json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
         ));
@@ -655,42 +706,151 @@ mod tests {
         assert!(kept.rules[0].starter && !kept.rules[1].starter);
     }
 
+    /// The owner's yes covers a question that names no repository and any in the list, and none about
+    /// a repository outside it. A rule they wrote for some repositories answers as it always did.
     #[test]
-    fn ask_11_the_first_join_shares_job_status_until_the_owner_says_otherwise() {
-        let home = std::env::temp_dir().join(format!("obid-ask-11-{}", std::process::id()));
+    fn peer_37_a_rule_of_chosen_repositories_covers_only_them() {
+        let mut sharing = Sharing::default();
+        let yes = sharing.share_chosen(0, chosen());
+        assert!(yes.covers("ernesto", &[]), "\"What's the progress?\"");
+        assert!(yes.covers("ernesto", &["ACME/app".to_owned()]));
+        assert!(!yes.covers("ernesto", &["acme/private".to_owned()]));
+        assert!(
+            !yes.covers(
+                "ernesto",
+                &["acme/app".to_owned(), "acme/private".to_owned()]
+            ),
+            "one outside is enough"
+        );
+        let own = rule(json!({"for": "*", "repos": ["acme/app"], "tells": ["jobStatus"]}));
+        assert!(!own.covers("ernesto", &[]), "a rule of theirs didn't widen");
+    }
+
+    /// One rule, whichever way they tick: exactly what's chosen, each time, never wider, and a room's
+    /// yes follows it down, never up.
+    #[test]
+    fn peer_38_the_yes_covers_exactly_what_is_ticked() {
+        let mut sharing = Sharing::default();
+        let first = sharing.share_chosen(1, chosen());
+        assert_eq!(first.repos, Scope::These(chosen()));
+        assert_eq!(
+            first.tells,
+            [JOB_STATUS, JOB_PROGRESS],
+            "what the card lists"
+        );
+        assert_eq!(sharing.chosen_repos(), chosen());
+        assert_eq!(sharing.offered, Some(1));
+        assert!(!sharing.to_offer(), "asked once");
+        let room = sharing.share_room(2).unwrap();
+        assert_eq!(room.repos, Scope::These(chosen()), "the room's goes as far");
+        // Change: fewer, then others.
+        let narrowed = sharing.share_chosen(3, vec!["acme/web".to_owned()]);
+        assert_eq!(narrowed.id, first.id, "the same rule");
+        assert_eq!(narrowed.repos, Scope::These(vec!["acme/web".to_owned()]));
+        assert_eq!(sharing.offered, Some(1), "the first time asked stays");
+        assert_eq!(
+            sharing.rules[1].repos,
+            Scope::These(vec!["acme/web".to_owned()]),
+            "the room's never covers more"
+        );
+        sharing.share_chosen(4, chosen());
+        assert_eq!(
+            sharing.rules[1].repos,
+            Scope::These(vec!["acme/web".to_owned()]),
+            "and doesn't grow back by itself"
+        );
+        sharing.share_chosen(5, vec!["acme/app".to_owned()]);
+        assert_eq!(sharing.rules.len(), 1, "a room's with nothing left goes");
+        // A rule they wrote isn't touched.
+        let mine = rule(json!({"for": ["ernesto"], "repos": "*", "tells": ["sharedResults"]}));
+        sharing.rules.push(mine.clone());
+        sharing.share_chosen(6, chosen());
+        assert_eq!(sharing.rules[1], mine);
+    }
+
+    #[test]
+    fn peer_38_what_the_card_takes() {
+        assert_eq!(chosen_from(&json!({})), Ok(None));
+        assert_eq!(chosen_from(&json!({"room": true})), Ok(None));
+        assert_eq!(chosen_from(&json!({"repos": []})), Ok(Some(vec![])));
+        assert_eq!(
+            chosen_from(&json!({"repos": ["acme/app", "ACME/APP"]})),
+            Ok(Some(vec!["acme/app".to_owned()]))
+        );
+        for bad in [
+            json!({"repos": "*"}),
+            json!({"repos": "acme/app"}),
+            json!({"repos": ["not a repo"]}),
+            json!({"repos": ["a/b\nConfirm"]}),
+            json!({"repos": [1]}),
+        ] {
+            assert!(chosen_from(&bad).is_err(), "{bad}");
+        }
+        let many: Vec<String> = (0..51).map(|i| format!("acme/r{i}")).collect();
+        assert!(
+            chosen_from(&json!({"repos": many})).is_err(),
+            "past a rule's 50"
+        );
+        assert_eq!(repo_names(&chosen()), "acme/app and acme/web");
+        assert_eq!(
+            repo_names(&["a/a".to_owned(), "b/b".to_owned(), "c/c".to_owned()]),
+            "a/a, b/b and c/c"
+        );
+        assert_eq!(Scope::These(vec!["a/a".to_owned()]).in_words(), "in a/a");
+    }
+
+    /// What said every repository goes at the next start and they're asked once more; what they wrote
+    /// stays, and a yes to the card is left alone.
+    #[test]
+    fn peer_39_a_yes_to_every_repository_is_asked_again() {
+        let before: Sharing = serde_json::from_value(json!({"offered": 7, "rules": [
+            {"id": "s-000000000001", "for": "*", "repos": "*", "tells": ["jobStatus", "jobProgress"],
+             "created": 0, "uses": 3, "lastUsed": null, "starter": true},
+            {"id": "s-000000000002", "for": "*", "repos": "*", "tells": ["jobStatus"],
+             "created": 0, "uses": 3, "lastUsed": null, "starter": false, "roomYes": true},
+            {"id": "s-000000000003", "for": ["ernesto"], "repos": "*", "tells": ["jobStatus"],
+             "created": 0, "uses": 3, "lastUsed": null, "starter": false},
+        ]}))
+        .unwrap();
+        let mut after = before.clone();
+        assert!(after.retire_every_repository_yes());
+        assert_eq!(after.rules.len(), 1);
+        assert_eq!(after.rules[0].id, "s-000000000003", "their own wider rule");
+        assert_eq!(after.rules[0].tells, [JOB_STATUS], "not widened either");
+        assert_eq!(after.offered, None, "asked once more");
+        assert!(!after.retire_every_repository_yes(), "once");
+
+        let mut own = Sharing {
+            rules: vec![rule(
+                json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
+            )],
+            offered: Some(7),
+            ..Sharing::default()
+        };
+        assert!(!own.retire_every_repository_yes(), "nothing of obid's here");
+        assert_eq!(own.offered, Some(7));
+
+        let mut chose = Sharing::default();
+        chose.share_chosen(1, chosen());
+        chose.share_room(2);
+        assert!(!chose.retire_every_repository_yes(), "they chose these");
+        assert_eq!(chose.rules.len(), 2);
+    }
+
+    /// Nothing about joining makes a rule: the file stays as it was, and a member from before and a
+    /// new one reach the same card.
+    #[test]
+    fn peer_40_no_file_shares_nothing_and_is_asked() {
+        let home = std::env::temp_dir().join(format!("obid-peer-27-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         let kept = Kept::open(&home);
-        assert!(kept.load().rules.is_empty(), "nothing before joining");
-        assert!(!home.join("sharing.json").exists(), "and nothing kept");
-        let first = kept.seed_at_joining().unwrap();
-        assert_eq!(first.rules.len(), 1);
-        let rule = &first.rules[0];
-        assert_eq!(rule.tells, vec![JOB_STATUS.to_owned()], "status only");
-        assert!(rule.covers("anyone", &[]) && rule.covers("anyone", &["a/b".to_owned()]));
-        assert_eq!(kept.load(), first, "the same rule, under the same id");
-        assert_eq!(kept.seed_at_joining(), None, "once");
-        // Removed by the owner: it stays removed, across a restart and another join.
-        kept.save(&Sharing {
-            rules: vec![],
-            ..first
-        })
-        .unwrap();
-        assert_eq!(kept.seed_at_joining(), None);
-        assert!(Kept::open(&home).load().rules.is_empty());
-        // A file that doesn't read shares nothing, and is never replaced by the starter.
+        let none = kept.load();
+        assert!(none.rules.is_empty() && none.to_offer());
+        assert!(kept.reads(), "nothing kept yet");
+        // A file that doesn't read shares nothing.
         std::fs::write(home.join("sharing.json"), "not json").unwrap();
         assert!(Kept::open(&home).load().rules.is_empty());
-        assert_eq!(kept.seed_at_joining(), None);
-        assert_eq!(
-            std::fs::read_to_string(home.join("sharing.json")).unwrap(),
-            "not json"
-        );
-        std::fs::remove_file(home.join("sharing.json")).unwrap();
-        // A membership from before: no rules, kept, so that no later join seeds one.
-        kept.keep_none_when_missing();
-        assert!(kept.load().rules.is_empty());
-        assert_eq!(kept.seed_at_joining(), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -729,7 +889,7 @@ mod tests {
         let owners = ["ernesto".to_owned()];
         let repos = ["acme/app".to_owned()];
         let mut sharing = Sharing::default();
-        let rule = sharing.share_job_status(5);
+        let rule = sharing.share_chosen(5, chosen());
         assert_eq!(sharing.offered, Some(5));
         assert_eq!(
             rule.tells,
@@ -740,17 +900,17 @@ mod tests {
         assert!(!sharing.job_status_for_all(&owners, &repos), "not the room");
         assert_eq!(rule.to_json()["starter"], true);
         // Twice is still one, and the first time asked stays.
-        assert_eq!(sharing.share_job_status(9).id, rule.id);
+        assert_eq!(sharing.share_chosen(9, chosen()).id, rule.id);
         assert_eq!((sharing.rules.len(), sharing.offered), (1, Some(5)));
     }
 
-    /// A yes isn't widened silently: a rule that told status keeps telling status, whoever made it,
-    /// through a restart, until the owner's yes to the one card that lists the rest.
+    /// A yes isn't widened silently: a rule of theirs that told status keeps telling status, through
+    /// a restart, until their yes to the one card that lists the rest.
     #[test]
     fn peer_23_only_a_yes_adds_a_jobs_progress_to_a_rule_from_before() {
         let before: Sharing = serde_json::from_value(json!({"rules": [{
             "id": "s-000000000001", "for": "*", "repos": "*", "tells": ["jobStatus"],
-            "created": 0, "uses": 3, "lastUsed": null, "starter": true}]}))
+            "created": 0, "uses": 3, "lastUsed": null, "starter": false}]}))
         .unwrap();
         assert!(!before.rules[0].has(JOB_PROGRESS), "nothing widens it");
         assert!(before.to_offer(), "the one time obid asks");
@@ -762,16 +922,21 @@ mod tests {
         let narrow = rule(json!({"for": ["ernesto"], "repos": ["a/b"], "tells": ["jobStatus"]}));
         let results = rule(json!({"for": "*", "repos": "*", "tells": ["sharedResults"]}));
         yes.rules.extend([narrow, results]);
-        let widened = yes.share_job_status(9);
+        let widened = yes.share_progress_too(9).unwrap();
         assert_eq!(widened.id, "s-000000000001", "the rule they have");
         assert_eq!(widened.uses, 3);
         assert_eq!(yes.rules.len(), 3, "no new rule");
         assert!(yes.rules[1].has(JOB_PROGRESS), "they're among everyone");
         assert!(!yes.rules[2].has(JOB_PROGRESS), "it told no status");
         assert!(!yes.to_offer(), "not asked twice");
+        assert_eq!(
+            Sharing::default().share_progress_too(1),
+            None,
+            "no rule for it"
+        );
         // With a yes behind it, a first-time owner isn't asked a second time either.
         let mut new = Sharing::default();
-        new.share_job_status(1);
+        new.share_chosen(1, chosen());
         new.offered = None;
         assert!(!new.to_offer(), "it has it already");
         assert_eq!(new.rules[0].tells, [JOB_STATUS, JOB_PROGRESS]);
@@ -783,7 +948,7 @@ mod tests {
             rules: vec![mine, listed],
             ..Sharing::default()
         };
-        left.share_job_status(1);
+        left.share_progress_too(1);
         assert!(left.rules[0].has(JOB_PROGRESS));
         let kept: Sharing = serde_json::from_slice(&serde_json::to_vec(&left).unwrap()).unwrap();
         assert!(kept.rules[0].progress_yes, "across a restart");
@@ -791,10 +956,9 @@ mod tests {
         assert_eq!(left.rules[0].tells, [JOB_STATUS]);
         assert_eq!(left.rules[1].tells, [JOB_STATUS, JOB_PROGRESS]);
         assert!(left.offered.is_none());
-        // A first join's rule doesn't have it.
-        assert_eq!(starter(0).rules[0].tells, [JOB_STATUS]);
-        // Nor the room's, on top of status: a post goes to everyone unasked.
-        let mut room = starter(0);
+        // The room's has it not, on top of status: a post goes to everyone unasked.
+        let mut room = Sharing::default();
+        room.share_chosen(0, chosen());
         assert_eq!(room.share_room(1).unwrap().tells, [JOB_STATUS]);
     }
 
@@ -805,10 +969,14 @@ mod tests {
         let mut sharing = Sharing::default();
         assert!(sharing.share_room(1).is_none(), "no status shared yet");
         assert!(sharing.rules.is_empty());
-        sharing.share_job_status(1);
+        sharing.share_chosen(1, chosen());
         assert!(!sharing.job_status_for_all(&owners, &repos), "not yet");
         let rule = sharing.share_room(2).unwrap();
         assert!(sharing.job_status_for_all(&owners, &repos));
+        assert!(
+            !sharing.job_status_for_all(&owners, &["acme/private".to_owned()]),
+            "only the repositories they chose"
+        );
         assert!(rule.for_this_sphere());
         assert_eq!(rule.to_json()["starter"], false);
         assert_eq!(sharing.share_room(3).unwrap().id, rule.id, "one");

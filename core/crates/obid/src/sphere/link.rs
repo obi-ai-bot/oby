@@ -796,9 +796,6 @@ impl Link {
         let inbox = Inbox::open(&config.home);
         let decisions = Decisions::open(&config.home);
         let sharing = sharing::Kept::open(&config.home);
-        if membership.is_some() {
-            sharing.keep_none_when_missing();
-        }
         let pins = super::pins::Pins::open(&config.home);
         let triage = crate::triage::Kept::open(&config.home);
         let chain = ChainKept::open(&config.home);
@@ -873,6 +870,9 @@ impl Link {
         let owner = joined_as
             .or_else(|| files.load_owner())
             .unwrap_or_else(|| config.owner.clone());
+        let mut shared = sharing.load();
+        let mut items = items;
+        retire_every_repository(&sharing, &inbox, &mut shared, &mut items);
         let state = State {
             key,
             seal,
@@ -894,7 +894,7 @@ impl Link {
             exchanges: by_id,
             inbox: items,
             decisions: decisions.load(),
-            sharing: sharing.load(),
+            sharing: shared,
             self_answers: HashMap::new(),
             all_self_answers: Vec::new(),
             seen,
@@ -2152,9 +2152,6 @@ impl Link {
         {
             let mut state = self.lock();
             state.membership = Some(membership);
-            if let Some(seeded) = self.sharing.seed_at_joining() {
-                state.sharing = seeded;
-            }
             state.delegation = Some(delegation);
             state.client = Some(client);
             state.token = None;
@@ -2970,6 +2967,8 @@ enum Recheck {
 }
 
 /// Why a Confirm without the owner's tap is refused (#776).
+const CHOOSE_REPOS_FIRST: &str =
+    "Choose the repositories first, in Oby on your Mac: nothing was shared.";
 pub const NEEDS_YOUR_TAP: &str =
     "Only your tap can confirm this: confirm it in Oby on your Mac or iPhone.";
 
@@ -2987,6 +2986,52 @@ fn expired(item: &Item, now: i64) -> bool {
 
 /// Closes `inbox`'s item `id` when it's an offer past its day ([`expired`]), answering it closed;
 /// none otherwise. The caller holds the lock `inbox` is under.
+/// PEER-39: what said "every repository" tells no more once obid starts, and the owner is asked once
+/// which repositories instead: a first join's rule, a yes to those words, and a card still open with
+/// them on it. A rule they wrote stays. A file that doesn't read shares nothing, and stays as it is.
+fn retire_every_repository(
+    kept: &sharing::Kept,
+    inbox: &Inbox,
+    shared: &mut Sharing,
+    items: &mut HashMap<String, Item>,
+) {
+    if !kept.reads() {
+        return;
+    }
+    let mut changed = shared.retire_every_repository_yes();
+    let told_everywhere = shared.status_repos().is_some_and(sharing::Scope::is_every);
+    for item in items.values_mut().filter(|i| i.done.is_none()) {
+        let (stale, asked_anew) = match item
+            .confirm
+            .as_ref()
+            .map(|c| (c.action.as_str(), &c.payload))
+        {
+            Some((inbox::action::SHARE_STATUS, payload)) => {
+                let stale = payload.is_null() && !shared.shares_only_status();
+                (stale, stale)
+            }
+            Some((inbox::action::SHARE_ROOM, _)) => (
+                item.title.contains("every repository") && !told_everywhere,
+                false,
+            ),
+            _ => (false, false),
+        };
+        if stale {
+            item.done = Some(time::now());
+            if let Err(e) = inbox.save(item) {
+                tracing::warn!("can't keep inbox item {}: {e}", item.id);
+            }
+        }
+        if asked_anew {
+            shared.offered = None;
+            changed = true;
+        }
+    }
+    if changed && let Err(e) = kept.save(shared) {
+        tracing::warn!("can't keep the sharing rules: {e}");
+    }
+}
+
 fn close_expired(inbox: &mut HashMap<String, Item>, id: &str, now: i64) -> Option<Item> {
     let item = inbox.get(id).filter(|i| expired(i, now))?.clone();
     let closed = closed_start(item, OFFER_EXPIRED, now);

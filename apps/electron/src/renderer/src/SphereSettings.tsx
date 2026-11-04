@@ -6,7 +6,8 @@ import SphereTile from './SphereTile';
 import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
 import type { InboxItem } from '../../shared/obid-wire';
-import { canAddProgress, canOpenRoom, whatItTells, type SharingRule } from './sharing';
+import RepoTicks from './RepoTicks';
+import { canAddProgress, canChangeRepos, canOpenRoom, repoTicks, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
 import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 
@@ -182,6 +183,7 @@ function WhatItTells({ sphere }: { sphere: Sphere }) {
         const { label, about } = whatItTells(rule, sphere.members);
         return (
           <Row key={rule.id} label={label} about={about}>
+            {canChangeRepos(rule) && <button className="set-button set-member-action" onClick={() => open()}>Change repositories</button>}
             <button className="set-button set-member-action" onClick={() => change(() => api.removeSharingRule(rule.id))} aria-label={`Remove ${label}`}>Remove</button>
           </Row>
         );
@@ -209,8 +211,11 @@ function WhatItTells({ sphere }: { sphere: Sphere }) {
 
 // The card, whole, as Home shows it: what its Confirm signs is on screen. Closed with Esc or a click
 // outside, it stays open on Home.
-function ShareModal({ card, onClose, onAnswered }: { card: InboxItem; onClose: () => void; onAnswered: () => void }) {
+function ShareModal({ card: opened, onClose, onAnswered }: { card: InboxItem; onClose: () => void; onAnswered: () => void }) {
+  const [card, setCard] = useState(opened);
+  const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const ticks = repoTicks(card);
   const answer = (done: Promise<unknown>) => void done.then(onAnswered, (e: Error) => setProblem(e.message));
   const close = useRef(onClose);
   close.current = onClose;
@@ -227,10 +232,11 @@ function ShareModal({ card, onClose, onAnswered }: { card: InboxItem; onClose: (
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
         </header>
         <p id="share-what" className="modal-lede">{card.text}</p>
+        {ticks && <RepoTicks {...ticks} onCard={setCard} onSending={setSending} />}
         {problem && <p className="set-problem">{problem}</p>}
         <div className="modal-actions">
           <button type="button" className="set-button" autoFocus onClick={() => answer(api.answer(card.id, { answer: 'Cancel' }))}>Cancel</button>
-          <button type="button" className="modal-primary" onClick={() => answer(api.confirm(card.id))}>Confirm</button>
+          <button type="button" className="modal-primary" disabled={!!ticks && (sending || !ticks.chosen.length)} onClick={() => answer(api.confirm(card.id))}>Confirm</button>
         </div>
       </div>
     </div>,

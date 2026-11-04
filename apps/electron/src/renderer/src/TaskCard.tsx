@@ -8,6 +8,8 @@ import { api, type PublishChoices } from './obid';
 import { answer, changeCheck, changeMode, markSeen, openOnGitHub, type Task } from './tasks';
 import { prName, prUrl } from './jobPage';
 import { Menu } from './Menu';
+import RepoTicks from './RepoTicks';
+import { seeItem } from './live';
 
 // A task as a card in its group: where it came from and what it is, which
 // agent has it where, then what's happening now: the live step while it runs,
@@ -228,6 +230,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
   // answered would land on the next one's buttons (one click, one answer)
   const [shownAt] = useState(() => performance.now());
   const [editing, setEditing] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
   const pick = (o: string, words?: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o, words); onAnswer?.(o); };
   return (
     <div className="tc-ask">
@@ -235,6 +238,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
       <p className="tc-ask-head">{ask.headline}</p>
       <p className="tc-ask-text">{ask.text}</p>
       {ask.detail && editing === null && <pre className="tc-code">{ask.detail}</pre>}
+      {ask.repos && !task.answer && <RepoTicks {...ask.repos} onCard={seeItem} onSending={setSending} />}
       {task.answer ? (
         !inChat && <p className="tc-answered"><Check size={14} strokeWidth={1.8} />{task.answer}</p>
       ) : editing !== null ? (
@@ -251,6 +255,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
               // check's Use it is one
               className={`tc-option${i === (ask.kind === 'confirm' || ask.kind === 'check' ? ask.recommended : ask.recommended ?? 0) ? ' is-primary' : ''}${o === 'Deny' ? ' is-danger' : ''}`}
               title={o === 'Always allow' ? ask.always : undefined}
+              disabled={o === 'Confirm' && !!ask.repos && (sending || !ask.repos.chosen.length)}
               onClick={() => (ask.kind === 'check' && o === 'Edit' ? setEditing(ask.detail ?? '') : ask.kind === 'question' && o === TELL ? setEditing('') : pick(o))}
             >
               {o}

@@ -120,7 +120,8 @@ export const api = {
   // rules, taking one out, and the card that asks, which only a Confirm above answers
   sharing: () => call<{ rules: SharingRule[] }>('GET', '/v1/obid/sharing'),
   removeSharingRule: (r: string) => call<null>('DELETE', `/v1/obid/sharing/rules/${id(r)}`),
-  offerSharing: (room = false) => call<InboxItem>('POST', '/v1/obid/sharing/offer', room ? { room } : undefined),
+  // repos: what's ticked on the card, which its title then names, and it shares nothing until Confirm (PEER-38)
+  offerSharing: (room = false, repos?: string[]) => call<InboxItem>('POST', '/v1/obid/sharing/offer', room ? { room } : repos ? { repos } : undefined),
   // Settings › Remote access: pairing an iPhone through obid's Obysphere (main signs the invitation), the
   // paired ones, and Revoke
   pairInvite: () => call<Invitation>('POST', '/v1/pairing/invite', undefined, (b) => b.pairInvite()),

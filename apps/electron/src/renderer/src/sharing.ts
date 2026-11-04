@@ -6,12 +6,28 @@ const TELLS: Record<string, { label: string; what: string }> = {
   sharedResults: { label: 'What it already sent them', what: 'The results of reviews they asked for' },
 };
 // members: the others in the Obysphere, since the room goes to all of them or not at all
-const toEveryone = (rule: SharingRule) => rule.for === '*' && rule.repos === '*' && rule.tells.includes('jobStatus');
+const toEveryone = (rule: SharingRule) => rule.for === '*' && rule.tells.includes('jobStatus');
 // Whether Settings offers the room: status is shared, and no rule opens the room yet
 export const canOpenRoom = (rules: SharingRule[]) => rules.some(toEveryone) && !rules.some((r) => toEveryone(r) && !r.starter);
 
-// Whether Settings offers each task's step and report line: the same card a first question brings
-export const canAddProgress = (rules: SharingRule[]) => rules.some(toEveryone) && !rules.some((r) => r.tells.includes('jobProgress'));
+// Whether Settings offers each task's step and report line, to a rule of the owner's for every
+// repository: a yes to the card with the repositories on it has them already
+export const canAddProgress = (rules: SharingRule[]) => rules.some((r) => toEveryone(r) && r.repos === '*') && !rules.some((r) => r.tells.includes('jobProgress'));
+
+// Whether Settings offers to change a rule's repositories: only the one the owner's yes made, through
+// the same card and Confirm. A rule they wrote themselves stays as they wrote it (PEER-42).
+export const canChangeRepos = (rule: SharingRule) => !!rule.starter && rule.repos !== '*';
+
+// The card's list and what's ticked on it, when it's the card that asks (PEER-38)
+export const repoTicks = (item: { confirm?: { action: string; payload: { offered?: string[]; repos?: string[] } | null } | null }) => {
+  const payload = item.confirm?.action === 'share_status' ? item.confirm.payload : null;
+  return payload?.offered ? { offered: payload.offered, chosen: payload.repos ?? [] } : undefined;
+};
+// One tick more or less, in the list's order, so the title reads as the list does
+export const tickRepo = (offered: string[], ticked: string[], repo: string) => {
+  const next = ticked.includes(repo) ? ticked.filter((r) => r !== repo) : [...ticked, repo];
+  return offered.filter((r) => next.includes(r));
+};
 
 export function whatItTells(rule: SharingRule, members: string[]) {
   const known = rule.tells.map((t) => TELLS[t]).filter(Boolean);

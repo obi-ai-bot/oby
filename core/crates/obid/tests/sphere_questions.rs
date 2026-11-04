@@ -15,6 +15,7 @@ use support::*;
 
 const DECLINE_REMEMBER: &str = "Decline, and remember for this repo";
 const REPO: &str = "obi-e2e/fixture-app";
+const PRIVATE: &str = "wellington/private-taxes";
 
 fn answerer() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-answerer")
@@ -23,27 +24,38 @@ fn answerer() -> PathBuf {
 /// obid A (wellington), its card accepting questions, joined to a new fake Sphere with the fake
 /// answerer as Claude Code; obi-ernesto joined too, accepting questions.
 async fn setup(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
-    let (sphere, obid, ernesto) = setup_with_starter(folder).await;
+    let (sphere, obid, ernesto) = just_joined(folder).await;
     tokio::task::block_in_place(|| {
-        for rule in get(&obid, "/v1/obid/sharing")["rules"].as_array().unwrap() {
-            let id = rule["id"].as_str().unwrap();
-            let gone = call(
-                &obid,
-                "DELETE",
-                &format!("/v1/obid/sharing/rules/{id}"),
-                None,
-            );
-            assert_eq!(gone.status, 204, "{}", gone.text);
-        }
+        let card = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(card.status, 201, "{}", card.text);
+        let no = answer_item(&obid, &card.body, json!({"answer": "Cancel"}));
+        assert_eq!(no.status, 200, "{}", no.text);
     });
     (sphere, obid, ernesto)
 }
 
-/// [`setup`], with the rule an obid's first join makes (ASK-11).
-async fn setup_with_starter(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
+/// [`just_joined`], with the owner's yes to the card for the fixture repository (PEER-38).
+async fn setup_with_yes(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
+    let (sphere, obid, ernesto) = just_joined(folder).await;
+    tokio::task::block_in_place(|| {
+        let yes = confirm(&obid, &ticked(&obid, &[REPO]));
+        assert_eq!(yes.status, 200, "{}", yes.text);
+    });
+    (sphere, obid, ernesto)
+}
+
+/// The card with `repos` ticked on it: its id.
+fn ticked(obid: &Obid, repos: &[&str]) -> String {
+    let card = post(obid, "/v1/obid/sharing/offer", &json!({"repos": repos}));
+    assert_eq!(card.status, 201, "{}", card.text);
+    card.body["id"].as_str().unwrap().to_owned()
+}
+
+/// obid A and obi-ernesto joined, with no rule and never asked.
+async fn just_joined(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
     let sphere = FakeSphere::start().await;
-    let remote = fixture(&folder.0.join("fixture"));
-    let obid = start(&folder.0, &config(&folder.0, &remote, &answerer()), None);
+    fixture(&folder.0.join("fixture"));
+    let obid = restarted(folder);
     let wellington = Owner::new("wellington");
     let joined = tokio::task::block_in_place(|| {
         join_a_accepting(&obid, &sphere, &wellington, &["review_request", "question"])
@@ -113,10 +125,15 @@ fn share(obid: &Obid, rule: Value) -> String {
 
 /// A job of wellington's own in the fixture repository, ended: its id.
 fn a_job(obid: &Obid, title: &str) -> String {
+    a_job_in(obid, REPO, title)
+}
+
+/// A job of wellington's own in `repo`, ended: its id.
+fn a_job_in(obid: &Obid, repo: &str, title: &str) -> String {
     let made = post(
         obid,
         "/v1/jobs",
-        &json!({"job": {"repo": REPO, "kind": "investigate", "task": "Look at the average", "title": title}}),
+        &json!({"job": {"repo": repo, "kind": "investigate", "task": "Look at the average", "title": title}}),
     );
     assert_eq!(made.status, 201, "{}", made.text);
     let id = made.body["id"].as_str().unwrap().to_owned();
@@ -442,7 +459,7 @@ async fn each_sender_is_limited() {
         );
         let wanted =
             json!({"selfAnswersPerHour": 1, "selfAnswersPerHourTotal": 2, "inboxPerOwner": 2});
-        let limits = call(&obid, "PUT", "/v1/obid/sharing/limits", Some(&wanted));
+        let limits = call_signed(&obid, "PUT", "/v1/obid/sharing/limits", Some(&wanted));
         assert_eq!(limits.status, 200, "{}", limits.text);
         assert_eq!(get(&obid, "/v1/obid/sharing")["limits"], wanted);
         for bad in [
@@ -450,7 +467,7 @@ async fn each_sender_is_limited() {
             json!({"selfAnswersPerHour": 1, "inboxPerOwner": 1}),
             json!({"selfAnswersPerHour": 1, "selfAnswersPerHourTotal": 2, "inboxPerOwner": 1, "x": 1}),
         ] {
-            let refused = call(&obid, "PUT", "/v1/obid/sharing/limits", Some(&bad));
+            let refused = call_signed(&obid, "PUT", "/v1/obid/sharing/limits", Some(&bad));
             assert_eq!(refused.status, 422, "{bad}: {}", refused.text);
         }
     });
@@ -554,7 +571,7 @@ async fn self_answers_count_across_a_restart() {
             &obid,
             json!({"for": ["ernesto"], "repos": "*", "tells": ["jobStatus"]}),
         );
-        let limits = call(
+        let limits = call_signed(
             &obid,
             "PUT",
             "/v1/obid/sharing/limits",
@@ -691,12 +708,12 @@ async fn an_answer_ends_the_exchange_obid_asked_in() {
     assert_eq!(kinds, ["question", "answer"]);
 }
 
-/// A new obid's own starter rule answers a member's question about what its owner is doing, from
-/// the status of its jobs alone, without its owner.
+/// After the owner's yes obid answers a member's question about what its owner is doing, from what
+/// it may tell alone, without its owner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ask_11_a_new_obid_answers_a_members_question_by_itself() {
+async fn ask_11_a_yes_answers_a_members_question_by_itself() {
     let folder = Folder::new("ask-11");
-    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
+    let (_sphere, obid, ernesto) = setup_with_yes(&folder).await;
     tokio::task::block_in_place(|| a_job(&obid, "Billing retries"));
     let question = ernesto.request(
         "obi-wellington",
@@ -719,12 +736,7 @@ async fn ask_11_a_new_obid_answers_a_members_question_by_itself() {
     let e = tokio::task::block_in_place(|| exchange(&obid, cid));
     assert_eq!(e["decidedBy"], "sharing");
     let inbox = tokio::task::block_in_place(|| get(&obid, "/v1/inbox"));
-    let open = inbox.as_array().unwrap();
-    assert_eq!(open.len(), 1, "{open:?}");
-    assert_eq!(
-        open[0]["confirm"]["action"], "share_status",
-        "its owner wasn't bothered by the question: only the one time obid asks about progress"
-    );
+    assert_eq!(inbox, json!([]), "its owner wasn't bothered");
 }
 
 /// When only its owner can answer, the asker hears so at once, and the owner hears the question in
@@ -732,7 +744,7 @@ async fn ask_11_a_new_obid_answers_a_members_question_by_itself() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ask_12_a_question_only_the_person_can_answer_says_it_waits_and_reaches_them() {
     let folder = Folder::new("ask-12");
-    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
+    let (_sphere, obid, ernesto) = setup_with_yes(&folder).await;
     let question = ernesto.request(
         "obi-wellington",
         "question",
@@ -787,37 +799,25 @@ async fn ask_12_a_question_only_the_person_can_answer_says_it_waits_and_reaches_
     assert_eq!(answer[0]["body"]["by"], "owner");
 }
 
-/// A membership from before the starter rule shares nothing on upgrade: no file becomes no rules,
-/// and its members' questions keep going to its owner.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ask_11_an_existing_membership_starts_sharing_nothing() {
-    let folder = Folder::new("ask-11-old");
-    let (_sphere, mut obid, _ernesto) = setup_with_starter(&folder).await;
-    let file = obid.home.join("sharing.json");
-    let status = obid.stop();
-    assert!(status.success(), "obid exited {status}");
-    std::fs::remove_file(&file).unwrap();
-    let remote = folder.0.join("fixture/remote.git");
-    let obid = start(&folder.0, &config(&folder.0, &remote, &answerer()), None);
-    let rules = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sharing"));
-    assert_eq!(rules["rules"], json!([]), "{rules}");
-    assert!(file.is_file(), "kept, so that no later join seeds one");
-}
-
-/// An obid already in the Sphere from before the starter rule, as an upgrade finds it: no rule, and
-/// never asked. obi-ernesto is in the Sphere too.
+/// An obid already in the Sphere with no rule and never asked, as an upgrade finds it. obi-ernesto
+/// is in the Sphere too.
 async fn old_member(folder: &Folder) -> (FakeSphere, Obid, TestObi) {
-    let (sphere, mut obid, ernesto) = setup_with_starter(folder).await;
-    let file = obid.home.join("sharing.json");
+    let (sphere, mut obid, ernesto) = just_joined(folder).await;
     assert!(obid.stop().success());
-    std::fs::remove_file(&file).unwrap();
+    std::fs::write(obid.home.join("sharing.json"), "{\"rules\": []}").unwrap();
     let obid = restarted(folder);
     (sphere, obid, ernesto)
 }
 
+/// obid on its folder, with a second repository of the owner's, a personal one: the same remote is
+/// enough.
 fn restarted(folder: &Folder) -> Obid {
     let remote = folder.0.join("fixture/remote.git");
-    start(&folder.0, &config(&folder.0, &remote, &answerer()), None)
+    let mut settings = config(&folder.0, &remote, &answerer());
+    let mine = settings["repos"][0].clone();
+    settings["repos"].as_array_mut().unwrap().push(json!({
+        "repo": PRIVATE, "remote": mine["remote"], "defaultBranch": "main", "pullRequests": false}));
+    start(&folder.0, &settings, None)
 }
 
 /// The open cards asking whether to share.
@@ -943,10 +943,15 @@ async fn peer_17_no_silent_share() {
         assert!(rules(&obid).is_empty(), "opening the card grants nothing");
         card
     });
-    let yes = tokio::task::block_in_place(|| confirm(&obid, card["id"].as_str().unwrap()));
+    let yes = tokio::task::block_in_place(|| {
+        let same = ticked(&obid, &[REPO]);
+        assert_eq!(same, card["id"].as_str().unwrap(), "still the one card");
+        confirm(&obid, &same)
+    });
     assert_eq!(yes.status, 200, "{}", yes.text);
     let rule = tokio::task::block_in_place(|| rules(&obid)).remove(0);
     assert_eq!(rule["for"], "*");
+    assert_eq!(rule["repos"], json!([REPO]));
     assert_eq!(
         rule["tells"],
         json!(["jobStatus", "jobProgress"]),
@@ -988,14 +993,20 @@ async fn peer_17_no_silent_share() {
     });
 }
 
-/// A first join's rule tells status, and the first question it answers asks the owner once about
-/// each job's progress, in words of its own. Only their Confirm adds it, to the rule they have: the
+/// A rule of theirs tells status, and the first question it answers asks the owner once about each
+/// job's progress, in words of its own. Only their Confirm adds it, to the rule they have: the
 /// next answer has moved on from status, and nothing asks again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_23_a_rule_from_before_tells_more_only_on_the_owners_yes() {
     let folder = Folder::new("peer-23");
-    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
-    tokio::task::block_in_place(|| a_job(&obid, "Billing retries"));
+    let (_sphere, obid, ernesto) = just_joined(&folder).await;
+    tokio::task::block_in_place(|| {
+        a_job(&obid, "Billing retries");
+        share(
+            &obid,
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
+        );
+    });
     let ask = async |text: &str| {
         let question = ernesto.request("obi-wellington", "question", json!({"text": text}), 3600);
         ernesto.send(&question).await;
@@ -1052,7 +1063,13 @@ async fn peer_23_a_rule_from_before_tells_more_only_on_the_owners_yes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_23_remove_closes_the_open_card() {
     let folder = Folder::new("peer-23-remove");
-    let (_sphere, obid, ernesto) = setup_with_starter(&folder).await;
+    let (_sphere, obid, ernesto) = just_joined(&folder).await;
+    tokio::task::block_in_place(|| {
+        share(
+            &obid,
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
+        );
+    });
     let question = ernesto.request(
         "obi-wellington",
         "question",
@@ -1085,9 +1102,11 @@ async fn peer_23_remove_closes_the_open_card() {
         let opened = post(&obid, "/v1/obid/sharing/offer", &json!({}));
         assert_eq!(opened.status, 201, "{}", opened.text);
         let title = opened.body["title"].as_str().unwrap();
+        assert!(title.contains("Which repositories"), "{title}");
         assert!(
-            !title.contains("also") && title.contains("current step"),
-            "{title}"
+            opened.text.contains("current step"),
+            "it says all of it: {}",
+            opened.text
         );
     });
 }
@@ -1199,7 +1218,7 @@ async fn peer_21_a_secret_in_a_jobs_report_never_reaches_the_answer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_18_remove_stays_removed() {
     let folder = Folder::new("peer-18");
-    let (_sphere, mut obid, ernesto) = setup_with_starter(&folder).await;
+    let (_sphere, mut obid, ernesto) = setup_with_yes(&folder).await;
     tokio::task::block_in_place(|| {
         let rule = rules(&obid).remove(0);
         let id = rule["id"].as_str().unwrap();
@@ -1220,7 +1239,7 @@ async fn peer_18_remove_stays_removed() {
         let opened = post(&obid, "/v1/obid/sharing/offer", &json!({}));
         assert_eq!(opened.status, 201, "{}", opened.text);
         assert!(rules(&obid).is_empty());
-        let yes = confirm(&obid, opened.body["id"].as_str().unwrap());
+        let yes = confirm(&obid, &ticked(&obid, &[REPO]));
         assert_eq!(yes.status, 200, "{}", yes.text);
         assert_eq!(rules(&obid).len(), 1, "their own click brings it back");
     });
@@ -1260,9 +1279,10 @@ async fn peer_17_a_yes_doesnt_replace_a_file_that_stopped_reading() {
     waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
     let file = obid.home.join("sharing.json");
     tokio::task::block_in_place(|| {
-        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        within(20, "the card", || offers(&obid).into_iter().next());
+        let card = ticked(&obid, &[REPO]);
         std::fs::write(&file, "not json").unwrap();
-        let yes = confirm(&obid, card["id"].as_str().unwrap());
+        let yes = confirm(&obid, &card);
         assert_eq!(yes.status, 409, "{}", yes.text);
     });
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
@@ -1284,8 +1304,8 @@ async fn peer_17_a_removed_member_gets_nothing_from_a_yes() {
         let members = call(&obid, "GET", "/v1/obid/sphere/members", None);
         assert_eq!(members.status, 200, "{}", members.text);
         assert_eq!(members.body, json!([]), "the directory says they left");
-        let card = within(20, "the card", || offers(&obid).into_iter().next());
-        let yes = confirm(&obid, card["id"].as_str().unwrap());
+        within(20, "the card", || offers(&obid).into_iter().next());
+        let yes = confirm(&obid, &ticked(&obid, &[REPO]));
         assert_eq!(yes.status, 200, "{}", yes.text);
         std::thread::sleep(std::time::Duration::from_secs(5));
         let e = exchange(&obid, &cid);
@@ -1304,13 +1324,13 @@ async fn peer_17_a_removed_member_gets_nothing_from_a_yes() {
 }
 
 /// Leaving a Sphere: the rule obid made and the open card go, and the next Sphere asks again rather
-/// than sharing with no click, a first join's seed included.
+/// than sharing with no click.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_19_leaving_takes_the_offers_rule_and_the_next_sphere_asks_again() {
     let folder = Folder::new("peer-19");
-    let (_sphere, obid, _ernesto) = setup_with_starter(&folder).await;
+    let (_sphere, obid, _ernesto) = setup_with_yes(&folder).await;
     tokio::task::block_in_place(|| {
-        assert_eq!(rules(&obid)[0]["starter"], true, "a first join's seed");
+        assert_eq!(rules(&obid)[0]["starter"], true, "the owner's yes");
         // The room's yes was that Sphere's too.
         let room = post(&obid, "/v1/obid/sharing/offer", &json!({"room": true}));
         assert_eq!(room.status, 201, "{}", room.text);
@@ -1349,7 +1369,7 @@ async fn peer_19_leaving_takes_the_offers_rule_and_the_next_sphere_asks_again() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_19_leaving_forgets_the_rule_though_the_file_stopped_reading() {
     let folder = Folder::new("peer-19-bad");
-    let (_sphere, obid, _ernesto) = setup_with_starter(&folder).await;
+    let (_sphere, obid, _ernesto) = setup_with_yes(&folder).await;
     let file = obid.home.join("sharing.json");
     std::fs::write(&file, "not json").unwrap();
     tokio::task::block_in_place(|| {
@@ -1365,7 +1385,7 @@ async fn peer_19_leaving_forgets_the_rule_though_the_file_stopped_reading() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_19_leaving_keeps_the_rules_the_owner_wrote() {
     let folder = Folder::new("peer-19-own");
-    let (_sphere, obid, _ernesto) = setup_with_starter(&folder).await;
+    let (_sphere, obid, _ernesto) = setup_with_yes(&folder).await;
     tokio::task::block_in_place(|| {
         share(
             &obid,
@@ -1434,6 +1454,7 @@ async fn peer_17_a_leave_during_the_answer_isnt_said_as_the_scans_no() {
                 .map(|_| ())
         };
         within(20, "the owner told", || told(&obid, "only you can answer"));
+        assert_eq!(ticked(&obid, &[REPO]), card["id"].as_str().unwrap());
         let yes = confirm(&obid, card["id"].as_str().unwrap());
         assert_eq!(yes.status, 200, "{}", yes.text);
         let left = call(&obid, "DELETE", "/v1/obid/sphere", None);
@@ -1475,10 +1496,340 @@ async fn peer_17_a_waiting_question_the_scan_stops_is_said_to_the_owner() {
         within(20, "the owner told", || {
             said_in(&obid, "only you can answer")
         });
+        assert_eq!(ticked(&obid, &[REPO]), card["id"].as_str().unwrap());
         let yes = confirm(&obid, card["id"].as_str().unwrap());
         assert_eq!(yes.status, 200, "{}", yes.text);
         within(60, "the no said", || {
             said_in(&obid, "didn't pass the secret scan")
         });
+    });
+}
+
+/// Told only what they chose: a job in a repository outside the rule isn't in the answer, its count
+/// or its references, whatever the question is, and a question about that repository waits on the
+/// owner like any they didn't share. The stand-in model lists all it was given, so what it says is
+/// what reached it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_37_a_repo_outside_the_rule_is_never_told() {
+    let folder = Folder::new("peer-24");
+    let (_sphere, obid, ernesto) = setup_with_yes(&folder).await;
+    tokio::task::block_in_place(|| {
+        a_job_in(&obid, PRIVATE, "File my taxes");
+        a_job(&obid, "Billing retries");
+    });
+    let ask = async |body: Value| {
+        let question = ernesto.request("obi-wellington", "question", body, 3600);
+        ernesto.send(&question).await;
+        ernesto.receive_reply_to(&question, 30).await
+    };
+    for words in [
+        "What's the progress?",
+        "How many tasks does Wellington have, in all? And the private ones?",
+    ] {
+        let answer = ask(json!({"text": words})).await;
+        assert_eq!(answer["type"], "answer", "{answer}");
+        assert_eq!(answer["body"]["by"], "obi");
+        let told = answer["body"].to_string();
+        assert!(told.contains("Billing retries"), "{told}");
+        assert!(!told.contains("taxes"), "{told}");
+        assert_eq!(
+            answer["body"]["text"]
+                .as_str()
+                .unwrap()
+                .matches(':')
+                .count(),
+            1,
+            "one item: {told}"
+        );
+        assert_eq!(
+            answer["body"]["refs"].as_array().unwrap().len(),
+            1,
+            "{told}"
+        );
+    }
+    // It moves nothing to name it: not the repository, nor a job there.
+    let private_job = tokio::task::block_in_place(|| {
+        get(&obid, "/v1/jobs")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["repo"] == PRIVATE)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    });
+    for asked in [
+        about(PRIVATE),
+        json!([{"kind": "job", "repo": PRIVATE, "job": private_job}]),
+        json!([{"kind": "repo", "repo": REPO}, {"kind": "repo", "repo": PRIVATE}]),
+        about("wellington/no-such-repository"),
+    ] {
+        let status = ask(json!({"text": "What's going on there?", "about": asked})).await;
+        assert_eq!(
+            status["body"],
+            json!({"state": "waiting_on_owner"}),
+            "{asked}: {status}"
+        );
+    }
+    // No second card for any of it.
+    let inbox = tokio::task::block_in_place(|| get(&obid, "/v1/inbox"));
+    assert!(
+        inbox
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["confirm"].is_null()),
+        "asked once already: {inbox}"
+    );
+}
+
+/// The card lists the owner's repositories with nothing ticked, the most recently worked on first.
+/// What Confirm signs names exactly what's ticked: nothing ticked does nothing, a stray name isn't
+/// taken, and a signature for other ticks doesn't pass. From Settings it opens with what's chosen, and
+/// a Confirm there changes that rule and no more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_38_the_card_signs_exactly_what_is_ticked() {
+    let folder = Folder::new("peer-25");
+    let (_sphere, obid, ernesto) = just_joined(&folder).await;
+    tokio::task::block_in_place(|| {
+        a_job_in(&obid, PRIVATE, "File my taxes");
+    });
+    waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    tokio::task::block_in_place(|| {
+        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        let id = card["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            card["confirm"]["payload"],
+            json!({"offered": [PRIVATE, REPO], "repos": []}),
+            "every one listed, the latest worked on first, none ticked"
+        );
+        assert_eq!(
+            card["title"],
+            "Which repositories can I tell people in your Obysphere about?"
+        );
+        // Nothing ticked: signed or not, nothing comes of it, and the card stays.
+        let empty = confirm(&obid, &id);
+        assert_eq!(empty.status, 409, "{}", empty.text);
+        assert!(
+            empty.text.contains("Choose the repositories"),
+            "{}",
+            empty.text
+        );
+        assert!(rules(&obid).is_empty());
+        assert_eq!(offers(&obid).len(), 1, "still open");
+
+        for bad in [
+            json!({"repos": "*"}),
+            json!({"repos": ["nobody/else"]}),
+            json!({"repos": ["not a repo"]}),
+        ] {
+            let refused = post(&obid, "/v1/obid/sharing/offer", &bad);
+            assert_eq!(refused.status, 422, "{bad}: {}", refused.text);
+        }
+        assert_eq!(offers(&obid)[0]["title"], card["title"], "unchanged");
+
+        // A tick changes what Confirm would sign, and no more than that.
+        assert_eq!(ticked(&obid, &[REPO, PRIVATE]), id, "the same card");
+        let both = offers(&obid).remove(0);
+        assert_eq!(
+            both["title"],
+            format!(
+                "Can I tell people in your Obysphere how your tasks are going, with each one's current step and latest report line, in {REPO} and {PRIVATE}?"
+            )
+        );
+        assert!(rules(&obid).is_empty(), "a tick shares nothing");
+        let unsigned = answer_item(&obid, &both, json!({"answer": "Confirm"}));
+        assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+        // The owner reads two repositories; a script takes one off before the signature lands.
+        let signed = confirm_approval(&obid, &id);
+        ticked(&obid, &[REPO]);
+        let stale = post(
+            &obid,
+            &format!("/v1/inbox/{id}/answer"),
+            &json!({"answer": "Confirm", "approval": signed}),
+        );
+        assert!(stale.status >= 400, "{}", stale.text);
+        assert!(rules(&obid).is_empty(), "signed for other words");
+
+        let yes = confirm(&obid, &ticked(&obid, &[PRIVATE, REPO]));
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        let made = rules(&obid).remove(0);
+        assert_eq!(made["repos"], json!([PRIVATE, REPO]), "exactly those");
+        assert_eq!(made["for"], "*");
+        assert_eq!(made["tells"], json!(["jobStatus", "jobProgress"]));
+
+        // Settings' way to change them: the same signed path, the same rule.
+        let again = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(again.status, 201, "{}", again.text);
+        assert_eq!(
+            again.body["confirm"]["payload"]["repos"],
+            json!([PRIVATE, REPO])
+        );
+        assert!(again.body["title"].as_str().unwrap().contains(PRIVATE));
+        assert_eq!(
+            rules(&obid)[0]["repos"],
+            json!([PRIVATE, REPO]),
+            "until Confirm"
+        );
+        let yes = confirm(&obid, &ticked(&obid, &[REPO]));
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        let changed = rules(&obid);
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0]["id"], made["id"]);
+        assert_eq!(changed[0]["repos"], json!([REPO]));
+        assert!(offers(&obid).is_empty());
+    });
+    // Asked once: another question brings no second card, and goes by what they chose.
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "And now?"}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    let answer = ernesto.receive_reply_to(&question, 30).await;
+    assert_eq!(answer["type"], "answer", "{answer}");
+    tokio::task::block_in_place(|| assert!(offers(&obid).is_empty(), "asked once"));
+}
+
+/// A yes to "every repository", and a first join's rule with no yes at all, tell nothing from the next
+/// start: the first question waits and asks which repositories, once. What the owner wrote stays,
+/// wide as it is, and a card still open with the old words is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_39_every_repository_is_asked_again() {
+    let folder = Folder::new("peer-26");
+    let (_sphere, mut obid, ernesto) = just_joined(&folder).await;
+    let file = obid.home.join("sharing.json");
+    tokio::task::block_in_place(|| {
+        a_job_in(&obid, PRIVATE, "File my taxes");
+    });
+    assert!(obid.stop().success());
+    std::fs::write(
+        &file,
+        json!({"offered": 1, "rules": [
+            {"id": "s-000000000001", "for": "*", "repos": "*", "tells": ["jobStatus", "jobProgress"],
+             "created": 0, "uses": 4, "lastUsed": null, "starter": true},
+            {"id": "s-000000000002", "for": "*", "repos": "*", "tells": ["jobStatus"],
+             "created": 0, "uses": 0, "lastUsed": null, "starter": false, "roomYes": true}]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut obid = restarted(&folder);
+    assert!(
+        tokio::task::block_in_place(|| rules(&obid)).is_empty(),
+        "it tells nothing from now"
+    );
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("s-000000000001"),
+        "and it's kept that way"
+    );
+    waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    tokio::task::block_in_place(|| {
+        let card = within(20, "the card", || offers(&obid).into_iter().next());
+        assert!(
+            card["title"]
+                .as_str()
+                .unwrap()
+                .contains("Which repositories"),
+            "{card}"
+        );
+    });
+    // A no is a no: the next start doesn't ask again.
+    tokio::task::block_in_place(|| {
+        let card = offers(&obid).remove(0);
+        let no = answer_item(&obid, &card, json!({"answer": "Cancel"}));
+        assert_eq!(no.status, 200, "{}", no.text);
+    });
+    assert!(obid.stop().success());
+    let mut obid = restarted(&folder);
+    waiting_question(&obid, &ernesto, "And now?").await;
+    tokio::task::block_in_place(|| assert!(offers(&obid).is_empty(), "no means no"));
+
+    // Their own rule for every repository stays and answers; a card that only adds progress is
+    // left alone while it stands, and goes once it doesn't.
+    let (rule, card) = tokio::task::block_in_place(|| {
+        let id = share(
+            &obid,
+            json!({"for": "*", "repos": "*", "tells": ["jobStatus"]}),
+        );
+        let card = post(&obid, "/v1/obid/sharing/offer", &json!({}));
+        assert_eq!(card.status, 201, "{}", card.text);
+        (id, card.body["id"].as_str().unwrap().to_owned())
+    });
+    assert!(obid.stop().success());
+    let mut obid = restarted(&folder);
+    tokio::task::block_in_place(|| {
+        assert_eq!(rules(&obid)[0]["id"], rule.as_str(), "their own rule");
+        assert_eq!(rules(&obid)[0]["repos"], "*");
+        assert_eq!(offers(&obid)[0]["id"], card.as_str(), "its card too");
+    });
+    assert!(obid.stop().success());
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let mut gone = kept.clone();
+    gone["rules"] = json!([]);
+    std::fs::write(&file, gone.to_string()).unwrap();
+    let obid = restarted(&folder);
+    tokio::task::block_in_place(|| {
+        assert!(offers(&obid).is_empty(), "the old words are gone");
+        assert_eq!(rules(&obid), Vec::<Value>::new());
+    });
+    waiting_question(&obid, &ernesto, "Once more?").await;
+    tokio::task::block_in_place(|| {
+        let card = within(20, "asked anew", || offers(&obid).into_iter().next());
+        assert!(
+            card["title"]
+                .as_str()
+                .unwrap()
+                .contains("Which repositories"),
+            "{card}"
+        );
+    });
+}
+
+/// Joining shares nothing, on a new install too: `POST /v1/obid/sphere/join` carries no device's
+/// signature, so it can't be what shares. A new member reaches the same card as an old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_40_a_first_join_shares_nothing_until_the_card() {
+    let folder = Folder::new("peer-27");
+    let (_sphere, obid, ernesto) = just_joined(&folder).await;
+    tokio::task::block_in_place(|| {
+        a_job(&obid, "Billing retries");
+        assert!(rules(&obid).is_empty(), "no seed");
+        assert!(offers(&obid).is_empty(), "nothing asked before anyone asks");
+    });
+    let cid = waiting_question(&obid, &ernesto, "What is Wellington working on?").await;
+    tokio::task::block_in_place(|| {
+        assert_eq!(exchange(&obid, &cid)["state"], "inbox");
+        within(20, "the card", || offers(&obid).into_iter().next());
+        assert!(rules(&obid).is_empty());
+    });
+}
+
+/// How much of the owner's account answers can spend is theirs to raise: obid's token alone, which the
+/// page reaches through main, changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_41_the_limits_take_the_devices_signature() {
+    let folder = Folder::new("peer-28");
+    let (_sphere, obid, _ernesto) = just_joined(&folder).await;
+    tokio::task::block_in_place(|| {
+        let before = get(&obid, "/v1/obid/sharing")["limits"].clone();
+        let wanted = json!({"selfAnswersPerHour": 1000, "selfAnswersPerHourTotal": 10000, "inboxPerOwner": 100});
+        let token = call(&obid, "PUT", "/v1/obid/sharing/limits", Some(&wanted));
+        assert_eq!(token.status, 403, "{}", token.text);
+        assert_eq!(
+            get(&obid, "/v1/obid/sharing")["limits"],
+            before,
+            "nothing changed"
+        );
+        let lower =
+            json!({"selfAnswersPerHour": 0, "selfAnswersPerHourTotal": 0, "inboxPerOwner": 0});
+        let token = call(&obid, "PUT", "/v1/obid/sharing/limits", Some(&lower));
+        assert_eq!(token.status, 403, "lowering takes it too: {}", token.text);
+        let signed = call_signed(&obid, "PUT", "/v1/obid/sharing/limits", Some(&wanted));
+        assert_eq!(signed.status, 200, "{}", signed.text);
+        assert_eq!(get(&obid, "/v1/obid/sharing")["limits"], wanted);
     });
 }

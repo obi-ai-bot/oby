@@ -78,7 +78,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 
 - **RIG-1** Pointed at the owner's real Oby, under `HOME` or the password database's home, by its folder, a folder inside it or holding it, a link (one that leads nowhere too), a firmlink, another spelling of the same name or `OBID_HOME`, every command refuses with exit 2 and changes nothing.
 - **RIG-2** Pointed at port 7777, it refuses the same way.
-- **RIG-3** `start` from nothing: the Sphere, both obids joined with sealing on, the rule written, Dana's starter rule with Dana's signed yes to a job's progress, Dana's job running, and the owner's step printed.
+- **RIG-3** `start` from nothing: the Sphere, both obids joined with sealing on, the rule written, Dana's signed yes to the card for the rig's repository, Dana's job running, and the owner's step printed.
 - **RIG-4** With the rule and the job, `ask "What are you working on?"`: the job quoted, "Asked Dana's Oby. Dana wasn't bothered.", Dana's inbox empty.
 - **RIG-5** On stand-ins, a question holding `need-owner`: "It's waiting on Dana", and an `obiRequest` in Dana's inbox.
 - **RIG-6** `policy off` and ask: "This Obysphere's rules don't allow questions yet", no exchange kept, also with words already answered once, whose old exchange isn't this one. `policy on` restores it.
@@ -98,6 +98,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 - **RIG-20** A `rig.json` that doesn't read: `status` says to reset; `stop` and `reset` work.
 - **RIG-21** `stop` and `reset` on a folder that isn't there say so, exit 0, and make nothing.
 - **RIG-22** While it's all up and Dana's job has ended, `start` starts another, and says it's running.
+- **RIG-23** `job --personal`, in a repository of Dana's that Dana's yes leaves out, and ask: the answer has "Billing retries" and nothing of "File my taxes" (the plan's PEER-15).
 - **RIG-23** A wrong `OBID_BIN`: `start` says what's wrong, exit 1, with nothing left up.
 
 ### Test it when it's done

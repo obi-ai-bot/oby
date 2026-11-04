@@ -5,6 +5,7 @@ import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, ty
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
+import { repoTicks } from './sharing';
 import { replaceTasks, type Asking, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
@@ -293,8 +294,11 @@ export const itemAsk = (item: InboxItem, detail?: string): Ask => {
     kind: LABELLED[item.kind] ?? item.kind as AskKind, headline: item.headline ?? item.title, text: item.headline || item.kind === 'question' ? item.text : '',
     options: item.options, recommended: item.recommended ?? undefined, detail: detail ?? item.watch?.review ?? undefined,
     ...(label ? { label } : {}),
+    repos: repoTicks(item),
   };
 };
+// A card as obid just answered it (PEER-38: its title after a tick)
+export const seeItem = (item: InboxItem) => take({ kind: 'inbox', item });
 // a check to keep: one taking a check out shows as any confirm item, its Confirm as such
 const checkOf = (item?: InboxItem) =>
   (item?.kind === 'confirm' && item.confirm?.action === 'set_check' ? item.confirm.payload?.check ?? undefined : undefined);

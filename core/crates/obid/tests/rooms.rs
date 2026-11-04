@@ -489,7 +489,7 @@ async fn rooms_10_the_self_answer_limit_holds() {
     tokio::task::block_in_place(|| {
         a_job(&obid, "Land the fix");
         share(&obid, everyone());
-        let limits = call(
+        let limits = call_signed(
             &obid,
             "PUT",
             "/v1/obid/sharing/limits",
@@ -518,7 +518,7 @@ async fn rooms_10_the_self_answer_limit_holds() {
         assert_eq!(found, 1);
         // It says so where a question's would, on the sharing rule that made it.
         let sharing = call(&obid, "GET", "/v1/obid/sharing", None).body;
-        assert_eq!(sharing["rules"][1]["uses"], 1, "{sharing}");
+        assert_eq!(sharing["rules"][0]["uses"], 1, "{sharing}");
     });
     // A restart keeps counting.
     let status = obid.stop();
@@ -1564,11 +1564,16 @@ async fn rooms_17_a_signed_yes_on_its_card_opens_the_room_and_remove_closes_it()
     let (sphere, obid, _, _ernesto) = setup(&folder, false).await;
     let rules = |obid: &Obid| call(obid, "GET", "/v1/obid/sharing", None).body["rules"].clone();
     let card = tokio::task::block_in_place(|| {
-        assert_eq!(
-            rules(&obid)[0]["starter"],
-            true,
-            "status shared, by the seed"
+        let opened = call(
+            &obid,
+            "POST",
+            "/v1/obid/sharing/offer",
+            Some(&json!({"repos": [REPO]})),
         );
+        assert_eq!(opened.status, 201, "{}", opened.text);
+        let yes = confirm(&obid, opened.body["id"].as_str().unwrap());
+        assert_eq!(yes.status, 200, "{}", yes.text);
+        assert_eq!(rules(&obid)[0]["starter"], true, "status shared, by a yes");
         let opened = call(
             &obid,
             "POST",
@@ -1577,6 +1582,11 @@ async fn rooms_17_a_signed_yes_on_its_card_opens_the_room_and_remove_closes_it()
         );
         assert_eq!(opened.status, 201, "{}", opened.text);
         assert_eq!(opened.body["confirm"]["action"], "share_room");
+        assert!(
+            opened.body["title"].as_str().unwrap().contains(REPO),
+            "it names how far it goes: {}",
+            opened.text
+        );
         let id = opened.body["id"].as_str().unwrap().to_owned();
         let unsigned = call(
             &obid,
@@ -1600,6 +1610,7 @@ async fn rooms_17_a_signed_yes_on_its_card_opens_the_room_and_remove_closes_it()
         let list = all.as_array().unwrap();
         assert_eq!(list.len(), 2, "{list:?}");
         assert_eq!(list[1]["starter"], false);
+        assert_eq!(list[1]["repos"], json!([REPO]), "as far as the yes goes");
         a_job(&obid, "After the yes");
         within(30, "its post", || {
             let done = posts(&obid);
@@ -1634,15 +1645,6 @@ async fn rooms_17_the_rooms_card_needs_status_shared_first() {
     let folder = Folder::new("room-17b");
     let (_sphere, obid, _, _ernesto) = setup(&folder, false).await;
     tokio::task::block_in_place(|| {
-        let all = call(&obid, "GET", "/v1/obid/sharing", None).body;
-        let id = all["rules"][0]["id"].as_str().unwrap();
-        let gone = call(
-            &obid,
-            "DELETE",
-            &format!("/v1/obid/sharing/rules/{id}"),
-            None,
-        );
-        assert_eq!(gone.status, 204, "{}", gone.text);
         let opened = call(
             &obid,
             "POST",

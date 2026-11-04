@@ -428,8 +428,14 @@ pub async fn offer_to_share(
     State(shared): State<Arc<Shared>>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let room = serde_json::from_slice::<Value>(&body).is_ok_and(|b| b["room"] == true);
-    Ok(json(StatusCode::CREATED, shared.link.offer_again(room)?))
+    let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    let chosen = crate::sphere::sharing::chosen_from(&body)
+        .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let room = body["room"] == true;
+    Ok(json(
+        StatusCode::CREATED,
+        shared.link.offer_again(room, chosen)?,
+    ))
 }
 
 /// `DELETE /v1/obid/sharing/rules/{id}`.
@@ -448,6 +454,18 @@ pub async fn forget_rule(
 }
 
 /// `PUT /v1/obid/sharing/limits`.
-pub async fn limits(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
+pub async fn limits(
+    State(shared): State<Arc<Shared>>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    // How much of the owner's account answers can spend is theirs to raise, as a rule is (PEER-41).
+    if crate::routes::signed_by(&shared, "PUT", &uri, &headers, &body).is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "How much your Oby may answer is only yours to change: an app of yours signs it.",
+        ));
+    }
     Ok(json(StatusCode::OK, shared.link.set_limits(&body)?))
 }

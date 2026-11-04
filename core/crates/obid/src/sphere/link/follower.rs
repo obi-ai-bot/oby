@@ -518,11 +518,13 @@ impl Link {
     }
 
     /// A question comes to an owner who was never asked and shares nothing (it waits on them), or
-    /// only how their tasks are going (it's answered with that): one card asks whether obid may answer
-    /// by itself, or tell each job's progress too (PEER-16, PEER-23). Nothing changes until their
-    /// Confirm. A file that doesn't read says nothing of what they chose, and stays as it is.
+    /// only how their tasks are going, by a rule of theirs (it's answered with that): one card asks
+    /// which repositories obid may answer about by itself, or to tell each job's progress too (PEER-16,
+    /// PEER-23, PEER-38). Nothing changes until their Confirm. A file that doesn't read says nothing of
+    /// what they chose, and stays as it is.
     fn offer_to_share(&self) {
         let now = time::now();
+        let repos = self.repos_to_offer(&[]);
         let only_status = {
             let mut state = self.lock();
             if !state.sharing.to_offer() || !self.sharing.reads() {
@@ -533,28 +535,107 @@ impl Link {
             self.save_sharing(&state.sharing);
             state.sharing.shares_only_status()
         };
-        self.add_confirm_once(inbox::share_item(now, only_status));
+        self.add_confirm_once(if only_status {
+            inbox::add_progress_item(now)
+        } else {
+            inbox::share_item(now, repos, Vec::new())
+        });
     }
 
-    /// `POST /v1/obid/sharing/offer`: the same card, from Settings, for an owner who said no or
-    /// removed the rule and changed their mind; with `{"room": true}`, the room's, for one who shares
-    /// status. Only their Confirm makes the rule.
-    pub fn offer_again(&self, room: bool) -> Result<Value, ApiError> {
+    /// The repositories the card lists (PEER-38): the owner's own, from the jobs they ran, the most
+    /// recent first, and their configuration, with `also` (what's chosen now, which may have left
+    /// both). Each in full, so what's ticked is what's read.
+    fn repos_to_offer(&self, also: &[String]) -> Vec<String> {
+        let jobs = self.jobs.list(usize::MAX);
+        let configured = self.config.repos.get();
+        let names = jobs
+            .iter()
+            .filter(|j| j.obi.is_none())
+            .map(|j| &j.repo)
+            .chain(configured.iter().map(|r| &r.repo))
+            .chain(also);
+        let mut out: Vec<String> = Vec::new();
+        for repo in names {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(repo))
+                && obi_protocol::schema::is_valid("common#/$defs/repo", &json!(repo))
+            {
+                out.push(repo.clone());
+            }
+        }
+        out
+    }
+
+    /// `POST /v1/obid/sharing/offer`: the same card, from Settings, for an owner who said no, removed
+    /// the rule or wants to change the repositories; with `chosen`, those ticked on it (the same card,
+    /// its title naming them); with `room`, the room's, for one who shares status. Only their Confirm
+    /// makes the rule.
+    pub fn offer_again(&self, room: bool, chosen: Option<Vec<String>>) -> Result<Value, ApiError> {
         self.sharing_reads()?;
         let now = time::now();
         if room {
-            if !self.lock().sharing.shares_status() {
+            let repos = self.lock().sharing.status_repos().cloned();
+            let Some(repos) = repos else {
                 return Err(api(StatusCode::CONFLICT, NOT_SHARING_STATUS));
-            }
-            return Ok(self.shown(&self.add_confirm_once(inbox::share_room_item(now))));
+            };
+            // In place of an older one: its words may name other repositories.
+            let item = self.add_confirm_instead(inbox::share_room_item(now, &repos));
+            return Ok(self.shown(&item));
         }
-        let only_status = {
+        let (only_status, told) = {
             let mut state = self.lock();
             state.sharing.offered.get_or_insert(now);
             self.save_sharing(&state.sharing);
-            state.sharing.shares_only_status()
+            (
+                state.sharing.shares_only_status(),
+                state.sharing.chosen_repos(),
+            )
         };
-        let item = self.add_confirm_once(inbox::share_item(now, only_status));
+        if only_status {
+            if chosen.is_some() {
+                return Err(api(
+                    StatusCode::CONFLICT,
+                    "You share every repository by a rule of your own: there's nothing to tick.",
+                ));
+            }
+            return Ok(self.shown(&self.add_confirm_once(inbox::add_progress_item(now))));
+        }
+        let offered = self.repos_to_offer(&told);
+        if let Some(stray) = chosen
+            .iter()
+            .flatten()
+            .find(|c| !offered.iter().any(|o| o.eq_ignore_ascii_case(c)))
+        {
+            return Err(api(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("{stray} isn't one of your repositories."),
+            ));
+        }
+        let is_open = |i: &Item| {
+            i.done.is_none()
+                && i.confirm
+                    .as_ref()
+                    .is_some_and(|c| c.action == inbox::action::SHARE_STATUS)
+        };
+        let item = {
+            let mut state = self.lock();
+            match state.inbox.values_mut().find(|i| is_open(i)) {
+                Some(open) => {
+                    let ticked = open
+                        .confirm
+                        .as_ref()
+                        .and_then(|c| serde_json::from_value(c.payload["repos"].clone()).ok());
+                    let chosen = chosen.or(ticked).unwrap_or(told);
+                    inbox::tick_repos(open, offered, chosen);
+                    open.clone()
+                }
+                None => {
+                    let made = inbox::share_item(now, offered, chosen.unwrap_or(told));
+                    state.inbox.insert(made.id.clone(), made.clone());
+                    made
+                }
+            }
+        };
+        self.save_item(&item);
         Ok(self.shown(&item))
     }
 
@@ -569,15 +650,27 @@ impl Link {
         Ok(())
     }
 
-    /// The owner's Confirm (PEER-17): the rule, and the questions waiting on them go by it, as one
-    /// that came now would. One the run can't answer comes back to them. One they're already answering
-    /// stays theirs, and one from someone who has left the Sphere gets nothing.
-    pub(super) fn share_status(self: &Arc<Self>) -> Result<(), ApiError> {
+    /// The owner's Confirm (PEER-17, PEER-38): the rule the card names, and the questions waiting on
+    /// them go by it, as one that came now would. One about a repository they didn't tick, or that the
+    /// run can't answer, stays or comes back to them. One they're already answering stays theirs, and
+    /// one from someone who has left the Sphere gets nothing. A card with nothing ticked does nothing.
+    pub(super) fn share_status(self: &Arc<Self>, payload: &Value) -> Result<(), ApiError> {
         self.sharing_reads()?;
         let now = time::now();
+        let ticked: Option<Vec<String>> = payload
+            .get("repos")
+            .and_then(|r| serde_json::from_value(r.clone()).ok());
+        let changed = ticked.is_some();
         let (rule, waiting) = {
             let mut state = self.lock();
-            let rule = state.sharing.share_job_status(now);
+            let rule = match ticked {
+                Some(chosen) if chosen.is_empty() => None,
+                Some(chosen) => Some(state.sharing.share_chosen(now, chosen)),
+                None => state.sharing.share_progress_too(now),
+            };
+            let Some(rule) = rule else {
+                return Err(api(StatusCode::CONFLICT, CHOOSE_REPOS_FIRST));
+            };
             self.save_sharing(&state.sharing);
             let waiting: Vec<String> = state
                 .exchanges
@@ -587,6 +680,13 @@ impl Link {
                 .collect();
             (rule, waiting)
         };
+        // A room's card still open names the repositories as they were.
+        if changed {
+            let closed = self.lock().close_cards(&[inbox::action::SHARE_ROOM], now);
+            for item in closed {
+                self.save_item(&item);
+            }
+        }
         for cid in waiting {
             let body = self
                 .lock()
@@ -637,7 +737,7 @@ impl Link {
         Ok(())
     }
 
-    /// Leaving a Sphere (PEER-19): a rule obid made on a yes (a first join's, the offer's, the room's)
+    /// Leaving a Sphere (PEER-19): a rule obid made on a yes (the offer's, the room's)
     /// names no Sphere, and what they agreed to was this one's. It goes, with the cards and that they
     /// were asked, so the next Sphere asks again, also when the file stopped reading: what's in
     /// memory answers in the next Sphere otherwise. Rules they wrote themselves stay.
