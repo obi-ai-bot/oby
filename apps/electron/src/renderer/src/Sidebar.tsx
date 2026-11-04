@@ -16,7 +16,7 @@ import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSp
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import StatusDot from './StatusDot';
-import { memberOpens, mockConvosWith, plainId, useConvos } from './peers';
+import { askCardLine, memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
 import { chatOfTask, lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
@@ -54,8 +54,10 @@ const convoAbout = (c: Chat) => {
   if (!c.said.length && c.about !== undefined) return c.about;
   const n = c.said.flatMap((m) => m.jobs ?? []).length;
   if (n) return `Started ${n} task${n === 1 ? '' : 's'}`;
-  const said = [...c.said].reverse().find((m) => m.who === 'oby' && m.text)?.text;
-  return said ? plain(said) : 'Oby is on it';
+  const said = [...c.said].reverse().find((m) => m.who === 'oby' && (m.text || m.askCard));
+  // a question's card: what it says, which is all its turns are now
+  if (said?.askCard) return askCardLine(said.askCard, Date.now()) ?? said.askCard.question;
+  return said ? plain(said.text) : 'Oby is on it';
 };
 
 // The side panel, in two columns: icons on the far left pick a section
@@ -267,7 +269,7 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
 
   // your conversations with Oby (matching the search): pinned ones first, under
   // Pinned, the rest under Recent (no headings while nothing's pinned)
-  const talks = chats.filter((c) => matches(c.title, ...c.said.map((m) => m.text)));
+  const talks = chats.filter((c) => matches(c.title, ...c.said.flatMap((m) => (m.askCard ? [m.askCard.question, m.askCard.said ?? '', askCardLine(m.askCard, Date.now()) ?? ''] : [m.text]))));
   const pinned = talks.filter((c) => c.pinned);
   // chat first, under your Oby: all of them, in one list
   const latest = latestChat(chats);

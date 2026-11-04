@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, File as FileIcon } from 'lucide-react';
 import { BrandMark } from './brands';
 import { ObyFace, PeerByline } from './ObyFace';
+import AskCard from './AskCard';
 import ObyFaceLive from './ObyFaceLive';
 import { markRead, say, useConvos } from './peers';
 import StatusDot from './StatusDot';
@@ -47,7 +48,7 @@ type Entry = Message | { who: 'oby'; ask: true; ago: number };
 // (peers.ts): each Oby's words under its owner's picture and name. Whatever is
 // happening now comes last: an Oby at work, or the agent's line. It lies over
 // what was open; back (in the title bar, or Esc) returns to it.
-export default function ChatView({ id, kind = 'task', leaving, covered = false, onBack, onGone, onOpenTask }: {
+export default function ChatView({ id, kind = 'task', leaving, covered = false, onBack, onGone, onOpenTask, onOpenMember }: {
   id: string;
   kind?: 'task' | 'oby' | 'peer';
   leaving: boolean;
@@ -55,6 +56,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   onBack: () => void;
   onGone: () => void;
   onOpenTask: (id: string) => void;       // a card in the thread: that task's page
+  onOpenMember?: (owner: string) => void;  // a question's card: that person's thread
 }) {
   const tasks = useTasks();
   const chats = useChats();
@@ -183,6 +185,8 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                   ...((m as Message).setup && !(m as Message).streaming ? [<SetupCard key="setup" step={(m as Message).setup!} />] : []),
                   // work Oby offers to start: yours to start with a tap
                   ...((m as Message).offer ? [<OfferCard key="offer" offer={(m as Message).offer!} />] : []),
+                  // a question to another Oby: one card, updating in place
+                  ...((m as Message).askCard ? [<AskCard key="askcard" card={(m as Message).askCard!} onOpen={onOpenMember} />] : []),
                   // a Confirm Oby's answer made: one click here or on Home, the owner's signed Confirm
                   ...((m as Message).confirm ? [<div key={`confirm-${(m as Message).confirm!.id}`} className="msg-ask"><AskBlock task={{ id: (m as Message).confirm!.id, job: { ask: (m as Message).confirm!.ask } }} inChat /></div>] : []),
                   // what this message started
@@ -201,7 +205,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
                       : <span className="msg-face"><Face live={working && i === head && !covered} talk={i === head && !covered ? talking?.text.length : undefined} /></span>)}
                     {parts}
                     {last && !(m as Message).streaming && !(typing && i === thread.length - 1 && side === 'oby') ? (
-                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || 'ask' in m || (m as Message).confirm ? ' is-wide' : ''}`}>
+                      <div className={`msg-end${end?.type === ThreadTask || end?.type === SetupCard || end?.type === OfferCard || end?.type === AskCard || 'ask' in m || (m as Message).confirm ? ' is-wide' : ''}`}>
                         {end}
                         <time className="msg-time">{clock(m.ago)}</time>
                       </div>

@@ -1119,6 +1119,7 @@ mod tests {
             asked: None,
             attachments: vec![],
             relayed: false,
+            asks: vec![],
         };
         Briefing {
             turns: vec![turn("user", "how is it going?"), turn("oby", "Fine.")],
@@ -1487,6 +1488,7 @@ mod tests {
                 asked: None,
                 attachments: vec![],
                 relayed: false,
+                asks: vec![],
             })
             .collect();
         let text = briefing.text();

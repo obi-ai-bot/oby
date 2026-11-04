@@ -140,7 +140,12 @@ export type LimitDecision = {
 // "GET /v1/conversation"
 // ended: the turn that tells how a job ended; routine: a routine's run's (neither answers you)
 // attachments: on your turn, the names of the files that went with the words (obid only)
-export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[] };
+// relayed: Oby's turn about another Oby. asks: the cards of questions to other Obys it tells of (AskMark)
+export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[]; relayed?: boolean; asks?: AskMark[] };
+// A question to another Oby as obid says it stands (docs/contracts/ask-an-oby.md): one per `exchange`, the
+// latest, in place of its turns; a refused one has no exchange. state: an open string. said: the other
+// Oby's words, data. by and reason: its own claims, which pick words and never show. why: obid's words.
+export type AskMark = { exchange: string | null; owner: string; name: string; question: string; state: string; quietAt?: string | null; by?: string | null; reason?: string | null; said?: string | null; why?: string };
 // obid only: conversations
 // tasks: the jobs it started; folders: the working folders its work is in (an obid that takes folders)
 export type Conversation = { id: string; title: string; pinned: boolean; created: string; lastActivity: string; cursor: string; tasks?: string[]; folders?: string[];
@@ -303,6 +308,7 @@ export type Event =
   | { kind: 'jobGone'; id: string }
   | { kind: 'inbox'; item: InboxItem }
   | { kind: 'turn'; turn: Turn }
+  | { kind: 'turnAsks'; turn: Turn }
   | { kind: 'step'; step: Step }
   | { kind: 'delta'; delta: Delta }
   | { kind: 'accounts'; accounts: Account[] }
@@ -353,6 +359,7 @@ export function parseEvent(name: string, data: string): Event | null {
       return typeof v.title === 'string' && typeof v.status === 'string' ? { kind: 'job', job: value as Job } : null;
     case 'inbox': return typeof v.id === 'string' ? { kind: 'inbox', item: value as InboxItem } : null;
     case 'turn': return typeof v.id === 'string' ? { kind: 'turn', turn: value as Turn } : null;
+    case 'turnAsks': return typeof v.id === 'string' ? { kind: 'turnAsks', turn: value as Turn } : null;
     // a step of the turn, and its brain's thinking: both say what it's on
     case 'step': case 'thinking': return typeof v.text === 'string' && typeof v.turn === 'string' ? { kind: 'step', step: value as Step } : null;
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;

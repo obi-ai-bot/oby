@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn } from './obid';
+import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
@@ -96,7 +96,11 @@ const byAt = (a: Turn, b: Turn) => a.at.localeCompare(b.at);
 const merged = (had: Turn[], more: Turn[]) => [...had.filter((t) => !more.some((m) => m.id === t.id)), ...more].sort(byAt);
 const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, ...rest } = r; return rest; };
 // Oby answering words: not a job's report or a routine's run, which come whenever they come
-const answers = (t: Turn) => t.who === 'oby' && !t.ended && !t.routine;
+const answers = (t: Turn) => t.who === 'oby' && !t.ended && !t.routine && !folded(t);
+// The cards a turn holds, of a shape this app reads. Any other leaves its turn as words.
+const asksOn = (t: Turn): AskMark[] => (Array.isArray(t.asks) ? t.asks : []).filter((a) => !!a && typeof a.owner === 'string' && typeof a.name === 'string' && typeof a.question === 'string' && typeof a.state === 'string');
+// obid's own turn about a question, which its card says instead (only those are relayed with a card)
+const folded = (t: Turn) => !!t.relayed && asksOn(t).length > 0;
 // words this app has on their way in a conversation
 const inFlight = (s: Live, c: string) => Object.values(s.expected).includes(s.alias[c] ?? c);
 // of two copies of a job, the one to keep: the newer by obid's revision, as an answer can come
@@ -161,7 +165,20 @@ export function chatOf(s: Live, c: Conversation): Chat {
   const last = turns[lastWords];
   const coming = !!last && (!!p?.turn || last.id in s.expected || (s.on[c.id] === last.id && (c.id in s.working || c.id in s.words || !!p)));
   const settled = !coming && !turns.slice(lastWords + 1).some(answers) ? last : undefined;
+  // a question to another Oby is one card: where it first showed, under Oby's next words, as it
+  // stands now, in place of the turns that tell of it. Whichever turn holds it, a restart reads the same
+  const latest = new Map(turns.flatMap(asksOn).flatMap((a) => (a.exchange ? [[a.exchange, a] as const] : [])));
+  const shownAsks = new Set<string>();
+  let cards: Message[] = [];
+  const dealCards = () => { said.push(...cards); cards = []; };
   for (const t of turns) {
+    const held = asksOn(t);
+    for (const a of held) {
+      if (a.exchange && shownAsks.has(a.exchange)) continue;
+      if (a.exchange) shownAsks.add(a.exchange);
+      cards.push({ who: 'oby', text: '', ago: minutesAgo(t.at), askCard: a.exchange ? latest.get(a.exchange) : a });
+    }
+    if (folded(t)) { dealCards(); continue; }
     if (t.who === 'user') unanswered();
     const answer = answers(t) ? asked : undefined;
     const mine = answer ? byTurn.filter((j) => j.turn === answer).map((j) => j.id) : [];
@@ -174,9 +191,11 @@ export function chatOf(s: Live, c: Conversation): Chat {
     if (t.who === 'oby') confirm({ who: 'oby', text: '', ago: minutesAgo(t.at) }, t.at);
     if (t.who === 'user') { asked = t.id; askedWords = message; if (t === settled || s.unanswered.has(t.id)) unanswered(); }
     else if (answer) asked = undefined;
+    if (t.who === 'oby') dealCards();
   }
   const words = p ? wordsOf(p.to).slice(0, p.n).join('') : s.words[c.id], q = s.waiting[c.id];
   if (p || words) said.push({ who: 'oby', text: words ?? '', ago: 0, streaming: true });
+  dealCards();
   // its answer still coming (under the words so far), or an event turn's offer: last
   const placed = new Set(said.flatMap((m) => (m.offer ? [m.offer.id] : [])));
   for (const offer of offers.filter((o) => !placed.has(o.id))) said.push({ who: 'oby', text: '', ago: 0, offer });
@@ -483,7 +502,7 @@ export function lookAtUsage() {
 
 // --- events
 
-function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
+export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
   switch (e.kind) {
     case 'job':
       return s.gone.has(e.job.id) ? s : { ...s, jobs: { ...s.jobs, [e.job.id]: newer(s.jobs[e.job.id], e.job) } };
@@ -526,6 +545,11 @@ function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine
       if (e.turn.who === 'oby') return { ...next, ...answered, working: without(s.working, c), words: without(s.words, c), pace: live ? paced(s, c, e.turn.text, e.turn.id) : s.pace };
       // your words after Oby's: the rest of its last answer shows whole
       return s.pace[c]?.turn ? { ...next, pace: without(s.pace, c) } : next;
+    }
+    // a question's card on a turn: only the card changes, and nothing about a turn under way
+    case 'turnAsks': {
+      const c = e.turn.conversation;
+      return c ? { ...s, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } } : s;
     }
     case 'step': {
       const c = e.step.conversation ?? Object.keys(s.turns).find((k) => s.turns[k].some((t) => t.id === e.step.turn));

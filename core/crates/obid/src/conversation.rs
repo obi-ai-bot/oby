@@ -65,6 +65,11 @@ pub struct Turn {
     /// gave itself, is in it, so its text reaches the owner and never a model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub relayed: bool,
+    /// The cards of questions to other Obys on this turn (crate::brain::ask), each as it stood
+    /// then. An app that knows them shows one card per `exchange`, its latest, in place of the
+    /// relayed turns that tell of it; one that doesn't reads `text`, as ever. Left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<Value>,
 }
 
 /// The question an Oby turn asked, and its options.
@@ -688,6 +693,7 @@ impl Conversations {
             None,
             names,
             false,
+            vec![],
         );
         let turn = match added {
             Ok(turn) => turn.id,
@@ -776,16 +782,18 @@ impl Conversations {
             asked,
             vec![],
             false,
+            vec![],
         )
     }
 
     /// Oby's turn in the conversation `id` about another Oby, which never reaches a model
-    /// ([`Turn::relayed`]). `foreign` as in [`Self::append`].
+    /// ([`Turn::relayed`]). `foreign` as in [`Self::append`]; `asks`: the card it updates, if any.
     pub fn append_relayed(
         &self,
         id: &str,
         text: String,
         foreign: Option<String>,
+        asks: Vec<Value>,
     ) -> Result<Turn, Error> {
         let mut threads = self.lock();
         let index = threads
@@ -806,7 +814,33 @@ impl Conversations {
             None,
             vec![],
             true,
+            asks,
         )
+    }
+
+    /// A question's first card in the conversation `id`, on its latest turn that isn't relayed. No
+    /// turn is added, since an app with no card must read what it read before, and a relayed turn's
+    /// words are about its own card only, as the app folds them. `turnAsks` says so, which only an
+    /// app with the card reads: a `turn` again would alert a phone.
+    pub fn add_ask(&self, id: &str, card: Value) -> Result<(), Error> {
+        let mut threads = self.lock();
+        let thread = threads
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or(Error::NoConversation)?;
+        let kept = thread.clone();
+        let Some(turn) = thread.turns.iter_mut().rev().find(|t| !t.relayed) else {
+            return Ok(());
+        };
+        turn.asks.push(card);
+        let turn = turn.clone();
+        if let Err(error) = self.write(thread) {
+            *thread = kept;
+            return Err(Error::Io(error));
+        }
+        self.events
+            .send("turnAsks", serde_json::to_value(&turn).unwrap_or_default());
+        Ok(())
     }
 
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
@@ -1076,6 +1110,7 @@ impl Conversations {
             None,
             vec![],
             false,
+            vec![],
         )
     }
 
@@ -1096,6 +1131,7 @@ impl Conversations {
         asked: Option<Asked>,
         attachments: Vec<String>,
         relayed: bool,
+        asks: Vec<Value>,
     ) -> Result<Turn, Error> {
         let sequence = next_sequence(threads);
         let thread = &mut threads[index];
@@ -1122,6 +1158,7 @@ impl Conversations {
             asked,
             attachments,
             relayed,
+            asks,
         };
         thread.turns.push(turn.clone());
         let excess = thread.turns.len().saturating_sub(KEPT);
@@ -2203,6 +2240,7 @@ mod tests {
                 &asks,
                 "> Words.".into(),
                 Some("what another Oby said".into()),
+                vec![],
             )
             .unwrap();
         assert!(

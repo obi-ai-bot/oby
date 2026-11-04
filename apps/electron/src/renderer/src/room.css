@@ -11,3 +11,13 @@
 .msg.is-waiting .msg-bubble { opacity: 0.6; }
 .room-problem { width: 100%; max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; color: var(--danger); font-size: var(--text-md); line-height: 18px; overflow-wrap: anywhere; }
 .room-under { margin: -6px 0 10px; padding: 0 var(--gutter); color: var(--muted); font-size: 11px; line-height: 14px; text-align: center; user-select: none; }
+
+/* a question to another Oby, in a conversation (AskCard.tsx): one card that updates in place */
+.ask-card { width: 100%; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.06); text-align: left; user-select: text; transition: border-color var(--fade); }
+.ask-card:hover { border-color: var(--line-strong); }
+.ask-card-head { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--text-md); font-weight: 500; line-height: 18px; user-select: none; }
+.ask-card-who { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ask-card-q { color: var(--text); font-size: var(--text-md); line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-card-said { position: relative; padding-left: 12px; color: var(--text); font-size: var(--text-base); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-card-said::before { content: ''; position: absolute; top: 2px; bottom: 2px; left: 0; width: 3px; border-radius: 1.5px; background: var(--line); }
+.ask-card-line { color: var(--muted); font-size: var(--text-sm); line-height: 16px; overflow-wrap: anywhere; }

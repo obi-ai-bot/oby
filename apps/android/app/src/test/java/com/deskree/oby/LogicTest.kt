@@ -88,6 +88,14 @@ class LogicTest {
         assertEquals(listOf("Allow once", "Deny"), CardOption.permission(RunnerPermission("p", title = "Run")).map { it.label })
     }
 
+    /** ASK-21: as obid writes it (ask_an_oby's ask_21 holds this file to that). Run from `app/`. */
+    @Test fun ask21ATurnWithAQuestionsCardReadsAsItsWords() {
+        val json = java.io.File("../../../core/crates/obid/tests/fixtures/carded-turn.json").readText()
+        val turn = wire.decodeFromString(RunnerTurn.serializer(), json).turn
+        assertEquals("> Billing retries.\n\nAsked ernesto's Oby. ernesto wasn't bothered.", turn.text)
+        assertEquals(Who.oby, turn.who)
+    }
+
     @Test fun theRunnersTurnListsTheEchoById() {
         val echo = Turn(id = "e1", who = Who.user, text = "Hi", conversation = "c1")
         assertTrue(ChatThread.lists(Turn(id = "e1", who = Who.user, text = "Hi", conversation = "c1"), echo))
