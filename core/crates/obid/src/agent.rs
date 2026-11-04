@@ -840,6 +840,35 @@ pub fn step(tool: &str, input: &Value) -> String {
     }
 }
 
+/// [`step`], for someone else's eyes (docs/contracts/peer-thread.md, PEER-22): a command is only its
+/// program, or the description its agent gave it, and a search names nothing it looked for.
+pub fn told_step(tool: &str, input: &Value) -> String {
+    let description = input
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|d| !d.trim().is_empty());
+    match tool {
+        "Bash" => description.map(str::to_owned).unwrap_or_else(|| {
+            let command = input.get("command").and_then(Value::as_str).unwrap_or("");
+            format!("Running {}", program(command).unwrap_or("a command"))
+        }),
+        "Grep" | "Glob" => "Searching the code".into(),
+        _ => step(tool, input),
+    }
+}
+
+/// The program `command` starts, past its variables and its path: none when it's anything but a
+/// plain name, which a word that holds a value would be.
+fn program(command: &str) -> Option<&str> {
+    let word = command
+        .split_whitespace()
+        .find(|word| !word.contains('='))?
+        .rsplit('/')
+        .next()?;
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-');
+    (!word.is_empty() && word.chars().all(plain)).then_some(word)
+}
+
 /// A search's regular expression in words, for a step: its flags, anchors and escaped
 /// punctuation left out (`(?i)\busage\b` is `usage`), `a|b` as `a or b`, a run of anything as
 /// `…`, of spaces as a space; character classes and other escapes stay as written. A pattern of
@@ -1084,6 +1113,45 @@ mod tests {
 
     /// #858: the owner's answer to `AskUserQuestion` reaches Claude Code as the input it runs
     /// with; a plain allow keeps the agent's own, a deny says why.
+    #[test]
+    fn peer_22_a_command_is_told_by_its_program_or_its_description() {
+        let told = |command: &str| told_step("Bash", &json!({"command": command}));
+        assert_eq!(
+            told("mysql -u root -pS3cretPassw0rd9 prod"),
+            "Running mysql"
+        );
+        assert_eq!(told("psql postgres://app:S3cret@db/x"), "Running psql");
+        assert_eq!(told("git commit -m 'the layoffs'"), "Running git");
+        assert_eq!(told("TOKEN=abc FOO=1 /usr/bin/curl -s x"), "Running curl");
+        assert_eq!(told("$(cat secret) x"), "Running a command");
+        assert_eq!(told(""), "Running a command");
+        assert_eq!(
+            told_step(
+                "Bash",
+                &json!({"command": "curl -u a:b x", "description": "Check the site"})
+            ),
+            "Check the site"
+        );
+        // A search names nothing it looked for, whatever an owner's screen shows.
+        assert_eq!(
+            told_step("Grep", &json!({"pattern": "layoffs"})),
+            "Searching the code"
+        );
+        assert_eq!(
+            told_step("Glob", &json!({"pattern": "**/acme*"})),
+            "Searching the code"
+        );
+        assert_eq!(
+            told_step("Edit", &json!({"file_path": "/a/b/c.rs"})),
+            "Editing c.rs"
+        );
+        // The owner's own step is as it was.
+        assert_eq!(
+            step("Bash", &json!({"command": "mysql -u root -pS3cret prod"})),
+            "Running mysql -u root -pS3cret prod"
+        );
+    }
+
     #[test]
     fn an_answer_carries_the_input_it_runs_with() {
         let input = json!({"questions": [{"question": "Which?", "options": [{"label": "A"}]}]});

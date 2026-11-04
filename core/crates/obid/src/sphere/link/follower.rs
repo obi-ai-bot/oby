@@ -646,22 +646,10 @@ impl Link {
             let mut state = self.lock();
             state.sharing.forget_the_offer();
             self.save_sharing(&state.sharing);
-            let now = time::now();
-            state
-                .inbox
-                .values_mut()
-                .filter(|i| {
-                    i.done.is_none()
-                        && i.confirm.as_ref().is_some_and(|c| {
-                            c.action == inbox::action::SHARE_STATUS
-                                || c.action == inbox::action::SHARE_ROOM
-                        })
-                })
-                .map(|i| {
-                    i.done = Some(now);
-                    i.clone()
-                })
-                .collect()
+            state.close_cards(
+                &[inbox::action::SHARE_STATUS, inbox::action::SHARE_ROOM],
+                time::now(),
+            )
         };
         for item in closed {
             self.save_item(&item);

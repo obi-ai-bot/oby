@@ -204,7 +204,7 @@ pub fn share_item(now: i64, only_status: bool) -> Item {
         )
     } else {
         (
-            "Can I tell people in your Obysphere how your tasks are going, in every repository?",
+            "Can I tell people in your Obysphere how your tasks are going, with each one's current step and latest report line, in every repository?",
             "I'd answer whoever asks, waiting questions first: each task's title, repository, stage, \
              state, pull request, current step and latest report line. Never logs, diffs, prompts or files.",
             [

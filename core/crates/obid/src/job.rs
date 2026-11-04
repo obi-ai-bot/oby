@@ -529,6 +529,14 @@ pub struct Job {
     /// The agent's latest words, shortened: what it's doing now and why (#730).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    /// What it's doing, in words fit for someone else's Oby ([`crate::agent::told_step`]): from its
+    /// latest tool call, never a command's arguments. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doing: Option<String>,
+    /// The owner said something to its agent: what the agent says from then on can be its reply to
+    /// them, which another Oby is never told (PEER-22). Never in the API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owner_spoke: bool,
     /// Why it stopped without ending done, in obid's words, apart from the agent's own summary;
     /// or, ended done, what it didn't do (nothing committed). None while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1010,6 +1018,8 @@ impl Job {
             unfollowed: None,
             activity: None,
             context: None,
+            doing: None,
+            owner_spoke: false,
             reason: None,
             next_step: None,
             resumes_at: None,
