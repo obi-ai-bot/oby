@@ -2151,6 +2151,7 @@ A repository says which secrets its check needs in `secretspec.toml` at its root
   | `POST /v1/jobs/{id}/messages` | the job that hears them, or the follow-up they start, isn't; files attached make the follow-up someone else's code, signed or not, as they mark a conversation |
   | `POST /v1/jobs/{id}/permission` (an answer, a no's words) | the job isn't |
   | `POST /v1/inbox/{id}/answer` on a job's question, permission or plan (an answer, a no's words) | the job isn't |
+  | `POST /v1/inbox/{id}/answer` on another Oby's open question (an answer, a Decline, `done`) | `403`, nothing goes and it stays open, unless a paired phone sent it through the gateway. `later` needs nothing (docs/contracts/peer-thread.md, PEER-33) |
   | `PATCH /v1/jobs/{id}` (a title, which Oby's conversations read) | the job isn't |
   | `POST /v1/plans` | the conversation is marked |
   | `POST /v1/memory/suggestions/{id}/remember` | the memory is marked |

@@ -429,8 +429,7 @@ fn telling(exchange: &Exchange, name: &str, now: i64) -> Option<Telling> {
 }
 
 /// Follows the exchanges: what comes back for a question a conversation asked posts there, and
-/// another Oby's question only its owner can answer gets a conversation of its own, since the apps
-/// don't show an `obiRequest` yet.
+/// another Oby's question only its owner can answer gets a conversation of its own, beside its card.
 pub fn report(shared: Arc<Shared>) {
     let mut bus = shared.events.subscribe();
     let mut stopping = shared.stopping.clone();
@@ -521,6 +520,18 @@ fn ask_the_owner(shared: &Shared, exchange: &Exchange, owner: &str) {
         "expired" => (
             "over",
             format!("This question from {oby} ran out:\n\n{quoted}"),
+        ),
+        // Settled on its card, or by a Confirm here: this conversation asked them, so it says so.
+        "done" | "declined" if exchange.decided_by.as_deref() == Some("inbox") => (
+            "over",
+            format!(
+                "You {} this question from {oby}:\n\n{quoted}",
+                if exchange.state == "done" {
+                    "answered"
+                } else {
+                    "said no to"
+                }
+            ),
         ),
         // It waited on them, and their yes to sharing let obid answer it (PEER-17).
         "done" => (

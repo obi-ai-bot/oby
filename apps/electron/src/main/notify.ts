@@ -95,6 +95,10 @@ const canPublish = (j: ObidJob) => j.status === 'done' && j.kind !== 'research' 
 const pushedHead = (j: ObidJob) => j.outgoing?.filter((o) => o.action === 'push' && o.branch === j.branch).at(-1)?.id ?? '';
 
 const call = (path: string, body: unknown) => () => obid('POST', path, body);
+// Another Oby's question, its words as plain text: obid's own say they're "quoted below", and here
+// nothing is. Answered on its card, where the click signs it, so no button (PEER-33).
+export const questionWords = (i: Pick<InboxItem, 'kind' | 'obi'>) =>
+  (i.kind === 'obiRequest' && i.obi?.type === 'question' && typeof i.obi.quoted?.text === 'string' ? plain(i.obi.quoted.text) : null);
 const id = encodeURIComponent;
 
 function wanted(): Map<string, Alert> {
@@ -171,6 +175,7 @@ function wanted(): Map<string, Alert> {
     // this Mac's signature on the owner's click in the window (device.ts), where what it carries
     // out shows in full.
     if (i.kind === 'confirm') { title = 'Confirm'; body = plain(`${i.title}\n${i.text}`); }
+    body = questionWords(i) ?? body;
     want.set(offer ? `offer:${offer}` : `item:${i.id}`, {
       what: 'open', needs: true, title, body, place: { job, conversation }, buttons,
       thread: job ? `job-${job}` : conversation ? `conversation-${conversation}` : 'oby',

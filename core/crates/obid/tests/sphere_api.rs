@@ -56,11 +56,11 @@ fn wait_item(obid: &Obid) -> Value {
 
 fn answer(obid: &Obid, item: &Value, answer: &str) -> Value {
     let id = item["id"].as_str().unwrap();
-    let answered = call(
+    let answered = call_typed(
         obid,
         "POST",
         &format!("/v1/inbox/{id}/answer"),
-        Some(&json!({"answer": answer})),
+        &json!({"answer": answer}),
     );
     assert_eq!(answered.status, 200, "{}", answered.text);
     answered.body

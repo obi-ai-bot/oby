@@ -1178,7 +1178,7 @@ impl Link {
             .lock()
             .inbox
             .get(id)
-            .filter(|i| i.done.is_none() && i.obi.as_ref().is_some_and(|o| o["type"] == "question"))
+            .filter(|i| i.done.is_none() && i.is_question())
             .cloned();
         if let Some(item) = question {
             match given {

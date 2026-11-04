@@ -3,8 +3,10 @@ import Composer, { typingIn } from './Composer';
 import { box as draftBox } from './drafts';
 import { askFromBox, boxShut, lineUnder, nextQuiet, openThread, useThreads, whoseOby, withWords } from './peers';
 import { atEnd } from './room';
+import { QuestionBlock } from './QuestionCard';
 import { RoomThread } from './RoomView';
 import { useSpheres } from './spheres';
+import { asksWaiting, useTasks } from './tasks';
 import { useScrollThumb } from './useScrollThumb';
 import './room.css';
 
@@ -22,6 +24,9 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
   onGone: () => void;
 }) {
   const held = useThreads().get(owner) ?? {};
+  // what they asked that only you can answer: the same card as on Home, gone from both once settled
+  useTasks();
+  const asking = asksWaiting().flatMap((a) => (a.question?.from === owner ? [a.question] : []));
   const t = held.thread;
   const sphere = useSpheres().find((s) => s.live);
   const posts = useMemo(() => withWords(t?.posts ?? []), [t]);
@@ -80,6 +85,7 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
         </section>
         <div {...thumbProps} />
       </div>
+      {asking.map((q) => <div key={q.id} className="room-card"><QuestionBlock question={q} /></div>)}
       {held.problem && <p className="room-problem" role="alert">{held.problem}</p>}
       {shut || waiting ? <p className="room-under">{shut ?? `Asking ${who}…`}</p> : (
         <Composer

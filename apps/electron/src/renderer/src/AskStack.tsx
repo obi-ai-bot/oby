@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { BrandMark } from './brands';
 import { AskBlock } from './TaskCard';
 import { OfferBlock } from './OfferCard';
+import { QuestionBlock } from './QuestionCard';
 import { asksWaiting, openOnGitHub, tasksWith, useTasks, type Asking, type Task } from './tasks';
 
 // What Oby is asking you, on Home, under the attention line: one card per task
@@ -130,6 +131,7 @@ function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onOpenT
           : entry.talk && <button className="tc-link ask-open" onClick={() => onOpenTalk?.(entry.talk!)}>Open conversation<ChevronRight size={14} strokeWidth={1.8} /></button>}
       </header>
       {entry.offer ? <OfferBlock offer={entry.offer} onAnswer={onAnswer} />
+        : entry.question ? <QuestionBlock question={entry.question} onAnswer={onAnswer} />
         : <AskBlock task={{ id: entry.id, answer: entry.answer, job: { ask: entry.ask } }} onAnswer={onAnswer} />}
     </article>
   );

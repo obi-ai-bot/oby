@@ -462,6 +462,12 @@ impl Item {
         }
     }
 
+    /// Whether it's another Oby's question waiting on the owner: only they answer or decline it
+    /// (PEER-33, docs/contracts/peer-thread.md).
+    pub fn is_question(&self) -> bool {
+        self.obi.as_ref().is_some_and(|o| o["type"] == "question")
+    }
+
     /// The conversation a `start` item was proposed in (kept beside its job as `proposedIn`; the
     /// planned job's own `conversation` for one made before), or a confirm came from (a job it
     /// starts, or the conversation's own Confirm): the apps show it opened out there.

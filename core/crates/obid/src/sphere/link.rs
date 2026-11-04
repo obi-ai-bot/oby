@@ -2969,6 +2969,11 @@ enum Recheck {
 /// Why a Confirm on the card that asks to share, with nothing ticked, does nothing (PEER-38).
 const CHOOSE_REPOS_FIRST: &str =
     "Choose the repositories first, in Oby on your Mac: nothing was shared.";
+
+/// Why an answer no device of the owner's signed doesn't reach another Oby's question (PEER-33).
+pub const NEEDS_YOUR_HAND: &str =
+    "Only you answer this one, from your own app: this answer wasn't signed, so nothing was sent.";
+
 /// Why a Confirm without the owner's tap is refused (#776).
 pub const NEEDS_YOUR_TAP: &str =
     "Only your tap can confirm this: confirm it in Oby on your Mac or iPhone.";

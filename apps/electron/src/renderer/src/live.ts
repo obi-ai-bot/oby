@@ -6,7 +6,7 @@ import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { AGENTS, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { repoTicks } from './sharing';
-import { replaceTasks, type Asking, type Task } from './tasks';
+import { replaceTasks, type Asking, type PersonQuestion, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
@@ -15,7 +15,7 @@ import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
-import { lookAgainAtThreads, threadChanged } from './peers';
+import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 
 // What obid has (docs/runner-api.md), kept live by its event stream, as apps/web/src/live.ts does
 // it: the stream first, then the status, jobs, inbox and conversations, with the events that came
@@ -325,8 +325,9 @@ const checkOf = (item?: InboxItem) =>
 // What obid asks the owner with no task to show it on (a job's item shows on its task's card), for
 // Home's stack, of the kinds it was made for: GitHub's offers, Confirms, failures, and work Oby
 // offers to start (its job isn't one until it starts), as OfferCard shows it in its conversation.
-// Any other kind stays where it's shown in full (an Obi-to-Obi request must show all it quotes
-// before it's answered). Only what needs the owner (as obid sorts it: needs_you, pending with it),
+// Of what another Oby asks, a question, which its card shows whole (QuestionCard.tsx); any other kind
+// stays where it's shown in full (an Obi-to-Obi request must show all it quotes before it's
+// answered). Only what needs the owner (as obid sorts it: needs_you, pending with it),
 // not put off, and not while its answer is on its way.
 const ON_HOME = new Set(['github', 'confirm', 'start', 'failed', 'failure']);
 // On Home, obid's words under the headline, unless they are the headline (a failure's)
@@ -334,12 +335,21 @@ export const homeAsk = (i: InboxItem): Ask => {
   const ask = itemAsk(i);
   return { ...ask, text: ask.headline === i.text ? '' : i.text };
 };
+// Another Oby's question, by its shape: all but obid's own words are what that Oby wrote
+const texts = (list: unknown) => (Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : []);
+export const questionOf = (i: InboxItem): PersonQuestion | undefined => {
+  const o = i.obi, words = o?.quoted?.text;
+  if (i.kind !== 'obiRequest' || o?.type !== 'question' || typeof words !== 'string' || typeof o.fromOwner !== 'string') return undefined;
+  return { id: i.id, from: o.fromOwner, words, choices: texts(o.quoted?.choices), repos: texts(o.repos) };
+};
 function asksOf(s: Live): Asking[] {
   const now = Date.now();
-  const open = s.inbox.filter((i) => ON_HOME.has(i.kind) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
+  const open = s.inbox.filter((i) => (ON_HOME.has(i.kind) || questionOf(i)) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
     && !(i.later && Date.parse(i.later) > now) && !s.answering.has(i.id));
   return [
     ...open.filter((i) => !i.offer).map((i) => {
+      const question = questionOf(i);
+      if (question) return { id: i.id, title: `Question from ${plainId(question.from)}`, question };
       // over it a GitHub item's own title, as on To do; obid's words under Oby's headline, or under
       // the title till one comes (clamped: they can be long)
       const g = i.github;
@@ -1144,6 +1154,12 @@ export async function changeCheck(repo: string, check: string | null) {
   } catch (e) {
     say(e);
   }
+}
+
+// The owner's answer to another Oby's question, or their Decline: signed by main, or obid refuses it,
+// and that refusal is the caller's to say, over the words it keeps (QuestionCard.tsx).
+export async function answerQuestion(id: string, words: string) {
+  take({ kind: 'inbox', item: await api.answer(id, { answer: words }) });
 }
 
 // an item with no task answered from Home's stack, its answer on its way (or not any more)

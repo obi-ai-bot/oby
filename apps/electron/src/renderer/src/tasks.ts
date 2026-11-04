@@ -51,8 +51,11 @@ export const useTasks = () => useSyncExternalStore(subscribe, () => tasks, () =>
 // a failure, answered as a task's decision is (answer); or work Oby offers to start, as OfferCard
 // shows it, with the conversation it was offered in (talk). Home's stack shows them with the tasks
 // that need you. url: its page on GitHub
+// another Oby's question only the owner can answer: who asks (their exact owner id), and what they
+// wrote, which is data (QuestionCard.tsx)
+export type PersonQuestion = { id: string; from: string; words: string; choices: string[]; repos: string[] };
 export type Asking = { id: string; title: string; who?: string; brand?: Brand; url?: string; talk?: string }
-  & ({ ask: Ask; offer?: undefined } | { offer: Offer; ask?: undefined });
+  & ({ ask: Ask; offer?: undefined; question?: undefined } | { offer: Offer; ask?: undefined; question?: undefined } | { question: PersonQuestion; ask?: undefined; offer?: undefined });
 let asks: Asking[] = [];
 export const asksWaiting = () => asks;
 // obid's jobs, in place of the mock's (live.ts), with what it asks and GitHub's work (error: why

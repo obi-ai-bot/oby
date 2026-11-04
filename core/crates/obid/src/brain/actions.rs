@@ -1184,9 +1184,10 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
         // Dismissing an event is one-off; starting its work (Look into it, Fix it) is the owner's
         // to confirm, as a GitHub offer's is (#1124).
         "pluginEvent" if words == crate::sphere::inbox::DISMISS => Owners::No,
-        // Saying no once to another Obi is one-off; accepting its request at all, remembering
-        // either way, or answering its question in words (they leave for the other Obi) aren't.
-        "obiRequest" if words == DECLINE || owner => Owners::No,
+        // Saying no once to another Obi's request is one-off; accepting it at all, remembering
+        // either way, or answering its question in words (they leave for the other Obi) aren't. Nor
+        // is saying no to its question: that goes back as the person's own (PEER-33).
+        "obiRequest" if owner || (words == DECLINE && !item.is_question()) => Owners::No,
         "obiRequest" => {
             let fixed = |option: &str, name: &str| {
                 Owners::Confirm(
@@ -1201,6 +1202,16 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
                 ACCEPT => fixed(ACCEPT, action::ACCEPT),
                 ACCEPT_REMEMBER => fixed(ACCEPT_REMEMBER, action::ACCEPT_REMEMBER),
                 DECLINE_REMEMBER => fixed(DECLINE_REMEMBER, action::DECLINE_REMEMBER),
+                DECLINE => Owners::Confirm(
+                    format!("{DECLINE}: {about}"),
+                    format!(
+                        "Oby's brain planned to say no to {about}. That goes back as yours, so it happens only if you confirm."
+                    ),
+                    on_item(
+                        action::ANSWER_QUESTION,
+                        serde_json::json!({"words": DECLINE}),
+                    ),
+                ),
                 _ => Owners::Confirm(
                     format!("Send an answer: {about}"),
                     format!(
@@ -2068,6 +2079,26 @@ mod tests {
         );
         assert_eq!(confirmed.action, action::ANSWER_QUESTION);
         assert_eq!(confirmed.payload, json!({"words": words}));
+    }
+
+    /// PEER-33: no turn says no to another Oby's question for its owner. It waits on their Confirm,
+    /// where a review request's no is still one-off. Their own word goes, as for any answer.
+    #[test]
+    fn peer_33_a_turn_says_no_to_a_question_only_on_a_confirm() {
+        use crate::sphere::inbox::DECLINE;
+        let mut question = item("obiRequest", "obi-2", "Question from Bob", &[]);
+        question.obi = Some(json!({"type": "question"}));
+        let Owners::Confirm(title, _, confirmed) = owners_call(&question, DECLINE, None, false)
+        else {
+            panic!("not a confirm")
+        };
+        assert_eq!(title, "Decline: Question from Bob");
+        assert_eq!(confirmed.action, action::ANSWER_QUESTION);
+        assert_eq!(confirmed.payload, json!({"words": DECLINE}));
+        assert_eq!(owners_call(&question, DECLINE, None, true), Owners::No);
+        let mut review = item("obiRequest", "obi-3", "Review request from Bob", &[]);
+        review.obi = Some(json!({"type": "review_request"}));
+        assert_eq!(owners_call(&review, DECLINE, None, false), Owners::No);
     }
 
     #[test]
