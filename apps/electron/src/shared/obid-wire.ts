@@ -76,7 +76,7 @@ export type Job = {
   title: string;
   // obid only: why its pull request couldn't be read last time (gh missing or signed out)
   pullRequestError?: string | null;
-  waiting?: { kind: string; text: string } | null;
+  waiting?: { kind: string; text: string; reserved?: string[] | null } | null;
   // The account-wide question is shown once. Its settled choice remains authoritative while
   // the job is stopped, so an ordinary interruption card must not ask the owner again.
   accountLimit?: { decision: string | null; state: 'pending' | 'resume' | 'stop' | 'move'; resetAt: string | null } | null;
@@ -193,6 +193,8 @@ export type Account = {
   // (docs/contracts/chatgpt-sign-in.md)
   login?: string;
   loginEmail?: string;
+  // on a ChatGPT login, once the owner answered: whether work nobody's watching may use it (left out: not asked yet, a no)
+  backgroundConsent?: boolean;
   // obid only: a sign-in of it is under way, its `label` not yet about that one
   signingIn?: boolean;
   // obid only: the model and efforts its jobs run on, each only when the owner chose it (#1574)

@@ -881,8 +881,7 @@ async fn run(shared: &Arc<Shared>, batch: Vec<Event>, ledger: Arc<Mutex<Ledger>>
         reply: "",
     };
     let Some((tool, account)) = super::talk::unattended(shared) else {
-        let tool = shared.config.conversation.agent;
-        watch.leave(shared, &failed(&shared.jobs.none_signed_in(tool)));
+        watch.leave(shared, &failed(&super::talk::why_unattended(shared)));
         return true;
     };
     let control = shared.turns.begin(&turn, CONVERSATION);

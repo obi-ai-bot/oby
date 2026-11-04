@@ -1,3 +1,4 @@
+import { waitSays } from './chatgpt';
 import { useEffect, useMemo } from 'react';
 import { ArrowUpRight, Check, X } from 'lucide-react';
 import Composer from './Composer';
@@ -62,7 +63,7 @@ export function WorkNow({ task, onClick }: { task: Task; onClick?: () => void })
   const under = !list?.some((t) => t.state === 'running');
   // a step its session doesn't hold is obid's own ("Trying again in 5 minutes (2 of 3)", RECOVERY-5)
   const own = j.step && j.step !== 'Working' && j.step !== 'Thinking' && !entries.some((e) => e.kind === 'tool' && e.summary === j.step);
-  const says = !steps.length && !list ? j.waiting?.text || j.step : own && j.step;
+  const says = !steps.length && !list ? waitSays(j) : own && j.step;
   const now = stage && task.status === 'running' ? <p className="lt-thought"><span className="sheen">{stage.title}</span></p>
     : task.status === 'running' && says ? <p className="lt-thought"><span className="sheen">{says}</span></p>
     : null;

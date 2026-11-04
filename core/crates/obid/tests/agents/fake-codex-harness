@@ -8,6 +8,7 @@
 // settings, and what its CODEX_HOME holds.
 // What a turn does comes from the last line of the owner's words:
 //   RELAY              a turn on a ChatGPT login: through obid's relay, as fake-codex's
+//   SLEEP              goes on until it's stopped
 //   HELLO              searches the web for "greetings" and streams "Hello there."
 //   REMEMBER           says "resume=<the thread it resumed, or none>"
 //   TOOLS              says "tools: <the oby tools, by name>"
@@ -180,12 +181,15 @@ async function runTurn(turnId, prompt) {
   if (auth.tokens && !("refresh_token" in auth.tokens))
     return complete(turnId, null, "failed", { message: "401 Unauthorized: Missing bearer or basic authentication in header" });
   cut = prompt.includes("Your run was cut");
+  // Oby's own turn, nobody watching: what supervise.txt in its room says, as fake-harness does.
+  if (prompt.includes("Oby here, not the owner") && existsSync("supervise.txt")) return act(turnId, readFileSync("supervise.txt", "utf8").trim());
   return act(turnId, prompt.split("\n").pop());
 }
 
 let cut = false;
 async function act(turnId, words) {
   const room = process.cwd();
+  if (words.startsWith("SLEEP")) return; // the turn goes on until it's stopped
   if (words.startsWith("WEB ")) {
     const search = { type: "webSearch", id: randomUUID(), query: "greetings" };
     event("item/started", turnId, { item: search });

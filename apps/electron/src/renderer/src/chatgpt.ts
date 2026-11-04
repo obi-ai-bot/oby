@@ -42,3 +42,15 @@ export const accountNow = async (id: string) => (await api.status()).accounts.fi
 export const welcomeDue = async (status: Pick<Status, 'accounts'> | null | undefined) =>
   !!status?.accounts.some((a) => a.login === 'chatgpt' && a.signedIn) && !(await api.chatgptSettings()).welcomed;
 export const welcomed = () => api.setChatgptWelcomed();
+
+// Work nobody's watching uses a ChatGPT login only with a yes (docs/contracts/chatgpt-sign-in.md,
+// CHATGPT-20): obid keeps and enforces it, and this asks once per account, a new one or one from
+// before there was a question. Oby's own words, Sangam's to change.
+// What a task waiting says: a wait for the owner's yes says it whole, its step, with what to do.
+export const waitSays = (j: { step?: string; waiting?: { text?: string; reserved?: string[] | null } | null }) =>
+  (j.waiting?.reserved?.length === 0 ? j.step : j.waiting?.text) || j.step;
+export const BACKGROUND_TITLE = 'Can work I run by myself use this plan?';
+export const backgroundWords = (name: string) => `Routines, my own reviews and anything else nobody’s watching would use the ChatGPT plan on ${name}. You can turn this off in Settings › Agents.`;
+export const BACKGROUND_LABEL = 'Work I run by myself can use this plan';
+export const backgroundDue = (status: Pick<Status, 'accounts'> | null | undefined) =>
+  status?.accounts.find((a) => a.login === 'chatgpt' && a.signedIn && a.backgroundConsent === undefined);

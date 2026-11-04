@@ -2152,9 +2152,9 @@ pub(crate) fn forget_login_secrets(login: &Path) {
 /// What a new session hears first when it takes over a job from `was`, which hit its usage limit
 /// (#871): where the work is, and what the earlier rounds reported, quoted, with every secret obid
 /// knows taken out.
-pub(super) fn handoff(job: &Job, was: &str) -> String {
+pub(super) fn handoff(job: &Job, was: &str, because: &str) -> String {
     let note = format!(
-        "{was} was working on this job and hit its account's usage limit. You're taking it over in the same worktree and branch: its commits are on the branch, and it may have left changes uncommitted. Check `git status` and `git log` before you go on."
+        "{was} was working on this job and {because}. You're taking it over in the same worktree and branch: its commits are on the branch, and it may have left changes uncommitted. Check `git status` and `git log` before you go on."
     );
     match job.summaries.as_ref().filter(|s| !s.is_empty()) {
         Some(summaries) => {
@@ -2168,6 +2168,39 @@ pub(super) fn handoff(job: &Job, was: &str) -> String {
         }
         None => note,
     }
+}
+
+/// What a [`carry_over`] says: to the agent taking over, on the job's list of moves, and in its changes.
+pub(super) struct Carried {
+    pub because: &'static str,
+    pub why: String,
+    pub by: String,
+}
+
+/// Puts a job that has run on `account`, to go on there in the same worktree and branch: a new
+/// session, told what it's taking over. [`Jobs::forget_moved_login`] is the rest of it.
+pub(super) fn carry_over(
+    job: &mut Job,
+    tool: Tool,
+    account: &crate::config::Account,
+    tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>,
+    from: &str,
+    said: Carried,
+) {
+    let to = format!("{} · {}", tool.name(), account.name);
+    let heard = handoff(job, from, said.because);
+    job.heard.insert(0, heard);
+    on_tool(job, tool);
+    job.account = account.id.clone();
+    job.session = None;
+    tune(job, tuning);
+    job.moves.push(crate::job::Move {
+        from: from.to_owned(),
+        to: to.clone(),
+        why: Some(said.why),
+        date: obi_protocol::time::now(),
+    });
+    job.changed(format!("Moved from {from} to {to} {}", said.by));
 }
 
 /// Removes `login/<name>`, each folder on the way looked at without following a link: a link (or

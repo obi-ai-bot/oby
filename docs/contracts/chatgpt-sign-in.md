@@ -9,6 +9,7 @@ OpenAI's words below were re-read from the pages themselves on 2026-11-03 (https
 - **Sangam's screen:** `SetupCard.tsx` (first run), `SettingsView.tsx` Agents, `Composer.tsx` usage panel, the limit card in `live.ts`. His ChatGPT row is at `Connectors.tsx:55`.
 - **Outcome:** someone with no Codex login connects their ChatGPT plan in the browser with one click and no code to type, and Codex jobs run on it. They can add several ChatGPT accounts.
 - **Status:** **Implemented against a stand-in OpenAI, not yet proven with a real sign-in.** The owner's decisions of 2026-11-02: obid may hold ChatGPT tokens, for ChatGPT only; conversations on any connected agent, yes; offer ChatGPT accounts at limits, yes; OpenAI's required words, no objection; unattended jobs, yes. A release leaves its way in out by default until "One real sign-in" below has run ("The gate", below). Its rule is in `AGENTS.md` (#1886).
+- **Background use:** implemented (CGP-3, CHATGPT-20 to 26). OpenAI's terms (https://openai.com/policies/sign-in-with-chatgpt-terms/) expect express consent for background use, so work nobody's watching uses a ChatGPT login only with the owner's yes, per account. **Proposed words, Sangam's to change.** The owner's decision of 2026-11-03 stands alongside it: logins keep moving past a limit by themselves inside a profile (ACC-6), the terms a recorded risk; this rule only says a move of background work doesn't land on a login with no yes.
 - **Scope:**
   - In: Codex accounts with their own folder, on the Electron app.
   - Phones: display only (their screens are later work; CHATGPT-18 proves the new keys decode).
@@ -38,7 +39,40 @@ OpenAI's words below were re-read from the pages themselves on 2026-11-03 (https
 - `signedIn` depends on the refresh token and a marker, never on the access token's expiry.
 - Switching kinds removes the old login only after the new one succeeds.
 - Nobody moves without the owner's click. A conversation the owner put on a ChatGPT account, or whose session is on one, stays on it: at its limit the turn says so and goes nowhere else, on that turn or the next. One on anything else never lands on one, however full it is. Auto picks one only on a Mac with no other login of any tool, whether or not that login can run now: a full one, or a Codex one whose token is ending, is still there. A turn nobody watches follows the same rule, though it won't run on Cursor. Offered at a limit (#1563), it moves only on the owner's click.
-- New jobs on Auto do route to a ChatGPT account, as unknown (`Jobs::pick`): it's in the owner's list.
+- New jobs on Auto do route to a ChatGPT account, as unknown (`Jobs::pick`): it's in the owner's list. Work nobody's watching only with the owner's yes (below).
+
+### Background use
+
+**What counts as background** (`Job::background`): anything with no person watching. A job the owner started and is following is foreground, for its whole life, its rounds and retries included.
+
+| Who starts it, or moves it | Which | With no yes |
+|---|---|---|
+| A routine's run (`Routine::job`) | Background | Skipped on Auto, to the next account. A routine naming the login waits on it. Nothing else can take it: the job waits and says why. A signed-out login isn't waited on: what's missing is its sign-in, and the job says that, as any job does. |
+| Oby's own review (`Jobs::reviewer`), and another Oby's | Background | Skipped; the task's `noReviewer` says why and the review starts on the yes. Another Oby's only ever runs on Claude Code. |
+| A turn nobody watches: the supervisor's, an event's (`talk::unattended`) | Background | Skipped, with nothing else: the owner is told why, and the yes only when it would help: beside another login on the Mac, a ChatGPT one isn't taken anyway. |
+| What such a turn starts: a restart, a split's parts. It starts nothing else (`UNWATCHED_START`) | Background | As a routine's. |
+| `POST /v1/jobs` with no app's signature: oby-mcp, a script, the Watch | Background: nobody says they're watching | As a routine's. |
+| `POST /v1/jobs` an app of the owner's signed | Foreground | Runs. |
+| A conversation's plan, signed or not (`POST /v1/plans`), and what its turn starts | Foreground | Runs. The app's unsigned sends (signed-words.md) can't be told from a script's, so it counts as the owner's. |
+| The owner's signed words to a job that ended, which start a follow-up, a Start or Confirm on a card, a GitHub item they start | Foreground: the follow-up of a routine's job too | Runs. Words no app signed keep the job's own class. |
+| Try again on a job (`continue_job`), signed or not | The job's own: it's the same job, so a routine's stays background | Waits, or goes to the next account, carrying on as a move does: a new session, told what it's taking over. |
+| A move past a limit (`limit_destinations`), today on the owner's click and by itself once ACC-6 lands, or `oby_change_job` | The job's own | A background job isn't offered the login, and the change is refused: it goes to the next account, or waits. A foreground job moves as it did. |
+| A background job about to start on a login, its yes taken back or never given (`Jobs::schedule`, under the jobs' lock) | Background | Goes to the next account of its tool, or waits. A review stays on its account, so it's stopped and started again elsewhere. |
+
+**No yes isn't an error.** The login is passed over as one with no room is. A job with nowhere else to go is `queued`, `waiting.kind` `limit` (a kind every app decodes), `reserved` empty, and its `step` says why; it takes no slot, a routine's next run is skipped as "still going", and its count of failures doesn't move. It isn't using the account, so it doesn't keep the owner from signing it in or removing it (409 `busy` is for what's using it). Removed, with nothing else to take the job, it stops and says so. The phones don't offer Start now on it: only the Mac can say yes. **Existing accounts start with no yes**, as a marker from before this has none: nothing fails on upgrade, and they're asked.
+
+**Where it's asked:** once per account, right after sign-in and after OpenAI's welcome, or at the next launch for an account signed in before there was a question (`ChatGptWelcome`). In Oby's first person:
+
+| Where | Words |
+|---|---|
+| The question | **Can work I run by myself use this plan?** *Routines, my own reviews and anything else nobody's watching would use the ChatGPT plan on {email}. You can turn this off in Settings › Agents.* **Not now** · **Yes, it can** |
+| Settings › Agents, on that account | **Work I run by myself can use this plan**, a switch. Turning it on asks the same question; turning it off is at once. |
+| A job waiting | *Waiting for your OK for work I run by myself to use the ChatGPT plan on {name}: you can allow it on your Mac, in Settings › Agents.* |
+| A job stopped by the switch | *You turned off work I run by myself on this ChatGPT plan, so I stopped.* |
+
+**How it's granted:** only **Yes, it can**, clicked in the owner's own app, signed by the device's key (signed-words.md, WORDS-13). The token alone, a job, an agent, the brain and a phone (the route is off the gateway) can't say yes. A no needs no signature: it takes nothing away from the owner, and a key that can't sign must never keep them from withdrawing.
+
+**Withdrawing** takes effect now: background jobs running on the login stop and say why, a turn nobody watches ends and what it hadn't done comes again, a review starts again elsewhere (or its task says what it waits for), and what's queued moves or waits. A review its account's limit stopped stays that limit's question; Resume on it starts it again elsewhere. What the owner started goes on. A job that had run and moves goes on as a move past a limit does: a new session, told what it's taking over, with nothing of the old account's login left. The answer goes with the login: removing the account, or a device login replacing it, forgets it, so whoever signs in next is asked. A sign-in again by the same person keeps it; another person's is refused (CHATGPT-5).
 
 ### Words
 
@@ -99,6 +133,7 @@ All add-only.
 - `DELETE /v1/accounts/{id}` stays 204, and answers 200 `{"revoked":false}` when revocation wasn't confirmed.
 - No new reason word. Callback failures use `label` with `signedIn:false`, and the app's wait ends when the tried account stops saying `signingIn`.
 - `GET` and `PUT /v1/settings/chatgpt` `{"welcomed": bool}`, off the gateway, for the welcome shown once.
+- `AccountJson` gains optional `backgroundConsent: bool` on a ChatGPT login once the owner answered; left out until then. `POST /v1/accounts/{id}/background` `{"given": bool}` answers, off the gateway; `true` needs `X-Oby-Words`. Kept in `settings.json` (`backgroundConsent`, by account id: `given`, `at`, `device`).
 - `POST /v1/agent/chatgpt/{job}/responses`, `GET /v1/agent/chatgpt/{job}/models`: the relay, with the job's broker or a conversation turn's token only.
 - **Storage:** one vault entry per account, `oby.chatgpt.<id>`, holding access and refresh tokens, scopes, expiry, `earliest_refresh_at`, client id, `sub`, email, host id and replaced access tokens. A non-secret marker in the account's folder (`chatgpt.json`) holds email, whether it's signed in, plan use, expiry and refresh age; `has_login`, `signed_in`, `login_problem` and `login_note` branch on it. One `ext_agent_host_id`, `urn:uuid:<v4>`, per Mac (`home/chatgpt-host`). Removal: revoke, delete the entry, `retire`. At start, obid revokes and deletes an entry with no account only when the owner removed that account; absence alone proves nothing.
 - **Models:** the picker stays static. At launch obid checks the chosen model against the account's cached `/v1/models`. A null, absent or unlisted model takes the first `visibility=="list"` slug, and the job's own `model` and its transcript say so. A list that can't be had, or an empty one, changes nothing.
@@ -127,6 +162,13 @@ All add-only.
 - **CHATGPT-17, alerts:** A plan token of any generation in anything an alert is built from, plain or encoded, whole or longer than the alert's cut, reaches no phone, not a piece of it, from any builder. The alert still goes, saying `[vault: oby.chatgpt.<id>]`. With the vault unreadable no alert goes, and the next look after it's fixed says it.
 - **CHATGPT-18:** Older phones decode the new keys, with no new enum value.
 - **CHATGPT-19:** Stopping a job mid-refresh and a failed vault write leave the account signed in. So does a lost answer OpenAI hadn't acted on; one it had comes back `refresh_token_reused` and ends in sign in needed.
+- **CHATGPT-20:** With no yes, a routine on Auto passes the login by for the next account, even when it's the owner's default; with nothing else it waits and says why, isn't a failure, sends OpenAI nothing, and starts on the yes. A job with no app's signature, and a routine naming the login, wait too. A turn nobody watches doesn't take it, even with nothing else on the Mac: the owner hears why. Oby's review passes it over and says why (`chatgpt_20_a_review_waits_for_the_yes`).
+- **CHATGPT-21:** A yes is for one account, and goes with the login.
+- **CHATGPT-22:** What the owner started needs no yes, on Auto too, nor does their signed follow-up of a routine's job.
+- **CHATGPT-23:** Taking the yes back stops work nobody's watching on the login now, saying why; the next waits; what the owner started goes on. It takes no signature. A turn nobody watches ends. A review starts again elsewhere with no error (`chatgpt_23_a_review_stopped_by_the_no_starts_again_elsewhere`), or its task says what it waits for; one resumed after the no doesn't run there. A job already queued waits; one that had run and goes elsewhere moves with its handover.
+- **CHATGPT-24:** The token alone never says yes, nor a signature over another request or one used already; the gateway doesn't have the route; an account that isn't a ChatGPT login has nothing to answer.
+- **CHATGPT-25:** A move past a limit doesn't offer a background job a login with no yes; once there's one it does. The owner's own job is offered it as before (CHATGPT-13).
+- **CHATGPT-26:** An account from before there was a question starts with no yes and is asked once, in the app; a no isn't asked again; nothing that ran before fails.
 
 ## Spikes
 
@@ -178,3 +220,4 @@ Scenarios (`apps/electron/src/renderer/src/test/chatgptGate.test.tsx`):
 2. A job over 70 minutes that uses Oby's MCP tools.
 3. Remove the account and see it gone in ChatGPT settings.
 4. An existing device-login account unchanged after upgrade.
+5. A routine on Auto skips the account until you say yes: with only a ChatGPT account, its job waits and says why, and starts when you click **Yes, it can**. Turn the switch off while one runs: it stops and says why.

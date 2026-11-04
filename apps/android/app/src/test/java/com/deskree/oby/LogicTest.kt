@@ -55,6 +55,15 @@ class LogicTest {
         assertEquals("upcoming", j.stages.single().stateName)
     }
 
+    @Test fun aTaskWaitingForTheYesOffersNoStartNow() {
+        fun waiting(json: String) = job("""{"id":"j1","created":"2026-10-09T21:43:30.123Z","status":"queued","waiting":$json}""")
+        val yes = waiting("""{"kind":"limit","text":"your OK","reserved":[]}""")
+        assertTrue(yes.waitsToStart)
+        assertFalse(yes.canStartNow)
+        assertTrue(waiting("""{"kind":"limit","text":"room","reserved":["a"]}""").canStartNow)
+        assertTrue(waiting("""{"kind":"schedule","text":"tomorrow"}""").canStartNow)
+    }
+
     @Test fun whatNeedsYou() {
         val publish = job("""{"id":"p","created":"2026-10-09T21:43:30Z","status":"done","base":"dev","commits":2,"kind":"fix","canPublish":true}""")
         assertTrue(publish.canPublish)

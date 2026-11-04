@@ -182,6 +182,8 @@ export const api = {
   signInChatGpt: (a: string) => call<SignIn>('GET', `/v1/accounts/${id(a)}/sign-in?with=chatgpt`),
   chatgptSettings: () => call<{ welcomed: boolean }>('GET', '/v1/settings/chatgpt'),
   setChatgptWelcomed: () => call<{ welcomed: boolean }>('PUT', '/v1/settings/chatgpt', { welcomed: true }),
+  // whether work nobody's watching may use this ChatGPT login: main signs the yes on the owner's click
+  setBackgroundConsent: (a: string, given: boolean) => call<Account>('POST', `/v1/accounts/${id(a)}/background`, { given }),
   signInCode: (a: string, code: string) => call<Account>('POST', `/v1/accounts/${id(a)}/sign-in`, { code }),
   endSignIn: (a: string) => call<null>('DELETE', `/v1/accounts/${id(a)}/sign-in`),
   // obid only: GitHub's sign-in (gh's device flow), and Tetrix's

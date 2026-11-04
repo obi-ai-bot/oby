@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { ANOTHER_ROUND, TRY_AGAIN, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
+import { ANOTHER_ROUND, BACKGROUND_YES, DECISIONS, TRY_AGAIN, WITHIN_MS, owners, wordsOf } from '../../../shared/words';
 import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../../main/words';
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
@@ -28,6 +28,22 @@ describe('signed words', () => {
       ['POST', '/v1/inbox/i1/answer', { later: '2026-10-30T10:00:00Z' }], ['POST', '/v1/jobs/j1/messages', { text: ['not text'] }],
       ['POST', '/v1/jobs/j1/messages', 'raw'],
     ] as const) expect(wordsOf(method, path, body), `${method} ${path} ${JSON.stringify(body)}`).toBeNull();
+  });
+
+  it('WORDS-13: the yes to work nobody’s watching on a ChatGPT login signs only by its own button’s label, in exactly its shape', () => {
+    const path = '/v1/accounts/a1/background';
+    expect(wordsOf('POST', path, { given: true })).toEqual([BACKGROUND_YES]);
+    expect(owners('POST', path, { given: true }, [BACKGROUND_YES], [])).toEqual([0]);
+    // nothing held, a card's words, or a permission's Allow don't stand for it
+    expect(owners('POST', path, { given: true }, [], [])).toBeNull();
+    expect(owners('POST', path, { given: true }, ['Routines, my own reviews'], [])).toBeNull();
+    expect(owners('POST', path, { given: true }, [DECISIONS.allow], [])).toBeNull();
+    // a no goes unsigned, and nothing else goes along with a yes
+    for (const body of [{ given: false }, { given: true, account: 'a2' }, { given: 'true' }, {}]) {
+      expect(wordsOf('POST', path, body), JSON.stringify(body)).toBeNull();
+    }
+    expect(wordsOf('PUT', path, { given: true })).toBeNull();
+    expect(wordsOf('POST', '/v1/accounts/a1/reserve', { given: true })).toBeNull();
   });
 
   it('WORDS-10: the owner’s say in the Sphere’s room signs in exactly its shape, its words held', () => {

@@ -150,6 +150,12 @@ impl Waiting {
     pub fn for_room(&self) -> bool {
         self.reserved.is_some()
     }
+
+    /// Whether it waits for the owner's yes to a ChatGPT login (CHATGPT-20): as for room, with no
+    /// reserve to lift.
+    pub fn for_consent(&self) -> bool {
+        self.reserved.as_ref().is_some_and(Vec::is_empty)
+    }
 }
 
 /// On a review job another Obi asked for: the exchange it answers (runner-api.md, "obid only:
@@ -646,6 +652,10 @@ pub struct Job {
     /// The routine whose run started it (crate::routines), or none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<RoutineMark>,
+    /// Nobody's watching it, though it's neither a routine's nor a review ([`Job::background`]):
+    /// no app of the owner's signed `POST /v1/jobs`, or a turn nobody watches started it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
     /// The conversation that started it had read something it didn't write (a file, a command's
     /// output, the web, an attachment): it runs in the owner's mode, Bypass too (the owner's decision
     /// of 2026-10-27), inside Oby's box, and publishes by itself as any job does (the owner's
@@ -1050,6 +1060,7 @@ impl Job {
             usage_seen: None,
             window_share: None,
             routine: None,
+            unattended: false,
             untrusted: false,
             unsigned: false,
             memory_from_others: false,
@@ -1119,6 +1130,13 @@ impl Job {
     /// runs its own way (runner-api.md, "obid only: Obi-to-Obi review jobs").
     pub fn read_only(&self) -> bool {
         READ_ONLY.contains(&self.kind.as_str()) && self.obi.is_none()
+    }
+
+    /// Work nobody's watching (CHATGPT-20): a routine's run, a review Oby runs by itself, or
+    /// [`Job::unattended`]. It takes a ChatGPT login only with the owner's yes
+    /// ([`crate::jobs::Jobs::takes_background`]). What the owner started stays theirs.
+    pub fn background(&self) -> bool {
+        self.unattended || self.routine.is_some() || self.review_of.is_some() || self.obi.is_some()
     }
 
     pub fn max_rounds(&self) -> u32 {

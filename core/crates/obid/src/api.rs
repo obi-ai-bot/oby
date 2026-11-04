@@ -136,6 +136,10 @@ pub fn router(shared: Arc<Shared>) -> Router {
             axum::routing::patch(crate::accounts::change).delete(crate::accounts::remove),
         )
         .route("/v1/accounts/{id}/reserve", post(crate::accounts::reserve))
+        .route(
+            "/v1/accounts/{id}/background",
+            post(crate::accounts::background),
+        )
         .route("/v1/github", get(crate::github_login::get))
         .route("/v1/repos", get(crate::repos::list))
         .route("/v1/repos/check", post(crate::repos::change_check))
@@ -710,6 +714,10 @@ pub struct AccountJson {
     /// The email its ChatGPT login said, for display: `sub` is the identity, never this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_email: Option<String>,
+    /// On a ChatGPT login, once the owner answered: whether work nobody's watching may use it
+    /// (CHATGPT-20). Left out until then, and it's a no; left out on any other login.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_consent: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -852,6 +860,12 @@ pub fn account_json(
         identity: shared.config.agents.identity(&account.id),
         signing_in: shared.sign_ins.under_way(&account.id),
         login: chatgpt.is_some().then_some("chatgpt"),
+        background_consent: chatgpt.as_ref().and_then(|_| {
+            crate::settings::load(&shared.config.home)
+                .background_consent
+                .get(&account.id)
+                .map(|answer| answer.given)
+        }),
         login_email: chatgpt.and_then(|marker| marker.email),
     }
 }

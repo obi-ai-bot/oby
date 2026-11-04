@@ -18,6 +18,9 @@
 //   9. A task stopped at its check's limit goes out by hand, on the owner's own click: its page
 //      shows obid's sentence first, main's own dialog asks with it, and exactly that is pushed
 //      (PUBLISHING-14). A script's call with no click, or with a sentence obid doesn't say, asks nothing.
+//  10. The yes to work nobody's watching on a ChatGPT login, on a stand-in account with no sign-in:
+//      the page's script alone gets 403; a real click on its button comes back 200, signed by this
+//      Mac's key (docs/contracts/chatgpt-sign-in.md, CHATGPT-24).
 // Screenshots of each step go to OBY_CORE_SHOTS (a folder), when it's set.
 // Run: cargo build -p obid (or OBY_TEST_OBID=<obid>), npm run build, then npm run test:core.
 import assert from 'node:assert/strict';
@@ -48,14 +51,17 @@ async function freePort() {
 // A scratch obid: one stand-in Claude account, the fixture repository with its check
 async function startObid() {
   const root = scratch, home = join(root, 'home');
-  for (const dir of ['home/accounts/stub', 'env-home', 'tmp', 'electron-data']) mkdirSync(join(root, dir), { recursive: true });
+  for (const dir of ['home/accounts/stub', 'home/accounts/plan', 'env-home', 'tmp', 'electron-data']) mkdirSync(join(root, dir), { recursive: true });
   const fixture = buildFixture(join(root, 'fixture'));
   json(join(home, 'accounts/stub/.credentials.json'), { claudeAiOauth: { accessToken: 'fake-claude', expiresAt: (Math.floor(Date.now() / 1000) + 86400) * 1000 } });
   const port = await freePort();
   json(join(root, 'config.json'), {
     listen: `127.0.0.1:${port}`, home, owner: 'wellington', telemetry: false,
     claudeKeychain: false, cursorKeychain: false, allowFileRemotes: true,
-    agents: { claude: { bin: join(agents, 'fake-harness-jobs'), accounts: [{ id: 'stub', name: 'Stub', configDir: join(home, 'accounts/stub') }] } },
+    agents: {
+      claude: { bin: join(agents, 'fake-harness-jobs'), accounts: [{ id: 'stub', name: 'Stub', configDir: join(home, 'accounts/stub') }] },
+      codex: { bin: join(agents, 'fake-codex'), accounts: [{ id: 'plan', name: 'Plan', configDir: join(home, 'accounts/plan') }] },
+    },
     repos: [{ repo: 'obi-e2e/fixture-app', remote: fixture.remoteUrl, defaultBranch: 'main', check: 'node --test', pullRequests: true }],
   });
   const logs = [];
@@ -294,6 +300,27 @@ async function main() {
   });
   assert.equal(sent.outgoing.find((o) => o.action === 'push').branch, stoppedJob.branch);
   await shot(page, '9-published');
+
+  // 10. The yes (CHATGPT-24). The account is a stand-in: its marker says it's signed in with ChatGPT.
+  const seconds = Math.floor(Date.now() / 1000);
+  json(join(s.home, 'accounts/plan/chatgpt.json'), { email: 'person@example.com', signed: true, planUse: true, expiresAt: seconds + 3600, refreshedAt: seconds });
+  const background = '/v1/accounts/plan/background';
+  const plan = async () => (await s.call('GET', '/v1/status')).accounts.find((a) => a.id === 'plan');
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+  await page.getByRole('dialog', { name: 'You’re using your ChatGPT plan' }).getByRole('button', { name: 'Got it' }).click();
+  const question = page.getByRole('dialog', { name: 'Can work I run by myself use this plan?' });
+  await question.waitFor();
+  const alone = await page.evaluate((path) => window.app.obid.call('POST', path, { given: true }), background);
+  assert.equal(alone.status, 403, `a script's yes, no click: ${alone.text}`);
+  assert.equal((await plan()).backgroundConsent, undefined, 'it’s still asked');
+  await shot(page, '10-the-question');
+  await question.getByRole('button', { name: 'Yes, it can' }).click();
+  await until('the yes kept', async () => (await plan()).backgroundConsent === true);
+  const given = JSON.parse(readFileSync(join(s.home, 'settings.json'), 'utf8')).backgroundConsent.plan;
+  assert.equal(given.given, true);
+  assert.ok(given.device, `signed by this Mac’s device: ${JSON.stringify(given)}`);
+  await question.waitFor({ state: 'detached' });
 
   assert.deepEqual(errors, [], 'no page errors');
   console.log('core: Home → task → its conversation → follow-ups, the owner’s words signed: all passed');

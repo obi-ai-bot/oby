@@ -28,6 +28,8 @@ pub struct Control {
     signed: AtomicBool,
     /// When it began: an inbox item made since is one the owner hasn't seen yet.
     pub begun: i64,
+    /// A turn nobody watches: the account it runs on ([`Turns::cancel_unattended_on`]).
+    unattended_on: std::sync::OnceLock<String>,
 }
 
 impl Control {
@@ -47,6 +49,11 @@ impl Control {
     /// Whether the owner's words this turn answers were signed by an app of theirs.
     pub fn signed(&self) -> bool {
         self.signed.load(Ordering::SeqCst)
+    }
+
+    /// Nobody watches this turn, and it runs on `account`.
+    pub fn unattended_on(&self, account: &str) {
+        let _ = self.unattended_on.set(account.to_owned());
     }
 
     pub fn set_signed(&self, signed: bool) {
@@ -159,6 +166,7 @@ impl Turns {
             cancelled: AtomicBool::new(false),
             signed: AtomicBool::new(false),
             begun: obi_protocol::time::now(),
+            unattended_on: std::sync::OnceLock::new(),
         });
         let mut underway = self.lock();
         for earlier in underway.iter().filter(|c| c.conversation == conversation) {
@@ -192,6 +200,7 @@ impl Turns {
             cancelled: AtomicBool::new(false),
             signed: AtomicBool::new(false),
             begun: obi_protocol::time::now(),
+            unattended_on: std::sync::OnceLock::new(),
         });
         underway.push(control.clone());
         Some(control)
@@ -213,6 +222,18 @@ impl Turns {
         self.waiting()
             .retain(|(c, _)| conversation.is_some_and(|id| c != id));
         self.mark(conversation, |c| c.cancelled.store(true, Ordering::SeqCst))
+    }
+
+    /// Ends the turns nobody watches on `account`: the owner took back their yes for it
+    /// (CHATGPT-23). They end as a user's words cut them: what they hadn't done comes again.
+    pub fn cancel_unattended_on(&self, account: &str) {
+        for control in self
+            .lock()
+            .iter()
+            .filter(|c| c.unattended_on.get().is_some_and(|on| on == account))
+        {
+            control.cancelled.store(true, Ordering::SeqCst);
+        }
     }
 
     fn mark(&self, conversation: Option<&str>, mark: impl Fn(&Control)) -> bool {

@@ -257,6 +257,8 @@ pub fn follow_up(
     let task = format!("{}\n\n{}", job.request, quoted(words, nonce)?);
     let mut new = crate::jobs::follow_up(job, &task);
     new.request = Some(job.request.clone());
+    // Oby's own step, with nobody watching (CHATGPT-20).
+    new.unattended = true;
     if let (Some(n), Some(title)) = (part, new.title.as_deref()) {
         let suffix = format!(" · part {n}");
         let room = 60usize.saturating_sub(suffix.chars().count());
@@ -435,7 +437,6 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
         return true;
     }
     let Some((tool, account)) = super::talk::unattended(shared) else {
-        let tool = shared.config.conversation.agent;
         ask_owner(
             shared,
             job,
@@ -444,7 +445,7 @@ async fn supervise(shared: &Arc<Shared>, job: &Job) -> bool {
             taken,
             &format!(
                 "Oby can't decide by itself here: {}.",
-                shared.jobs.none_signed_in(tool).trim_end_matches('.')
+                super::talk::why_unattended(shared).trim_end_matches('.')
             ),
         );
         return true;

@@ -127,6 +127,11 @@ fn vault(obid: &Obid) -> PathBuf {
     obid.home.join("vault/secrets.json")
 }
 
+/// Only ChatGPT logins can run here: Claude Code's stand-in has no login.
+fn world_of_chatgpt_alone(name: &str) -> World {
+    world(name)
+}
+
 /// CHATGPT-1: with no Codex login, one click and consent: signed in, no `auth.json`, and the tokens
 /// only in the vault. The seeded login's own account says `ownLogin`, so the app adds a new one.
 #[test]
@@ -693,25 +698,29 @@ fn chatgpt_11_every_token_is_taken_out_of_answers_also_after_a_restart() {
 fn job(world: &World, account: &str, task: &str) -> String {
     // (a sign-in that just took still holds the account for a moment)
     let posted = within(10, "the job was taken", || {
-        let posted = call(
+        let posted = call_typed(
             &world.obid,
             "POST",
             "/v1/jobs",
-            Some(
-                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "check": "true",
-                "agent": "codex", "account": account, "task": task}}),
-            ),
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "check": "true",
+            "agent": "codex", "account": account, "task": task}}),
         );
         (posted.status != 422).then_some(posted)
     });
     assert_eq!(posted.status, 201, "{}", posted.text);
+    // (the owner's own never waits for a yes: `ended` would wait with it)
+    assert!(posted.body["waiting"].is_null(), "{}", posted.text);
     posted.body["id"].as_str().unwrap().to_owned()
 }
 
+/// The job once it ended. Bounded: a job that never ends fails its test, and doesn't hang it.
 fn ended(world: &World, id: &str) -> Value {
-    let answer = call(&world.obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
-    assert_eq!(answer.status, 200, "{}", answer.text);
-    answer.body
+    within(180, "the job ended", || {
+        let answer = call(&world.obid, "GET", &format!("/v1/jobs/{id}"), None);
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        (!["queued", "running"].contains(&answer.body["status"].as_str().unwrap_or_default()))
+            .then_some(answer.body)
+    })
 }
 
 fn posts(world: &World) -> usize {
@@ -1228,14 +1237,12 @@ fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itsel
     let id = new_account(&world.obid);
     signed_in(&world, &id);
     // (a week's limit: a five-hour one waits for its reset, with no question: LIMITS-5)
-    let posted = call(
+    let posted = call_typed(
         &world.obid,
         "POST",
         "/v1/jobs",
-        Some(
-            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
-            "task": "LIMITED WEEK: 86400", "agent": "claude", "account": "stub"}}),
-        ),
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
+        "task": "LIMITED WEEK: 86400", "agent": "claude", "account": "stub"}}),
     );
     assert_eq!(posted.status, 201, "{}", posted.text);
     let job = posted.body["id"].as_str().unwrap().to_owned();
@@ -1257,6 +1264,684 @@ fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itsel
     assert_eq!(
         stays["account"], "stub",
         "it moves only on the owner's click"
+    );
+    assert_eq!(posts(&world), 0);
+}
+
+/// The owner's click in an app of theirs: signed by the device's key.
+fn allow(world: &World, id: &str) -> Answer {
+    call_typed(
+        &world.obid,
+        "POST",
+        &format!("/v1/accounts/{id}/background"),
+        &json!({"given": true}),
+    )
+}
+
+/// A routine on `agent` and `account`, made paused-free, its id.
+fn routine(world: &World, name: &str, task: &str, agent: &str, account: &str) -> String {
+    let made = call(
+        &world.obid,
+        "POST",
+        "/v1/routines",
+        Some(
+            &json!({"name": name, "repo": "obi-e2e/fixture-app", "kind": "research",
+            "task": task, "agent": agent, "account": account,
+            "schedule": {"every": "weekdays", "at": "09:00"},
+            "zone": "America/Sao_Paulo", "createdBy": "mac"}),
+        ),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    made.body["id"].as_str().unwrap().to_owned()
+}
+
+/// Runs the routine now: its job's id.
+fn run_routine(world: &World, id: &str) -> String {
+    let ran = within(10, "the routine ran", || {
+        let ran = call(&world.obid, "POST", &format!("/v1/routines/{id}/run"), None);
+        ran.body["job"]["id"].is_string().then_some(ran)
+    });
+    assert_eq!(ran.status, 201, "{}", ran.text);
+    ran.body["job"]["id"].as_str().unwrap().to_owned()
+}
+
+fn job_now(world: &World, id: &str) -> Value {
+    call(&world.obid, "GET", &format!("/v1/jobs/{id}"), None).body
+}
+
+/// A second way in beside a ChatGPT login: Claude Code's stand-in, signed in.
+fn world_with_claude(name: &str) -> World {
+    let folder = Folder::new(name);
+    let openai = OpenAi::start();
+    let config = configured(&folder.0);
+    let claude = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join(".credentials.json"),
+        json!({"claudeAiOauth": {"accessToken": "fake-claude",
+            "expiresAt": (obi_protocol::time::now() + 86400) * 1000}})
+        .to_string(),
+    )
+    .unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    World {
+        _folder: folder,
+        openai,
+        obid,
+    }
+}
+
+/// CHATGPT-20: with no yes, a routine on Auto passes the login by for the next account, even when
+/// the owner's default is that login. With nothing else it waits and says why: not failed, nothing
+/// sent to OpenAI, and on the owner's yes it starts there.
+#[test]
+fn chatgpt_20_no_consent_no_background_use() {
+    let world = world_with_claude("chatgpt-20-skips");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let set = call(
+        &world.obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"defaultAccount": id})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let auto = routine(&world, "On Auto", "Nothing to do", "auto", "auto");
+    let job = run_routine(&world, &auto);
+    let ran = job_now(&world, &job);
+    assert_eq!(ran["account"], "stub", "the next account: {ran}");
+    assert!(ran["waiting"].is_null(), "{ran}");
+    ended(&world, &job);
+    assert_eq!(posts(&world), 0);
+
+    let world = world_of_chatgpt_alone("chatgpt-20-waits");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let auto = routine(&world, "On Auto", "RELAY", "auto", "auto");
+    let job = run_routine(&world, &auto);
+    let waits = within(10, "it says why", || {
+        let now = job_now(&world, &job);
+        now["waiting"]["reserved"].is_array().then_some(now)
+    });
+    assert_eq!(waits["status"], "queued", "{waits}");
+    assert_eq!(waits["waiting"]["kind"], "limit", "a kind the apps know");
+    let step = waits["step"].as_str().unwrap();
+    assert!(step.contains("work I run by myself"), "{step}");
+    let on_routine = call(&world.obid, "GET", &format!("/v1/routines/{auto}"), None).body;
+    assert_eq!(on_routine["failuresInARow"], 0, "{on_routine}");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(job_now(&world, &job)["status"], "queued");
+    assert_eq!(posts(&world), 0, "nothing went to OpenAI");
+
+    let start = call(&world.obid, "POST", &format!("/v1/jobs/{job}/start"), None);
+    assert_ne!(start.status, 200, "Start now can't say yes: {}", start.text);
+
+    let answer = allow(&world, &id);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert_eq!(answer.body["backgroundConsent"], true);
+    let done = ended(&world, &job);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["account"], id.as_str());
+    assert!(posts(&world) > 0, "it ran on the plan");
+}
+
+/// CHATGPT-20: work with no signature on it is nobody's to watch, and a routine naming the login
+/// waits on it, never going elsewhere.
+#[test]
+fn chatgpt_20_unsigned_jobs_and_named_routines_wait_too() {
+    let world = world_with_claude("chatgpt-20-unsigned");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let posted = within(10, "the job was taken", || {
+        let posted = call(
+            &world.obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
+                "agent": "codex", "task": "RELAY"}}),
+            ),
+        );
+        (posted.status != 422).then_some(posted)
+    });
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let unsigned = posted.body["id"].as_str().unwrap().to_owned();
+    assert!(job_now(&world, &unsigned)["waiting"]["reserved"].is_array());
+
+    let named = routine(&world, "Named", "RELAY", "codex", &id);
+    let job = run_routine(&world, &named);
+    let waits = job_now(&world, &job);
+    assert!(waits["waiting"]["reserved"].is_array(), "{waits}");
+    assert_eq!(waits["account"], id.as_str());
+    assert_eq!(posts(&world), 0);
+    assert_eq!(allow(&world, &id).status, 200);
+    let done = ended(&world, &job);
+    assert_eq!(done["account"], id.as_str(), "{done}");
+    assert_eq!(done["status"], "done", "{done}");
+}
+
+/// CHATGPT-21: a yes is for one account, and it goes with the login.
+#[test]
+fn chatgpt_21_consent_is_per_account() {
+    let world = world_of_chatgpt_alone("chatgpt-21");
+    let (one, two) = (new_account(&world.obid), new_account(&world.obid));
+    signed_in(&world, &one);
+    let two_says = signed_in(&world, &two);
+    assert!(two_says.get("backgroundConsent").is_none(), "{two_says}");
+    assert_eq!(allow(&world, &one).status, 200);
+    let says = |id: &str| account(&world.obid, id).unwrap();
+    assert_eq!(says(&one)["backgroundConsent"], true);
+    assert!(says(&two).get("backgroundConsent").is_none());
+
+    let on_two = run_routine(&world, &routine(&world, "Two", "RELAY", "codex", &two));
+    assert!(job_now(&world, &on_two)["waiting"]["reserved"].is_array());
+    assert_eq!(posts(&world), 0);
+    let on_one = run_routine(&world, &routine(&world, "One", "RELAY", "codex", &one));
+    assert_eq!(ended(&world, &on_one)["status"], "done");
+    assert!(job_now(&world, &on_two)["waiting"]["reserved"].is_array());
+
+    let stop = call(
+        &world.obid,
+        "POST",
+        &format!("/v1/jobs/{on_two}/stop"),
+        None,
+    );
+    assert_eq!(stop.status, 200, "{}", stop.text);
+    let gone = call(&world.obid, "DELETE", &format!("/v1/accounts/{one}"), None);
+    assert!(gone.status < 300, "{}", gone.text);
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(world.obid.home.join("settings.json")).unwrap())
+            .unwrap();
+    assert!(kept.get("backgroundConsent").is_none(), "{kept}");
+}
+
+/// CHATGPT-22: what the owner started needs no yes, on Auto too, nor does their signed follow-up
+/// of a routine's job.
+#[test]
+fn chatgpt_22_foreground_needs_no_consent() {
+    let world = world_of_chatgpt_alone("chatgpt-22");
+    let id = new_account(&world.obid);
+    let a = signed_in(&world, &id);
+    assert!(a.get("backgroundConsent").is_none(), "{a}");
+    let posted = within(10, "the job was taken", || {
+        let posted = call_typed(
+            &world.obid,
+            "POST",
+            "/v1/jobs",
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "task": "RELAY"}}),
+        );
+        (posted.status != 422).then_some(posted)
+    });
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let mine = posted.body["id"].as_str().unwrap().to_owned();
+    assert!(
+        job_now(&world, &mine)["waiting"].is_null(),
+        "it doesn't wait"
+    );
+    let done = ended(&world, &mine);
+    assert_eq!(
+        (&done["status"], &done["account"]),
+        (&json!("done"), &json!(id)),
+        "{done}"
+    );
+    assert!(posts(&world) > 0);
+
+    let job = run_routine(&world, &routine(&world, "Mine next", "RELAY", "codex", &id));
+    assert!(job_now(&world, &job)["waiting"]["reserved"].is_array());
+    assert_eq!(
+        call(&world.obid, "POST", &format!("/v1/jobs/{job}/stop"), None).status,
+        200
+    );
+    let next = call_typed(
+        &world.obid,
+        "POST",
+        &format!("/v1/jobs/{job}/messages"),
+        &json!({"text": "RELAY again"}),
+    );
+    assert_eq!(next.status, 201, "{}", next.text);
+    let followed = next.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(ended(&world, &followed)["status"], "done");
+}
+
+/// CHATGPT-23: taking the yes back stops work nobody's watching on it now, with why, and what comes
+/// next waits. What the owner started goes on.
+#[test]
+fn chatgpt_23_withdrawn_consent_stops_it() {
+    let world = world_of_chatgpt_alone("chatgpt-23");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    assert_eq!(allow(&world, &id).status, 200);
+    let name = routine(&world, "Running", "SLEEP", "codex", &id);
+    let running = run_routine(&world, &name);
+    within(30, "it runs", || {
+        (job_now(&world, &running)["status"] == "running").then_some(())
+    });
+    let mine = job(&world, &id, "SLEEP");
+    within(30, "the owner's runs", || {
+        (job_now(&world, &mine)["status"] == "running").then_some(())
+    });
+
+    // A no needs no signature: a key that can't sign never keeps anyone from taking it back.
+    let off = call(
+        &world.obid,
+        "POST",
+        &format!("/v1/accounts/{id}/background"),
+        Some(&json!({"given": false})),
+    );
+    assert_eq!(off.status, 200, "{}", off.text);
+    assert_eq!(off.body["backgroundConsent"], false);
+    let stopped = within(10, "it stopped", || {
+        let now = job_now(&world, &running);
+        (now["status"] == "stopped").then_some(now)
+    });
+    assert!(
+        stopped["reason"].as_str().unwrap().contains("turned off"),
+        "{stopped}"
+    );
+    assert_eq!(job_now(&world, &mine)["status"], "running", "the owner's");
+    assert_eq!(
+        call(&world.obid, "POST", &format!("/v1/jobs/{mine}/stop"), None).status,
+        200
+    );
+
+    let again = run_routine(&world, &routine(&world, "Next", "RELAY", "codex", &id));
+    assert!(job_now(&world, &again)["waiting"]["reserved"].is_array());
+}
+
+/// CHATGPT-24: the token alone never says yes, nor does a signature over another request or one
+/// used already; a phone's gateway doesn't have the route; and an account that isn't a ChatGPT login
+/// has nothing to answer.
+#[test]
+fn chatgpt_24_the_token_alone_cant_give_consent() {
+    let world = world_of_chatgpt_alone("chatgpt-24");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let path = format!("/v1/accounts/{id}/background");
+    let yes = json!({"given": true});
+    let says = || account(&world.obid, &id).unwrap();
+
+    let token_alone = call(&world.obid, "POST", &path, Some(&yes));
+    assert_eq!(token_alone.status, 403, "{}", token_alone.text);
+    assert!(says().get("backgroundConsent").is_none());
+    assert!(
+        !world.obid.home.join("settings.json").is_file()
+            || !std::fs::read_to_string(world.obid.home.join("settings.json"))
+                .unwrap()
+                .contains("backgroundConsent")
+    );
+
+    let other = words_header(&world.obid, "POST", &path, Some(&json!({"given": false})));
+    let wrong = call_with_headers(
+        &world.obid,
+        TOKEN,
+        "POST",
+        &path,
+        Some(&yes),
+        &[("X-Oby-Words", &other)],
+    );
+    assert_eq!(
+        wrong.status, 403,
+        "a signature over other words: {}",
+        wrong.text
+    );
+    assert!(says().get("backgroundConsent").is_none());
+
+    let once = words_header(&world.obid, "POST", &path, Some(&yes));
+    let first = call_with_headers(
+        &world.obid,
+        TOKEN,
+        "POST",
+        &path,
+        Some(&yes),
+        &[("X-Oby-Words", &once)],
+    );
+    assert_eq!(first.status, 200, "{}", first.text);
+    assert_eq!(
+        call(&world.obid, "POST", &path, Some(&json!({"given": false}))).status,
+        200
+    );
+    let replayed = call_with_headers(
+        &world.obid,
+        TOKEN,
+        "POST",
+        &path,
+        Some(&yes),
+        &[("X-Oby-Words", &once)],
+    );
+    assert_eq!(replayed.status, 403, "used already: {}", replayed.text);
+    assert_eq!(says()["backgroundConsent"], false);
+
+    let codex = call(
+        &world.obid,
+        "POST",
+        "/v1/accounts/codex/background",
+        Some(&json!({"given": false})),
+    );
+    assert_eq!(codex.status, 422, "{}", codex.text);
+}
+
+/// CHATGPT-25: a move past a limit doesn't put a routine's job on a login with no yes, and is offered
+/// once there is one. The owner's own job is offered it as before (CHATGPT-13).
+#[test]
+fn chatgpt_25_a_move_passes_over_it_until_consent() {
+    let world = world_with_claude("chatgpt-25");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let limited = routine(&world, "Limited", "LIMITED WEEK: 86400", "claude", "stub");
+    let job = run_routine(&world, &limited);
+    let decision = within(30, "the question", || {
+        call(&world.obid, "GET", "/v1/limit-decisions", None)
+            .body
+            .as_array()?
+            .iter()
+            .find(|d| d["jobs"][0]["id"] == job.as_str())
+            .cloned()
+    });
+    let offers = |d: &Value| {
+        d["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["account"] == id.as_str())
+    };
+    assert!(!offers(&decision), "{decision}");
+    assert_eq!(allow(&world, &id).status, 200);
+    within(10, "it's offered now", || {
+        call(&world.obid, "GET", "/v1/limit-decisions", None)
+            .body
+            .as_array()?
+            .iter()
+            .find(|d| d["jobs"][0]["id"] == job.as_str() && offers(d))
+            .cloned()
+    });
+}
+
+/// CHATGPT-26: an account from before there was a question starts with no yes, and nothing that ran
+/// before fails: the owner's own work runs, a routine's waits, and it isn't a failure.
+#[test]
+fn chatgpt_26_an_existing_account_starts_with_no_yes_and_nothing_fails() {
+    let world = world_of_chatgpt_alone("chatgpt-26");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let name = routine(&world, "Old routine", "RELAY", "auto", "auto");
+    let world = restarted(world);
+    let a = account(&world.obid, &id).unwrap();
+    assert_eq!(a["signedIn"], true, "{a}");
+    assert!(
+        a.get("backgroundConsent").is_none(),
+        "asked, not refused: {a}"
+    );
+    assert_eq!(ended(&world, &job(&world, &id, "RELAY"))["status"], "done");
+    let waits = run_routine(&world, &name);
+    assert!(job_now(&world, &waits)["waiting"]["reserved"].is_array());
+    let kept = call(&world.obid, "GET", &format!("/v1/routines/{name}"), None).body;
+    assert_eq!(kept["failuresInARow"], 0, "{kept}");
+}
+
+/// CHATGPT-20: words no app signed, to a routine's job that ended, start work nobody's watching. The
+/// owner's signed words start theirs (CHATGPT-22).
+#[test]
+fn chatgpt_20_unsigned_words_to_a_routines_job_stay_in_the_background() {
+    let world = world_of_chatgpt_alone("chatgpt-20-api");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    assert_eq!(allow(&world, &id).status, 200);
+    let job = run_routine(&world, &routine(&world, "Ran", "RELAY", "codex", &id));
+    assert_eq!(ended(&world, &job)["status"], "done");
+    let off = call(
+        &world.obid,
+        "POST",
+        &format!("/v1/accounts/{id}/background"),
+        Some(&json!({"given": false})),
+    );
+    assert_eq!(off.status, 200, "{}", off.text);
+    let next = call(
+        &world.obid,
+        "POST",
+        &format!("/v1/jobs/{job}/messages"),
+        Some(&json!({"text": "RELAY again"})),
+    );
+    assert_eq!(next.status, 201, "{}", next.text);
+    let next = next.body["id"].as_str().unwrap();
+    assert!(
+        job_now(&world, next)["waiting"]["reserved"].is_array(),
+        "{}",
+        job_now(&world, next)
+    );
+}
+
+/// CHATGPT-20: a job waiting for the yes isn't using the account: it doesn't keep the owner from
+/// signing it in or removing it, and a job with nothing left to wait for says so.
+#[test]
+fn chatgpt_20_a_wait_doesnt_keep_the_account_from_changing() {
+    let world = world_of_chatgpt_alone("chatgpt-20-change");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let job = run_routine(&world, &routine(&world, "Named", "RELAY", "codex", &id));
+    assert!(job_now(&world, &job)["waiting"]["reserved"].is_array());
+    let page = call(
+        &world.obid,
+        "GET",
+        &format!("/v1/accounts/{id}/sign-in?with=chatgpt"),
+        None,
+    );
+    assert_eq!(page.status, 200, "signing in again: {}", page.text);
+    let ended_it = call(
+        &world.obid,
+        "DELETE",
+        &format!("/v1/accounts/{id}/sign-in"),
+        None,
+    );
+    assert!(ended_it.status < 300, "{}", ended_it.text);
+    let gone = within(10, "the account went", || {
+        let gone = call(&world.obid, "DELETE", &format!("/v1/accounts/{id}"), None);
+        (gone.status != 409).then_some(gone)
+    });
+    assert!(gone.status < 300, "removing it: {}", gone.text);
+    let stopped = within(10, "it says why", || {
+        // (the scheduler looks when something changes: a new routine is one)
+        let now = job_now(&world, &job);
+        (now["status"] == "stopped").then_some(now)
+    });
+    assert!(
+        stopped["reason"].as_str().unwrap().contains("was removed"),
+        "{stopped}"
+    );
+}
+
+/// CHATGPT-21: a device login replacing a ChatGPT login takes the yes with it: whoever signs in with
+/// ChatGPT here next is asked.
+#[test]
+fn chatgpt_21_a_device_login_forgets_the_yes() {
+    let world = world("chatgpt-21-device");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    assert_eq!(allow(&world, &id).status, 200);
+    let page = call(
+        &world.obid,
+        "GET",
+        &format!("/v1/accounts/{id}/sign-in"),
+        None,
+    );
+    assert_eq!(page.status, 200, "{}", page.text);
+    within(30, "the device login took", || {
+        account(&world.obid, &id).filter(|a| a.get("login").is_none() && a["signedIn"] == true)
+    });
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(world.obid.home.join("settings.json")).unwrap())
+            .unwrap();
+    assert!(kept.get("backgroundConsent").is_none(), "{kept}");
+    let again = signed_in(&world, &id);
+    assert_eq!(again["login"], "chatgpt");
+    assert!(
+        again.get("backgroundConsent").is_none(),
+        "asked anew: {again}"
+    );
+}
+
+/// Claude Code's stand-in as a harness, Codex's as a conversation's, and a job on Claude Code that
+/// fails, for an event turn to look at, what it does said by `script`. Claude Code leaves once the
+/// job ended, so a ChatGPT login is all that can run; `another`: a Codex login is on the Mac beside
+/// it, whose token is over.
+fn event_world(name: &str, script: &str, another: bool, yes: bool) -> (World, String) {
+    let folder = Folder::new(name);
+    let openai = OpenAi::start();
+    let remote = fixture(&folder.0.join("fixture"));
+    let harness = agent("fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["orchestratorDelay"] = json!(1);
+    config["conversation"] = json!({"agent": "codex"});
+    config["agents"]["codex"] = json!({"bin": agent("fake-codex-harness"), "accounts": []});
+    let stub = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&stub).unwrap();
+    std::fs::write(stub.join(".credentials.json"), "{}").unwrap();
+    if another {
+        use base64::Engine;
+        let expired = format!(
+            "x.{}.y",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(json!({"exp": 1000}).to_string())
+        );
+        let device = folder.0.join("home/accounts/device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::write(
+            device.join("auth.json"),
+            json!({"tokens": {"access_token": expired, "refresh_token": "r"}}).to_string(),
+        )
+        .unwrap();
+        config["agents"]["codex"]["accounts"] =
+            json!([{"id": "device", "name": "Device", "configDir": device}]);
+    }
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[("OBID_TEST_CHATGPT_ORIGIN", &openai.origin)],
+    );
+    let world = World {
+        _folder: folder,
+        openai,
+        obid,
+    };
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    if yes {
+        assert_eq!(allow(&world, &id).status, 200);
+    }
+    let room = world.obid.home.join("conversations/orchestrator/room");
+    std::fs::create_dir_all(&room).unwrap();
+    std::fs::write(room.join("supervise.txt"), script).unwrap();
+    let posted = within(10, "the job was taken", || {
+        let posted = call(
+            &world.obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "JOB-FAILS",
+                "title": "Flaky thing", "rounds": 1, "agent": "claude", "account": "stub"}}),
+            ),
+        );
+        (posted.status == 201).then_some(posted)
+    });
+    ended(&world, posted.body["id"].as_str().unwrap());
+    std::fs::remove_file(stub.join(".credentials.json")).unwrap();
+    (world, id)
+}
+
+/// The owner's item about an event turn that couldn't run: its words.
+fn event_item(world: &World) -> String {
+    within(90, "the owner hears about the event", || {
+        call(&world.obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()?
+            .iter()
+            .find_map(|i| {
+                let text = i["text"].as_str()?;
+                text.starts_with("Oby couldn't work out")
+                    .then(|| text.to_owned())
+            })
+    })
+}
+
+/// CHATGPT-23: taking the yes back ends a turn nobody watches that's running on the login, and what
+/// it hadn't done comes again: with nothing else, the owner hears why.
+#[test]
+fn chatgpt_23_a_turn_nobody_watches_stops_on_the_no() {
+    let (world, id) = event_world("chatgpt-23-turn", "SLEEP\n", false, true);
+    let turns = world
+        .obid
+        .home
+        .join("conversations/orchestrator/config/turns.jsonl");
+    within(90, "the turn is on the ChatGPT login", || {
+        std::fs::read_to_string(&turns)
+            .ok()
+            .filter(|t| t.contains("app-server"))
+    });
+    let off = call(
+        &world.obid,
+        "POST",
+        &format!("/v1/accounts/{id}/background"),
+        Some(&json!({"given": false})),
+    );
+    assert_eq!(off.status, 200, "{}", off.text);
+    assert!(event_item(&world).contains("work I run by myself"));
+}
+
+/// CHATGPT-20: a turn that can't run names the yes only when the yes would help: beside another login
+/// on the Mac, one that can't run now too, a ChatGPT one isn't taken anyway.
+#[test]
+fn chatgpt_20_why_names_the_yes_only_when_it_would_help() {
+    let (world, _) = event_world("chatgpt-20-why", "SAY Nothing.\n", true, false);
+    let told = event_item(&world);
+    assert!(!told.contains("work I run by myself"), "{told}");
+}
+
+/// CHATGPT-20: a turn nobody watches takes no ChatGPT login with no yes, even with nothing else on
+/// the Mac: the owner hears why.
+#[test]
+fn chatgpt_20_a_turn_nobody_watches_needs_the_yes_too() {
+    let world = world_with_claude("chatgpt-20-turn");
+    let id = new_account(&world.obid);
+    signed_in(&world, &id);
+    let room = world.obid.home.join("conversations/orchestrator/room");
+    std::fs::create_dir_all(&room).unwrap();
+    std::fs::write(room.join("supervise.txt"), "FAIL\n").unwrap();
+    let posted = within(10, "the job was taken", || {
+        let posted = call(
+            &world.obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "JOB-FAILS",
+                "title": "Flaky thing", "rounds": 1, "agent": "claude", "account": "stub"}}),
+            ),
+        );
+        (posted.status == 201).then_some(posted)
+    });
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    ended(&world, posted.body["id"].as_str().unwrap());
+    // Only now does Claude Code leave: the ChatGPT login is all there is when the turn comes.
+    std::fs::remove_file(world.obid.home.join("accounts/stub/.credentials.json")).unwrap();
+    let told = within(60, "the owner hears why", || {
+        call(&world.obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()?
+            .iter()
+            .find(|i| {
+                i["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("work I run by myself"))
+            })
+            .cloned()
+    });
+    assert!(
+        told["text"].as_str().unwrap().contains("ChatGPT plan"),
+        "{told}"
     );
     assert_eq!(posts(&world), 0);
 }

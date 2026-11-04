@@ -172,6 +172,37 @@ describe('Continue with ChatGPT', () => {
     expect(settings.accountRow(row({ signedIn: true }) as never, now).chatgpt).toBe(false);
   });
 
+  it('CHATGPT-26: a signed-in ChatGPT login is asked once, an existing one too; a no isn’t asked again, and nothing else is asked', async () => {
+    const { chatgpt, settings } = await load();
+    const now = Date.parse('2030-01-01T00:00:00Z');
+    const accounts = (more: Record<string, unknown>) => ({ accounts: [row({ signedIn: true, login: 'chatgpt', ...more })] }) as never;
+    expect(chatgpt.backgroundDue(accounts({}))?.id).toBe('c2');
+    expect(chatgpt.backgroundDue(accounts({ backgroundConsent: false }))).toBeUndefined();
+    expect(chatgpt.backgroundDue(accounts({ backgroundConsent: true }))).toBeUndefined();
+    expect(chatgpt.backgroundDue(accounts({ signedIn: false }))).toBeUndefined();
+    expect(chatgpt.backgroundDue({ accounts: [row({ signedIn: true })] } as never), 'a device login').toBeUndefined();
+    expect(chatgpt.backgroundDue(null)).toBeUndefined();
+    expect(settings.accountRow(row({ signedIn: true, login: 'chatgpt', backgroundConsent: true }) as never, now).background).toBe(true);
+    expect(settings.accountRow(row({ signedIn: true, login: 'chatgpt' }) as never, now).background).toBe(false);
+  });
+
+  it('CHATGPT-20: a task waiting for the yes says it whole, with what to do; any other wait as it did', async () => {
+    const { chatgpt } = await load();
+    const step = 'Waiting for your OK: you can allow it on your Mac, in Settings › Agents.';
+    expect(chatgpt.waitSays({ step, waiting: { text: 'your OK', reserved: [] } })).toBe(step);
+    expect(chatgpt.waitSays({ step: 'Waiting for a free slot', waiting: { text: 'a slot opens' } })).toBe('a slot opens');
+    expect(chatgpt.waitSays({ step: 'Waiting for room', waiting: { text: 'an account with room', reserved: ['a1'] } })).toBe('an account with room');
+    expect(chatgpt.waitSays({ step: 'Starting' })).toBe('Starting');
+  });
+
+  it('CHATGPT-23: the switch asks obid, for that account', async () => {
+    await load();
+    const { api } = await import('../obid');
+    say('POST /v1/accounts/c2/background', { status: 200, body: row({ backgroundConsent: false }) });
+    await api.setBackgroundConsent('c2', false);
+    expect(calls.at(-1)).toEqual({ method: 'POST', path: '/v1/accounts/c2/background', body: { given: false } });
+  });
+
   it('CHATGPT-17: the welcome shows once, obid’s word on it, even with localStorage emptied', async () => {
     const { chatgpt } = await load();
     const signed = { accounts: [row({ signedIn: true, login: 'chatgpt' })] } as never;
