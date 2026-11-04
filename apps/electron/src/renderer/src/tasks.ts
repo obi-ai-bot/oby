@@ -3,7 +3,7 @@ import { BRANDS, type Brand } from './brands';
 import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
 import { modeLabel } from './modes';
 import { streamWords, wait } from './stream';
-import { everything, onObid } from './lean';
+import { chatFirst, everything, onObid } from './lean';
 import * as live from './live';
 import { box as draftBox, forget } from './drafts';
 
@@ -228,9 +228,11 @@ const isArchived = (t: Task) => t.status === 'done' && (!!t.job.archived || (t.j
 // what's on Home: everything not archived
 const onHome = () => tasks.filter((t) => !isArchived(t));
 // The archive: tasks done longer ago than that, with the ones archived before
-// (mock.ts), most recently done first; less any deleted
+// (mock.ts), most recently done first; less any deleted. Chat first, also a done one with no
+// conversation to hold its card (one from before every task had one, or whose conversation was deleted)
+// ponytail: one still running with none shows nowhere until it ends, then here; its alert and any ask still do
 export const archivedTasks = (): Archived[] => [
-  ...tasks.filter(isArchived).map((t) => ({ id: t.id, type: t.type, who: t.who, title: t.title, agent: t.job.agent, finished: t.job.finished ?? t.job.created })),
+  ...tasks.filter((t) => isArchived(t) || (chatFirst && t.status === 'done' && t.job.noConversation)).map((t) => ({ id: t.id, type: t.type, who: t.who, title: t.title, agent: t.job.agent, finished: t.job.finished ?? t.job.created })),
   ...(everything ? ARCHIVE : []),
 ].filter((a) => !deleted.has(a.id)).sort((a, b) => a.finished - b.finished);
 

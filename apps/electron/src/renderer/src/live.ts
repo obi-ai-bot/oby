@@ -53,7 +53,7 @@ type Live = {
   alias: Record<string, string>;
   // decisions answered here, by job: what was asked, the pick, and the inbox item it settles.
   // The cards keep showing it answered (as the mock's do), and the stack lets it go.
-  answered: Record<string, { ask: Ask; option: string; item?: string }>;
+  answered: Record<string, { ask: Ask; option: string; item?: string; until?: number }>;
   // items with no task answered from Home's stack, their answer on its way: off the stack meanwhile
   answering: Set<string>;
   // the repository last picked for words sent here, by conversation (its app id), and when
@@ -75,7 +75,16 @@ const set = (patch: Partial<Live>) => {
 // An event, or obid's answer to a call as one, over the state as it is when it's taken: never a
 // state read before the call's await, which would undo what came meanwhile (a Confirm's answer
 // putting back the job its own `deleted` event took away)
-const take = (e: Event) => (e.kind === 'transcript' || e.kind === 'transcriptLine' ? heard(e) : set(apply(state, e)));
+const take = (e: Event) => {
+  if (e.kind === 'transcript' || e.kind === 'transcriptLine') return heard(e);
+  set(apply(state, e));
+  if (e.kind === 'inbox') lookUpJobOf(e.item);
+};
+// a job that waits on you, however old: past the latest 100, its ask would show nowhere (obid
+// keeps every open item's job, and an item can come with no event for its job; a start item's isn't one until it starts)
+const lookUpJobOf = (i: Pick<InboxItem, 'job' | 'kind' | 'state'>) => {
+  if (i.job && i.kind !== 'start' && i.state !== 'done' && !state.jobs[i.job] && !state.gone.has(i.job)) void api.job(i.job).then((job) => take({ kind: 'job', job }), () => {});
+};
 export const useLive = () => useSyncExternalStore((l) => { listeners.add(l); return () => { listeners.delete(l); }; }, () => state);
 // the limit decisions for a conversation's or a job's work (ChatView), as Home's stack shows them
 export const useLimitAsks = (conversation?: string, job?: string) => { useLive(); return limitAsks(state, conversation, job); };
@@ -177,6 +186,10 @@ export function chatOf(s: Live, c: Conversation): Chat {
     about: c.tasks?.length ? `Started ${c.tasks.length} task${c.tasks.length === 1 ? '' : 's'}` : '',
     typing: c.id in s.working, step: p || words ? undefined : s.working[c.id],
     waiting: q ? { question: q.text, options: q.options } : undefined,
+    // waiting on you with no task to say so (a task's says it itself, Sidebar.tsx): Oby's question back,
+    // its cards, a limit on its tasks, and in the one for what other Obys ask, a question only you can answer
+    needs: !!q || confirms.length > 0 || offers.length > 0 || limitAsks(s, c.id).length > 0
+      || (!!c.fromObys && s.inbox.some((i) => i.kind === 'obiRequest' && i.obi?.type === 'question' && !(i.later && Date.parse(i.later) > now) && i.triage !== 'fyi' && i.triage !== 'ignore')),
   };
 }
 function chatsOf(s: Live): Chat[] {
@@ -308,7 +321,7 @@ function asksOf(s: Live): Asking[] {
       // the title till one comes (clamped: they can be long)
       const g = i.github;
       return {
-        id: i.id, ask: homeAsk(i), title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title,
+        id: i.id, ask: homeAsk(i), title: g?.quoted?.title ? `#${g.number} ${g.quoted.title}` : i.title, talk: i.conversation ? shownId(i.conversation) : undefined,
         ...(g ? { who: g.list === 'reviews' ? g.author ?? undefined : undefined, brand: BRANDS.github, url: g.url } : {}),
       };
     }),
@@ -401,10 +414,12 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
 }
 
 function taskOf(s: Live, j: Job): Task {
-  // answered here: answered until obid asks something else
-  const now = askOf(s, j), was = s.answered[j.id];
-  const answer = was && (!now || itemOf(s, j.id)?.id === was.item) ? was.option : undefined;
-  const ask = answer ? was!.ask : now;
+  // answered here: answered until obid asks something else. Put off: until its time, by obid's item
+  // where there's one, so a restart keeps it; settled meanwhile, it's over
+  const now = askOf(s, j), was = s.answered[j.id], item = itemOf(s, j.id);
+  const putOff = !!now && (item?.later ? Date.parse(item.later) > Date.now() : was?.option === 'Later' && item?.id === was.item && (was.until ?? 0) > Date.now());
+  const answer = putOff ? 'Later' : was && was.option !== 'Later' && (!now || item?.id === was.item) ? was.option : undefined;
+  const ask = answer && !putOff ? was!.ask : now;
   const job: JobView = {
     id: j.id, type: j.kind === 'review' ? 'review' : j.issue != null ? 'issues' : 'tasks', title: j.title, request: j.request,
     agent: j.agent, account: s.status?.accounts.find((a) => a.id === j.account)?.name ?? j.account,
@@ -414,9 +429,10 @@ function taskOf(s: Live, j: Job): Task {
     stages: stagesOf(j),
     ask, summary: j.summary || undefined, reason: j.reason || undefined, commits: j.commits ?? undefined, published: j.published ?? undefined, nothingDone: j.nothingDone || undefined,
     created: minutesAgo(j.created), finished: j.finished ? minutesAgo(j.finished) : undefined, conversation: j.conversation ? shownId(j.conversation) : undefined,
+    noConversation: !s.conversations.some((c) => c.id === j.conversation),
     archived: !!j.archived, publish: publishOf(j, carriedOn(j, Object.values(s.jobs))),
   };
-  const needs = (!!now && !answer) || answer === 'Later';
+  const needs = !!now && (!answer || putOff);
   job.page = pageOf(j, s.status?.accounts.find((a) => a.id === j.account), needs);
   return {
     id: j.id, type: job.type, title: j.title, brand: AGENTS[j.agent]?.brand ?? AGENTS.claude.brand, job,
@@ -438,7 +454,7 @@ function publish() {
   // what's put off comes back when its time comes, which obid sends no event for: look again then
   // (the soonest, and at least hourly)
   clearTimeout(waking);
-  const due = Math.min(...state.inbox.map((i) => (i.later ? Date.parse(i.later) : Infinity)).filter((t) => t > Date.now()));
+  const due = Math.min(...[...state.inbox.map((i) => (i.later ? Date.parse(i.later) : Infinity)), ...Object.values(state.answered).map((a) => a.until ?? Infinity), ...limitLater.values()].filter((t) => t > Date.now()));
   if (due < Infinity) waking = setTimeout(() => set({}), Math.min(due - Date.now() + 500, 3600_000));
   // the week's share, else the 5-hour window's; unknown until the tool says (never a made-up 0%).
   // Only when obid's status changed: publish runs at every change, each word of Oby's included,
@@ -693,6 +709,7 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     if (complete) keepFoldersOf(new Set(next.conversations.map((c) => c.id)));
     set(next);
     onSynced();
+    next.inbox.forEach(lookUpJobOf);
     // what the room missed while the stream was away
     lookAgain();
     lookAgainAtThreads();
@@ -1030,7 +1047,7 @@ export async function answerJob(id: string, option: string, words?: string) {
   // a card drawn before the limit came: this click would sign past its grouped choice (#1563)
   if (j && option === ANOTHER_ROUND && limitHolds(state, j)) return;
   const shown = option === 'Edit' && words ? `Use ${words}` : option === TELL && words ? words : option;
-  if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id } } });
+  if (ask) set({ answered: { ...state.answered, [id]: { ask, option: shown, item: item?.id, ...(option === 'Later' ? { until: Date.now() + 3600_000 } : {}) } } });
   else if (item) answering(item.id, true);
   try {
     if (checkOf(item) && option !== 'Later') {

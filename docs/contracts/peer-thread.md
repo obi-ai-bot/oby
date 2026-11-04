@@ -105,7 +105,7 @@ A member's row in a live Obysphere is a button that opens their thread, by exact
 
 The other side of a thread: for a member's Oby to answer by itself, its owner must have said it may. A membership from before the starter rule (docs/contracts/ask-an-oby.md, "The default") has no rule, so every question waits on its owner and the asker reads "It's waiting on Dana". The words below are proposals: this design leads for now, by the owner's decision, and Sangam can change them.
 
-- **Asked once, where the owner already is.** The first question that waits on an owner who has no rule, and was never asked, brings one Confirm card on Home (and on the phones, and as a Mac notification, like any Confirm): "Can I tell people in your Obysphere how your tasks are going, in every repository?", then that it starts with the questions waiting now, what it tells and what it never tells, all of it in the three lines Home's card shows. obid marks it asked when it makes the card, so no other question, member or restart asks again. Nothing else asks: not obid's start, not a join.
+- **Asked once, where the owner already is.** The first question that waits on an owner who has no rule, and was never asked, brings one Confirm card on the stack, over your conversation and on the empty chat (docs/contracts/chat-first.md), with the orange dot on Chats and Oby's row (and on the phones, and as a Mac notification, like any Confirm): "Can I tell people in your Obysphere how your tasks are going, in every repository?", then that it starts with the questions waiting now, what it tells and what it never tells, all of it in the three lines the stack's card shows. obid marks it asked when it makes the card, so no other question, member or restart asks again. Nothing else asks: not obid's start, not a join.
 - **The card holds obid's own words only.** Neither who asked nor their words are in it: nothing a member chose shapes what the owner's device signs. The question itself is on its own card, as ever.
 - **Yes.** One rule, `{"for": "*", "repos": "*", "tells": ["jobStatus", "jobProgress"]}` (the rule they have, when they tell everyone status already), answering who asks and opening no room, since the card promises nothing about the room. Every question waiting on the owner then goes by it, as if it had come now: so the asker who read "It's waiting on Dana" gets their answer, and a member isn't stuck behind a question they already asked (`busy`). The card says so. Three stay with the owner: one the material can't answer, which comes back; one whose answer they already wrote, waiting on its Confirm, since a model's words mustn't replace theirs; and one from someone no longer an active member, who gets nothing (by the directory as obid last read it, up to about 60 seconds old: a member removed within that minute may still get this answer). "Questions from other Obys" says how it ended: "I answered this question from Dana's Oby by myself:", or that it said no because what it wrote didn't pass the secret scan, quoted.
 - **No (Cancel).** Nothing changes, and it doesn't ask again. Questions keep waiting on the owner.
@@ -178,7 +178,7 @@ Run for real on 2026-11-03, on the rig with Dana's real job (PEER-3's steps belo
 
 On the rig (`node e2e/rig.mjs start`, then `app`, [test-rig.md](test-rig.md)), or two Macs in one Obysphere:
 
-1. Click a member's row in the side panel: their thread opens, the box ready, its title naming them with their owner id.
+1. Click the Sphere's tile in the side panel, then a member's row: their thread opens, the box ready, its title naming them with their owner id.
 2. Ask "What are you working on?": your words show on the right as the box empties, and their Oby's answer comes under them as a quote, then "Dana wasn't bothered.", with nothing added to your conversations and their inbox empty.
 3. Paste something the secret scan catches: nothing goes, the words stay and the scan's words show.
 4. Ask something only they know: "It's waiting on Dana." They answer: their words as a quote, then "Dana answered this one, not its Oby." Ask again and they decline: "Dana said no to this one."
@@ -187,7 +187,7 @@ On the rig (`node e2e/rig.mjs start`, then `app`, [test-rig.md](test-rig.md)), o
 
 On a real Mac that is already in an Obysphere from before the starter rule (or with `home/sharing.json` holding `{"rules": []}`), with a teammate's Oby:
 
-1. The teammate asks how your work is going: they read "It's waiting on" you, and Home shows the one card.
+1. The teammate asks how your work is going: they read "It's waiting on" you, and the stack shows the one card, Chats and Oby's row with the orange dot.
 2. They ask something else: no second card. Confirm: they get an answer from your Oby, and your list is clear.
 3. The Obysphere's settings list what your Oby tells. Remove it: the next question waits on you, and nothing asks again.
 4. Share from the settings: the card opens whole, and on Confirm the next question is answered by itself.

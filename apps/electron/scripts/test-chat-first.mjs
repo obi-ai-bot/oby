@@ -161,30 +161,14 @@ async function main() {
   await until('the accounts', async () => (await page.locator('.settings-layer, .set-page, [class*="settings"]').count()) > 0);
   await button(page, 'Back').click();
   await until('back in the conversation', async () => (await onTop(page)) === talk);
-  await until('the panel back on the chats', async () => (await page.locator('.rail-button[aria-label="Oby"]').getAttribute('aria-pressed')) === 'true');
+  await until('the panel back on the chats', async () => (await page.locator('.rail-button[aria-label="Chats"]').getAttribute('aria-pressed')) === 'true');
   ok('CHATFIRST-9 Esc stays, and back from a page returns to the conversation and the chats');
-
-  // CHATFIRST-7: the kinds of work under Tasks
-  await page.locator('.rail-button[aria-label="Tasks"]').click();
-  await page.locator('.chat-kind', { hasText: 'Review PR' }).waitFor();
-  await page.locator('.chat-kind', { hasText: 'Issues' }).waitFor();
-  await shot(page, '7a-tasks-section');
-  await page.locator('.chat-kind', { hasText: /^Tasks/ }).click();
-  await until('its cards', () => page.locator('.group-layer:not(.is-leaving)').count());
-  await shot(page, '7b-tasks-cards');
-  ok('CHATFIRST-7 Review PR, Issues and Tasks open from the side panel');
 
   // CHATFIRST-8: what Oby asks shows over your conversation, answered there in a click
   const draft = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'research', title: 'Draft task', task: 'DRAFT: notes.md' } });
   await until('the draft task ends', async () => ['done', 'failed', 'stopped'].includes((await s.call('GET', `/v1/jobs/${draft.id}`)).status), 120_000);
-  await button(page, 'Back').click();
-  await until('back in the conversation', async () => (await onTop(page)) === talk);
-  const row = page.locator('.task-row', { hasText: 'Draft task' });
-  await row.waitFor();
-  await row.click({ button: 'right' });
-  await page.getByRole('menuitem', { name: 'Delete task' }).click();
+  await s.call('POST', `/v1/jobs/${draft.id}/delete`);
   await until('obid’s Confirm', async () => (await s.call('GET', '/v1/inbox')).some((i) => i.job === draft.id && i.state === 'open'));
-  // (deleting from the side panel opened nothing: the conversation stays on top)
   const confirm = page.locator('.asks-over .ask-card.is-up', { hasText: 'Delete Draft task' }).getByRole('button', { name: 'Confirm', exact: true });
   await confirm.waitFor();
   await shot(page, '8-asks-over-the-chat');
@@ -195,7 +179,7 @@ async function main() {
   ok('CHATFIRST-8 what Oby asks is answered over the conversation');
 
   // CHATFIRST-4: New conversation, one click from the panel, the box focused
-  await page.locator('.rail-button[aria-label="Oby"]').click();
+  await page.locator('.rail-button[aria-label="Chats"]').click();
   await button(page, 'New conversation').click();
   await until('the empty chat', async () => (await page.evaluate(() => !document.querySelector('.stage.is-hidden'))));
   await until('its box focused', () => focusedBox(page));
@@ -214,10 +198,15 @@ async function main() {
   await page.keyboard.press('Meta+A');
   await page.keyboard.press('Backspace');
   ok('CHATFIRST-9 back from a page returns to the empty chat, your words kept');
-  // and Oby's row, your latest conversation
+  // and Oby's row, the empty chat too: from a conversation, it goes there
+  await page.locator('.convo-row').first().click();
+  await until('a conversation', async () => (await onTop(page)) !== null);
   await page.locator('.chat-own').click();
-  await until('your latest', async () => (await onTop(page)) !== null);
-  ok('CHATFIRST-4 New conversation is one click, and Oby’s row goes back');
+  await until('the empty chat again', async () => (await onTop(page)) === null);
+  await until('its box focused', () => focusedBox(page));
+  ok('CHATFIRST-4 New conversation is one click, and so is Oby’s row');
+  await page.locator('.convo-row').first().click();
+  await until('a conversation', async () => (await onTop(page)) !== null);
 
   // CHATFIRST-12: deleting the one you're in goes to your latest, and the last one to the empty chat
   const deleteOnTop = async () => {
@@ -248,21 +237,51 @@ async function main() {
   await shot(page, '11-home-kept');
   ok('CHATFIRST-11 ?home is Sangam’s Home, with its chips');
 
-  // CHATFIRST-3 and CHATFIRST-5: the Obysphere and its teammates, on the mock's demo data
+  // CHATFIRST-5: the Obysphere's tile opens its column, its teammates there, on the mock's demo data
   await page.evaluate(() => localStorage.setItem('oby.welcomed', '1'));
   await page.goto(`${built}?everything&chat`);
-  await page.locator('.chat-sphere', { hasText: 'Deskree' }).waitFor();
+  await page.locator('.rail-button[aria-label="Deskree"]').waitFor();
   await until('its conversation', async () => (await onTop(page)) !== null);
-  await shot(page, '3-panel-with-teammates');
   const mine = await onTop(page);
-  const text = await page.locator('.sidebar-content').innerText();
-  assert.ok(text.indexOf('Oby') < text.indexOf('Deskree') && text.indexOf('Deskree') < text.indexOf('Dima’s Oby') && !text.includes('Claude Code'), text);
+  const chatsColumn = await page.locator('.sidebar-content').innerText();
+  // (the demo's own words name people and tools, so its rows, not its text)
+  assert.ok(chatsColumn.startsWith('Chats'), chatsColumn.slice(0, 80));
+  assert.equal(await page.locator('.oby-row, .sphere-group').count(), 0, 'no Sphere’s people under the chats');
+  await shot(page, '3-panel');
+  await page.locator('.rail-button[aria-label="Deskree"]').click();
+  await page.getByRole('button', { name: /^Chat with Dima’s Oby/ }).waitFor();
+  const sphereColumn = await page.locator('.sidebar-content').innerText();
+  assert.ok(['Knowledge', 'Invite member', 'Members'].every((w) => sphereColumn.includes(w)) && !sphereColumn.includes('New conversation'), sphereColumn);
+  await shot(page, '5-a-spheres-column');
   await page.getByRole('button', { name: /^Chat with Dima’s Oby/ }).click();
   await page.locator('.crumb', { hasText: 'Dima’s Oby' }).waitFor();
   await shot(page, '5-a-teammates-oby');
-  await button(page, 'Back').click();
-  await until('back in your conversation', async () => (await onTop(page)) === mine);
-  ok('CHATFIRST-3 and 5 the Obysphere and teammates list under Oby, and a teammate’s Oby opens and comes back');
+  await page.locator('.rail-button[aria-label="Chats"]').click();
+  await until('Chats takes you back to your conversation', async () => (await onTop(page)) === mine);
+  ok('CHATFIRST-5 the tile opens the Sphere’s column, a teammate’s Oby opens from it, and Chats comes back');
+
+  // CHATFIRST-16: the whole list scrolls; the row you're on stays in view, and Chats goes to the first that waits
+  const list = page.locator('.sidebar-list');
+  const inView = (row) => row.evaluate((el) => { const r = el.getBoundingClientRect(), l = el.closest('.sidebar-list').getBoundingClientRect(); return r.top >= l.top - 1 && r.bottom <= l.bottom + 1; });
+  const scrolling = await list.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight, overflow: getComputedStyle(el).overflowY }));
+  assert.ok(scrolling.scroll > scrolling.client && ['auto', 'scroll'].includes(scrolling.overflow), JSON.stringify(scrolling));
+  await page.locator('.convo-row').last().click();
+  await until('the last conversation', () => page.locator('.convo-row').last().evaluate((el) => el.classList.contains('is-active')));
+  await page.locator('.rail-button[aria-label="Deskree"]').click();
+  await page.getByRole('button', { name: /^Chat with Dima’s Oby/ }).waitFor();
+  await page.locator('.rail-button[aria-label="Chats"]').click();
+  await until('the column back', () => page.locator('.convo-row').count());
+  await until('the row you’re on in view', () => inView(page.locator('.convo-row.is-active')));
+  ok('CHATFIRST-16 the list scrolls, and the row you’re on comes back into view');
+  const waiting = page.locator('.convo-row:has(> .status-dot.is-needs)').first();
+  await until('a row that waits', () => waiting.count());
+  // from wherever it isn't: the far end of the list from it
+  await list.evaluate((el, top) => { el.scrollTop = top ? el.scrollHeight : 0; }, await waiting.evaluate((el) => el.offsetTop < el.closest('.sidebar-list').scrollHeight / 2));
+  assert.equal(await inView(waiting), false, 'CHATFIRST-16: scrolled away from it');
+  await page.locator('.rail-button[aria-label="Chats"]').click();
+  await until('the row that waits in view', () => inView(waiting));
+  await shot(page, '16-chats-goes-to-what-waits');
+  ok('CHATFIRST-16 Chats brings the first row that waits into view');
 
   // CHATFIRST-8: at the window's smallest height a tall ask scrolls, so a real click reaches Later
   await button(page, 'Hide sidebar').click();

@@ -4,7 +4,7 @@ The business behavior contract for the app's side of the room, from [the templat
 
 ## Feature and status
 
-- **Outcome:** The owner opens a Sphere's row and reads what members' Obys post, and can say something themselves.
+- **Outcome:** The owner opens a Sphere's tile and reads what members' Obys post, and can say something themselves.
 - **Status:** **Implemented** in the app; on the mock until #1868 is merged. Every obid without it answers `404`, which reads as no room.
 - **Sangam's screen:** none yet. It follows the Deskree board of Wellington's Sphere prototype, with the chat's own parts. The words here are proposals, Sangam's to change.
 - **Out of scope:** what the prototype draws and obid doesn't give: standups, clash spotting, Right now, Map. Replying to one post, unread marks and "new posts below".
@@ -13,7 +13,7 @@ The business behavior contract for the app's side of the room, from [the templat
 
 obid owns following, verifying and keeping the room, and posting; the app shows what obid says and sends the owner's words.
 
-- A Sphere's row in the side panel opens its room when obid answers `room: "available"`. Otherwise, whether obid said `unavailable`, answered `404` or hasn't answered, the row does what it did before, and nothing says a room is missing. A room that goes while it's open closes; what was typed stays the box's draft.
+- A Sphere's tile in the side panel opens its room, beside its column, when obid answers `room: "available"`. Otherwise, whether obid said `unavailable`, answered `404` or hasn't answered, the tile opens its column alone, and nothing says a room is missing. A room that goes while it's open closes; what was typed stays the box's draft.
 - A post sits under a byline, `<owner>’s Oby` or `Your Oby`, with who sent it under that as data (`<from> · <owner>`). `owner` is obid's directory's; a card's name, which a card declares for itself, is never the identity. Its kind in words: Working on, Finished, Asking, Answering (with whom, once that post is here). A kind this app doesn't know shows no words. Raw kind names never show.
 - `by` and `kind` are the sender's own claims. A member's `say` reads `Says <owner> wrote this`, in the same style as any Oby's post: never as the person's own words, and never as more trustworthy. A post is yours only when its `from` is this Mac's Oby: `Your Oby`, and your bubble on the right when its `by` is `owner`. A post naming you as its `owner` from any other `from` isn't yours.
 - `verified` (add-only, as the members list has it: the owner compared that owner's key) is optional. False or missing, the post says `Not verified`, unless it's yours: that's proved by its `from` being this Mac's Oby, and obid wrote it itself. One naming you as its `owner` from any other `from` is marked like any other. True adds nothing: no post is ever marked as verified. Until obid sends it, every post but yours says so.
@@ -31,7 +31,7 @@ obid owns following, verifying and keeping the room, and posting; the app shows 
 
 ## Acceptance scenarios
 
-- **ROOMAPP-1** A Sphere's row opens its room only when obid says it has one; never the tour's sample.
+- **ROOMAPP-1** A Sphere's tile opens its room only when obid says it has one, and chat first; never the tour's sample.
 - **ROOMAPP-2** Every member's post reads as that member's Oby with `from` and `owner` as data, the kind in plain words; an answer names whom it answers; `about` adds only what the words don't say.
 - **ROOMAPP-3** A post's words, and a refused post's `error`, are text under a byline: no HTML, Markdown, links or anything to click.
 - **ROOMAPP-4** `waiting` shows as not sent yet; `refused` shows its `error`.
