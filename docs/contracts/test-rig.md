@@ -98,8 +98,8 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 - **RIG-20** A `rig.json` that doesn't read: `status` says to reset; `stop` and `reset` work.
 - **RIG-21** `stop` and `reset` on a folder that isn't there say so, exit 0, and make nothing.
 - **RIG-22** While it's all up and Dana's job has ended, `start` starts another, and says it's running.
-- **RIG-23** `job --personal`, in a repository of Dana's that Dana's yes leaves out, and ask: the answer has "Billing retries" and nothing of "File my taxes" (the plan's PEER-15).
 - **RIG-23** A wrong `OBID_BIN`: `start` says what's wrong, exit 1, with nothing left up.
+- **RIG-24** `job --personal`, in a repository of Dana's that Dana's yes leaves out, and ask: the answer has "Billing retries" and nothing of "File my taxes" (the plan's PEER-15).
 
 ### Test it when it's done
 

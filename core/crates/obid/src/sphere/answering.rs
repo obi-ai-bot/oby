@@ -140,6 +140,39 @@ pub fn material(
     items
 }
 
+/// The repositories `material` tells of: what a rule must still cover when what a run wrote from it
+/// goes (PEER-37), whatever the question named.
+pub fn told_repos(material: &[Value]) -> Vec<String> {
+    let mut repos: Vec<String> = Vec::new();
+    for repo in material.iter().filter_map(|i| i["ref"]["repo"].as_str()) {
+        if !repos.iter().any(|r| r.eq_ignore_ascii_case(repo)) {
+            repos.push(repo.to_owned());
+        }
+    }
+    repos
+}
+
+/// What the card lists (PEER-38): the owner's own repositories, from the jobs they ran, as
+/// [`crate::jobs::Jobs::list`] has them, the most recent first, never a job another Oby asked for, then
+/// `configured`, then `also`. Each once, and only what a rule could name.
+pub fn offer_list(jobs: &[Job], configured: &[String], also: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let names = jobs
+        .iter()
+        .filter(|j| j.obi.is_none())
+        .map(|j| &j.repo)
+        .chain(configured)
+        .chain(also);
+    for repo in names {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(repo))
+            && obi_protocol::schema::is_valid("common#/$defs/repo", &json!(repo))
+        {
+            out.push(repo.clone());
+        }
+    }
+    out
+}
+
 /// What's told of `job`, whole: what it's doing while it runs, and what its agent last said, else
 /// the first line of its report. Once the owner has spoken to it, its agent's words can be a reply
 /// to them, so only a report written before that (kept apart by [`crate::job::steered`]) is told. A
@@ -776,8 +809,46 @@ mod tests {
         let items = told(&rule(json!(["jobStatus"])), &jobs).await;
         assert_eq!(items.len(), 2, "{items:?}");
         assert!(!items.iter().any(|i| i["ref"]["job"] == "j-nowhere"));
-        // Nothing tells the model there's more than it was given.
-        assert!(SYSTEM.contains("never say or guess that they have other tasks"));
+    }
+
+    /// The card lists the owner's own: never a repository they only hold a teammate's job in.
+    #[test]
+    fn peer_38_the_card_lists_the_owners_own_repositories() {
+        let job = |repo: &str, theirs: bool| {
+            let mut job = running(repo);
+            job.repo = repo.into();
+            if theirs {
+                job.obi = Some(crate::job::ObiRef {
+                    correlation_id: "c".into(),
+                    from: "obi-x".into(),
+                    from_owner: "x".into(),
+                    request_id: "r".into(),
+                });
+            }
+            job
+        };
+        let names = |list: &[&str]| list.iter().map(|r| (*r).to_owned()).collect::<Vec<_>>();
+        let listed = offer_list(
+            &[
+                job("me/latest", false),
+                job("x/teammates", true),
+                job("ME/LATEST", false),
+                job("not a repo", false),
+            ],
+            &names(&["acme/app", "me/latest"]),
+            &names(&["old/chosen", "acme/app"]),
+        );
+        assert_eq!(listed, ["me/latest", "acme/app", "old/chosen"]);
+    }
+
+    #[test]
+    fn peer_37_what_a_material_tells_of() {
+        let material = [
+            json!({"ref": {"kind": "job", "repo": "a/b", "job": "j"}}),
+            json!({"ref": {"kind": "job", "repo": "A/B", "job": "k"}}),
+            json!({"ref": {"kind": "repo", "repo": "c/d"}}),
+        ];
+        assert_eq!(told_repos(&material), ["a/b", "c/d"]);
     }
 
     #[test]

@@ -963,6 +963,8 @@ async fn peer_17_a_yes_leaves_the_question_the_owner_is_answering() {
                 .find(|i| i["confirm"]["action"] == "answer_question")
                 .cloned()
         });
+        let open = call(&obid, "POST", "/v1/obid/sharing/offer", Some(&json!({})));
+        assert_eq!(open.status, 201, "{}", open.text);
         let opened = call(
             &obid,
             "POST",

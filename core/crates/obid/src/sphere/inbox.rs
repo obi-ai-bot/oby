@@ -705,8 +705,7 @@ pub fn ref_words(r: &Value) -> String {
 }
 
 /// The `obiRequest` item for the `question` of `exchange` (its body already checked against the
-/// spec), about `repos` (the repositories its `about` names that obid could check: protocol.md
-/// 5.2 and 5.9), `referenced` the jobs it names that are obid's own. `title` and `text` come from
+/// spec), about `repos` (the repositories its `about` names: protocol.md 5.2 and 5.9), `referenced` the jobs it names that are obid's own. `title` and `text` come from
 /// the typed fields only: the asker and what the references name, a job reference only when it
 /// is one of `referenced` (the rest stay under `obi.about`). Its words, and its choices, are
 /// quoted under `obi.quoted`, never made buttons: the owner answers in words, or picks a choice

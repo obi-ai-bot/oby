@@ -190,6 +190,8 @@ async function deviceOf(who, state) {
 // the rig's repository and Dana's inbox stays empty.
 async function danaSaysYes(state) {
   if (state.danaSaidYes) return;
+  const opened = await api("dana").call("POST", "/v1/obid/sharing/offer", {});
+  if (opened.status >= 300) fail(`Dana's card: ${opened.status} ${opened.text}`);
   const offered = await api("dana").call("POST", "/v1/obid/sharing/offer", { repos: [REPO] });
   if (offered.status >= 300) fail(`Dana's card: ${offered.status} ${offered.text}`);
   const { id: item, title } = JSON.parse(offered.text);

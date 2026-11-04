@@ -23,6 +23,9 @@ export const repoTicks = (item: { confirm?: { action: string; payload: { offered
   const payload = item.confirm?.action === 'share_status' ? item.confirm.payload : null;
   return payload?.offered ? { offered: payload.offered, chosen: payload.repos ?? [] } : undefined;
 };
+// Confirm on that card: off with nothing ticked as obid has it, while a tick is on its way or one was
+// refused, so a click can't share what wasn't ticked
+export const confirmIsOff = (ticks: { chosen: string[] } | undefined, hold: boolean) => !!ticks && (hold || !ticks.chosen.length);
 // One tick more or less, in the list's order, so the title reads as the list does
 export const tickRepo = (offered: string[], ticked: string[], repo: string) => {
   const next = ticked.includes(repo) ? ticked.filter((r) => r !== repo) : [...ticked, repo];

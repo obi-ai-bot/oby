@@ -476,10 +476,13 @@ pub fn chosen_from(body: &Value) -> Result<Option<Vec<String>>, String> {
     if map["repos"].as_array().is_some_and(Vec::is_empty) {
         return Ok(Some(Vec::new()));
     }
+    if map["repos"].as_array().is_some_and(|list| list.len() > 50) {
+        return Err("You can tick at most 50 repositories.".into());
+    }
     let repo = |t: &str| obi_protocol::schema::is_valid("common#/$defs/repo", &json!(t));
-    match scope(map, "repos", "repositories (owner/name)", repo)? {
-        Scope::These(list) => Ok(Some(list)),
-        Scope::Every(_) => Err("repos is the list you ticked, 1 to 50.".into()),
+    match scope(map, "repos", "repositories (owner/name)", repo) {
+        Ok(Scope::These(list)) => Ok(Some(list)),
+        Ok(Scope::Every(_)) | Err(_) => Err("That isn't a list of your repositories.".into()),
     }
 }
 
@@ -724,6 +727,11 @@ mod tests {
         );
         let own = rule(json!({"for": "*", "repos": ["acme/app"], "tells": ["jobStatus"]}));
         assert!(!own.covers("ernesto", &[]), "a rule of theirs didn't widen");
+        let room = sharing.share_room(1).unwrap();
+        assert!(
+            room.covers("ernesto", &[]),
+            "the room's yes answers who asks"
+        );
     }
 
     /// One rule, whichever way they tick: exactly what's chosen, each time, never wider, and a room's
@@ -787,10 +795,11 @@ mod tests {
             assert!(chosen_from(&bad).is_err(), "{bad}");
         }
         let many: Vec<String> = (0..51).map(|i| format!("acme/r{i}")).collect();
-        assert!(
-            chosen_from(&json!({"repos": many})).is_err(),
-            "past a rule's 50"
-        );
+        let past = chosen_from(&json!({"repos": many})).unwrap_err();
+        assert_eq!(past, "You can tick at most 50 repositories.", "a rule's 50");
+        for bad in [json!({"repos": "*"}), json!({"repos": ["not a repo"]})] {
+            assert!(!chosen_from(&bad).unwrap_err().contains('*'), "{bad}");
+        }
         assert_eq!(repo_names(&chosen()), "acme/app and acme/web");
         assert_eq!(
             repo_names(&["a/a".to_owned(), "b/b".to_owned(), "c/c".to_owned()]),

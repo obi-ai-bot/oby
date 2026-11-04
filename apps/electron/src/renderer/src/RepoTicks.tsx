@@ -1,32 +1,38 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from './obid';
 import { tickRepo } from './sharing';
 import type { InboxItem } from '../../shared/obid-wire';
 
 // The card's repositories (docs/contracts/peer-thread.md, PEER-38): each in full, the most recently
 // worked on first, ticked only by the owner, with no way to tick them all. Each tick asks obid for the
-// card again, whose title, what Confirm signs, names what's ticked, so that's what shows above it.
-// onSending: Confirm waits while a tick is on its way.
-export default function RepoTicks({ offered, chosen, onCard, onSending }: {
+// card again, whose title, what Confirm signs, names what's ticked, so that's what shows above it. The
+// boxes follow what obid has: another view of the card moving it, or a tick it refused.
+// onHold: Confirm stays off while a tick is on its way or one was refused.
+export default function RepoTicks({ offered, chosen, onCard, onHold }: {
   offered: string[];
   chosen: string[];
   onCard: (card: InboxItem) => void;
-  onSending: (sending: boolean) => void;
+  onHold: (hold: boolean) => void;
 }) {
   const [ticked, setTicked] = useState(chosen);
+  const [sending, setSending] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
-  const sending = useRef(0);
+  const obids = useRef(chosen);
+  obids.current = chosen;
+  const hold = sending > 0 || !!problem;
+  useEffect(() => onHold(hold), [hold]);
+  const said = chosen.join('\n');
+  useEffect(() => { if (!sending) setTicked(obids.current); }, [said, sending]);
   const toggle = (repo: string) => {
     const next = tickRepo(offered, ticked, repo);
     setTicked(next);
     setProblem(null);
-    sending.current += 1;
-    onSending(true);
+    setSending((n) => n + 1);
     queue.current = queue.current
       .then(() => api.offerSharing(false, next))
       .then(onCard, (e: Error) => setProblem(e.message))
-      .finally(() => { sending.current -= 1; if (!sending.current) onSending(false); });
+      .finally(() => setSending((n) => n - 1));
   };
   return (
     <>
@@ -37,7 +43,6 @@ export default function RepoTicks({ offered, chosen, onCard, onSending }: {
             <span>{repo}</span>
           </label>
         ))}
-        {!offered.length && <p className="share-repo is-none">No repositories yet.</p>}
       </div>
       {problem && <p className="set-problem">{problem}</p>}
     </>

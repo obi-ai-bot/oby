@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACCEPTS, NotThisKey, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
 } from '../../../shared/sphere';
-import { canAddProgress, canChangeRepos, canOpenRoom, repoTicks, tickRepo, whatItTells, type SharingRule } from '../sharing';
+import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, tickRepo, whatItTells, type SharingRule } from '../sharing';
 
 // docs/contracts/obysphere.md: each test is named after its scenario. SPHERE-5 (two real obids on
 // one local Obysphere) is scripts/test-sphere.mjs.
@@ -257,6 +257,11 @@ describe('what your Oby tells (docs/contracts/peer-thread.md)', () => {
     expect(tickRepo(offered, [], 'c/c')).toEqual(['c/c']);
     expect(tickRepo(offered, ['c/c'], 'a/a')).toEqual(['a/a', 'c/c']);
     expect(tickRepo(offered, ['a/a', 'c/c'], 'a/a')).toEqual(['c/c']);
+    // Confirm: off with nothing ticked as obid has it, a tick on its way, or one refused
+    expect(confirmIsOff({ chosen: [] }, false)).toBe(true);
+    expect(confirmIsOff({ chosen: ['a/a'] }, true)).toBe(true);
+    expect(confirmIsOff({ chosen: ['a/a'] }, false)).toBe(false);
+    expect(confirmIsOff(undefined, true), 'a card with no ticks is as it was').toBe(false);
   });
   it('peer_42: Settings lists the chosen repositories, with Change only on the rule the owner’s yes made', () => {
     const chosen = { ...rule, repos: ['acme/app', 'acme/web'], tells: ['jobStatus', 'jobProgress'] };

@@ -251,13 +251,15 @@ impl Link {
                 self.outbox.notify_one();
                 return;
             }
-            // The rule may have gone while the model ran: then nothing it wrote goes.
+            // The rule may have gone while the model ran, or stopped covering a repository the
+            // run was told of (PEER-37: Change keeps its id): then nothing it wrote goes.
+            let told = answering::told_repos(&material);
             let still = super::follower::active_member(&state, &exchange.peer)
-                && state
-                    .sharing
-                    .rules
-                    .iter()
-                    .any(|r| r.id == rule.id && r.covers(&owner, &repos));
+                && state.sharing.rules.iter().any(|r| {
+                    r.id == rule.id
+                        && r.covers(&owner, &repos)
+                        && told.iter().all(|repo| r.repos.has_repo(repo))
+                });
             let reply = match &failure {
                 _ if !still => None,
                 None => self.reply_locked(&state, &exchange, "answer", body.clone()),

@@ -2966,9 +2966,10 @@ enum Recheck {
     Unread(String),
 }
 
-/// Why a Confirm without the owner's tap is refused (#776).
+/// Why a Confirm on the card that asks to share, with nothing ticked, does nothing (PEER-38).
 const CHOOSE_REPOS_FIRST: &str =
     "Choose the repositories first, in Oby on your Mac: nothing was shared.";
+/// Why a Confirm without the owner's tap is refused (#776).
 pub const NEEDS_YOUR_TAP: &str =
     "Only your tap can confirm this: confirm it in Oby on your Mac or iPhone.";
 
@@ -2984,8 +2985,6 @@ fn expired(item: &Item, now: i64) -> bool {
         && now - item.created >= OFFER_SECONDS
 }
 
-/// Closes `inbox`'s item `id` when it's an offer past its day ([`expired`]), answering it closed;
-/// none otherwise. The caller holds the lock `inbox` is under.
 /// PEER-39: what said "every repository" tells no more once obid starts, and the owner is asked once
 /// which repositories instead: a first join's rule, a yes to those words, and a card still open with
 /// them on it. A rule they wrote stays. A file that doesn't read shares nothing, and stays as it is.
@@ -3032,6 +3031,8 @@ fn retire_every_repository(
     }
 }
 
+/// Closes `inbox`'s item `id` when it's an offer past its day ([`expired`]), answering it closed;
+/// none otherwise. The caller holds the lock `inbox` is under.
 fn close_expired(inbox: &mut HashMap<String, Item>, id: &str, now: i64) -> Option<Item> {
     let item = inbox.get(id).filter(|i| expired(i, now))?.clone();
     let closed = closed_start(item, OFFER_EXPIRED, now);

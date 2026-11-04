@@ -7,7 +7,7 @@ import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
 import type { InboxItem } from '../../shared/obid-wire';
 import RepoTicks from './RepoTicks';
-import { canAddProgress, canChangeRepos, canOpenRoom, repoTicks, whatItTells, type SharingRule } from './sharing';
+import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
 import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 
@@ -211,9 +211,9 @@ function WhatItTells({ sphere }: { sphere: Sphere }) {
 
 // The card, whole, as Home shows it: what its Confirm signs is on screen. Closed with Esc or a click
 // outside, it stays open on Home.
-function ShareModal({ card: opened, onClose, onAnswered }: { card: InboxItem; onClose: () => void; onAnswered: () => void }) {
+export function ShareModal({ card: opened, onClose, onAnswered }: { card: InboxItem; onClose: () => void; onAnswered: () => void }) {
   const [card, setCard] = useState(opened);
-  const [sending, setSending] = useState(false);
+  const [hold, setHold] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const ticks = repoTicks(card);
   const answer = (done: Promise<unknown>) => void done.then(onAnswered, (e: Error) => setProblem(e.message));
@@ -232,11 +232,11 @@ function ShareModal({ card: opened, onClose, onAnswered }: { card: InboxItem; on
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}><X size={16} strokeWidth={1.6} /></button>
         </header>
         <p id="share-what" className="modal-lede">{card.text}</p>
-        {ticks && <RepoTicks {...ticks} onCard={setCard} onSending={setSending} />}
+        {ticks && <RepoTicks {...ticks} onCard={setCard} onHold={setHold} />}
         {problem && <p className="set-problem">{problem}</p>}
         <div className="modal-actions">
           <button type="button" className="set-button" autoFocus onClick={() => answer(api.answer(card.id, { answer: 'Cancel' }))}>Cancel</button>
-          <button type="button" className="modal-primary" disabled={!!ticks && (sending || !ticks.chosen.length)} onClick={() => answer(api.confirm(card.id))}>Confirm</button>
+          <button type="button" className="modal-primary" disabled={confirmIsOff(ticks, hold)} onClick={() => answer(api.confirm(card.id))}>Confirm</button>
         </div>
       </div>
     </div>,
