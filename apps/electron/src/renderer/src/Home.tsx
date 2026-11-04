@@ -16,16 +16,17 @@ import { setFolders } from './folders';
 import AskStack from './AskStack';
 import ObyView from './ObyView';
 import RoomView from './RoomView';
+import PeerThreadView from './PeerThread';
 import ArchiveView from './ArchiveView';
 import SettingsView, { settingsLabel } from './SettingsView';
 import SphereSettings, { sphereSettingsLabel } from './SphereSettings';
 import KnowledgeView, { knowledgeLabel } from './KnowledgeView';
-import { useSpheres } from './spheres';
+import { outOfSphere, useSpheres } from './spheres';
 import { chatFirst, everything, onObid, welcome } from './lean';
 import { realId, shownId, useLive } from './live';
 import { WELCOME, setUp, startOnboarding } from './onboarding';
 import { askOby, chatOfTask, latestChat, renameChat, restingChat, tellAbout, useChats } from './chats';
-import { useConvos } from './peers';
+import { useConvos, useThreads, whoseOby } from './peers';
 import { AvatarStack } from './ObyFace';
 import { convoTitle, hasAttachments, type Attachments } from './mock';
 import { box as draftBox } from './drafts';
@@ -70,7 +71,8 @@ function rubberBand(w: number) {
 // adding it again, so a task and its conversation go back and forth.
 type Step =
   | { kind: 'group'; id: string; tab: Tab }
-  | { kind: 'task' | 'thread' | 'talk' | 'oby' | 'peer' | 'settings' | 'session'; id: string }
+  // member: a member of the live Obysphere (their thread), by owner id
+  | { kind: 'task' | 'thread' | 'talk' | 'oby' | 'peer' | 'member' | 'settings' | 'session'; id: string }
   // an Obysphere's settings, its knowledge or its room: which one
   | { kind: 'sphere' | 'knowledge' | 'room'; id: string }
   | { kind: 'archive'; id?: undefined };
@@ -84,6 +86,7 @@ export default function Home() {
   const tasks = useTasks();  // counts and dots follow tasks being added and opened
   const chats = useChats();
   const convos = useConvos();
+  const threads = useThreads();
   const spheres = useSpheres();
   // what needs you: the tasks', and what obid asks with no task (a GitHub offer, a Confirm)
   const running = runningCount(), needsYou = countOf('needs') + asksWaiting().length;
@@ -162,9 +165,9 @@ export default function Home() {
     const i = live.findIndex((l) => l.kind === 'task' && !tasks.some((t) => t.id === l.id));
     if (i >= 0) backOut(i);
   }, [tasks]);
-  // an Obysphere deleted or left (from its settings): its settings, Knowledge and room go too
+  // an Obysphere deleted or left (from its settings): its settings, Knowledge, room and threads go too
   useEffect(() => {
-    const i = live.findIndex((l) => (l.kind === 'sphere' || l.kind === 'knowledge' || l.kind === 'room') && !spheres.some((s) => s.id === l.id));
+    const i = live.findIndex((l) => outOfSphere(l, spheres));
     if (i >= 0) backOut(i);
   }, [spheres]);
   // a conversation deleted (from its menu): its page goes too
@@ -337,12 +340,13 @@ export default function Home() {
     if (l.kind === 'knowledge') return knowledgeLabel;
     if (l.kind === 'room') return spheres.find((s) => s.id === l.id)?.name ?? '';
     if (l.kind === 'oby') return `${l.id}’s Oby`;
+    if (l.kind === 'member') return whoseOby(threads.get(l.id)?.thread?.name ?? l.id, l.id);
     return convos.find((c) => c.id === l.id)?.title ?? '';
   };
   // the Obys in the conversation on top, if it's one with other people's Obys
   const peerWith = top?.kind === 'peer' ? convos.find((c) => c.id === top.id)?.with : undefined;
   // the side panel's highlighted row: the task, conversation or Oby on top
-  const firstOby = live.find((l) => l.kind === 'oby');
+  const firstOby = live.find((l) => l.kind === 'oby' || l.kind === 'member');
   // and in Home, the task: on its page, in its thread, or in the conversation
   // opened from its page
   const under = live.at(-2);
@@ -361,6 +365,7 @@ export default function Home() {
         onOpenTask={(id) => start({ kind: 'task', id })}
         onOpenChat={(id) => start({ kind: 'task', id }, conversationOf(id))}
         onOpenOby={(name) => start({ kind: 'oby', id: name })}
+        onOpenMember={(owner) => start({ kind: 'member', id: owner })}
         onOpenTalk={(id) => start({ kind: 'talk', id })}
         onOpenArchive={() => start({ kind: 'archive' })}
         onOpenSetting={(id) => start({ kind: 'settings', id })}
@@ -542,6 +547,7 @@ export default function Home() {
         if (l.kind === 'sphere') return <SphereSettings key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'knowledge') return <KnowledgeView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'room') return <RoomView key={l.key} id={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
+        if (l.kind === 'member') return <PeerThreadView key={l.key} owner={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'oby') return <ObyView key={l.key} name={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenConvo={(id) => push({ kind: 'peer', id })} />;
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
         return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} />;

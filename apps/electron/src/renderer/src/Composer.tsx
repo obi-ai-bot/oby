@@ -18,7 +18,7 @@ import { usePrompt } from './prompts';
 import { leave, useGlide } from './glide';
 import { folderName, folderPlace, foldersOf, pickFolders, setFolders, useFolders, usedFolders, useRecentFolders } from './folders';
 import { everything } from './lean';
-import { keeper } from './drafts';
+import { keeper, leftInBox } from './drafts';
 import TalkPill from './TalkPill';
 import type { Chat } from './chats';
 
@@ -40,10 +40,7 @@ export function numbered(name: string, taken: Set<string>) {
   return next;
 }
 
-// What stays in the box once words that could be refused are answered: all of it when they didn't
-// go; when they did, what was typed after them while they went
-export const leftInBox = (sent: string, now: string, went: boolean) =>
-  !went ? now : now.startsWith(sent) ? now.slice(sent.length).trimStart() : now;
+export { leftInBox };
 
 // Whether the box stacks at this height: once its text runs past one line, until it's sent. An empty
 // box measured while still stacked is past one line by its padding alone, which is no reason to stay

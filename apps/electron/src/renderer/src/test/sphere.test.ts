@@ -195,10 +195,12 @@ describe('obysphere', () => {
 
 describe('obysphere in the side panel', () => {
   let spheres: typeof import('../spheres');
+  let peers: typeof import('../peers');
   beforeAll(async () => {
     vi.stubGlobal('location', { search: '' });
     vi.stubGlobal('window', {});
     spheres = await import('../spheres');
+    peers = await import('../peers');
   });
 
   it('sphere_3_the_joined_obysphere_shows_with_the_other_obys_owners', () => {
@@ -215,9 +217,9 @@ describe('obysphere in the side panel', () => {
 
   it('sphere_7_a_live_obysphere_s_members_open_no_made_up_conversation', () => {
     const live = spheres.liveSphere({ state: 'joined', url: 'https://sphere.example.com', sphere: 'demo' }, [{ owner: 'ernesto' }], {})!;
-    expect(spheres.canChat(live)).toBe(false);
+    expect(peers.memberOpens(live)).toBe('thread');
     // the mock's (and the tour's sample) keep Sangam's conversations
-    expect(spheres.canChat(spheres.SAMPLE)).toBe(true);
+    expect(peers.memberOpens(spheres.SAMPLE)).toBe('tour');
   });
 });
 

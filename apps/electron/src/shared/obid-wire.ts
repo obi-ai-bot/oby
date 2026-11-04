@@ -253,7 +253,8 @@ export type Delta = { turn: string; conversation: string; text: string };
 export type RoomRef = { kind: string; repo?: string; pr?: number; issue?: number; job?: string };
 export type RoomPost = {
   id: string; seq: number | null; recordedAt: string | null; from: string; owner: string;
-  kind: 'working_on' | 'done' | 'found' | 'need' | 'say'; by: 'obi' | 'owner'; createdAt: string; replyTo: string | null;
+  // the room's: working_on, done, found, need or say; a thread's: the protocol's type. An open string
+  kind: string; by: 'obi' | 'owner'; createdAt: string; replyTo: string | null;
   text: string; about: RoomRef[]; state: 'sent' | 'waiting' | 'refused'; error: string | null;
   // whether the owner compared the sender's owner's key, as on the members list; left out by an obid
   // from before it. kind and by are what the sender says of itself, and no such check.
@@ -271,8 +272,31 @@ export function roomPostOf(value: unknown): RoomPost | null {
   return { ...v, about: Array.isArray(v.about) ? v.about.filter((r) => r && typeof r === 'object') : [] } as RoomPost;
 }
 
+// obid only: a member's thread (docs/contracts/peer-thread.md): the room's post, whose words can be
+// absent, with where its exchange stands. member and takesQuestions are null until obid has read
+// the directory: not knowing, which says nothing about them.
+export type PeerExchange = { id: string; type: string; direction: string; state: string; waitingOnThem: boolean; quietAt: string | null };
+export type PeerPost = Omit<RoomPost, 'text'> & { text: string | null; direction: string; status: string | null; reason: string | null; exchange: PeerExchange };
+export type PeerThread = { owner: string; name: string; member: boolean | null; takesQuestions: boolean | null; posts: PeerPost[] };
+const orNullString = (v: unknown) => v === null || typeof v === 'string';
+export function peerPostOf(value: unknown): PeerPost | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>, x = v.exchange as Record<string, unknown> | null | undefined;
+  const room = orNullString(v.text) ? roomPostOf({ ...v, text: '' }) : null;
+  if (!room || !x || typeof x.id !== 'string' || typeof x.state !== 'string' || !orNullString(x.quietAt)) return null;
+  return { ...room, text: v.text as string | null, exchange: { ...x, waitingOnThem: x.waitingOnThem === true } } as PeerPost;
+}
+export function peerThreadOf(value: unknown): PeerThread | null {
+  const v = (value ?? {}) as Record<string, unknown>;
+  if (typeof v.owner !== 'string' || typeof v.name !== 'string' || !Array.isArray(v.posts)) return null;
+  const known = (b: unknown) => (typeof b === 'boolean' ? b : null);
+  return { owner: v.owner, name: v.name, member: known(v.member), takesQuestions: known(v.takesQuestions), posts: v.posts.flatMap((p) => peerPostOf(p) ?? []) };
+}
+
 export type Event =
   | { kind: 'roomPost'; post: RoomPost }
+  // its posts aren't taken from it: the thread is read again (peers.ts)
+  | { kind: 'peerThread'; owner: string }
   | { kind: 'job'; job: Job }
   | { kind: 'jobGone'; id: string }
   | { kind: 'inbox'; item: InboxItem }
@@ -331,6 +355,7 @@ export function parseEvent(name: string, data: string): Event | null {
     case 'step': case 'thinking': return typeof v.text === 'string' && typeof v.turn === 'string' ? { kind: 'step', step: value as Step } : null;
     case 'delta': return typeof v.text === 'string' && typeof v.conversation === 'string' ? { kind: 'delta', delta: value as Delta } : null;
     case 'roomPost': { const post = roomPostOf(value); return post ? { kind: 'roomPost', post } : null; }
+    case 'peerThread': return typeof v.owner === 'string' ? { kind: 'peerThread', owner: v.owner } : null;
     case 'accounts': return Array.isArray(value) ? { kind: 'accounts', accounts: value as Account[] } : null;
     case 'conversation':
       if (typeof v.id !== 'string') return null;

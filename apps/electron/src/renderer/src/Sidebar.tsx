@@ -12,11 +12,11 @@ import { SETTINGS_PAGES } from './SettingsView';
 import InviteModal from './InviteModal';
 import CreateSphereModal from './CreateSphereModal';
 import SphereTile from './SphereTile';
-import { CAN_CREATE, ME, SAMPLE, canChat, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
+import { CAN_CREATE, ME, SAMPLE, cancelInvite, invite, memberCount, urlOf, useSpheres, type Sphere } from './spheres';
 import TaskMenu from './TaskMenu';
 import ConvoMenu from './ConvoMenu';
 import StatusDot from './StatusDot';
-import { convosWith, hasUnread, useConvos } from './peers';
+import { memberOpens, mockConvosWith, plainId, useConvos } from './peers';
 import { roomOpens, useRoom } from './room';
 import { lastAgo, latestChat, renameChat, useChats, type Chat } from './chats';
 import { chatFirst, everything } from './lean';
@@ -64,7 +64,7 @@ const convoAbout = (c: Chat) => {
 // Settings from your account picture at the foot), the column beside
 // them shows it. Search, on the tabs that have it, sits by the panel icon.
 // It opens from the left and pushes the view over.
-export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenOwn, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, activeRoom = null, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
+export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOpenOwn, onOpenGroup, onOpenTask, onOpenChat, onOpenOby, onOpenMember, onOpenTalk, onOpenArchive, onOpenSetting, onOpenSphereSetting, onOpenKnowledge, onOpenRoom, activeRoom = null, activeOby = null, activeTalk = null, activeSetting = null, activeSphereSetting = null, activeKnowledge = null, active = null, width, onResize }: {
   open: boolean;
   onClose: () => void;  // the panel closes (its tab's icon again, while that tab is showing)
   onNewChat: () => void;
@@ -74,7 +74,8 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   onOpenGroup: (id: string) => void;  // chat first: a kind of work's cards (Home's chips, on Home)
   onOpenTask: (id: string) => void;  // a task's page, on its own
   onOpenChat: (id: string) => void;  // a task's conversation, from its menu or its row's icon
-  onOpenOby: (name: string) => void;  // someone else's Oby, from the Obysphere: its conversations
+  onOpenOby: (name: string) => void;  // someone else's Oby, from the mock's Obysphere: its conversations
+  onOpenMember: (owner: string) => void;  // a member of the live Obysphere, by owner id: their thread
   onOpenTalk: (id: string) => void;  // a conversation with Oby, from Conversations
   onOpenArchive: () => void;  // the archived tasks, as a page
   activeOby?: string | null;  // the Oby whose page is showing: its row is highlighted
@@ -311,19 +312,15 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
   // An Obysphere's people: on its own page by their names, under Chats as their Obys
   const memberRows = (s: Sphere, asObys = false) => (s.sample || s.live ? s.members.map((name) => ({ name })) : OBYS.filter((o) => s.members.includes(o.name))).filter((o) => matches(o.name)).map((o) => {
     // in the sample: the tour's conversations, the one showing lit, the one it calls dotted
-    const n = s.sample ? (SAMPLE_TALK[o.name] ? 1 : 0) : convosWith(convos, o.name).length;
-    const unread = s.sample ? tour.call === o.name : hasUnread(convos, o.name);
+    const mock = mockConvosWith(s, convos, o.name);
+    const n = s.sample ? (SAMPLE_TALK[o.name] ? 1 : 0) : mock.length;
+    const unread = s.sample ? tour.call === o.name : mock.some((c) => c.unread);
     const lit = s.sample ? tour.member === o.name : activeOby === o.name;
-    const shownName = asObys ? `${o.name}’s Oby` : o.name;
-    // a live Obysphere's: just who's in it (spheres.ts, canChat)
-    if (!canChat(s)) return (
-      <div key={o.name} className="connector oby-row">
-        <OwnerAvatar name={o.name} size={22} />
-        <span className="connector-text"><span className="connector-name">{shownName}</span></span>
-      </div>
-    );
+    // a live member's row goes by their owner id (peers.ts), which is all obid's directory gives
+    const opens = memberOpens(s), who = opens === 'thread' ? plainId(o.name) : o.name;
+    const shownName = asObys ? `${who}’s Oby` : who;
     return (
-      <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (s.sample ? tourDid(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${o.name}’s Oby${s.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
+      <button key={o.name} className={`connector oby-row${lit ? ' is-active' : ''}`} aria-current={lit || undefined} onClick={() => (opens === 'tour' ? tourDid(o.name) : opens === 'thread' ? onOpenMember(o.name) : onOpenOby(o.name))} aria-label={`Chat with ${who}’s Oby${s.sample ? ', a sample' : ''}${unread ? ', new messages' : ''}`}>
         <OwnerAvatar name={o.name} size={22} />
         <span className="connector-text">
           <span className="connector-name">{shownName}</span>

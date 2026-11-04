@@ -1,9 +1,103 @@
 import { useSyncExternalStore } from 'react';
 import { PEER_CONVOS, hasAttachments, type Attachments, type PeerConvo, type PeerMessage } from './mock';
+import { ApiError, api, peerThreadOf, type PeerExchange, type PeerPost, type PeerThread } from './obid';
+import { draft, keep, leftInBox } from './drafts';
 import { streamWords, wait } from './stream';
 
-// Your conversations with the other Obys in the Obysphere (mock.ts), as a small
-// store: started from an Oby's page, added to in a conversation, answered by
+// What a member's row opens: in a live Obysphere their thread, which is obid's; the tour's sample and
+// the mock's Obyspheres (?everything, a browser) stay Sangam's made-up conversations, below, and
+// never a live one, which would say a message went when nothing did.
+export const memberOpens = (s: { live?: true; sample?: true }) => (s.live ? 'thread' : s.sample ? 'tour' : 'mock');
+// the mock's conversations with someone, for their row: a live member has none of them, whatever their name
+export const mockConvosWith = (s: { live?: true; sample?: true }, all: Convo[], name: string) => (memberOpens(s) === 'mock' ? convosWith(all, name) : []);
+
+// An owner id with anything but plain ASCII shows those characters as codes, so a Cyrillic i in "dima"
+// or a reversing mark shows for what it is. A Sphere's operator names ids. ASCII look-alikes (`dirna`) still pass.
+export const plainId = (id: string) => id.replace(/[^\x21-\x7e]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+// Who a thread is with, as obid's whose_oby (brain/ask.rs): a name is what a card says of itself, so
+// its owner id goes beside any name that differs. An ask has no Confirm: this is where the owner sees who.
+export const whoseOby = (name: string, owner: string) => (name === owner ? `${plainId(owner)}’s Oby` : `${name}’s Oby (${plainId(owner)})`);
+
+// Members' threads (docs/contracts/peer-thread.md), per exact owner id, outliving the view: thread, as
+// obid has it; gone, obid's words for why it has none; sending, words on their way; problem, why the
+// last words didn't go.
+// ponytail: each change reads the thread again rather than merging peerThread's posts: a read from
+// loopback, nothing to disagree with obid. The newest 50 exchanges, obid's default; add paging when
+// someone has more.
+export type Held = { thread?: PeerThread; gone?: string; sending?: string; problem?: string };
+let threads: ReadonlyMap<string, Held> = new Map();
+const threadListeners = new Set<() => void>();
+export const threadNow = (owner: string): Held => threads.get(owner) ?? {};
+export const useThreads = () => useSyncExternalStore((l) => { threadListeners.add(l); return () => { threadListeners.delete(l); }; }, () => threads);
+const hold = (owner: string, change: Held) => { threads = new Map(threads).set(owner, { ...threads.get(owner), ...change }); threadListeners.forEach((l) => l()); };
+// the newest read asked for, per owner: an older answer doesn't take a thread back
+const asked = new Map<string, number>();
+export async function lookAtThread(owner: string) {
+  const mine = (asked.get(owner) ?? 0) + 1;
+  asked.set(owner, mine);
+  try {
+    const thread = peerThreadOf(await api.peerThread(owner));
+    if (thread && asked.get(owner) === mine) hold(owner, { thread, gone: undefined });
+  } catch (e) {
+    // obid down or a 5xx: as it was, until it's read again
+    if (e instanceof ApiError && (e.status === 404 || e.status === 409) && asked.get(owner) === mine) hold(owner, { gone: e.message });
+  }
+}
+// The view opening: what obid said last time isn't what it says now
+export function openThread(owner: string) {
+  if (threadNow(owner).gone !== undefined) hold(owner, { gone: undefined });
+  void lookAtThread(owner);
+}
+export const threadChanged = (owner: string) => { if (asked.has(owner)) void lookAtThread(owner); };
+export const lookAgainAtThreads = () => { for (const owner of asked.keys()) void lookAtThread(owner); };
+// out of the Sphere: rejoining starts every thread empty
+export const forgetThreads = () => { if (asked.size || threads.size) { asked.clear(); threads = new Map(); threadListeners.forEach((l) => l()); } };
+
+// The box's send, which outlives its view (the owner can click someone else and back): whether the
+// words went. One at a time per owner, or a box put back from its draft would ask twice. A refusal is
+// kept to show whenever the thread is open. Of the draft it lets go of only what went.
+export async function askFromBox(owner: string, text: string, box: string): Promise<boolean> {
+  if (threadNow(owner).sending !== undefined) return false;
+  hold(owner, { sending: text, problem: undefined });
+  try {
+    await api.peerAsk(owner, text.trim());
+  } catch (e) {
+    hold(owner, { sending: undefined, problem: e instanceof Error ? e.message : String(e) });
+    return false;
+  }
+  keep(box, leftInBox(text, draft(box), true));
+  hold(owner, { sending: undefined });
+  await lookAtThread(owner);
+  return true;
+}
+
+// Why the box can't ask, if so. null is obid not knowing yet (it hasn't read the directory): the box
+// stays, and nobody is called gone.
+export function boxShut(t: PeerThread): string | null {
+  if (t.member === false) return `${plainId(t.owner)} left this Obysphere.`;
+  return t.takesQuestions === false ? `${whoseOby(t.name, t.owner)} doesn’t take questions.` : null;
+}
+
+// What a thread shows: posts with words. One without (a status, a bare decline) says it through its
+// exchange's line, under the last post that has words.
+export const withWords = (posts: PeerPost[]) => posts.filter((p): p is PeerPost & { text: string } => p.text !== null);
+// Where an exchange stands, plainly. SPH-5 owns these words. The clock decides `quietAt`, so no event says it.
+export function standing(x: PeerExchange, owner: string, now: number): string | null {
+  if (x.waitingOnThem) return `Waiting on ${plainId(owner)}`;
+  if (x.quietAt) return Date.parse(x.quietAt) <= now ? 'Hasn’t answered yet' : 'Asking…';
+  return x.state === 'declined' ? 'Declined' : x.state === 'expired' ? 'No answer came' : x.state === 'cancelled' ? 'Called off' : null;
+}
+// under each exchange's last post with words, and no other
+export const lineUnder = (posts: PeerPost[], i: number, owner: string, now: number) =>
+  (posts.slice(i + 1).some((p) => p.exchange.id === posts[i].exchange.id) ? null : standing(posts[i].exchange, owner, now));
+// when the next open question counts as unanswered, if one still will
+export const nextQuiet = (posts: PeerPost[], now: number) => Math.min(Infinity, ...posts.flatMap((p) => {
+  const at = p.exchange.quietAt ? Date.parse(p.exchange.quietAt) : NaN;
+  return at > now ? [at] : [];
+}));
+
+// Your conversations with the other Obys in the mock's Obyspheres (mock.ts), as a
+// small store: started from an Oby's page, added to in a conversation, answered by
 // the Oby you're talking to. typing: the Oby writing its reply (its words then
 // come in a word at a time, as your own Oby's do).
 export type Convo = PeerConvo & { typing?: boolean };

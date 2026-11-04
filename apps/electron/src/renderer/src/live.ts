@@ -14,6 +14,7 @@ import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
 import { lookAgain, takeRoomPost } from './room';
+import { lookAgainAtThreads, threadChanged } from './peers';
 
 // What obid has (docs/runner-api.md), kept live by its event stream, as apps/web/src/live.ts does
 // it: the stream first, then the status, jobs, inbox and conversations, with the events that came
@@ -534,6 +535,9 @@ function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine
     case 'roomPost':
       takeRoomPost(e.post);
       return s;
+    case 'peerThread':
+      threadChanged(e.owner);
+      return s;
   }
 }
 
@@ -691,6 +695,7 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     onSynced();
     // what the room missed while the stream was away
     lookAgain();
+    lookAgainAtThreads();
     // Settings › Agents' choices kept here before obid kept them: moved to it once (AGENTS-7)
     void moveKeptChoices(status).then((moved) => { if (moved && mine === generation) lookAtUsage(); });
     // where work can start: GitHub's list takes a moment, so the rest doesn't wait for it
