@@ -149,6 +149,21 @@ pub struct Settings {
     /// The owner's own ceilings ([`Limits`]).
     #[serde(default, skip_serializing_if = "is_default")]
     pub limits: Limits,
+    /// What the owner answered about work nobody's watching using each ChatGPT login (CHATGPT-20),
+    /// by account id. No entry: they haven't been asked, and it's a no.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub background_consent: BTreeMap<String, BackgroundConsent>,
+}
+
+/// The owner's answer about one ChatGPT login: a yes only from a signed click in an app of theirs
+/// (`POST /v1/accounts/{id}/background`), and which device it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundConsent {
+    pub given: bool,
+    pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 fn is_default(limits: &Limits) -> bool {
@@ -277,6 +292,7 @@ impl Default for Settings {
             account_failover: None,
             no_check: Vec::new(),
             limits: Limits::default(),
+            background_consent: BTreeMap::new(),
         }
     }
 }

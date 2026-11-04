@@ -643,6 +643,8 @@ pub async fn dispatch(
     let mut new =
         new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
     new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    // Only an app of the owner's signs: anything else holding the token, nobody's said to watch.
+    new.unattended = !new.vetted;
     if job.get("runsOn").is_some_and(|place| !place.is_null()) {
         return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
     }
@@ -738,6 +740,7 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         start_from: None,
         made_branch: false,
         routine: None,
+        unattended: false,
         untrusted: false,
         // Set by `dispatch` only for words an app of the owner's signed (crate::secretspec).
         vetted: false,

@@ -1297,6 +1297,13 @@ async fn session(
     // A turn nobody watches runs in a session of its own, never the conversation's: nothing of
     // the owner's history is in it (super::supervisor), and its id is kept apart.
     let unattended = supervising.is_some() || event.is_some();
+    // Said first, then looked at: either this reads a no, or the no finds this turn (CHATGPT-23).
+    if unattended {
+        control.unattended_on(&account.id);
+        if !shared.jobs.takes_background(account) {
+            return Err(super::talk::why_unattended(shared).into());
+        }
+    }
     let repos_note = if unattended {
         None
     } else {

@@ -3,7 +3,9 @@ import { BRANDS } from './brands';
 import { Window } from './Connectors';
 import { onObid } from './lean';
 import { useLive, say } from './live';
-import { MANAGE_USAGE, MOCK_WELCOME, manageUsage, welcomeDue, welcomed } from './chatgpt';
+import { BACKGROUND_YES } from '../../shared/words';
+import { BACKGROUND_TITLE, MANAGE_USAGE, MOCK_WELCOME, backgroundDue, backgroundWords, manageUsage, welcomeDue, welcomed } from './chatgpt';
+import { api } from './obid';
 
 // OpenAI's approved mark for its button (developers.openai.com/assets/siwc/sign-in-buttons), drawn in
 // the button's own colour.
@@ -17,22 +19,41 @@ export const ManageUsage = () => (
   <button type="button" className="chatgpt-link" onClick={() => manageUsage()}>{MANAGE_USAGE}</button>
 );
 
-// The first sign-in's welcome (OpenAI's words), once (chatgpt.ts). Off obid, Sangam's mock shows it
-// after its stand-in sign-in.
+// The question about work nobody's watching, for one account (chatgpt.ts). Only its yes goes signed,
+// and only on a real click on that button (shared/words.ts), so it takes no focus: Enter isn't a yes.
+export function BackgroundConsent({ name, onAnswer, onClose }: { name: string; onAnswer: (given: boolean) => void; onClose?: () => void }) {
+  return (
+    <Window brand={BRANDS.openai} title={BACKGROUND_TITLE} onClose={onClose ?? (() => onAnswer(false))}>
+      <p className="modal-lede">{backgroundWords(name)}</p>
+      <div className="modal-actions">
+        <button type="button" className="set-button" onClick={onClose ?? (() => onAnswer(false))}>Not now</button>
+        <button type="button" className="modal-primary" onClick={() => onAnswer(true)}>{BACKGROUND_YES}</button>
+      </div>
+    </Window>
+  );
+}
+
+// The first sign-in's welcome (OpenAI's words), once (chatgpt.ts), and then the question above, once
+// per account. Off obid, Sangam's mock shows the welcome after its stand-in sign-in.
 export function ChatGptWelcome() {
   const { status } = useLive();
   const [open, setOpen] = useState(false);
+  const signed = !!status?.accounts.some((a) => a.login === 'chatgpt' && a.signedIn);
+  // the welcome goes first, so the question waits to know whether it's due
+  const [looked, setLooked] = useState<boolean | null>(null);
   useEffect(() => {
     if (!onObid) return;
     let gone = false;
-    void welcomeDue(status).then((due) => { if (!gone && due) setOpen(true); }, () => { /* asked again with the next status */ });
+    void welcomeDue(status).then((due) => { if (!gone) { setLooked(signed); if (due) setOpen(true); } }, () => { if (!gone) setLooked(signed); /* asked again with the next status */ });
     return () => { gone = true; };
-  }, [status?.accounts.some((a) => a.login === 'chatgpt' && a.signedIn)]);
+  }, [signed]);
   useEffect(() => {
     const show = () => setOpen(true);
     addEventListener(MOCK_WELCOME, show);
     return () => removeEventListener(MOCK_WELCOME, show);
   }, []);
+  const asking = onObid && !open && looked === signed ? backgroundDue(status) : undefined;
+  if (asking) return <BackgroundConsent name={asking.loginEmail ?? asking.name} onAnswer={(given) => void api.setBackgroundConsent(asking.id, given).catch(say)} />;
   if (!open) return null;
   const done = () => { setOpen(false); if (onObid) void welcomed().catch(say); };
   return (

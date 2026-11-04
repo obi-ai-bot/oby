@@ -201,6 +201,8 @@ enum class JobStatus { queued, running, done, failed, stopped, interrupted;
     val waitsForAnswer get() = questionValue != null && dismissed == null && st != JobStatus.stopped
     val waitsForPermission get() = permissionValue != null && isActive
     val waitsToStart get() = st == JobStatus.queued && waitingValue?.kind in listOf("schedule", "limit")
+    /** It can start now by a word from here: not when it waits for the owner's yes to a ChatGPT plan, which only the Mac gives (obid: `reserved` empty). */
+    val canStartNow get() = waitsToStart && waitingValue?.reserved?.isEmpty() != true
     val mergeStopped get() = dismissed == null && mergeNeedsYou == true
     val cloudStopped get() = dismissed == null && cloudNeedsYou == true
     val reviewStopped get() = reviewNeedsYou == true

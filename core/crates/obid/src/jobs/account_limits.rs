@@ -418,6 +418,11 @@ impl Jobs {
         {
             return Vec::new();
         }
+        // Work nobody's watching doesn't move onto a ChatGPT login without the owner's yes
+        // (CHATGPT-20). Reviews stay where they are, so they don't count.
+        let background = jobs
+            .iter()
+            .any(|j| j.background() && j.obi.is_none() && !j.read_only());
         let now = obi_protocol::time::now();
         let home = login_home();
         let mut result = Vec::new();
@@ -426,6 +431,7 @@ impl Jobs {
                 if account.id == decision.account
                     || self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())
+                    || (background && !self.takes_background(&account))
                     || !(self.verified_limit_room(&account.id, now, now.saturating_sub(600))
                         || self.chatgpt_has_room(&account, now))
                     || self.own_sandbox(tool, &account)
@@ -651,27 +657,20 @@ impl Jobs {
                     return Err("This review cannot change accounts.".into());
                 }
                 let from = format!("{} · {}", from_tool.name(), from_name);
-                let to = format!("{} · {}", tool.name(), account.name);
-                let heard = handoff(&next, &from);
-                next.heard.insert(0, heard);
-                on_tool(&mut next, tool);
-                next.account = account.id;
+                carry_over(
+                    &mut next,
+                    tool,
+                    &account,
+                    &tuning,
+                    &from,
+                    Carried {
+                        because: "hit its account's usage limit",
+                        why: "Your account-limit choice".into(),
+                        by: "by your account-limit choice".into(),
+                    },
+                );
                 next.named = true;
-                next.session = None;
-                tune(&mut next, &tuning);
-                next.moves.push(crate::job::Move {
-                    from: from.clone(),
-                    to: to.clone(),
-                    why: Some("Your account-limit choice".into()),
-                    date: obi_protocol::time::now(),
-                });
-                next.changed(format!(
-                    "Moved from {from} to {to} by your account-limit choice"
-                ));
-                let login = self.login_path(id);
-                forget_login_secrets(&login);
-                remove_inside(&login, ".claude.json");
-                remove_inside(&login, "cli-config.json");
+                self.forget_moved_login(id);
             }
             hear(&mut next, crate::brain::actions::TRY_AGAIN);
             next_round(&mut next);
@@ -686,6 +685,14 @@ impl Jobs {
         self.changed.notify_waiters();
         self.schedule();
         Ok(())
+    }
+
+    /// What a job leaves behind of its old account's login when it moves ([`carry_over`]).
+    pub(super) fn forget_moved_login(&self, id: &str) {
+        let login = self.login_path(id);
+        forget_login_secrets(&login);
+        remove_inside(&login, ".claude.json");
+        remove_inside(&login, "cli-config.json");
     }
 
     /// Persist the failed job's fresh episode first. A crash before the old receipt is saved can

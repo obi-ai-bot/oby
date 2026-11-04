@@ -357,9 +357,9 @@ private fun TaskAsked(job: Job) {
 private fun Controls(job: Job, busy: Boolean, run: (suspend () -> Unit) -> Unit) {
     val phone = LocalPhone.current
     val reserved = if (job.waitsToStart) Usage.liftable(job.waitingValue?.reserved, phone.accounts) else emptyList()
-    if (!job.waitsToStart && reserved.isEmpty()) return
+    if (!job.canStartNow && reserved.isEmpty()) return
     Flow(8.dp, centred = false, modifier = Modifier.padding(top = 4.dp)) {
-        if (job.waitsToStart) PillButton("Start now", enabled = !busy) { run { phone.startNow(job.id) } }
+        if (job.canStartNow) PillButton("Start now", enabled = !busy) { run { phone.startNow(job.id) } }
         for (account in reserved) PillButton(Usage.useAnyway(account.usage), enabled = !busy) { run { phone.runner.liftReserve(account.id, true) } }
     }
     for (account in reserved) T(Usage.liftNote(account.usage), Tokens.textSm, Tokens.muted, modifier = Modifier.padding(top = 6.dp))

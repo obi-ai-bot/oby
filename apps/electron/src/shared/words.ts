@@ -18,6 +18,10 @@ export const DECISIONS: Record<string, string> = { allow: 'Allow', always: 'Alwa
 export const ANOTHER_ROUND = 'Give it another round';
 export const TRY_AGAIN = 'Try again, picking up where you left off. Finish with a short summary as asked.';
 
+// The yes to work nobody's watching using a ChatGPT login (docs/contracts/chatgpt-sign-in.md): this
+// button's label, its own so a click on any other button (a permission's Allow) can't stand for it.
+export const BACKGROUND_YES = 'Yes, it can';
+
 const MESSAGES = /^\/v1\/jobs\/[^/]+\/messages$/;
 const ROOM = /^\/v1\/spheres\/[^/]+\/room$/;
 const PEER_ASK = /^\/v1\/obid\/sphere\/peers\/[^/]+\/ask$/;
@@ -45,6 +49,8 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   if (method === 'POST' && ROOM.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;
   // the owner's question from a member's thread: its words alone (the path says to whom)
   if (method === 'POST' && PEER_ASK.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;
+  // the yes alone: a no needs no signature (obid keeps it either way)
+  if (method === 'POST' && /^\/v1\/accounts\/[^/]+\/background$/.test(p)) return body.given === true && shaped(body, { given: flag }) ? [BACKGROUND_YES] : null;
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;
   if (method === 'POST' && /^\/v1\/inbox\/[^/]+\/answer$/.test(p)) return text(body.answer) && shaped(body, { answer: text }) ? [body.answer] : null;
   if (method === 'POST' && /^\/v1\/jobs\/[^/]+\/permission$/.test(p)) {

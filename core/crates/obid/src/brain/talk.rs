@@ -222,9 +222,14 @@ pub fn next(shared: &Shared) -> Option<String> {
 pub(super) fn unattended(shared: &Shared) -> Option<(Tool, Account)> {
     let tools = unwatched(tools(shared));
     let apart = nothing_else(shared);
+    // Nobody's watching, so a ChatGPT login only with the owner's yes (CHATGPT-20).
     let lists = tools
         .into_iter()
-        .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
+        .map(|tool| {
+            let mut list = shared.jobs.thinking_accounts(tool);
+            list.retain(|account| shared.jobs.takes_background(account));
+            (tool, list)
+        })
         .collect();
     keep_apart(
         order(None, None, lists, true, |id| shared.jobs.has_room(id)),
@@ -232,6 +237,24 @@ pub(super) fn unattended(shared: &Shared) -> Option<(Tool, Account)> {
     )
     .into_iter()
     .next()
+}
+
+/// Why [`unattended`] found no account, in one line, for the owner. It names the yes only when the
+/// yes would help: with another login on this Mac, full or not, a ChatGPT one isn't taken anyway.
+pub(super) fn why_unattended(shared: &Shared) -> String {
+    let not_yet = matches!(nothing_else(shared), Apart::OnlyThese)
+        .then(|| {
+            let mut logins = shared.jobs.thinking_accounts(Tool::Codex).into_iter();
+            logins.find(|account| !shared.jobs.takes_background(account))
+        })
+        .flatten();
+    match not_yet {
+        Some(account) => format!(
+            "it needs your OK for work I run by myself to use the ChatGPT plan on {}: you can allow it in Settings › Agents.",
+            account.name
+        ),
+        None => shared.jobs.none_signed_in(shared.config.conversation.agent),
+    }
 }
 
 fn unwatched(mut tools: Vec<Tool>) -> Vec<Tool> {

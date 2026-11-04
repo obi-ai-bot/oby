@@ -73,7 +73,8 @@ nonisolated enum TaskFacts {
     }
 
     static func controls(_ job: Job) -> Controls {
-        Controls(startNow: job.waitsToStart, stop: job.isActive, dismiss: job.needsYou || job.canPublish)
+        // Not one waiting for the owner's yes to a ChatGPT plan, which only the Mac gives (obid: `reserved` empty).
+        Controls(startNow: job.waitsToStart && job.waiting?.reserved?.isEmpty != true, stop: job.isActive, dismiss: job.needsYou || job.canPublish)
     }
 
     /// The facts under Details, in order: a name, its value, and whether it reads as code.

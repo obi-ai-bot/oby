@@ -1126,6 +1126,61 @@ pub async fn reserve(
     ))
 }
 
+/// `POST /v1/accounts/{id}/background` `{"given": true | false}`: whether work nobody's watching may
+/// use this ChatGPT login (CHATGPT-20). A yes only from a click in an app of the owner's, signed by
+/// its device's key: never the token alone, and so never a job or an agent. A no takes nothing it
+/// shouldn't, so it's kept unsigned too, and a key that can't sign never keeps anyone from
+/// withdrawing it. Off the gateway, like signing in. The Account.
+pub async fn background(
+    State(shared): State<Arc<Shared>>,
+    UrlPath(id): UrlPath<String>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let shape = "{\"given\": true | false}";
+    let map = object(&body, &["given"], shape)?;
+    let Some(given) = map.get("given").and_then(Value::as_bool) else {
+        return Err(unprocessable(format!(
+            "given is true or false: the body is {shape}."
+        )));
+    };
+    let (tool, account) = find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
+    if tool != Tool::Codex || crate::chatgpt::marker_of(&account).is_none() {
+        return Err(unprocessable(format!(
+            "{} isn't signed in with ChatGPT.",
+            account.name
+        )));
+    }
+    let device = crate::routes::signed_by(&shared, "POST", &uri, &headers, &body);
+    if given && device.is_none() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "Only a click in Oby on your own device can allow this.",
+        ));
+    }
+    crate::settings::update(&shared.config.home, |s| {
+        s.background_consent.insert(
+            id.clone(),
+            crate::settings::BackgroundConsent {
+                given,
+                at: obi_protocol::time::now(),
+                device,
+            },
+        );
+    })
+    .map_err(|e| unkept(Path::new("settings.json"), e))?;
+    shared.jobs.background_answered(&id, given);
+    if !given {
+        shared.turns.cancel_unattended_on(&id);
+    }
+    send_accounts(&shared).await;
+    Ok(answer(
+        StatusCode::OK,
+        json_now(&shared, tool, account).await,
+    ))
+}
+
 /// `DELETE /v1/accounts/{id}`: `204`. A sign-in under way ends first; then `409` while a job of
 /// the account is queued or running. Its folder goes too when obid made it. A ChatGPT login is
 /// revoked first and its entry deleted; `200 {"revoked": false}` when OpenAI didn't confirm it.
@@ -1153,12 +1208,22 @@ pub async fn remove(
         .begin_change(&id)
         .ok_or_else(|| busy(&account))?;
     let revoked = shared.chatgpt.remove(&id).await;
+    forget_consent(&shared, &id);
     forget_account(&shared, &account)?;
     send_accounts(&shared).await;
     if !revoked {
         return Ok(answer(StatusCode::OK, json!({"revoked": false})));
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The answer about a ChatGPT login goes with the login.
+fn forget_consent(shared: &Shared, id: &str) {
+    if let Err(e) = crate::settings::update(&shared.config.home, |s| {
+        s.background_consent.remove(id);
+    }) {
+        tracing::error!("can't forget what the owner said about {id}: {e}");
+    }
 }
 
 /// Takes `account` off, its [`crate::jobs::Changing`] held: its login copy, its folder when obid
@@ -1842,6 +1907,8 @@ async fn start(
                     && crate::jobs::codex_copy_ready(&login, &account.name).is_ok()
                 {
                     shared.chatgpt.replaced_by_device_login(&account.id).await;
+                    // Whoever signs in with ChatGPT here next is asked anew.
+                    forget_consent(&shared, &account.id);
                 }
                 let account = account.clone();
                 tokio::task::spawn_blocking(move || {

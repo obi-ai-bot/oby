@@ -578,6 +578,10 @@ pub struct NewJob {
     /// The routine whose run it is (crate::routines).
     #[serde(default)]
     pub routine: Option<crate::job::RoutineMark>,
+    /// Nobody's watching what starts it ([`Job::unattended`]). Never from the API, never kept: a
+    /// Start or a Confirm is the owner's own click.
+    #[serde(skip)]
+    pub unattended: bool,
     /// Its conversation had read something untrusted ([`Job::untrusted`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
@@ -655,8 +659,43 @@ impl Source {
     }
 }
 
+/// What stands between work nobody's watching and the ChatGPT login called `name` (CHATGPT-20). In
+/// Oby's own words, Sangam's to change.
+fn consent_words(name: &str) -> String {
+    format!("your OK for work I run by myself to use the ChatGPT plan on {name}")
+}
+
+/// What a job says when it stopped because the owner took their yes back (CHATGPT-23).
+const BACKGROUND_OFF: &str =
+    "You turned off work I run by myself on this ChatGPT plan, so I stopped.";
+
+/// What a job waiting for the owner's yes says when the account it waited on was removed.
+const WAITED_ON_GONE: &str =
+    "The account it was waiting on was removed, and nothing else can take it.";
+
+/// A job waiting for the owner's yes to `account` (CHATGPT-20): `limit` as the apps know it, as a
+/// wait for room with no reserve to lift. `agent`: the tool it asked for, if any. "On your Mac": a
+/// phone reads it too, and has no such setting.
+fn consent_wait(account: &crate::config::Account, agent: Option<&str>) -> Waiting {
+    Waiting {
+        kind: "limit".into(),
+        text: format!(
+            "{}: you can allow it on your Mac, in Settings › Agents",
+            consent_words(&account.name)
+        ),
+        reserved: Some(Vec::new()),
+        tool: agent
+            .map(str::trim)
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"))
+            .map(str::to_owned),
+    }
+}
+
 /// What a job waiting for an account with room says (#872).
 fn room_step(wait: &Waiting) -> String {
+    if wait.for_consent() {
+        return format!("Waiting for {}.", wait.text);
+    }
     format!(
         "Waiting for {}. Use one anyway to start it now; otherwise it starts when an account has room.",
         wait.text
@@ -2368,10 +2407,13 @@ impl Jobs {
     /// the account and none starts on it.
     pub fn begin_change(self: &Arc<Self>, account: &str) -> Option<Changing> {
         let mut state = self.lock();
-        let busy = state
-            .jobs
-            .values()
-            .any(|j| j.account == account && j.status.is_active());
+        // One waiting for the owner's yes isn't using it: it doesn't keep them from signing it in
+        // or removing it (CHATGPT-20).
+        let busy = state.jobs.values().any(|j| {
+            j.account == account
+                && j.status.is_active()
+                && !j.waiting.as_ref().is_some_and(Waiting::for_consent)
+        });
         if busy || !state.changing.insert(account.to_owned()) {
             return None;
         }
@@ -2592,6 +2634,54 @@ impl Jobs {
             .is_none()
     }
 
+    /// Whether `account` takes work nobody's watching ([`Job::background`], CHATGPT-20): any login
+    /// does, but a ChatGPT one only with the owner's yes, signed.
+    pub(crate) fn takes_background(&self, account: &crate::config::Account) -> bool {
+        crate::chatgpt::marker_of(account).is_none()
+            || crate::settings::load(&self.config.home)
+                .background_consent
+                .get(&account.id)
+                .is_some_and(|answer| answer.given)
+    }
+
+    /// Work nobody's watching waits for the owner's yes to run on this login: a signed-out one
+    /// doesn't: it's its sign-in that's missing, as for any job, and the job says that.
+    fn waits_for_yes(&self, tool: Tool, account: &crate::config::Account) -> bool {
+        !self.takes_background(account) && signed_in(tool, account, login_home().as_deref())
+    }
+
+    /// Whether `job` is work nobody's watching, on a login that waits for the owner's yes.
+    fn off_its_login(&self, job: &Job) -> bool {
+        job.background()
+            && crate::accounts::find(&self.config.agents.get(), &job.account)
+                .is_some_and(|(tool, account)| self.waits_for_yes(tool, &account))
+    }
+
+    /// The owner answered about a ChatGPT login (`POST /v1/accounts/{id}/background`). A yes: what
+    /// waited for it starts. A no: work nobody's watching comes off it now: what's running stops,
+    /// and [`Jobs::schedule`] looks at what's queued, under the lock: the settings are written by
+    /// now, so whatever it starts from here on it has checked, and what it started before is on
+    /// this list.
+    pub fn background_answered(self: &Arc<Self>, account: &str, given: bool) {
+        if !given {
+            let stopping: Vec<String> = {
+                let state = self.lock();
+                state
+                    .jobs
+                    .values()
+                    .filter(|j| j.account == account && j.background() && j.status.is_active())
+                    .filter(|j| state.workers.contains_key(&j.id))
+                    .map(|j| j.id.clone())
+                    .collect()
+            };
+            for id in stopping {
+                self.stop(&id);
+                self.update(&id, |job| job.reason = Some(BACKGROUND_OFF.to_owned()));
+            }
+        }
+        self.schedule();
+    }
+
     /// `tool`'s first account that is [`signed_in`], if any.
     pub fn signed_in_account(&self, tool: Tool) -> Option<crate::config::Account> {
         let home = login_home();
@@ -2653,6 +2743,18 @@ impl Jobs {
         agent: Option<&str>,
         named: Option<&str>,
     ) -> Result<(Tool, crate::config::Account), Refused> {
+        self.pick_for(agent, named, false)
+    }
+
+    /// [`Jobs::pick`] for a job, `background` when nobody's watching it: routing then passes over a
+    /// login that doesn't take that ([`Jobs::takes_background`]), as it does one without room. An
+    /// account named is the caller's to look at.
+    fn pick_for(
+        &self,
+        agent: Option<&str>,
+        named: Option<&str>,
+        background: bool,
+    ) -> Result<(Tool, crate::config::Account), Refused> {
         let tools: Vec<Tool> = match agent
             .map(str::trim)
             .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"))
@@ -2695,6 +2797,7 @@ impl Jobs {
         let now = obi_protocol::time::now();
         let mut first = None;
         let mut held = Vec::new();
+        let mut not_yet = None;
         for tool in &tools {
             let mut accounts = self.accounts(*tool);
             if let Some(id) = &preferred {
@@ -2719,6 +2822,8 @@ impl Jobs {
                     for account in accounts {
                         if !signed_in(*tool, &account, home.as_deref()) {
                             first.get_or_insert((*tool, account));
+                        } else if background && !self.takes_background(&account) {
+                            not_yet.get_or_insert(account.name);
                         } else if let Some(why) = self.usage.get(&account.id).held(now) {
                             held.push(format!("{} {why}", account.name));
                         } else {
@@ -2741,6 +2846,9 @@ impl Jobs {
                 "No account has room: {}.",
                 held.join("; ")
             )));
+        }
+        if let Some(name) = not_yet {
+            return Err(Refused(format!("I need {}.", consent_words(&name))));
         }
         // None is signed in: the first, whose tool then says why it can't run.
         if let Some(found) = first {
@@ -2872,16 +2980,25 @@ impl Jobs {
             .account
             .as_deref()
             .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
-        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872).
-        let (tool, account, waiting) = match self.pick(new.agent.as_deref(), new.account.as_deref())
-        {
-            Ok((tool, account)) => (tool, account, None),
-            Err(refused) if !named => match self.in_reserve(new.agent.as_deref()) {
-                Some(held) => held,
-                None => return Err(refused),
-            },
-            Err(refused) => return Err(refused),
-        };
+        let background = new.unattended || new.routine.is_some();
+        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872);
+        // by a ChatGPT login the owner hasn't said yes to, for their yes (CHATGPT-20).
+        let (tool, account, waiting) =
+            match self.pick_for(new.agent.as_deref(), new.account.as_deref(), background) {
+                Ok((tool, account)) if background && self.waits_for_yes(tool, &account) => {
+                    let wait = consent_wait(&account, new.agent.as_deref());
+                    (tool, account, Some(wait))
+                }
+                Ok((tool, account)) => (tool, account, None),
+                Err(refused) if !named => match self
+                    .in_reserve(new.agent.as_deref(), background)
+                    .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
+                {
+                    Some(held) => held,
+                    None => return Err(refused),
+                },
+                Err(refused) => return Err(refused),
+            };
         let most = crate::settings::limits().rounds();
         if let Some(rounds) = new.rounds
             && !(1..=most).contains(&rounds)
@@ -2923,6 +3040,7 @@ impl Jobs {
     fn in_reserve(
         &self,
         agent: Option<&str>,
+        background: bool,
     ) -> Option<(Tool, crate::config::Account, Option<Waiting>)> {
         let asked = agent
             .map(str::trim)
@@ -2941,6 +3059,7 @@ impl Jobs {
                 !self.being_changed(&a.id)
                     && signed_in(*tool, a, home.as_deref())
                     && self.usage.get(&a.id).only_reserved(now)
+                    && (!background || self.takes_background(a))
             })
             .collect();
         let (tool, first) = held.first().cloned()?;
@@ -2964,6 +3083,50 @@ impl Jobs {
         ))
     }
 
+    /// The first ChatGPT login of `agent`'s tool the owner hasn't said yes to: where work nobody's
+    /// watching waits when nothing else can take it (CHATGPT-20), and what it waits for.
+    fn first_not_yet(
+        &self,
+        agent: Option<&str>,
+    ) -> Option<(Tool, crate::config::Account, Option<Waiting>)> {
+        let asked = agent
+            .map(str::trim)
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"));
+        if asked.is_some_and(|a| a != Tool::Codex.id()) {
+            return None;
+        }
+        let home = login_home();
+        let account = self.accounts(Tool::Codex).into_iter().find(|a| {
+            !self.being_changed(&a.id)
+                && signed_in(Tool::Codex, a, home.as_deref())
+                && !self.takes_background(a)
+        })?;
+        let wait = consent_wait(&account, asked);
+        Some((Tool::Codex, account, Some(wait)))
+    }
+
+    /// Job `id`, about to start with nobody watching on a login with no yes ([`Jobs::schedule`]):
+    /// the owner took it back, or its next round came after they did. It waits, and
+    /// [`Jobs::room_for_waiting`] looks for another account. A review stays on its account, so it's
+    /// stopped, and [`Jobs::reviewed`] starts another elsewhere.
+    fn hold_for_consent(&self, id: &str) {
+        let Some(job) = self.get(id) else { return };
+        if job.review_of.is_some() || job.obi.is_some() {
+            self.stop(id);
+            self.update(id, |job| job.reason = Some(BACKGROUND_OFF.to_owned()));
+            return;
+        }
+        let Some((_, account)) = crate::accounts::find(&self.config.agents.get(), &job.account)
+        else {
+            return;
+        };
+        let wait = consent_wait(&account, Some(&job.agent));
+        self.update(id, |job| {
+            job.step = room_step(&wait);
+            job.waiting = Some(wait);
+        });
+    }
+
     /// Jobs waiting for an account with room (#872) that has one now take it: an account in
     /// their list whose reserve the owner lifted (Use anyway), else the first of their tool with
     /// room. Then they wait for a slot like any queued job.
@@ -2978,6 +3141,7 @@ impl Jobs {
             .cloned()
             .collect();
         for job in waiting {
+            let background = job.background();
             let listed = job
                 .waiting
                 .as_ref()
@@ -2987,17 +3151,41 @@ impl Jobs {
                 Tool::ALL.into_iter().find_map(|tool| {
                     self.accounts(tool)
                         .into_iter()
-                        .find(|a| &a.id == id && self.has_room(id))
+                        .find(|a| {
+                            &a.id == id
+                                && self.has_room(id)
+                                && (!background || self.takes_background(a))
+                        })
                         .map(|a| (tool, a))
                 })
             });
             // The tool it asked for, else any: never narrowed by where it waits now.
             let asked = job.waiting.as_ref().and_then(|w| w.tool.clone());
-            let Some((tool, account)) = lifted.or_else(|| self.pick(asked.as_deref(), None).ok())
-            else {
+            let for_consent = job.waiting.as_ref().is_some_and(Waiting::for_consent);
+            let on_its_own = job.named && for_consent;
+            let was = crate::accounts::find(&self.config.agents.get(), &job.account);
+            let found = if on_its_own {
+                // The owner named it, so it goes nowhere else: it starts on their yes.
+                was.clone().filter(|(tool, account)| {
+                    !self.being_changed(&account.id) && !self.waits_for_yes(*tool, account)
+                })
+            } else {
+                lifted.or_else(|| self.pick_for(asked.as_deref(), None, background).ok())
+            };
+            let Some((tool, account)) = found else {
+                // What it waited on is gone, and nothing else takes it: nothing would ever start it.
+                if for_consent && was.is_none() {
+                    self.stop(&job.id);
+                    self.update(&job.id, |job| {
+                        job.reason = Some(WAITED_ON_GONE.to_owned());
+                    });
+                    continue;
+                }
                 // Still waiting: what holds it as it is now, on the first account that does (the
                 // one Start now lifts).
-                if let Some((tool, first, Some(now))) = self.in_reserve(asked.as_deref())
+                if !on_its_own
+                    && let Some((tool, first, Some(now))) =
+                        self.in_reserve(asked.as_deref(), background)
                     && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
                 {
                     let tuning = crate::settings::load(&self.config.home).tuning;
@@ -3013,14 +3201,37 @@ impl Jobs {
             };
             let on = format!("{} · {}", tool.name(), account.name);
             let tuning = crate::settings::load(&self.config.home).tuning;
+            // It has run: its session and its login copy are the old account's (CHATGPT-23).
+            let carried = job.session.is_some() && job.account != account.id;
+            let from = was.map_or(job.account.clone(), |(tool, account)| {
+                format!("{} · {}", tool.name(), account.name)
+            });
             self.update(&job.id, |job| {
-                on_tool(job, tool);
-                job.account = account.id.clone();
-                tune(job, &tuning);
+                if carried {
+                    carry_over(
+                        job,
+                        tool,
+                        &account,
+                        &tuning,
+                        &from,
+                        Carried {
+                            because: "couldn't go on with its account",
+                            why: "It needs your OK to go on there".into(),
+                            by: format!("as {from} needs your OK for work I run by myself"),
+                        },
+                    );
+                } else {
+                    on_tool(job, tool);
+                    job.account = account.id.clone();
+                    tune(job, &tuning);
+                }
                 job.waiting = None;
                 job.step = "Starting".into();
                 job.changed(format!("Started when an account had room: {on}"));
             });
+            if carried {
+                self.forget_moved_login(&job.id);
+            }
         }
     }
 
@@ -3038,6 +3249,11 @@ impl Jobs {
         if job.status != Status::Queued || !job.waiting.as_ref().is_some_and(Waiting::for_room) {
             return Some(Err(Refused(
                 "It isn't waiting to start: obid starts every other job as soon as it can.".into(),
+            )));
+        }
+        if job.waiting.as_ref().is_some_and(Waiting::for_consent) {
+            return Some(Err(Refused(
+                "It's waiting for your OK to use that ChatGPT plan: you can allow it on your Mac, in Settings › Agents.".into(),
             )));
         }
         if let Err(e) = self.usage.lift(&job.account, true) {
@@ -3096,6 +3312,7 @@ impl Jobs {
         job.made_branch = new.made_branch;
         job.follow_up_of = new.follow_up_of;
         job.routine = new.routine;
+        job.unattended = new.unattended;
         // A follow-up of a rule's job is the rule's too (#1314). A Start item's job never carries
         // `rule` (it's never from the API): found here. So is an untrusted one's.
         // One line of follow-ups on a branch: it follows the newest of them (MERGING-23).
@@ -3271,6 +3488,7 @@ impl Jobs {
         self.room_for_waiting();
         let mut start = Vec::new();
         let mut waiting = Vec::new();
+        let mut held = Vec::new();
         {
             let mut state = self.lock();
             // One waiting for an account with room takes no slot ([`Jobs::room_for_waiting`]).
@@ -3285,6 +3503,13 @@ impl Jobs {
                 .collect();
             queued.sort();
             for (_, id) in queued {
+                // Nobody's watching it, and its login has no yes. Looked at here, under the lock,
+                // for a yes withdrawn: either this reads the no, or the no's stop list, taken once
+                // it's kept, finds this worker (CHATGPT-23).
+                if state.jobs.get(&id).is_some_and(|j| self.off_its_login(j)) {
+                    held.push(id);
+                    continue;
+                }
                 // A job queued while its account is signed in or removed waits for that to end
                 // ([`Jobs::begin_change`]).
                 if state
@@ -3345,6 +3570,14 @@ impl Jobs {
                 async move { Box::pin(jobs.work(&id, signal)).await }
             };
             jobs.spawn_worker(id, work);
+        }
+        // They wait now, or stopped, so this doesn't come back to them; another account may take
+        // them, and a slot they'd have had is free.
+        if !held.is_empty() {
+            for id in &held {
+                self.hold_for_consent(id);
+            }
+            self.schedule();
         }
     }
 
@@ -3712,6 +3945,8 @@ impl Jobs {
                         owners: unheard,
                         // Words the owner typed; a Confirm's are what Oby proposed.
                         vetted: source == Source::Owner,
+                        // Their word, signed, on it: they're following it now.
+                        unattended: source == Source::Api && job.background(),
                         // Files may hold anyone's words, as a conversation's do (crate::secretspec).
                         foreign: (!attachments.is_empty())
                             .then(|| "files the owner attached, which may hold anyone's words".into()),
@@ -5672,7 +5907,14 @@ impl Jobs {
             return Some(Err(Refused("Say which tool or account.".into())));
         }
         let agent = agent.or(Some(job.agent.as_str()));
-        let (tool, chosen) = match self.pick(agent, account) {
+        let background = job.background();
+        let (tool, chosen) = match self.pick_for(agent, account, background) {
+            Ok(picked) if background && self.waits_for_yes(picked.0, &picked.1) => {
+                return Some(Err(Refused(format!(
+                    "I need {}.",
+                    consent_words(&picked.1.name)
+                ))));
+            }
             Ok(picked) => picked,
             Err(refused) => return Some(Err(refused)),
         };
@@ -11178,12 +11420,17 @@ impl Jobs {
             .filter(|t| *t != Tool::Cursor && !approved.contains(&t.id()));
         let mut theirs = None;
         let mut held = Vec::new();
+        let mut not_yet = None;
         for tool in tools {
             for account in self.accounts(tool) {
                 if self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())
                     || failed.contains(&reviewed_on(tool.id(), &account.id).as_str())
                 {
+                    continue;
+                }
+                if !self.takes_background(&account) {
+                    not_yet.get_or_insert(account.name);
                     continue;
                 }
                 if let Some(why) = self.usage.get(&account.id).held(now) {
@@ -11201,6 +11448,8 @@ impl Jobs {
                     "Oby's second review waits for a tool other than {} signed in with room.",
                     by.name()
                 )
+            } else if let Some(name) = not_yet.filter(|_| held.is_empty()) {
+                format!("My review waits for {}.", consent_words(&name))
             } else if held.is_empty() {
                 "Oby's review waits for a Claude Code or Codex account signed in to review it."
                     .to_owned()
@@ -11430,6 +11679,16 @@ impl Jobs {
         // of its own, now unless the job's at work again (its publish starts one).
         let head = author.pushed_head().map(str::to_owned);
         if review.read_another_head(&author) {
+            self.update(&of, |job| job.reviewing = None);
+            self.start_review(&of);
+            return;
+        }
+        // The owner took back their yes for its login (CHATGPT-23): that's no end for the review,
+        // which goes on another account, or says what it waits for.
+        if review.status == Status::Stopped
+            && review.dismissed.is_none()
+            && self.off_its_login(&review)
+        {
             self.update(&of, |job| job.reviewing = None);
             self.start_review(&of);
             return;
@@ -16494,6 +16753,308 @@ mod tests {
 
     /// AGENTS-1, AGENTS-2 and AGENTS-6 (docs/contracts/agents.md): with no account named, new work
     /// goes to the account new tasks go to, and the planner's agent follows it; signed out, out of
+    /// Jobs on a ChatGPT login called Plan, signed in or not, with no yes, beside what `others` adds:
+    /// `dev`, a Codex login, `stub`, Claude Code's.
+    fn jobs_on_a_plan(signed: bool, others: &[&str]) -> Arc<Jobs> {
+        let root = std::env::temp_dir().join(format!("obid-plan-{}", uuid::Uuid::new_v4()));
+        let folder = |id: &str| {
+            let dir = root.join("accounts").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let now = obi_protocol::time::now();
+        std::fs::write(
+            folder("plan").join(crate::chatgpt::MARKER),
+            json!({"signed": signed, "planUse": true, "expiresAt": now + 3600, "refreshedAt": now})
+                .to_string(),
+        )
+        .unwrap();
+        let mut codex = vec![json!({"id": "plan", "name": "Plan", "configDir": folder("plan")})];
+        if others.contains(&"dev") {
+            std::fs::write(
+                folder("dev").join("auth.json"),
+                json!({"OPENAI_API_KEY": "k"}).to_string(),
+            )
+            .unwrap();
+            codex.push(json!({"id": "dev", "name": "Dev", "configDir": folder("dev")}));
+        }
+        let mut agents = json!({"codex": {"bin": "/usr/bin/true", "accounts": codex}});
+        if others.contains(&"stub") {
+            std::fs::write(folder("stub").join(".credentials.json"), "{}").unwrap();
+            agents["claude"] = json!({"bin": "/usr/bin/true",
+                "accounts": [{"id": "stub", "name": "Stub", "configDir": folder("stub")}]});
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": agents})
+            .to_string(),
+        )
+        .unwrap();
+        Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap()
+    }
+
+    fn on(id: &str, kind: &str, agent: &str, account: &str, status: Status) -> Job {
+        let mut job = Job::new(
+            id.into(),
+            "o/r".into(),
+            kind.into(),
+            "t".into(),
+            agent.into(),
+            account.into(),
+        );
+        job.status = status;
+        job
+    }
+
+    fn a_routines(mut job: Job) -> Job {
+        job.routine = Some(crate::job::RoutineMark {
+            id: "r".into(),
+            name: "Routine".into(),
+            scheduled: 0,
+            catch_up: false,
+        });
+        job
+    }
+
+    /// A published job on Claude Code, and its review running on the plan.
+    fn reviewed_on_the_plan(jobs: &Jobs, status: Status) {
+        let mut author = on("a", "fix", "claude", "stub", Status::Done);
+        author.branch = "oby/fix".into();
+        author.published = Some("https://github.com/o/r/pull/1".into());
+        author.outgoing = vec![crate::publish::Outgoing::new(
+            "push",
+            "o/r",
+            "abc",
+            Some("oby/fix"),
+        )];
+        author.reviewing = Some("r1".into());
+        assert_eq!(author.pushed_head(), Some("abc"));
+        jobs.insert(author);
+        let mut review = on("r1", "review", "codex", "plan", status);
+        review.review_of = Some("a".into());
+        // (the head it reads is the job's: nothing else starts another review)
+        review.start_commit = Some("abc".into());
+        assert!(!review.read_another_head(jobs.get("a").as_ref().unwrap()));
+        jobs.insert(review);
+    }
+
+    /// CHATGPT-23: a review running on the plan, its yes taken back, starts again on an account
+    /// that can take it, with no error for the owner to read.
+    #[tokio::test]
+    async fn chatgpt_23_a_review_stopped_by_the_no_starts_again_elsewhere() {
+        let jobs = jobs_on_a_plan(true, &["stub"]);
+        reviewed_on_the_plan(&jobs, Status::Running);
+        let (sender, _receiver) = watch::channel(Signal::Run);
+        jobs.lock().workers.insert("r1".into(), sender);
+        jobs.background_answered("plan", false);
+        let stopped = jobs.get("r1").unwrap();
+        assert_eq!(stopped.status, Status::Stopped);
+        assert_eq!(stopped.reason.as_deref(), Some(BACKGROUND_OFF));
+        // (what a review's worker does as it ends)
+        jobs.reviewed("r1");
+        let author = jobs.get("a").unwrap();
+        assert_eq!(author.review_error, None);
+        let next = author.reviewing.expect("a new review");
+        assert_ne!(next, "r1");
+        assert_eq!(jobs.get(&next).unwrap().account, "stub");
+    }
+
+    /// CHATGPT-23: nothing else can take it: the task says what its review waits for.
+    #[tokio::test]
+    async fn chatgpt_23_a_review_with_nowhere_to_go_says_what_it_waits_for() {
+        let jobs = jobs_on_a_plan(true, &[]);
+        reviewed_on_the_plan(&jobs, Status::Stopped);
+        jobs.reviewed("r1");
+        let author = jobs.get("a").unwrap();
+        assert_eq!(author.review_error, None);
+        assert_eq!(author.reviewing, None);
+        assert!(
+            author
+                .no_reviewer
+                .as_deref()
+                .is_some_and(|why| why.contains("work I run by myself")),
+            "{:?}",
+            author.no_reviewer
+        );
+    }
+
+    /// CHATGPT-23: a review that gets to run again after the no (Resume on an account's limit, hours
+    /// later perhaps) doesn't run on the login: it starts again elsewhere.
+    #[tokio::test]
+    async fn chatgpt_23_a_review_resumed_after_the_no_doesnt_run_there() {
+        let jobs = jobs_on_a_plan(true, &["stub"]);
+        reviewed_on_the_plan(&jobs, Status::Queued);
+        jobs.schedule();
+        assert!(!jobs.lock().workers.contains_key("r1"));
+        assert_eq!(jobs.get("r1").unwrap().status, Status::Stopped);
+        let next = jobs.get("a").unwrap().reviewing.expect("a new review");
+        assert_eq!(jobs.get(&next).unwrap().account, "stub");
+    }
+
+    /// CHATGPT-23: work nobody's watching, already queued when the yes goes, doesn't start: it waits,
+    /// saying why, and what the owner started isn't held.
+    #[tokio::test]
+    async fn chatgpt_23_a_job_queued_when_the_yes_goes_waits() {
+        let jobs = jobs_on_a_plan(true, &[]);
+        jobs.insert(a_routines(on("q", "fix", "codex", "plan", Status::Queued)));
+        jobs.insert(on("mine", "fix", "codex", "plan", Status::Queued));
+        jobs.background_answered("plan", false);
+        let queued = jobs.get("q").unwrap();
+        assert!(!jobs.lock().workers.contains_key("q"));
+        assert_eq!(queued.status, Status::Queued);
+        assert!(queued.waiting.as_ref().is_some_and(Waiting::for_consent));
+        assert!(queued.step.contains("Settings › Agents"), "{}", queued.step);
+        assert!(jobs.lock().workers.contains_key("mine"));
+    }
+
+    /// CHATGPT-23: a job that has run, held from its login and taken by another account, goes on as a
+    /// move does: a new session, told what it's taking over, its old login's copy gone. One that
+    /// never ran only starts there.
+    #[tokio::test]
+    async fn chatgpt_23_a_held_job_that_ran_moves_with_its_handover() {
+        let jobs = jobs_on_a_plan(true, &["dev"]);
+        let mut ran = a_routines(on("ran", "fix", "codex", "plan", Status::Queued));
+        ran.session = Some("old-thread".into());
+        jobs.insert(ran);
+        jobs.insert(a_routines(on(
+            "new",
+            "fix",
+            "codex",
+            "plan",
+            Status::Queued,
+        )));
+        let login = jobs.login_path("ran");
+        std::fs::create_dir_all(&login).unwrap();
+        std::fs::write(login.join("cli-config.json"), "{}").unwrap();
+        jobs.schedule();
+        let ran = jobs.get("ran").unwrap();
+        assert_eq!(ran.account, "dev");
+        assert_eq!(ran.session, None);
+        assert!(
+            ran.heard
+                .first()
+                .is_some_and(|h| h.contains("couldn't go on with its account")),
+            "{:?}",
+            ran.heard
+        );
+        assert_eq!(ran.moves.len(), 1);
+        assert!(!login.join("cli-config.json").exists());
+        let new = jobs.get("new").unwrap();
+        assert_eq!(new.account, "dev");
+        assert!(new.moves.is_empty() && new.heard.is_empty());
+    }
+
+    /// CHATGPT-20: a signed-out login has no yes to wait for: what's missing is its sign-in, and the
+    /// switch doesn't even show. The job goes on and says so, as any job on a signed-out account.
+    #[tokio::test]
+    async fn chatgpt_20_a_signed_out_login_gets_no_wait_for_the_yes() {
+        let jobs = jobs_on_a_plan(false, &[]);
+        let new = NewJob {
+            repo: "o/r".into(),
+            kind: "research".into(),
+            task: "t".into(),
+            agent: Some("codex".into()),
+            account: Some("plan".into()),
+            unattended: true,
+            ..NewJob::default()
+        };
+        let (_, _, account, _, waiting) = jobs.vetted(&new).unwrap();
+        assert_eq!((account.id.as_str(), waiting), ("plan", None));
+        let auto = NewJob {
+            account: None,
+            ..new
+        };
+        let (_, _, _, _, waiting) = jobs.vetted(&auto).unwrap();
+        assert_eq!(waiting, None);
+    }
+
+    /// CHATGPT-20: `oby_change_job` doesn't put work nobody's watching on a login with no yes.
+    #[tokio::test]
+    async fn chatgpt_20_a_change_onto_the_login_is_refused() {
+        let jobs = jobs_on_a_plan(true, &["dev"]);
+        jobs.insert(a_routines(on("j", "fix", "codex", "dev", Status::Stopped)));
+        let refused = jobs
+            .change("j", Some("codex"), Some("plan"), "by Oby", Source::Event)
+            .unwrap()
+            .unwrap_err();
+        assert!(refused.0.contains("work I run by myself"), "{}", refused.0);
+        assert_eq!(jobs.get("j").unwrap().account, "dev");
+        // The owner's own job moves there as it did.
+        jobs.insert(on("mine", "fix", "codex", "dev", Status::Stopped));
+        let moved = jobs
+            .change("mine", Some("codex"), Some("plan"), "by Oby", Source::Event)
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.account, "plan");
+    }
+
+    /// CHATGPT-20: what the supervisor starts by itself is work nobody's watching.
+    #[test]
+    fn chatgpt_20_a_supervisors_follow_up_is_in_the_background() {
+        let job = on("j", "fix", "codex", "dev", Status::Failed);
+        let new = crate::brain::supervisor::follow_up(&job, "go on", None, "nonce").unwrap();
+        assert!(new.unattended);
+    }
+
+    /// CHATGPT-20: Oby's own review passes a ChatGPT login by with no yes, and says why; with one,
+    /// it runs there.
+    #[tokio::test]
+    async fn chatgpt_20_a_review_waits_for_the_yes() {
+        let root = std::env::temp_dir().join(format!("obid-review-yes-{}", uuid::Uuid::new_v4()));
+        let plan = root.join("accounts/plan");
+        std::fs::create_dir_all(&plan).unwrap();
+        let now = obi_protocol::time::now();
+        std::fs::write(
+            plan.join(crate::chatgpt::MARKER),
+            json!({"signed": true, "planUse": true, "expiresAt": now + 3600, "refreshedAt": now})
+                .to_string(),
+        )
+        .unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"codex": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "plan", "name": "Plan", "configDir": plan}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let author = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "t".into(),
+            "codex".into(),
+            "plan".into(),
+        );
+        let why = jobs.reviewer(&author).unwrap_err();
+        assert!(why.contains("work I run by myself"), "{why}");
+        assert!(why.contains("Plan"), "{why}");
+        crate::settings::update(&jobs.config.home, |s| {
+            s.background_consent.insert(
+                "plan".into(),
+                crate::settings::BackgroundConsent {
+                    given: true,
+                    at: now,
+                    device: Some("d".into()),
+                },
+            );
+        })
+        .unwrap();
+        assert_eq!(jobs.reviewer(&author).unwrap().1.id, "plan");
+    }
+
     /// room or unset, routing's own order; a job takes its account's model and effort, a complex
     /// one its complex-task effort.
     #[tokio::test]

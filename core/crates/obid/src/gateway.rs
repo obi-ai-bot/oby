@@ -1031,6 +1031,8 @@ mod tests {
         assert!(!allows(&Method::POST, "/v1/accounts/abc/reserve/x"));
         assert!(!allows(&Method::GET, "/v1/accounts/abc/sign-in"));
         assert!(!allows(&Method::POST, "/v1/accounts/abc/sign-in"));
+        // CHATGPT-24: a yes for work nobody's watching only from this Mac's app.
+        assert!(!allows(&Method::POST, "/v1/accounts/abc/background"));
         assert!(!allows(&Method::GET, "/v1/jobs/abc/def/wait"));
         for (method, path) in [
             (Method::GET, "/v1/connections"),

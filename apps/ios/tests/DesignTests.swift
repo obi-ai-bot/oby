@@ -309,6 +309,15 @@ struct DesignTests {
     }
     #endif
 
+    @Test func aTaskWaitingForTheYesOffersNoStartNow() throws {
+        let yes = try job("w", "queued", extra: #", "waiting": {"kind": "limit", "text": "your OK", "reserved": []}"#)
+        #expect(yes.waitsToStart && !TaskFacts.controls(yes).startNow)
+        let room = try job("r", "queued", extra: #", "waiting": {"kind": "limit", "text": "room", "reserved": ["a"]}"#)
+        #expect(TaskFacts.controls(room).startNow)
+        let then = try job("s", "queued", extra: #", "waiting": {"kind": "schedule", "text": "tomorrow"}"#)
+        #expect(TaskFacts.controls(then).startNow)
+    }
+
     @Test func aDoneTaskSaysWhatItLeftBehind() throws {
         let done = try job("d", "done", finished: "2026-10-09T22:16:53Z", extra: #", "commits": 2, "published": "https://github.com/deskree-inc/oby/pull/412""#)
         #expect(TaskFacts.resultLine(done) == "2 commits on oby/fix-1 · oby#412 · Took 34m")
