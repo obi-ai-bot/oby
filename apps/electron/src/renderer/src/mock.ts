@@ -68,9 +68,15 @@ export type Ask = {
   label?: string;     // over the headline, in place of the kind's (a merge card's own: Ready to merge)
   always?: string;    // what Always allow saves, in obid's words: on its button's hover (proposed, Sangam's to change)
   repos?: { offered: string[]; chosen: string[] };  // the repositories to tick, on the card that asks to share (PEER-38)
+  // Oby's escalation (orchestrator-): whole text on the stack (TASKS-17); with a job, the box
+  // that steers it (never a button of the model's recommendation)
+  fullText?: boolean;
+  steer?: boolean;
 };
 // a Question's own words for the agent, in place of its options (as on his "Go with this plan?")
 export const TELL = 'Tell it something';
+// Oby's escalation: the owner's words to that task, as its page's box (TASKS-17)
+export const STEER = 'Tell it what to do';
 export const ASK_LABEL: Record<AskKind, string> = {
   question: 'Question', permission: 'Permission', review: 'Out of reviews', failed: 'Failed',
   limit: 'Out of usage', start: 'Start it?', merge: 'Not merged', back: 'Came back', check: 'Check', remember: 'Remember?',

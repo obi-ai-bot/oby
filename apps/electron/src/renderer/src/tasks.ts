@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
+import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
 import { modeLabel } from './modes';
 import { streamWords, wait } from './stream';
 import { chatFirst, everything, onObid } from './lean';
@@ -159,8 +159,8 @@ export function answer(id: string, option: string, words?: string) {
   if (onObid) return void live.answerJob(id, option, words);
   const k = tasks.find((x) => x.id === id);
   if (!k) return;
-  // Tell it something: the owner's own words are the answer
-  const said = option === TELL && words ? words : option;
+  // Tell it something / Tell it what to do: the owner's own words are the answer
+  const said = (option === TELL || option === STEER) && words ? words : option;
   update(id, () => ({ answer: said, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
   say(id, { who: 'you', text: said, ago: 0 });
   const agent = AGENTS[k.job.agent].name;
