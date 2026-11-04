@@ -33,11 +33,12 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
   const sentHere = useRef(false);
 
   useEffect(() => { openThread(owner); }, [owner]);
-  // an open question goes quiet with no event: the clock's next word
+  // an open question goes quiet with no event: the clock's next word. setTimeout fires at once past
+  // 2^31-1 ms, which a Mac whose clock was set back could reach, and tick would keep re-arming it
   useEffect(() => {
     const at = nextQuiet(t?.posts ?? [], Date.now());
     if (at === Infinity) return;
-    const timer = setTimeout(() => setTick((n) => n + 1), at - Date.now());
+    const timer = setTimeout(() => setTick((n) => n + 1), Math.min(at - Date.now(), 2 ** 31 - 1));
     return () => clearTimeout(timer);
   }, [t, tick]);
 
@@ -68,7 +69,7 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
       <div className="chat-scroll">
         <section ref={list} className="chat" aria-label={who} role="log" onScroll={(e) => { onScroll(); following.current = atEnd(e.currentTarget); }}>
           <div className="chat-column">
-            {posts.length > 0 && <RoomThread posts={posts} obi={sphere?.obi} standing={(i) => lineUnder(posts, i, owner, Date.now())} />}
+            {posts.length > 0 && <RoomThread posts={posts} obi={sphere?.obi} standing={(i) => lineUnder(posts, i, t!, Date.now())} />}
           </div>
           {t && !posts.length && (
             <div className="group-none"><div>

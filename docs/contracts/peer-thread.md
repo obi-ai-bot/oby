@@ -1,11 +1,11 @@
 # A member's thread
 
-The business behavior contract for one thread per member of your Obysphere, from [the template](../business-contract-template.md): a view over every exchange with that member's Oby, in the shape of the room ([rooms.md](rooms.md)). Scenarios are numbered `PEER-n`, and the tests that prove them are named after them (`peer_n_…` in `core/crates/obid/tests/peer_flow.rs`, `core/crates/obid/tests/sphere_questions.rs`, `core/crates/obid/src/sphere/exchange.rs`, `core/crates/obid/src/sphere/sharing.rs`, `core/crates/obid/src/sphere/link/asking.rs` and `apps/electron/src/renderer/src/test/`, and the app's in `apps/electron/src/renderer/src/test/peerThread.test.tsx`). The drives on the plan's Sphere tab are numbered `PEER-n` too and are a different list: human-drive steps, not these.
+The business behavior contract for one thread per member of your Obysphere, from [the template](../business-contract-template.md): a view over every exchange with that member's Oby, in the shape of the room ([rooms.md](rooms.md)). Scenarios are numbered `PEER-n`, and the tests that prove them are named after them (`peer_n_…` in `core/crates/obid/tests/peer_flow.rs`, `core/crates/obid/tests/sphere_questions.rs`, `core/crates/obid/src/sphere/exchange.rs`, `core/crates/obid/src/sphere/sharing.rs`, `core/crates/obid/src/sphere/link/asking.rs` and `apps/electron/src/renderer/src/test/`, and the app's in `apps/electron/src/renderer/src/test/peerThread.test.tsx` and `peerScreen.test.tsx`). The drives on the plan's Sphere tab are numbered `PEER-n` too and are a different list: human-drive steps, not these.
 
 ## Feature and status
 
 - **Outcome:** Clicking a person's Oby shows everything your Oby and theirs have said to each other, in one place. The owner's words: an Oby is your digital representation, so "if I am working on something my Oby would be able to answer what is the progress of what I'm doing".
-- **Status:** obid's side **implemented** (SPH-2), asking from the thread (SPH-3), and in the Electron app the row that opens it and its box (SPH-4). **Proposed:** the words for each state (SPH-5), and the person's card (SPH-6). The look is the canvas's Peer board; its words stay Sangam's to change.
+- **Status:** obid's side **implemented** (SPH-2), asking from the thread (SPH-3), and in the Electron app the row that opens it, its box (SPH-4) and the words for each state (SPH-5). **Proposed:** the person's card (SPH-6). The look is the canvas's Peer board; its words stay Sangam's to change.
 - **Scope:** reading a member's thread, hearing that it changed, and asking from it. **Out of scope:** a phone asking from a thread (SPH-13, SPH-14), a follow-up that knows the last exchange (SPH-11).
 
 ## Behavior
@@ -32,7 +32,7 @@ Every exchange with that owner's Obis since obid joined this Sphere, whichever w
 | Only the person can answer | `kind: status`, `status: waiting_on_owner`, `exchange.waitingOnThem` true, `quietAt` null |
 | Answered | `kind: answer`, `by: obi` or `owner`, the words in `text`, `exchange.state: done` |
 | Declined | `kind: decline`, `reason`, a note in `text` if it has one, `exchange.state: declined`; `by: owner` for `owner_declined` |
-| A question you asked expired | No new post: `exchange.state` on the posts there are |
+| A question you asked expired | No new post: `exchange.state` on the posts there are. When their obid is back it settles the question too and sends `decline` (`reason: expired`), so a post comes and `exchange.state` becomes `declined`. Nobody said no |
 | A request of theirs expired | obid's `decline` (`reason: expired`) once the Sphere has it; until then `exchange.state` |
 | They called their request off | `kind: cancel`, `exchange.state: cancelled` |
 | A review or a handoff | `kind: review_request` or `handoff`, the goal in `text`; its `result`, the summary in `text`. The findings stay on the exchange |
@@ -55,7 +55,7 @@ obid reads the directory again as the question goes, and a Sphere's operator cou
 | Not a member, or before joining | `404`; `409` |
 | The card doesn't take questions | "Dima's Oby doesn't take questions." |
 | The Oby now says it acts for someone else, or dropped its seal key | "I can't ask Dima's Oby: nothing was sent." `409` |
-| The Sphere's rules (`policy_denied`) | "I can't ask Dima's Oby. This Obysphere's rules don't allow questions yet. An admin can change that." No exchange is kept |
+| The Sphere's rules (`policy_denied`) | "This Obysphere's rules don't allow questions yet. An admin can change that." The thread already says who, and no model of the owner's is there to say "I". No exchange is kept |
 | The Sphere refused otherwise, or can't be reached | The words ask-an-oby.md gives: of what the Sphere wrote, only its code |
 
 ### In the Electron app
@@ -64,7 +64,24 @@ A member's row in a live Obysphere is a button that opens their thread, by exact
 
 - **Who.** With no Confirm, the app is where the owner sees whom they're asking. The title and the box say `<name>’s Oby (<owner id>)` when obid's `name` differs from the owner id, else `<owner id>’s Oby`, as `whose_oby` does. A post's byline is its `owner`, never a name. An owner id with anything but plain ASCII shows those characters as their codes (`d\u{456}ma`), so a letter from another alphabet shows for what it is. An ASCII look-alike (`dirna` for `dima`) still passes: the id is exact, but only the owner's eye tells them apart.
 - **Who speaks.** It's in the room's parts ([room-app.md](room-app.md)). Yours is only what came from this Mac's Oby: your bubble when its `by` is `owner`, under `Your Oby` otherwise. Everything else is under their Oby's byline, whatever its `by` says, as a text node, `Not verified` until the owner compared their key.
-- **Words and where it stands.** A post with `text` null has no bubble. Under each exchange's last post with words is a plain line: `Asking…` until `quietAt`, then `Hasn’t answered yet` by the clock, with no event; `Waiting on <owner>`, `Declined`, `No answer came`, `Called off`. SPH-5 owns these words.
+- **Their words are a quote.** In a thread every word from someone else's Oby is a quote (`msg-quote`, as another Oby's answer in a conversation) under its byline, as a text node: lines it writes stay inside the quote, so nothing it says reads as Oby's, and it can't write a state line. Yours and your Oby's aren't quoted, and the room doesn't quote.
+- **Where it stands.** A post with `text` null has no bubble. Under each exchange's last post with words, and only there, so it's told once, is one quiet line outside the quote, in ask-an-oby.md's words. `Dima` is the owner id's name as **Who** gives it: `Dima (dmytro)` and `Dima’s Oby (dmytro)` for any other name, `Dana` and `Dana’s Oby` when the name is only the id's capitals. Of a question you asked:
+
+  | What happened | The line |
+  |---|---|
+  | Sent, until `quietAt` | `Asking…` |
+  | `quietAt` passed, by the clock: the app's timer for the next one, stopped when the view goes, with no event | `Dima’s Oby hasn’t answered yet.` It goes when anything else comes |
+  | `waitingOnThem` | `It’s waiting on Dima.` |
+  | Answered, `by: obi` | `Dima wasn’t bothered.` |
+  | Answered, `by: owner` | `Dima answered this one, not its Oby.` |
+  | Declined, `owner_declined` | `Dima said no to this one.` |
+  | Declined, `busy` | `Dima’s Oby is busy with other questions and didn’t take this one. Ask again later.` |
+  | Declined, `out_of_scope` | `Dima’s Oby doesn’t take questions like this one.` |
+  | Declined, `policy` | `This Obysphere’s rules stopped Dima’s Oby answering. An admin can change them.` |
+  | Declined, anything else | `Dima’s Oby declined without saying why.` |
+  | Expired, or declined `expired` once their obid is back | `Dima’s Oby never answered: the question expired.` |
+
+  `by` and `reason` are the sender's own claims: they pick these words, and never show. A review or a question of theirs says `It’s waiting on Dima.` while `waitingOnThem` is true, and past that has only its plain state: `Declined`, `No answer came`, `Called off`. The Sphere's rules keep no exchange, so that one is the box's refusal, above.
 - **The box** takes words alone, signed by main (WORDS-12), and keeps them until obid takes them: any refusal leaves them there with obid's words over it. It stays while `member` and `takesQuestions` are null, since that's obid not knowing. Only `false` shuts it, saying so. One send per owner: words on their way hold the box of a view opened meanwhile, the owner having clicked away and back, so nothing asks twice, and only what went leaves the draft. A refusal stays with the thread until the next words, so one that came while the owner was elsewhere still shows. A draft is the Sphere's own, as owner ids are.
 - **Reading.** Each `peerThread` event for a thread it has opened, and the stream coming back, read it again, and an older answer never replaces a newer one. obid away leaves what shows. A `404` or `409` shuts the box with obid's words, until the view next opens and it's read again; leaving the Sphere closes the thread. What was typed stays the box's draft.
 
@@ -143,8 +160,11 @@ Run for real on 2026-11-03, on the rig with Dana's real job (PEER-3's steps belo
 - **PEER-9** The box sends words alone, and they read in the thread as it empties; a refusal, or obid away, leaves them there with obid's words.
 - **PEER-10** The owner id shows beside any other name, and an id with anything but plain ASCII shows its codes: a card saying `Dima’s Oby` from `aaron` reads `Dima’s Oby (aaron)`, and a post goes by its owner id.
 - **PEER-11** The owner's words are theirs only from this Mac's Oby. Every other word is a text node under their Oby's byline, whatever its `by`: no HTML, link or bubble of yours. A post with no words has no bubble, and one of another shape isn't shown.
-- **PEER-12** `member` and `takesQuestions` null call nobody gone and keep the box; an open question reads `Hasn’t answered yet` once `quietAt` passes, with no event.
+- **PEER-12** `member` and `takesQuestions` null call nobody gone and keep the box; an open question reads `Dima’s Oby hasn’t answered yet.` once `quietAt` passes, with no event.
 - **PEER-13** One send per owner: words on their way hold a box opened meanwhile, nothing asks twice, words typed since stay, and a refusal shows whichever view is open when it comes.
+- **PEER-14** An answer is a quote under its byline, every line of it a text node, with no HTML or link, and the line that says where it stands is outside it, so an answer that says the same words is still only theirs. Yours and your Oby's aren't quoted, and the room's posts aren't.
+- **PEER-15** Each state reads in its words above, one line per exchange, by that exchange's own posts. `Dima’s Oby hasn’t answered yet.` comes by the app's timer at `quietAt` and not before, with no event; each open question at its own time; a view that goes stops its timer; once the last passed nothing waits; a time past what a timer holds doesn't spin; and the answer takes its place. A question that expired stays expired when their obid's `decline` (`reason: expired`) comes. A reason nobody knows picks the plain words and never shows. A question of theirs says nothing of who was bothered, and a review keeps its plain state.
+- **PEER-24** A name that isn't its owner's id shows that id in every line, a look-alike letter as its code: a card saying `Dima’s Oby` from `aaron` reads `Dima (aaron) wasn’t bothered.`. A name that's only the id's capitals says it once.
 - **PEER-16** A member from before is asked once, by the first question that waits on them: not by a second, not again after a restart, not again after a no. The card holds none of a member's words, and a file that doesn't read gets no card.
 - **PEER-17** Nothing is shared silently: not by the question, its words, the card, the API token alone or Settings opening the card. (The first-join seed is the stated exception until SPH-8, above.) `POST /v1/obid/sharing/rules` with the token alone is `403`. A Confirm with the device's signature makes one rule of status and progress that answers who asks and opens no room, and in the Electron app main signs it only on a press of Confirm and an input it saw itself. The questions that waited go by it: answered by the Oby and off the owner's list, or back with the owner when the material can't answer; said to the owner when the scan stops the answer. One the owner is already answering stays theirs, and a member removed meanwhile gets nothing. A file that stopped reading is refused, not replaced. Settings lists the rule in plain words, opens the card whole, and shows why a change failed.
 - **PEER-18** A rule the owner removed stays removed, across a restart and later questions, and nothing asks for it again; only their own click brings it back.
@@ -159,8 +179,11 @@ Run for real on 2026-11-03, on the rig with Dana's real job (PEER-3's steps belo
 On the rig (`node e2e/rig.mjs start`, then `app`, [test-rig.md](test-rig.md)), or two Macs in one Obysphere:
 
 1. Click a member's row in the side panel: their thread opens, the box ready, its title naming them with their owner id.
-2. Ask "What are you working on?": your words show on the right as the box empties, and their Oby's answer comes under them, with nothing added to your conversations and their inbox empty.
+2. Ask "What are you working on?": your words show on the right as the box empties, and their Oby's answer comes under them as a quote, then "Dana wasn't bothered.", with nothing added to your conversations and their inbox empty.
 3. Paste something the secret scan catches: nothing goes, the words stay and the scan's words show.
+4. Ask something only they know: "It's waiting on Dana." They answer: their words as a quote, then "Dana answered this one, not its Oby." Ask again and they decline: "Dana said no to this one."
+5. With their obid stopped, ask: `Asking…`, and after 2 minutes, with nothing else happening, "Dana's Oby hasn't answered yet." Start it: the answer comes and that line goes.
+6. With the Sphere's rule off (`node e2e/rig.mjs policy off`), ask: "This Obysphere's rules don't allow questions yet. An admin can change that.", and the words stay in the box.
 
 On a real Mac that is already in an Obysphere from before the starter rule (or with `home/sharing.json` holding `{"rules": []}`), with a teammate's Oby:
 

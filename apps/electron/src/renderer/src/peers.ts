@@ -81,15 +81,42 @@ export function boxShut(t: PeerThread): string | null {
 // What a thread shows: posts with words. One without (a status, a bare decline) says it through its
 // exchange's line, under the last post that has words.
 export const withWords = (posts: PeerPost[]) => posts.filter((p): p is PeerPost & { text: string } => p.text !== null);
-// Where an exchange stands, plainly. SPH-5 owns these words. The clock decides `quietAt`, so no event says it.
-export function standing(x: PeerExchange, owner: string, now: number): string | null {
-  if (x.waitingOnThem) return `Waiting on ${plainId(owner)}`;
-  if (x.quietAt) return Date.parse(x.quietAt) <= now ? 'Hasn’t answered yet' : 'Asking…';
+// Who a state line names: the owner id beside any other name, as whoseOby does, but not for a name
+// that's only the id's capitals (`Dana`, `dana`), or every line would say it twice.
+function named(t: Pick<PeerThread, 'name' | 'owner'>) {
+  const same = t.name.toLowerCase() === t.owner.toLowerCase();
+  const id = same ? '' : ` (${plainId(t.owner)})`, shown = same ? plainId(t.name) : t.name;
+  return { person: `${shown}${id}`, oby: `${shown}’s Oby${id}` };
+}
+// Where an exchange stands, in ask-an-oby.md's words. The clock decides `quietAt`, so no event says
+// it. `by` and `reason` are what the sender says of itself: they pick obid's words here and never
+// show. Past waiting, a question of theirs or a review has only its plain state.
+export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' | 'posts'>, now: number): string | null {
+  const { person, oby } = named(t);
+  if (x.waitingOnThem) return `It’s waiting on ${person}.`;
+  if (x.quietAt) return Date.parse(x.quietAt) <= now ? `${oby} hasn’t answered yet.` : 'Asking…';
+  const said = t.posts.filter((p) => p.exchange.id === x.id);
+  if (x.direction === 'outgoing' && x.type === 'question') {
+    const answer = said.find((p) => p.kind === 'answer');
+    if (x.state === 'done' && answer) return answer.by === 'owner' ? `${person} answered this one, not its Oby.` : `${person} wasn’t bothered.`;
+    if (x.state === 'expired') return `${oby} never answered: the question expired.`;
+    if (x.state === 'declined') {
+      switch (said.find((p) => p.kind === 'decline')?.reason) {
+        case 'owner_declined': return `${person} said no to this one.`;
+        case 'busy': return `${oby} is busy with other questions and didn’t take this one. Ask again later.`;
+        case 'out_of_scope': return `${oby} doesn’t take questions like this one.`;
+        case 'policy': return `This Obysphere’s rules stopped ${oby} answering. An admin can change them.`;
+        // their obid saying so, once it's back: nobody said no
+        case 'expired': return `${oby} never answered: the question expired.`;
+        default: return `${oby} declined without saying why.`;
+      }
+    }
+  }
   return x.state === 'declined' ? 'Declined' : x.state === 'expired' ? 'No answer came' : x.state === 'cancelled' ? 'Called off' : null;
 }
-// under each exchange's last post with words, and no other
-export const lineUnder = (posts: PeerPost[], i: number, owner: string, now: number) =>
-  (posts.slice(i + 1).some((p) => p.exchange.id === posts[i].exchange.id) ? null : standing(posts[i].exchange, owner, now));
+// under each exchange's last post with words, and no other, so it's told once. shown: the thread's posts with words
+export const lineUnder = (shown: PeerPost[], i: number, t: Pick<PeerThread, 'name' | 'owner' | 'posts'>, now: number) =>
+  (shown.slice(i + 1).some((p) => p.exchange.id === shown[i].exchange.id) ? null : standing(shown[i].exchange, t, now));
 // when the next open question counts as unanswered, if one still will
 export const nextQuiet = (posts: PeerPost[], now: number) => Math.min(Infinity, ...posts.flatMap((p) => {
   const at = p.exchange.quietAt ? Date.parse(p.exchange.quietAt) : NaN;
