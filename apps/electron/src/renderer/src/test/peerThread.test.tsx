@@ -178,7 +178,7 @@ describe('where it stands', () => {
     // the clock decides, and says when next to look
     const before = Date.parse('2026-11-03T12:01:00Z'), after = Date.parse('2026-11-03T12:02:00Z');
     const dana = thread();
-    expect(standing(open, dana, before)).toBe('Asking…');
+    expect(standing(open, dana, before)).toBe('Asked');
     expect(standing(open, dana, after)).toBe('Dana’s Oby hasn’t answered yet.');
     expect(nextQuiet([asked()], before)).toBe(after);
     expect(nextQuiet([asked()], after)).toBe(Infinity);

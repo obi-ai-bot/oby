@@ -103,7 +103,45 @@ pub fn pick<'a>(members: &'a [AskMember], wanted: &str) -> Picked<'a> {
     }
 }
 
+/// The longest name the owner can teach Oby for someone (ASK-27).
+const MOST_KNOWN_AS: usize = 80;
+
 impl Link {
+    fn known_as_file(&self) -> std::path::PathBuf {
+        self.config.home.join("sphere").join("known-as.json")
+    }
+
+    /// Who the owner taught Oby a name means (ASK-27): their owner id. It goes with `home/sphere`, so
+    /// leaving an Obysphere forgets it. Only the owner's word or their Confirm writes it.
+    pub fn known_as(&self, name: &str) -> Option<String> {
+        let kept: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&std::fs::read(self.known_as_file()).ok()?).ok()?;
+        kept.get(&name.trim().to_lowercase()).cloned()
+    }
+
+    /// Remembers that the owner means `owner` by `name`. A failure only means asking again next time.
+    pub fn remember_known_as(&self, name: &str, owner: &str) {
+        let name = name.trim().to_lowercase();
+        if name.is_empty()
+            || name.chars().count() > MOST_KNOWN_AS
+            || name.chars().any(char::is_control)
+        {
+            return;
+        }
+        let file = self.known_as_file();
+        let mut kept: std::collections::BTreeMap<String, String> = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        kept.insert(name, owner.to_owned());
+        let written = serde_json::to_vec_pretty(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| crate::store::write_private(&file, &bytes));
+        if let Err(e) = written {
+            tracing::warn!("sphere: a name for someone wasn't kept: {e}");
+        }
+    }
+
     /// The other active members as the directory last read them, sorted by owner.
     pub fn ask_members(&self) -> Vec<AskMember> {
         let mut me = vec![self.owner()];

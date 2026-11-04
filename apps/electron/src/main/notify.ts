@@ -8,8 +8,9 @@ import { mergeAlert, parseEvent, plainId, sseReader, type Conversation, type Eve
 // Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
 // RunnerFeed.swift), by the owner's rule of 2026-10-28 (`notifies`, the one gate): nothing while
 // the window is in front, on any page; away from it, only what waits on the owner to decide or
-// act (an agent's ask, a Confirm, a Start, a question, a job that failed or couldn't publish);
-// never progress, a result with nothing to decide, or Oby's own words. What alerts is what obid
+// act (an agent's ask, a Confirm, a Start, a question, a job that failed or couldn't publish), and
+// the answer to a question they asked another Oby, which its card promises (`pingOf`); never
+// progress, a result with nothing to decide, or Oby's own words. What alerts is what obid
 // pushes to the phones (core/crates/obid/src/push.rs, `wanted` and its `notifies`), so the Mac and
 // the iPhone agree; the words are the Swift app's. One alert per thing, replaced when what it
 // needs changes, gone once it's settled anywhere; nothing that was there when Oby opened.
@@ -284,6 +285,10 @@ function look() {
   }
   for (const [key, s] of said) if (s.needs && !next.has(key)) withdraw(key);
   said = next;
+  for (const [c, p] of pings) {
+    if (notifies(true, focused())) post(`ask:${p.id}`, { what: '', needs: true, title: p.title, subtitle: titles.get(c), body: plain(p.body), place: { conversation: c }, thread: `conversation-${c}`, buttons: [] });
+  }
+  pings.clear();
   // Oby's answer asks nothing (its asks come as inbox items, above): FYI, which the gate keeps in
   for (const [c, text] of answers) {
     const place = { conversation: c };
@@ -292,6 +297,15 @@ function look() {
   }
   answers.clear();
 }
+
+// The answer to a question the owner asked another Oby, once it's in: its card said "I'll ping you".
+// Only its end: "still waiting" is no answer. Their words stay data: plain text in an alert, and a
+// name from their card, cleaned as the inbox's are.
+export const pingOf = (t: Pick<Turn, 'asks' | 'text'>) => {
+  const a = t.asks?.find((c) => ['answered', 'declined', 'expired'].includes(c.state));
+  return a && t.text.trim() ? { title: `${plainId(a.name)}’s Oby answered`, body: t.text } : null;
+};
+const pings = new Map<string, { id: string; title: string; body: string }>();
 
 // A burst of changes (a job's steps, its end and publish) settles first, as obid's push waits
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -308,7 +322,11 @@ function heard(t: Turn) {
   const before = lastAnswer.get(c);
   if (before && (t.at < before.at || t.id === before.id)) return;
   lastAnswer.set(c, t);
-  if (Date.parse(t.at) > Date.now() - 600_000) answers.set(c, t.text);
+  if (Date.parse(t.at) > Date.now() - 600_000) {
+    answers.set(c, t.text);
+    const ping = pingOf(t);
+    if (ping) pings.set(c, { id: t.id, ...ping });
+  }
 }
 
 function take(e: Event) {
