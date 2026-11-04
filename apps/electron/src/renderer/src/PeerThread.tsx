@@ -68,7 +68,7 @@ export default function PeerThreadView({ owner, leaving, covered = false, onClos
       <div className="chat-scroll">
         <section ref={list} className="chat" aria-label={who} role="log" onScroll={(e) => { onScroll(); following.current = atEnd(e.currentTarget); }}>
           <div className="chat-column">
-            {posts.length > 0 && <RoomThread posts={posts} obi={sphere?.obi} standing={(i) => lineUnder(posts, i, owner, Date.now())} />}
+            {posts.length > 0 && <RoomThread posts={posts} obi={sphere?.obi} standing={(i) => lineUnder(posts, i, t!, Date.now())} />}
           </div>
           {t && !posts.length && (
             <div className="group-none"><div>

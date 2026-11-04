@@ -5,6 +5,7 @@
 .room-from { color: var(--muted); font-size: 11px; line-height: 14px; overflow-wrap: anywhere; }
 .room-by .peer-by { margin-bottom: 0; min-width: 0; overflow-wrap: anywhere; }
 .room-did { color: var(--muted); font-size: var(--text-sm); line-height: 16px; user-select: none; }
+.room-quote { white-space: pre-wrap; overflow-wrap: anywhere; }
 .room-about, .room-state { margin: 3px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 16px; overflow-wrap: anywhere; }
 .room-state.is-refused { color: var(--danger); }
 .msg.is-waiting .msg-bubble { opacity: 0.6; }

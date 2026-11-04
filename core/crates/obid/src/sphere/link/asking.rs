@@ -239,7 +239,12 @@ impl Link {
         let sent = self
             .request_for(body.to_string().as_bytes(), Some(meant))
             .await
-            .map_err(|e| api(e.status, crate::brain::ask::refusal(&member.name, &e)))?;
+            .map_err(|e| {
+                // The thread already says who, and no model of the owner's is there to be "I".
+                let words = crate::brain::ask::refusal(&member.name, &e);
+                let rules = words.strip_prefix(&format!("I can't ask {}'s Oby. ", member.name));
+                api(e.status, rules.unwrap_or(&words))
+            })?;
         let cid = sent["correlationId"].as_str().unwrap_or_default();
         let exchange = self.lock().exchanges.get(cid).cloned();
         let verified = self.pins.verified(owner);

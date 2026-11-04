@@ -177,19 +177,20 @@ describe('where it stands', () => {
     expect(boxShut(thread({ takesQuestions: false }))).toBe('Dana’s Oby (dana) doesn’t take questions.');
     // the clock decides, and says when next to look
     const before = Date.parse('2026-11-03T12:01:00Z'), after = Date.parse('2026-11-03T12:02:00Z');
-    expect(standing(open, 'dana', before)).toBe('Asking…');
-    expect(standing(open, 'dana', after)).toBe('Hasn’t answered yet');
+    const dana = thread();
+    expect(standing(open, dana, before)).toBe('Asking…');
+    expect(standing(open, dana, after)).toBe('Dana’s Oby hasn’t answered yet.');
     expect(nextQuiet([asked()], before)).toBe(after);
     expect(nextQuiet([asked()], after)).toBe(Infinity);
-    expect(standing({ ...open, quietAt: null, waitingOnThem: true }, 'dana', after)).toBe('Waiting on dana');
-    expect(standing({ ...open, quietAt: null, state: 'done' }, 'dana', after)).toBeNull();
-    expect(standing({ ...open, quietAt: null, state: 'declined' }, 'dana', after)).toBe('Declined');
+    expect(standing({ ...open, quietAt: null, waitingOnThem: true }, dana, after)).toBe('It’s waiting on Dana.');
+    expect(standing({ ...open, quietAt: null, state: 'done' }, dana, after)).toBeNull();
+    expect(standing({ ...open, quietAt: null, state: 'declined' }, dana, after)).toBe('Dana’s Oby declined without saying why.');
     // one line per exchange, under its last post with words: a bare status doesn't hide it
     const waiting = { ...open, quietAt: null, waitingOnThem: true }, asking = withWords([asked({ exchange: waiting }), post('s', { kind: 'status', text: null, exchange: waiting }), post('later', { exchange: { ...open, id: 'x2' } })]);
-    expect(asking.map((_, i) => lineUnder(asking, i, 'dana', after))).toEqual(['Waiting on dana', 'Hasn’t answered yet']);
+    expect(asking.map((_, i) => lineUnder(asking, i, dana, after))).toEqual(['It’s waiting on Dana.', 'Dana’s Oby hasn’t answered yet.']);
     // and it shows, in a thread, whose byline is already their owner id
-    const shown = renderToStaticMarkup(<RoomThread posts={asking} obi="obi-me" standing={(i) => lineUnder(asking, i, 'dana', after)} />);
-    expect(shown).toContain('Waiting on dana');
+    const shown = renderToStaticMarkup(<RoomThread posts={asking} obi="obi-me" standing={(i) => lineUnder(asking, i, dana, after)} />);
+    expect(shown).toContain('It’s waiting on Dana.');
     expect(shown).not.toContain('room-from');
   });
 });

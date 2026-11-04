@@ -21,7 +21,7 @@ const at = (p: RoomPost) => Date.parse(p.recordedAt ?? p.createdAt);
 // under a byline with who sent it as data: no Markdown, no links, nothing to click. A post's `by` and
 // `kind` are the sender's own claims: no one's post reads as more trustworthy for them, and the only
 // mark verification makes is its lack. obi: this Mac's Oby in this Sphere. standing: a member's thread
-// says where a post's exchange stands, under it (PeerThread.tsx).
+// says where a post's exchange stands, under it, and sets their words apart as a quote (PeerThread.tsx).
 export function RoomThread({ posts, obi, standing }: { posts: RoomPost[]; obi?: string; standing?: (i: number) => string | null }) {
   return (
     <ol className="chat-thread rise" style={{ '--i': 1 } as React.CSSProperties}>
@@ -43,7 +43,7 @@ export function RoomThread({ posts, obi, standing }: { posts: RoomPost[]; obi?: 
               </div>
             )}
             <div className="msg-end">
-              <p className="msg-bubble">{p.text}</p>
+              {standing && !mine ? <blockquote className="msg-quote room-quote">{p.text}</blockquote> : <p className="msg-bubble">{p.text}</p>}
               {about && <p className="room-about">{about}</p>}
               {/* (yours is proved by its `from`, and obid wrote it itself) */}
               {!mine && p.verified !== true && <p className="room-state">Not verified</p>}

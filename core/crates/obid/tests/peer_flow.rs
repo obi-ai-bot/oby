@@ -803,10 +803,9 @@ async fn peer_5_a_secret_stops_it() {
     sphere.lock().deny_requests = true;
     let denied = tokio::task::block_in_place(|| ask(&obid, "ernesto", QUESTION));
     assert_eq!(denied.status, 502, "{}", denied.text);
-    assert!(
-        denied.text.contains(
-            "This Obysphere's rules don't allow questions yet. An admin can change that."
-        ),
+    assert_eq!(
+        denied.body["error"],
+        "This Obysphere's rules don't allow questions yet. An admin can change that.",
         "{}",
         denied.text
     );
