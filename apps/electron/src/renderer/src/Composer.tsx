@@ -9,7 +9,7 @@ import StatusDot from './StatusDot';
 import { useClicksEverywhere } from './Menu';
 import { useTasks, type Task } from './tasks';
 import { BrandMark } from './brands';
-import { fullness, useAccounts, weekWords } from './SettingsView';
+import { barOf, fullness, useAccounts, weekWords } from './SettingsView';
 import { USING_PLAN } from './chatgpt';
 import { ManageUsage } from './ChatGptPlan';
 import { lookAtUsage, uploadFiles, useRepos } from './live';
@@ -618,10 +618,10 @@ function UsageGauge({ ref, open, onClick }: { ref: React.Ref<HTMLButtonElement>;
 // Each account's use, over the box like the + panel, as Settings › Agents has it: its agent
 // and name, when its 5-hour session starts over and how much of it is used on one line, the
 // session's bar under them (yellow past 80%, red past 90%), and the week in words under that
-// (an account with no session figure: its week's words alone); a gear at the top right goes to
+// (an account with no session figure: the bar is what it has, as in Settings › Agents); a gear at the top right goes to
 // Settings › Agents, and takes the focus on opening. Esc, a click outside or Tab out of it
 // closes it.
-function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: React.FocusEvent) => void }) {
+export function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: React.FocusEvent) => void }) {
   const [accounts] = useAccounts();
   const close = useRef(onClose);
   close.current = onClose;
@@ -641,20 +641,20 @@ function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (e: Reac
       </div>
       {!accounts.length && <p className="add-empty">No accounts yet</p>}
       {accounts.map((a) => {
-        const week = weekWords(a);
+        const week = weekWords(a), bar = a.signedIn === false ? null : barOf(a);
         return (
           <div key={a.id} className="usage-row">
             <BrandMark brand={AGENTS[a.agent].brand} size={16} mono />
             <span className="usage-text">
               <span className="usage-line">
                 <span className="usage-name">{AGENTS[a.agent].name} · {a.name}</span>
-                {a.session != null && <>
+                {bar != null && <>
                   {a.sessionResets && <span className="usage-about">Resets {a.sessionResets}</span>}
-                  <span className={`usage-used ${fullness(a.session)}`.trim()}>{a.session}%</span>
+                  <span className={`usage-used ${fullness(bar)}`.trim()}>{bar}%</span>
                 </>}
               </span>
-              {a.session != null && <span className="set-meter" role="meter" aria-valuenow={a.session} aria-valuemin={0} aria-valuemax={100} aria-label={`${a.session}% of the 5-hour session used`}>
-                <span className={fullness(a.session)} style={{ width: `${a.session}%` }} />
+              {bar != null && <span className="set-meter" role="meter" aria-valuenow={bar} aria-valuemin={0} aria-valuemax={100} aria-label={a.session != null ? `${bar}% of the 5-hour session used` : `${bar}% used`}>
+                <span className={fullness(bar)} style={{ width: `${bar}%` }} />
               </span>}
               <span className="usage-week">{week}</span>
               {a.chatgpt && a.signedIn && <span className="usage-week">{USING_PLAN} · <ManageUsage /></span>}
