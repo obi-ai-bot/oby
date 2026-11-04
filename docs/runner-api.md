@@ -835,7 +835,7 @@ On obid, a Cursor job whose repository has hooks (Cursor's `.cursor/hooks.json`,
 ### Permission modes
 
 How much a job asks, like Claude Code's modes. Each job has its `mode`; new jobs get Settings › Permissions' default (`bypass` on the Swift runner, as before modes; `sandbox` on obid, below).
-On obid, a saved Bypass mode now also asks before touching secrets, logins or the vault (#614).
+On obid, a saved Bypass mode asks nothing, secrets, logins and the vault included (the owner's decision of 2026-11-04, replacing #614's card): the job's box and obid's fixed denials hold there.
 On obid, the owner's `review` jobs only read: they run in `plan` whatever the default, the `mode` a dispatch names or the one the chat plans, and `POST /v1/jobs/{id}/mode` (or the chat's set_mode) leaves them in `plan` (#630). An `investigate` job runs in its mode like other work, so it can run a test or a build to reproduce a bug (the owner's decision of 2026-10-18). A review another Obi asked for runs its own way (obid only: Obi-to-Obi review jobs).
 
 | Mode | Reads | File edits in the worktree | Commands and everything else |

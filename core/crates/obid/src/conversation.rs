@@ -1555,11 +1555,28 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         },
         _ => return None,
     };
-    // A stalled job's summary starts with the same stall in other words: obid says it once.
-    let mut text = match first_line("summary").filter(|_| job["stalled"].is_null()) {
-        Some(summary) => format!("{said}\n{summary}"),
+    // A stalled job's summary starts with the same stall in other words: obid says it once. The
+    // rest is the agent's whole report, as Claude Code ends a task with what it did (TASKS-16).
+    let summary = job["summary"]
+        .as_str()
+        .map(|s| crate::job::steered(s).0)
+        .filter(|_| job["stalled"].is_null());
+    let mut text = match summary.and_then(whole_report) {
+        Some(summary) => format!("{said}\n\n{summary}"),
         None => said,
     };
+    // Where it leaves them, in obid's words: what can be done with work nothing published.
+    if status == "done"
+        && job["published"].is_null()
+        && job["nothingDone"] != true
+        && first_line("publishError").is_none()
+        && first_line("reason").is_none()
+        && job["pushed"].as_u64().unwrap_or(0) == 0
+    {
+        text = format!(
+            "{text}\n\nNothing was published. Reply here to act on this, or to send it on."
+        );
+    }
     // What it did on the owner's words after its work (#1661).
     if let Some(steer) = job["summary"].as_str().and_then(crate::job::last_steer) {
         text = format!("{text}\n{}", crate::brain::briefing::line(steer, 300));
@@ -1568,6 +1585,36 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
         conversation.to_owned(),
         crate::secrets::known().redact(&text),
     ))
+}
+
+/// The longest a job's report goes in its conversation.
+const MOST_REPORT: usize = 6000;
+
+/// An agent's final report as the conversation shows it: without its own leading "Summary" heading,
+/// which only repeats what obid says above it, and cut at [`MOST_REPORT`] characters. `None` when
+/// nothing is left.
+fn whole_report(summary: &str) -> Option<String> {
+    let body = summary.trim_start();
+    let body = match body.split_once('\n') {
+        Some((first, rest))
+            if first
+                .trim_start_matches('#')
+                .trim()
+                .eq_ignore_ascii_case("summary") =>
+        {
+            rest.trim_start()
+        }
+        _ => body,
+    }
+    .trim_end();
+    if body.is_empty() || body.eq_ignore_ascii_case("summary") {
+        return None;
+    }
+    if body.chars().count() <= MOST_REPORT {
+        return Some(body.to_owned());
+    }
+    let cut: String = body.chars().take(MOST_REPORT).collect();
+    Some(format!("{cut}…"))
 }
 
 /// Follows obid's job events (#351): when a job a conversation's plan started goes from queued or
@@ -2121,7 +2168,7 @@ mod tests {
             job_report(&failed),
             Some((
                 "c1".into(),
-                "Fix oby #351 failed.\nNot logged in with [redacted: vault TEST_351]".into()
+                "Fix oby #351 failed.\n\nNot logged in with [redacted: vault TEST_351]\nMore below.".into()
             ))
         );
         let mut published = job("done");
@@ -2129,13 +2176,13 @@ mod tests {
         published["summary"] = json!("Reports reach the chat.");
         assert_eq!(
             job_report(&published).unwrap().1,
-            "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
+            "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\n\nReports reach the chat."
         );
         // PUBLISHING-12: a follow-up that pushed onto its task's open pull request says so.
         published["addedTo"] = json!(700);
         assert_eq!(
             job_report(&published).unwrap().1,
-            "Fix oby #351 is done: added to pull request #700, https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat."
+            "Fix oby #351 is done: added to pull request #700, https://github.com/obi-ai-bot/obi/pull/700\n\nReports reach the chat."
         );
         published["addedTo"] = json!(null);
         // TASKCONV-14: what it did on the owner's words after its work shows too.
@@ -2143,7 +2190,7 @@ mod tests {
             json!("Reports reach the chat.\n\nAfter what you told it: Ended it with a period.");
         assert_eq!(
             job_report(&published).unwrap().1,
-            "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\nReports reach the chat.\nAfter what you told it: Ended it with a period."
+            "Fix oby #351 is done: https://github.com/obi-ai-bot/obi/pull/700\n\nReports reach the chat.\nAfter what you told it: Ended it with a period."
         );
         let mut unpublished = job("done");
         unpublished["publishError"] = json!("Not published: the secret scan couldn't run.\nwhy");
@@ -2151,7 +2198,26 @@ mod tests {
             job_report(&unpublished).unwrap().1,
             "Fix oby #351 is done, but it wasn't published: Not published: the secret scan couldn't run."
         );
-        assert_eq!(job_report(&job("done")).unwrap().1, "Fix oby #351 is done.");
+        assert_eq!(
+            job_report(&job("done")).unwrap().1,
+            "Fix oby #351 is done.\n\nNothing was published. Reply here to act on this, or to send it on."
+        );
+        // TASKS-16: the agent's whole report, without its own heading, and no bare "Summary".
+        let mut reported = job("done");
+        reported["summary"] = json!("## Summary\n\n**Yes.**\n\nSecond part.");
+        assert_eq!(
+            job_report(&reported).unwrap().1,
+            "Fix oby #351 is done.\n\n**Yes.**\n\nSecond part.\n\nNothing was published. Reply here to act on this, or to send it on."
+        );
+        assert_eq!(crate::conversation::whole_report("## Summary\n"), None);
+        assert_eq!(crate::conversation::whole_report("Summary"), None);
+        assert_eq!(
+            crate::conversation::whole_report(&"x".repeat(7000))
+                .unwrap()
+                .chars()
+                .count(),
+            crate::conversation::MOST_REPORT + 1
+        );
         // Pushed, then only its pull request failed; or pushed to a remote with none (#627).
         let mut pushed = job("done");
         pushed["pushed"] = json!(1);
@@ -2191,7 +2257,7 @@ mod tests {
         nothing["summary"] = json!("I couldn't implement issue #131, and I made no commits.");
         assert_eq!(
             job_report(&nothing).unwrap().1,
-            "Fix oby #351 ended with nothing done. Nothing committed, so nothing was published.\nI couldn't implement issue #131, and I made no commits."
+            "Fix oby #351 ended with nothing done. Nothing committed, so nothing was published.\n\nI couldn't implement issue #131, and I made no commits."
         );
         let mut stalled = job("failed");
         stalled["stalled"] = json!({"text": "no progress for 15 minutes", "note": "Left: tests"});

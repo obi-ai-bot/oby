@@ -2747,10 +2747,11 @@ pub fn reach(call: &Call, bounds: &Bounds) -> Option<Reach> {
 /// fixed denials (`crate::policy`) come before this, in every mode.
 pub fn decide(call: &Call, mode: Mode, rules: &[Rule], bounds: &Bounds) -> Verdict {
     let worktree = bounds.worktree.as_path();
-    // Secrets, a login or the vault: in every mode, only the owner's own answer lets one through
-    // (the security review of #586): no mode and no saved rule does, so a mode the brain sets
-    // can't settle one. What else leaves the sandbox matters only in Sandbox mode.
-    let reached = reach(call, bounds);
+    // Secrets, a login or the vault: only the owner's own answer lets one through (the security
+    // review of #586), but in Bypass, which asks nothing (the owner's decision of 2026-11-04): the
+    // job's box and obid's fixed denials are what hold there, not a card. No saved rule settles one.
+    // What else leaves the sandbox matters only in Sandbox mode.
+    let reached = reach(call, bounds).filter(|r| mode != Mode::Bypass || *r != Reach::Secrets);
     let reach = match reached {
         Some(Reach::Secrets) => Some(Reach::Secrets),
         other if mode == Mode::Sandbox => other,
@@ -3520,14 +3521,19 @@ mod tests {
             assert_eq!(decide_in(&call, mode, &saved), Verdict::Ask, "{mode:?}");
         }
         assert_eq!(decide_in(&call, Mode::Bypass, &saved), Verdict::Allow);
-        // A hook that touches secrets asks in Bypass too, and no rule answers it.
+        // A hook that touches secrets asks but in Bypass, and no rule answers it.
         let secret = Call {
             tool: REPOSITORY_HOOKS.into(),
             command: Some("cat ~/.ssh/id_rsa".into()),
             ..Call::default()
         };
         for mode in Mode::ALL {
-            assert_eq!(decide_in(&secret, mode, &saved), Verdict::Ask, "{mode:?}");
+            let answer = if mode == Mode::Bypass {
+                Verdict::Allow
+            } else {
+                Verdict::Ask
+            };
+            assert_eq!(decide_in(&secret, mode, &saved), answer, "{mode:?}");
         }
     }
 
@@ -3663,11 +3669,11 @@ mod tests {
         // It prints what it's given when there's no such program: a secret's value too.
         assert_ne!(plan("command -V \"$GH_TOKEN\""), Verdict::Allow);
         assert_ne!(plan("command -v $GITHUB_TOKEN"), Verdict::Allow);
-        // `command` as an option's value hides nothing, Bypass too.
+        // `command` as an option's value hides nothing.
         assert_eq!(
             decide(
                 &bash("/usr/bin/time -f command -v printenv"),
-                Mode::Bypass,
+                Mode::Sandbox,
                 &[],
                 &bounds
             ),
@@ -4433,7 +4439,7 @@ mod tests {
     /// Re-review of #586, S2: a secret waits for the owner in every mode, whatever rule is saved,
     /// so a mode the brain sets can't let one through. Other reads still go through.
     #[test]
-    fn secrets_wait_for_the_owner_in_every_mode() {
+    fn secrets_wait_for_the_owner_in_every_mode_but_bypass() {
         let worktree = &Bounds::of(Path::new(WORKTREE));
         let read = |path: &str| Call::new("Read", &serde_json::json!({"file_path": path}));
         let edit = |path: &str| tool("Edit", &[path]);
@@ -4451,7 +4457,12 @@ mod tests {
             ] {
                 for saved in [&[][..], &rules[..]] {
                     let verdict = decide(&call, mode, saved, worktree);
-                    assert_ne!(verdict, Verdict::Allow, "{mode:?} {call:?} {saved:?}");
+                    if mode == Mode::Bypass {
+                        // PERMISSIONS: Bypass asks nothing; a deny rule still holds, and the box.
+                        assert_eq!(verdict, Verdict::Allow, "{call:?} {saved:?}");
+                    } else {
+                        assert_ne!(verdict, Verdict::Allow, "{mode:?} {call:?} {saved:?}");
+                    }
                 }
             }
             assert_eq!(
@@ -4942,7 +4953,7 @@ mod tests {
                 "{secret}"
             );
             assert_eq!(
-                decide_in(&bash(&secret), Mode::Bypass, &[]),
+                decide_in(&bash(&secret), Mode::Sandbox, &[]),
                 Verdict::Ask,
                 "{secret}"
             );
@@ -5442,7 +5453,7 @@ mod tests {
                 "{command}"
             );
             assert_eq!(
-                decide_in(&bash(command), Mode::Bypass, &[]),
+                decide_in(&bash(command), Mode::Sandbox, &[]),
                 Verdict::Ask,
                 "{command}"
             );
@@ -6061,7 +6072,7 @@ mod tests {
     /// that variable, as `echo $NAME` does, and `git config`'s keys and patterns aren't files.
     /// Dumping the environment, a secret's name and a secret's file still ask.
     #[test]
-    fn bypass_4_only_what_touches_secrets_asks_in_bypass() {
+    fn bypass_4_bypass_asks_nothing_and_a_secret_is_still_named() {
         for command in [
             "printenv HTTPS_PROXY",
             "printenv -0 PATH HOME",
@@ -6089,7 +6100,7 @@ mod tests {
                 "{command}"
             );
             assert_eq!(
-                decide_in(&bash(command), Mode::Bypass, &[]),
+                decide_in(&bash(command), Mode::Sandbox, &[]),
                 Verdict::Ask,
                 "{command}"
             );
