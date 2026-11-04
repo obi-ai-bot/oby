@@ -272,7 +272,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
 // A check's command in Settings' field, in place of the choices: Use it keeps what's typed; with
 // empty (Change check's) an empty field is allowed, that button its label, and gives null. A
 // question's own answer takes the same field (label, use, max).
-function CheckField({ initial, empty, label = 'The check’s command', use = 'Use it', max = 200, onUse, onCancel }: {
+export function CheckField({ initial, empty, label = 'The check’s command', use = 'Use it', max = 200, onUse, onCancel }: {
   initial: string; empty?: string; label?: string; use?: string; max?: number; onUse: (check: string | null) => void; onCancel: () => void;
 }) {
   const [value, setValue] = useState(initial);

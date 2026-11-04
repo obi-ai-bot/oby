@@ -3,7 +3,7 @@ import { constants, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { obid, send, type Answer, type Trusted } from './obid';
 import { answerLimit, writeOwn } from './device';
-import { mergeAlert, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
+import { mergeAlert, parseEvent, plainId, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
 // RunnerFeed.swift), by the owner's rule of 2026-10-28 (`notifies`, the one gate): nothing while
@@ -95,9 +95,14 @@ const canPublish = (j: ObidJob) => j.status === 'done' && j.kind !== 'research' 
 const pushedHead = (j: ObidJob) => j.outgoing?.filter((o) => o.action === 'push' && o.branch === j.branch).at(-1)?.id ?? '';
 
 const call = (path: string, body: unknown) => () => obid('POST', path, body);
+// Another Oby's question: who by their owner id as its card shows it, and their words as plain text,
+// since obid's own say they're "quoted below", and here nothing is. Answered on its card, where the
+// click signs it, so no button (PEER-33).
+const questionOf = ({ kind, obi: o }: InboxItem) => (kind === 'obiRequest' && o?.type === 'question' && typeof o.quoted?.text === 'string' && typeof o.fromOwner === 'string'
+  ? { title: `Question from ${plainId(o.fromOwner)}`, body: plain(o.quoted.text) } : null);
 const id = encodeURIComponent;
 
-function wanted(): Map<string, Alert> {
+export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string, Alert> {
   const want = new Map<string, Alert>();
   for (const j of jobs.values()) {
     // another Obi's, or let go: nothing
@@ -149,7 +154,7 @@ function wanted(): Map<string, Alert> {
   // From the open inbox: a Confirm, a Start, Allow for the conversation's shell command, and what
   // obid sorts as needing the owner. A job's permission alerts as its job; what one turn offered
   // (oby_offer) is one alert, however many jobs.
-  const open = [...inbox.values()].filter((i) => i.state === 'open');
+  const open = [...items].filter((i) => i.state === 'open');
   const offered = new Set<string>();
   for (const i of open) {
     const offer = i.offer?.id;
@@ -171,6 +176,8 @@ function wanted(): Map<string, Alert> {
     // this Mac's signature on the owner's click in the window (device.ts), where what it carries
     // out shows in full.
     if (i.kind === 'confirm') { title = 'Confirm'; body = plain(`${i.title}\n${i.text}`); }
+    const question = questionOf(i);
+    if (question) ({ title, body } = question);
     want.set(offer ? `offer:${offer}` : `item:${i.id}`, {
       what: 'open', needs: true, title, body, place: { job, conversation }, buttons,
       thread: job ? `job-${job}` : conversation ? `conversation-${conversation}` : 'oby',

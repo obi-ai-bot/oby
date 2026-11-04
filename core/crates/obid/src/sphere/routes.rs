@@ -238,6 +238,23 @@ pub async fn answer(
     // own words for Oby's review (#1659).
     let signer = crate::routes::signed_by(&shared, "POST", &uri, &headers, &body);
     let typed = signer.is_some();
+    // Another Oby's question is answered or declined only by the owner's hand (PEER-33): a signature
+    // of one of their devices, or a paired phone through the gateway. Putting it off says nothing, so
+    // it needs neither; a body that's neither is refused below, as any.
+    if !typed
+        && device.is_none()
+        && shared
+            .link
+            .item(&id)
+            .is_some_and(|i| i.done.is_none() && i.is_question())
+        && serde_json::from_slice::<Value>(&body)
+            .is_ok_and(|b| b.get("answer").is_some() || b.get("done").is_some())
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            super::link::NEEDS_YOUR_HAND,
+        ));
+    }
     // Who answered stays on the item, and in the log: a merge can be traced afterwards (#1825).
     let by = signer.or_else(|| device.as_ref().map(|d| d.0.0.clone()));
     tracing::info!(

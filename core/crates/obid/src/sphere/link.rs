@@ -2969,6 +2969,11 @@ enum Recheck {
 /// Why a Confirm on the card that asks to share, with nothing ticked, does nothing (PEER-38).
 const CHOOSE_REPOS_FIRST: &str =
     "Choose the repositories first, in Oby on your Mac: nothing was shared.";
+
+/// Why an answer no device of the owner's signed doesn't reach another Oby's question (PEER-33).
+pub const NEEDS_YOUR_HAND: &str =
+    "Only you answer this one, from your own app: this answer wasn't signed, so nothing was sent.";
+
 /// Why a Confirm without the owner's tap is refused (#776).
 pub const NEEDS_YOUR_TAP: &str =
     "Only your tap can confirm this: confirm it in Oby on your Mac or iPhone.";
@@ -3099,6 +3104,23 @@ pub(crate) const CONFIRM_MERGED: &str = "Closed by Oby: that pull request was me
 pub(crate) const CONFIRM_CLOSED: &str = "Closed by Oby: that pull request was closed since.";
 pub(crate) const CONFIRM_MOVED: &str =
     "Closed by Oby: that pull request's head moved since. Ask Oby again.";
+
+pub(crate) const CONFIRM_SETTLED: &str = "Closed by Oby: that request was settled since.";
+
+/// Whether this open Confirm answers another Obi's request that's no longer open, among `open`: it
+/// was answered on its card or another device, called off, or ran out (PEER-35).
+pub(crate) fn settled_request(item: &Item, open: &[Item]) -> bool {
+    use inbox::action;
+    item.confirm.as_deref().is_some_and(|c| {
+        matches!(
+            c.action.as_str(),
+            action::ACCEPT
+                | action::ACCEPT_REMEMBER
+                | action::DECLINE_REMEMBER
+                | action::ANSWER_QUESTION
+        ) && !open.iter().any(|i| i.id == c.target)
+    })
+}
 
 /// The plain note an open Confirm settles with because what it does can no longer happen
 /// (TASKS-13), or none while it still can: an action on a task that's gone, or a merge of the pull

@@ -943,6 +943,40 @@ fn a_phone_cant_approve_a_listeners_review() {
     assert_eq!(dismissed.body["state"], "done");
 }
 
+/// PEER-36: a phone that has never heard of the signature still answers another Oby's question, as
+/// the owner's paired device, while obid's token alone on the loopback doesn't (PEER-33). No exchange
+/// is behind this item: getting as far as saying so is what it shows.
+#[test]
+fn peer_36_a_paired_phone_answers_a_question_unsigned() {
+    let folder = Folder::new("gateway-question");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    config["gateway"] = json!("127.0.0.1:0");
+    let parsed = obid::config::Config::parse(&config.to_string()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let events = obid::events::Events::new();
+        let jobs = obid::jobs::Jobs::open(parsed.clone(), events.clone(), Err("no sandbox".into()))
+            .unwrap();
+        let (_stop, stopping) = tokio::sync::watch::channel(false);
+        let link = obid::sphere::Link::open(parsed, jobs, events, stopping);
+        let item = serde_json::from_value(json!({"id": "obi-q", "kind": "obiRequest", "job": "",
+            "title": "Question from dana", "text": "t", "options": ["Decline"], "details": null,
+            "recommended": null, "created": 1, "done": null, "later": null, "answer": null,
+            "obi": {"type": "question", "correlationId": "q", "quoted": {"text": "Why?"}}}))
+        .unwrap();
+        link.add_items(vec![item]);
+    });
+    let obid = start(&folder.0, &config, None);
+    let body = json!({"answer": "Because."});
+    let target = "/v1/inbox/obi-q/answer";
+    let loopback = call(&obid, "POST", target, Some(&body));
+    assert_eq!(loopback.status, 403, "{}", loopback.text);
+    let token = paired(&obid);
+    let phone = through(&obid, Some(&token), "POST", target, Some(&body));
+    assert_eq!(phone.status, 409, "past the hand's check: {}", phone.text);
+    assert!(phone.text.contains("settled already"), "{}", phone.text);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Through the owner's Obysphere (docs/runner-api.md, "obid only: the phone relay"): the fake
 // Sphere relays what the test's phone sends, and keeps every byte it relayed.

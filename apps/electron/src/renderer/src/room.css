@@ -10,6 +10,11 @@
 .room-state.is-refused { color: var(--danger); }
 .msg.is-waiting .msg-bubble { opacity: 0.6; }
 .room-problem { width: 100%; max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto; padding: 8px var(--gutter) 0; color: var(--danger); font-size: var(--text-md); line-height: 18px; overflow-wrap: anywhere; }
+/* a question only you can answer, over a member's thread's box; its asker's words scroll, however many */
+.room-card { width: 100%; max-width: calc(540px + 2 * var(--gutter)); margin: 0 auto 8px; padding: 0 var(--gutter); }
+.room-card .tc-ask { margin-top: 0; }
+.tc-ask .tc-report.is-problem { margin-top: 8px; font-size: var(--text-md); font-weight: 400; line-height: 18px; overflow-wrap: anywhere; }
+.room-question { margin-top: 8px; max-height: 30vh; overflow: auto; white-space: pre-line; overflow-wrap: anywhere; }
 .room-under { margin: -6px 0 10px; padding: 0 var(--gutter); color: var(--muted); font-size: 11px; line-height: 14px; text-align: center; user-select: none; }
 
 /* a question to another Oby, in a conversation (AskCard.tsx): one card that updates in place */

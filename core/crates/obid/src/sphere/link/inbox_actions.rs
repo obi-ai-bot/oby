@@ -820,7 +820,12 @@ impl Link {
         let all = self.jobs.list(usize::MAX);
         let dead: Vec<(&str, &str)> = open
             .iter()
-            .filter_map(|i| Some((i.id.as_str(), dead_confirm(i, &all)?)))
+            .filter_map(|i| {
+                let why = settled_request(i, &open)
+                    .then_some(CONFIRM_SETTLED)
+                    .or_else(|| dead_confirm(i, &all))?;
+                Some((i.id.as_str(), why))
+            })
             .collect();
         if dead.is_empty() {
             return;
@@ -1178,13 +1183,21 @@ impl Link {
             .lock()
             .inbox
             .get(id)
-            .filter(|i| i.done.is_none() && i.obi.as_ref().is_some_and(|o| o["type"] == "question"))
+            .filter(|i| i.done.is_none() && i.is_question())
             .cloned();
         if let Some(item) = question {
-            match given {
-                Given::Answer(words) => return self.answer_question(item, Some(words)).await,
-                Given::Done => return self.answer_question(item, None).await,
-                Given::Later(_) => {}
+            let words = match &given {
+                Given::Answer(words) => Some(Some(words.clone())),
+                Given::Done => Some(None),
+                Given::Later(_) => None,
+            };
+            if let Some(words) = words {
+                let answered = self.answer_question(item, words).await;
+                // Refused, it wasn't answered: whoever signed that one sent nothing.
+                if answered.is_err() {
+                    self.note_answered_by(id, None);
+                }
+                return answered;
             }
         }
         // The owner's review (crate::review): Approve posts it on GitHub, with no lock held. The
