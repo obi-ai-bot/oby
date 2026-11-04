@@ -67,6 +67,7 @@ mod tests {
                         asked: None,
                         attachments: vec![],
                         relayed: false,
+                        asks: vec![],
                     },
                 )
             })

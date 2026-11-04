@@ -551,7 +551,7 @@ export default function Home() {
         if (l.kind === 'member') return <PeerThreadView key={l.key} owner={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} />;
         if (l.kind === 'oby') return <ObyView key={l.key} name={l.id} leaving={leaving} covered={covered} onClose={back} onGone={onGone} onOpenConvo={(id) => push({ kind: 'peer', id })} />;
         const kind = l.kind === 'talk' ? 'oby' : l.kind === 'peer' ? 'peer' : 'task';
-        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} />;
+        return <ChatView key={l.key} kind={kind} id={l.id} leaving={leaving} covered={covered} onBack={back} onGone={onGone} onOpenTask={openTask} onOpenMember={(owner) => push({ kind: 'member', id: owner })} />;
       })}
       {/* chat first: what Oby is asking you, over your conversation, answered there in one click
           (with none open, on the stage, as on Home) */}

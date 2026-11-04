@@ -47,6 +47,11 @@ do {
             say("inbox \(try await runner.inbox().count)")
             let turns = try await runner.conversation(before: nil, limit: 50)
             say("conversation \(turns.count)")
+            // ASK-21: a turn with a question's card, as obid writes it (ask_an_oby's ask_21 holds
+            // this file to that), read as the phones read it: its words, whole.
+            let carded = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appending(path: "fixtures/carded-turn.json")
+            let old = try Runner.decoder.decode(RunnerTurn.self, from: Data(contentsOf: carded))
+            say("carded \(old.turn.text.hasPrefix("> Billing retries.") && old.turn.text.hasSuffix("wasn't bothered.")) \(old.turn.who.rawValue)")
             if let first = list.first {
                 let one = try await runner.job(first.id)
                 say("job \(one.id) \(one.status.rawValue) heading=\(one.heading)")

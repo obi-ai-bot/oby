@@ -1,0 +1,22 @@
+{
+  "id": "id",
+  "who": "oby",
+  "text": "> Billing retries.\n\nAsked ernesto's Oby. ernesto wasn't bothered.",
+  "at": "2026-11-03T10:00:00Z",
+  "jobs": [],
+  "conversation": "conversation",
+  "relayed": true,
+  "asks": [
+    {
+      "exchange": "exchange",
+      "owner": "ernesto",
+      "name": "ernesto",
+      "question": "What is Ernesto working on?",
+      "state": "answered",
+      "quietAt": null,
+      "by": "obi",
+      "reason": null,
+      "said": "Billing retries."
+    }
+  ]
+}

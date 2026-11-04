@@ -760,6 +760,7 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
             asked: None,
             attachments: vec![],
             relayed: false,
+            asks: vec![],
         });
     }
     Ok(Some(out))

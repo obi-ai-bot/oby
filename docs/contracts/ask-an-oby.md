@@ -1,11 +1,11 @@
 # Asking another Oby from your conversation
 
-The business behavior contract for your Oby asking another person's Oby something and telling you in your own conversation, from [the template](../business-contract-template.md). Scenarios are numbered `ASK-n`; the tests that prove them are named after them (`ask_n_…` in `core/crates/obid/tests/ask_an_oby.rs`, `tests/sphere_questions.rs`, and unit tests in `core/crates/obid/src/brain/ask.rs`, `brain/supervisor.rs`, `sphere/sharing.rs` and `sphere/link/asking.rs`).
+The business behavior contract for your Oby asking another person's Oby something and telling you in your own conversation, from [the template](../business-contract-template.md). Scenarios are numbered `ASK-n`; the tests that prove them are named after them (`ask_n_…` in `core/crates/obid/tests/ask_an_oby.rs`, `tests/sphere_questions.rs`, `apps/electron/src/renderer/src/test/askCard.test.tsx`, and unit tests in `core/crates/obid/src/brain/ask.rs`, `brain/supervisor.rs`, `sphere/sharing.rs` and `sphere/link/asking.rs`).
 
 ## Feature and status
 
 - **Outcome:** "What's Dima working on?" just works, in your conversation: your Oby asks Dima's Oby, Dima's Oby answers from what it knows of its own jobs, and you read the answer. Neither of you has to bother Dima. The owner's words, 2026-11-02: "My Oby should talk to other Obys, to ask for progress, to ask for other information that their Oby will be able to answer without having to bother their humans."
-- **Status:** **Implemented** in obid, and run for real with two scratch obids, the real `claude` and a local obi-sphere (every state in the table but expiry and the other declines, which the automated tests cover). The words are proposed: Sangam owns them. The design is the "You talk to your Oby. Your Oby talks to theirs." canvas (boards Ask, DimaAnswered, DimaSilent, DimaRefused and DimaDeclined).
+- **Status:** **Implemented** in obid and, for the card, the Electron app, and run for real with two scratch obids, the real `claude` and a local obi-sphere (every state in the table but expiry and the other declines, which the automated tests cover). The words are proposed: Sangam owns them. The design is the "You talk to your Oby. Your Oby talks to theirs." canvas (boards Ask, DimaAnswered, DimaSilent, DimaRefused and DimaDeclined).
 - **Scope:** a question from a conversation to one member's Oby, every state of what comes back, and answering by itself. **Out of scope:** reviews and handoffs from a conversation; a teammate's chat (the two Obys talking); Sangam's screen for a question that waits for you (the apps don't show an `obiRequest` yet, so it reaches you as a conversation, below); changing a Sphere's policy from Oby.
 
 ## Behavior
@@ -17,7 +17,7 @@ The business behavior contract for your Oby asking another person's Oby somethin
 - **obid** checks and sends the question, follows what comes back, and writes what the owner reads: its own words around a quote.
 - **The other Oby's obid** decides by its owner's rules alone: a sharing rule lets it answer by itself from its material (docs/runner-api.md, "obid only: questions from other Obis"), and otherwise the question waits for its owner.
 - **The Obysphere** allows or refuses the request by its policy, which only its admin changes.
-- **The apps** show the turn. A quote is Markdown (`> `), which the Electron app shows as a quote already; they add nothing and decide nothing.
+- **The apps** show it. The Electron app shows each question as one card (below); an app without the card shows the turns. A quote is Markdown (`> `). They decide nothing.
 
 ### Triggers and prerequisites
 
@@ -26,7 +26,7 @@ The business behavior contract for your Oby asking another person's Oby somethin
 
 ### States and transitions
 
-The asker's side. Each line is one turn of Oby's in the conversation, after the turn that asked. Each is said at most once, also across a restart.
+The asker's side. Each line is one turn of Oby's in the conversation, after the turn that asked, which the Electron app folds into the question's card. Each is said at most once, also across a restart.
 
 | What happened | What the owner reads | Marks the conversation |
 |---|---|---|
@@ -51,6 +51,18 @@ The question wasn't sent, which the brain says in the turn itself:
 
 These name what the brain gave in `to`, never who that turned out to be, since they reach the brain. A question refused only once the owner clicked its Confirm answers the click with these words, naming the owner id, and says them as Oby's turn in the conversation too, after any turn under way, so it never ends on "waits for the owner's OK" with no card (marked `relayed`, like every turn about another Oby).
 
+### One card per question
+
+The owner's decision of 2026-11-03 (the canvas's AskCard board; its words stay Sangam's to change): a question from a conversation reads as one card that updates in place, not as loose turns. The person, the question, what came back as a quote, and one line that says where it stands. A click opens that person's thread. Your Oby's own words stay one line above it.
+
+- **obid owns the state.** Each turn above carries the card as it stood then, in `asks` on the turn, and obid keeps writing the same turns in the same words: an app that doesn't know the key shows exactly what it showed. The card first goes on a turn that's already there, the conversation's latest that isn't relayed, the moment the question has gone, on the owner's word or their Confirm: it adds no turn, and only a `turnAsks` event says so, which no phone reads, so nothing alerts again and nothing about a turn under way changes.
+- **The app folds.** One card per `exchange`, where it first showed, under Oby's next words, as its latest copy says. A relayed turn holds a card only when it's obid's own turn about that question, so that turn shows no words of its own, and isn't an answer to anyone's words: a task the words started stays with them. A relayed turn with no card, another member's question among them, stays words, and so do older turns. So a restart reads the same turns and shows one card in its last state, whichever turn holds it.
+- **What else reads a conversation.** Its row in the side panel says what its latest card says, and the side panel's search finds the card's question, words and line.
+- **Never a stuck "Asking…".** `asking` carries `quietAt`, and past it the app says "hasn't answered yet" by the clock, also with obid unable to write the turn that says so.
+- **The words are the thread's** (peer-thread.md's table, `askedLine` in peers.ts, imported), rather than the board's foot lines, since a rule is written once: `Asking…`, `It’s waiting on Dima.`, `Dima’s Oby hasn’t answered yet.`, `Dima wasn’t bothered.`, `Dima answered this one, not its Oby.`, each decline's and expiry's.
+- **Not allowed.** A question the Sphere refused keeps no exchange (ASK-8), and has a card with `exchange` null and `state` `refused`: `why` is the refusal's words above, on the owner's word and after their click. What the brain says stays as it is. The secret scan's refusal has no card: a card would be a second place for the words it stopped.
+- **Their words stay theirs.** `said` is cleaned as a quote is, and shown as a text node under the card's byline, named as the thread's lines name them (peer-thread.md, **Where it stands**: `Dima’s Oby (dmytro)`, `Dana’s Oby`): no Markdown, HTML or link, so nothing it writes reads as Oby's. `by` and `reason` pick words and never show. Marks, `relayed` and what reaches a prompt don't change: a model reads a turn's `text` through `heard`, and never `asks`.
+
 The answerer's side:
 
 - **By itself.** Under the owner's yes (below), a member's question is answered from the status and progress of their jobs in the repositories they chose, through the model run docs/runner-api.md describes. With no yes, its questions go to its owner, and the first of them asks the owner once which repositories to share (docs/contracts/peer-thread.md, PEER-16, PEER-38).
@@ -72,7 +84,7 @@ The answerer's side:
 - **The answerer tells status, and a job's progress on its owner's yes.** Its model gets only a question file and a material file: each of its owner's jobs' title ("An Oby task" when it has none, never its prompt), repository name, job id, stage, state and pull request, and under a rule with `jobProgress` its current step and latest report line (peer-thread.md, PEER-20 to 23). Private repositories' names are told too: that's what the rule shares. Never logs, diffs, prompts, files, secrets or logins. Its answer passes the secret scan before it goes. Nothing in a question can make it run, change or publish anything, and approvals never come from another Oby.
 - **Ids and names are what a member says of itself.** Whoever redeems an open invitation picks their Obi id, owner id and card. So `to` means an exact owner id, else a name one member goes by, never an Obi id. Only an exact owner id that no other card claims goes on the owner's word. A name waits for a Confirm that shows it with the owner id ("Ask Dima's Oby (dmytro)"), and so does an owner id another card also claims, naming both ("Ask sam's Oby, not copycat, whose card goes by that name too"); that is a Confirm and not a refusal, or anyone could stop questions to a colleague by copying their name. A name comes from a card only when it reads `<name>'s Oby`, is at most 3 words of one writing system with no `.`, and shows only when it couldn't be mistaken for another member's name or owner id, or the owner's own; else the owner id shows.
 - **Nothing a member chose reaches a prompt.** The orientation is fixed text, on watched turns only. Oby's turns about another Oby are marked `relayed`: when a session starts over and hears the earlier turns, or a briefing does, each is only that there was one. The friendly name is for the owner's eyes: the tool's answers name only what the brain itself gave. `oby_members` returns who is there quoted, and makes the turn untrusted; a Confirm's title goes to the owner, never back to the model.
-- **The API stays add-only.** New tools, one new Confirm action (`ask_oby`, whose value the phones treat as an open string), and a reply type the protocol already had. No new value in anything the phones decode as a closed enum: a posted answer is an ordinary Oby turn.
+- **The API stays add-only.** New tools, one new Confirm action (`ask_oby`, whose value the phones treat as an open string), a reply type the protocol already had, and `asks` on a turn, which no phone reads (`RunnerTurn`'s `CodingKeys` in Runner.swift, `ignoreUnknownKeys` in `wire` in Models.kt), and one event, `turnAsks`, which every app ignores until it knows it. `state` is an open string under that key, and `exchange.state` and `Job` gain no value. No new value in anything the phones decode as a closed enum: a posted answer is an ordinary Oby turn.
 
 ## Interfaces and dependencies
 
@@ -102,6 +114,12 @@ The answerer's side:
 - **ASK-16** A new session hears nothing a member chose, words or name, and every turn in the conversation of their questions waits for the owner's Confirm; an unsigned turn leaves the owner's next signed words theirs, in a new session too.
 - **ASK-17** Only an exact owner id no other card claims goes without the owner seeing who: an Obi id reaches no one; a name, or an owner id another card claims, makes a Confirm showing who and tells the model nothing of it; a card gives a name, never a sentence or a look-alike. A card that says it acts for someone else by the time the question goes gets nothing, on the owner's word or after their Confirm.
 - **ASK-18** A question from another Oby never decides where the app opens, on the Mac or the iPhone, or where words that name no conversation go.
+- **ASK-19** One question is one card, by its exchange, whichever turns hold it, with Oby's own words above it and none of its loose turns; a second question is a second card. It comes live, on a `turnAsks` event, and no `turn` comes twice. A card never lands on another question's relayed turn. The conversation's row and the side panel's search read what the card says, and a task stays with the words that started it.
+- **ASK-20** A card goes asking, then waiting or hasn't answered, then its end, in place, each in the thread's words. A restart leaves one card in its last state, told once, also when the answer came while obid was down, and by the clock it never stays on asking. A card's update leaves a turn under way alone. An exchange marked `cancelled` reads as the thread reads it, `Called off`.
+- **ASK-21** An app without the card reads the same turns in the same words as before: asking adds no turn, `asks` is one more key the Swift and Android decoders ignore, and a conversation with no question has none. In the Electron app, a turn with no card, or one of a shape it doesn't read, stays words.
+- **ASK-22** Another Oby's words in a card are text nodes under a byline, cleaned as a quote is, with no HTML or link, apart from obid's line; a card's name shows its owner id; a later turn's prompt hears none of it, and the conversation is marked as ever.
+- **ASK-23** A question the Sphere refused has a card with no exchange saying why, on the owner's word and after their click, keeps no exchange and adds no turn on their word. One the scan stopped has no card.
+- **ASK-24** A click on a card opens that person's thread, by exact owner id, from Home's conversation too. Its label holds what it says, for a screen reader.
 
 ### Test it when it's done
 
@@ -112,3 +130,4 @@ Two Obys on one Obysphere whose admin has written the rule above, on real Macs o
 3. Ask something only Dima knows: "It's waiting on Dima" here, "Questions from other Obys" there. Dima tells their Oby what to say, Confirms, and it comes back "Dima answered this one, not its Oby."
 4. Ask again and have Dima Decline: "Dima said no to this one."
 5. With Dima's obid stopped, ask: after 2 minutes, "Dima's Oby hasn't answered yet."
+6. In the Electron app, each of these is one card whose line changes in place, with no loose turns; quit obid and start it: still one card, in its last state. A click opens Dima's thread. On the iPhone or Android, the same conversation shows the quoted turns.

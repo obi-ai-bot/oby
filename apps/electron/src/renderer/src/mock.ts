@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { onObid } from './lean';
-import type { RoomPost } from '../../shared/obid-wire';
+import type { AskMark, RoomPost } from '../../shared/obid-wire';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
 // app on dev (Engine/Jobs.swift Job, Engine/Conversation.swift Turn,
@@ -602,7 +602,8 @@ export const TURNS: Turn[] = [
 // way, folded over its words (looked: how many were lookups; asked: whose Obys
 // it asked); streaming: its words still coming in. files: what went with yours
 // (a photo with a preview of itself); obys: the Obys it @mentions
-export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep; offer?: Offer; confirm?: { id: string; ask: Ask } } & Attachments;
+export type Message = { who: string; text: string; ago: number; jobs?: string[]; by?: string; steps?: string[]; looked?: number; asked?: string[]; streaming?: boolean; setup?: SetupStep; offer?: Offer; confirm?: { id: string; ask: Ask }; askCard?: AskMark } & Attachments;
+// askCard (obid only): a question to another Oby, one card that updates in place (AskCard.tsx)
 // confirm (obid only): a Confirm Oby's answer made (a merge, a write on GitHub), answered here or
 // on Home, one item (#1680)
 // Work Oby offers to start, on obid only (OfferCard.tsx): its title, each job in obid's words with

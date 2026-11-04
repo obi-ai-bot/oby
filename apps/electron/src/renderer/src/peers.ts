@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { PEER_CONVOS, hasAttachments, type Attachments, type PeerConvo, type PeerMessage } from './mock';
-import { ApiError, api, peerThreadOf, type PeerExchange, type PeerPost, type PeerThread } from './obid';
+import { ApiError, api, peerThreadOf, type AskMark, type PeerExchange, type PeerPost, type PeerThread } from './obid';
 import { draft, keep, leftInBox } from './drafts';
 import { streamWords, wait } from './stream';
 
@@ -83,25 +83,25 @@ export function boxShut(t: PeerThread): string | null {
 export const withWords = (posts: PeerPost[]) => posts.filter((p): p is PeerPost & { text: string } => p.text !== null);
 // Who a state line names: the owner id beside any other name, as whoseOby does, but not for a name
 // that's only the id's capitals (`Dana`, `dana`), or every line would say it twice.
-function named(t: Pick<PeerThread, 'name' | 'owner'>) {
+export function named(t: Pick<PeerThread, 'name' | 'owner'>) {
   const same = t.name.toLowerCase() === t.owner.toLowerCase();
   const id = same ? '' : ` (${plainId(t.owner)})`, shown = same ? plainId(t.name) : t.name;
   return { person: `${shown}${id}`, oby: `${shown}’s Oby${id}` };
 }
-// Where an exchange stands, in ask-an-oby.md's words. The clock decides `quietAt`, so no event says
-// it. `by` and `reason` are what the sender says of itself: they pick obid's words here and never
-// show. Past waiting, a question of theirs or a review has only its plain state.
-export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' | 'posts'>, now: number): string | null {
+// Where a question you asked stands, in ask-an-oby.md's words: a thread's line and a conversation's
+// card say the same (AskCard.tsx). `by` and `reason` are what the sender says of itself: they pick
+// these words and never show.
+export function askedLine(state: string, t: Pick<PeerThread, 'name' | 'owner'>, by?: string | null, reason?: string | null): string | null {
   const { person, oby } = named(t);
-  if (x.waitingOnThem) return `It’s waiting on ${person}.`;
-  if (x.quietAt) return Date.parse(x.quietAt) <= now ? `${oby} hasn’t answered yet.` : 'Asking…';
-  const said = t.posts.filter((p) => p.exchange.id === x.id);
-  if (x.direction === 'outgoing' && x.type === 'question') {
-    const answer = said.find((p) => p.kind === 'answer');
-    if (x.state === 'done' && answer) return answer.by === 'owner' ? `${person} answered this one, not its Oby.` : `${person} wasn’t bothered.`;
-    if (x.state === 'expired') return `${oby} never answered: the question expired.`;
-    if (x.state === 'declined') {
-      switch (said.find((p) => p.kind === 'decline')?.reason) {
+  switch (state) {
+    case 'asking': return 'Asking…';
+    case 'waiting': return `It’s waiting on ${person}.`;
+    case 'quiet': return `${oby} hasn’t answered yet.`;
+    case 'answered': return by === 'owner' ? `${person} answered this one, not its Oby.` : `${person} wasn’t bothered.`;
+    case 'expired': return `${oby} never answered: the question expired.`;
+    case 'cancelled': return 'Called off';
+    case 'declined':
+      switch (reason) {
         case 'owner_declined': return `${person} said no to this one.`;
         case 'busy': return `${oby} is busy with other questions and didn’t take this one. Ask again later.`;
         case 'out_of_scope': return `${oby} doesn’t take questions like this one.`;
@@ -110,7 +110,24 @@ export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' |
         case 'expired': return `${oby} never answered: the question expired.`;
         default: return `${oby} declined without saying why.`;
       }
-    }
+    default: return null;
+  }
+}
+// Where a question's card stands (AskCard.tsx). Past its quiet by the clock: no word may have reached
+// obid, so "asking" would never end
+export const askCardState = (c: AskMark, now: number) => (c.state === 'asking' && c.quietAt && Date.parse(c.quietAt) <= now ? 'quiet' : c.state);
+export const askCardLine = (c: AskMark, now: number) => (c.state === 'refused' ? c.why ?? null : askedLine(askCardState(c, now), c, c.by, c.reason));
+// Where an exchange stands. The clock decides `quietAt`, so no event says it. Past waiting, a question
+// of theirs or a review has only its plain state.
+export function standing(x: PeerExchange, t: Pick<PeerThread, 'name' | 'owner' | 'posts'>, now: number): string | null {
+  if (x.waitingOnThem) return askedLine('waiting', t);
+  if (x.quietAt) return askedLine(Date.parse(x.quietAt) <= now ? 'quiet' : 'asking', t);
+  const said = t.posts.filter((p) => p.exchange.id === x.id);
+  if (x.direction === 'outgoing' && x.type === 'question') {
+    const answer = said.find((p) => p.kind === 'answer');
+    if (x.state === 'done' && answer) return askedLine('answered', t, answer.by);
+    if (x.state === 'expired') return askedLine('expired', t);
+    if (x.state === 'declined') return askedLine('declined', t, null, said.find((p) => p.kind === 'decline')?.reason);
   }
   return x.state === 'declined' ? 'Declined' : x.state === 'expired' ? 'No answer came' : x.state === 'cancelled' ? 'Called off' : null;
 }

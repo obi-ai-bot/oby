@@ -252,6 +252,7 @@ fn the_swift_client_follows_obid_and_lists_its_jobs() {
         next(&lines, "conversation ", 30, &mut seen),
         "conversation 3"
     );
+    assert_eq!(next(&lines, "carded ", 30, &mut seen), "carded true oby");
     assert_eq!(
         next(&lines, "job ", 30, &mut seen),
         format!("job {id} done heading=Job progress screen")
