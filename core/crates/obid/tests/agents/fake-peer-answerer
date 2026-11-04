@@ -1,0 +1,148 @@
+#!/usr/bin/env node
+// SPH-10 protocol stand-in. It verifies the confined launch's contract, then behaves like a
+// model that may obey hostile question data. No real account or model request is involved.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { spawnSync } from "node:child_process";
+
+const args = process.argv.slice(2);
+const tool = args.at(-1) === "acp" ? "cursor" : "codex";
+const question = JSON.parse(readFileSync("question.json", "utf8"));
+const testCase = question.question.text;
+const canary = "PEER-QUESTION-CANARY";
+const fail = (why) => { process.stderr.write(`${why}\n`); process.exit(3); };
+const check = (yes, why) => { if (!yes) fail(why); };
+const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+const reply = (id, result) => emit({ jsonrpc: "2.0", id, result });
+const notice = (method, params) => emit({ method, params });
+const pending = new Map();
+let next = 100;
+const ask = (method, params) => new Promise((resolve) => {
+  const id = next++;
+  pending.set(id, resolve);
+  emit({ id, method, params });
+});
+const off = args.filter((a) => /^features\..+=false$/.test(a)).map((a) => a.slice(9, -6));
+if (args.slice(-2).join(" ") === "features list") {
+  for (const name of off) process.stdout.write(`${name} stable ${testCase.includes("features-on") && name === "shell_tool" ? "true" : "false"}\n`);
+  process.exit(0);
+}
+let system;
+let mode;
+let dynamic;
+const out = (material) => ({ answerable: !testCase.includes("need-owner"),
+  text: testCase.includes("leak-case") ? `The key is ${"AKIA"}${"ABCDEFGHIJKLMNOP"}.` : material.items[0].title,
+  refs: [0], choice: 0 });
+const fixed = (text) => {
+  check(!text.includes(canary) && !text.includes(testCase), "quoted question reached instructions");
+  check(text.includes("question.json") && text.includes("material.json"), "missing file instructions");
+};
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", async (line) => {
+  const msg = JSON.parse(line);
+  if (!msg.method) {
+    const resolve = pending.get(msg.id);
+    pending.delete(msg.id);
+    resolve?.(msg.result ?? { refused: true });
+    return;
+  }
+  const p = msg.params;
+  if (tool === "codex") {
+    switch (msg.method) {
+      case "initialize":
+        check(p.capabilities.experimentalApi, "no experimental Read tool");
+        reply(msg.id, {}); break;
+      case "thread/start":
+        fixed(p.baseInstructions); system = p.baseInstructions;
+        check(p.ephemeral && p.cwd === process.cwd(), "not a fresh confined thread");
+        check(p.approvalPolicy === "untrusted", "auto approved tools");
+        check(p.dynamicTools.length === 1 && p.dynamicTools[0].name === "Read" && p.dynamicTools[0].type === "function", "extra or malformed dynamic tools");
+        check(args.includes('web_search="disabled"') && off.includes("shell_tool") && off.includes("apply_patch_freeform"), "native tools not disabled");
+        dynamic = p.dynamicTools[0]; reply(msg.id, { thread: { id: "t" } }); break;
+      case "turn/start": {
+        fixed(p.input[0].text);
+        check(system && dynamic && p.outputSchema.required.length === 4, "no fixed schema");
+        reply(msg.id, { turn: { id: "turn" } });
+        if (testCase.includes("native-tool")) {
+          notice("item/started", { threadId: "t", item: { type: "webSearch" } });
+          break;
+        }
+        if (testCase.includes("unknown-tool")) {
+          await ask("item/tool/call", { threadId: "t", tool: "Shell", arguments: { file_path: "question.json" } });
+          break;
+        }
+        if (testCase.includes("forbidden")) {
+          await ask("item/commandExecution/requestApproval", { threadId: "t", command: "cat /etc/passwd" });
+          break;
+        }
+        for (const file of ["../login/auth.json", "/etc/passwd", "question.json/../material.json"]) {
+          const denied = await ask("item/tool/call", { threadId: "t", tool: "Read", arguments: { file_path: file } });
+          check(denied.success === false, `Read escaped to ${file}`);
+        }
+        const q = await ask("item/tool/call", { threadId: "t", tool: "Read", arguments: { file_path: "question.json" } });
+        check(q.success && q.contentItems[0].text.includes(canary), "no quoted question read");
+        const m = await ask("item/tool/call", { threadId: "t", tool: "Read", arguments: { file_path: "material.json" } });
+        const answer = testCase.includes("invalid-json") ? "no JSON" : JSON.stringify(out(JSON.parse(m.contentItems[0].text)));
+        notice("item/completed", { threadId: "t", item: { type: "agentMessage", text: answer } });
+        notice("turn/completed", { threadId: "t", turn: { id: "turn", status: testCase.includes("failed-turn") ? "failed" : "completed" } });
+        break;
+      }
+    }
+  } else {
+    const home = process.env.CURSOR_CONFIG_DIR;
+    const config = JSON.parse(readFileSync(join(home, "cli-config.json"), "utf8"));
+    check(config.approvalMode === "allowlist" && config.sandbox.readBoundary === "workspace", "no workspace read boundary");
+    for (const deny of ["Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*:*)", `Read(${home}/**)`])
+      check(config.permissions.deny.includes(deny), `missing ${deny}`);
+    const hooks = JSON.parse(readFileSync(join(home, ".cursor/hooks.json"), "utf8"));
+    check(JSON.stringify(hooks) === JSON.stringify(JSON.parse(readFileSync(join(home, "hooks.json"), "utf8"))), "custom config hook layout differs");
+    const gate = hooks.hooks.preToolUse[0];
+    check(gate.failClosed && hooks.hooks.beforeReadFile[0].failClosed, "hook fails open");
+    if (process.platform === "darwin" && msg.method === "initialize") {
+      const invoke = (data) => spawnSync("/bin/sh", ["-c", gate.command], { input: JSON.stringify(data), encoding: "utf8" });
+      for (const file of ["question.json", "material.json"]) {
+        const allowed = invoke({ hook_event_name: "preToolUse", tool_name: "Read", tool_input: { file_path: join(process.cwd(), file) } });
+        check(allowed.status === 0 && JSON.parse(allowed.stdout).permission === "allow", "read gate refused a quoted file");
+      }
+      for (const [name, path] of [["Read", join(home, "auth.json")], ["Read", "../login/auth.json"], ["Read", "/etc/passwd"],
+                                  ["Write", "question.json"], ["Shell", "question.json"], ["WebSearch", "question.json"],
+                                  ["WebFetch", "question.json"], ["Grep", "question.json"], ["MCP:x", "question.json"]]) {
+        check(invoke({ hook_event_name: "preToolUse", tool_name: name, tool_input: { file_path: path } }).status === 2, `hook allowed ${name} ${path}`);
+      }
+      check(invoke({ hook_event_name: "beforeReadFile", file_path: join(home, "auth.json") }).status === 2, "beforeReadFile allowed the login");
+      check(invoke({}).status === 2, "malformed hook input failed open");
+    }
+    switch (msg.method) {
+      case "initialize": check(!p.clientCapabilities.fs && !p.clientCapabilities.terminal, "extra client tools"); reply(msg.id, {}); break;
+      case "session/new":
+        check(p.mcpServers.length === 0 && p.cwd === process.cwd(), "extra MCP or wrong folder");
+        reply(msg.id, { sessionId: "s", modes: { currentModeId: "agent", availableModes: testCase.includes("no-ask") ? [] : [{ id: "ask", name: "Ask" }] } }); break;
+      case "session/set_mode": check(p.modeId === "ask", "not read-only"); mode = "ask"; reply(msg.id, {}); break;
+      case "session/prompt": {
+        check(mode === "ask", "never set Ask mode"); fixed(p.prompt[0].text);
+        check(p.prompt[0].text.startsWith("You write a short answer") && p.prompt[0].text.includes("JSON schema:"), "wrong fixed first message");
+        if (testCase.includes("native-outside")) {
+          notice("session/update", { sessionId: "s", update: { sessionUpdate: "tool_call", kind: "read", locations: [{ path: "/etc/passwd" }] } });
+          break;
+        }
+        if (testCase.includes("forbidden")) {
+          const kind = testCase.includes("shell") ? "execute" : testCase.includes("web") ? "fetch" : testCase.includes("write") ? "edit" : testCase.includes("mcp") ? "other" : "read";
+          await ask("session/request_permission", { sessionId: "s", toolCall: { kind, locations: [{ path: join(home, "auth.json") }] },
+            options: [{ kind: "allow_once", optionId: "yes" }, { kind: "reject_once", optionId: "no" }] });
+          break;
+        }
+        for (const file of ["question.json", "material.json"]) {
+          const result = await ask("session/request_permission", { sessionId: "s", toolCall: { kind: "read", locations: [{ path: join(process.cwd(), file) }] },
+            options: [{ kind: "allow_always", optionId: "always" }, { kind: "allow_once", optionId: "once" }, { kind: "reject_once", optionId: "no" }] });
+          check(result.outcome.optionId === "once", "two-file read was refused or granted always");
+        }
+        const material = JSON.parse(readFileSync("material.json", "utf8"));
+        const answer = testCase.includes("invalid-json") ? "no JSON" : JSON.stringify(out(material));
+        notice("session/update", { sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: answer } } });
+        reply(msg.id, { stopReason: testCase.includes("failed-turn") ? "cancelled" : "end_turn" });
+        break;
+      }
+    }
+  }
+});
