@@ -364,7 +364,8 @@ pub struct Job {
     pub issue: Option<u64>,
     pub rounds: Option<u32>,
     /// Whether the owner or caller set the round limit. Kept in the job file, never in the API.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// Old job files don't record this provenance, so treat their limits as explicit.
+    #[serde(default = "legacy_rounds_named")]
     pub rounds_named: bool,
     /// Previous check's named failing tests, retained because `checks` exposes only its latest run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -730,6 +731,10 @@ pub struct Job {
     /// went: a restart in between reads GitHub to settle each. Never in the API's job.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sending: Vec<Sending>,
+}
+
+fn legacy_rounds_named() -> bool {
+    true
 }
 
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).

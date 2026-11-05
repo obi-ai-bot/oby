@@ -6909,8 +6909,9 @@ impl Jobs {
             .get(id)
             .and_then(|j| j.checks.last().map(|c| &c.failing).cloned())
             .unwrap_or_default();
+        let current_job = self.get(id).unwrap_or_else(|| job.clone());
         let names: Vec<_> = failing.iter().map(|f| f.test.clone()).collect();
-        let improving = should_extend_check_rounds(job, &names, round);
+        let improving = should_extend_check_rounds(&current_job, &names, round);
         if improving {
             self.update(id, |job| {
                 job.rounds = Some(job.current_round().max(round) + 1)
@@ -6920,7 +6921,7 @@ impl Jobs {
                 check_failed(command, output, &failing)
             ));
         }
-        if round >= job.max_rounds() {
+        if round >= current_job.max_rounds() {
             let limit = format!("`{command}` still fails after {round} round(s)");
             self.update(id, |job| job.limit = Some(limit.clone()));
             return Err(End::needs_you(
@@ -14982,6 +14983,20 @@ mod tests {
         job.rounds_named = true;
         assert!(!should_extend_check_rounds(
             &job,
+            &["a".into()],
+            CHECK_ROUNDS
+        ));
+    }
+
+    /// CHECKS-4: A job file from before limit provenance was stored is treated as explicitly named.
+    #[test]
+    fn checks_4_legacy_round_limit_stays_fixed() {
+        let mut value = serde_json::to_value(check_round_job()).unwrap();
+        value.as_object_mut().unwrap().remove("roundsNamed");
+        let legacy: Job = serde_json::from_value(value).unwrap();
+        assert!(legacy.rounds_named);
+        assert!(!should_extend_check_rounds(
+            &legacy,
             &["a".into()],
             CHECK_ROUNDS
         ));
