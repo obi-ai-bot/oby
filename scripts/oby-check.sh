@@ -8,8 +8,8 @@
 #   scripts/oby-check.sh [base]    what changed since the merge base with base (default origin/dev),
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run
 #
-#   core/                 cargo fmt --check; clippy -D warnings on the touched crates; obid's lib
-#                         tests of each touched module (src/a/b.rs: `a::b::`; all of them for
+#   core/                 the line limit below; cargo fmt --check; clippy -D warnings on the touched
+#                         crates; obid's lib tests of each touched module (src/a/b.rs: `a::b::`; all of them for
 #                         lib.rs, main.rs, build.rs, a file under src/ that isn't Rust, its
 #                         Cargo.toml, or the workspace's Cargo.toml or Cargo.lock), its touched
 #                         test binaries, tests/<module>.rs or tests/<module>_api.rs of a touched
@@ -19,6 +19,7 @@
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   mcp/, Package.swift   swift test
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
+#   scripts/oby-check*    scripts/oby-check-test.sh
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
@@ -46,6 +47,18 @@ changed=$({ git diff --name-only "$base"; git ls-files --others --exclude-standa
 # Xcode's and SwiftPM's builds, kept between runs (in a job, in its HOME).
 cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 
+# Dispatcher, not harness (AGENTS.md): how many production lines the Rust core may have outside the
+# Sphere. A cut lowers it. Raising it is the owner's word: this is the check, so a job's own change
+# to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
+obid_lines_limit=90500
+# A file counts up to its `#[cfg(test)]`; the Sphere's and its protocol's don't count. A new crate does.
+obid_lines() {
+    find core/crates -path '*/src/*' -name '*.rs' -not -path 'core/crates/obid/src/sphere/*' \
+        -not -path 'core/crates/obi-protocol/*' \
+        -exec awk '/^#\[cfg\(test\)\]/ { nextfile } { n++ } END { print n + 0 }' {} + |
+        awk '{ total += $1 } END { print total + 0 }'
+}
+
 failed=()
 # Inside a job's sandbox, where Seatbelt can't make another.
 nested=''
@@ -61,7 +74,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift=''
+rust='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -100,13 +113,23 @@ while IFS= read -r file; do
     esac
     case "$file" in
         apps/electron/*) electron=1 ;;
+        scripts/oby-check*) check_script=1 ;;
     esac
 done <<< "$changed"
 
 # The distinct lines of a list, each after `$2` when given.
 each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 
+if [[ -n "$check_script" ]]; then step bash scripts/oby-check-test.sh; fi
+
 if [[ -n "$rust" ]]; then
+    lines=$(obid_lines)
+    if ((lines > obid_lines_limit)); then
+        echo "oby-check: the Rust core has $lines production lines outside the Sphere, past its limit of $obid_lines_limit (AGENTS.md, \"Dispatcher, not harness\"): cut as much elsewhere, or ask the owner to raise obid_lines_limit in this script" >&2
+        failed+=("the Rust core's line limit")
+    elif ((lines + 1000 < obid_lines_limit)); then
+        echo "oby-check: the Rust core has $lines production lines outside the Sphere: lower obid_lines_limit in this script from $obid_lines_limit, so the cut stays cut"
+    fi
     # A job's check has no network (above): use the crates the agent already fetched into HOME.
     # Without this, cargo still tries to refresh index.crates.io and fails DNS before the cache.
     export CARGO_NET_OFFLINE=true
