@@ -266,7 +266,7 @@ pub async fn add_progress(rule: &Rule, material: &mut [Value], jobs: &[Job], scr
 /// the same fence as other Obys' words. At most one, never `except` (the exchange being answered),
 /// each line cut short and scanned alone like [`add_progress`]: a finding leaves that line out, and
 /// a scan that can't run leaves the exchange out. Not a tell: it adds no job or repository, and
-/// doesn't widen what a sharing rule covers (SPH-11, PEER-43, ASK-28).
+/// doesn't widen what a sharing rule covers (SPH-11, PEER-43, ASK-32).
 pub async fn add_last_exchange(
     material: &mut Vec<Value>,
     exchanges: &[&Exchange],
@@ -1195,9 +1195,9 @@ mod tests {
         assert!(items.is_empty(), "{items:?}");
     }
 
-    /// ASK-28: the same prior exchange is what a follow-up's run reads in its material.
+    /// ASK-32: the same prior exchange is what a follow-up's run reads in its material.
     #[tokio::test]
-    async fn ask_28_a_follow_up_gets_the_last_exchange_in_its_material() {
+    async fn ask_32_a_follow_up_gets_the_last_exchange_in_its_material() {
         let scratch = std::env::temp_dir().join(format!("obid-ask28-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&scratch);
         let mut prior = Exchange::new(
