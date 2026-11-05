@@ -240,22 +240,6 @@ impl Cause {
         {
             return Cause::Other;
         }
-        if [
-            "not logged in",
-            "log in",
-            "login",
-            "sign in",
-            "authentication",
-            "authorization",
-            "unauthorized",
-            "forbidden",
-            "api key",
-        ]
-        .iter()
-        .any(|w| error.contains(w))
-        {
-            return Cause::Other;
-        }
         let status = error
             .split("api error: ")
             .nth(1)
