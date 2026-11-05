@@ -372,7 +372,9 @@ fn waits_for_later(said: &str) -> bool {
 /// overloaded API, a dropped connection or stream, as the tool says ([`agent::Failure`]). Never an
 /// account's usage limit (its words, or `full`: its usage says so).
 fn transient(cause: agent::Cause, full: bool, words: &str) -> bool {
-    if cause == agent::Cause::Unknown && retrying_wont_mend(words) {
+    if cause == agent::Cause::Unknown
+        && (retrying_wont_mend(words) || crate::limits::is_limit(words))
+    {
         return false;
     }
     match cause {
@@ -15569,6 +15571,13 @@ mod tests {
             false,
             "Codex hit an error: usage limit reached"
         ));
+        for error in [
+            "Rate limit exceeded, try again in 2 hours",
+            "Monthly limit exceeded",
+        ] {
+            assert_eq!(Cause::read(error), Cause::Unknown, "{error}");
+            assert!(!transient(Cause::read(error), false, error), "{error}");
+        }
     }
 
     #[test]
