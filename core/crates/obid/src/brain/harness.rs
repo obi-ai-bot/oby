@@ -529,7 +529,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let token = new_token();
     let (mcp, url, tetrix) = mcp_config(shared, &place, id);
     write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
-    let mut flags = claude_flags(shared, tetrix.is_some(), true);
+    let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), true);
     let key = flags_key(&flags);
     flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
     let launch = shared.jobs.conversation_launch(
@@ -609,7 +609,8 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
 /// session gets Tetrix's server.
-fn claude_flags(shared: &Shared, tetrix: bool, watched: bool) -> Vec<OsString> {
+fn claude_flags(shared: &Shared, account: &str, tetrix: bool, watched: bool) -> Vec<OsString> {
+    let model = crate::settings::account_model(&shared.config.home, Tool::Claude, account);
     [
         "-p",
         "--input-format",
@@ -633,7 +634,7 @@ fn claude_flags(shared: &Shared, tetrix: bool, watched: bool) -> Vec<OsString> {
         "--max-turns",
         MAX_TURNS,
         "--model",
-        shared.config.conversation.model_for(Tool::Claude),
+        &model,
         "--append-system-prompt",
         orientation(shared, tetrix, watched).as_str(),
     ]
@@ -1656,7 +1657,7 @@ async fn attempts(
             (Some(_), None) => words.clone(),
             (None, _) => first.clone(),
         };
-        let mut flags = claude_flags(shared, tetrix.is_some(), !session.unwatched());
+        let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), !session.unwatched());
         if session.unwatched()
             && let Some(at) = flags.iter().position(|f| f == TOOLS)
         {
@@ -1776,7 +1777,11 @@ async fn attempts(
         // What the run spent, as its CLI reported it (super::calls).
         let mut call = super::calls::Call::read(
             tool.id(),
-            Some(config.model_for(tool)).filter(|model| !model.is_empty()),
+            Some(&crate::settings::account_model(
+                &shared.config.home,
+                tool,
+                &account.id,
+            )),
             turn.result.as_ref(),
             began,
         )

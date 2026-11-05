@@ -1118,7 +1118,7 @@ fn agents_4_the_default_account_is_validated_kept_and_cleared() {
 /// account, and cleared with null; a job with no model of its own runs on the account's, at its
 /// effort, and a model the job names wins.
 #[test]
-fn agents_5_6_jobs_run_on_their_accounts_model_and_effort() {
+fn conversation_agent_21_agents_5_6_jobs_run_on_their_accounts_model_and_effort() {
     let folder = Folder::new("account-models");
     let (obid, _) = obid(&folder);
     let patch = |body: Value| call(&obid, "PATCH", "/v1/accounts/stub", Some(&body));
@@ -1167,7 +1167,16 @@ fn agents_5_6_jobs_run_on_their_accounts_model_and_effort() {
     let cleared = patch(json!({"model": null, "effort": null, "complexEffort": null}));
     assert_eq!(cleared.status, 200, "{}", cleared.text);
     assert!(cleared.body.get("model").is_none(), "{}", cleared.body);
-    assert_eq!(ran(json!({})), "model=none effort=none");
+    let fallback = call(&obid, "GET", "/v1/status", None).body["models"]["claude"]["model"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(ran(json!({})), format!("model={fallback} effort=none"));
+    obid::settings::update(&obid.home, |s| {
+        s.tuning.entry("stub".into()).or_default().model = Some("retired".into())
+    })
+    .unwrap();
+    assert_eq!(ran(json!({})), format!("model={fallback} effort=none"));
 }
 
 /// AGENTS-8 (docs/contracts/agents.md): the models and efforts Settings › Agents offers, and each

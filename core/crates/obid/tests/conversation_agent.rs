@@ -64,6 +64,86 @@ fn obid(name: &str) -> (Folder, Obid) {
     (folder, obid)
 }
 
+#[test]
+fn conversation_agent_21_turns_use_the_accounts_model_and_fall_back_to_status_defaults() {
+    let folder = Folder::new("talk-models");
+    let config = configured(&folder);
+    let mut obid = start(&folder.0, &config, None);
+    let defaults = call(&obid, "GET", "/v1/status", None).body["models"].clone();
+    let patch = |obid: &Obid, account: &str, model: Value| {
+        let answer = call(
+            obid,
+            "PATCH",
+            &format!("/v1/accounts/{account}"),
+            Some(&json!({"model": model})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+    };
+    patch(&obid, CLAUDE, json!("claude-haiku-5-5"));
+    patch(&obid, CODEX, json!("gpt-6-astra"));
+    obid.stop();
+    obid = start(&folder.0, &config, None);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    assert_eq!(
+        status["models"], defaults,
+        "account choices leave tool defaults intact"
+    );
+    for (account, tool, expected) in [
+        (CLAUDE, "claude", "claude-haiku-5-5"),
+        (CODEX, "codex", "gpt-6-astra"),
+    ] {
+        assert_eq!(
+            status["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == account)
+                .unwrap()["model"],
+            expected
+        );
+        let set = call(
+            &obid,
+            "PUT",
+            "/v1/settings/jobs",
+            Some(&json!({"talkAccount": account})),
+        );
+        assert_eq!(set.status, 200, "{}", set.text);
+        let answer = said(&obid, json!({"said": "HELLO", "new": true}));
+        let id = conversation(&answer);
+        let turns = recorded(
+            &obid
+                .home
+                .join("conversations")
+                .join(&id)
+                .join("config/turns.jsonl"),
+        );
+        if tool == "claude" {
+            let argv = turns.last().unwrap()["argv"].as_array().unwrap();
+            let at = argv.iter().position(|a| a == "--model").unwrap();
+            assert_eq!(argv[at + 1], expected);
+        } else {
+            assert_eq!(config_turns(&obid, &id).last().unwrap()["model"], expected);
+        }
+    }
+    patch(&obid, CODEX, Value::Null);
+    let answer = said(&obid, json!({"said": "HELLO", "new": true}));
+    assert_eq!(
+        config_turns(&obid, &conversation(&answer)).last().unwrap()["model"],
+        defaults["codex"]["model"]
+    );
+    obid.stop();
+    obid::settings::update(&obid.home, |s| {
+        s.tuning.entry(CODEX.into()).or_default().model = Some("retired-model".into())
+    })
+    .unwrap();
+    obid = start(&folder.0, &config, None);
+    let answer = said(&obid, json!({"said": "HELLO", "new": true}));
+    assert_eq!(
+        config_turns(&obid, &conversation(&answer)).last().unwrap()["model"],
+        defaults["codex"]["model"]
+    );
+}
+
 fn said(obid: &Obid, body: Value) -> Answer {
     let answer = call(obid, "POST", "/v1/plans", Some(&body));
     assert_eq!(answer.status, 200, "{}", answer.text);

@@ -747,16 +747,18 @@ impl Models {
     pub fn defaults() -> Models {
         Models {
             claude: Choice {
-                model: "claude-opus-5-5",
+                model: crate::settings::default_model(crate::agent::Tool::Claude),
                 effort: "xhigh",
                 complex_effort: "xhigh",
             },
             codex: Choice {
-                model: "gpt-6.1-sol",
+                model: crate::settings::default_model(crate::agent::Tool::Codex),
                 effort: "high",
                 complex_effort: "high",
             },
-            cursor: CursorChoice { model: "auto" },
+            cursor: CursorChoice {
+                model: crate::settings::default_model(crate::agent::Tool::Cursor),
+            },
         }
     }
 }

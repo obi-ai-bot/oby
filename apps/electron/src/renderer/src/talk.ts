@@ -19,6 +19,18 @@ export const usageWords = (a: Account) => {
 };
 // What a person calls the tool, in the message box's picker
 export const TOOL_NAME: Record<Agent, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor' };
+export const PILL_TOOL_NAME: Record<Agent, string> = { ...TOOL_NAME, claude: 'Claude Code' };
+export function modelChoice(saved: string, fallback: string, options: readonly { id: string; name: string }[]) {
+  const offered = options.find((m) => m.id === saved);
+  return { id: offered ? saved : fallback, name: offered?.name ?? options.find((m) => m.id === fallback)?.name ?? fallback, unavailable: !offered };
+}
+export function modelUsage(a: Account) {
+  if (a.full) return 'Full';
+  const lines = [];
+  if (a.session != null) lines.push(`${a.session}% used in 5h`);
+  if (a.used != null) lines.push(`${a.used}% used${a.weekly ? ' this week' : ''}`);
+  return lines.join(' · ') || 'No usage';
+}
 // An account by its tool; by its name too once its tool has more than one
 export const rowTitle = (a: Account, accounts: Account[]) =>
   accounts.filter((x) => x.agent === a.agent && x.signedIn !== false).length > 1 ? `${TOOL_NAME[a.agent]} · ${a.name}` : TOOL_NAME[a.agent];

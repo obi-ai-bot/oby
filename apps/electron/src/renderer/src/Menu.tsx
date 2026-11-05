@@ -8,18 +8,20 @@ import { createPortal } from 'react-dom';
 // a click on the button that opened it is left to that button, which closes it
 // (a toggle, not a reopen). The window changing size closes it too, as a macOS
 // menu does, rather than leaving it where the button no longer is.
-export function Menu({ at, onClose, height = 90, align = 'right', width, children }: {
+export function Menu({ at, onClose, onEscape = onClose, height = 90, align = 'right', width, style: placement, children }: {
   at: DOMRect;
   onClose: () => void;
+  onEscape?: () => void;
   height?: number;  // about how tall it is, to tell whether it fits below
   align?: 'left' | 'right';
   width?: number;  // wider than its 148px least, where its items want room
+  style?: React.CSSProperties;
   children: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useClicksEverywhere(true);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopImmediatePropagation(); onClose(); } };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onEscape(); } };
     const onDown = (e: PointerEvent) => {
       const onButton = e.clientX >= at.left && e.clientX <= at.right && e.clientY >= at.top && e.clientY <= at.bottom;
       if (!ref.current?.contains(e.target as Node) && !onButton) onClose();
@@ -28,13 +30,14 @@ export function Menu({ at, onClose, height = 90, align = 'right', width, childre
     addEventListener('pointerdown', onDown, true);
     addEventListener('resize', onClose);
     return () => { removeEventListener('keydown', onKey, true); removeEventListener('pointerdown', onDown, true); removeEventListener('resize', onClose); };
-  }, [onClose, at]);
+  }, [onClose, onEscape, at]);
 
   const up = at.bottom + height > innerHeight;
   const style: React.CSSProperties = {
     ...(align === 'left' ? { left: at.left } : { right: innerWidth - at.right }),
     ...(width ? { minWidth: width } : {}),
     ...(up ? { bottom: innerHeight - at.top + 4 } : { top: at.bottom + 4 }),
+    ...placement,
   };
   return createPortal(
     <div ref={ref} className={`row-menu${up ? ' is-up' : ''}${align === 'left' ? ' is-left' : ''}`} style={style} role="menu">{children}</div>,

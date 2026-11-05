@@ -2204,7 +2204,7 @@ fn a_turns_usage_is_kept_from_its_result_line() {
     assert_eq!(record["conversation"], answer.body["conversation"]);
     let call = &record["calls"][0];
     assert_eq!(call["adapter"], "claude");
-    assert_eq!(call["model"], "claude-sonnet-5-5");
+    assert_eq!(call["model"], "claude-opus-5-5");
     assert_eq!(call["outcome"], "answered");
     assert_eq!(call["num_turns"], 2);
     for (key, n) in [

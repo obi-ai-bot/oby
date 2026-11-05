@@ -2935,7 +2935,7 @@ attributes:
     fn a_cursor_run_starts_with_no_mcp_approval_of_its_own() {
         let root = std::env::temp_dir().join(format!("oby-approvals-{}", std::process::id()));
         let login = root.join("login");
-        let planted = login.join(".cursor/projects/a-project/mcp-approvals.json");
+        let planted = acp::cursor::data_dir(&login).join("projects/a-project/mcp-approvals.json");
         std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
         std::fs::write(&planted, "[]").unwrap();
         copy_cursor(None, &root.join("cli-config.json"), &root, &login).unwrap();
