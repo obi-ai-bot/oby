@@ -534,23 +534,56 @@ pub fn codex_read(result: &Value) -> Option<Usage> {
 }
 
 /// Cursor's `GetCurrentPeriodUsage` answer, with its `GetPlanInfo` answer (null when that failed):
-/// a figure only when `planUsage` says one, as Cursor's own code reads it: its included spend over
-/// a `limit` above 0, else `totalPercentUsed`. The reset is the included usage's (a weekly plan's
+/// the highest reported share: included spend over a positive limit, total, Auto or API percent.
+/// The reset is the included usage's (a weekly plan's
 /// week), else the billing cycle's end. A number and a time are all that's taken from either.
 pub fn cursor(current: &Value, plan: &Value) -> Option<Usage> {
-    let used = current.get("planUsage").filter(|used| used.is_object())?;
-    let seven_day = match number(&used["limit"]).filter(|limit| *limit > 0.0) {
-        Some(limit) => share(&used["includedSpend"], limit).unwrap_or(0.0),
-        None => share(&used["totalPercentUsed"], 100.0)?,
-    };
-    let at = |value: &Value| epoch(value).or_else(|| utc(value));
+    let used = &current["planUsage"];
+    let included_spend = used["includedSpend"].as_f64();
+    let limit = used["limit"].as_f64();
+    let total = used["totalPercentUsed"].as_f64();
+    let auto = used["autoPercentUsed"].as_f64();
+    let api = used["apiPercentUsed"].as_f64();
+    let included = included_spend
+        .zip(limit.filter(|limit| *limit > 0.0))
+        .map(|(spend, limit)| spend / limit);
+    let winner = [
+        ("includedSpend", included),
+        ("totalPercentUsed", total.map(|n| n / 100.0)),
+        ("autoPercentUsed", auto.map(|n| n / 100.0)),
+        ("apiPercentUsed", api.map(|n| n / 100.0)),
+    ]
+    .into_iter()
+    .filter_map(|(field, share)| share.map(|share| (field, share)))
+    .max_by(|a, b| a.1.total_cmp(&b.1));
+    tracing::info!(
+        "{}",
+        cursor_line(
+            [included_spend, limit, total, auto, api],
+            winner.map(|(field, _)| field)
+        )
+    );
+    let seven_day = winner?.1.clamp(0.0, 1.0);
     Some(Usage {
         seven_day: Some(seven_day),
-        seven_day_resets: at(&plan["planInfo"]["includedUsageResetsAt"])
-            .or_else(|| at(&current["billingCycleEnd"])),
+        seven_day_resets: cursor_reset(current, plan),
         advisory: true,
         ..Usage::default()
     })
+}
+
+pub(crate) fn cursor_reset(current: &Value, plan: &Value) -> Option<i64> {
+    let at = |value: &Value| epoch(value).or_else(|| utc(value));
+    at(&plan["planInfo"]["includedUsageResetsAt"]).or_else(|| at(&current["billingCycleEnd"]))
+}
+
+/// The one log line a Cursor read leaves (USAGE-7): its numbers and which field won. Numbers only, by
+/// type, so nothing else of the answer can reach the log.
+fn cursor_line(numbers: [Option<f64>; 5], winner: Option<&str>) -> String {
+    let [included_spend, limit, total, auto, api] = numbers;
+    format!(
+        "Cursor usage included_spend={included_spend:?} limit={limit:?} total={total:?} auto={auto:?} api={api:?} winner={winner:?}"
+    )
 }
 
 /// What a job's turns used, summed as the tools reported them (#731). A count no tool reported
@@ -1353,6 +1386,19 @@ mod tests {
     }
 
     /// A figure without a reset doesn't keep an old one, which would read as 0%.
+    #[test]
+    fn usage_7_one_log_line_has_only_numbers_and_the_winning_field() {
+        let line = cursor_line(
+            [Some(0.0), Some(2000.0), None, Some(72.0), None],
+            Some("autoPercentUsed"),
+        );
+        assert!(
+            line.contains("auto=Some(72.0)") && line.contains("limit=Some(2000.0)"),
+            "{line}"
+        );
+        assert!(line.contains("winner=Some(\"autoPercentUsed\")"), "{line}");
+    }
+
     #[test]
     fn usage_7_a_cursor_read_takes_the_place_of_the_last_whole() {
         let home = Home::new("cursor-whole");

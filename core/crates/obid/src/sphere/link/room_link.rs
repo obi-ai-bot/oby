@@ -527,6 +527,7 @@ impl Link {
         let written = answering::write(
             &self.config,
             &self.sandbox,
+            &self.jobs,
             &dir,
             &need.owner,
             &self.own_name(),

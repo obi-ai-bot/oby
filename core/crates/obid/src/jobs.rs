@@ -16373,6 +16373,8 @@ mod tests {
         );
         // Nor is it told the author's Tetrix rules: no session to save, no commit to stamp.
         assert!(tetrix_line(&unsigned).contains("end every commit message with a `Tetrix-Session"));
+        // Three of the owner's tasks stopped to ask about a Tetrix that refused them.
+        assert!(tetrix_line(&unsigned).contains("that never stops the work"));
         unsigned.review_of = Some("j1".into());
         let line = tetrix_line(&unsigned);
         assert!(!line.contains("call `save_session`") && !line.contains("end every commit"));

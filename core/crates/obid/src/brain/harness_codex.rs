@@ -25,7 +25,7 @@ use crate::api::Shared;
 /// (`code_mode_host` off, Codex offers no MCP tool at all): `exec`'s JavaScript has no file,
 /// process or network access. Codex takes keys it doesn't know without a word, so obid checks, and
 /// ends a turn in which something runs anyway ([`crate::codex::Options::no_commands`]).
-const OFF: &[&str] = &[
+pub(crate) const OFF: &[&str] = &[
     "shell_tool",
     "shell_snapshot",
     "apps",
@@ -148,6 +148,11 @@ pub(super) async fn launch(
 /// in the same box, environment, `CODEX_HOME` and folder (`launch`, its `app-server` swapped for
 /// `features list`), so both see the same settings, managed ones included.
 async fn features_off(launch: &Launch) -> Result<(), String> {
+    features_off_with(launch, &[]).await
+}
+
+/// Other confined runs may remove more features from the same checked baseline.
+pub(crate) async fn features_off_with(launch: &Launch, extra: &[&str]) -> Result<(), String> {
     let mut argv = launch.argv.clone();
     if argv.last().map(|a| a.as_os_str()) != Some("app-server".as_ref()) {
         return Err(
@@ -188,7 +193,7 @@ async fn features_off(launch: &Launch) -> Result<(), String> {
             );
         }
     };
-    for name in OFF {
+    for name in OFF.iter().chain(extra) {
         match feature(&out, name) {
             Some(false) => {}
             Some(true) => {

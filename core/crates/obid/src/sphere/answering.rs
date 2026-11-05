@@ -1,7 +1,7 @@
 //! An answer the Obi writes by itself to another Obi's question (docs/runner-api.md, "obid only:
 //! questions from other Obis"; spec `protocol.md` section 11, "Questions"), under one sharing rule.
 //!
-//! Its only material is what that rule allows ([`material`]). A model run on the owner's Claude Code
+//! Its only material is what that rule allows ([`material`]). A model run on an eligible
 //! account writes it ([`write`]): the question reaches the model only as a quoted file,
 //! `question.json`, and the material as another, `material.json`, in a folder of the run's own; its
 //! prompt is fixed and names neither's words. It reads nothing else, by two layers that each hold
@@ -14,6 +14,10 @@
 //!   directory) and `--permission-prompts none` (anything that would ask is refused), and no
 //!   `--allowedTools`. This is what keeps the account folder, which the system must let the process
 //!   read, out of the model's reach.
+//! - **Codex and Cursor** ([`providers`]): the same confined launch and quoted files, frozen
+//!   read-only. Codex's only executable tool is obid's two-file Read callback; Cursor uses Ask
+//!   mode, Workspace read access, fixed denials and its provider-only proxy. No ChatGPT account
+//!   answers another person's activity. Both return through the same output and publish gates.
 //!
 //! It runs no command, writes nothing that leaves, and changes nothing. What it writes is checked,
 //! cleaned and scanned (the publish gate) before anything is sent, and it can always say it can't
@@ -29,7 +33,7 @@
 //! covers (SPH-11).
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -41,6 +45,8 @@ use crate::config::Config;
 use crate::job::Job;
 use crate::sandbox::{self, Sandbox, Spec};
 use crate::{process, store};
+
+mod providers;
 
 /// The most jobs, and shared results, one answer's material holds.
 const MAX_JOBS: usize = 20;
@@ -260,7 +266,7 @@ pub async fn add_progress(rule: &Rule, material: &mut [Value], jobs: &[Job], scr
 /// the same fence as other Obys' words. At most one, never `except` (the exchange being answered),
 /// each line cut short and scanned alone like [`add_progress`]: a finding leaves that line out, and
 /// a scan that can't run leaves the exchange out. Not a tell: it adds no job or repository, and
-/// doesn't widen what a sharing rule covers (SPH-11, PEER-43, ASK-28).
+/// doesn't widen what a sharing rule covers (SPH-11, PEER-43, ASK-32).
 pub async fn add_last_exchange(
     material: &mut Vec<Value>,
     exchanges: &[&Exchange],
@@ -374,21 +380,60 @@ fn refs_of(indexes: &[Value], material: &[Value]) -> Vec<Value> {
     out
 }
 
-/// Runs the model on the owner's first Claude Code account, in `dir` (made new, removed after):
+/// Runs the model on an eligible account, in a fresh folder beside `dir`, removed after:
 /// `Ok(None)` when it says it can't answer, `Err` when it couldn't run or said nothing usable.
+#[allow(clippy::too_many_arguments)]
 pub async fn write(
     config: &Config,
     sandbox: &Result<Sandbox, String>,
+    jobs: &crate::jobs::Jobs,
     dir: &Path,
     owner: &str,
     your_owner: &Value,
     question: &Value,
     material: &[Value],
 ) -> Result<Option<Written>, String> {
-    let _ = std::fs::remove_dir_all(dir);
-    let ran = run(config, sandbox, dir, owner, your_owner, question, material).await;
-    let _ = std::fs::remove_dir_all(dir);
-    let out = ran?;
+    let folder = RunFolder::new(dir)?;
+    let ran = run(
+        config, sandbox, jobs, &folder.0, owner, your_owner, question, material,
+    )
+    .await;
+    written(ran?, question, material)
+}
+
+/// A fresh sibling of the requested exchange folder. Full exchange UUIDs leave Cursor no room
+/// for its sockets on the default Mac home path. Creation is exclusive (a collision never reuses
+/// another run's files), and Drop also removes the private login if the future is cancelled.
+struct RunFolder(PathBuf);
+
+impl RunFolder {
+    fn new(requested: &Path) -> Result<Self, String> {
+        let parent = requested
+            .parent()
+            .ok_or("the answer's folder has no parent")?;
+        store::make_private_dir(parent).map_err(|_| "obid couldn't make its answers folder")?;
+        let name = format!("r{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let path = parent.join(name);
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&path)
+            .map_err(|_| "obid couldn't make a private answering folder")?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for RunFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn written(out: Value, question: &Value, material: &[Value]) -> Result<Option<Written>, String> {
     if out["answerable"] != true {
         return Ok(None);
     }
@@ -407,9 +452,11 @@ pub async fn write(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     config: &Config,
     sandbox: &Result<Sandbox, String>,
+    jobs: &crate::jobs::Jobs,
     dir: &Path,
     owner: &str,
     your_owner: &Value,
@@ -419,19 +466,8 @@ async fn run(
     let sandbox = sandbox
         .as_ref()
         .map_err(|why| format!("there's no job sandbox: {why}"))?;
-    let agent = config
-        .agents
-        .get()
-        .claude
-        .ok_or("Claude Code isn't configured")?;
-    // The first that can run: one with no login would send every question to the owner.
-    let account = agent
-        .accounts
-        .iter()
-        .find(|a| crate::jobs::signed_in(Tool::Claude, a, crate::jobs::login_home().as_deref()))
-        .or(agent.accounts.first())
-        .ok_or("Claude Code has no account")?;
-    let bin = process::resolve_bin(&agent.bin).ok_or("Claude Code's binary isn't available")?;
+    let (tool, agent, account) = providers::account(config)?;
+    let bin = process::resolve_bin(&agent.bin).ok_or("the answering tool isn't available")?;
     // The folder the model reads (only the two quoted files) and its temporary folder, apart:
     // nothing of its HOME (a copied login) is inside what it reads without asking.
     let reads = dir.join("question");
@@ -457,6 +493,11 @@ async fn run(
         json!({"quoted": "What your owner lets you tell them, and nothing else.",
                "yourOwner": your_owner, "items": material}),
     )?;
+
+    if tool != Tool::Claude {
+        let out = providers::run(jobs, tool, &account, dir).await?;
+        return checked(out);
+    }
 
     let mut hidden = vec![config.home.clone()];
     hidden.extend(crate::jobs::person_homes());
@@ -594,24 +635,34 @@ async fn run(
         .get("structured_output")
         .filter(|o| o.is_object())
         .ok_or("the model returned no structured output")?;
-    let errors = jsonschema_problems(out);
+    checked(out.clone())
+}
+
+fn checked(out: Value) -> Result<Value, String> {
+    let errors = jsonschema_problems(&out);
     if !errors.is_empty() {
         return Err(format!(
             "the model's answer didn't match its schema: {errors}"
         ));
     }
-    Ok(out.clone())
+    Ok(out)
 }
 
 /// What's wrong with the model's output against [`schema`], briefly; empty when nothing is.
 fn jsonschema_problems(out: &Value) -> String {
     let ok = out["answerable"].is_boolean()
-        && out["text"].is_string()
+        && out["text"]
+            .as_str()
+            .is_some_and(|text| text.chars().count() <= MAX_TEXT)
         && out["refs"]
             .as_array()
             .is_some_and(|r| r.len() <= 10 && r.iter().all(Value::is_u64))
         && (out["choice"].is_null() || out["choice"].as_u64().is_some_and(|c| c <= 2))
-        && out.as_object().is_some_and(|o| o.len() == 4);
+        && out.as_object().is_some_and(|o| {
+            o.len() == 4
+                && o.keys()
+                    .all(|k| ["answerable", "text", "refs", "choice"].contains(&k.as_str()))
+        });
     if ok { String::new() } else { "fields".into() }
 }
 
@@ -621,6 +672,76 @@ mod tests {
     use crate::sphere::sharing::rule_from;
 
     const ASKED: &str = "Rotate the billing keys, then tell finance";
+
+    #[test]
+    fn ask_31_run_folders_are_private_short_and_removed() {
+        let parent =
+            std::env::temp_dir().join(format!("obid-answer-folders-{}", uuid::Uuid::new_v4()));
+        let requested = parent.join(uuid::Uuid::new_v4().to_string());
+        let first = RunFolder::new(&requested).unwrap();
+        let second = RunFolder::new(&requested).unwrap();
+        assert_ne!(
+            first.0, second.0,
+            "two runs never share a login or input files"
+        );
+        let mac = Path::new("/Users/developer/Library/Application Support/Oby/Runner/answers")
+            .join(first.0.file_name().unwrap())
+            .join("login");
+        assert!(
+            crate::acp::cursor::data_dir(&mac).as_os_str().len() <= crate::acp::cursor::SOCKET_ROOM
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&first.0).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let file = first.0.join("login");
+        store::write_private(&file, b"private login copy").unwrap();
+        drop(first);
+        assert!(
+            !file.exists(),
+            "a cancelled or failed run leaves no private copy"
+        );
+        drop(second);
+        assert!(std::fs::read_dir(&parent).unwrap().next().is_none());
+        std::fs::remove_dir(parent).unwrap();
+    }
+
+    #[test]
+    fn ask_31_answers_share_validation_and_cleaning() {
+        let material = [json!({"ref": {"kind": "repo", "repo": "acme/app"}})];
+        let question = json!({"choices": ["Yes", "No"]});
+        let out = checked(
+            json!({"answerable": true, "text": "  Billing\r\nis moving\u{202e}\u{0007} ",
+            "refs": [0, 0, 200], "choice": 2}),
+        )
+        .unwrap();
+        let answer = written(out, &question, &material).unwrap().unwrap();
+        assert_eq!(answer.text, "Billing\nis moving");
+        assert_eq!(answer.refs, [material[0]["ref"].clone()]);
+        assert_eq!(answer.choice, None);
+        for bad in [
+            json!({}),
+            json!({"answerable": true, "text": "x", "refs": [], "extra": null}),
+            json!({"answerable": true, "text": "x", "refs": ["0"], "choice": null}),
+            json!({"answerable": true, "text": "x".repeat(MAX_TEXT + 1), "refs": [], "choice": null}),
+        ] {
+            assert!(checked(bad).is_err());
+        }
+        assert_eq!(
+            written(
+                checked(json!({"answerable": false, "text": "", "refs": [], "choice": null}))
+                    .unwrap(),
+                &question,
+                &material
+            )
+            .unwrap(),
+            None
+        );
+    }
 
     fn running(id: &str) -> Job {
         let mut job = Job::new(
@@ -1074,9 +1195,9 @@ mod tests {
         assert!(items.is_empty(), "{items:?}");
     }
 
-    /// ASK-28: the same prior exchange is what a follow-up's run reads in its material.
+    /// ASK-32: the same prior exchange is what a follow-up's run reads in its material.
     #[tokio::test]
-    async fn ask_28_a_follow_up_gets_the_last_exchange_in_its_material() {
+    async fn ask_32_a_follow_up_gets_the_last_exchange_in_its_material() {
         let scratch = std::env::temp_dir().join(format!("obid-ask28-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&scratch);
         let mut prior = Exchange::new(

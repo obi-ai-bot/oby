@@ -178,6 +178,7 @@ impl Link {
         let written = match answering::write(
             &self.config,
             &self.sandbox,
+            &self.jobs,
             &dir,
             &owner,
             &self.own_name(),
