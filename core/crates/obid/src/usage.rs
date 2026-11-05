@@ -557,13 +557,11 @@ pub fn cursor(current: &Value, plan: &Value) -> Option<Usage> {
     .filter_map(|(field, share)| share.map(|share| (field, share)))
     .max_by(|a, b| a.1.total_cmp(&b.1));
     tracing::info!(
-        ?included_spend,
-        ?limit,
-        ?total,
-        ?auto,
-        ?api,
-        winner = winner.map(|(field, _)| field),
-        "Cursor usage"
+        "{}",
+        cursor_line(
+            [included_spend, limit, total, auto, api],
+            winner.map(|(field, _)| field)
+        )
     );
     let seven_day = winner?.1.clamp(0.0, 1.0);
     Some(Usage {
@@ -577,6 +575,15 @@ pub fn cursor(current: &Value, plan: &Value) -> Option<Usage> {
 pub(crate) fn cursor_reset(current: &Value, plan: &Value) -> Option<i64> {
     let at = |value: &Value| epoch(value).or_else(|| utc(value));
     at(&plan["planInfo"]["includedUsageResetsAt"]).or_else(|| at(&current["billingCycleEnd"]))
+}
+
+/// The one log line a Cursor read leaves (USAGE-7): its numbers and which field won. Numbers only, by
+/// type, so nothing else of the answer can reach the log.
+fn cursor_line(numbers: [Option<f64>; 5], winner: Option<&str>) -> String {
+    let [included_spend, limit, total, auto, api] = numbers;
+    format!(
+        "Cursor usage included_spend={included_spend:?} limit={limit:?} total={total:?} auto={auto:?} api={api:?} winner={winner:?}"
+    )
 }
 
 /// What a job's turns used, summed as the tools reported them (#731). A count no tool reported
@@ -1379,6 +1386,19 @@ mod tests {
     }
 
     /// A figure without a reset doesn't keep an old one, which would read as 0%.
+    #[test]
+    fn usage_7_one_log_line_has_only_numbers_and_the_winning_field() {
+        let line = cursor_line(
+            [Some(0.0), Some(2000.0), None, Some(72.0), None],
+            Some("autoPercentUsed"),
+        );
+        assert!(
+            line.contains("auto=Some(72.0)") && line.contains("limit=Some(2000.0)"),
+            "{line}"
+        );
+        assert!(line.contains("winner=Some(\"autoPercentUsed\")"), "{line}");
+    }
+
     #[test]
     fn usage_7_a_cursor_read_takes_the_place_of_the_last_whole() {
         let home = Home::new("cursor-whole");

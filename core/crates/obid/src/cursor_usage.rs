@@ -271,46 +271,11 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn usage_7_one_info_line_has_only_numbers_and_the_winning_field() {
-        #[derive(Clone, Default)]
-        struct Logged(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Logged {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let logged = Logged::default();
-        let writer = logged.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .with_ansi(false)
-            .without_time()
-            .with_writer(move || writer.clone())
-            .finish();
-        let _logging = tracing::subscriber::set_default(subscriber);
-        // Another test's thread may have told this callsite nobody listens.
-        tracing::callsite::rebuild_interest_cache();
+    async fn usage_7_auto_use_is_the_figure_when_included_spend_is_zero() {
         let usage = figure(read(|_| body(200,
             r#"{"planUsage":{"limit":2000,"includedSpend":0,"autoPercentUsed":72},"displayMessage":"ANSWER-WORDS"}"#
         )).await);
         assert_eq!(usage.seven_day, Some(0.72));
-        let said = String::from_utf8(logged.0.lock().unwrap().clone()).unwrap();
-        assert_eq!(said.lines().count(), 1, "{said}");
-        assert!(
-            said.contains("INFO") && said.contains("winner=\"autoPercentUsed\""),
-            "{said}"
-        );
-        assert!(
-            said.contains("Some(72.0)") && said.contains("Some(2000.0)"),
-            "{said}"
-        );
-        for words in [TOKEN, "ANSWER-WORDS", "displayMessage"] {
-            assert!(!said.contains(words), "{said}");
-        }
     }
 
     #[tokio::test]

@@ -464,7 +464,8 @@ mod tests {
     /// proves the confined filesystem; inside an obid job a second Seatbelt box cannot be made.
     async fn answer(tool: Tool, case: &str) -> Result<Value, String> {
         let folder = Folder::new();
-        let dir = &folder.0;
+        // through a Mac's /var link, as the agent sees it
+        let dir = &folder.0.canonicalize().unwrap();
         let reads = dir.join("question");
         let login = dir.join("login");
         store::make_private_dir(&reads).unwrap();
