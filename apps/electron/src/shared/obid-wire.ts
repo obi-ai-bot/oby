@@ -201,6 +201,9 @@ export type Account = {
   model?: string;
   effort?: string;
   complexEffort?: string;
+  // obid only: this account's own model list when it differs from GET /v1/settings/models/options
+  // for its tool (CONVERSATION-AGENT-22). Older runners omit it.
+  models?: { id: string; name: string }[];
 };
 export type Status = {
   runner: { version: string; host: string; engine?: string };

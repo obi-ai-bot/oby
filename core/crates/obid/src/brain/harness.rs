@@ -610,7 +610,9 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
 /// session gets Tetrix's server.
 fn claude_flags(shared: &Shared, account: &str, tetrix: bool, watched: bool) -> Vec<OsString> {
-    let model = crate::settings::account_model(&shared.config.home, Tool::Claude, account);
+    let offered = shared.jobs.model_lists.for_account(Tool::Claude, account);
+    let model =
+        crate::settings::account_model(&shared.config.home, Tool::Claude, account, &offered);
     [
         "-p",
         "--input-format",
@@ -1781,6 +1783,7 @@ async fn attempts(
                 &shared.config.home,
                 tool,
                 &account.id,
+                &shared.jobs.model_lists.for_account(tool, &account.id),
             )),
             turn.result.as_ref(),
             began,

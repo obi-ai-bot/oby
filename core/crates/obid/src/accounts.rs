@@ -995,7 +995,8 @@ pub async fn change(
     let text = text_field(&map, "name")?;
     let new_payer = map.contains_key("payer").then(|| payer(map.get("payer")));
     let (tool, _) = find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?;
-    let tuned = tuning(&map, tool)?;
+    let offered = shared.jobs.model_lists.for_account(tool, &id);
+    let tuned = tuning(&map, tool, &offered)?;
     // The name and payer first: a refused one keeps the model and efforts as they were too.
     let (tool, account) = if text.is_none() && new_payer.is_none() {
         find(&shared.config.agents.get(), &id).ok_or_else(|| no_account(&id))?
@@ -1053,19 +1054,18 @@ pub async fn change(
 }
 
 /// The model and efforts a `PATCH` sets, each a value or null (the tool's own): a model `tool`
-/// offers ([`crate::settings::models`]), and an effort it takes ([`crate::settings::efforts`]).
+/// offers for this account ([`crate::model_lists`]), and an effort it takes ([`crate::settings::efforts`]).
 fn tuning(
     map: &Map<String, Value>,
     tool: Tool,
+    offered: &[crate::model_lists::Offered],
 ) -> Result<Vec<(&'static str, Option<String>)>, ApiError> {
     let mut tuned = Vec::new();
     for key in ["model", "effort", "complexEffort"] {
         let value = match map.get(key) {
             None => continue,
             Some(Value::Null) => None,
-            Some(Value::String(v))
-                if key == "model" && crate::settings::models(tool).iter().any(|(m, _)| m == v) =>
-            {
+            Some(Value::String(v)) if key == "model" && offered.iter().any(|m| m.id == *v) => {
                 Some(v.clone())
             }
             Some(Value::String(v))
@@ -1074,10 +1074,7 @@ fn tuning(
                 Some(v.clone())
             }
             Some(_) if key == "model" => {
-                let ids: Vec<_> = crate::settings::models(tool)
-                    .iter()
-                    .map(|(m, _)| *m)
-                    .collect();
+                let ids: Vec<_> = offered.iter().map(|m| m.id.as_str()).collect();
                 return Err(unprocessable(format!(
                     "model is one of {}'s: {}, or null.",
                     tool.name(),
@@ -1264,6 +1261,7 @@ fn forget_account(shared: &Shared, account: &Account) -> Result<(), ApiError> {
     if let Err(e) = shared.jobs.usage.forget(&id) {
         tracing::warn!("account {id}: its usage stayed in usage.json: {e}");
     }
+    shared.jobs.model_lists.forget(&id);
     tracing::info!("account {id}: removed");
     // Its model and efforts go with it, and new tasks go by routing's own order again.
     if let Err(e) = crate::settings::update(&shared.config.home, |s| {
@@ -2281,7 +2279,7 @@ fn tool_command(bin: &Path, scratch: &Path) -> tokio::process::Command {
 
 /// The variables that point a tool at the account: its folder `dir`, or for the tool's own login
 /// (no folder) the person's home, as the tool itself would run.
-fn account_env(
+pub(crate) fn account_env(
     tool: Tool,
     dir: Option<&Path>,
     scratch: &Path,

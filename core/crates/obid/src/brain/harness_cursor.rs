@@ -79,10 +79,15 @@ pub(super) fn launch(
         &door(conversation),
     )?;
     let mut options = options(&account.name, url, tetrix, token, resume);
+    let offered = shared
+        .jobs
+        .model_lists
+        .for_account(crate::agent::Tool::Cursor, &account.id);
     options.model = Some(crate::settings::account_model(
         &shared.config.home,
         crate::agent::Tool::Cursor,
         &account.id,
+        &offered,
     ));
     Ok((launch, options))
 }

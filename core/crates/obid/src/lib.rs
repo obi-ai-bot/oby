@@ -44,6 +44,7 @@ pub mod limits;
 pub mod memory;
 pub mod merge;
 pub mod meter;
+pub mod model_lists;
 pub mod obi_dir;
 pub mod permissions;
 pub mod policy;

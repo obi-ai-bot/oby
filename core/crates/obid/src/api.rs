@@ -721,6 +721,10 @@ pub struct AccountJson {
     /// (CHATGPT-20). Left out until then, and it's a no; left out on any other login.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_consent: Option<bool>,
+    /// This account's own model list when it differs from `GET /v1/settings/models/options` for
+    /// its tool (CONVERSATION-AGENT-22). Add-only; older apps ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<crate::model_lists::Offered>>,
 }
 
 #[derive(Serialize)]
@@ -872,6 +876,13 @@ pub fn account_json(
                 .map(|answer| answer.given)
         }),
         login_email: chatgpt.and_then(|marker| marker.email),
+        // Against today's fixed list: a live CLI list that differs is sent on the account so the
+        // message-box menu can use it even when tool options already show another account's list.
+        models: shared.jobs.model_lists.when_differs(
+            tool,
+            &account.id,
+            &crate::model_lists::fallback(tool),
+        ),
     }
 }
 
@@ -881,15 +892,28 @@ async fn models() -> axum::Json<Models> {
 }
 
 /// `GET /v1/settings/models/options`: the models and efforts Settings › Agents offers each tool
-/// ([`crate::settings::models`], [`crate::settings::efforts`]); each model lists its efforts too,
-/// as Codex's do.
-async fn model_options() -> axum::Json<serde_json::Value> {
+/// (each account's last good CLI list when read, else [`crate::settings::models`]); each model
+/// lists its efforts too, as Codex's do. Add-only shape.
+async fn model_options(State(shared): State<Arc<Shared>>) -> axum::Json<serde_json::Value> {
+    let home = crate::jobs::login_home();
     let options = crate::agent::Tool::ALL.map(|tool| {
         let efforts = crate::settings::efforts(tool);
-        let models: Vec<_> = crate::settings::models(tool)
-            .iter()
-            .map(|(id, name)| serde_json::json!({"id": id, "name": name, "efforts": efforts}))
+        let peers: Vec<(String, bool)> = shared
+            .jobs
+            .accounts(tool)
+            .into_iter()
+            .map(|a| {
+                (
+                    a.id.clone(),
+                    crate::jobs::signed_in(tool, &a, home.as_deref()),
+                )
+            })
             .collect();
+        let models: Vec<_> =
+            crate::model_lists::tool_options(&shared.jobs.model_lists, tool, &peers)
+                .into_iter()
+                .map(|m| serde_json::json!({"id": m.id, "name": m.name, "efforts": efforts}))
+                .collect();
         (
             tool.id().to_owned(),
             serde_json::json!({"models": models, "efforts": efforts, "complexEfforts": efforts}),

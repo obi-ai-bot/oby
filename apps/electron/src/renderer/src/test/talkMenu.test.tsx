@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   chosen: 'p', saved: { p: 'claude-opus-5-5', w: 'claude-sonnet-5-5' } as Record<string, string>,
   tune: vi.fn(), choose: vi.fn(), setDefault: vi.fn(), fail: false,
 }));
+const LONG_CURSOR = Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}`, name: `Model ${i}` }));
 vi.mock('../SettingsView', async () => {
   const { useState } = await import('react');
   return {
@@ -14,7 +15,7 @@ vi.mock('../SettingsView', async () => {
     useAccounts: () => [[
       { id: 'p', agent: 'claude', name: 'Personal', used: 34, weekly: true, session: null },
       { id: 'w', agent: 'claude', name: 'Work', used: null, session: 12 },
-      { id: 'x', agent: 'cursor', name: 'Cursor', used: null },
+      { id: 'x', agent: 'cursor', name: 'Cursor', used: null, models: LONG_CURSOR },
     ]],
     useTalkDefault: () => [state.chosen, state.setDefault],
     useModels: () => {
@@ -114,4 +115,18 @@ it('CONVERSATION-AGENT-21: renders an unavailable model fallback and checks the 
   await click(button('Personal'));
   expect(button('Opus', document.querySelector('.row-submenu')!).getAttribute('aria-checked')).toBe('true');
   expect(document.querySelector('.row-submenu')?.textContent).not.toContain('retired');
+});
+
+it('CONVERSATION-AGENT-22: the model menu uses that account\'s list and scrolls when long', async () => {
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 420 });
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 420 });
+  await show();
+  await click(button('Cursor'));
+  const models = document.querySelector<HTMLElement>('[aria-label="Cursor models"]')!;
+  expect(models.className).toContain('is-scroll');
+  expect(models.style.maxHeight).not.toBe('');
+  expect(Number.parseFloat(models.style.maxHeight)).toBeLessThanOrEqual(420);
+  expect(models.querySelectorAll('button')).toHaveLength(40);
+  expect(button('Model 39', models)).toBeTruthy();
+  expect(button('Auto', models)).toBeUndefined();
 });

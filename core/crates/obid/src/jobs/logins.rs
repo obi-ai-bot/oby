@@ -2184,6 +2184,7 @@ pub(super) fn carry_over(
     tool: Tool,
     account: &crate::config::Account,
     tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>,
+    offered: &[crate::model_lists::Offered],
     from: &str,
     said: Carried,
 ) {
@@ -2193,7 +2194,7 @@ pub(super) fn carry_over(
     on_tool(job, tool);
     job.account = account.id.clone();
     job.session = None;
-    tune(job, tuning);
+    tune(job, tuning, offered);
     job.moves.push(crate::job::Move {
         from: from.to_owned(),
         to: to.clone(),

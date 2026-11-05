@@ -24,6 +24,11 @@ export function modelChoice(saved: string, fallback: string, options: readonly {
   const offered = options.find((m) => m.id === saved);
   return { id: offered ? saved : fallback, name: offered?.name ?? options.find((m) => m.id === fallback)?.name ?? fallback, unavailable: !offered };
 }
+// The message-box model menu: this account's own list when status sent one (it differs from the
+// tool options), else the tool's options (CONVERSATION-AGENT-22).
+export function accountModels(a: Account, toolOptions: readonly { id: string; name: string }[] | undefined) {
+  return a.models?.length ? a.models : toolOptions ?? [];
+}
 export function modelUsage(a: Account) {
   if (a.full) return 'Full';
   const lines = [];
