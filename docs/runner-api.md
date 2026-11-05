@@ -2237,6 +2237,20 @@ The message box's Select working folder… (Sangam's design, #1564): the owner p
 - **What a conversation keeps.** At most 20 folders (the owner's `limits.folders`), in the order picked, the same folder once, in its file (`home/conversations/<id>.json`); more is `422` (`A conversation works in at most 20 folders.`). `POST /v1/plans` adds; `PATCH` replaces, merged with the folders as they are when it's written, so a folder taken off meanwhile comes back only if it passes its own check.
 - **What the window shows.** obid's `422`s are the error lines the Electron app shows as they are. Their words are obid's placeholders until Sangam writes his: `"<name>" isn't a folder's full path.`, `"<name>" isn't at <path>.`, `Oby can't read "<name>": macOS hasn't let it in. Allow it in System Settings › Privacy & Security › Files and Folders.`, `"<name>" is a file, not a folder.`, `"<name>" is your whole disk: pick a folder inside it.`, `"<name>" holds your Mac's disks: pick a folder on one.`, `"<name>" is your whole home folder: pick a folder inside it.`, `"<name>" is where your Mac keeps its own settings, so Oby doesn't work there.`, `"<name>" is where your Mac keeps its own files, so Oby doesn't work there.`, `"<name>" is where the system keeps its own files, so Oby doesn't work there.`, `"<name>" holds Oby's own files, so Oby doesn't work there.`, `"<name>" holds an agent's login, so Oby doesn't work there.`, `"<name>" holds your keys or logins, so Oby doesn't work there.`, `"<name>" has a name Oby can't read.`, `A conversation works in at most 20 folders.`, `Folders are added only on the Mac.` and `Folders are added only on the Mac: from here you can take one off.`
 
+### obid only: profiles
+
+Chrome-style profiles on this Mac (docs/contracts/profiles.md): a local id and name, never an identity. PROF-1 keeps the registry and the list route; nothing else in obid reads them yet, and apps show nothing. The Swift runner has none: `404`.
+
+**Where.** `home/profiles.json` (0600): `{"profiles":[{"id","name","color","default"}]}`. An install with no file, or one whose `profiles` list is empty, gets one first profile on start (`id` a lower-case UUID, `name` `Personal`, `color` `#3a5a8c`, `default` true) that holds everything the install already has: nothing moves, renames or signs out. A file that doesn't read is left as it is, logged, and answered as that same first profile without writing over it.
+
+**`GET /v1/profiles`**: every profile, as kept:
+
+```json
+[{"id": "3f0c…", "name": "Personal", "color": "#3a5a8c", "default": true, "waiting": false}]
+```
+
+`waiting` is always `false` until later work has something in a profile that waits on the owner. Older runners answer `404`.
+
 ### obid only: memory (#378)
 
 What Oby remembers about the owner and each repository (docs/onboarding.md section 5, "Learned workflow: memory"). This part keeps memories, lists and deletes them, finds what the owner keeps repeating, and keeps how each repository merges, typed (`workflow`, below); each owner's job's agent and each conversation's session get them as quoted data (**What reaches the work**, below); the job follower merges by a remembered workflow (obid only: merging). The Swift runner has none: `404`.

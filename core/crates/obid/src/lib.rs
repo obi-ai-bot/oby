@@ -48,6 +48,7 @@ pub mod obi_dir;
 pub mod permissions;
 pub mod policy;
 pub mod process;
+pub mod profiles;
 pub mod publish;
 pub mod push;
 pub mod relay;
@@ -416,6 +417,7 @@ pub async fn serve(
     stopwatch.lap("sphere");
     let cleared = clear::Cleared::open(&config.home);
     let devices = devices::Devices::open(&config.mac_home);
+    let profiles = profiles::Profiles::open(&config.home);
     let paired = gateway::Gateway::open(&config.mac_home);
     let relay = relay::Relay::open(&config.mac_home);
     link.use_relay(relay.clone());
@@ -469,6 +471,7 @@ pub async fn serve(
         cleanup,
         cleared,
         devices,
+        profiles,
         gateway: paired,
         gateway_state,
         relay,

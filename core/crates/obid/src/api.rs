@@ -35,6 +35,8 @@ pub struct Shared {
     pub cleared: crate::clear::Cleared,
     /// The devices that may approve publishing (`POST /v1/devices`).
     pub devices: crate::devices::Devices,
+    /// Chrome-style profiles on this Mac (`GET /v1/profiles`); nothing else reads them yet.
+    pub profiles: crate::profiles::Profiles,
     /// The phones paired with the gateway, and the open invitation (crate::gateway).
     pub gateway: crate::gateway::Gateway,
     /// `status.gateway`: whether the gateway listens, and why not; none with no `gateway` configured.
@@ -248,6 +250,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
                 .patch(crate::artifacts::update)
                 .delete(crate::artifacts::remove),
         )
+        .route("/v1/profiles", get(crate::profiles::list_route))
         .route(
             "/v1/artifacts/{id}/{version}/{*path}",
             get(crate::artifacts::file),
