@@ -1584,8 +1584,8 @@ mod tests {
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
+        // Fixture repositories own their objects, independently of the enclosing job.
+        let out = crate::git::command(dir, &[])
             .args([
                 "-c",
                 "user.name=t",

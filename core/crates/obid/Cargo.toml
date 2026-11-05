@@ -47,6 +47,10 @@ uuid.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Safe access to owned processes' resident memory without ps's setuid/task-port privileges.
+libproc = "0.14.11"
+
 [dev-dependencies]
 # The channel's tests relay it through a WebSocket server of their own.
 axum = { workspace = true, features = ["ws"] }

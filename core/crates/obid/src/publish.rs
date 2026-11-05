@@ -1849,9 +1849,8 @@ mod tests {
         let (bare, clone) = (root.join("remote.git"), root.join("clone"));
         std::fs::create_dir_all(&clone).unwrap();
         let run = |at: &std::path::Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(at)
+            // Clear the enclosing job's Git folders before building these repositories.
+            let out = crate::git::command(at, &[])
                 .args([
                     "-c",
                     "user.name=t",

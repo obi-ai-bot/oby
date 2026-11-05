@@ -1,7 +1,7 @@
 //! What this machine's memory holds and what each job's processes use (`GET /v1/status`
-//! `memory`, docs/runner-api.md). Read from `sysctl`, `vm_stat` and `ps` on macOS and from `/proc`
-//! on Linux: the system calls behind them would need the `unsafe` this workspace forbids, and a
-//! read costs a few milliseconds, made only while jobs run or when status is asked.
+//! `memory`, docs/runner-api.md). Read from `sysctl`, `vm_stat`, `ps` and libproc's safe rusage
+//! wrapper on macOS and from `/proc` on Linux, with no unsafe code in obid. A read costs a few
+//! milliseconds, made only while jobs run or when status is asked.
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -160,9 +160,26 @@ fn read_machine() -> Option<Machine> {
 pub fn processes() -> Vec<Process> {
     #[cfg(target_os = "macos")]
     {
-        run("/bin/ps", &["-axo", "pid=,ppid=,pgid=,rss="])
-            .map(|out| parse_ps(&out))
-            .unwrap_or_default()
+        run(
+            crate::process::ps_path(),
+            &["-axo", "pid=,ppid=,pgid=,rss="],
+        )
+        .map(|out| {
+            let mut table = parse_ps(&out);
+            for process in &mut table {
+                // An ad-hoc ps can read identities, but loses Apple's task-port
+                // entitlement for other processes' RSS. rusage needs no task port.
+                if process.rss == 0
+                    && let Ok(pid) = i32::try_from(process.pid)
+                    && let Ok(usage) =
+                        libproc::pid_rusage::pidrusage::<libproc::pid_rusage::RUsageInfoV2>(pid)
+                {
+                    process.rss = usage.ri_resident_size;
+                }
+            }
+            table
+        })
+        .unwrap_or_default()
     }
     #[cfg(target_os = "linux")]
     {
@@ -194,7 +211,7 @@ const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// `program`'s output, or `None` when it didn't run, failed or took longer than [`RUN_LIMIT`]
 /// (then it's ended).
 #[cfg(target_os = "macos")]
-fn run(program: &str, args: &[&str]) -> Option<String> {
+fn run(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Option<String> {
     let mut child = std::process::Command::new(program)
         .args(args)
         .env_clear()
@@ -439,5 +456,18 @@ Pages occupied by compressor:                 347536.
         assert!(machine.total > 0 && machine.available <= machine.total);
         let me = std::process::id();
         assert!(tree_rss(&processes(), &[me]) > 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn measures_another_process_without_ps_task_port_privileges() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let rss = tree_rss(&processes(), &[child.id()]);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(rss > 0, "the child's resident memory wasn't measured");
     }
 }
