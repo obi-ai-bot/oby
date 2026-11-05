@@ -375,6 +375,7 @@ fn transient(cause: agent::Cause, full: bool) -> bool {
     match cause {
         agent::Cause::Passing => true,
         agent::Cause::Busy => !full,
+        agent::Cause::Unknown => true,
         _ => false,
     }
 }
@@ -15484,8 +15485,7 @@ mod tests {
         }
     }
 
-    /// Overloaded, failing or dropped APIs are retried; an account's usage limit, an auth error,
-    /// and a number that only looks like a status aren't.
+    /// Known transient errors and unknown tool errors are retried; usage limits and auth errors aren't.
     #[test]
     fn transient_errors_are_the_ones_trying_again_mends() {
         use super::transient;
@@ -15504,19 +15504,43 @@ mod tests {
         for error in [
             "Claude AI usage limit reached|1791582173",
             "Codex hit an error: You've hit your usage limit.",
-            "it broke",
             r#"API Error: 401 {"error":{"message":"invalid x-api-key","request_id":"req_500429"}}"#,
             "Invalid API key · Please run /login (request 5004)",
-            "the tests timed out after 500 ms",
         ] {
             assert!(!transient(Cause::read(error), false), "{error}");
         }
+        assert!(transient(Cause::read("it broke"), false));
+        // This is only the tool's error text, so an unrecognised timeout is retryable too.
+        assert!(transient(
+            Cause::read("the tests timed out after 500 ms"),
+            false
+        ));
         // A 429 while the account's usage says it is full is its limit, not a blip.
         assert!(!transient(
             Cause::read("API Error: 429 rate limit exceeded"),
             true
         ));
         assert!(transient(Cause::read("API Error: 529 overloaded"), true));
+    }
+
+    #[test]
+    fn recovery_9_unknown_tool_errors_retry_but_limits_and_client_statuses_do_not() {
+        use super::transient;
+        use crate::agent::Cause;
+        assert_eq!(Cause::read("http/2 CANCEL"), Cause::Unknown);
+        assert!(transient(Cause::read("http/2 CANCEL"), false));
+        for error in ["out of credits", "quota", "API Error: 404 not found"] {
+            assert_eq!(Cause::read(error), Cause::Other, "{error}");
+            assert!(!transient(Cause::read(error), false), "{error}");
+        }
+        assert_eq!(
+            Cause::read("Codex hit an error: usage limit reached"),
+            Cause::Limit
+        );
+        assert!(!transient(
+            Cause::read("Codex hit an error: usage limit reached"),
+            false
+        ));
     }
 
     #[test]
