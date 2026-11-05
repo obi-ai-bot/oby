@@ -78,7 +78,13 @@ pub(super) fn launch(
         place.folder.join("agent.log"),
         &door(conversation),
     )?;
-    Ok((launch, options(&account.name, url, tetrix, token, resume)))
+    let mut options = options(&account.name, url, tetrix, token, resume);
+    options.model = Some(crate::settings::account_model(
+        &shared.config.home,
+        crate::agent::Tool::Cursor,
+        &account.id,
+    ));
+    Ok((launch, options))
 }
 
 fn options(

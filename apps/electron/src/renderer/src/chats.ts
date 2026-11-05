@@ -158,7 +158,7 @@ export function renameChat(id: string, title: string) {
   if (t) update(id, () => ({ title: t }));
 }
 // The account it talks through (TalkPill): obid's from its next turn; the mock's, here.
-export const chooseTalk = (id: string, account: string) => (ofObid(id) ? void live.chooseTalk(id, account) : update(id, () => ({ talkAccount: account })));
+export const chooseTalk = (id: string, account: string) => (ofObid(id) ? live.chooseTalk(id, account) : update(id, () => ({ talkAccount: account })));
 export const useTalkSetting = () => { const s = live.useLive().status; const [kept] = useKeptSetting<string | null>(TALK_DEFAULT, null); return onObid ? { account: s?.talkAccount ?? null, next: s?.talkNext ?? null } : { account: kept, next: null }; };
 export const lookAtUsage = () => { if (onObid) live.lookAtUsage(); };
 export const pinChat = (id: string, pinned: boolean) => (ofObid(id) ? void live.pinConversation(id, pinned) : update(id, () => ({ pinned })));

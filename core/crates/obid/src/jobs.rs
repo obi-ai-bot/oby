@@ -718,8 +718,9 @@ fn on_tool(job: &mut Job, tool: Tool) {
 fn tune(job: &mut Job, tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>) {
     let kept = tuning.get(&job.account).cloned().unwrap_or_default();
     if job.model.is_none() || job.model_from_account {
-        job.model_from_account = kept.model.is_some();
-        job.model = kept.model.clone();
+        let model = Tool::from_id(&job.agent).and_then(|tool| kept.offered_model(tool));
+        job.model_from_account = model.is_some();
+        job.model = model.map(str::to_owned);
     }
     job.effort = kept.effort(job.complex).map(str::to_owned);
 }
@@ -8021,21 +8022,24 @@ impl Jobs {
                     let chatgpt = self
                         .job_account(&job)
                         .is_ok_and(|(_, account)| crate::chatgpt::marker_of(&account).is_some());
-                    let options = codex::Options {
-                        resume: job.session.clone(),
-                        model: job.model.clone(),
-                        effort: job.effort.clone(),
-                        plan,
-                        instructions: (!obi_review).then(|| standing_rules(&job)).flatten(),
-                        no_commands: false,
-                        usage: !chatgpt,
-                        priced: if chatgpt {
-                            Some("plan".into())
-                        } else {
-                            self.usage.get(&job.account).priced
-                        },
-                        chatgpt,
-                    };
+                    let options =
+                        codex::Options {
+                            resume: job.session.clone(),
+                            model: Some(job.model.clone().unwrap_or_else(|| {
+                                crate::settings::default_model(tool).to_owned()
+                            })),
+                            effort: job.effort.clone(),
+                            plan,
+                            instructions: (!obi_review).then(|| standing_rules(&job)).flatten(),
+                            no_commands: false,
+                            usage: !chatgpt,
+                            priced: if chatgpt {
+                                Some("plan".into())
+                            } else {
+                                self.usage.get(&job.account).priced
+                            },
+                            chatgpt,
+                        };
                     codex::run_turn(
                         launch,
                         prompt,
@@ -8060,7 +8064,7 @@ impl Jobs {
                         // does a cut run's continuation.
                         resume_only: session_only
                             || job.parked.as_ref().is_some_and(|p| p.answered),
-                        model: job.model.clone(),
+                        model: Some(job.model.clone().unwrap_or_else(|| crate::settings::default_model(tool).to_owned())),
                         plan,
                         plan_mode: "plan".into(),
                         agent_mode: "agent".into(),
@@ -10212,9 +10216,11 @@ impl Jobs {
                 if let Some(rules) = standing_rules(&job) {
                     flags.extend(["--append-system-prompt".into(), rules.into()]);
                 }
-                if let Some(model) = &job.model {
-                    flags.extend(["--model".into(), model.into()]);
-                }
+                let model = job
+                    .model
+                    .as_deref()
+                    .unwrap_or_else(|| crate::settings::default_model(tool));
+                flags.extend(["--model".into(), model.into()]);
                 if let Some(effort) = &job.effort {
                     flags.extend(["--effort".into(), effort.into()]);
                 }
@@ -16799,6 +16805,31 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn conversation_agent_21_jobs_use_their_accounts_offered_model() {
+        let mut job = on("j", "work", "claude", "personal", Status::Queued);
+        let mut tuning = std::collections::BTreeMap::new();
+        tuning.insert(
+            "personal".into(),
+            crate::settings::Tuning {
+                model: Some("claude-haiku-5-5".into()),
+                ..Default::default()
+            },
+        );
+        tune(&mut job, &tuning);
+        assert_eq!(job.model.as_deref(), Some("claude-haiku-5-5"));
+        assert!(job.model_from_account);
+        tuning.get_mut("personal").unwrap().model = Some("retired".into());
+        tune(&mut job, &tuning);
+        assert_eq!(job.model, None, "retired choice falls back at launch");
+        job.account = "work".into();
+        tune(&mut job, &tuning);
+        assert_eq!(job.model, None);
+        job.model = Some("explicit-model".into());
+        tune(&mut job, &tuning);
+        assert_eq!(job.model.as_deref(), Some("explicit-model"));
+    }
+
     fn on(id: &str, kind: &str, agent: &str, account: &str, status: Status) -> Job {
         let mut job = Job::new(
             id.into(),
@@ -17738,23 +17769,7 @@ mod tests {
         let clone = root.join("clone");
         std::fs::create_dir_all(&clone).unwrap();
         std::fs::write(clone.join("Makefile"), "test:\n\ttrue\n").unwrap();
-        let git = |args: &[&str]| {
-            let done = std::process::Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=t",
-                    "-c",
-                    "user.email=t@t",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .current_dir(&clone)
-                .output()
-                .unwrap();
-            assert!(done.status.success(), "{done:?}");
-            String::from_utf8(done.stdout).unwrap().trim().to_owned()
-        };
+        let git = |args: &[&str]| cleanup_git(&clone, args);
         git(&["init", "-q"]);
         git(&["add", "."]);
         git(&["commit", "-qm", "init"]);
@@ -18815,6 +18830,14 @@ mod tests {
 
     fn cleanup_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
+            // These repositories own their objects, independently of the worktree running
+            // the tests. Match obid's Git adapter when the caller pins its own object store.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .args([
                 "-c",
                 "user.name=t",
@@ -18827,7 +18850,11 @@ mod tests {
             .current_dir(dir)
             .output()
             .unwrap();
-        assert!(out.status.success(), "git {args:?}");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
@@ -19407,23 +19434,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=t",
-                    "-c",
-                    "user.email=t@t",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .current_dir(&repo)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?}");
-            String::from_utf8_lossy(&out.stdout).trim().to_owned()
-        };
+        let git = |args: &[&str]| cleanup_git(&repo, args);
         git(&["init", "-q"]);
         let commit = |name: &str| {
             git(&["commit", "-q", "--allow-empty", "-m", name]);

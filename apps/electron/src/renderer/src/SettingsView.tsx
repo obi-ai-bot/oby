@@ -689,22 +689,26 @@ const tuningOf = (a: { model?: string; effort?: string; complexEffort?: string }
 // and the choices. Each starts from what obid's status says the tool runs; obid keeps a change on
 // the account and offers the choices; an older obid and the mock keep it here, with the mock's
 // choices
-export function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => Promise<void>] {
+export function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string, change: Partial<Tuning>) => Promise<void>, Models] {
   const status = useLive().status;
   const live = status?.models as Partial<Models> | undefined;
   const [mine, setMine] = useKeptSetting<Record<string, Partial<Tuning>>>('models.mine', {});
   const [options, setOptions] = useState(MOCK_OPTIONS);
+  const [claudeModel] = useSetting('claude.model', MOCK_MODELS.claude!.model);
+  const [codexModel] = useSetting('codex.model', MOCK_MODELS.codex!.model);
+  const [cursorModel] = useSetting('cursor.model', MOCK_MODELS.cursor!.model);
+  const mockModels = { claude: claudeModel, codex: codexModel, cursor: cursorModel };
   const kept = keepsAgents(status);
   useEffect(() => { if (kept) api.modelOptions().then(setOptions, () => {}); }, [kept]);
   // each tool's on its own: what obid says it runs over the mock's, so a key obid leaves out isn't lost
-  const base = Object.fromEntries((Object.keys(MOCK_MODELS) as Agent[]).map((a) => [a, { ...MOCK_MODELS[a], ...(onObid ? live?.[a] : undefined) }])) as Models;
+  const base = Object.fromEntries((Object.keys(MOCK_MODELS) as Agent[]).map((a) => [a, { ...MOCK_MODELS[a], ...(onObid ? live?.[a] : { model: mockModels[a] }) }])) as Models;
   const of = (x: Account): Tuning => ({ ...(base[x.agent] ?? { model: 'auto' }),
     ...(kept ? tuningOf(status.accounts.find((a) => a.id === x.id)) : mine[x.id]) });
   const tune = async (id: string, change: Partial<Tuning>) => {
     if (!kept) return setMine({ ...mine, [id]: { ...mine[id], ...change } });
     await tuneAccount(id, change);
   };
-  return [of, options, tune];
+  return [of, options, tune, base];
 }
 // an account's choices kept by obid (PATCH /v1/accounts/{id}), over the accounts as they are once
 // it answers: an `accounts` event during the call stays, only the choices are the answer's (#1709)

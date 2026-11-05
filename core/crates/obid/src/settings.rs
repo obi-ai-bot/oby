@@ -184,6 +184,12 @@ pub struct Tuning {
 }
 
 impl Tuning {
+    /// A retired account choice falls back; an explicit job model is handled separately.
+    pub fn offered_model(&self, tool: crate::agent::Tool) -> Option<&str> {
+        self.model
+            .as_deref()
+            .filter(|model| models(tool).iter().any(|(id, _)| id == model))
+    }
     /// The effort a job runs at: a complex one's own, else the routine one.
     pub fn effort(&self, complex: bool) -> Option<&str> {
         complex
@@ -191,6 +197,24 @@ impl Tuning {
             .flatten()
             .or(self.effort.as_deref())
     }
+}
+
+/// The tool defaults exposed in status, shared by jobs and conversation turns.
+pub fn default_model(tool: crate::agent::Tool) -> &'static str {
+    match tool {
+        crate::agent::Tool::Claude => "claude-opus-5-5",
+        crate::agent::Tool::Codex => "gpt-6.1-sol",
+        crate::agent::Tool::Cursor => "auto",
+    }
+}
+
+pub fn account_model(home: &Path, tool: crate::agent::Tool, account: &str) -> String {
+    load(home)
+        .tuning
+        .get(account)
+        .and_then(|t| t.offered_model(tool))
+        .unwrap_or_else(|| default_model(tool))
+        .to_owned()
 }
 
 /// The efforts each tool takes, as Settings › Agents offers them (`GET /v1/settings/models/options`):
@@ -382,6 +406,33 @@ mod tests {
         };
         assert_eq!(routine.effort(true), Some("low"));
         assert_eq!(Tuning::default().effort(true), None);
+    }
+
+    #[test]
+    fn conversation_agent_21_each_accounts_model_is_optional_and_retired_choices_fall_back() {
+        let home = std::env::temp_dir().join(format!("obid-models-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        for tool in crate::agent::Tool::ALL {
+            let model = models(tool)[0].0;
+            update(&home, |s| {
+                s.tuning.insert(
+                    "personal".into(),
+                    Tuning {
+                        model: Some(model.into()),
+                        ..Default::default()
+                    },
+                );
+            })
+            .unwrap();
+            assert_eq!(account_model(&home, tool, "personal"), model);
+            assert_eq!(account_model(&home, tool, "work"), default_model(tool));
+            update(&home, |s| {
+                s.tuning.get_mut("personal").unwrap().model = Some("retired".into())
+            })
+            .unwrap();
+            assert_eq!(account_model(&home, tool, "personal"), default_model(tool));
+        }
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

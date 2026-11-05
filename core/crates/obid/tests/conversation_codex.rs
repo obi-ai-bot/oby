@@ -687,7 +687,10 @@ fn a_codex_turns_usage_is_kept_from_its_token_usage() {
         .expect("the turn's record");
     let call = &record["calls"][0];
     assert_eq!(call["adapter"], "codex", "{record}");
-    assert_eq!(call["model"], Value::Null, "Codex's own model: {record}");
+    assert_eq!(
+        call["model"], "gpt-6.1-sol",
+        "status.models default: {record}"
+    );
     assert_eq!(call["input_tokens"], 20, "{record}");
     assert_eq!(call["cache_read_input_tokens"], 100, "{record}");
     assert_eq!(call["output_tokens"], 9, "{record}");

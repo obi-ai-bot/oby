@@ -114,8 +114,11 @@ pub(super) async fn launch(
     )?;
     features_off(&launch).await?;
     launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
-    let model = shared.config.conversation.model_for(Tool::Codex);
-    let mut model = (!model.is_empty()).then(|| model.to_owned());
+    let mut model = Some(crate::settings::account_model(
+        &shared.config.home,
+        Tool::Codex,
+        &account.id,
+    ));
     if chatgpt {
         // What its last run was refused is over.
         if let Some(run) = url.rsplit('/').next() {

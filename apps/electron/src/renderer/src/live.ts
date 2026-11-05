@@ -954,7 +954,7 @@ export async function renameConversation(shown: string, title: string) {
 export async function chooseTalk(shown: string, talkAccount: string) {
   const c = realId(shown);
   if (c.startsWith('new:')) return;
-  try { take({ kind: 'conversation', conversation: await api.editConversation(c, { talkAccount }) }); } catch (e) { say(e); }
+  take({ kind: 'conversation', conversation: await api.editConversation(c, { talkAccount }) });
 }
 export const talkReady = (shown: string) => !realId(shown).startsWith('new:');
 export async function pinConversation(shown: string, pinned: boolean) {
