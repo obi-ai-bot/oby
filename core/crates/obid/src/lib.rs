@@ -494,6 +494,17 @@ pub async fn serve(
         push: pushes,
         stopping: stopping_rx.clone(),
     });
+    // ACC-6: one line in the job's conversation when it moved past a limit by itself.
+    {
+        let shared = Arc::downgrade(&shared);
+        jobs.on_limit_moved(Arc::new(move |conversation, line, job| {
+            if let Some(shared) = shared.upgrade() {
+                let _ = shared
+                    .conversations
+                    .append(&conversation, "oby", line, vec![job], None);
+            }
+        }));
+    }
     let app = api::router(shared.clone());
     stopwatch.lap("the rest");
     // How long each step took, so a slow start names its step.

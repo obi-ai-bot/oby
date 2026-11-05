@@ -1210,7 +1210,7 @@ fn chatgpt_17_obid_keeps_that_the_welcome_was_shown() {
 /// The owner's decision of 2026-11-02: ChatGPT accounts are offered at a limit, though they report
 /// no usage. Offered, never moved to without the owner's click.
 #[test]
-fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itself() {
+fn chatgpt_13_an_owners_job_at_a_limit_moves_to_a_chatgpt_account() {
     let folder = Folder::new("chatgpt-13-offer");
     let openai = OpenAi::start();
     let config = configured(&folder.0);
@@ -1246,26 +1246,11 @@ fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itsel
     );
     assert_eq!(posted.status, 201, "{}", posted.text);
     let job = posted.body["id"].as_str().unwrap().to_owned();
-    let decision = within(30, "the question offers the ChatGPT account", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .iter()
-            .find(|d| {
-                d["options"]
-                    .as_array()
-                    .is_some_and(|o| o.iter().any(|o| o["account"] == id.as_str()))
-            })
-            .cloned()
+    let moved = within(30, "it moves to the ChatGPT account", || {
+        let now = call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
+        (now["account"] == id.as_str()).then_some(now)
     });
-    assert_eq!(decision["jobs"][0]["id"], job.as_str());
-    let stays = call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
-    assert_eq!(stays["status"], "interrupted", "{stays}");
-    assert_eq!(
-        stays["account"], "stub",
-        "it moves only on the owner's click"
-    );
-    assert_eq!(posts(&world), 0);
+    assert_eq!(moved["agent"], "codex", "{moved}");
 }
 
 /// The owner's click in an app of theirs: signed by the device's key.
@@ -1634,30 +1619,16 @@ fn chatgpt_25_a_move_passes_over_it_until_consent() {
     signed_in(&world, &id);
     let limited = routine(&world, "Limited", "LIMITED WEEK: 86400", "claude", "stub");
     let job = run_routine(&world, &limited);
-    let decision = within(30, "the question", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .iter()
-            .find(|d| d["jobs"][0]["id"] == job.as_str())
-            .cloned()
+    let now = || call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
+    let waits = within(30, "it waits, passed over", || {
+        let j = now();
+        (j["status"] == "queued" && !j["resumesAt"].is_null()).then_some(j)
     });
-    let offers = |d: &Value| {
-        d["options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|o| o["account"] == id.as_str())
-    };
-    assert!(!offers(&decision), "{decision}");
+    assert_eq!(waits["account"], "stub", "{waits}");
     assert_eq!(allow(&world, &id).status, 200);
-    within(10, "it's offered now", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .iter()
-            .find(|d| d["jobs"][0]["id"] == job.as_str() && offers(d))
-            .cloned()
+    within(60, "with a yes, it moves there", || {
+        let j = now();
+        (j["account"] == id.as_str()).then_some(j)
     });
 }
 

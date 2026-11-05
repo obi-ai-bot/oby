@@ -54,6 +54,14 @@ fn wait(obid: &Obid, id: &str) -> Value {
     answer.body
 }
 
+/// The job, waiting for its account's reset (LIMITS-17): `wait` would outlast the test.
+fn limit_wait(obid: &Obid, id: &str) -> Value {
+    within(60, "the job waits for its reset", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
+    })
+}
+
 /// Streaming words for 4 quiet windows, a job keeps running and ends done; one that only writes
 /// files in its worktree (a quiet build) keeps running too, but not past 4 windows without a word
 /// (a loop touching a file isn't progress).
@@ -429,11 +437,10 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     );
     assert_eq!(prompts(&job).len(), 1, "{job}");
 
+    // A limit isn't a retry: it waits for its reset, having told the agent once (LIMITS-17).
     let id = post_job(&obid, "LIMITED WEEK: 86400 KEEP PROMPTS");
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "interrupted", "{job}");
+    let job = limit_wait(&obid, &id);
     assert_eq!(prompts(&job).len(), 1, "{job}");
-    assert!(!job["accountLimit"].is_null(), "{job}");
 
     // A passing error on an account its usage says is full is its limit's, not a retry's.
     let (_folder, obid) = obid_with("recovery-1-full", json!({}), &[]);
@@ -441,9 +448,8 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     let usage = json!({"status": "allowed_warning", "unifiedWindows": {
         "seven_day": {"utilization": 1.0, "resetsAt": reset}}});
     let id = post_job(&obid, &format!("USAGE: {usage} TRANSIENT KEEP PROMPTS"));
-    let job = wait(&obid, &id);
+    let job = limit_wait(&obid, &id);
     assert_eq!(prompts(&job).len(), 1, "{job}");
-    assert!(!job["accountLimit"].is_null(), "{job}");
 }
 
 /// RECOVERY-7: how a turn ended is read from the tool's fields: a 429 whose words name no status

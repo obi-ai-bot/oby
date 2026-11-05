@@ -58,7 +58,7 @@ pub(super) fn wait_for_reset(job: &mut Job, at: i64) {
 /// A run a five-hour limit stopped starts its wait, a try counted (LIMITS-9), unless Stop came as
 /// the run ended: nothing undoes it (LIMITS-6). Whether the owner asked for its round stays.
 pub(super) fn start_wait(job: &mut Job, at: i64) {
-    if !job.status.is_active() {
+    if matches!(job.status, Status::Stopped | Status::Done | Status::Failed) {
         return;
     }
     job.recovery.limit_resumes += 1;
@@ -67,17 +67,320 @@ pub(super) fn start_wait(job: &mut Job, at: i64) {
     job.changed(format!("A five-hour limit stopped it. {}", job.step));
 }
 
+/// ACC-6 / LIMITS-17: nowhere to move, so it waits for a reset with no try counted (not a
+/// five-hour wait of LIMITS-5).
+pub(super) fn start_wait_no_try(job: &mut Job, at: i64) {
+    if matches!(job.status, Status::Stopped | Status::Done | Status::Failed) {
+        return;
+    }
+    job.publish_step = None;
+    job.account_limit_blocked = false;
+    job.account_limit_episode = None;
+    job.account_limit_nonce = None;
+    job.account_limit_choice = None;
+    wait_for_reset(job, at);
+    job.finished = None;
+    job.reason = None;
+    job.next_step = None;
+    job.changed(format!(
+        "Its account hit a limit, and no other has room. {}",
+        job.step
+    ));
+}
+
 impl Jobs {
     /// When job `id`, stopped by a limit its tool said resets at `reset`, resumes by itself: only a
     /// five-hour limit (the owner's decision of 2026-11-02), and only [`RESUME_TRIES`] times.
+    /// A reset a few seconds past still counts: the stand-in's window is 2s, and ending the turn
+    /// can cross it before this runs (LIMITS-5 / LIMITS-9).
     pub(super) fn limit_resume_at(&self, id: &str, reset: Option<i64>) -> Option<i64> {
         let (job, reset) = (self.get(id)?, reset?);
-        (job.recovery.limit_resumes < RESUME_TRIES
-            && self
-                .usage
-                .get(&job.account)
-                .five_hour_limit(reset, obi_protocol::time::now()))
-        .then(|| reset + RESUME_AFTER_RESET)
+        if job.recovery.limit_resumes >= RESUME_TRIES {
+            return None;
+        }
+        let now = obi_protocol::time::now();
+        let usage = self.usage.get(&job.account);
+        let five = usage.five_hour_limit(reset, now)
+            || (reset <= now
+                && reset + RESUME_AFTER_RESET > now
+                && usage.five_hour_limit(reset, reset.saturating_sub(1)));
+        five.then_some(reset + RESUME_AFTER_RESET)
+    }
+
+    /// When a job with nowhere to move waits for its reset (ACC-6 / LIMITS-17): a five-hour wait
+    /// as LIMITS-5, else any known reset, else an hour when the tool named none.
+    pub(super) fn limit_wait_at(&self, id: &str, reset: Option<i64>) -> Option<i64> {
+        if let Some(at) = self.limit_resume_at(id, reset) {
+            return Some(at);
+        }
+        let job = self.get(id)?;
+        if self.leaves_limit_alone(&job) || self.on_chatgpt_login(&job) {
+            return None;
+        }
+        let now = obi_protocol::time::now();
+        reset
+            .filter(|at| *at + RESUME_AFTER_RESET > now)
+            .or(Some(now + crate::usage::UNKNOWN_RESET))
+            .map(|at| at + RESUME_AFTER_RESET)
+    }
+
+    /// A ChatGPT login: OpenAI's limit names no time, so its job asks instead of waiting
+    /// (CHATGPT-13).
+    fn on_chatgpt_login(&self, job: &Job) -> bool {
+        Tool::from_id(&job.agent).is_some_and(|tool| {
+            self.accounts(tool)
+                .iter()
+                .any(|a| a.id == job.account && crate::chatgpt::marker_of(a).is_some())
+        })
+    }
+
+    /// Reviews, `claudeOwnSandbox` and API-key accounts stay on #1563's ask (LIMITS-19).
+    pub(super) fn leaves_limit_alone(&self, job: &Job) -> bool {
+        if job.obi.is_some() || job.read_only() {
+            return true;
+        }
+        let Some(tool) = Tool::from_id(&job.agent) else {
+            return true;
+        };
+        let Some(account) = self
+            .accounts(tool)
+            .into_iter()
+            .find(|a| a.id == job.account)
+        else {
+            return false;
+        };
+        self.own_sandbox(tool, &account) || self.is_api_key_account(tool, &account)
+    }
+
+    /// An account that pays per token (USAGE-4 / LIMITS-19): no subscription windows to verify.
+    /// One whose tool has reported a window isn't left alone: room can be checked.
+    fn is_api_key_account(&self, tool: Tool, account: &crate::config::Account) -> bool {
+        let usage = self.usage.get(&account.id);
+        if usage.priced.as_deref() == Some("api") {
+            return true;
+        }
+        if usage.five_hour.is_some() || usage.seven_day.is_some() {
+            return false;
+        }
+        let Some(file) = login_file(tool, account, login_home().as_deref()) else {
+            return false;
+        };
+        let Ok(bytes) = std::fs::read(&file) else {
+            return false;
+        };
+        let login: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        match tool {
+            Tool::Codex => {
+                login["OPENAI_API_KEY"]
+                    .as_str()
+                    .is_some_and(|k| !k.is_empty())
+                    && login["tokens"]["access_token"]
+                        .as_str()
+                        .is_none_or(|t| t.is_empty())
+            }
+            Tool::Claude => {
+                !login["claudeAiOauth"].is_object()
+                    && login
+                        .get("primaryApiKey")
+                        .or(login.get("apiKey"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|k| !k.is_empty())
+            }
+            Tool::Cursor => false,
+        }
+    }
+
+    /// ACC-6: how full `account` reads for picking the most room (lower is more room).
+    fn room_used(&self, account: &str) -> f64 {
+        let usage = self.usage.get(account);
+        let now = obi_protocol::time::now();
+        if usage.advisory {
+            return usage.seven_day_at(now).unwrap_or(0.0);
+        }
+        usage
+            .five_hour_at(now)
+            .unwrap_or(0.0)
+            .max(usage.seven_day_at(now).unwrap_or(0.0))
+    }
+
+    /// ACC-6: the best destination for an automatic limit move: same tool first with the most
+    /// room, then any other in Auto's order (Cursor last; USAGE-9).
+    pub(super) async fn best_auto_destination(
+        &self,
+        job: &Job,
+    ) -> Option<(Tool, crate::config::Account)> {
+        if self.leaves_limit_alone(job) {
+            return None;
+        }
+        let source_tool = Tool::from_id(&job.agent)?;
+        let background = job.background();
+        let now = obi_protocol::time::now();
+        let home = login_home();
+        let mut candidates: Vec<(u8, f64, usize, Tool, crate::config::Account)> = Vec::new();
+        for (tool_i, tool) in Tool::ALL.into_iter().enumerate() {
+            for account in self.accounts(tool) {
+                if account.id == job.account
+                    || self.being_changed(&account.id)
+                    || !signed_in(tool, &account, home.as_deref())
+                    || (background && !self.takes_background(&account))
+                    || self.own_sandbox(tool, &account)
+                    || self.is_api_key_account(tool, &account)
+                    || !(self.verified_limit_room(&account.id, now, now.saturating_sub(600))
+                        || self.chatgpt_has_room(&account, now))
+                {
+                    continue;
+                }
+                if tool == Tool::Claude && self.claude_login_ready(Some(&account)).await.is_err() {
+                    continue;
+                }
+                let same = u8::from(tool != source_tool);
+                candidates.push((same, self.room_used(&account.id), tool_i, tool, account));
+            }
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+        candidates
+            .into_iter()
+            .next()
+            .map(|(_, _, _, tool, account)| (tool, account))
+    }
+
+    /// ACC-6's conversation line (proposed words).
+    fn auto_moved_line(from: Tool, to: Tool) -> String {
+        format!(
+            "{} hit its limit, so this moved to {}.",
+            from.name(),
+            to.name()
+        )
+    }
+
+    /// ACC-6: move job `id` to `to` now, queue it, and say so in its conversation.
+    pub(super) fn apply_auto_limit_move(
+        self: &Arc<Self>,
+        id: &str,
+        to: (Tool, crate::config::Account),
+    ) -> Result<(), String> {
+        let (tool, account) = to;
+        let Some(job) = self.get(id) else {
+            return Err("The job no longer exists.".into());
+        };
+        if self.leaves_limit_alone(&job) {
+            return Err("This job stays on its account.".into());
+        }
+        let from_tool = Tool::from_id(&job.agent).ok_or("The old tool is unavailable.")?;
+        let from_name = self
+            .accounts(from_tool)
+            .into_iter()
+            .find(|a| a.id == job.account)
+            .map_or_else(|| job.account.clone(), |a| a.name);
+        let from = format!("{} · {}", from_tool.name(), from_name);
+        let conversation = job.conversation.clone();
+        let line = Self::auto_moved_line(from_tool, tool);
+        let tuning = crate::settings::load(&self.config.home).tuning;
+        let offered = self.model_lists.for_account(tool, &account.id);
+        let changed = {
+            let mut state = self.lock();
+            if state.publishing.contains(id) {
+                return Err("The job is publishing.".into());
+            }
+            let job = state.jobs.get(id).ok_or("The job no longer exists.")?;
+            if past_safety(job) {
+                return Err("The job needs a separate safety confirmation.".into());
+            }
+            if state
+                .jobs
+                .values()
+                .any(|j| j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch)
+            {
+                return Err("A follow-up now carries the job's branch.".into());
+            }
+            if let Some(why) = branch_busy(&state.jobs, job) {
+                return Err(why);
+            }
+            let mut next = job.clone();
+            next.revision += 1;
+            carry_over(
+                &mut next,
+                tool,
+                &account,
+                &tuning,
+                &offered,
+                &from,
+                Carried {
+                    because: "hit its account's usage limit",
+                    why: "Its account hit its usage limit".into(),
+                    by: "because its account hit its usage limit".into(),
+                },
+            );
+            next.named = true;
+            next.account_limit_blocked = false;
+            next.account_limit_episode = None;
+            next.account_limit_nonce = None;
+            next.account_limit_reset = None;
+            next.account_limit_choice = None;
+            next.resumes_at = None;
+            next.waiting = None;
+            hear(&mut next, crate::brain::actions::TRY_AGAIN);
+            next_round(&mut next);
+            next.asked = true;
+            self.forget_moved_login(id);
+            self.store
+                .save(&next)
+                .map_err(|e| format!("Couldn't save the job: {e}"))?;
+            state.jobs.insert(id.to_owned(), next.clone());
+            next
+        };
+        if let Some(conversation) = conversation
+            && let Some(hook) = self.limit_moved_hook.get()
+        {
+            hook(conversation, line, id.to_owned());
+        }
+        self.events.send("job", changed.to_json());
+        self.changed.notify_waiters();
+        self.schedule();
+        Ok(())
+    }
+
+    /// ACC-6: try to move job `id` now. True when it moved.
+    pub(super) async fn try_auto_limit_move(self: &Arc<Self>, id: &str) -> bool {
+        let Some(job) = self.get(id) else {
+            return false;
+        };
+        let Some(to) = self.best_auto_destination(&job).await else {
+            return false;
+        };
+        match self.apply_auto_limit_move(id, to) {
+            Ok(()) => true,
+            Err(why) => {
+                tracing::info!("job {id}: couldn't move past its limit by itself: {why}");
+                false
+            }
+        }
+    }
+
+    /// ACC-6: waiting jobs (and older pending asks) move when room appears (LIMITS-18).
+    pub(super) async fn auto_limit_moves(self: &Arc<Self>) {
+        let ids: Vec<String> = self
+            .lock()
+            .jobs
+            .values()
+            .filter(|j| {
+                j.dismissed.is_none()
+                    && ((j.status == Status::Queued && j.resumes_at.is_some())
+                        || (j.status == Status::Interrupted && j.account_limit_blocked))
+            })
+            .map(|j| j.id.clone())
+            .collect();
+        for id in ids {
+            let Some(job) = self.get(&id) else { continue };
+            if self.leaves_limit_alone(&job) {
+                continue;
+            }
+            if self.try_auto_limit_move(&id).await
+                && let Some(episode) = job.account_limit_episode
+            {
+                let _ = self.limit_decisions.applied(&episode, &id);
+            }
+        }
     }
 
     /// Resumes the jobs whose reset came, in their own sessions: one each [`RESET_TICK`], so a Mac
@@ -109,6 +412,7 @@ impl Jobs {
                 continue;
             }
             if !self.limit_source_is_connected(&job.agent, &job.account) {
+                // auto_limit_moves already tried; left-alone (or nowhere) still asks.
                 self.ask_about_limit(
                     &id,
                     None,
@@ -127,7 +431,19 @@ impl Jobs {
                             }
                         });
                     }
-                    None => self.ask_about_limit(&id, free, LIMIT_QUESTION),
+                    None if self.leaves_limit_alone(&job) => {
+                        self.ask_about_limit(&id, free, LIMIT_QUESTION);
+                    }
+                    None => {
+                        // ACC-6: nowhere to move (tried above), wait for this reset.
+                        if let Some(at) = free.or(Some(now + crate::usage::UNKNOWN_RESET)) {
+                            self.update(&id, |job| {
+                                if waits(job) {
+                                    start_wait_no_try(job, at + RESUME_AFTER_RESET);
+                                }
+                            });
+                        }
+                    }
                 }
                 continue;
             }

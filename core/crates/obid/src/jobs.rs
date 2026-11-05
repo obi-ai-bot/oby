@@ -732,6 +732,9 @@ fn tune(
 /// Who adds the inbox's Confirm items (crate::sphere::link).
 pub type ConfirmHook = Arc<dyn Fn(crate::sphere::inbox::Item) + Send + Sync>;
 
+/// Who posts ACC-6's one line in the job's conversation when it moved past a limit by itself.
+pub type LimitMovedHook = Arc<dyn Fn(String, String, String) + Send + Sync>;
+
 /// A review another Obi asked for, once the owner or a remembered decision accepted it.
 #[derive(Debug, Clone)]
 pub struct ObiReview {
@@ -893,6 +896,8 @@ pub struct Jobs {
     review_hook: std::sync::OnceLock<ReviewHook>,
     /// Told when a permission waits for the owner, and when it stops waiting.
     permission_hook: std::sync::OnceLock<PermissionHook>,
+    /// Told when a job moved past a limit by itself (ACC-6): conversation id, line, job id.
+    limit_moved_hook: std::sync::OnceLock<LimitMovedHook>,
     /// The Sphere link, for jobs that run on a teammate's Mac (crate::sphere::guest).
     link: std::sync::OnceLock<std::sync::Weak<crate::sphere::Link>>,
     confirm_hook: std::sync::OnceLock<ConfirmHook>,
@@ -1191,6 +1196,7 @@ impl Jobs {
             preparing: Mutex::new(HashMap::new()),
             review_hook: std::sync::OnceLock::new(),
             permission_hook: std::sync::OnceLock::new(),
+            limit_moved_hook: std::sync::OnceLock::new(),
             link: std::sync::OnceLock::new(),
             confirm_hook: std::sync::OnceLock::new(),
             permissions: Mutex::new(kept),
@@ -1288,6 +1294,11 @@ impl Jobs {
 
     pub fn use_chatgpt(&self, chatgpt: Arc<crate::chatgpt::ChatGpt>) {
         let _ = self.chatgpt.set(chatgpt);
+    }
+
+    /// Posts ACC-6's conversation line when a job moved past a limit by itself.
+    pub fn on_limit_moved(&self, hook: LimitMovedHook) {
+        let _ = self.limit_moved_hook.set(hook);
     }
 
     /// A response on a ChatGPT login completed: an hour obid inferred from its limit is over.
@@ -1557,6 +1568,7 @@ impl Jobs {
             if for_room {
                 self.schedule();
             }
+            self.auto_limit_moves().await;
             self.resume_limit_waits();
             self.run_approved_limit_decisions().await;
         }
@@ -7095,72 +7107,88 @@ impl Jobs {
                     self.update(id, |job| job.review_result = review.clone());
                     self.review_ended(id, false).await;
                 }
-                // A five-hour limit's job waits for its reset by itself (LIMITS-5).
-                let resume_at = match &end {
-                    End::AccountLimit { reset, .. } => self.limit_resume_at(id, *reset),
-                    _ => None,
+                // ACC-6: move by itself when another account has room; else wait for the reset
+                // (LIMITS-5 / LIMITS-17). Left-alone cases still ask (#1563). Capture the wait
+                // before the async move try: stubs use a 2s reset, and awaiting would miss it.
+                let (resume_at, five_hour) = match &end {
+                    End::AccountLimit { reset, .. } => {
+                        let five = self.limit_resume_at(id, *reset);
+                        (
+                            five.or_else(|| self.limit_wait_at(id, *reset)),
+                            five.is_some(),
+                        )
+                    }
+                    _ => (None, false),
                 };
-                self.update(id, |job| {
-                    if let Some(at) = resume_at {
-                        account_limits::start_wait(job, at);
-                        return;
-                    }
-                    let (reason, next, resumes) = match &end {
-                        End::AccountLimit { reason, reset } => {
-                            job.account_limit_blocked = true;
-                            job.account_limit_episode = None;
-                            job.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
-                            job.account_limit_reset = *reset;
-                            job.account_limit_choice = None;
-                            (reason.clone(), Some(crate::job::TRY_AGAIN), None)
+                let moved =
+                    matches!(&end, End::AccountLimit { .. }) && self.try_auto_limit_move(id).await;
+                if !moved {
+                    self.update(id, |job| {
+                        if let Some(at) = resume_at {
+                            if five_hour {
+                                account_limits::start_wait(job, at);
+                            } else {
+                                account_limits::start_wait_no_try(job, at);
+                            }
+                            return;
                         }
-                        End::Failed(why) => (why.clone(), None, None),
-                        End::NeedsYou {
-                            reason,
-                            next,
-                            resumes,
-                        } => (reason.clone(), *next, *resumes),
-                        // Only a stop or a shutdown ends a run that moved on, and one that asked
-                        // waits: both handled above.
-                        End::Asked(_) => (
-                            "It stopped while moving to another account.".into(),
-                            Some(crate::job::TRY_AGAIN),
-                            None,
-                        ),
-                    };
-                    // Needing the owner, with a session to pick up: the agent's own summary stays
-                    // (`summaries` has every round's), and why it stopped is said apart. A dead end,
-                    // or one with no session, failed, its summary why.
-                    let needs_you = matches!(end, End::AccountLimit { .. })
-                        || (matches!(end, End::NeedsYou { .. }) && job.session.is_some());
-                    if needs_you {
-                        job.status = Status::Interrupted;
-                        if job.summary.trim().is_empty() {
+                        let (reason, next, resumes) = match &end {
+                            End::AccountLimit { reason, reset } => {
+                                job.account_limit_blocked = true;
+                                job.account_limit_episode = None;
+                                job.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
+                                job.account_limit_reset = *reset;
+                                job.account_limit_choice = None;
+                                (reason.clone(), Some(crate::job::TRY_AGAIN), None)
+                            }
+                            End::Failed(why) => (why.clone(), None, None),
+                            End::NeedsYou {
+                                reason,
+                                next,
+                                resumes,
+                            } => (reason.clone(), *next, *resumes),
+                            // Only a stop or a shutdown ends a run that moved on, and one that asked
+                            // waits: both handled above.
+                            End::Asked(_) => (
+                                "It stopped while moving to another account.".into(),
+                                Some(crate::job::TRY_AGAIN),
+                                None,
+                            ),
+                        };
+                        // Needing the owner, with a session to pick up: the agent's own summary stays
+                        // (`summaries` has every round's), and why it stopped is said apart. A dead end,
+                        // or one with no session, failed, its summary why.
+                        let needs_you = matches!(end, End::AccountLimit { .. })
+                            || (matches!(end, End::NeedsYou { .. }) && job.session.is_some());
+                        if needs_you {
+                            job.status = Status::Interrupted;
+                            if job.summary.trim().is_empty() {
+                                job.summary = reason.clone();
+                            }
+                            job.next_step = next.map(str::to_owned);
+                            job.resumes_at = resumes;
+                        } else {
+                            job.status = Status::Failed;
                             job.summary = reason.clone();
+                            job.next_step = None;
+                            job.resumes_at = None;
                         }
-                        job.next_step = next.map(str::to_owned);
-                        job.resumes_at = resumes;
-                    } else {
-                        job.status = Status::Failed;
-                        job.summary = reason.clone();
-                        job.next_step = None;
-                        job.resumes_at = None;
+                        job.reason = Some(reason);
+                        job.asked = false;
+                        job.publish_step = None;
+                        job.step = String::new();
+                        job.finished = Some(obi_protocol::time::now());
+                        if job.obi.is_some() {
+                            job.review_result = review;
+                        }
+                    });
+                    if matches!(end, End::AccountLimit { .. }) && resume_at.is_none() {
+                        self.record_account_limit(id);
                     }
-                    job.reason = Some(reason);
-                    job.asked = false;
-                    job.publish_step = None;
-                    job.step = String::new();
-                    job.finished = Some(obi_protocol::time::now());
-                    if job.obi.is_some() {
-                        job.review_result = review;
+                    // What the conversation supervises: continue, split or restart (docs/runner-api.md).
+                    if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
+                        self.events.send("stalled", job.to_json());
                     }
-                });
-                if matches!(end, End::AccountLimit { .. }) && resume_at.is_none() {
-                    self.record_account_limit(id);
-                }
-                // What the conversation supervises: continue, split or restart (docs/runner-api.md).
-                if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
-                    self.events.send("stalled", job.to_json());
                 }
             }
         }
@@ -10663,7 +10691,9 @@ impl Jobs {
                     if limited && job.obi.is_none() {
                         return Err(End::AccountLimit {
                             reason,
-                            reset: reset.filter(|at| *at > now),
+                            // Keep a reset whose resume time (reset + 90) is still ahead: a 2s
+                            // stub window can pass while the turn ends (LIMITS-5).
+                            reset: reset.filter(|at| *at + 90 > now),
                         });
                     }
                     let resumes = None;

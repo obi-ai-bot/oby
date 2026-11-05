@@ -1460,14 +1460,15 @@ fn a_check_that_keeps_failing_stops_at_a_limit() {
     assert_eq!(publish["detail"], "Dismissed");
 }
 
-/// A provider limit stops work and groups jobs on that account for one owner decision (#1563).
+/// A provider limit on jobs that stay on their account (a review, LIMITS-19) groups them for one
+/// owner decision (#1563).
 #[test]
 fn usage_limit_jobs_wait_for_one_owner_decision() {
     let folder = Folder::new("limit-owner-decision");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));
     let post = || {
-        post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
+        post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"review", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
     let first = post();
     let job = wait(&obid, &first);

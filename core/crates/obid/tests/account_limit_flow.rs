@@ -7,6 +7,8 @@ use support::*;
 
 #[test]
 fn owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool() {
+    // ACC-6: ordinary live limits move or wait by themselves. This keeps the signed Move path
+    // (LIMITS-10 / older ask): a pending decision, Codex offered, owner moves (AGENTS-6).
     let folder = Folder::new("limit-move-tool");
     let remote = fixture(&folder.0.join("fixture"));
     let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
@@ -25,24 +27,22 @@ fn owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool() {
     config["agents"]["codex"] = json!({"bin":agents.join("fake-codex"),"accounts":[{"id":"codex","name":"Codex account","configDir":codex}]});
     let now = obi_protocol::time::now();
     std::fs::write(home.join("usage.json"), json!({"codex":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now}}).to_string()).unwrap();
-    let obid = start(&folder.0, &config, None);
-    let posted = call(
-        &obid,
-        "POST",
-        "/v1/jobs",
-        Some(
-            &json!({"job":{"repo":"obi-e2e/fixture-app","kind":"research","task":"LIMITED WEEK: 86400","agent":"claude","account":"stub"}}),
-        ),
+    let id = "aaaa0mov";
+    blocked_job(
+        &folder.0.join("home/jobs"),
+        id,
+        "research",
+        Some(now + 3600),
     );
-    assert_eq!(posted.status, 201, "{}", posted.text);
-    let id = posted.body["id"].as_str().unwrap().to_owned();
-    let stopped = within(60, "Claude hits limit", || {
-        let j = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        (j["status"] == "interrupted").then_some(j)
-    });
+    let mut job = read_job(&folder, id);
+    job.task = "Look around".into();
+    write_job(&folder, &job);
+    let branch = job.branch.clone();
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let stopped = job_now(&obid, id);
+    assert_eq!(stopped["status"], "interrupted", "{stopped}");
     assert!(stopped["resumesAt"].is_null());
     assert!(stopped["moves"].as_array().unwrap().is_empty());
-    let branch = stopped["branch"].clone();
     let decision = within(20, "the grouped decision offers Codex", || {
         let v = call(&obid, "GET", "/v1/limit-decisions", None).body;
         v.as_array()?
@@ -90,7 +90,7 @@ fn owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool() {
     assert_eq!(moved["model"], "gpt-6-astra");
     assert_eq!(moved["effort"], "low");
     assert_eq!(moved["moves"].as_array().unwrap().len(), 1);
-    let threads = home.join("logins").join(&id).join("threads");
+    let threads = home.join("logins").join(id).join("threads");
     let text = std::fs::read_dir(&threads)
         .unwrap()
         .flatten()
@@ -741,6 +741,13 @@ fn limits_5_a_job_that_starts_on_a_full_account_waits_too() {
 fn limits_5_a_waiting_job_takes_no_slot() {
     let folder = Folder::new("limits-5-slot");
     let config = limit_config(&folder.0, "fake-claude", true);
+    // Codex's reading is an hour old: room nobody verified, so the job waits instead of moving (LIMITS-5).
+    let now = obi_protocol::time::now();
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        json!({"codex":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now-3600,"sevenDayObservedAt":now-3600}}).to_string(),
+    )
+    .unwrap();
     let obid = start(&folder.0, &config, None);
     let waits = post(&obid, "LIMITED: 300");
     waiting_for_reset(&obid, &waits);
@@ -764,7 +771,9 @@ fn limits_5_a_waiting_job_takes_no_slot() {
     assert_eq!(next.status, 201, "{}", next.text);
     let next = next.body["id"].as_str().unwrap();
     assert_eq!(ended(&obid, next)["status"], "done");
-    assert_eq!(job_now(&obid, &waits)["status"], "queued");
+    let still = job_now(&obid, &waits);
+    assert_eq!(still["status"], "queued", "{still}");
+    assert_eq!(still["account"], "stub", "{still}");
 }
 
 /// LIMITS-6: Stop ends the wait, for good.
@@ -870,10 +879,10 @@ fn limits_8_jobs_resume_one_at_a_time() {
     );
 }
 
-/// LIMITS-9: a job waits out at most 3 five-hour limits; the next asks, as any limit does, and only
-/// the owner's signed choice carries it on.
+/// LIMITS-9: a job waits out at most 3 five-hour limits; the next tries ACC-6 (move or wait), with
+/// no question when nowhere else has room.
 #[test]
-fn limits_9_three_tries_then_the_owner_is_asked() {
+fn limits_9_past_three_tries_moves_or_waits_with_no_question() {
     let (folder, config, mut obid) = on_stub("limits-9");
     let id = post(&obid, "LIMITED AGAIN: 300 KEEP PROMPTS");
     for tries in 1..=3 {
@@ -886,20 +895,15 @@ fn limits_9_three_tries_then_the_owner_is_asked() {
             (prompts_of(&job_now(&obid, &id)).len() == tries + 1).then_some(())
         });
     }
-    let asks = asked(&obid, &id);
-    assert_eq!(asks["status"], "interrupted", "{asks}");
-    assert!(asks["resumesAt"].is_null(), "{asks}");
-    assert_eq!(asks["accountLimit"]["state"], "pending", "{asks}");
-    assert_eq!(prompts_of(&asks).len(), 4, "{asks}");
-    let decisions = pending_decisions(&obid);
-    assert_eq!(decisions[0]["jobs"][0]["id"], id.as_str(), "{decisions:?}");
-    let unsigned = call(
-        &obid,
-        "POST",
-        &format!("/v1/jobs/{id}/messages"),
-        Some(&json!({"text": "Try again"})),
+    let waits = waiting_for_reset(&obid, &id);
+    assert_eq!(waits["status"], "queued", "{waits}");
+    assert!(waits["accountLimit"].is_null(), "{waits}");
+    assert!(
+        pending_decisions(&obid).is_empty(),
+        "{:?}",
+        pending_decisions(&obid)
     );
-    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    assert_eq!(read_job(&folder, &id).recovery.limit_resumes, 3);
 }
 
 /// Job `id`, of `kind` and asked `task`, its account's limit stopped it `tries` waits in, and the owner's signed
@@ -936,19 +940,21 @@ fn signed_resume(
     (first, config, obid)
 }
 
-/// LIMITS-9: a signed Resume carries the job on, and gives it no new tries: its next limit asks again.
+/// LIMITS-9: a signed Resume (left-alone / older ask) carries the job on and gives it no new
+/// five-hour tries; its next limit follows ACC-6 (wait with no question when nowhere has room).
 #[test]
 fn limits_9_a_signed_resume_gives_no_new_tries() {
     let folder = Folder::new("limits-9-signed");
-    let (first, _config, obid) =
-        signed_resume(&folder, "cccc0901", "investigate", "LIMITED AGAIN: 300", 3);
-    let asks = within(90, "its next limit asks again", || {
-        let job = job_now(&obid, "cccc0901");
-        (job["accountLimit"]["state"] == "pending"
-            && job["accountLimit"]["decision"] != first.as_str())
-        .then_some(job)
-    });
-    assert!(asks["resumesAt"].is_null(), "{asks}");
+    let (_first, _config, obid) =
+        signed_resume(&folder, "cccc0901", "investigate", "LIMITED AGAIN: 2", 3);
+    let waits = waiting_for_reset(&obid, "cccc0901");
+    assert_eq!(waits["status"], "queued", "{waits}");
+    assert!(waits["accountLimit"].is_null(), "{waits}");
+    assert!(
+        pending_decisions(&obid).is_empty(),
+        "{:?}",
+        pending_decisions(&obid)
+    );
     assert_eq!(read_job(&folder, "cccc0901").recovery.limit_resumes, 3);
 }
 
@@ -973,10 +979,10 @@ fn limits_9_only_the_owners_own_words_start_the_count_again() {
     assert_eq!(job_now(&obid, &id)["status"], "queued");
 }
 
-/// LIMITS-10: a weekly limit, a limit with no known reset, or one further off than five hours: the
-/// owner's decision, as before.
+/// LIMITS-10 / LIMITS-17: a weekly limit, a limit with no known reset, or one further off than five
+/// hours: with nowhere to move it waits for the reset (or an hour), with no question.
 #[test]
-fn limits_10_any_other_limit_asks_as_before() {
+fn limits_10_any_other_limit_moves_or_waits_with_no_question() {
     for (name, task) in [
         ("limits-10-week", "LIMITED WEEK: 86400"),
         ("limits-10-near-week", "LIMITED WEEK: 3600"),
@@ -986,24 +992,26 @@ fn limits_10_any_other_limit_asks_as_before() {
     ] {
         let (_folder, _config, obid) = on_stub(name);
         let id = post(&obid, task);
-        let asks = asked(&obid, &id);
-        assert_eq!(asks["status"], "interrupted", "{task}: {asks}");
-        assert!(asks["resumesAt"].is_null(), "{task}: {asks}");
-        assert_eq!(asks["accountLimit"]["state"], "pending", "{task}");
-        let decisions = pending_decisions(&obid);
-        assert_eq!(decisions[0]["jobs"][0]["id"], id.as_str(), "{task}");
+        let waits = waiting_for_reset(&obid, &id);
+        assert_eq!(waits["status"], "queued", "{task}: {waits}");
+        assert!(waits["accountLimit"].is_null(), "{task}: {waits}");
+        assert!(
+            pending_decisions(&obid).is_empty(),
+            "{task}: {:?}",
+            pending_decisions(&obid)
+        );
     }
 }
 
-/// LIMITS-10: a job that starts on an account a week holds asks as it did: with no reset of its own.
+/// LIMITS-10: a job that starts on an account a week holds waits with no question, as ACC-6.
 #[test]
-fn limits_10_a_job_that_starts_on_an_account_a_week_holds_asks_as_before() {
+fn limits_10_a_job_that_starts_on_an_account_a_week_holds_waits_with_no_question() {
     let (_folder, _config, obid) = on_stub("limits-10-start");
-    let first = asked(&obid, &post(&obid, "LIMITED WEEK: 86400"));
-    assert!(!first["accountLimit"]["resetAt"].is_null(), "{first}");
-    let second = asked(&obid, &post(&obid, "Look around"));
-    assert!(second["accountLimit"]["resetAt"].is_null(), "{second}");
-    assert!(second["resumesAt"].is_null(), "{second}");
+    let first = waiting_for_reset(&obid, &post(&obid, "LIMITED WEEK: 86400"));
+    assert!(!first["resumesAt"].is_null(), "{first}");
+    let second = waiting_for_reset(&obid, &post(&obid, "Look around"));
+    assert!(!second["resumesAt"].is_null(), "{second}");
+    assert!(second["accountLimit"].is_null(), "{second}");
 }
 
 /// LIMITS-11: at its time, an account a later five-hour reset still holds gets a new wait, no try
@@ -1034,10 +1042,11 @@ fn limits_11_an_account_still_held_at_the_reset() {
     let usage =
         json!({"stub": {"fiveHour": 0.1, "sevenDay": 0.97, "sevenDayResets": now + 86_400}});
     let obid = its_time_comes(&folder, &config, obid, &id, Some(usage));
-    let job = asked(&obid, &id);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(job["accountLimit"]["state"], "pending", "{job}");
-    assert_eq!(pending_decisions(&obid).len(), 1);
+    // ACC-6: nowhere else has room, so it waits for the week's reset, with no question.
+    let job = waiting_for_reset(&obid, &id);
+    assert_eq!(job["status"], "queued", "{job}");
+    assert!(job["accountLimit"].is_null(), "{job}");
+    assert!(pending_decisions(&obid).is_empty());
     drop(obid);
 
     let (folder, config, obid) = on_stub("limits-11-gone");
@@ -1253,4 +1262,228 @@ fn limits_14_a_wait_on_an_ended_pull_request_doesnt_run() {
 #[test]
 fn limits_13_an_older_wait_stays_the_owners() {
     after_restart("limits-13", true, None, false);
+}
+
+/// Two Claude accounts: `stub` (will hit the limit) and `room` (most room), both signed in.
+fn on_two_claude(name: &str) -> (Folder, Value, Obid) {
+    let folder = Folder::new(name);
+    let mut config = limit_config(&folder.0, "fake-claude", false);
+    let home = folder.0.join("home");
+    let room = home.join("accounts/room");
+    std::fs::create_dir_all(&room).unwrap();
+    let now = obi_protocol::time::now();
+    std::fs::write(
+        room.join(".credentials.json"),
+        json!({"claudeAiOauth":{"accessToken":"fake-room","expiresAt":(now+86400)*1000}})
+            .to_string(),
+    )
+    .unwrap();
+    config["agents"]["claude"]["accounts"] = json!([
+        {"id":"stub","name":"Stub","configDir": home.join("accounts/stub")},
+        {"id":"room","name":"Room","configDir": room},
+    ]);
+    std::fs::write(
+        home.join("usage.json"),
+        json!({
+            "stub":{"fiveHour":0.99,"sevenDay":0.5,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now},
+            "room":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let tuned = call_settings_before_start(&folder.0, &config, "room", "claude-fable-5-1");
+    let obid = start_with(&folder.0, &tuned, None, &[("OBID_USAGE_READS", "on")]);
+    (folder, tuned, obid)
+}
+
+/// Writes Settings › Agents model for `account` before obid starts.
+fn call_settings_before_start(folder: &Path, config: &Value, account: &str, model: &str) -> Value {
+    let home = folder.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let settings = json!({"tuning": {account: {"model": model}}});
+    std::fs::write(home.join("settings.json"), settings.to_string()).unwrap();
+    config.clone()
+}
+
+/// LIMITS-15 (ACC-6): a limit moves by itself to the same tool's account with the most room.
+#[test]
+fn limits_15_a_limit_moves_by_itself_to_the_same_tools_account_with_most_room() {
+    let (_folder, _config, obid) = on_two_claude("limits-15");
+    let id = post(&obid, "LIMITED WEEK: 86400");
+    let moved = within(90, "it moved to room by itself", || {
+        let j = job_now(&obid, &id);
+        (j["account"] == "room"
+            && (j["status"] == "done" || j["status"] == "running" || j["status"] == "queued"))
+            .then_some(j)
+    });
+    assert_eq!(moved["agent"], "claude", "{moved}");
+    assert_eq!(moved["model"], "claude-fable-5-1", "{moved}");
+    assert_eq!(moved["moves"].as_array().unwrap().len(), 1, "{moved}");
+    assert!(moved["accountLimit"].is_null(), "{moved}");
+    assert!(pending_decisions(&obid).is_empty());
+    let conversation = moved["conversation"].as_str().unwrap();
+    let turns = call(
+        &obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    )
+    .body;
+    let text = turns
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["who"] == "oby")
+        .map(|t| t["text"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("Claude Code hit its limit, so this moved to Claude Code."),
+        "{text}"
+    );
+}
+
+/// LIMITS-16 (ACC-6): with no room on the same tool, it moves to another tool from its handoff.
+#[test]
+fn limits_16_a_limit_moves_by_itself_to_another_tool() {
+    let folder = Folder::new("limits-16");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let home = folder.0.join("home");
+    let now = obi_protocol::time::now();
+    std::fs::write(
+        home.join("settings.json"),
+        json!({"tuning": {"codex": {"model": "gpt-6-astra", "effort": "low"}}}).to_string(),
+    )
+    .unwrap();
+    // stub has no room; only Codex does.
+    std::fs::write(
+        home.join("usage.json"),
+        json!({
+            "stub":{"fiveHour":0.99,"sevenDay":0.9,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now},
+            "codex":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let id = post(&obid, "LIMITED WEEK: 86400");
+    let moved = within(90, "it moved to Codex by itself", || {
+        let j = job_now(&obid, &id);
+        (j["agent"] == "codex").then_some(j)
+    });
+    assert_eq!(moved["account"], "codex", "{moved}");
+    assert_eq!(moved["model"], "gpt-6-astra", "{moved}");
+    assert_eq!(moved["effort"], "low", "{moved}");
+    assert_eq!(moved["moves"].as_array().unwrap().len(), 1, "{moved}");
+    let done = within(90, "Codex finishes", || {
+        let j = job_now(&obid, &id);
+        (j["status"] == "done").then_some(j)
+    });
+    let threads = home.join("logins").join(&id).join("threads");
+    let text = std::fs::read_dir(&threads)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("hit its account's usage limit") && text.contains("same worktree and branch"),
+        "{text}"
+    );
+    let conversation = done["conversation"].as_str().unwrap();
+    let turns = call(
+        &obid,
+        "GET",
+        &format!("/v1/conversation?id={conversation}"),
+        None,
+    )
+    .body;
+    let said = turns
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["who"] == "oby")
+        .map(|t| t["text"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        said.contains("Claude Code hit its limit, so this moved to Codex."),
+        "{said}"
+    );
+}
+
+/// LIMITS-17 (ACC-6): with no account with room, it waits for the reset with no question.
+#[test]
+fn limits_17_with_no_room_it_waits_for_the_reset_with_no_question() {
+    let (_folder, _config, obid) = on_stub("limits-17");
+    let id = post(&obid, "LIMITED WEEK: 86400");
+    let waits = waiting_for_reset(&obid, &id);
+    assert!(waits["accountLimit"].is_null(), "{waits}");
+    assert!(pending_decisions(&obid).is_empty());
+}
+
+/// LIMITS-18 (ACC-6): a waiting job moves when room appears on another account.
+#[test]
+fn limits_18_a_waiting_job_moves_when_room_appears() {
+    let (folder, config, obid) = on_stub("limits-18");
+    let id = post(&obid, "LIMITED WEEK: 86400");
+    waiting_for_reset(&obid, &id);
+    let home = folder.0.join("home");
+    let room = home.join("accounts/room");
+    std::fs::create_dir_all(&room).unwrap();
+    let now = obi_protocol::time::now();
+    std::fs::write(
+        room.join(".credentials.json"),
+        json!({"claudeAiOauth":{"accessToken":"fake-room","expiresAt":(now+86400)*1000}})
+            .to_string(),
+    )
+    .unwrap();
+    // Restart with the second account and its room, so ACC-6 can pick it.
+    drop(obid);
+    let mut config = config;
+    config["agents"]["claude"]["accounts"] = json!([
+        {"id":"stub","name":"Stub","configDir": home.join("accounts/stub")},
+        {"id":"room","name":"Room","configDir": room},
+    ]);
+    std::fs::write(
+        home.join("usage.json"),
+        json!({
+            "stub":{"fiveHour":0.99,"sevenDay":0.9,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now},
+            "room":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let moved = within(90, "the waiting job moved to room", || {
+        let j = job_now(&obid, &id);
+        (j["account"] == "room").then_some(j)
+    });
+    assert!(
+        moved["resumesAt"].is_null()
+            || moved["status"] != "queued"
+            || moved["waiting"].is_null()
+            || moved["moves"].as_array().unwrap().len() == 1,
+        "{moved}"
+    );
+    assert_eq!(moved["moves"].as_array().unwrap().len(), 1, "{moved}");
+}
+
+/// LIMITS-19 (ACC-6): a review still asks; it is not auto-moved.
+#[test]
+fn limits_19_reviews_own_sandbox_and_api_key_accounts_still_ask() {
+    let folder = Folder::new("limits-19");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    blocked_job(
+        &folder.0.join("home/jobs"),
+        "ffff1901",
+        "review",
+        Some(obi_protocol::time::now() + 3600),
+    );
+    let obid = start(&folder.0, &config, None);
+    let asks = asked(&obid, "ffff1901");
+    assert_eq!(asks["status"], "interrupted", "{asks}");
+    assert_eq!(asks["accountLimit"]["state"], "pending", "{asks}");
+    assert_eq!(asks["account"], "stub", "{asks}");
+    assert!(asks["moves"].as_array().unwrap().is_empty(), "{asks}");
 }
