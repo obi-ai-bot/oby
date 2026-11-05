@@ -228,8 +228,11 @@ fn default_branch() -> String {
 pub struct Config {
     /// An address on 127.0.0.1: the only one obid binds.
     pub listen: SocketAddr,
-    /// Everything obid keeps, and the only place it writes besides its `HOME` and `TMPDIR`.
+    /// Profile storage root; also the Mac-wide root until profile storage is split.
     pub home: PathBuf,
+    /// What stays one per Mac (PROF-2). Equal to `home` until profile storage is split.
+    /// Internal only: not a separate configuration-file setting.
+    pub mac_home: PathBuf,
     /// The owner's id, as their Sphere knows them.
     pub owner: String,
     /// The agents and their accounts as they are now: the configuration's, with what the API
@@ -571,6 +574,7 @@ impl Config {
 
         Ok(Config {
             listen,
+            mac_home: file.home.clone(),
             home: file.home,
             owner: file.owner,
             agents: crate::accounts::Live::new(file.agents),
@@ -815,6 +819,7 @@ mod tests {
         let config = Config::parse(&with(serde_json::json!({}))).unwrap();
         assert_eq!(config.listen, "127.0.0.1:7811".parse().unwrap());
         assert_eq!(config.home, PathBuf::from("/srv/obid-home"));
+        assert_eq!(config.mac_home, config.home);
         assert_eq!(config.owner, "wellington");
         let claude = config.agents.get().claude.unwrap();
         assert_eq!(claude.bin, "claude");

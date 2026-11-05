@@ -154,11 +154,11 @@ fn raise_open_files() {
     }
 }
 
-/// Makes `home` if it isn't there yet, and keeps it its owner's alone (0700): it holds the API
+/// Makes `mac_home` if it isn't there yet, and keeps it its owner's alone (0700): it holds the API
 /// token, the Obi key, clones and the database. A home that is there already with group or
 /// world access is tightened to 0700, the way `home/api-token` is to 0600.
 pub fn prepare_home(config: &Config) -> Result<(), StartError> {
-    let home = &config.home;
+    let home = &config.mac_home;
     let err = |source| StartError::Home {
         path: home.clone(),
         source,
@@ -312,7 +312,7 @@ pub async fn serve(
     // However `serve` returns, the door stops taking calls with it.
     let _server_ends = AbortOnDrop(server.abort_handle());
     let host = gethostname::gethostname().to_string_lossy().into_owned();
-    let cleanup = Arc::new(api::Cleanup::unmeasured(&config.home));
+    let cleanup = Arc::new(api::Cleanup::unmeasured(&config.mac_home));
     let cancelled = Arc::new(AtomicBool::new(false));
     // However `serve` returns (a stop, a start that fails, the end), the walk ends with it.
     let _end_walk = SetOnDrop(cancelled.clone());
@@ -415,9 +415,9 @@ pub async fn serve(
     );
     stopwatch.lap("sphere");
     let cleared = clear::Cleared::open(&config.home);
-    let devices = devices::Devices::open(&config.home);
-    let paired = gateway::Gateway::open(&config.home);
-    let relay = relay::Relay::open(&config.home);
+    let devices = devices::Devices::open(&config.mac_home);
+    let paired = gateway::Gateway::open(&config.mac_home);
+    let relay = relay::Relay::open(&config.mac_home);
     link.use_relay(relay.clone());
     let broker_host = if cfg!(target_os = "linux") {
         format!("http://10.0.2.2:{}", bound.port())
@@ -461,7 +461,7 @@ pub async fn serve(
     jobs.use_routines(routines.clone());
     let github =
         github_work::Feed::open(config.clone(), jobs.clone(), link.clone(), events.clone());
-    let pushes = push::Push::open(&config.home, &config.push_relay);
+    let pushes = push::Push::open(&config.mac_home, &config.push_relay);
     let shared = Arc::new(api::Shared {
         config,
         token,
@@ -983,6 +983,181 @@ fn settle_stale_items(shared: Arc<api::Shared>) {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// PROFILES-12: exercise the real startup wiring with deliberately different roots.
+    #[tokio::test]
+    async fn profiles_12_mac_stores_use_the_mac_home() {
+        use serde_json::json;
+        use std::time::{Duration, SystemTime};
+
+        let root = std::env::temp_dir().join(format!("obid-profiles-{}", uuid::Uuid::new_v4()));
+        let mut config = Config::parse(
+            &json!({
+                "listen": "127.0.0.1:0", "home": root.join("profile"),
+                "owner": "profiles-test", "agents": {}, "repos": [],
+                "claudeKeychain": false, "cursorKeychain": false
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(config.mac_home, config.home);
+        config.mac_home = root.join("mac");
+        prepare_home(&config).unwrap();
+        assert!(config.mac_home.is_dir());
+        assert!(!config.home.exists());
+        let token = token::load(&config.mac_home).unwrap();
+        assert_eq!(token::load(&config.mac_home).unwrap(), token);
+        assert!(!config.home.join("api-token").exists());
+
+        // Existing gateway and push registrations must be read, then updated in the same root.
+        let now = SystemTime::now();
+        let gateway = gateway::Gateway::open(&config.mac_home);
+        let invite = gateway.invite(
+            "https://mac.example",
+            "Mac",
+            "mac.example",
+            now,
+            None,
+            false,
+        );
+        let paired = gateway.redeem(&invite.secret, "Phone", now, None).unwrap();
+        push::Push::open(&config.mac_home, &config.push_relay)
+            .keep(
+                "profiles-push-fixture".into(),
+                Some(paired.device_id.clone()),
+            )
+            .unwrap();
+        use base64::Engine as _;
+        use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+        let secret = p256::SecretKey::from_slice(&[29; 32]).unwrap();
+        let key = base64::engine::general_purpose::STANDARD
+            .encode(secret.public_key().to_encoded_point(false).as_bytes());
+        std::fs::write(config.mac_home.join("pairing"), &key).unwrap();
+
+        // Relay::open learns the stored Mac key as a secret, even with no Sphere connected.
+        let (_, seed) = relay::envelope::MacKey::generate().unwrap();
+        let seed = hex::encode(seed);
+        std::fs::create_dir_all(config.mac_home.join("keys")).unwrap();
+        std::fs::write(
+            config.mac_home.join("keys/relay.json"),
+            json!({"relay": "profiles-relay", "key": seed}).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(config.mac_home.join("worktrees")).unwrap();
+        std::fs::write(config.mac_home.join("worktrees/measured"), b"mac-wide").unwrap();
+
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let (ready, address) = tokio::sync::oneshot::channel();
+        let running = tokio::spawn(serve(
+            config.clone(),
+            token.clone(),
+            async {
+                let _ = stopped.await;
+            },
+            move |bound| {
+                let _ = ready.send(bound);
+            },
+        ));
+        let _abort = AbortOnDrop(running.abort_handle());
+        let address = tokio::time::timeout(Duration::from_secs(30), address)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            secrets::known().redact(&seed),
+            seed,
+            "startup loaded the Mac relay key"
+        );
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let base = format!("http://{address}");
+        let registered = client
+            .post(format!("{base}/v1/devices"))
+            .bearer_auth(&token)
+            .json(&json!({"name": "Mac", "publicKey": key}))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            registered.status().is_success(),
+            "{}",
+            registered.text().await.unwrap()
+        );
+        assert!(config.mac_home.join("devices.json").is_file());
+        assert!(
+            !config.mac_home.join("pairing").exists(),
+            "pairing was consumed"
+        );
+        let listed: serde_json::Value = client
+            .get(format!("{base}/v1/pairing/devices"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(listed.to_string().contains(&paired.device_id));
+        let revoked = client
+            .delete(format!("{base}/v1/pairing/devices/{}", paired.device_id))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), reqwest::StatusCode::NO_CONTENT);
+        let pushes: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config.mac_home.join("push/fcm.json")).unwrap())
+                .unwrap();
+        assert_eq!(pushes, json!([]));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status: serde_json::Value = client
+                    .get(format!("{base}/v1/status"))
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                if let Some(cleanup) = status.get("cleanup") {
+                    assert_eq!(
+                        cleanup["path"],
+                        config.mac_home.join("worktrees").to_string_lossy().as_ref()
+                    );
+                    assert!(cleanup["bytes"].as_u64().unwrap() > 0);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            config.home.join("jobs").exists(),
+            "profile stores stay under home"
+        );
+        for name in [
+            "api-token",
+            "devices.json",
+            "pairing",
+            "gateway-devices.json",
+            "keys/relay.json",
+            "push",
+        ] {
+            assert!(
+                !config.home.join(name).exists(),
+                "{name} leaked into the profile root"
+            );
+        }
+        stop.send(()).unwrap();
+        running.await.unwrap().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// A walk that ends after obid answers goes to the apps as `cleanup`; one that panics or is
     /// cut short sends nothing.
