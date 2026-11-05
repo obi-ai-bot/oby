@@ -1611,6 +1611,11 @@ What it doesn't hold back:
 
 ### obid only: configuration
 
+Internally, `Config.mac_home` names the Mac-wide stores (API token, devices and pairing,
+gateway, phone relay, push and cleanup measurement; [PROFILES-12](contracts/profiles.md)).
+It is always initialized to `home` today, so file locations and API behavior are unchanged.
+It is not a configuration-file key. Profile stores and `Jobs::open` remain unchanged in PROF-2.
+
 ```sh
 obid serve --config /path/to/config.json
 ```

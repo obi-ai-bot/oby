@@ -158,16 +158,17 @@ fn main() -> ExitCode {
         );
     }
     let home = config.home.clone();
-    // The token only ever from home/api-token: never from obid's environment.
-    if let Err(e) =
-        obid::token::refuse_environment(&config.home, std::env::var_os(obid::token::ENV).is_some())
-    {
+    // The token only ever from mac_home/api-token: never from obid's environment.
+    if let Err(e) = obid::token::refuse_environment(
+        &config.mac_home,
+        std::env::var_os(obid::token::ENV).is_some(),
+    ) {
         return fail(Some(&home), e, 2);
     }
     if let Err(e) = obid::prepare_home(&config) {
         return fail(Some(&home), e, 1);
     }
-    let token = match obid::token::load(&config.home) {
+    let token = match obid::token::load(&config.mac_home) {
         Ok(token) => token,
         Err(e) => return fail(Some(&home), e, 1),
     };
