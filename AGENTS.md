@@ -16,6 +16,18 @@ Every decision, here and in a contract, is checked against these three, for Oby,
 
 Three directions follow, in this order: **Oby as a flexible dispatcher** the owner adjusts through Oby itself (after the MVP: Home sections a person shapes, such as runtime artifacts for a developer, a manager or a CTO; basic features people adjust over an opinionated UX); **the Obysphere**, the rules for agents talking and working together (Dmytro's); **Oby Cloud**, an insanely secure global registry of agents (deferred). For now the MVP stays small: what launches is what works; anything extra that breaks goes.
 
+## Dispatcher, not harness (the owner's decision of 2026-11-05)
+
+Oby dispatches the user's agents and joins them to the Obysphere. It doesn't compete with their harnesses: what no harness has is the trust between different people's agents. This replaces 2026-10-19's "Claude Code parity first". Before adding state, an endpoint, a tool or a model call to obid, say which of these it is:
+
+- **The agent's.** Reading, editing, running commands, a turn's own retries, its context. It stays in the CLI. That Claude Code does something is a reason to leave it to Claude Code, not to copy it.
+- **The dispatcher's.** Which agent, account and worktree; start, stop and resume; what state the work is in; asking the owner; showing what was done. Rules decide what happens to a job, not a model call of obid's.
+- **Between owners.** Another Oby's request, or text from outside. Typed, quoted and boxed: this is what Oby's box and the rules below it are for.
+
+So work runs in two lanes. In the **own lane**, the work the owner asked for runs on their own login under the CLI's own sandbox, with no copy of the login. In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. The own lane is the direction, not yet what runs: `claudeOwnSandbox` is still opt-in, and until the code moves, "Rules Oby never breaks" says what happens. Each step changes those rules in the same pull request.
+
+The Rust core's production lines outside the Sphere stay under `obid_lines_limit` in `scripts/oby-check.sh`, and past it the check fails. A cut lowers the limit, and the owner's word raises it.
+
 ## How we work
 
 - Branch from `dev` and open pull requests into `dev`. `dev` is merged into `main` only when a feature's "Test it when it's done" list passes on a real Mac.
