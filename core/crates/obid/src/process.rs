@@ -85,6 +85,17 @@ fn with_own_ps(path: &OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| path.to_os_string())
 }
 
+/// Process inspection uses the same non-setuid copy as a job's PATH on macOS. Absolute
+/// `/bin/ps` calls bypass that copy and are refused when obid itself runs inside a job's box.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn ps_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(dir) = own_ps_folder(&std::env::temp_dir()) {
+        return dir.join("ps");
+    }
+    PathBuf::from("/bin/ps")
+}
+
 /// The folder of [`with_own_ps`]'s copy, in the person's own temporary folder: no box writes
 /// there and every box reads it, so no job can swap it, and nothing is written in a job's folders.
 /// Only a private folder of theirs on an absolute path is first on anyone's `PATH` (a `TMPDIR` of

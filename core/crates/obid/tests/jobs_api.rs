@@ -1139,14 +1139,25 @@ fn a_fake_agent_inside_a_jobs_sandbox_stays_in_it() {
         job.outside.clone(),
         PathBuf::from("."),
     ];
-    let reach = dirs
-        .iter()
-        .map(|d| d.display().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let reach = serde_json::to_string(&dirs).unwrap();
     let argv = job.wrapped(&job.spec(true), "reach_from_inside_a_job");
     let (passed, said) = job.run(&job.spec(true), &argv, &[("OBID_REACH", reach.into())]);
     assert!(passed, "{said}");
+    let sandbox = obid::sandbox::Sandbox::detect(Path::new(OBID)).unwrap();
+    if sandbox.encloses() {
+        // Seatbelt can't apply this Spec on top of the enclosing job box. The outer fences still
+        // hide the person's home; folders under the outer job's temp stay reachable; the worktree
+        // stays writable — Enclosing's promise (docs/runner-api.md, "obid inside a job").
+        let expected = format!("{} read=no write=no", person.display());
+        assert!(said.contains(&expected), "{expected}: {said}");
+        assert!(!person.join(".obid-reached").exists(), "{person:?}");
+        for dir in [&dirs[1], &dirs[2]] {
+            let expected = format!("{} read=ok write=ok", dir.display());
+            assert!(said.contains(&expected), "{expected}: {said}");
+        }
+        assert!(said.contains(". read=ok write=ok"), "{said}");
+        return;
+    }
     // The homes are hidden; a folder elsewhere is read, as by any job, never written.
     for (dir, reached) in [
         (&dirs[0], "read=no write=no"),
@@ -1203,6 +1214,20 @@ fn inside_another_sandbox_a_fake_agent_test_runs_nothing() {
     let mut sandbox_exec: Vec<std::ffi::OsString> =
         vec!["/usr/bin/sandbox-exec".into(), "-p".into(), foreign.into()];
     sandbox_exec.extend(job.argv(test));
+    let sandbox = obid::sandbox::Sandbox::detect(Path::new(OBID)).unwrap();
+    if sandbox.encloses() {
+        // Already in a job's box: wrapped uses Enclosing, so the agent test runs. A foreign
+        // sandbox-exec still can't nest (sandbox_apply is refused).
+        let (passed, said) = job.run(&job.spec(false), &job.wrapped(&job.spec(false), test), &[]);
+        assert!(passed, "{said}");
+        let (passed, said) = job.run(&job.spec(false), &sandbox_exec, &[]);
+        assert!(!passed, "{said}");
+        assert!(
+            said.contains("sandbox_apply") || said.contains("sandbox-exec can't make a sandbox"),
+            "{said}"
+        );
+        return;
+    }
     for argv in [job.wrapped(&job.spec(false), test), sandbox_exec] {
         let (passed, said) = job.run(&job.spec(false), &argv, &[]);
         assert!(!passed, "{said}");
@@ -3038,9 +3063,10 @@ fn what_leaves_the_sandbox_still_asks() {
     let obid = start(&folder.0, &config(&folder.0, &remote));
     // The account's own folder (its `configDir`), as obid gives it to the agent.
     let login = folder.0.join("home/accounts/stub/settings.json");
+    let read_login = format!("cat '{}'", login.to_string_lossy().replace('\'', "'\\''"));
     for (ask, why, always) in [
         (
-            json!({"tool": "Bash", "input": {"command": format!("cat {}", login.display())}}),
+            json!({"tool": "Bash", "input": {"command": read_login}}),
             "It touches secrets or the vault.",
             false,
         ),

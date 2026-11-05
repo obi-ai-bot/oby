@@ -54,7 +54,7 @@
 //                    whether its login kept a refresh token
 //   DETAIL           runs `ls`, whose output holds DETAIL-ONLY-CANARY-7f3a, then ends the turn with
 //                    "Listed the files." (tests/plans_api.rs: what a call printed never reaches the brain)
-//   REACH: <dir> …   tries to list each folder and to write .obid-reached in it, and ends the turn
+//   REACH: [<dir>, …]   tries to list each folder and to write .obid-reached in it, and ends the turn
 //                    with "<dir> read=ok|no write=ok|no; …"
 //   ECHO             ends the turn with "heard: <the prompt> resume=<the session it resumed, or none>"
 //   TODOS            makes a to-do list with TaskCreate, runs `echo alpha` and `echo beta` on the first
@@ -554,7 +554,7 @@ rl.on("line", (line) => {
         return "no";
       }
     };
-    const dirs = reach[1].trim().split(/\s+/);
+    const dirs = JSON.parse(reach[1]);
     result(dirs.map((d) => `${d} read=${tries(() => readdirSync(d))} write=${tries(() => writeFileSync(`${d}/.obid-reached`, "x"))}`).join("; "));
   } else if (login) {
     const tries = (f) => {

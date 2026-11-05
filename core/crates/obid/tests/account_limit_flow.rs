@@ -656,9 +656,18 @@ fn its_time_comes(
     assert!(job.resumes_at.is_some(), "{job:?}");
     job.resumes_at = Some(obi_protocol::time::now() - 1);
     write_job(folder, &job);
-    if let Some(usage) = usage {
-        std::fs::write(folder.0.join("home/usage.json"), usage.to_string()).unwrap();
-    }
+    let usage_file = folder.0.join("home/usage.json");
+    let usage = usage.unwrap_or_else(|| {
+        // Advance the account's clock together with the job's, rather than relying on
+        // a two-second reset expiring while obid shuts down and starts again.
+        let mut usage: Value =
+            serde_json::from_slice(&std::fs::read(&usage_file).unwrap()).unwrap();
+        let account = usage.get_mut(&job.account).unwrap();
+        account["fiveHourResets"] = json!(obi_protocol::time::now() - 1);
+        account["fullUntil"] = json!(obi_protocol::time::now() - 1);
+        usage
+    });
+    std::fs::write(usage_file, usage.to_string()).unwrap();
     start(&folder.0, config, None)
 }
 
@@ -668,7 +677,7 @@ fn its_time_comes(
 #[test]
 fn limits_5_a_five_hour_limit_resumes_by_itself_in_its_session() {
     let (folder, config, obid) = on_stub("limits-5");
-    let id = post(&obid, "LIMITED ONCE: 2 KEEP PROMPTS");
+    let id = post(&obid, "LIMITED ONCE: 300 KEEP PROMPTS");
     let waits = waiting_for_reset(&obid, &id);
     let usage: Value =
         serde_json::from_slice(&std::fs::read(folder.0.join("home/usage.json")).unwrap()).unwrap();
@@ -713,7 +722,7 @@ fn limits_5_a_five_hour_limit_resumes_by_itself_in_its_session() {
         prompts[1].contains("What you were last sent"),
         "{prompts:?}"
     );
-    assert!(prompts[1].contains("LIMITED ONCE: 2"), "{prompts:?}");
+    assert!(prompts[1].contains("LIMITED ONCE: 300"), "{prompts:?}");
 }
 
 /// LIMITS-5: a job that starts on an account a five-hour limit holds waits for the same reset, so
@@ -730,10 +739,11 @@ fn limits_5_a_job_that_starts_on_a_full_account_waits_too() {
 /// LIMITS-5: while it waits it takes no slot and holds no job behind it.
 #[test]
 fn limits_5_a_waiting_job_takes_no_slot() {
-    let (_folder, _config, obid) = on_stub("limits-5-slot");
-    let waits = post(&obid, "LIMITED: 2");
+    let folder = Folder::new("limits-5-slot");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let waits = post(&obid, "LIMITED: 300");
     waiting_for_reset(&obid, &waits);
-    std::thread::sleep(std::time::Duration::from_secs(3));
     let one = call(
         &obid,
         "PUT",
@@ -741,8 +751,19 @@ fn limits_5_a_waiting_job_takes_no_slot() {
         Some(&json!({"maxRunning": 1})),
     );
     assert_eq!(one.status, 200, "{}", one.text);
-    let next = post(&obid, "Look around");
-    assert_eq!(ended(&obid, &next)["status"], "done");
+    // An eligible account can work while the first account remains at its limit.
+    let next = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate",
+            "task": "Look around", "agent": "codex", "account": "codex"}}),
+        ),
+    );
+    assert_eq!(next.status, 201, "{}", next.text);
+    let next = next.body["id"].as_str().unwrap();
+    assert_eq!(ended(&obid, next)["status"], "done");
     assert_eq!(job_now(&obid, &waits)["status"], "queued");
 }
 
@@ -750,7 +771,7 @@ fn limits_5_a_waiting_job_takes_no_slot() {
 #[test]
 fn limits_6_stop_ends_the_wait() {
     let (_folder, _config, obid) = on_stub("limits-6");
-    let id = post(&obid, "LIMITED: 2 KEEP PROMPTS");
+    let id = post(&obid, "LIMITED: 300 KEEP PROMPTS");
     waiting_for_reset(&obid, &id);
     let stopped = call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
     assert_eq!(stopped.status, 200, "{}", stopped.text);
@@ -780,7 +801,7 @@ fn limits_6_stop_frees_the_waiting_jobs_account() {
 #[test]
 fn limits_7_the_wait_survives_a_restart() {
     let (folder, config, obid) = on_stub("limits-7");
-    let id = post(&obid, "LIMITED ONCE: 2 KEEP PROMPTS");
+    let id = post(&obid, "LIMITED ONCE: 300 KEEP PROMPTS");
     let waits = waiting_for_reset(&obid, &id);
     within(10, "the wait is kept", || {
         read_job(&folder, &id).resumes_at.is_some().then_some(())
@@ -854,7 +875,7 @@ fn limits_8_jobs_resume_one_at_a_time() {
 #[test]
 fn limits_9_three_tries_then_the_owner_is_asked() {
     let (folder, config, mut obid) = on_stub("limits-9");
-    let id = post(&obid, "LIMITED AGAIN: 2 KEEP PROMPTS");
+    let id = post(&obid, "LIMITED AGAIN: 300 KEEP PROMPTS");
     for tries in 1..=3 {
         waiting_for_reset(&obid, &id);
         within(10, "the try is counted", || {
@@ -920,7 +941,7 @@ fn signed_resume(
 fn limits_9_a_signed_resume_gives_no_new_tries() {
     let folder = Folder::new("limits-9-signed");
     let (first, _config, obid) =
-        signed_resume(&folder, "cccc0901", "investigate", "LIMITED AGAIN: 2", 3);
+        signed_resume(&folder, "cccc0901", "investigate", "LIMITED AGAIN: 300", 3);
     let asks = within(90, "its next limit asks again", || {
         let job = job_now(&obid, "cccc0901");
         (job["accountLimit"]["state"] == "pending"
@@ -992,7 +1013,7 @@ fn limits_11_an_account_still_held_at_the_reset() {
     let now = obi_protocol::time::now();
 
     let (folder, config, obid) = on_stub("limits-11-later");
-    let id = post(&obid, "LIMITED: 2");
+    let id = post(&obid, "LIMITED: 300");
     waiting_for_reset(&obid, &id);
     let later = now + 1800;
     let usage = json!({"stub": {"fiveHour": 1.0, "sevenDay": 0.4, "fiveHourResets": later,
@@ -1008,7 +1029,7 @@ fn limits_11_an_account_still_held_at_the_reset() {
     drop(obid);
 
     let (folder, config, obid) = on_stub("limits-11-week");
-    let id = post(&obid, "LIMITED: 2");
+    let id = post(&obid, "LIMITED: 300");
     waiting_for_reset(&obid, &id);
     let usage =
         json!({"stub": {"fiveHour": 0.1, "sevenDay": 0.97, "sevenDayResets": now + 86_400}});
@@ -1020,7 +1041,7 @@ fn limits_11_an_account_still_held_at_the_reset() {
     drop(obid);
 
     let (folder, config, obid) = on_stub("limits-11-gone");
-    let id = post(&obid, "LIMITED: 2");
+    let id = post(&obid, "LIMITED: 300");
     waiting_for_reset(&obid, &id);
     std::fs::remove_file(folder.0.join("home/accounts/stub/.credentials.json")).unwrap();
     let obid = its_time_comes(&folder, &config, obid, &id, None);
@@ -1041,7 +1062,7 @@ fn limits_11_an_account_still_held_at_the_reset() {
 #[test]
 fn limits_12_resuming_keeps_everything_else() {
     let (folder, config, mut obid) = on_stub("limits-12");
-    let id = post(&obid, "LIMITED ONCE: 2 KEEP PROMPTS");
+    let id = post(&obid, "LIMITED ONCE: 300 KEEP PROMPTS");
     waiting_for_reset(&obid, &id);
     let told = call_typed(
         &obid,
@@ -1129,7 +1150,7 @@ fn limits_12_resuming_keeps_everything_else() {
 fn limits_12_a_resumed_run_ends_as_its_round_would() {
     let (folder, config, obid) = on_stub("limits-12-round");
     let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "account": "stub", "rounds": 3,
-        "task": "LIMITED ONCE: 2"});
+        "task": "LIMITED ONCE: 300"});
     let posted = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
     assert_eq!(posted.status, 201, "{}", posted.text);
     let id = posted.body["id"].as_str().unwrap().to_owned();
@@ -1148,7 +1169,7 @@ fn limits_12_a_resumed_run_ends_as_its_round_would() {
 
     let folder = Folder::new("limits-12-asked");
     let id = "cccc1201";
-    let (_, config, obid) = signed_resume(&folder, id, "build", "LIMITED ONCE: 2", 0);
+    let (_, config, obid) = signed_resume(&folder, id, "build", "LIMITED ONCE: 300", 0);
     waiting_for_reset(&obid, id);
     let obid = its_time_comes(&folder, &config, obid, id, None);
     let done = ended(&obid, id);

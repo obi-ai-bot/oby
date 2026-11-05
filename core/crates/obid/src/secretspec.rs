@@ -1544,13 +1544,14 @@ required = false
     fn job_worktree(dir: &Path, name: &str, start: &str) -> Spec {
         let clone = dir.join("clone");
         let worktree = dir.join(name);
-        sh(
-            &clone,
-            &format!(
-                "git worktree add -q --detach {} {start}",
-                worktree.display()
-            ),
-        );
+        // TMPDIR may contain spaces (Oby's own home does): pass paths as arguments.
+        let added = crate::git::command(&clone, &[])
+            .args(["worktree", "add", "-q", "--detach"])
+            .arg(&worktree)
+            .arg(start)
+            .output()
+            .unwrap();
+        assert!(added.status.success(), "{added:?}");
         let admin = clone.join(".git/worktrees").join(name);
         std::fs::create_dir_all(admin.join("objects")).unwrap();
         Spec {

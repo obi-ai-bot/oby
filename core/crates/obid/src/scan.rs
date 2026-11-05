@@ -931,17 +931,26 @@ fn random_bytes() -> [u8; 8] {
 const FIRST_LINE: &str = "obid";
 
 /// What gitleaks reads last: a made-up GitHub token, new each run and never kept whole, in the
-/// shape its `github-pat` rule always flags (checked by hand with gitleaks 8.30.1: 20 of 20).
+/// shape its `github-pat` rule flags, with an entropy floor and no allowlisted words.
 /// When its report doesn't have it, gitleaks didn't read what it was given.
 fn canary() -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut bytes = [0u8; 36];
+    let mut bytes = [0u8; 20];
     getrandom::fill(&mut bytes).expect("the system's random source works");
+    canary_from(&bytes)
+}
+
+fn canary_from(bytes: &[u8; 20]) -> String {
+    // Gitleaks's global allowlist matches `false` anywhere and `null` at the end,
+    // case-insensitively. No vowels in the random part means neither can occur.
+    const ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXYZ0123456789";
     let tail: String = bytes
         .iter()
         .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
         .collect();
-    format!("{}{}{tail}", "gh", "p_")
+    // These sixteen distinct characters, plus the prefix, keep entropy above the
+    // github-pat rule's 3-bit minimum even when every random byte is identical.
+    // The remaining twenty characters still give each scan a fresh random canary.
+    format!("{}{}A0B1C2D3E4F5G6H7{tail}", "gh", "p_")
 }
 
 async fn run_gitleaks(
@@ -1181,6 +1190,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn canaries_are_detected_even_with_repeated_random_bytes() {
+        let folder = scratch("canary-alphabet");
+        for byte in 0..=u8::MAX {
+            let token = canary_from(&[byte; 20]);
+            assert_eq!(token.len(), 40);
+            let lower = token.to_ascii_lowercase();
+            assert!(!lower.contains("false") && !lower.ends_with("null"));
+            let found = gitleaks(&[("canary".into(), token)], &folder)
+                .await
+                .unwrap();
+            assert!(
+                found
+                    .iter()
+                    .any(|f| f.name == "canary" && f.rule == "gitleaks github-pat"),
+                "byte {byte}: {found:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// A stand-in gitleaks that reads its input to the end and finds only obid's canary there.

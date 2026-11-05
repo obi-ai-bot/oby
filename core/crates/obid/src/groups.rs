@@ -81,7 +81,7 @@ fn identify(pid: u32) -> Option<(String, String)> {
 /// [`identify`] elsewhere: `ps`.
 #[cfg(not(target_os = "linux"))]
 fn identify(pid: u32) -> Option<(String, String)> {
-    let out = match std::process::Command::new("/bin/ps")
+    let out = match std::process::Command::new(crate::process::ps_path())
         .args(["-o", "lstart=", "-o", "stat=", "-o", "comm=", "-p"])
         .arg(pid.to_string())
         .env_clear()

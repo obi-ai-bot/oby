@@ -16147,19 +16147,31 @@ mod tests {
         let root = std::env::temp_dir().join(format!("obid-stages-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let file = root.join("logs/j/stages.log");
+        let began = std::time::Instant::now();
         {
             let stages = Stages::new(file.clone());
             stages.begin("prepare");
             std::thread::sleep(Duration::from_millis(20));
             stages.begin("agent round 1");
         }
+        let elapsed = began.elapsed().as_secs_f64();
         let text = std::fs::read_to_string(&file).unwrap_or_default();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
         assert!(
-            lines[0].starts_with("prepare 0.0") && lines[0].ends_with('s'),
+            lines[0].starts_with("prepare ") && lines[0].ends_with('s'),
             "{text}"
         );
+        // A busy Mac may schedule us much later than the requested sleep. Check the
+        // recorded duration against the actual interval, allowing its two-decimal rounding.
+        let seconds = lines[0]
+            .strip_prefix("prepare ")
+            .unwrap()
+            .strip_suffix('s')
+            .unwrap();
+        assert_eq!(seconds.split_once('.').unwrap().1.len(), 2, "{text}");
+        let seconds: f64 = seconds.parse().unwrap();
+        assert!(seconds >= 0.02 && seconds <= elapsed + 0.005, "{text}");
         assert!(lines[1].starts_with("agent round 1 "), "{text}");
         let _ = std::fs::remove_dir_all(&root);
     }
