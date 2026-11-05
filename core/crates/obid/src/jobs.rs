@@ -38,11 +38,11 @@ const ACTIVITY_EVERY: Duration = Duration::from_secs(1);
 /// stall when they stop making progress (docs/runner-api.md, `limit`; [`Stall`]).
 pub const ROUND_LIMIT: Duration = Duration::from_secs(45 * 60);
 /// How long one run of the check may take.
-pub const CHECK_LIMIT: Duration = Duration::from_secs(20 * 60);
+pub const CHECK_LIMIT: Duration = Duration::from_secs(45 * 60);
 /// What a check run that took too long ends with.
 /// The words of a message that carries only files (`POST /v1/jobs/{id}/messages`).
 pub const FILES_ALONE: &str = "Look at the files I attached.";
-pub const CHECK_TOO_LONG: &str = "obid stopped it after 20 minutes, the most a test run may take.";
+pub const CHECK_TOO_LONG: &str = "obid stopped it after 45 minutes, the most a test run may take.";
 /// How much of a check's output obid keeps: its end.
 const CHECK_OUTPUT_MAX: usize = 64 * 1024;
 /// Why a job that commits ended done with nothing to publish.
