@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPH-10 protocol stand-in. It verifies the confined launch's contract, then behaves like a
 // model that may obey hostile question data. No real account or model request is involved.
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { spawnSync } from "node:child_process";
@@ -55,7 +55,7 @@ rl.on("line", async (line) => {
         reply(msg.id, {}); break;
       case "thread/start":
         fixed(p.baseInstructions); system = p.baseInstructions;
-        check(p.ephemeral && p.cwd === process.cwd(), "not a fresh confined thread");
+        check(p.ephemeral && realpathSync(p.cwd) === process.cwd(), "not a fresh confined thread");
         check(p.approvalPolicy === "untrusted", "auto approved tools");
         check(p.dynamicTools.length === 1 && p.dynamicTools[0].name === "Read" && p.dynamicTools[0].type === "function", "extra or malformed dynamic tools");
         check(args.includes('web_search="disabled"') && off.includes("shell_tool") && off.includes("apply_patch_freeform"), "native tools not disabled");
@@ -116,7 +116,7 @@ rl.on("line", async (line) => {
     switch (msg.method) {
       case "initialize": check(!p.clientCapabilities.fs && !p.clientCapabilities.terminal, "extra client tools"); reply(msg.id, {}); break;
       case "session/new":
-        check(p.mcpServers.length === 0 && p.cwd === process.cwd(), "extra MCP or wrong folder");
+        check(p.mcpServers.length === 0 && realpathSync(p.cwd) === process.cwd(), "extra MCP or wrong folder");
         reply(msg.id, { sessionId: "s", modes: { currentModeId: "agent", availableModes: testCase.includes("no-ask") ? [] : [{ id: "ask", name: "Ask" }] } }); break;
       case "session/set_mode": check(p.modeId === "ask", "not read-only"); mode = "ask"; reply(msg.id, {}); break;
       case "session/prompt": {

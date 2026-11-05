@@ -292,6 +292,8 @@ pub(crate) mod tests {
             .with_writer(move || writer.clone())
             .finish();
         let _logging = tracing::subscriber::set_default(subscriber);
+        // Another test's thread may have told this callsite nobody listens.
+        tracing::callsite::rebuild_interest_cache();
         let usage = figure(read(|_| body(200,
             r#"{"planUsage":{"limit":2000,"includedSpend":0,"autoPercentUsed":72},"displayMessage":"ANSWER-WORDS"}"#
         )).await);
