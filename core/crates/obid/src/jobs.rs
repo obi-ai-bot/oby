@@ -714,11 +714,15 @@ fn on_tool(job: &mut Job, tool: Tool) {
 
 /// The model and effort `job` runs on, on its account as it is now (#1574): a model it named
 /// itself stays; else its account's, as Settings › Agents set them (`tuning`, by account); neither,
-/// the tool's own. Again whenever it changes account.
-fn tune(job: &mut Job, tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>) {
+/// the tool's own. Again whenever it changes account. `offered` is that account's own list.
+fn tune(
+    job: &mut Job,
+    tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>,
+    offered: &[crate::model_lists::Offered],
+) {
     let kept = tuning.get(&job.account).cloned().unwrap_or_default();
     if job.model.is_none() || job.model_from_account {
-        let model = Tool::from_id(&job.agent).and_then(|tool| kept.offered_model(tool));
+        let model = kept.offered_model(offered);
         job.model_from_account = model.is_some();
         job.model = model.map(str::to_owned);
     }
@@ -919,6 +923,8 @@ pub struct Jobs {
     pub usage_changed: Notify,
     /// The usage reads an app's look starts ([`Jobs::want_usage`]).
     usage_reads: Mutex<UsageReads>,
+    /// Each account's last good model list, refreshed with those usage reads (crate::model_lists).
+    pub model_lists: crate::model_lists::ModelLists,
     /// What the meter last read: the machine's memory, and each running job's ([`Jobs::meter`]).
     measured: Mutex<Measured>,
     /// Wakes the meter: a job started.
@@ -1201,6 +1207,7 @@ impl Jobs {
             usage,
             usage_changed: Notify::new(),
             usage_reads: Mutex::default(),
+            model_lists: crate::model_lists::ModelLists::default(),
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
         });
@@ -2128,7 +2135,41 @@ impl Jobs {
                     }
                     Err(why) => tracing::info!("{name} account {id}: usage not read: {why}"),
                 }
+                // Same cadence as usage: each account's own model list, never blocking a turn or job.
+                if !self.being_changed(&id) && self.accounts(tool).iter().any(|a| a.id == id) {
+                    self.refresh_models(tool, &account).await;
+                }
             }
+        }
+    }
+
+    /// One account's models from its CLI (crate::model_lists). Keeps the last good list; a failed
+    /// read changes nothing. Notifies when the list changed so apps hear it on `accounts`.
+    async fn refresh_models(&self, tool: Tool, account: &crate::config::Account) {
+        let agents = self.config.agents.get();
+        let Some(bin) = match tool {
+            Tool::Claude => agents.claude.as_ref(),
+            Tool::Codex => agents.codex.as_ref(),
+            Tool::Cursor => agents.cursor.as_ref(),
+        }
+        .map(|agent| agent.bin.as_str())
+        .and_then(crate::process::resolve_bin)
+        .filter(|bin| bin.is_absolute()) else {
+            return;
+        };
+        let dir = self
+            .config
+            .home
+            .join("plans")
+            .join(uuid::Uuid::new_v4().to_string());
+        if crate::store::make_private_dir(&dir).is_err() {
+            return;
+        }
+        let scratch = crate::model_lists::Scratch(dir);
+        if let Some(listed) = crate::model_lists::read(tool, &bin, account, &scratch.0).await
+            && self.model_lists.keep(&account.id, listed)
+        {
+            self.usage_changed.notify_one();
         }
     }
 
@@ -3190,10 +3231,11 @@ impl Jobs {
                     && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
                 {
                     let tuning = crate::settings::load(&self.config.home).tuning;
+                    let offered = self.model_lists.for_account(tool, &first.id);
                     self.update(&job.id, |job| {
                         on_tool(job, tool);
                         job.account = first.id.clone();
-                        tune(job, &tuning);
+                        tune(job, &tuning, &offered);
                         job.step = room_step(&now);
                         job.waiting = Some(now);
                     });
@@ -3202,6 +3244,7 @@ impl Jobs {
             };
             let on = format!("{} · {}", tool.name(), account.name);
             let tuning = crate::settings::load(&self.config.home).tuning;
+            let offered = self.model_lists.for_account(tool, &account.id);
             // It has run: its session and its login copy are the old account's (CHATGPT-23).
             let carried = job.session.is_some() && job.account != account.id;
             let from = was.map_or(job.account.clone(), |(tool, account)| {
@@ -3214,6 +3257,7 @@ impl Jobs {
                         tool,
                         &account,
                         &tuning,
+                        &offered,
                         &from,
                         Carried {
                             because: "couldn't go on with its account",
@@ -3224,7 +3268,7 @@ impl Jobs {
                 } else {
                     on_tool(job, tool);
                     job.account = account.id.clone();
-                    tune(job, &tuning);
+                    tune(job, &tuning, &offered);
                 }
                 job.waiting = None;
                 job.step = "Starting".into();
@@ -3296,7 +3340,14 @@ impl Jobs {
         });
         job.model = new.model.map(|m| m.trim().to_owned());
         job.complex = new.complex;
-        tune(&mut job, &crate::settings::load(&self.config.home).tuning);
+        let offered = Tool::from_id(&job.agent)
+            .map(|tool| self.model_lists.for_account(tool, &job.account))
+            .unwrap_or_default();
+        tune(
+            &mut job,
+            &crate::settings::load(&self.config.home).tuning,
+            &offered,
+        );
         job.files = files;
         job.attachments = new.attachments;
         job.conversation = new.conversation;
@@ -5941,6 +5992,7 @@ impl Jobs {
             account.is_some_and(|a| !a.trim().is_empty() && !a.eq_ignore_ascii_case("auto"));
         let mut blocked = false;
         let tuning = crate::settings::load(&self.config.home).tuning;
+        let offered = self.model_lists.for_account(tool, &chosen.id);
         let changed = self.update(id, |job| {
             if job.account_limit_blocked && !source.approves_limit() {
                 blocked = true;
@@ -5951,7 +6003,7 @@ impl Jobs {
             // A new session on the new choice; another tool runs its own model.
             job.session = None;
             on_tool(job, tool);
-            tune(job, &tuning);
+            tune(job, &tuning, &offered);
             job.moves.push(crate::job::Move {
                 from: from.clone(),
                 to: to.clone(),
@@ -16830,17 +16882,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        tune(&mut job, &tuning);
+        let offered = crate::model_lists::fallback(Tool::Claude);
+        tune(&mut job, &tuning, &offered);
         assert_eq!(job.model.as_deref(), Some("claude-haiku-5-5"));
         assert!(job.model_from_account);
         tuning.get_mut("personal").unwrap().model = Some("retired".into());
-        tune(&mut job, &tuning);
+        tune(&mut job, &tuning, &offered);
         assert_eq!(job.model, None, "retired choice falls back at launch");
         job.account = "work".into();
-        tune(&mut job, &tuning);
+        tune(&mut job, &tuning, &offered);
         assert_eq!(job.model, None);
         job.model = Some("explicit-model".into());
-        tune(&mut job, &tuning);
+        tune(&mut job, &tuning, &offered);
         assert_eq!(job.model.as_deref(), Some("explicit-model"));
     }
 

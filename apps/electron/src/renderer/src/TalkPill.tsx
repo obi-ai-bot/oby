@@ -5,7 +5,7 @@ import { Menu } from './Menu';
 import { everything } from './lean';
 import { useAccounts, useModels, useTalkDefault, type Account } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
-import { AUTO, PILL_TOOL_NAME, chosenOf, dot, list, modelChoice, modelUsage, percent, rowTitle, shownAccount, usageLines } from './talk';
+import { AUTO, PILL_TOOL_NAME, accountModels, chosenOf, dot, list, modelChoice, modelUsage, percent, rowTitle, shownAccount, usageLines } from './talk';
 import type { Agent } from './mock';
 
 const MARKS: Record<Agent, Brand> = { claude: BRANDS.claude, codex: BRANDS.openai, cursor: BRANDS.cursor };
@@ -20,7 +20,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const { account: setting, next } = useTalkSetting();
   const [, setDefault] = useTalkDefault();
   const [at, setAt] = useState<DOMRect | null>(null);
-  const [sub, setSub] = useState<{ account: Account; button: HTMLButtonElement; top: number } | null>(null);
+  const [sub, setSub] = useState<{ account: Account; button: HTMLButtonElement; top: number; maxHeight: number } | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
@@ -33,7 +33,8 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const rows = list(accounts);
   const close = () => { setAt(null); setSub(null); setError(''); pill.current?.focus(); };
   const closeSub = () => { sub?.button.focus(); setSub(null); };
-  const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent]?.model ?? 'auto', options[a.agent]?.models ?? []);
+  const modelsOf = (a: Account) => accountModels(a, options[a.agent]?.models);
+  const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent]?.model ?? 'auto', modelsOf(a));
   const pick = async (account: string, model?: string) => {
     if (saving) return;
     setSaving(true);
@@ -46,8 +47,10 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
     finally { setSaving(false); }
   };
   const openModels = (a: Account, button: HTMLButtonElement) => {
-    const tall = (options[a.agent]?.models.length ?? 0) * 30 + 14;
-    setSub({ account: a, button, top: Math.min(-8, innerHeight - 12 - tall - button.getBoundingClientRect().top) });
+    // Keep the submenu inside the window at its smallest size: scroll when the list is long.
+    const room = Math.max(120, innerHeight - button.getBoundingClientRect().top - 12);
+    const tall = Math.min(modelsOf(a).length * 30 + 14, room);
+    setSub({ account: a, button, top: Math.min(-8, innerHeight - 12 - tall - button.getBoundingClientRect().top), maxHeight: tall });
   };
   useEffect(() => {
     if (at) (menu.current?.querySelector<HTMLButtonElement>(':scope > button[aria-checked="true"], :scope > .menu-sub-anchor > button[aria-checked="true"]') ?? menu.current?.querySelector('button'))?.focus();
@@ -114,8 +117,8 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
                 {chosen === a.id && <Check size={15} strokeWidth={1.8} className="talk-choice-check" />}
                 <ChevronRight size={13} strokeWidth={1.8} />
               </button>
-              {sub?.account.id === a.id && <span ref={models} role="menu" aria-label={`${rowTitle(a, accounts)} models`} className="row-menu row-submenu is-left" style={{ top: sub.top, minWidth: 200 }} onKeyDown={(e) => move(e, e.currentTarget, true)}>
-                {(options[a.agent]?.models ?? []).map((m) => <button key={m.id} role="menuitemradio" aria-checked={modelOf(a).id === m.id} disabled={saving} onClick={() => void pick(a.id, m.id)}>
+              {sub?.account.id === a.id && <span ref={models} role="menu" aria-label={`${rowTitle(a, accounts)} models`} className="row-menu row-submenu is-left is-scroll" style={{ top: sub.top, minWidth: 200, maxHeight: sub.maxHeight }} onKeyDown={(e) => move(e, e.currentTarget, true)}>
+                {modelsOf(a).map((m) => <button key={m.id} role="menuitemradio" aria-checked={modelOf(a).id === m.id} disabled={saving} onClick={() => void pick(a.id, m.id)}>
                   {m.name}{modelOf(a).id === m.id && <Check size={14} strokeWidth={1.8} className="menu-check" />}
                 </button>)}
               </span>}

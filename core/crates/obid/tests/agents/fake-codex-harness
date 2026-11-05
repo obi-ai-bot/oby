@@ -1,4 +1,16 @@
 #!/usr/bin/env node
+// `codex debug models` for CONVERSATION-AGENT-22 (before app-server).
+if (process.argv[2] === "debug" && process.argv[3] === "models") {
+  process.stdout.write(JSON.stringify({
+    models: [
+      { slug: "gpt-6.1-sol", display_name: "gpt-6.1-sol", visibility: "list" },
+      { slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list" },
+      { slug: "gpt-6-luna", display_name: "GPT-6-Luna", visibility: "list" },
+      { slug: "gpt-hidden", display_name: "Hidden", visibility: "hide" },
+    ],
+  }) + "\n");
+  process.exit(0);
+}
 // A stand-in for `codex app-server` as a conversation's agent (docs/runner-api.md, "obid only: the
 // conversation harness"): JSON-RPC over stdio, streamed words (`item/agentMessage/delta`), tool
 // items, and Oby's `oby` MCP server from its `-c mcp_servers.oby.*` arguments, each MCP tool call

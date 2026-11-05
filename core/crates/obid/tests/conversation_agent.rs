@@ -64,6 +64,86 @@ fn obid(name: &str) -> (Folder, Obid) {
     (folder, obid)
 }
 
+/// CONVERSATION-AGENT-22: usage reads also refresh each account's CLI model list; status adds
+/// `models` when it differs; PATCH accepts an id from that list.
+#[test]
+fn conversation_agent_22_account_lists_come_from_the_cli_and_reach_status() {
+    let folder = Folder::new("talk-model-lists");
+    let config = configured(&folder);
+    // A Codex login that `signed_in` accepts (JWT with a far-off exp).
+    use base64::Engine as _;
+    let ends = (obi_protocol::time::now() + 10 * 86_400) as i64;
+    let claims =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{ends}}}"#));
+    std::fs::write(
+        folder.0.join("home/accounts").join(CODEX).join("auth.json"),
+        json!({"tokens":{"access_token": format!("h.{claims}.s"), "refresh_token":"", "account_id":"a"}}).to_string(),
+    )
+    .unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        None,
+        &[
+            ("OBID_USAGE_READS", "on"),
+            ("OBID_USAGE_EVERY_SECONDS", "0"),
+        ],
+    );
+    let account = |id: &str| {
+        within(30, &format!("{id} models"), || {
+            call(&obid, "GET", "/v1/status", None);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            call(&obid, "GET", "/v1/status", None).body["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == id)
+                .and_then(|a| a.get("models").cloned())
+        })
+    };
+    let codex = account(CODEX);
+    assert!(
+        codex
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "gpt-6-luna"),
+        "{codex}"
+    );
+    assert!(
+        !codex
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "gpt-hidden"),
+        "{codex}"
+    );
+    let cursor = account(CURSOR);
+    assert!(
+        cursor
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "gpt-5.6-sol-high"),
+        "{cursor}"
+    );
+    let set = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/accounts/{CODEX}"),
+        Some(&json!({"model": "gpt-6-luna"})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    assert_eq!(set.body["model"], "gpt-6-luna");
+    let refused = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/accounts/{CODEX}"),
+        Some(&json!({"model": "not-on-list"})),
+    );
+    assert_eq!(refused.status, 422, "{}", refused.text);
+}
+
 #[test]
 fn conversation_agent_21_turns_use_the_accounts_model_and_fall_back_to_status_defaults() {
     let folder = Folder::new("talk-models");

@@ -1,4 +1,14 @@
 #!/usr/bin/env node
+// `cursor-agent models` for CONVERSATION-AGENT-22.
+if (process.argv[2] === "models") {
+  process.stdout.write([
+    "Available models",
+    "auto - Auto (current, default)",
+    "composer-2.5 - Composer 2.5",
+    "gpt-5.6-sol-high - GPT-5.6 Sol 1M High",
+  ].join("\n") + "\n");
+  process.exit(0);
+}
 // A stand-in for `cursor-agent --sandbox disabled acp` as a conversation's agent
 // (docs/contracts/conversation-agent.md): ACP over stdio as docs/cursor.md describes it, signed in
 // when its login file is where Cursor's file store keeps it. Sessions are kept in

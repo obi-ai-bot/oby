@@ -185,10 +185,11 @@ pub struct Tuning {
 
 impl Tuning {
     /// A retired account choice falls back; an explicit job model is handled separately.
-    pub fn offered_model(&self, tool: crate::agent::Tool) -> Option<&str> {
+    /// `offered` is that account's own list ([`crate::model_lists`]), else today's fixed list.
+    pub fn offered_model<'a>(&'a self, offered: &[crate::model_lists::Offered]) -> Option<&'a str> {
         self.model
             .as_deref()
-            .filter(|model| models(tool).iter().any(|(id, _)| id == model))
+            .filter(|model| offered.iter().any(|m| m.id == *model))
     }
     /// The effort a job runs at: a complex one's own, else the routine one.
     pub fn effort(&self, complex: bool) -> Option<&str> {
@@ -208,11 +209,18 @@ pub fn default_model(tool: crate::agent::Tool) -> &'static str {
     }
 }
 
-pub fn account_model(home: &Path, tool: crate::agent::Tool, account: &str) -> String {
+/// The model a turn or job runs on for `account`: its offered choice when still on the list, else
+/// the tool's default. `offered` is that account's own list (or the fixed fallback).
+pub fn account_model(
+    home: &Path,
+    tool: crate::agent::Tool,
+    account: &str,
+    offered: &[crate::model_lists::Offered],
+) -> String {
     load(home)
         .tuning
         .get(account)
-        .and_then(|t| t.offered_model(tool))
+        .and_then(|t| t.offered_model(offered))
         .unwrap_or_else(|| default_model(tool))
         .to_owned()
 }
@@ -228,10 +236,8 @@ pub fn efforts(tool: crate::agent::Tool) -> &'static [&'static str] {
     }
 }
 
-/// The models Settings › Agents offers for each tool, `(id, name)`, as Sangam's screen lists them.
-// ponytail: a fixed list, and an account's model must be on it (no other tool's model reaches a
-// CLI); each account's own (Codex's `model/list`, `cursor-agent models`) when the screen needs
-// models this list doesn't have.
+/// The fixed models each tool falls back to when its CLI isn't there or a read failed
+/// ([`crate::model_lists`]): `(id, name)`, as Sangam's screen listed them.
 pub fn models(tool: crate::agent::Tool) -> &'static [(&'static str, &'static str)] {
     use crate::agent::Tool;
     match tool {
@@ -413,6 +419,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("obid-models-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
         for tool in crate::agent::Tool::ALL {
+            let offered = crate::model_lists::fallback(tool);
             let model = models(tool)[0].0;
             update(&home, |s| {
                 s.tuning.insert(
@@ -424,13 +431,19 @@ mod tests {
                 );
             })
             .unwrap();
-            assert_eq!(account_model(&home, tool, "personal"), model);
-            assert_eq!(account_model(&home, tool, "work"), default_model(tool));
+            assert_eq!(account_model(&home, tool, "personal", &offered), model);
+            assert_eq!(
+                account_model(&home, tool, "work", &offered),
+                default_model(tool)
+            );
             update(&home, |s| {
                 s.tuning.get_mut("personal").unwrap().model = Some("retired".into())
             })
             .unwrap();
-            assert_eq!(account_model(&home, tool, "personal"), default_model(tool));
+            assert_eq!(
+                account_model(&home, tool, "personal", &offered),
+                default_model(tool)
+            );
         }
         std::fs::remove_dir_all(home).unwrap();
     }
