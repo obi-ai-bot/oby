@@ -87,26 +87,7 @@ pub async fn answer(
 ) -> Talk {
     match plan.action {
         Action::Dispatch => dispatch(shared, plan, asked, researched, live).await,
-        Action::AskUser => match &plan.question {
-            Some(question) => Talk::Question {
-                said: asked.said.to_owned(),
-                question: question.clone(),
-            },
-            None => Talk::reply(plan.reply.clone()),
-        },
-        Action::ReplyOnly | Action::Ignore => {
-            if plan.reply.is_empty() {
-                return Talk::None;
-            }
-            // The brain counted wrong: with agents working, Oby never says nothing is running.
-            // The facts come from the jobs the header counts (#11).
-            let jobs = shared.jobs.list(usize::MAX);
-            if super::briefing::working(&jobs) > 0 && super::briefing::contradicts(&plan.reply) {
-                return Talk::reply(super::briefing::working_line(&jobs, &shared.host));
-            }
-            Talk::reply(plan.reply.clone())
-        }
-        // Read in the turn's loop: one that gets here changes nothing and says nothing.
+        // An action that changes something goes through `act`: one that gets here says nothing.
         _ => Talk::None,
     }
 }
@@ -563,43 +544,18 @@ pub async fn act(
 ) -> Outcome {
     match plan.action {
         Action::StopAgent => stop(shared, plan),
-        Action::SetMode => set_mode(shared, plan),
-        Action::AnswerPermission => answer_permission(shared, plan, conversation),
-        Action::RetryJob | Action::DismissJob | Action::StartNow => {
-            on_jobs(shared, plan, source, conversation)
-        }
+        Action::RetryJob => on_jobs(shared, plan, source, conversation),
         Action::AnswerInbox => answer_inbox(shared, plan, conversation, None).await,
-        Action::SetSetting => set_setting(shared, plan),
         Action::MessageJob => message_job(shared, plan, said, source, conversation, turn),
-        Action::MoveJob => {
-            let names: Vec<String> = plan
-                .named()
-                .iter()
-                .map(|id| shared.jobs.get(id).map_or(id.clone(), |j| j.short_title()))
-                .collect();
-            Outcome::Failed(format!(
-                "Couldn't move {}: Oby can't move a task to another tool, account or model yet (#447).",
-                if names.len() == 1 {
-                    "it".to_owned()
-                } else {
-                    names.join(", ")
-                }
-            ))
+        Action::Dispatch => {
+            Outcome::Failed("Couldn't do that: dispatch starts jobs, it changes nothing.".into())
         }
-        Action::AskReviewAgain => Outcome::Failed(
-            "Couldn't ask for another review: obid's brain can't ask for one yet.".into(),
-        ),
-        other => Outcome::Failed(format!(
-            "Couldn't do that: {} is only for Oby's event orchestrator.",
-            other.as_str()
-        )),
     }
 }
 
-/// retry_job, dismiss_job and start_now (Engine/JobActions.swift, `actOnJobs`), one line per
-/// job. It failed when nothing happened to any of them. A job another conversation started is
-/// tried again or dismissed only on the owner's Confirm (#631); Oby's event orchestrator acts on
-/// any conversation's jobs.
+/// retry_job (Engine/JobActions.swift, `actOnJobs`), one line per job. It failed when nothing
+/// happened to any of them. A job another conversation started is tried again only on the owner's
+/// Confirm (#631); an event turn acts on any conversation's jobs.
 fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str) -> Outcome {
     let ids = plan.named();
     if ids.is_empty() {
@@ -616,21 +572,12 @@ fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str
             });
             continue;
         };
-        let name = job.short_title();
         let theirs = source != Source::Event
             && job
                 .conversation
                 .as_deref()
                 .is_some_and(|c| c != conversation);
-        let (line, done) = match plan.action {
-            Action::RetryJob => retry(shared, &job, theirs),
-            Action::DismissJob => dismiss(shared, &job, theirs),
-            // obid starts every job at once (#455): none waits for a Start when.
-            _ => (
-                format!("Couldn't start {name}: it isn't waiting for a Start when."),
-                false,
-            ),
-        };
+        let (line, done) = retry(shared, &job, theirs);
         any |= done;
         lines.push(line);
     }
@@ -696,62 +643,6 @@ fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
             true,
         ),
         Some(Err(refused)) => (format!("Couldn't try {name} again: {}", refused.0), false),
-        None => ("That task isn't here any more.".into(), false),
-    }
-}
-
-/// Lets a job that needs the owner go, saying what stays on its branch. Commits that aren't
-/// published, and another conversation's job (`theirs`), wait for the owner's Confirm (#631): a
-/// short word never throws work away.
-fn dismiss(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
-    let name = job.short_title();
-    let kept = match job.commits.unwrap_or(0) {
-        0 => String::new(),
-        1 => " (1 commit kept on its branch)".into(),
-        n => format!(" ({n} commits kept on its branch)"),
-    };
-    let unpublished = job.unpublished();
-    if job.dismissed.is_none() && job.needs_you() && (unpublished > 0 || theirs) {
-        let mut why = vec![];
-        if theirs {
-            why.push(format!("{name} was started in another conversation."));
-        }
-        if unpublished > 0 {
-            why.push(format!(
-                "{unpublished} of its commits aren't published: they stay on its branch {}, and obid doesn't publish them.",
-                job.branch
-            ));
-        }
-        confirm(
-            shared,
-            &job.id,
-            format!("Dismiss {name}{kept}"),
-            format!(
-                "Oby's brain planned to dismiss {name}. {} It happens only if you confirm.",
-                why.join(" ")
-            ),
-            Confirmed {
-                action: action::DISMISS_JOB.into(),
-                target: job.id.clone(),
-                payload: Value::Null,
-            },
-        );
-        let line = if unpublished > 0 {
-            format!(
-                "Dismissing {name} waits for your OK: its {unpublished} commit{} {} published. Confirm it in your inbox.",
-                if unpublished == 1 { "" } else { "s" },
-                if unpublished == 1 { "isn't" } else { "aren't" }
-            )
-        } else {
-            format!(
-                "{name} was started in another conversation, so dismissing it waits for your OK: confirm it in your inbox."
-            )
-        };
-        return (line, true);
-    }
-    match shared.jobs.dismiss(&job.id) {
-        Some(Ok(_)) => (format!("Dismissed {name}{kept}."), true),
-        Some(Err(refused)) => (format!("Couldn't let {name} go: {}", refused.0), false),
         None => ("That task isn't here any more.".into(), false),
     }
 }
@@ -1263,32 +1154,6 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
     }
 }
 
-/// set_setting: of what Settings has, obid keeps only how many jobs run at once.
-fn set_setting(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
-    let Some(setting) = &plan.setting else {
-        return Outcome::Failed("Couldn't change settings: the setting was missing.".into());
-    };
-    let Some(max) = setting.max_running else {
-        return Outcome::Failed(
-            "Couldn't change that: obid has no model settings or weekly reserves yet.".into(),
-        );
-    };
-    let old = shared.jobs.max_running();
-    match u32::try_from(max).map(|max| shared.jobs.set_max_running(max)) {
-        Ok(Ok(new)) => Outcome::Done(format!("Changed tasks at once from {old} to {new}.")),
-        Ok(Err(crate::jobs::SettingsError::Refused(why))) => {
-            Outcome::Failed(format!("Couldn't change tasks at once: {why}"))
-        }
-        Ok(Err(crate::jobs::SettingsError::Unkept(e))) => Outcome::Failed(format!(
-            "Couldn't change tasks at once: it couldn't be kept ({e})."
-        )),
-        Err(_) => Outcome::Failed(format!(
-            "Couldn't change tasks at once: maxRunning is 1 to {}.",
-            crate::settings::limits().max_running()
-        )),
-    }
-}
-
 /// The jobs the brain named ("cancel it"), or everything only when the user asked for all of
 /// it in so many words. Says what stopped, not the brain's reply: it doesn't know what ran.
 fn stop(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
@@ -1322,201 +1187,6 @@ fn stop(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
     })
 }
 
-/// "Stop asking on the Watch job": a running job's mode, as `POST /v1/jobs/{id}/mode` sets it.
-fn set_mode(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
-    let Some(mode) = plan.mode else {
-        return Outcome::NeedsWhich("Say which mode.".into());
-    };
-    let mode = mode.to_permissions();
-    // Bypass stops a job asking anything: it widens what the agent may do, so only the user's
-    // own Confirm sets it (#546). The other modes are done at once: ask and plan, and
-    // acceptEdits, which still asks before every command (the owner's choice).
-    if mode == crate::permissions::Mode::Bypass {
-        let jobs: Vec<crate::job::Job> = plan
-            .named()
-            .iter()
-            .filter_map(|id| shared.jobs.get(id))
-            .filter(|j| j.status.is_active())
-            .collect();
-        // A job in Bypass already asks nothing: there's nothing to widen, so nothing to confirm.
-        let already: Vec<String> = jobs
-            .iter()
-            .filter(|j| crate::jobs::Jobs::mode_of(j) == crate::permissions::Mode::Bypass)
-            .map(crate::job::Job::short_title)
-            .collect();
-        let jobs: Vec<crate::job::Job> = jobs
-            .into_iter()
-            .filter(|j| crate::jobs::Jobs::mode_of(j) != crate::permissions::Mode::Bypass)
-            .collect();
-        if jobs.is_empty() && !already.is_empty() {
-            return Outcome::Done(format!(
-                "{} {} in Bypass mode already: it asks you nothing.",
-                already.join(", "),
-                if already.len() == 1 { "is" } else { "are" }
-            ));
-        }
-        if jobs.is_empty() {
-            return Outcome::Done("That task isn't running any more.".into());
-        }
-        let names: Vec<String> = jobs.iter().map(crate::job::Job::short_title).collect();
-        // One item per job: each is the owner's own decision.
-        for job in &jobs {
-            let name = job.short_title();
-            confirm(
-                shared,
-                &job.id,
-                format!("Stop asking on {name}: Bypass mode"),
-                format!(
-                    "Oby's brain planned Bypass mode for {name}: obid answers everything by its rules, and the task stops asking you. It happens only if you confirm."
-                ),
-                Confirmed {
-                    action: action::SET_MODE_BYPASS.into(),
-                    target: job.id.clone(),
-                    payload: serde_json::Value::Null,
-                },
-            );
-        }
-        return Outcome::Done(format!(
-            "Bypass mode stops {} asking you, so it waits for your OK: confirm it in your inbox.",
-            names.join(", ")
-        ));
-    }
-    let mut done: Vec<String> = vec![];
-    let mut kept: Vec<String> = vec![];
-    for id in plan.named() {
-        match shared.jobs.get(id) {
-            Some(job) if job.status.is_active() && job.read_only() => kept.push(job.short_title()),
-            Some(job) if job.status.is_active() => {
-                if let Some(job) = shared.jobs.set_mode(id, mode) {
-                    done.push(job.short_title());
-                }
-            }
-            _ => {}
-        }
-    }
-    if done.is_empty() && !kept.is_empty() {
-        return Outcome::Done(format!(
-            "{} only {} in Plan mode.",
-            kept.join(", "),
-            if kept.len() == 1 {
-                "reads: it stays"
-            } else {
-                "read: they stay"
-            }
-        ));
-    }
-    if done.is_empty() {
-        return Outcome::Done("That task isn't running any more.".into());
-    }
-    Outcome::Done(format!(
-        "{} {} in {} mode now.",
-        done.join(", "),
-        if done.len() == 1 { "is" } else { "are" },
-        mode.title()
-    ))
-}
-
-/// "Allow it", "always allow that", "no, run only the runner tests": the permission waiting on
-/// the job the conversation is about.
-fn answer_permission(shared: &Arc<Shared>, plan: &Plan, conversation: &str) -> Outcome {
-    let (Some(id), Some(decision)) = (plan.named().first(), plan.decision) else {
-        return Outcome::NeedsWhich("Say which task to answer.".into());
-    };
-    let Some(job) = shared.jobs.get(id) else {
-        return Outcome::Done("That task isn't waiting for your OK any more.".into());
-    };
-    let name = job.short_title();
-    let Some(permission) = job.permission.as_ref() else {
-        return Outcome::Done(format!("{name} isn't waiting for your OK."));
-    };
-    // A plan is the owner's to approve or send back, either way (#609).
-    if permission.is_plan() {
-        return Outcome::Done(format!(
-            "{name} waits for you to approve its plan or send it back: only you can, in your inbox."
-        ));
-    }
-    // Its agent's question is the owner's to answer (#858).
-    if permission.is_question() {
-        return Outcome::Done(format!(
-            "{name} waits for you to answer its question: only you can, in your inbox."
-        ));
-    }
-    // Letting a secret through is the owner's alone, even once (#586); saying no isn't.
-    if permission.is_secret() && decision != super::plan::Decision::Deny {
-        return Outcome::Done(format!(
-            "{name} waits on something that touches secrets: only you can let it through, in your inbox."
-        ));
-    }
-    let message = plan
-        .message
-        .as_deref()
-        .map(str::trim)
-        .filter(|m| !m.is_empty());
-    // Always saves a rule every later prompt of the repository's jobs follows: only the user's
-    // own Confirm saves it (#546). Allow once and no are done at once.
-    if decision == super::plan::Decision::Always {
-        let (Some(rule), Some(always)) = (&permission.rule, &permission.always) else {
-            return Outcome::Failed(format!(
-                "Couldn't answer {name}: This one has no rule to save: allow it once instead."
-            ));
-        };
-        confirm(
-            shared,
-            id,
-            format!("Always allow {rule} in {}", job.repo),
-            format!(
-                "Oby's brain planned to answer {name}'s permission with always: {always}. It saves the rule {rule} for {}, and happens only if you confirm.",
-                job.repo
-            ),
-            Confirmed {
-                action: action::ALWAYS_ALLOW.into(),
-                target: id.clone(),
-                payload: serde_json::json!({"permission": permission.id}),
-            },
-        );
-        return Outcome::Done(format!(
-            "Always allowing saves a rule for {}, so it waits for your OK: confirm it in your inbox.",
-            job.repo_name()
-        ));
-    }
-    use crate::jobs::PermissionRefused;
-    // Its words, a no's, are the brain's (crate::secretspec).
-    if message.is_some_and(|m| !m.trim().is_empty())
-        && let Some(why) = super::written_after(shared, conversation)
-    {
-        shared.jobs.mark_foreign(id, why);
-    }
-    match shared.jobs.answer_permission_from(
-        id,
-        &permission.id,
-        decision.to_permissions(),
-        message,
-        Source::Untrusted,
-    ) {
-        Ok(_) => Outcome::Done(match decision {
-            super::plan::Decision::Allow => format!("Allowed it for {name}."),
-            super::plan::Decision::Always => format!(
-                "Allowed it for {name}, and saved the rule for {}: it won't ask again for that.",
-                job.repo_name()
-            ),
-            super::plan::Decision::Deny => format!(
-                "Told {name} no{}",
-                if message.is_some() {
-                    ", with your words."
-                } else {
-                    "."
-                }
-            ),
-        }),
-        Err(PermissionRefused::NoJob) => {
-            Outcome::Done("That task isn't waiting for your OK any more.".into())
-        }
-        Err(PermissionRefused::NotWaiting(why) | PermissionRefused::Refused(why)) => {
-            Outcome::Failed(format!("Couldn't answer {name}: {why}"))
-        }
-    }
-}
-
 /// Puts what the brain planned, which only the user may do, in the inbox as a `confirm` item:
 /// carried out only on their own Confirm (`POST /v1/inbox/{id}/answer`).
 pub(super) fn confirm(
@@ -1529,67 +1199,6 @@ pub(super) fn confirm(
     let item =
         crate::sphere::inbox::confirm_item(job, title, text, confirmed, obi_protocol::time::now());
     shared.link.add_confirm(item);
-}
-
-/// What a step event says the action does (`Desk.stepText`).
-pub fn step_text(shared: &Shared, plan: &Plan) -> String {
-    let names = || -> Vec<String> {
-        plan.named()
-            .iter()
-            .filter_map(|id| shared.jobs.get(id).map(|j| j.short_title()))
-            .collect()
-    };
-    let what = || {
-        let names = names();
-        if names.is_empty() {
-            "the selected jobs".to_owned()
-        } else {
-            names.join(", ")
-        }
-    };
-    match plan.action {
-        Action::MoveJob => {
-            let names = names();
-            let destination = plan
-                .destination
-                .as_ref()
-                .map(|m| {
-                    let tool = crate::agent::Tool::from_id(&m.agent).map(|t| t.name());
-                    let account = (m.account != "auto").then_some(m.account.as_str());
-                    [tool, account]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join(" · ")
-                })
-                .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| "the selected destination".into());
-            format!(
-                "Moving {} to {destination}",
-                if names.is_empty() {
-                    "jobs".to_owned()
-                } else {
-                    names.join(", ")
-                }
-            )
-        }
-        Action::StopAgent => if plan.all == Some(true) {
-            "Stopping all running work"
-        } else {
-            "Stopping the selected work"
-        }
-        .into(),
-        Action::AnswerPermission => "Answering a permission request".into(),
-        Action::SetMode => "Changing permission mode".into(),
-        Action::Research => "Looking up context".into(),
-        Action::RetryJob => format!("Trying {} again", what()),
-        Action::DismissJob => format!("Letting {} go", what()),
-        Action::AskReviewAgain => format!("Asking for another review of {}", what()),
-        Action::StartNow => format!("Starting {} now", what()),
-        Action::MessageJob => format!("Passing your message to {}", what()),
-        Action::AnswerInbox => "Answering an inbox item".into(),
-        other => other.as_str().into(),
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
-//! What the brain may decide (Engine/Brain.swift, `Plan`): schema v1 from #31, every action with
-//! its fields, and why obid refuses a plan (`Plan.problems`, the same refusal texts). Oby's tools
-//! (super::tools) and the event orchestrator's (super::orchestrator) act through a plan, checked
-//! here first. There is no merge, push, approve or publish action, and obid checks every plan
+//! What the brain may decide (Engine/Brain.swift, `Plan`): the actions Oby's tools (super::tools)
+//! take, each with its fields, and why obid refuses one (`Plan.problems`, the same refusal texts).
+//! There is no merge, push, approve or publish action, and obid checks every plan before anything
+//! happens for it.
 //! before anything happens for it.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,78 +27,23 @@ pub const NOTE_LENGTH: usize = 500;
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Dispatch,
-    AskUser,
-    ReplyOnly,
     StopAgent,
-    MoveJob,
-    Ignore,
-    /// The user answers a job's waiting permission (#134).
-    AnswerPermission,
-    /// The user changes how much jobs ask.
-    SetMode,
-    /// The chat reads a job before it answers (#302).
-    ReadJob,
-    /// The user changes the runner's settings in chat.
-    SetSetting,
     /// The chat acts on jobs and the inbox (#300).
     RetryJob,
-    DismissJob,
     AnswerInbox,
-    StartNow,
-    /// The user tells a job something (#542), or the event orchestrator does (#351).
+    /// The user tells a job something (#542).
     MessageJob,
-    /// Only for the event orchestrator (#351).
-    FixFailure,
-    AskReviewAgain,
-    /// Read-only context gathering before the chat answers or proposes work.
-    Research,
-    /// The chat finds past conversations by what was said in them before it answers (#593).
-    FindConversation,
 }
 
 impl Action {
     pub fn as_str(self) -> &'static str {
         match self {
             Action::Dispatch => "dispatch",
-            Action::AskUser => "ask_user",
-            Action::ReplyOnly => "reply_only",
             Action::StopAgent => "stop_agent",
-            Action::MoveJob => "move_job",
-            Action::Ignore => "ignore",
-            Action::AnswerPermission => "answer_permission",
-            Action::SetMode => "set_mode",
-            Action::ReadJob => "read_job",
-            Action::SetSetting => "set_setting",
             Action::RetryJob => "retry_job",
-            Action::DismissJob => "dismiss_job",
             Action::AnswerInbox => "answer_inbox",
-            Action::StartNow => "start_now",
             Action::MessageJob => "message_job",
-            Action::FixFailure => "fix_failure",
-            Action::AskReviewAgain => "ask_review_again",
-            Action::Research => "research",
-            Action::FindConversation => "find_conversation",
         }
-    }
-
-    /// The actions that change something, after which the brain plans the next step
-    /// (`Desk.acting`).
-    pub fn acts(self) -> bool {
-        matches!(
-            self,
-            Action::StopAgent
-                | Action::MoveJob
-                | Action::AnswerPermission
-                | Action::SetMode
-                | Action::SetSetting
-                | Action::RetryJob
-                | Action::DismissJob
-                | Action::AnswerInbox
-                | Action::StartNow
-                | Action::MessageJob
-                | Action::FixFailure
-                | Action::AskReviewAgain
-        )
     }
 }
 
@@ -189,33 +134,6 @@ impl Mode {
 
     pub fn as_str(self) -> &'static str {
         self.to_permissions().as_str()
-    }
-}
-
-/// answer_permission's answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Decision {
-    Allow,
-    Always,
-    Deny,
-}
-
-impl Decision {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Decision::Allow => "allow",
-            Decision::Always => "always",
-            Decision::Deny => "deny",
-        }
-    }
-
-    pub fn to_permissions(self) -> crate::permissions::Decision {
-        match self {
-            Decision::Allow => crate::permissions::Decision::Allow,
-            Decision::Always => crate::permissions::Decision::Always,
-            Decision::Deny => crate::permissions::Decision::Deny,
-        }
     }
 }
 
@@ -313,123 +231,22 @@ pub struct Question {
     pub plan: Option<String>,
 }
 
-/// Where move_job moves its jobs: a tool, an account by name and a model by id, each "auto"
-/// unless the user named it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Move {
-    pub agent: String,
-    pub account: String,
-    pub model: String,
-}
-
-/// set_setting's one change.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Setting {
-    #[serde(default)]
-    pub agent: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub effort: Option<String>,
-    #[serde(default, alias = "complexEffort")]
-    pub complex_effort: Option<String>,
-    #[serde(default, alias = "maxRunning")]
-    pub max_running: Option<i64>,
-    #[serde(default)]
-    pub account: Option<String>,
-    #[serde(default)]
-    pub lift: Option<bool>,
-}
-
-/// The research step's read-only tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LookupTool {
-    SearchCode,
-    ListFiles,
-    ReadFile,
-    GitLog,
-    ViewIssue,
-    #[serde(rename = "view_pr")]
-    ViewPr,
-    #[serde(rename = "fetch_url")]
-    FetchUrl,
-}
-
-impl LookupTool {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LookupTool::SearchCode => "search_code",
-            LookupTool::ListFiles => "list_files",
-            LookupTool::ReadFile => "read_file",
-            LookupTool::GitLog => "git_log",
-            LookupTool::ViewIssue => "view_issue",
-            LookupTool::ViewPr => "view_pr",
-            LookupTool::FetchUrl => "fetch_url",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Lookup {
-    pub tool: LookupTool,
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default, rename = "ref")]
-    pub reference: Option<String>,
-    #[serde(default)]
-    pub query: Option<String>,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default, alias = "startLine")]
-    pub start_line: Option<i64>,
-    #[serde(default, alias = "endLine")]
-    pub end_line: Option<i64>,
-    #[serde(default)]
-    pub number: Option<i64>,
-    #[serde(default)]
-    pub url: Option<String>,
-}
-
 /// One plan: one action and its fields.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
     pub action: Action,
     pub reply: String,
     /// One job per independent piece of work, up to 10; empty unless the action is dispatch.
-    #[serde(default)]
     pub dispatches: Vec<Dispatch>,
-    #[serde(default)]
-    pub question: Option<Question>,
-    /// The jobs an action names, by id from the briefing. Older plans have no key.
-    #[serde(default)]
+    /// The jobs an action names, by id from the briefing.
     pub jobs: Option<Vec<String>>,
     /// Stop everything, for stop_agent: only when the user clearly asked for all of it.
-    #[serde(default)]
     pub all: Option<bool>,
-    /// Where move_job moves the jobs `jobs` names.
-    #[serde(default, rename = "move")]
-    pub destination: Option<Move>,
-    #[serde(default)]
-    pub decision: Option<Decision>,
-    #[serde(default)]
     pub message: Option<String>,
-    #[serde(default)]
-    pub mode: Option<Mode>,
-    #[serde(default)]
-    pub setting: Option<Setting>,
     /// answer_inbox's item by id, and its answer: an option by its number from 1, or words.
-    #[serde(default)]
     pub item: Option<String>,
-    #[serde(default)]
     pub option: Option<i64>,
-    #[serde(default)]
     pub answer: Option<String>,
-    #[serde(default)]
-    pub lookups: Option<Vec<Lookup>>,
-    /// Markdown that accompanies a short spoken reply.
-    #[serde(default)]
-    pub details: Option<String>,
 }
 
 impl Plan {
@@ -439,24 +256,13 @@ impl Plan {
             action,
             reply: reply.into(),
             dispatches: vec![],
-            question: None,
             jobs: None,
             all: None,
-            destination: None,
-            decision: None,
             message: None,
-            mode: None,
-            setting: None,
             item: None,
             option: None,
             answer: None,
-            lookups: None,
-            details: None,
         }
-    }
-
-    pub fn decode(bytes: &[u8]) -> Option<Plan> {
-        serde_json::from_slice(bytes).ok()
     }
 
     pub fn named(&self) -> &[String] {
@@ -480,21 +286,12 @@ pub struct Context {
     /// What a job may move to: each tool's models, and its accounts by name.
     pub models: BTreeMap<String, Vec<String>>,
     pub move_accounts: BTreeMap<String, Vec<String>>,
-    pub setting_models: BTreeMap<String, Vec<String>>,
-    pub setting_efforts: BTreeMap<String, Vec<String>>,
-    pub setting_model_efforts: BTreeMap<String, BTreeMap<String, Vec<String>>>,
-    pub setting_accounts: Vec<String>,
     /// The jobs whose permission prompt waits for the user, by id.
     pub permissions: Vec<String>,
     /// Pull requests Oby authored (`owner/name#n`) and the jobs that own their review.
     pub review_authors: BTreeMap<String, String>,
     /// The inbox items waiting for the user, by id.
     pub inbox: Vec<String>,
-    /// Failure records whose post-mortems permit an automatic fix.
-    pub fixable_failures: Vec<String>,
-    /// The plan loop's event orchestrator's (#590): never on a harness turn, so the actions only it
-    /// planned are refused.
-    pub orchestrator: bool,
     /// The user's own words this turn, where "new job", "from scratch" or "start over" is read
     /// (#541). Never the brain's restatement.
     pub said: String,
@@ -549,36 +346,16 @@ pub fn review_key(repo: &str, pr: i64) -> String {
     format!("{repo}#{pr}")
 }
 
-/// A tool's default model (Engine/Models.swift, `AgentModels.value`).
-fn default_model(agent: &str) -> &'static str {
-    let models = crate::api::Models::defaults();
-    match agent {
-        "claude" => models.claude.model,
-        "codex" => models.codex.model,
-        "cursor" => models.cursor.model,
-        _ => "",
-    }
-}
-
 impl Plan {
     /// Why obid refuses this plan; empty when it's fine. `canary` is the turn's own word, which
     /// no plan may repeat.
     pub fn problems(&self, context: &Context, canary: &str) -> Vec<String> {
         let mut problems: Vec<String> = vec![];
         let action = self.action;
-        if !context.orchestrator && action == Action::FixFailure {
-            problems.push(format!(
-                "{} is only available to Oby's event orchestrator",
-                action.as_str()
-            ));
-        }
         if count(&self.reply) > REPLY_LENGTH {
             problems.push(format!("reply is longer than {REPLY_LENGTH} characters"));
         }
-        let mut texts: Vec<&str> = vec![
-            &self.reply,
-            self.question.as_ref().map_or("", |q| q.text.as_str()),
-        ];
+        let mut texts: Vec<&str> = vec![&self.reply];
         texts.extend(self.dispatches.iter().map(|d| d.task.as_str()));
         texts.extend(self.dispatches.iter().filter_map(|d| d.title.as_deref()));
         texts.extend(self.dispatches.iter().filter_map(|d| d.done.as_deref()));
@@ -588,88 +365,26 @@ impl Plan {
                 .flat_map(|d| d.findings.iter().flatten())
                 .map(|f| f.note.as_str()),
         );
-        if let Some(question) = &self.question {
-            texts.extend(question.options.iter().map(String::as_str));
-        }
         if !canary.is_empty() && texts.iter().any(|t| t.contains(canary)) {
             problems.push("the plan repeats the canary".into());
         }
 
-        match action {
-            Action::Dispatch => {
-                if self.dispatches.is_empty() {
-                    problems.push("dispatch needs at least one job in dispatches".into());
-                }
-                if self.dispatches.len() > MOST_DISPATCHES {
-                    problems.push("dispatches holds at most 10 jobs".into());
-                }
-                if self.question.is_some() {
-                    problems.push("dispatch has no question".into());
-                }
-                for dispatch in &self.dispatches {
-                    for problem in dispatch_problems(dispatch, context) {
-                        if !problems.contains(&problem) {
-                            problems.push(problem);
-                        }
+        if action == Action::Dispatch {
+            if self.dispatches.is_empty() {
+                problems.push("dispatch needs at least one job in dispatches".into());
+            }
+            if self.dispatches.len() > MOST_DISPATCHES {
+                problems.push("dispatches holds at most 10 jobs".into());
+            }
+            for dispatch in &self.dispatches {
+                for problem in dispatch_problems(dispatch, context) {
+                    if !problems.contains(&problem) {
+                        problems.push(problem);
                     }
                 }
             }
-            Action::AskUser => {
-                if self.question.is_none() {
-                    problems.push("ask_user needs its question object".into());
-                }
-                if !self.dispatches.is_empty() {
-                    problems.push("ask_user has no dispatches".into());
-                }
-                if let Some(question) = &self.question {
-                    if question.options.len() > MOST_OPTIONS {
-                        problems.push(format!("question has at most {MOST_OPTIONS} options"));
-                    }
-                    if let Some(recommended) = question.recommended
-                        && !(0..question.options.len() as i64).contains(&recommended)
-                    {
-                        problems
-                            .push("recommended is the index of one of the options, or null".into());
-                    }
-                }
-            }
-            Action::Research => {
-                let lookups = self.lookups.as_deref().unwrap_or(&[]);
-                if !(1..=4).contains(&lookups.len()) {
-                    problems.push("research needs 1 to 4 lookups".into());
-                }
-                if !self.dispatches.is_empty() {
-                    problems.push("research has no dispatches".into());
-                }
-                if self.question.is_some() {
-                    problems.push("research has no question".into());
-                }
-                if !self.named().is_empty() {
-                    problems.push("research has no jobs".into());
-                }
-                for lookup in lookups {
-                    problems.extend(lookup_problems(lookup, context));
-                }
-            }
-            _ => {
-                if !self.dispatches.is_empty() || self.question.is_some() {
-                    problems.push(format!(
-                        "{} has no dispatches or question object",
-                        action.as_str()
-                    ));
-                }
-            }
-        }
-        if action != Action::Research && !self.lookups.as_deref().unwrap_or(&[]).is_empty() {
-            problems.push("only research has lookups".into());
-        }
-        if let Some(details) = &self.details {
-            if count(details) > 4000 {
-                problems.push("details is longer than 4,000 characters".into());
-            }
-            if action != Action::ReplyOnly && action != Action::AskUser {
-                problems.push("details is only for reply_only and ask_user".into());
-            }
+        } else if !self.dispatches.is_empty() {
+            problems.push(format!("{} has no dispatches", action.as_str()));
         }
         // Only some actions name jobs, and only ones the briefing listed. Stopping everything is
         // said in so many words, never by naming none.
@@ -688,66 +403,6 @@ impl Plan {
                     problems.push("stop_agent names jobs or stops all, not both".into());
                 }
             }
-            Action::MoveJob => {
-                if named.is_empty() || named.len() > 10 {
-                    problems.push("move_job names 1 to 10 jobs".into());
-                }
-                for id in named.iter().filter(|id| !context.movable.contains(id)) {
-                    problems.push(format!("{id} isn't a job Oby can move"));
-                }
-                match &self.destination {
-                    Some(destination) => problems.extend(move_problems(destination, context)),
-                    None => problems.push("move_job needs its move object".into()),
-                }
-            }
-            Action::AnswerPermission => {
-                if named.len() != 1 {
-                    problems.push("answer_permission names one job".into());
-                }
-                for id in named.iter().filter(|id| !context.permissions.contains(id)) {
-                    problems.push(format!("{id} isn't waiting for the user's OK"));
-                }
-                if self.decision.is_none() {
-                    problems.push("answer_permission needs its decision".into());
-                }
-            }
-            Action::SetMode => {
-                if named.is_empty() {
-                    problems.push("set_mode names the jobs".into());
-                }
-                for id in named.iter().filter(|id| !context.jobs.contains(id)) {
-                    problems.push(format!("{id} isn't a running job"));
-                }
-                if self.mode.is_none() {
-                    problems.push("set_mode needs its mode".into());
-                }
-            }
-            Action::FindConversation => {
-                if context.orchestrator {
-                    problems.push("find_conversation is only for the chat".into());
-                }
-                let words = self.message.as_deref().unwrap_or("");
-                if crate::conversation::search_words(words).is_empty() {
-                    problems.push("find_conversation puts the words to find in `message`".into());
-                } else if count(words) > crate::conversation::QUERY {
-                    problems.push(format!(
-                        "find_conversation's `message` is at most {} characters",
-                        crate::conversation::QUERY
-                    ));
-                }
-            }
-            Action::ReadJob => {
-                if named.len() != 1 {
-                    problems.push("read_job names one job".into());
-                }
-                for id in named.iter().filter(|id| !context.movable.contains(id)) {
-                    problems.push(format!("{id} isn't a job Oby can read"));
-                }
-            }
-            Action::SetSetting => match &self.setting {
-                Some(setting) => problems.extend(setting_problems(setting, context)),
-                None => problems.push("set_setting needs its setting object".into()),
-            },
             Action::MessageJob => {
                 if named.len() != 1 {
                     problems.push("message_job names one job".into());
@@ -759,63 +414,16 @@ impl Plan {
                     problems.push("message_job needs what Oby found and what to change".into());
                 }
             }
-            Action::AskReviewAgain => {
-                if named.len() != 1 {
-                    problems.push("ask_review_again names one job".into());
-                }
-                for id in named.iter().filter(|id| !context.movable.contains(id)) {
-                    problems.push(format!("{id} isn't a job Oby can review again"));
-                }
-                if !context.orchestrator
-                    && let Some(id) = named.first()
-                    && !context.review_authors.values().any(|v| v == id)
-                {
-                    problems.push(format!("{id} isn't an Oby-authored pull request"));
-                }
-            }
-            Action::FixFailure => {
+            Action::RetryJob => {}
+            Action::Dispatch | Action::AnswerInbox => {
                 if !named.is_empty() {
-                    problems.push("fix_failure names its failure in item, not jobs".into());
-                }
-                if !context
-                    .fixable_failures
-                    .contains(self.item.as_ref().unwrap_or(&String::new()))
-                {
-                    problems.push("fix_failure names a studied, fixable failure".into());
-                }
-            }
-            Action::RetryJob | Action::DismissJob | Action::StartNow => {}
-            _ => {
-                if !named.is_empty() {
-                    problems.push(
-                        "only stop_agent, move_job, answer_permission and set_mode name jobs"
-                            .into(),
-                    );
+                    problems.push("only stop_agent, retry_job and message_job name jobs".into());
                 }
             }
         }
         problems.extend(self.job_action_problems(context));
         if action != Action::StopAgent && self.all == Some(true) {
             problems.push("only stop_agent stops all".into());
-        }
-        if action != Action::MoveJob && self.destination.is_some() {
-            problems.push("only move_job has a move object".into());
-        }
-        if self.decision.is_some() && action != Action::AnswerPermission {
-            problems.push("only answer_permission has a decision or a message".into());
-        }
-        if !self.message.as_deref().unwrap_or("").is_empty()
-            && action != Action::AnswerPermission
-            && action != Action::MessageJob
-            && action != Action::FindConversation
-        {
-            problems.push("only answer_permission has a decision or a message".into());
-        }
-        if action != Action::SetMode && self.mode.is_some() {
-            problems.push("only set_mode has a mode".into());
-        }
-        if action != Action::SetSetting && self.setting.is_some() {
-            problems.push("only set_setting has a setting object".into());
         }
         if count(self.message.as_deref().unwrap_or("")) > 2000 {
             problems.push("message is longer than 2,000 characters".into());
@@ -829,11 +437,7 @@ impl Plan {
         let named = self.named();
         let action = self.action;
         match action {
-            Action::RetryJob
-            | Action::DismissJob
-            | Action::StartNow
-            | Action::MessageJob
-            | Action::AskReviewAgain => {
+            Action::RetryJob | Action::MessageJob => {
                 if named.is_empty() || named.len() > 10 {
                     problems.push(format!("{} names 1 to 10 jobs", action.as_str()));
                 }
@@ -876,364 +480,21 @@ impl Plan {
                     problems.push("option counts from 1".into());
                 }
             }
-            _ => {}
+            Action::Dispatch | Action::StopAgent => {}
         }
         if action != Action::AnswerInbox
-            && action != Action::FixFailure
             && (self.item.is_some() || self.option.is_some() || self.answer.is_some())
         {
             problems.push("only answer_inbox has an item, an option or an answer".into());
         }
-        if action != Action::MessageJob
-            && action != Action::AnswerPermission
-            && action != Action::FindConversation
-            && self.message.as_deref().is_some_and(|m| !m.is_empty())
-        {
-            problems.push("only message_job or answer_permission has a message".into());
+        if action != Action::MessageJob && self.message.as_deref().is_some_and(|m| !m.is_empty()) {
+            problems.push("only message_job has a message".into());
         }
         if count(self.answer.as_deref().unwrap_or("")) > 2000 {
             problems.push("answer is longer than 2,000 characters".into());
         }
         problems
     }
-
-    /// What makes two actions the same: what they do, to which jobs, how (`Desk.signature`).
-    pub fn signature(&self) -> String {
-        let mut jobs = self.named().to_vec();
-        jobs.sort();
-        let setting = self.setting.as_ref().map_or(String::new(), |s| {
-            format!(
-                "{}/{}/{}/{}/{}/{}",
-                s.agent.as_deref().unwrap_or(""),
-                s.model.as_deref().unwrap_or(""),
-                s.effort.as_deref().unwrap_or(""),
-                s.max_running.map(|m| m.to_string()).unwrap_or_default(),
-                s.account.as_deref().unwrap_or(""),
-                s.lift.map(|l| l.to_string()).unwrap_or_default()
-            )
-        });
-        let act = [
-            self.item.clone().unwrap_or_default(),
-            self.option.map(|o| o.to_string()).unwrap_or_default(),
-            self.answer.clone().unwrap_or_default(),
-            if self.action == Action::MessageJob {
-                self.message.clone().unwrap_or_default()
-            } else {
-                String::new()
-            },
-        ]
-        .join("/");
-        [
-            self.action.as_str().to_owned(),
-            jobs.join(","),
-            if self.all == Some(true) {
-                "all".into()
-            } else {
-                String::new()
-            },
-            self.destination.as_ref().map_or(String::new(), |m| {
-                format!("{}/{}/{}", m.agent, m.account, m.model)
-            }),
-            self.mode.map(|m| m.as_str().to_owned()).unwrap_or_default(),
-            self.decision
-                .map(|d| d.as_str().to_owned())
-                .unwrap_or_default(),
-            setting,
-            act,
-        ]
-        .join("|")
-    }
-}
-
-fn setting_problems(setting: &Setting, context: &Context) -> Vec<String> {
-    let mut problems = vec![];
-    let model_change = setting.agent.is_some()
-        || setting.model.is_some()
-        || setting.effort.is_some()
-        || setting.complex_effort.is_some();
-    let max_change = setting.max_running.is_some();
-    let reserve_change = setting.account.is_some() || setting.lift.is_some();
-    if [model_change, max_change, reserve_change]
-        .iter()
-        .filter(|c| **c)
-        .count()
-        != 1
-    {
-        return vec!["set_setting changes one model, maxRunning, or account reserve".into()];
-    }
-    if model_change {
-        let Some(agent) = setting
-            .agent
-            .as_deref()
-            .filter(|a| ["claude", "codex", "cursor"].contains(a))
-        else {
-            return vec!["setting needs a tool".into()];
-        };
-        // Cursor has a model and nothing else: no effort to set.
-        if agent == "cursor" && (setting.effort.is_some() || setting.complex_effort.is_some()) {
-            return vec![
-                "Cursor has no effort: effort and complex_effort must be null for it".into(),
-            ];
-        }
-        let none = vec![];
-        let models = context.setting_models.get(agent).unwrap_or(&none);
-        let efforts = context.setting_efforts.get(agent).unwrap_or(&none);
-        if let Some(model) = &setting.model
-            && !models.contains(model)
-        {
-            problems.push(format!("unknown model; choices: {}", models.join(", ")));
-        }
-        if let Some(effort) = &setting.effort
-            && !efforts.contains(effort)
-        {
-            problems.push(format!("unknown effort; choices: {}", efforts.join(", ")));
-        }
-        if let Some(effort) = &setting.complex_effort
-            && !efforts.contains(effort)
-        {
-            problems.push(format!(
-                "unknown complex effort; choices: {}",
-                efforts.join(", ")
-            ));
-        }
-        let model = setting
-            .model
-            .clone()
-            .unwrap_or_else(|| default_model(agent).to_owned());
-        let choices = context
-            .setting_model_efforts
-            .get(agent)
-            .and_then(|m| m.get(&model));
-        if let (Some(effort), Some(choices)) = (&setting.effort, choices)
-            && !choices.contains(effort)
-        {
-            problems.push(format!(
-                "unknown effort for {model}; choices: {}",
-                choices.join(", ")
-            ));
-        }
-        if let (Some(effort), Some(choices)) = (&setting.complex_effort, choices)
-            && !choices.contains(effort)
-        {
-            problems.push(format!(
-                "unknown complex effort for {model}; choices: {}",
-                choices.join(", ")
-            ));
-        }
-        if setting.model.is_none() && setting.effort.is_none() && setting.complex_effort.is_none() {
-            problems.push("setting needs a model or effort".into());
-        }
-    } else if let Some(max) = setting.max_running {
-        // The owner's own ceiling (`limits.maxRunning`), 20 unless they raised it.
-        let most = i64::from(crate::settings::limits().max_running());
-        if !(1..=most).contains(&max) {
-            problems.push(format!("maxRunning goes from 1 to {most}"));
-        }
-    } else if reserve_change {
-        let Some(account) = &setting.account else {
-            problems.push("reserve setting needs an account".into());
-            return problems;
-        };
-        if !context.setting_accounts.contains(account) {
-            problems.push("unknown account".into());
-        }
-        if setting.lift.is_none() {
-            problems.push("reserve setting needs lift".into());
-        }
-    }
-    problems
-}
-
-fn is_hex_ref(text: &str) -> bool {
-    (7..=40).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-/// Whether `url` is HTTPS with a host and no user or password: malformed and non-HTTPS URLs are
-/// refused here; private addresses are refused when the lookup runs, so they show as evidence.
-fn is_https(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("https") {
-        return false;
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, _)| host);
-    !authority.contains('@') && !host.is_empty() && !url.chars().any(char::is_whitespace)
-}
-
-fn lookup_problems(lookup: &Lookup, context: &Context) -> Vec<String> {
-    let mut problems = vec![];
-    let path_valid = lookup.path.as_deref().is_none_or(|path| {
-        !path.is_empty()
-            && count(path) <= 300
-            && !path.starts_with('/')
-            && !path.starts_with('-')
-            && !path.split('/').any(|piece| piece == "..")
-    });
-    if !path_valid {
-        problems.push("path must be relative, at most 300 characters, and contain no .. segment or leading slash or hyphen".into());
-    }
-    if let Some(reference) = &lookup.reference
-        && !(is_branch_name(reference) || is_hex_ref(reference))
-    {
-        problems.push("ref must be a branch name or 7 to 40 hexadecimal characters".into());
-    }
-    let tool = lookup.tool.as_str();
-    let lines = lookup.start_line.is_some() || lookup.end_line.is_some();
-    match lookup.tool {
-        LookupTool::SearchCode => {
-            if lookup.repo.is_none() {
-                problems.push("search_code needs repo".into());
-            }
-            match &lookup.query {
-                Some(query) => {
-                    if !(1..=200).contains(&count(query)) || query.contains(['\n', '\r']) {
-                        problems.push(
-                            "search_code query must be 1 to 200 characters on one line".into(),
-                        );
-                    }
-                }
-                None => problems.push("search_code needs query".into()),
-            }
-            if lookup.number.is_some() || lookup.url.is_some() || lines {
-                problems.push("search_code has only repo, ref, query and path".into());
-            }
-        }
-        LookupTool::ListFiles => {
-            if lookup.repo.is_none() {
-                problems.push("list_files needs repo".into());
-            }
-            if lookup.query.is_some() || lookup.number.is_some() || lookup.url.is_some() || lines {
-                problems.push("list_files has only repo, ref and path".into());
-            }
-        }
-        LookupTool::ReadFile => {
-            if lookup.repo.is_none() {
-                problems.push("read_file needs repo".into());
-            }
-            if lookup.path.is_none() {
-                problems.push("read_file needs path".into());
-            }
-            if lookup.start_line.is_some_and(|s| s < 1) {
-                problems.push("startLine must be positive".into());
-            }
-            if lookup.end_line.is_some_and(|e| e < 1) {
-                problems.push("endLine must be positive".into());
-            }
-            if let (Some(start), Some(end)) = (lookup.start_line, lookup.end_line)
-                && end < start
-            {
-                problems.push("endLine must be at least startLine".into());
-            }
-            let start = lookup.start_line.unwrap_or(1);
-            if let Some(end) = lookup.end_line
-                && end >= start
-                && end - start >= 400
-            {
-                problems.push("read_file range is at most 400 lines".into());
-            }
-            if lookup.query.is_some() || lookup.number.is_some() || lookup.url.is_some() {
-                problems.push("read_file has only repo, ref, path and line range".into());
-            }
-        }
-        LookupTool::GitLog => {
-            if lookup.repo.is_none() {
-                problems.push("git_log needs repo".into());
-            }
-            if lookup.query.is_some() || lookup.number.is_some() || lookup.url.is_some() || lines {
-                problems.push("git_log has only repo, ref and path".into());
-            }
-        }
-        LookupTool::ViewIssue | LookupTool::ViewPr => {
-            if lookup.repo.is_none() {
-                problems.push(format!("{tool} needs repo"));
-            }
-            if lookup.number.is_none_or(|n| n <= 0) {
-                problems.push(format!("{tool} needs a positive number"));
-            }
-            if lookup.query.is_some()
-                || lookup.path.is_some()
-                || lines
-                || lookup.url.is_some()
-                || lookup.reference.is_some()
-            {
-                problems.push(format!("{tool} has only repo and number"));
-            }
-        }
-        LookupTool::FetchUrl => {
-            match &lookup.url {
-                Some(url) => {
-                    if !is_https(url) {
-                        problems.push("fetch_url needs a public HTTPS URL".into());
-                    }
-                }
-                None => problems.push("fetch_url needs url".into()),
-            }
-            if lookup.repo.is_some()
-                || lookup.reference.is_some()
-                || lookup.query.is_some()
-                || lookup.path.is_some()
-                || lines
-                || lookup.number.is_some()
-            {
-                problems.push("fetch_url has only url".into());
-            }
-        }
-    }
-    if let Some(repo) = &lookup.repo
-        && !context.repos.contains(repo)
-    {
-        problems.push(format!("{repo} isn't a known repository"));
-    }
-    problems
-}
-
-/// What's wrong with where move_job moves its jobs: the tool, account and model must exist and
-/// go together. Whether the account has room is checked when it moves.
-fn move_problems(destination: &Move, context: &Context) -> Vec<String> {
-    let mut problems = vec![];
-    if destination.agent == "auto" && destination.account == "auto" && destination.model == "auto" {
-        problems.push("move names a tool, an account or a model".into());
-    }
-    if destination.agent != "auto" && !context.models.contains_key(&destination.agent) {
-        problems.push(format!("{} can't run jobs", destination.agent));
-    }
-    if destination.account != "auto" {
-        let owners: Vec<&String> = context
-            .move_accounts
-            .iter()
-            .filter(|(_, names)| names.contains(&destination.account))
-            .map(|(agent, _)| agent)
-            .collect();
-        if owners.is_empty() {
-            problems.push(format!("{} isn't an account", destination.account));
-        } else if destination.agent != "auto" && !owners.contains(&&destination.agent) {
-            problems.push(format!(
-                "{} isn't an account of {}",
-                destination.account, destination.agent
-            ));
-        }
-    }
-    if destination.model != "auto" {
-        let owners: Vec<&String> = context
-            .models
-            .iter()
-            .filter(|(_, models)| models.contains(&destination.model))
-            .map(|(agent, _)| agent)
-            .collect();
-        if owners.is_empty() {
-            problems.push(format!("{} isn't a model", destination.model));
-        } else if destination.agent != "auto" && !owners.contains(&&destination.agent) {
-            problems.push(format!(
-                "{} isn't a model of {}",
-                destination.model, destination.agent
-            ));
-        }
-    }
-    problems
 }
 
 /// What's wrong with one job of a plan.
@@ -1463,23 +724,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn reply(text: &str) -> Plan {
-        Plan::decode(
-            format!(r#"{{"action":"reply_only","reply":"{text}","question":null,"dispatches":[],"jobs":[]}}"#)
-                .as_bytes(),
-        )
-        .unwrap()
-    }
-
     /// A stop of the jobs named, or of everything when none are.
     fn stop(ids: &[&str]) -> Plan {
-        Plan::decode(
-            json!({"action": "stop_agent", "reply": "", "question": null, "dispatches": [],
-                   "jobs": ids, "all": ids.is_empty()})
-            .to_string()
-            .as_bytes(),
-        )
-        .unwrap()
+        let mut plan = Plan::of(Action::StopAgent, "");
+        plan.jobs = Some(ids.iter().map(|id| (*id).to_owned()).collect());
+        plan.all = Some(ids.is_empty());
+        plan
     }
 
     fn context() -> Context {
@@ -1500,12 +750,6 @@ mod tests {
             stop(&["zz"]).problems(&context, "zq9"),
             ["zz isn't a job Oby can stop"]
         );
-        let mut dispatch = reply("ok");
-        dispatch.jobs = Some(vec!["ab12cd34".into()]);
-        assert_eq!(
-            dispatch.problems(&context, "zq9"),
-            ["only stop_agent, move_job, answer_permission and set_mode name jobs"]
-        );
         // Stopping everything is said in so many words, never by naming no job.
         assert!(stop(&[]).problems(&context, "zq9").is_empty());
         let mut bare = stop(&[]);
@@ -1520,20 +764,15 @@ mod tests {
             both.problems(&context, "zq9"),
             ["stop_agent names jobs or stops all, not both"]
         );
-        dispatch.jobs = None;
-        dispatch.all = Some(true);
-        assert_eq!(
-            dispatch.problems(&context, "zq9"),
-            ["only stop_agent stops all"]
+        let mut answer = Plan::of(Action::AnswerInbox, "");
+        answer.all = Some(true);
+        assert!(
+            answer
+                .problems(&context, "zq9")
+                .contains(&"only stop_agent stops all".to_owned())
         );
-        // Older plans have no jobs key; the schema offers only the briefing's running jobs.
-        assert_eq!(
-            Plan::decode(br#"{"action":"ignore","reply":"","question":null,"dispatches":[]}"#)
-                .unwrap()
-                .jobs,
-            None
-        );
-        let long = Plan::of(Action::ReplyOnly, &"x".repeat(REPLY_LENGTH + 1));
+        let mut long = stop(&[]);
+        long.reply = "x".repeat(REPLY_LENGTH + 1);
         assert_eq!(
             long.problems(&context, "zq9"),
             ["reply is longer than 400 characters"]
@@ -1543,8 +782,10 @@ mod tests {
     /// The canary of the turn never comes back in a plan.
     #[test]
     fn a_plan_repeating_the_canary_is_refused() {
+        let mut plan = stop(&[]);
+        plan.reply = "canary zq9".into();
         assert_eq!(
-            reply("canary zq9").problems(&context(), "zq9"),
+            plan.problems(&context(), "zq9"),
             ["the plan repeats the canary"]
         );
     }
@@ -1559,9 +800,6 @@ mod tests {
             review_authors: BTreeMap::from([("deskree-inc/oby#80".into(), "author".into())]),
             ..Context::default()
         };
-        let mut again = Plan::of(Action::AskReviewAgain, "");
-        again.jobs = Some(vec!["author".into()]);
-        assert!(again.problems(&context, "zq9").is_empty());
         let dispatch: Dispatch = serde_json::from_value(json!({
             "agent": "claude", "account": "default", "repo": "deskree-inc/oby", "base_branch": null,
             "pr": 80, "issue": null, "epic": null, "kind": "review", "title": null, "task": "Review PR #80",
@@ -1579,104 +817,67 @@ mod tests {
         assert!(standalone.problems(&context, "zq9").is_empty());
     }
 
-    /// BrainTests.cursorInDispatchEnum: the schema offers Cursor as a tool wherever one is named;
-    /// every tool, connected or not (#534), and problems refuses one that isn't connected.
-    /// The other actions' fields, with Swift's refusal texts.
+    /// JobActionTests.swiftChecksWhatTheBrainNames, with Swift's refusal texts.
     #[test]
-    fn job_actions_settings_and_lookups_are_checked() {
-        let mut context = context();
-        context.movable = vec!["ab12cd34".into(), "d0ne0000".into()];
-        context.inbox = vec!["item-1".into()];
-        context.permissions = vec!["ab12cd34".into()];
-        let mut retry = Plan::of(Action::RetryJob, "");
+    fn obid_checks_what_the_brain_names() {
+        let context = Context {
+            movable: vec!["fa11ed00".into()],
+            inbox: vec!["fa11ed00-failed-1".into()],
+            ..Context::default()
+        };
+        let retry = |ids: &[&str]| {
+            let mut plan = Plan::of(Action::RetryJob, "");
+            plan.jobs = Some(ids.iter().map(|id| (*id).to_owned()).collect());
+            plan
+        };
+        let answer = |item: &str, option: Option<i64>, words: Option<&str>| {
+            let mut plan = Plan::of(Action::AnswerInbox, "");
+            plan.item = Some(item.into());
+            plan.option = option;
+            plan.answer = words.map(str::to_owned);
+            plan
+        };
+        assert!(retry(&["fa11ed00"]).problems(&context, "c4n4ry").is_empty());
         assert_eq!(
-            retry.problems(&context, "zq9"),
+            retry(&["nobody"]).problems(&context, "c4n4ry"),
+            ["nobody isn't a job in the briefing"]
+        );
+        assert_eq!(
+            retry(&[]).problems(&context, "c4n4ry"),
             ["retry_job names 1 to 10 jobs"]
         );
-        retry.jobs = Some(vec!["nope".into()]);
-        assert_eq!(
-            retry.problems(&context, "zq9"),
-            ["nope isn't a job in the briefing"]
+        assert!(
+            answer("fa11ed00-failed-1", Some(1), None)
+                .problems(&context, "c4n4ry")
+                .is_empty()
         );
-        let mut answer = Plan::of(Action::AnswerInbox, "");
-        answer.item = Some("item-1".into());
+        assert!(
+            answer("fa11ed00-failed-1", None, Some("try again"))
+                .problems(&context, "c4n4ry")
+                .is_empty()
+        );
         assert_eq!(
-            answer.problems(&context, "zq9"),
+            answer("nothing-1", Some(1), None).problems(&context, "c4n4ry"),
+            ["answer_inbox names an item waiting in the inbox"]
+        );
+        assert_eq!(
+            answer("fa11ed00-failed-1", None, None).problems(&context, "c4n4ry"),
             ["answer_inbox gives an option or the user's words"]
         );
-        answer.option = Some(0);
-        answer.answer = Some("yes".into());
         assert_eq!(
-            answer.problems(&context, "zq9"),
+            answer("fa11ed00-failed-1", Some(0), Some("x")).problems(&context, "c4n4ry"),
             [
                 "answer_inbox gives an option or the user's words, not both",
                 "option counts from 1"
             ]
         );
-        let mut permission = Plan::of(Action::AnswerPermission, "");
-        permission.jobs = Some(vec!["d0ne0000".into()]);
+        // The fields belong to answer_inbox alone.
+        let mut stray = retry(&["fa11ed00"]);
+        stray.item = Some("fa11ed00-failed-1".into());
         assert_eq!(
-            permission.problems(&context, "zq9"),
-            [
-                "d0ne0000 isn't waiting for the user's OK",
-                "answer_permission needs its decision"
-            ]
+            stray.problems(&context, "c4n4ry"),
+            ["only answer_inbox has an item, an option or an answer"]
         );
-        let mut setting = Plan::of(Action::SetSetting, "");
-        setting.setting = Some(Setting {
-            max_running: Some(30),
-            ..Setting::default()
-        });
-        assert_eq!(
-            setting.problems(&context, "zq9"),
-            ["maxRunning goes from 1 to 20"]
-        );
-        setting.setting = Some(Setting {
-            max_running: Some(3),
-            model: Some("x".into()),
-            ..Setting::default()
-        });
-        assert_eq!(
-            setting.problems(&context, "zq9"),
-            ["set_setting changes one model, maxRunning, or account reserve"]
-        );
-        let mut research = Plan::of(Action::Research, "");
-        research.lookups = Some(vec![Lookup {
-            tool: LookupTool::ReadFile,
-            repo: Some("deskree-inc/oby".into()),
-            reference: None,
-            query: None,
-            path: Some("../etc/passwd".into()),
-            start_line: Some(1),
-            end_line: Some(500),
-            number: None,
-            url: None,
-        }]);
-        assert_eq!(
-            research.problems(&context, "zq9"),
-            [
-                "path must be relative, at most 300 characters, and contain no .. segment or leading slash or hyphen",
-                "read_file range is at most 400 lines"
-            ]
-        );
-        let mut fetch = Plan::of(Action::Research, "");
-        fetch.lookups = Some(vec![Lookup {
-            tool: LookupTool::FetchUrl,
-            repo: None,
-            reference: None,
-            query: None,
-            path: None,
-            start_line: None,
-            end_line: None,
-            number: None,
-            url: Some("http://user@example.com".into()),
-        }]);
-        assert_eq!(
-            fetch.problems(&context, "zq9"),
-            ["fetch_url needs a public HTTPS URL"]
-        );
-        assert!(is_https("https://docs.rs/serde?x=1"));
-        assert!(!is_https("https://user:pw@example.com/"));
     }
 
     /// What obid's jobs can't carry is refused, never dropped (review on #551).
@@ -1701,130 +902,6 @@ mod tests {
         assert!(plan.problems(&context, "zq9").contains(
             &"reads is null: obid's research jobs can't read other repositories yet".to_owned()
         ));
-    }
-
-    /// JobActionTests.swiftChecksWhatTheBrainNames
-    #[test]
-    fn obid_checks_what_the_brain_names() {
-        let context = Context {
-            movable: vec!["fa11ed00".into()],
-            inbox: vec!["fa11ed00-failed-1".into()],
-            ..Context::default()
-        };
-        let on = |action: &str, ids: &[&str]| {
-            Plan::decode(
-                json!({"action": action, "reply": "", "question": null, "dispatches": [], "jobs": ids})
-                    .to_string()
-                    .as_bytes(),
-            )
-            .unwrap()
-        };
-        let answer = |item: &str, option: Option<i64>, words: Option<&str>| {
-            Plan::decode(
-                json!({"action": "answer_inbox", "reply": "", "question": null, "dispatches": [], "jobs": [],
-                       "item": item, "option": option, "answer": words})
-                .to_string()
-                .as_bytes(),
-            )
-            .unwrap()
-        };
-        for action in ["retry_job", "dismiss_job", "start_now"] {
-            assert!(
-                on(action, &["fa11ed00"])
-                    .problems(&context, "c4n4ry")
-                    .is_empty()
-            );
-        }
-        assert_eq!(
-            on("retry_job", &["nobody"]).problems(&context, "c4n4ry"),
-            ["nobody isn't a job in the briefing"]
-        );
-        assert_eq!(
-            on("start_now", &[]).problems(&context, "c4n4ry"),
-            ["start_now names 1 to 10 jobs"]
-        );
-        assert!(
-            answer("fa11ed00-failed-1", Some(1), None)
-                .problems(&context, "c4n4ry")
-                .is_empty()
-        );
-        assert!(
-            answer("fa11ed00-failed-1", None, Some("try again"))
-                .problems(&context, "c4n4ry")
-                .is_empty()
-        );
-        assert_eq!(
-            answer("nothing-1", Some(1), None).problems(&context, "c4n4ry"),
-            ["answer_inbox names an item waiting in the inbox"]
-        );
-        assert_eq!(
-            answer("fa11ed00-failed-1", None, None).problems(&context, "c4n4ry"),
-            ["answer_inbox gives an option or the user's words"]
-        );
-        assert_eq!(
-            answer("fa11ed00-failed-1", Some(1), Some("x")).problems(&context, "c4n4ry"),
-            ["answer_inbox gives an option or the user's words, not both"]
-        );
-        // The fields belong to answer_inbox alone.
-        let mut stray = on("retry_job", &["fa11ed00"]);
-        stray.item = Some("fa11ed00-failed-1".into());
-        assert_eq!(
-            stray.problems(&context, "c4n4ry"),
-            ["only answer_inbox has an item, an option or an answer"]
-        );
-    }
-
-    /// ReadJobTests.readJobPlansAreChecked
-    #[test]
-    fn read_job_plans_are_checked() {
-        let context = Context {
-            accounts: BTreeMap::from([("claude".into(), vec!["default".into()])]),
-            repos: vec!["deskree-inc/oby".into()],
-            movable: vec!["aaaa1111".into(), "bbbb2222".into()],
-            ..Context::default()
-        };
-        let mut read = Plan::of(Action::ReadJob, "");
-        read.jobs = Some(vec!["aaaa1111".into()]);
-        assert!(read.problems(&context, "zq9").is_empty());
-        read.jobs = Some(vec!["zz".into()]);
-        assert_eq!(
-            read.problems(&context, "zq9"),
-            ["zz isn't a job Oby can read"]
-        );
-        read.jobs = Some(vec!["aaaa1111".into(), "bbbb2222".into()]);
-        assert_eq!(read.problems(&context, "zq9"), ["read_job names one job"]);
-        // It changes nothing, so the loop doesn't count it as an action that did something.
-        assert!(!Action::ReadJob.acts() && !Action::Research.acts());
-    }
-
-    /// #593: find_conversation takes the words to find in `message`, changes nothing, and is
-    /// the chat's alone.
-    #[test]
-    fn find_conversation_plans_are_checked() {
-        let mut context = Context::default();
-        let mut find = Plan::of(Action::FindConversation, "");
-        assert_eq!(
-            find.problems(&context, "zq9"),
-            ["find_conversation puts the words to find in `message`"]
-        );
-        find.message = Some(" ?! ".into());
-        assert_eq!(
-            find.problems(&context, "zq9"),
-            ["find_conversation puts the words to find in `message`"]
-        );
-        find.message = Some("x".repeat(201));
-        assert_eq!(
-            find.problems(&context, "zq9"),
-            ["find_conversation's `message` is at most 200 characters"]
-        );
-        find.message = Some("the Watch target".into());
-        assert!(find.problems(&context, "zq9").is_empty());
-        assert!(!Action::FindConversation.acts());
-        context.orchestrator = true;
-        assert_eq!(
-            find.problems(&context, "zq9"),
-            ["find_conversation is only for the chat"]
-        );
     }
 
     /// FinishFromPRTests.finishingAnIssueFromAPullRequestIsAValidFixBuildOrTest and
@@ -2031,8 +1108,7 @@ mod tests {
     }
 
     /// #542: the user may tell a job of the briefing something, one whose pull request merged too
-    /// (it gets a follow-up, the owner's decision of 2026-10-18). fix_failure stays the event
-    /// orchestrator's.
+    /// (it gets a follow-up, the owner's decision of 2026-10-18).
     #[test]
     fn the_user_may_message_a_job_of_the_briefing() {
         let mut context = context();
@@ -2067,12 +1143,6 @@ mod tests {
             message(&["33aa33aa"], Some("one more thing"))
                 .problems(&context, "zq9")
                 .is_empty()
-        );
-        let mut fix = Plan::of(Action::FixFailure, "");
-        fix.item = Some("f1".into());
-        assert!(
-            fix.problems(&context, "zq9")
-                .contains(&"fix_failure is only available to Oby's event orchestrator".to_owned())
         );
     }
 
