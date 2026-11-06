@@ -371,10 +371,16 @@ fn waits_for_later(said: &str) -> bool {
 /// An error a turn ended on that trying again mends (docs/runner-api.md, `limit`): a 5xx or 429, an
 /// overloaded API, a dropped connection or stream, as the tool says ([`agent::Failure`]). Never an
 /// account's usage limit (its words, or `full`: its usage says so).
-fn transient(cause: agent::Cause, full: bool) -> bool {
+fn transient(cause: agent::Cause, full: bool, words: &str) -> bool {
+    if cause == agent::Cause::Unknown
+        && (retrying_wont_mend(words) || crate::limits::is_limit(words))
+    {
+        return false;
+    }
     match cause {
         agent::Cause::Passing => true,
         agent::Cause::Busy => !full,
+        agent::Cause::Unknown => true,
         _ => false,
     }
 }
@@ -10557,13 +10563,16 @@ impl Jobs {
                     let passing = match &refusal {
                         Some(refusal) => refusal.after == After::TryAgain,
                         None if chatgpt => {
-                            turn.cause().is_some_and(|cause| transient(cause, false))
+                            turn.cause()
+                                .is_some_and(|cause| transient(cause, false, turn.error()))
                                 || (no_result && !retrying_wont_mend(&ended))
                         }
                         None => {
                             (!full
                                 && turn.resets.is_none()
-                                && turn.cause().is_some_and(|cause| transient(cause, full)))
+                                && turn
+                                    .cause()
+                                    .is_some_and(|cause| transient(cause, full, turn.error())))
                                 || (no_result && !limit_said && !retrying_wont_mend(&ended))
                         }
                     };
@@ -15495,8 +15504,7 @@ mod tests {
         }
     }
 
-    /// Overloaded, failing or dropped APIs are retried; an account's usage limit, an auth error,
-    /// and a number that only looks like a status aren't.
+    /// Known transient errors and unknown tool errors are retried; usage limits and auth errors aren't.
     #[test]
     fn transient_errors_are_the_ones_trying_again_mends() {
         use super::transient;
@@ -15510,24 +15518,77 @@ mod tests {
             "Codex hit an error: stream disconnected before completion",
             "API Error: 429 rate limit exceeded",
         ] {
-            assert!(transient(Cause::read(error), false), "{error}");
+            assert!(transient(Cause::read(error), false, error), "{error}");
         }
         for error in [
             "Claude AI usage limit reached|1791582173",
             "Codex hit an error: You've hit your usage limit.",
-            "it broke",
             r#"API Error: 401 {"error":{"message":"invalid x-api-key","request_id":"req_500429"}}"#,
             "Invalid API key · Please run /login (request 5004)",
-            "the tests timed out after 500 ms",
+            "HTTP 401",
+            "got 403 from the API",
+            "x-api-key was refused",
+            "No conversation found with session ID",
         ] {
-            assert!(!transient(Cause::read(error), false), "{error}");
+            assert!(!transient(Cause::read(error), false, error), "{error}");
         }
+        assert!(transient(Cause::read("it broke"), false, "it broke"));
+        // This is only the tool's error text, so an unrecognised timeout is retryable too.
+        assert!(transient(
+            Cause::read("the tests timed out after 500 ms"),
+            false,
+            "the tests timed out after 500 ms"
+        ));
         // A 429 while the account's usage says it is full is its limit, not a blip.
         assert!(!transient(
             Cause::read("API Error: 429 rate limit exceeded"),
-            true
+            true,
+            "API Error: 429 rate limit exceeded"
         ));
-        assert!(transient(Cause::read("API Error: 529 overloaded"), true));
+        assert!(transient(
+            Cause::read("API Error: 529 overloaded"),
+            true,
+            "API Error: 529 overloaded"
+        ));
+        let passing_with_auth_word = "API Error: 503 authentication service unavailable";
+        assert_eq!(Cause::read(passing_with_auth_word), Cause::Passing);
+        assert!(transient(
+            Cause::read(passing_with_auth_word),
+            false,
+            passing_with_auth_word
+        ));
+    }
+
+    #[test]
+    fn recovery_9_unknown_tool_errors_retry_but_limits_and_client_statuses_do_not() {
+        use super::transient;
+        use crate::agent::Cause;
+        assert_eq!(Cause::read("http/2 CANCEL"), Cause::Unknown);
+        assert!(transient(
+            Cause::read("http/2 CANCEL"),
+            false,
+            "http/2 CANCEL"
+        ));
+        for error in ["out of credits", "quota", "API Error: 404 not found"] {
+            assert_eq!(Cause::read(error), Cause::Other, "{error}");
+            assert!(!transient(Cause::read(error), false, error), "{error}");
+        }
+        assert_eq!(
+            Cause::read("Codex hit an error: usage limit reached"),
+            Cause::Limit
+        );
+        assert!(!transient(
+            Cause::read("Codex hit an error: usage limit reached"),
+            false,
+            "Codex hit an error: usage limit reached"
+        ));
+        for error in [
+            "Rate limit exceeded, try again in 2 hours",
+            "Monthly limit exceeded",
+        ] {
+            assert_eq!(Cause::read(error), Cause::Unknown, "{error}");
+            assert!(!transient(Cause::read(error), false, error), "{error}");
+        }
     }
 
     #[test]

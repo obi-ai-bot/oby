@@ -207,6 +207,8 @@ pub enum Cause {
     Busy,
     /// The account's usage limit, in the tool's own words.
     Limit,
+    /// The tool's words did not match a known failure.
+    Unknown,
     Other,
 }
 
@@ -261,7 +263,7 @@ impl Cause {
         match cut {
             true if error.contains("429") => Cause::Busy,
             true => Cause::Passing,
-            false => Cause::Other,
+            false => Cause::Unknown,
         }
     }
 
@@ -365,7 +367,7 @@ impl Turn {
         match self.cause() {
             Some(Cause::Limit) => true,
             Some(Cause::Busy | Cause::Passing | Cause::TooLong | Cause::SessionGone) => false,
-            Some(Cause::Other) | None => crate::limits::is_limit(words),
+            Some(Cause::Other | Cause::Unknown) | None => crate::limits::is_limit(words),
         }
     }
 
