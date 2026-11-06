@@ -17,7 +17,7 @@ The business behavior contract for what obid does by itself when a job's run is 
 
 ### End-of-job rules
 
-Every way a job's run ends has one rule, and obid applies it itself: no model turn reads the end and decides (the event orchestrator that did, and whose turns mostly left a second card with only Done, is retired). Past its tries a job shows its own card, with its real reason, and nothing else.
+Every way a job's run ends has one rule, and obid applies it itself: no model turn reads the end and decides (the event orchestrator that did, and whose turns mostly left a second card with only Done, is retired). Past its tries a job shows its own card, with its real reason, and nothing else. **One gap, open:** when Oby's own review of a done job's pull request ends without a verdict and no other reviewer takes it (the review job ends done with no verdict, ends done with commits of its own, or is stopped), obid only sets the author's `reviewError` (`Oby's review didn't finish: …`) and raises no card or item. The orchestrator's `review_error` event was the only thing that told the owner, so until obid raises one itself that pull request waits with nobody told; the owner sees it only on the task's Review stage.
 
 | Kind | Trigger | Tries | Waits | Past them: obid's rule, and what the owner sees |
 |---|---|---|---|---|
@@ -32,7 +32,7 @@ Every way a job's run ends has one rule, and obid applies it itself: no model tu
 | A login error, a session that's gone, an error off the allowlist | The tool's own fields, else whole words on stderr (RECOVERY-7) | None | None | Ends as the tool said (`failed` or `interrupted`), with its words |
 | A usage limit | The account's usage or the tool says it's full | Its own ([account-limits.md](account-limits.md)) | Until the reset, five-hour limits only (LIMITS-5) | Any other limit: the limit card, asked once (#1563) |
 | The owner's Stop | Stop | None | None | `stopped`: never continued by itself |
-| Done with commits | The agent's turn ends well | None | None | Published, reviewed and merged by [publishing.md](publishing.md) and [merging.md](merging.md); their own items when they can't |
+| Done with commits | The agent's turn ends well | None | None | Published, reviewed and merged by [publishing.md](publishing.md) and [merging.md](merging.md); their own items when they can't. Except the open gap above: a review that ends with no verdict and no reviewer left only sets `reviewError`, with no card, and the pull request waits silently |
 
 **Stalled** is `interrupted` with `stalled` set and the agent's handoff note. A job a conversation started goes to one supervisor turn in that conversation (its 3 steps); its conversation gone, the owner is asked with a `supervisor-` question. A job no conversation started stays stalled, its own card offering `Try again`.
 
