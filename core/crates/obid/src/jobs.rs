@@ -14789,10 +14789,21 @@ pub async fn run_check(
         output.push_str(CHECK_TOO_LONG);
     }
     let passed = !timed_out && status.is_some_and(|ended| sandbox_succeeded(&ended, env));
+    // A run past its limit judged nothing: no fix round for it, the owner's Publish by hand
+    // (PUBLISHING-16). A stop never sets `timed_out`.
+    let unchecked = timed_out.then(|| {
+        let limit = match limit.as_secs() {
+            secs if secs >= 60 => format!("{}-minute", secs / 60),
+            secs => format!("{secs}-second"),
+        };
+        format!(
+            "Not published: the check ran past its {limit} limit, so nothing counts as checked. Read its change, then Publish it by hand."
+        )
+    });
     Ok(CheckRun {
         passed,
         output,
-        unchecked: None,
+        unchecked,
     })
 }
 
