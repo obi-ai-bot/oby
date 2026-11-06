@@ -12154,14 +12154,18 @@ impl Jobs {
             job
         };
         // Its claim goes however this ends: a panic, or a future dropped part way (a Publish by
-        // hand whose request went), never leaves the job claimed until a restart (#914).
-        struct Claim<'a>(&'a Jobs, &'a str);
+        // hand whose request went), never leaves the job claimed until a restart (#914), nor
+        // showing a publish step nothing runs any more (MERGING-29).
+        struct Claim<'a>(&'a Jobs, &'a str, bool);
         impl Drop for Claim<'_> {
             fn drop(&mut self) {
                 self.0.lock().publishing.remove(self.1);
+                if !self.2 {
+                    self.0.update(self.1, |job| job.publish_step = None);
+                }
             }
         }
-        let claim = Claim(self, id);
+        let mut claim = Claim(self, id, false);
         let Some(base) = job.base.clone() else {
             return Err(Failure::Failed(
                 "Nothing to publish: it has no base.".into(),
@@ -12185,6 +12189,7 @@ impl Jobs {
             }
             Err(why) => Err(Failure::Failed(why)),
         };
+        claim.2 = true;
         drop(claim);
         if let Err(failure) = &outcome {
             tracing::info!("job {id}: not published: {}", failure.line());
