@@ -73,3 +73,9 @@ What obid has goes into Sangam's `Page` (`mock.ts`) and stages, in `jobPage.ts`;
 - **TASKS-16:** A finished task's turn in its conversation carries the agent's whole report (at most 6,000 characters, its own "Summary" heading dropped), after obid's line of how it ended; when nothing was published, it says so and that a reply acts on it. The conversation's row shows the latest words, or that its tasks finished, never "Started" for a task that ended.
 
 **On a real Mac (Test it when it's done):** rename a task from its page's menu, then quit and reopen: the name stays. Archive a done task: it's under Archive after a reopen. Delete a task whose pull request is open: obid's words show and it stays. Delete a task whose commits weren't published: its card asks Confirm, naming the commits; Cancel keeps it, Confirm deletes it. Open a done task's page: its pull request opens in the browser; Timeline, Usage and What went out show the job's own numbers. Open Full session on a running task: lines come in as the agent works.
+# Check rounds
+
+- **CHECKS-1:** At the default final round, if the check reports a nonempty set of named failing tests that is a strict subset of the previous round's named failures, obid increases the job's round limit and continues. The updated limit is saved with the job and the displayed `Round N of M` remains accurate. This may continue through round 8.
+- **CHECKS-2:** If the failing names are unchanged, different, larger, or unavailable for comparison, obid stops at the existing limit and offers `One more round`.
+- **CHECKS-3:** Round 8 is the hard ceiling, even when the named failing set shrinks.
+- **CHECKS-4:** A round limit named by the owner or caller is hard and is never extended.

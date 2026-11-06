@@ -96,6 +96,8 @@ pub(crate) const COMMITTING: [&str; 3] = ["build", "fix", "test"];
 /// The rounds a committing job with a check gets when nobody named a number (#958): its agent
 /// hears the check's failure and fixes it, and the last one still stops and asks.
 const CHECK_ROUNDS: u32 = 3;
+/// Absolute ceiling for default check rounds when each round makes measurable progress.
+const CHECK_ROUNDS_CEILING: u32 = 8;
 /// How many times in a row the same call may fail before the job stalls as looping.
 pub const LOOP_REPEATS: u32 = 5;
 /// How long the agent has to write its handoff note when its job stalls.
@@ -3338,6 +3340,7 @@ impl Jobs {
         job.rounds = new.rounds.or_else(|| {
             (COMMITTING.contains(&job.kind.as_str()) && job.check.is_some()).then_some(CHECK_ROUNDS)
         });
+        job.rounds_named = new.rounds.is_some();
         job.model = new.model.map(|m| m.trim().to_owned());
         job.complex = new.complex;
         let offered = Tool::from_id(&job.agent)
@@ -6902,7 +6905,23 @@ impl Jobs {
                 None,
             ));
         }
-        if round >= job.max_rounds() {
+        let failing = self
+            .get(id)
+            .and_then(|j| j.checks.last().map(|c| &c.failing).cloned())
+            .unwrap_or_default();
+        let current_job = self.get(id).unwrap_or_else(|| job.clone());
+        let names: Vec<_> = failing.iter().map(|f| f.test.clone()).collect();
+        let improving = should_extend_check_rounds(&current_job, &names, round);
+        if improving {
+            self.update(id, |job| {
+                job.rounds = Some(job.current_round().max(round) + 1)
+            });
+            return Ok(format!(
+                "{}\n\nKeep going: the failing test set shrank. Fix the remaining failures, run the check again, commit, and finish with a short summary.",
+                check_failed(command, output, &failing)
+            ));
+        }
+        if round >= current_job.max_rounds() {
             let limit = format!("`{command}` still fails after {round} round(s)");
             self.update(id, |job| job.limit = Some(limit.clone()));
             return Err(End::needs_you(
@@ -8543,11 +8562,19 @@ impl Jobs {
             {
                 return;
             }
-            self.update(id, |job| match job.checks.last_mut() {
-                Some(last) if ended.is_some() || last.steps.iter().any(|s| s.running) => {
-                    *last = record
+            self.update(id, |job| {
+                if let Some(last) = job.checks.last()
+                    && last.round < round
+                {
+                    job.previous_failing =
+                        Some(last.failing.iter().map(|f| f.test.clone()).collect());
                 }
-                _ => job.checks.push(record),
+                match job.checks.last_mut() {
+                    Some(last) if ended.is_some() || last.steps.iter().any(|s| s.running) => {
+                        *last = record
+                    }
+                    _ => job.checks.push(record),
+                }
             });
         };
         record(None);
@@ -14614,6 +14641,21 @@ fn brief_section(brief: &crate::job::Brief) -> String {
 /// can be all one stack, with the failures above it gone: #1790) and the end of its output, the
 /// secrets obid knows taken out, in a fence of its own so nothing the output says can close it and
 /// pose as the owner's words. A vault that can't be read sends none of it.
+fn should_extend_check_rounds(job: &Job, failing: &[String], round: u32) -> bool {
+    let Some(previous) = job.previous_failing.as_deref() else {
+        return false;
+    };
+    let failing: std::collections::HashSet<_> = failing.iter().collect();
+    let previous: std::collections::HashSet<_> = previous.iter().collect();
+    !job.rounds_named
+        && job.rounds.is_some_and(|limit| limit >= CHECK_ROUNDS)
+        && round >= job.max_rounds()
+        && round < CHECK_ROUNDS_CEILING
+        && !failing.is_empty()
+        && failing.len() < previous.len()
+        && failing.is_subset(&previous)
+}
+
 fn check_failed(command: &str, output: &str, failing: &[crate::facts::Failing]) -> String {
     let named: String = failing
         .iter()
@@ -14897,6 +14939,80 @@ pub fn owner_review_item(
 
 #[cfg(test)]
 mod tests {
+    fn check_round_job() -> Job {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "task".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.rounds = Some(CHECK_ROUNDS);
+        job.round = Some(CHECK_ROUNDS);
+        job.previous_failing = Some(vec!["a".into(), "b".into()]);
+        job
+    }
+
+    /// CHECKS-1: A nonempty strict subset at the default last round earns another round.
+    #[test]
+    fn checks_1_shrinking_failures_continue() {
+        assert!(should_extend_check_rounds(
+            &check_round_job(),
+            &["a".into()],
+            CHECK_ROUNDS
+        ));
+    }
+
+    /// CHECKS-2: An unchanged failing set stops at the default last round.
+    #[test]
+    fn checks_2_same_failures_stop() {
+        assert!(!should_extend_check_rounds(
+            &check_round_job(),
+            &["a".into(), "b".into()],
+            CHECK_ROUNDS
+        ));
+    }
+
+    /// CHECKS-3: The hard ceiling stops extension even when the set shrinks.
+    #[test]
+    fn checks_3_ceiling_stops() {
+        let mut job = check_round_job();
+        job.rounds = Some(CHECK_ROUNDS_CEILING);
+        job.round = Some(CHECK_ROUNDS_CEILING);
+        assert!(!should_extend_check_rounds(
+            &job,
+            &["a".into()],
+            CHECK_ROUNDS_CEILING
+        ));
+    }
+
+    /// CHECKS-4: A caller's explicit round number is a hard limit.
+    #[test]
+    fn checks_4_named_round_limit_stops() {
+        let mut job = check_round_job();
+        job.rounds_named = true;
+        assert!(!should_extend_check_rounds(
+            &job,
+            &["a".into()],
+            CHECK_ROUNDS
+        ));
+    }
+
+    /// CHECKS-4: A job file from before limit provenance was stored is treated as explicitly named.
+    #[test]
+    fn checks_4_legacy_round_limit_stays_fixed() {
+        let mut value = serde_json::to_value(check_round_job()).unwrap();
+        value.as_object_mut().unwrap().remove("roundsNamed");
+        let legacy: Job = serde_json::from_value(value).unwrap();
+        assert!(legacy.rounds_named);
+        assert!(!should_extend_check_rounds(
+            &legacy,
+            &["a".into()],
+            CHECK_ROUNDS
+        ));
+    }
+
     /// PUBLISHING-15
     #[test]
     fn publishing_15_a_follow_up_finds_a_moved_clone_along_its_chain() {

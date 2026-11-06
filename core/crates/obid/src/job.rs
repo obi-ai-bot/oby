@@ -363,6 +363,13 @@ pub struct Job {
     pub summaries: Option<Vec<String>>,
     pub issue: Option<u64>,
     pub rounds: Option<u32>,
+    /// Whether the owner or caller set the round limit. Kept in the job file, never in the API.
+    /// Old job files don't record this provenance, so treat their limits as explicit.
+    #[serde(default = "legacy_rounds_named")]
+    pub rounds_named: bool,
+    /// Previous check's named failing tests, retained because `checks` exposes only its latest run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_failing: Option<Vec<String>>,
     pub round: Option<u32>,
     pub check: Option<String>,
     /// Whether Oby asked the owner for its repository's check when it started with none (#1062):
@@ -726,6 +733,10 @@ pub struct Job {
     pub sending: Vec<Sending>,
 }
 
+fn legacy_rounds_named() -> bool {
+    true
+}
+
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sending {
@@ -973,6 +984,8 @@ impl Job {
             summaries: None,
             issue: None,
             rounds: None,
+            rounds_named: false,
+            previous_failing: None,
             round: None,
             check: None,
             check_asked: false,
