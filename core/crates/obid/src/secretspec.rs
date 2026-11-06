@@ -39,8 +39,7 @@
 //! - **Oby's conversation, while clean** (`crate::conversation`, `foreign`): it fails closed the
 //!   same way. The owner's signed words, Oby's own answers, room files outside the repositories'
 //!   checkouts, its own list and a job's end that's clean throughout keep it so; anything else
-//!   marks it for good: words no app signed, turns its client wrote, attachments, a supervisor's
-//!   turn, a recap, a check-in, a routine's run, another job's report or words, the inbox, past
+//!   marks it for good: words no app signed, turns its client wrote, attachments, a recap, a check-in, a routine's run, another job's report or words, the inbox, past
 //!   conversations, the web, a command, a helper, any tool
 //!   it doesn't know (`crate::brain::tools`, `reads_foreign`; `crate::brain::harness`,
 //!   `known_safe`). What a marked conversation starts is someone else's from the start, in a clone

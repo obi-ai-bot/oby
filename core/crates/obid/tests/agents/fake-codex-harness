@@ -193,8 +193,6 @@ async function runTurn(turnId, prompt) {
   if (auth.tokens && !("refresh_token" in auth.tokens))
     return complete(turnId, null, "failed", { message: "401 Unauthorized: Missing bearer or basic authentication in header" });
   cut = prompt.includes("Your run was cut");
-  // Oby's own turn, nobody watching: what supervise.txt in its room says, as fake-harness does.
-  if (prompt.includes("Oby here, not the owner") && existsSync("supervise.txt")) return act(turnId, readFileSync("supervise.txt", "utf8").trim());
   return act(turnId, prompt.split("\n").pop());
 }
 

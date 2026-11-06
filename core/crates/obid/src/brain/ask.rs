@@ -28,8 +28,8 @@ const EVERY: Duration = Duration::from_secs(5);
 const ANOTHER_OBY_SAID: &str = "what another Oby said";
 
 /// What the orientation adds on a turn someone watches, while this Oby is in an Obysphere.
-pub(super) fn orientation(shared: &Shared, watched: bool) -> String {
-    told(watched && shared.link.joined().is_ok()).to_owned()
+pub(super) fn orientation(shared: &Shared) -> String {
+    told(shared.link.joined().is_ok()).to_owned()
 }
 
 /// That it's there and to ask. Never who: whoever redeems an open invitation picks their own ids
@@ -106,12 +106,6 @@ pub(super) async fn ask(
         known_as,
     } = parse(args)?;
     let known_as = known_as.filter(|name| !name.trim().is_empty());
-    if session.unwatched() {
-        return Err(
-            "A turn nobody watches asks no other Oby: say what should be asked, and the owner can ask."
-                .into(),
-        );
-    }
     not_in_a_sphere(shared)?;
     shared.link.refresh_members().await;
     let members = shared.link.ask_members();
@@ -873,8 +867,8 @@ mod tests {
     }
 
     #[test]
-    fn ask_14_only_a_watched_turn_is_told_and_never_who() {
-        assert_eq!(told(false), "", "a turn nobody watches");
+    fn ask_14_outside_a_sphere_nothing_is_told_and_never_who() {
+        assert_eq!(told(false), "", "outside a sphere");
         assert!(told(true).contains("oby_ask"));
     }
 

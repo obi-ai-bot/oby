@@ -2371,19 +2371,19 @@ mod tests {
                 "oby",
                 "It stalled.".into(),
                 vec![],
-                Some("the supervisor's words".into()),
+                Some("a stalled job's words".into()),
             )
             .unwrap();
         conversations.mark(&id, "the inbox".into());
         assert_eq!(
             conversations.foreign(&id).as_deref(),
-            Some("the supervisor's words")
+            Some("a stalled job's words")
         );
         // Kept: obid opened again reads it marked still.
         let reopened = super::Conversations::open(&home, events.clone());
         assert_eq!(
             reopened.foreign(&id).as_deref(),
-            Some("the supervisor's words")
+            Some("a stalled job's words")
         );
         let unsigned = conversations
             .begin(

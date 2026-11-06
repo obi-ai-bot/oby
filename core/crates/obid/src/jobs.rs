@@ -591,10 +591,6 @@ pub struct NewJob {
     /// check gets none of the owner's secrets.
     #[serde(default)]
     pub foreign: Option<String>,
-    /// One part of a stalled job's split (crate::brain::supervisor): its parts follow it up side
-    /// by side, each on a branch of its own. Never from the API, never kept.
-    #[serde(skip)]
-    pub split: bool,
     /// The repository this job adds to the ones obid works in, on the owner's signed Confirm
     /// (crate::github_work::start_adding, #1118): taken only when obid doesn't know `repo`, kept
     /// once the job is made, seen by no other job before. Never from the API, never kept.
@@ -2632,7 +2628,7 @@ impl Jobs {
         }
     }
 
-    /// The accounts of `tool` Oby thinks with (the brain, conversations and their supervisor), best
+    /// The accounts of `tool` Oby thinks with (the brain and conversations), best
     /// first (#874): signed in, not being signed in or removed, and not marked full; those with
     /// room first, in the tool's order, then those held only by their weekly reserve (a turn is
     /// small, like a review), then the rest, the least of their 5-hour window used first.
@@ -3440,9 +3436,10 @@ impl Jobs {
                 .values()
                 .filter(|j| j.status.is_active())
                 .collect();
-            if let Some(other) = active.iter().find(|j| {
-                !new.split && job.follow_up_of.is_some() && j.follow_up_of == job.follow_up_of
-            }) {
+            if let Some(other) = active
+                .iter()
+                .find(|j| job.follow_up_of.is_some() && j.follow_up_of == job.follow_up_of)
+            {
                 return Err(Refused(format!(
                     "{} (job {}) is following it up already: tell that one instead.",
                     other.short_title(),
@@ -5800,32 +5797,6 @@ impl Jobs {
         // reviewed saying so, never `reviewing` forever.
         self.reviewed(id);
         Some(Ok(dismissed))
-    }
-
-    /// Records what the conversation that owns the job did about it when it stalled
-    /// (crate::brain::supervisor): a second part of the same turn's split joins its entry.
-    pub fn supervised(&self, id: &str, entry: crate::job::Supervision) -> Option<Job> {
-        let job = {
-            let mut state = self.lock();
-            let job = state.jobs.get_mut(id)?;
-            match job
-                .supervised
-                .iter_mut()
-                .find(|s| s.turn == entry.turn && s.decision == entry.decision)
-            {
-                Some(same) => {
-                    same.jobs.extend(entry.jobs);
-                    same.count = entry.count;
-                }
-                None => job.supervised.push(entry),
-            }
-            job.revised()
-        };
-        if let Err(e) = self.store.save(&job) {
-            tracing::error!("can't keep job {id}: {e}");
-        }
-        self.events.send("job", job.to_json());
-        Some(job)
     }
 
     /// Archives a job that ended and needs nothing, or unarchives it (`archived` false), adding
@@ -11991,8 +11962,7 @@ impl Jobs {
     /// for a follow-up that started from its first job's work, those it carries (#770): what its
     /// branch has over the last commit any job pushed to that branch or to the one it started from
     /// (unless that work's pull request was closed unmerged), or, when none is under `head` (a
-    /// branch of its own, or one rebased since), over its base or its pull request's head. A split
-    /// part counts only its own: its siblings carry the same commits.
+    /// branch of its own, or one rebased since), over its base or its pull request's head.
     async fn counted(
         &self,
         job: &Job,
@@ -12001,7 +11971,7 @@ impl Jobs {
         head: &str,
     ) -> u64 {
         let start_commit = job.start_commit.as_deref().unwrap_or_default();
-        if job.start_from.is_none() || head.is_empty() || self.split_part(job) {
+        if job.start_from.is_none() || head.is_empty() {
             return count_commits(worktree, folders, start_commit, head).await;
         }
         let from_out = self.first_turned_down(job).is_none();
@@ -12043,19 +12013,6 @@ impl Jobs {
             ),
         };
         count_commits(worktree, folders, &from, head).await
-    }
-
-    /// Whether `job` is one part of its first job's split (crate::brain::supervisor).
-    fn split_part(&self, job: &Job) -> bool {
-        job.follow_up_of
-            .as_deref()
-            .and_then(|first| self.get(first))
-            .is_some_and(|first| {
-                first
-                    .supervised
-                    .iter()
-                    .any(|s| s.decision == "split" && s.jobs.contains(&job.id))
-            })
     }
 
     /// The title of the job whose work `job` carries, through the follow-ups between them, when
@@ -14341,7 +14298,7 @@ pub fn not_continuable(job: &Job) -> Option<&'static str> {
 /// base, check, model, mode and conversation, the words its request and task, titled
 /// `Follow-up: <job's title>` (never the words themselves, which may be long; the conversation
 /// may name it better, `oby_tell_job`'s `title`), and what `job` did for its first prompt. Bypass
-/// isn't carried here: a follow-up the brain starts (`oby_tell_job`, a supervisor's restart) gets
+/// isn't carried here: a follow-up the brain starts (`oby_tell_job`) gets
 /// the owner's default mode, so only the owner's own choice starts a job that never asks (their
 /// default, their Confirm, or their own words to the job, [`Jobs::message`], which keep its mode).
 /// When `job` has commits that aren't merged, the follow-up
@@ -17110,14 +17067,6 @@ mod tests {
         assert_eq!(moved.account, "plan");
     }
 
-    /// CHATGPT-20: what the supervisor starts by itself is work nobody's watching.
-    #[test]
-    fn chatgpt_20_a_supervisors_follow_up_is_in_the_background() {
-        let job = on("j", "fix", "codex", "dev", Status::Failed);
-        let new = crate::brain::supervisor::follow_up(&job, "go on", None, "nonce").unwrap();
-        assert!(new.unattended);
-    }
-
     /// CHATGPT-20: Oby's own review passes a ChatGPT login by with no yes, and says why; with one,
     /// it runs there.
     #[tokio::test]
@@ -19578,19 +19527,6 @@ mod tests {
         follow.pr = Some(5);
         assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 1);
         follow.pr = None;
-        // A split part: its own alone.
-        let mut split = parent.clone();
-        split.supervised.push(crate::job::Supervision {
-            at: 0,
-            decision: "split".into(),
-            jobs: vec!["f".into()],
-            turn: "t".into(),
-            count: 1,
-        });
-        jobs.lock().jobs.insert("p".into(), split);
-        assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 0);
-        assert_eq!(jobs.counted(&follow, &repo, &folders, &next).await, 1);
-        jobs.lock().jobs.insert("p".into(), parent.clone());
         // Its first job's branch: over the last push under its head, never a rebased one.
         follow.branch = "oby/fix-p".into();
         assert_eq!(jobs.counted(&follow, &repo, &folders, &first).await, 2);

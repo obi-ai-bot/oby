@@ -1,6 +1,6 @@
 # Asking another Oby from your conversation
 
-The business behavior contract for your Oby asking another person's Oby something and telling you in your own conversation, from [the template](../business-contract-template.md). Scenarios are numbered `ASK-n`; the tests that prove them are named after them (`ask_n_…` in `core/crates/obid/tests/ask_an_oby.rs`, `tests/sphere_questions.rs`, `apps/electron/src/renderer/src/test/askCard.test.tsx`, and unit tests in `core/crates/obid/src/brain/ask.rs`, `brain/supervisor.rs`, `sphere/sharing.rs` and `sphere/link/asking.rs`).
+The business behavior contract for your Oby asking another person's Oby something and telling you in your own conversation, from [the template](../business-contract-template.md). Scenarios are numbered `ASK-n`; the tests that prove them are named after them (`ask_n_…` in `core/crates/obid/tests/ask_an_oby.rs`, `tests/sphere_questions.rs`, `apps/electron/src/renderer/src/test/askCard.test.tsx`, and unit tests in `core/crates/obid/src/brain/ask.rs`, `sphere/sharing.rs` and `sphere/link/asking.rs`).
 
 ## Feature and status
 
@@ -12,7 +12,7 @@ The business behavior contract for your Oby asking another person's Oby somethin
 
 ### Actors and ownership
 
-- **The owner** asks in their own words. Nothing else makes their Oby ask: no job, no other Oby, no turn nobody watches.
+- **The owner** asks in their own words. Nothing else makes their Oby ask: no job, no other Oby.
 - **The conversation's brain** picks whom to ask and words the question (`oby_ask`), and says it asked. It never sees or retells what comes back unless a later turn reads it (`oby_asks`), quoted.
 - **obid** checks and sends the question, follows what comes back, and writes what the owner reads: its own words around a quote.
 - **The other Oby's obid** decides by its owner's rules alone: a sharing rule lets it answer by itself from its material (docs/runner-api.md, "obid only: questions from other Obis"), and otherwise the question waits for its owner.
@@ -88,7 +88,7 @@ The answerer's side:
 
 ## Interfaces and dependencies
 
-- **Brain tools:** `oby_members`, `oby_ask`, `oby_asks` (never for a turn nobody watches).
+- **Brain tools:** `oby_members`, `oby_ask`, `oby_asks`.
 - **obid:** `Exchange` keeps `asked_in` and `told`, neither in the API's answer. docs/runner-api.md, "obid only: questions from other Obis" and "obid only: sharing rules".
 - **The default (SPH-8 replaced the first join's rule).** Joining shares nothing: a new member and an old one have no rule, and the first question that waits on them brings one card asking which repositories it may tell about (peer-thread.md, "Only the repositories the owner chooses", PEER-16, PEER-38, PEER-40). Their yes makes one rule, status and each job's step and report line, in those repositories. The limits hold (30 an hour per sender, 60 in all). The rule answers who asks, and only that: the room (docs/contracts/rooms.md) doesn't go by it, since a post goes to every member unasked. The owner removes the rule like any (the Obysphere's settings list it), after which it stays removed; leaving the Sphere takes it, and the next Sphere asks (peer-thread.md, PEER-19); a file that doesn't read, or can't be read, shares nothing and is never replaced.
 - **The Obysphere's policy (obi-ai-bot/obi-sphere, Dmytro's), not changed here.** A new Sphere's policy is `[]` (`spec/sphere-api.md` section 3, `server/src/routes/spheres.ts`), so every question is `policy_denied`, and only an owner token with `admin` can write it (`PUT /v0.1/spheres/{sphere}/policy`): obid holds neither. So until the Sphere starts with a rule, or its admin writes one, the owner reads the honest refusal above. What's missing, for Dmytro: a starter rule at creation, `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "actions": ["question"], "repos": ["*"]}`.
@@ -109,7 +109,7 @@ The answerer's side:
 - **ASK-11** After its owner's yes an obid answers a member's question about their work by itself, with no question in its owner's inbox; before it, joining shares nothing (PEER-40). The rule stays removed once removed; a file that doesn't read shares nothing and isn't replaced; a job with no title tells nothing of its prompt; the rule puts nothing in the room.
 - **ASK-12** A question only the person can answer sends `waiting_on_owner`, waits in the inbox, and is said quoted, naming the owner id when the card goes by another name, in the one conversation for every member's questions, which it marks; however many members ask, that pushes out no conversation of the owner's; the person's words go back labelled as theirs; called off or run out, it says so there. `oby_inbox` shows its words, so the brain can tell two questions apart, and it wakes no event turn and makes no second item.
 - **ASK-13** A later turn reads what was asked and answered with `oby_asks`, quoted; that marks the conversation with words that name no one, also with no answer yet, and what the same session, or a new one, asks next waits for the owner's Confirm.
-- **ASK-14** A turn nobody watches asks no one, lists no one, and isn't told who is there.
+- **ASK-14** A conversation outside a Sphere isn't told to ask, and none is told who is there. (Its turn nobody watches, which asked no one, is retired: [rules-delete-supervisor](PRLINK).)
 - **ASK-15** On a Mac whose Claude Code login is only in the Keychain, the answering run still runs, on a copy of what calls the API (real-Mac step: no automated test reaches the Keychain).
 - **ASK-16** A new session hears nothing a member chose, words or name, and every turn in the conversation of their questions waits for the owner's Confirm; an unsigned turn leaves the owner's next signed words theirs, in a new session too.
 - **ASK-17** Only an exact owner id no other card claims goes without the owner seeing who: an Obi id reaches no one; a name, or an owner id another card claims, makes a Confirm showing who and tells the model nothing of it; a card gives a name, never a sentence or a look-alike. A card that says it acts for someone else by the time the question goes gets nothing, on the owner's word or after their Confirm.

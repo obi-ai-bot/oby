@@ -547,8 +547,6 @@ pub async fn serve(
     routines::spawn(shared.clone());
     // Outside inbox items no rule sorts go to the quick model, once (crate::triage).
     triage::spawn(shared.clone());
-    // A job a conversation started that stalls goes back to that conversation, which decides.
-    brain::supervisor::spawn(shared.clone());
     // Once told to stop: every agent and check ends now, and its job stays as it is for the next
     // start; every sign-in's login ends, with everything it started; the event streams and waits
     // end, so the server's connections close.

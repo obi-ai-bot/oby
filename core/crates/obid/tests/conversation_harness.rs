@@ -1025,8 +1025,8 @@ fn oby_dispatch_carries_the_check_the_owner_named() {
     let (_folder, obid) = obid("harness-dispatch-check", true);
     let answer = said(
         &obid,
-        json!({"said": concat!("Check: cd core && cargo test -p obid --lib brain::supervisor\n",
-               r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "fix", "check": " cd core && cargo test -p obid --lib brain::supervisor "}"#),
+        json!({"said": concat!("Check: cd core && cargo test -p obid --lib brain::read\n",
+               r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "fix", "check": " cd core && cargo test -p obid --lib brain::read "}"#),
                "new": true}),
     );
     let jobs = answer.body["jobs"].as_array().unwrap();
@@ -1034,7 +1034,7 @@ fn oby_dispatch_carries_the_check_the_owner_named() {
     let id = jobs[0]["id"].as_str().unwrap();
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
     assert_eq!(
-        job.body["check"], "cd core && cargo test -p obid --lib brain::supervisor",
+        job.body["check"], "cd core && cargo test -p obid --lib brain::read",
         "{}",
         job.text
     );

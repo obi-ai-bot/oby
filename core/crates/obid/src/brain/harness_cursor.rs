@@ -13,8 +13,7 @@
 //!   Those services do search the web for it (crate::acp, `search`), so one that's been talked into
 //!   it can carry what it read out in a search, and obid can't gate that (the contract's known
 //!   limits). Where the box can't hold it to the proxy, it doesn't talk (macOS's Seatbelt does);
-//! - its commands ask, and obid's rule refuses them all (`oby_shell` is how a conversation runs one);
-//! - a turn nobody watches never runs on it ([`super::talk::unattended`]).
+//! - its commands ask, and obid's rule refuses them all (`oby_shell` is how a conversation runs one).
 
 use serde_json::{Value, json};
 
@@ -33,16 +32,8 @@ const ON_CURSOR: &str = "\n\nYou run on Cursor here. Your own shell is refused: 
 
 /// The first prompt of a Cursor session: what its session has no other way of being told, then
 /// `first`.
-pub(super) fn first_prompt(
-    shared: &Shared,
-    tetrix: bool,
-    watched: bool,
-    first: &str,
-) -> Result<String, String> {
-    let told = crate::vault::for_agent(&format!(
-        "{}{ON_CURSOR}",
-        orientation(shared, tetrix, watched)
-    ))?;
+pub(super) fn first_prompt(shared: &Shared, tetrix: bool, first: &str) -> Result<String, String> {
+    let told = crate::vault::for_agent(&format!("{}{ON_CURSOR}", orientation(shared, tetrix)))?;
     Ok(format!("{told}\n\n{first}"))
 }
 

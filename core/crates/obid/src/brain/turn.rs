@@ -28,8 +28,6 @@ pub struct Control {
     signed: AtomicBool,
     /// When it began: an inbox item made since is one the owner hasn't seen yet.
     pub begun: i64,
-    /// A turn nobody watches: the account it runs on ([`Turns::cancel_unattended_on`]).
-    unattended_on: std::sync::OnceLock<String>,
 }
 
 impl Control {
@@ -49,11 +47,6 @@ impl Control {
     /// Whether the owner's words this turn answers were signed by an app of theirs.
     pub fn signed(&self) -> bool {
         self.signed.load(Ordering::SeqCst)
-    }
-
-    /// Nobody watches this turn, and it runs on `account`.
-    pub fn unattended_on(&self, account: &str) {
-        let _ = self.unattended_on.set(account.to_owned());
     }
 
     pub fn set_signed(&self, signed: bool) {
@@ -155,9 +148,9 @@ impl Turns {
         })
     }
 
-    /// A new turn in `conversation`: one obid started there by itself (a supervisor's) is
-    /// cancelled, and its plan, when it comes, does nothing. The owner's turn under way there is
-    /// never one: their next words wait for it ([`Turns::wait_turn`]).
+    /// A new turn in `conversation`: any turn still under way there is cancelled, and its plan,
+    /// when it comes, does nothing. The owner's next words wait for their turn under way there
+    /// ([`Turns::wait_turn`]), so it's never theirs.
     pub fn begin(&self, turn: &str, conversation: &str) -> Arc<Control> {
         let control = Arc::new(Control {
             turn: turn.into(),
@@ -166,7 +159,6 @@ impl Turns {
             cancelled: AtomicBool::new(false),
             signed: AtomicBool::new(false),
             begun: obi_protocol::time::now(),
-            unattended_on: std::sync::OnceLock::new(),
         });
         let mut underway = self.lock();
         for earlier in underway.iter().filter(|c| c.conversation == conversation) {
@@ -174,26 +166,6 @@ impl Turns {
         }
         underway.push(control.clone());
         control
-    }
-
-    /// A turn in `conversation` only when none is under way there, checked as it begins: a
-    /// supervisor turn (super::supervisor) never replaces the owner's.
-    pub fn begin_if_idle(&self, turn: &str, conversation: &str) -> Option<Arc<Control>> {
-        let mut underway = self.lock();
-        if underway.iter().any(|c| c.conversation == conversation) {
-            return None;
-        }
-        let control = Arc::new(Control {
-            turn: turn.into(),
-            conversation: conversation.into(),
-            stopped: AtomicBool::new(false),
-            cancelled: AtomicBool::new(false),
-            signed: AtomicBool::new(false),
-            begun: obi_protocol::time::now(),
-            unattended_on: std::sync::OnceLock::new(),
-        });
-        underway.push(control.clone());
-        Some(control)
     }
 
     pub fn end(&self, control: &Arc<Control>) {
@@ -214,18 +186,6 @@ impl Turns {
         self.mark(conversation, |c| c.cancelled.store(true, Ordering::SeqCst))
     }
 
-    /// Ends the turns nobody watches on `account`: the owner took back their yes for it
-    /// (CHATGPT-23). They end as a user's words cut them: what they hadn't done comes again.
-    pub fn cancel_unattended_on(&self, account: &str) {
-        for control in self
-            .lock()
-            .iter()
-            .filter(|c| c.unattended_on.get().is_some_and(|on| on == account))
-        {
-            control.cancelled.store(true, Ordering::SeqCst);
-        }
-    }
-
     fn mark(&self, conversation: Option<&str>, mark: impl Fn(&Control)) -> bool {
         let underway = self.lock();
         let mut any = false;
@@ -239,7 +199,7 @@ impl Turns {
         any
     }
 
-    /// Whether a turn is under way in `conversation`: a supervisor turn waits for it to end.
+    /// Whether a turn is under way in `conversation`.
     pub fn underway_in(&self, conversation: &str) -> bool {
         self.lock().iter().any(|c| c.conversation == conversation)
     }
@@ -345,20 +305,6 @@ pub struct Answered {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A supervisor turn begins only where no turn is under way, and never cancels the owner's.
-    #[test]
-    fn a_supervisor_turn_never_replaces_the_owners() {
-        let turns = Turns::default();
-        let owner = turns.begin("t1", "c1");
-        assert!(turns.begin_if_idle("s1", "c1").is_none());
-        assert!(owner.live());
-        let elsewhere = turns.begin_if_idle("s2", "c2").unwrap();
-        assert!(turns.underway_in("c2"));
-        turns.end(&elsewhere);
-        turns.end(&owner);
-        assert!(turns.begin_if_idle("s3", "c1").is_some());
-    }
 
     /// ConversationTests.wordsThatCancelAreKnown
     #[test]

@@ -9,8 +9,7 @@
 //! the same token while Oby is signed in to Tetrix. The words stream as `delta` events, each tool
 //! call is a `step` with its `tool` and `detail`, and the turn ends with Oby's `turn`. When no
 //! account is signed in, or the session fails twice, the turn answers why in one line. Each run is
-//! kept with what its CLI said it spent (super::calls). The turn nobody watches runs here too, in a
-//! session of its own: a supervisor's (super::supervisor).
+//! kept with what its CLI said it spent (super::calls).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
@@ -49,16 +48,6 @@ const MAX_TURNS: &str = "50";
 /// web, writes in the room, a to-do list and sub-agents. No Bash or other code-running tool, so
 /// nothing the session runs can read its login copy and send it out; running anything is a job.
 const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite";
-/// The built-in tools of a turn nobody watches (super::supervisor): a to-do list only. No web,
-/// helpers or files (the room holds what the owner's own turns wrote), so what an agent's note
-/// says can't reach the owner's work or send anything anywhere; it reads its job with oby_job.
-const UNATTENDED_TOOLS: &str = "TodoWrite";
-/// Why a turn nobody watches is refused a built-in tool.
-const UNATTENDED: &str =
-    "A turn nobody watches reads only its job, with oby_job: no web, helpers or files.";
-/// Where a supervisor turn keeps its own session's id and taint, beside the conversation's
-/// `session.json`, which it never reads or writes.
-const SUPERVISOR_KEPT: &str = "supervisor-session.json";
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
 /// it ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
@@ -112,9 +101,6 @@ pub struct Session {
     pub room: PathBuf,
     /// The artifacts its tools published this turn, `{id, version}` each: they go on the turn.
     pub artifacts: Mutex<Vec<Value>>,
-    /// A supervisor turn's stalled job, and what it decided (super::supervisor); none for the
-    /// owner's own turns.
-    pub supervising: Option<Arc<super::supervisor::Watch>>,
     /// The end of what each shell call's command wrote, by the command (or its id) the call named,
     /// for its step's `output` (obid only: the conversation's shell).
     pub shell_out: Mutex<HashMap<String, String>>,
@@ -125,11 +111,6 @@ pub struct Session {
 }
 
 impl Session {
-    /// A turn nobody watches: a supervisor's.
-    pub fn unwatched(&self) -> bool {
-        self.supervising.is_some()
-    }
-
     /// Keeps the end of what a shell call's command wrote, for its step.
     pub fn shell_said(&self, key: &str, tail: String) {
         self.shell_out
@@ -526,7 +507,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let token = new_token();
     let (mcp, url, tetrix) = mcp_config(shared, &place, id);
     write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
-    let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), true);
+    let mut flags = claude_flags(shared, &account.id, tetrix.is_some());
     let key = flags_key(&flags);
     flags.extend(["--mcp-config".into(), mcp.into_os_string()]);
     let launch = shared.jobs.conversation_launch(
@@ -606,7 +587,7 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
 /// session gets Tetrix's server.
-fn claude_flags(shared: &Shared, account: &str, tetrix: bool, watched: bool) -> Vec<OsString> {
+fn claude_flags(shared: &Shared, account: &str, tetrix: bool) -> Vec<OsString> {
     let offered = shared.jobs.model_lists.for_account(Tool::Claude, account);
     let model =
         crate::settings::account_model(&shared.config.home, Tool::Claude, account, &offered);
@@ -635,7 +616,7 @@ fn claude_flags(shared: &Shared, account: &str, tetrix: bool, watched: bool) -> 
         "--model",
         &model,
         "--append-system-prompt",
-        orientation(shared, tetrix, watched).as_str(),
+        orientation(shared, tetrix).as_str(),
     ]
     .iter()
     .map(OsString::from)
@@ -720,7 +701,7 @@ pub async fn run(
         why = super::talk::why_none(shared, chosen.as_deref());
     }
     for (tool, account) in &accounts {
-        match session(shared, *tool, account, said, given, asked, control, None).await {
+        match session(shared, *tool, account, said, given, asked, control).await {
             Ok(mut answered) => {
                 shared
                     .conversations
@@ -795,30 +776,6 @@ pub async fn run(
         details: None,
         end: End::BrainFailed,
     }
-}
-
-/// A supervisor turn (super::supervisor) in a session of its own in its conversation's place, on
-/// `account`. `Err` says why it couldn't run.
-pub(super) async fn supervise(
-    shared: &Arc<Shared>,
-    tool: Tool,
-    account: &crate::config::Account,
-    asked: &Asked<'_>,
-    control: &Arc<Control>,
-    watch: Arc<super::supervisor::Watch>,
-) -> Result<Answered, String> {
-    session(
-        shared,
-        tool,
-        account,
-        asked.said,
-        &[],
-        asked,
-        control,
-        Some(watch),
-    )
-    .await
-    .map_err(|unanswered| unanswered.why)
 }
 
 /// Another account's answer (#874), with the line that says it moved.
@@ -1242,7 +1199,6 @@ async fn session(
     given: &[Turn],
     asked: &Asked<'_>,
     control: &Arc<Control>,
-    supervising: Option<Arc<super::supervisor::Watch>>,
 ) -> Result<Answered, Unanswered> {
     let watch = Stopwatch::new();
     let place = Place::of(&shared.config.home, &control.conversation);
@@ -1263,24 +1219,10 @@ async fn session(
     }
     watch.mark("its turn");
     checkouts(shared, &place, &|| control.live()).await;
-    // A turn nobody watches runs in a session of its own, never the conversation's: nothing of
-    // the owner's history is in it (super::supervisor), and its id is kept apart.
-    let unattended = supervising.is_some();
-    // Said first, then looked at: either this reads a no, or the no finds this turn (CHATGPT-23).
-    if unattended {
-        control.unattended_on(&account.id);
-        if !shared.jobs.takes_background(account) {
-            return Err(super::talk::why_unattended(shared).into());
-        }
-    }
-    let repos_note = if unattended {
-        None
-    } else {
-        named_checkouts(shared, &place, said, &|| control.live()).await
-    };
+    let repos_note = named_checkouts(shared, &place, said, &|| control.live()).await;
     watch.mark("repositories");
     super::thinking(shared, control, 1, "Thinking", State::Running);
-    let resumed = kept(&place, &account.id).filter(|_| !unattended);
+    let resumed = kept(&place, &account.id);
     let session = Arc::new(Session {
         conversation: control.conversation.clone(),
         said: said.to_owned(),
@@ -1301,15 +1243,10 @@ async fn session(
         acted: AtomicBool::new(false),
         told: AtomicUsize::new(0),
         asked: AtomicUsize::new(0),
-        kept: if unattended {
-            place.folder.join(SUPERVISOR_KEPT)
-        } else {
-            place.session.clone()
-        },
+        kept: place.session.clone(),
         account: account.id.clone(),
         room: place.room.clone(),
         artifacts: Mutex::new(vec![]),
-        supervising,
         shell_out: Mutex::default(),
         written: Mutex::default(),
     });
@@ -1319,17 +1256,12 @@ async fn session(
             .conversations
             .note_read_untrusted(&session.conversation);
     }
-    // A turn nobody watches is about what an agent wrote: nothing it does counts as the owner's
-    // own words, except what super::supervisor lets it do by itself.
-    if session.unwatched() {
-        session.taint();
-    }
     // What Cursor's own tools read, obid can't see (super::harness_cursor).
     if tool == Tool::Cursor {
         session.taint();
     }
     // Its Claude Code still running from the turn before, on the same session and account.
-    let warm = (tool == Tool::Claude && !unattended)
+    let warm = (tool == Tool::Claude)
         .then(|| {
             shared.harness.take_warm(
                 &control.conversation,
@@ -1371,7 +1303,7 @@ async fn session(
         // that failed it never costs the conversation that one (CONVERSATION-AGENT-15).
         (Err(_), Some(on)) => session.keep(Some(on)),
         // Told, so said no more (TASKCONV-19). A turn that got no answer heard nothing.
-        (Ok(_), _) if !unattended => shared.harness.shell.forget_cut(&control.conversation),
+        (Ok(_), _) => shared.harness.shell.forget_cut(&control.conversation),
         _ => {}
     }
     if tool == Tool::Cursor {
@@ -1463,8 +1395,6 @@ async fn attempts(
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
     let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation);
-    // A turn nobody watches has no Tetrix (super::supervisor).
-    let tetrix = tetrix.filter(|_| !session.unwatched());
     // Codex is given the servers in its arguments instead.
     if tool == Tool::Claude {
         write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
@@ -1520,16 +1450,11 @@ async fn attempts(
     if !session.attachments.is_empty() {
         session.taint();
     }
-    // Its own task list while something on it is still to do, so a summarized session keeps it;
-    // never one nobody watches, which knows only its own job (super::supervisor).
-    let (listed, tainted) = if session.unwatched() {
-        Default::default()
-    } else {
-        shared
-            .conversations
-            .tasks(&control.conversation)
-            .unwrap_or_default()
-    };
+    // Its own task list while something on it is still to do, so a summarized session keeps it.
+    let (listed, tainted) = shared
+        .conversations
+        .tasks(&control.conversation)
+        .unwrap_or_default();
     let tasks = tasks_line(&listed, &session.nonce);
     // A list written after something untrusted was read carries that in: so does this turn.
     if tasks.is_some() && tainted {
@@ -1538,16 +1463,8 @@ async fn attempts(
     // What came of its work since its last turn (TASKCONV-17, TASKCONV-19): what its commands wrote
     // is untrusted, and the turn that ran them left that mark on the conversation (`super::shell`); of
     // its jobs, only obid's own words are told.
-    let reports = if session.unwatched() {
-        None
-    } else {
-        job_reports(shared, given, &session.nonce)
-    };
-    let commands = if session.unwatched() {
-        None
-    } else {
-        shared.harness.shell.cut(&control.conversation)
-    };
+    let reports = job_reports(shared, given, &session.nonce);
+    let commands = shared.harness.shell.cut(&control.conversation);
     let commands = commands.map(|lines| {
         format!(
             "Commands of yours that were still running when your last turn ended, so obid ended them:\n{}\n{}",
@@ -1593,7 +1510,7 @@ async fn attempts(
     let words = crate::vault::for_agent(&with(words))?;
     let first = crate::vault::for_agent(&with(first_prompt(shared, said.trim(), given)))?;
     let first = if tool == Tool::Cursor {
-        super::harness_cursor::first_prompt(shared, tetrix.is_some(), !session.unwatched(), &first)?
+        super::harness_cursor::first_prompt(shared, tetrix.is_some(), &first)?
     } else {
         first
     };
@@ -1624,12 +1541,7 @@ async fn attempts(
             (Some(_), None) => words.clone(),
             (None, _) => first.clone(),
         };
-        let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), !session.unwatched());
-        if session.unwatched()
-            && let Some(at) = flags.iter().position(|f| f == TOOLS)
-        {
-            flags[at] = UNATTENDED_TOOLS.into();
-        }
+        let mut flags = claude_flags(shared, &account.id, tetrix.is_some());
         let key = flags_key(&flags);
         if let Some(session) = &resume {
             flags.extend(["--resume".into(), session.into()]);
@@ -1682,8 +1594,6 @@ async fn attempts(
                         tetrix.as_deref(),
                         token,
                         &resume,
-                        !session.unwatched(),
-                        !session.unwatched(),
                     )
                     .await
                     .map_err(Unanswered::moves)?;
@@ -1757,13 +1667,8 @@ async fn attempts(
         if !turn.succeeded() {
             call.outcome = super::calls::CallOutcome::Failed;
         }
-        let kind = if session.supervising.is_some() {
-            "supervisor"
-        } else {
-            "conversation"
-        };
         super::calls::Record::new(
-            kind,
+            "conversation",
             Some(&control.conversation),
             Some(&control.turn),
             vec![call],
@@ -1795,23 +1700,18 @@ async fn attempts(
                 &serde_json::to_vec(&kept).unwrap_or_default(),
             );
         }
-        // Kept for the conversation's next turn when this one answered; else it ends. A
-        // supervisor turn's session is never the conversation's (super::supervisor).
+        // Kept for the conversation's next turn when this one answered; else it ends.
         let kept_for = match (running, &turn.session) {
-            (Some(conn), Some(id))
-                if turn.succeeded() && control.live() && !session.unwatched() =>
-            {
-                Some(Warm {
-                    conn,
-                    token: token.to_owned(),
-                    account: account.id.clone(),
-                    config_dir: account.config_dir.clone(),
-                    session: Some(id.clone()),
-                    key,
-                    place: place.clone(),
-                    since: Instant::now(),
-                })
-            }
+            (Some(conn), Some(id)) if turn.succeeded() && control.live() => Some(Warm {
+                conn,
+                token: token.to_owned(),
+                account: account.id.clone(),
+                config_dir: account.config_dir.clone(),
+                session: Some(id.clone()),
+                key,
+                place: place.clone(),
+                since: Instant::now(),
+            }),
             // As before: it may take a few seconds to finish the session file a `--resume` reads.
             (Some(mut conn), _) => {
                 let until = Instant::now() + agent::AFTER_RESULT;
@@ -2163,7 +2063,7 @@ fn first_prompt(shared: &Shared, words: &str, given: &[Turn]) -> String {
 
 /// [`ORIENTATION`], with the repositories the room holds, and [`TETRIX`] when the session gets
 /// Tetrix's server (`tetrix`).
-pub(super) fn orientation(shared: &Shared, tetrix: bool, watched: bool) -> String {
+pub(super) fn orientation(shared: &Shared, tetrix: bool) -> String {
     let repos: Vec<String> = shared
         .config
         .repos
@@ -2195,12 +2095,12 @@ pub(super) fn orientation(shared: &Shared, tetrix: bool, watched: bool) -> Strin
             named(github)
         );
     }
-    // Only when the session gets Tetrix's server (`mcp_config`, never a turn nobody watches): a
+    // Only when the session gets Tetrix's server (`mcp_config`): a
     // waiting Claude Code started with the other words isn't given the turn ([`flags_key`]).
     if tetrix {
         orientation += TETRIX;
     }
-    orientation += &super::ask::orientation(shared, watched);
+    orientation += &super::ask::orientation(shared);
     orientation
 }
 
@@ -2347,12 +2247,6 @@ async fn one(
         }
     };
     let decide = |tool: &str, input: &Value| {
-        if session.unwatched()
-            && !tool.starts_with("mcp__oby__")
-            && !UNATTENDED_TOOLS.split(',').any(|t| t == tool)
-        {
-            return Ruling::Now(Answer::Deny(UNATTENDED.into()));
-        }
         Ruling::Now(rule(tool, input, &bounds, &place.repos, &|| {
             session.taint()
         }))
@@ -3471,27 +3365,6 @@ mod tests {
     }
 
     /// The mark goes to `session.json` as soon as it's set, before the run ends (crash safety).
-    /// A turn nobody watches has no web, helpers or files.
-    #[test]
-    fn an_unattended_turn_has_no_web_or_helpers() {
-        let tools: Vec<&str> = UNATTENDED_TOOLS.split(',').collect();
-        for gone in [
-            "WebSearch",
-            "WebFetch",
-            "Task",
-            "Agent",
-            "Bash",
-            "Read",
-            "Grep",
-            "Glob",
-            "LS",
-            "Write",
-        ] {
-            assert!(!tools.contains(&gone), "{gone}");
-        }
-        assert!(tools.iter().all(|t| TOOLS.split(',').any(|o| o == *t)));
-    }
-
     #[test]
     fn a_taint_is_kept_at_once() {
         let home = std::env::temp_dir().join(format!("obid-taint-kept-{}", std::process::id()));
@@ -3517,7 +3390,6 @@ mod tests {
             account: "a".into(),
             room: place.room.clone(),
             artifacts: Mutex::new(vec![]),
-            supervising: None,
             shell_out: Mutex::default(),
             written: Mutex::default(),
         };
@@ -3558,7 +3430,6 @@ mod tests {
             account: "a".into(),
             room: PathBuf::from("/nowhere/room"),
             artifacts: Mutex::new(vec![]),
-            supervising: None,
             shell_out: Mutex::default(),
             written: Mutex::default(),
         };
@@ -3876,7 +3747,6 @@ mod tests {
             account: "a".into(),
             room: PathBuf::from("/nowhere/room"),
             artifacts: Mutex::new(vec![]),
-            supervising: None,
             shell_out: Mutex::default(),
             written: Mutex::default(),
         }));

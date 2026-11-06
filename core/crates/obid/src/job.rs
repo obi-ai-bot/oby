@@ -583,8 +583,9 @@ pub struct Job {
     /// for a follow-up of work that isn't merged. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_from: Option<String>,
-    /// What the conversation that owns it did by itself each time it stalled
-    /// (crate::brain::supervisor), oldest first.
+    /// What the conversation supervisor (deleted, rules-delete-supervisor) did each time it
+    /// stalled, oldest first: only a job kept from before it went has any. `supervised` in the API
+    /// stays, empty from now on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supervised: Vec<Supervision>,
     /// One more each time obid sends it changed (a `job` event): `revision` in the API, so an app
@@ -656,7 +657,7 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routine: Option<RoutineMark>,
     /// Nobody's watching it, though it's neither a routine's nor a review ([`Job::background`]):
-    /// no app of the owner's signed `POST /v1/jobs`, or a turn nobody watches started it.
+    /// no app of the owner's signed `POST /v1/jobs`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unattended: bool,
     /// The conversation that started it had read something it didn't write (a file, a command's
@@ -769,7 +770,8 @@ pub struct RoutineMark {
     pub catch_up: bool,
 }
 
-/// One decision of the conversation about a job of its that stalled (crate::brain::supervisor).
+/// One decision the deleted conversation supervisor made about a stalled job, read back from a job
+/// kept from before it went.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Supervision {
     pub at: i64,
@@ -1441,7 +1443,8 @@ impl Job {
             .map(|s| {
                 json!({"at": obi_protocol::time::format(s.at), "decision": s.decision,
                        "jobs": s.jobs, "turn": s.turn, "count": s.count,
-                       "of": crate::brain::supervisor::MOST})
+                       // The supervisor's limit, when it ran.
+                       "of": 3})
             })
             .collect();
         // `title` is the derived one, always a string, as the Swift runner sends it.
