@@ -173,7 +173,6 @@ new-blok's `bindings` say what starts a workflow (`http`, `webhook`, `worker`, `
 | An Obi-to-Obi review request | `webhook` (the Sphere's) → `job/obi-review` |
 | PR following every 3 minutes (`follow_pull_requests`) | `cron` → `github/follow-prs`, which sends signals (2.4) |
 | Each `oby_*` tool | `mcp` → its flow (section 6) |
-| A job's or check's event for the orchestrator (#590) | internal → `orchestrator/event` |
 
 ### 2.4 Signals
 
@@ -337,7 +336,7 @@ steps         repeat max=8 until=step.ended:
 completeness  call  brain/check-handled      [spend:model]         everything the user named was handled (#539)
 ```
 
-The orchestrator (#590) is the same loop with its own allow-list and daily caps, started by an internal binding instead of the owner's words. The Lead (#589) is `brain/lead@1.0.0`: read the board, `plan`, check, start each job's flow, claim each issue after the scan.
+No loop starts on a job's or check's event: the event orchestrator (#590) is retired, and a job ends by obid's own rules (docs/contracts/recovery.md, "End-of-job rules"). The Lead (#589) is `brain/lead@1.0.0`: read the board, `plan`, check, start each job's flow, claim each issue after the scan.
 
 ## 5. Agents as nodes
 

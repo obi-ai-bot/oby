@@ -25,7 +25,6 @@ async fn setup_again(folder: &Folder) -> (FakeSphere, Obid, TestObi, Value) {
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
     let mut config = config(&folder.0, &remote, &agent);
     config["conversation"] = json!({"agent": "claude"});
-    config["orchestratorDelay"] = json!(1);
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
     std::fs::write(account.join(".credentials.json"), "{}").unwrap();
@@ -1001,35 +1000,6 @@ async fn ask_13_a_question_with_no_answer_yet_still_marks_the_reader() {
         json!({"to": "ernesto", "question": "And tomorrow?"})
     ));
     assert!(next.contains("waits for the owner's OK"), "{next}");
-}
-
-/// The wiring of ASK-14: a watched turn is told who is there (ASK-1), an event turn isn't.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ask_14_an_event_turn_isnt_told_who_is_there() {
-    let folder = Folder::new("ask-14");
-    let (_sphere, obid, _ernesto) = setup(&folder).await;
-    let room = obid.home.join("conversations/orchestrator/room");
-    std::fs::create_dir_all(&room).unwrap();
-    std::fs::write(room.join("supervise.txt"), "SAY Nothing to do.\n").unwrap();
-    let turns = obid
-        .home
-        .join("conversations/orchestrator/config/turns.jsonl");
-    let recorded = tokio::task::block_in_place(|| {
-        let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate",
-                         "task": "JOB-FAILS", "title": "Flaky thing", "rounds": 1});
-        let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({"job": job})));
-        assert!(
-            answer.status == 200 || answer.status == 201,
-            "{}",
-            answer.text
-        );
-        within(60, "the event turn", || {
-            std::fs::read_to_string(&turns).ok()
-        })
-    });
-    assert!(recorded.contains("You are Oby"), "{recorded}");
-    assert!(!recorded.contains("Obysphere"), "{recorded}");
-    assert!(!recorded.contains("ernesto"), "{recorded}");
 }
 
 /// A Sphere that serves the Oby asked for as someone else's by the time the question goes gets

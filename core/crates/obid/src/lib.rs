@@ -545,8 +545,6 @@ pub async fn serve(
     // Routines run on their schedules (#395).
     shared.routines.attach(&shared);
     routines::spawn(shared.clone());
-    // Job, check and inbox events go to the brain first (#590).
-    brain::orchestrator::spawn(shared.clone());
     // Outside inbox items no rule sorts go to the quick model, once (crate::triage).
     triage::spawn(shared.clone());
     // A job a conversation started that stalls goes back to that conversation, which decides.

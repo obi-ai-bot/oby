@@ -9,9 +9,8 @@
 //! the same token while Oby is signed in to Tetrix. The words stream as `delta` events, each tool
 //! call is a `step` with its `tool` and `detail`, and the turn ends with Oby's `turn`. When no
 //! account is signed in, or the session fails twice, the turn answers why in one line. Each run is
-//! kept with what its CLI said it spent (super::calls). The turns nobody watches run here too, each
-//! in a session of its own: a supervisor's (super::supervisor) and an event's
-//! (super::orchestrator).
+//! kept with what its CLI said it spent (super::calls). The turn nobody watches runs here too, in a
+//! session of its own: a supervisor's (super::supervisor).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
@@ -116,8 +115,6 @@ pub struct Session {
     /// A supervisor turn's stalled job, and what it decided (super::supervisor); none for the
     /// owner's own turns.
     pub supervising: Option<Arc<super::supervisor::Watch>>,
-    /// An event turn's events, and what it did (super::orchestrator); none for the owner's turns.
-    pub event: Option<Arc<super::orchestrator::Watch>>,
     /// The end of what each shell call's command wrote, by the command (or its id) the call named,
     /// for its step's `output` (obid only: the conversation's shell).
     pub shell_out: Mutex<HashMap<String, String>>,
@@ -128,9 +125,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// A turn nobody watches: a supervisor's or an event's.
+    /// A turn nobody watches: a supervisor's.
     pub fn unwatched(&self) -> bool {
-        self.supervising.is_some() || self.event.is_some()
+        self.supervising.is_some()
     }
 
     /// Keeps the end of what a shell call's command wrote, for its step.
@@ -723,11 +720,7 @@ pub async fn run(
         why = super::talk::why_none(shared, chosen.as_deref());
     }
     for (tool, account) in &accounts {
-        match session(
-            shared, *tool, account, said, given, asked, control, None, None,
-        )
-        .await
-        {
+        match session(shared, *tool, account, said, given, asked, control, None).await {
             Ok(mut answered) => {
                 shared
                     .conversations
@@ -822,32 +815,6 @@ pub(super) async fn supervise(
         &[],
         asked,
         control,
-        Some(watch),
-        None,
-    )
-    .await
-    .map_err(|unanswered| unanswered.why)
-}
-
-/// An event turn (super::orchestrator) in a session of its own, in the orchestrator's place, on
-/// `account`. `Err` says why it couldn't run.
-pub(super) async fn event(
-    shared: &Arc<Shared>,
-    tool: Tool,
-    account: &crate::config::Account,
-    asked: &Asked<'_>,
-    control: &Arc<Control>,
-    watch: Arc<super::orchestrator::Watch>,
-) -> Result<Answered, String> {
-    session(
-        shared,
-        tool,
-        account,
-        asked.said,
-        &[],
-        asked,
-        control,
-        None,
         Some(watch),
     )
     .await
@@ -1276,7 +1243,6 @@ async fn session(
     asked: &Asked<'_>,
     control: &Arc<Control>,
     supervising: Option<Arc<super::supervisor::Watch>>,
-    event: Option<Arc<super::orchestrator::Watch>>,
 ) -> Result<Answered, Unanswered> {
     let watch = Stopwatch::new();
     let place = Place::of(&shared.config.home, &control.conversation);
@@ -1299,7 +1265,7 @@ async fn session(
     checkouts(shared, &place, &|| control.live()).await;
     // A turn nobody watches runs in a session of its own, never the conversation's: nothing of
     // the owner's history is in it (super::supervisor), and its id is kept apart.
-    let unattended = supervising.is_some() || event.is_some();
+    let unattended = supervising.is_some();
     // Said first, then looked at: either this reads a no, or the no finds this turn (CHATGPT-23).
     if unattended {
         control.unattended_on(&account.id);
@@ -1344,7 +1310,6 @@ async fn session(
         room: place.room.clone(),
         artifacts: Mutex::new(vec![]),
         supervising,
-        event,
         shell_out: Mutex::default(),
         written: Mutex::default(),
     });
@@ -1355,7 +1320,7 @@ async fn session(
             .note_read_untrusted(&session.conversation);
     }
     // A turn nobody watches is about what an agent wrote: nothing it does counts as the owner's
-    // own words, except what super::supervisor or super::orchestrator lets it do by itself.
+    // own words, except what super::supervisor lets it do by itself.
     if session.unwatched() {
         session.taint();
     }
@@ -1794,8 +1759,6 @@ async fn attempts(
         }
         let kind = if session.supervising.is_some() {
             "supervisor"
-        } else if session.event.is_some() {
-            "event"
         } else {
             "conversation"
         };
@@ -3555,7 +3518,6 @@ mod tests {
             room: place.room.clone(),
             artifacts: Mutex::new(vec![]),
             supervising: None,
-            event: None,
             shell_out: Mutex::default(),
             written: Mutex::default(),
         };
@@ -3597,7 +3559,6 @@ mod tests {
             room: PathBuf::from("/nowhere/room"),
             artifacts: Mutex::new(vec![]),
             supervising: None,
-            event: None,
             shell_out: Mutex::default(),
             written: Mutex::default(),
         };
@@ -3916,7 +3877,6 @@ mod tests {
             room: PathBuf::from("/nowhere/room"),
             artifacts: Mutex::new(vec![]),
             supervising: None,
-            event: None,
             shell_out: Mutex::default(),
             written: Mutex::default(),
         }));

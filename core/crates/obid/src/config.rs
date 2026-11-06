@@ -70,7 +70,6 @@ struct File {
     /// Whether this obid may convene a Council review panel (`POST /v1/obid/sphere/council`).
     #[serde(default)]
     council: bool,
-    orchestrator_delay: Option<u64>,
     /// How long a job may go without progress before it stalls, in seconds: 1 to 86,400, 900
     /// when left out.
     stall_after: Option<u64>,
@@ -252,9 +251,6 @@ pub struct Config {
     /// Whether the configuration still says `{"store": "keychain"}`, which is the file since #1679:
     /// obid's start says so.
     pub vault_says_keychain: bool,
-    /// How long the event orchestrator waits for nearby events to come together before its
-    /// turn (#590): 30 seconds unless `orchestratorDelay` says otherwise (1 to 600).
-    pub orchestrator_delay: std::time::Duration,
     /// How long a job may go without progress before it stalls (docs/runner-api.md, `limit`): 15
     /// minutes unless `stallAfter` says otherwise.
     pub stall_after: std::time::Duration,
@@ -497,13 +493,6 @@ impl Config {
             }
         };
 
-        let orchestrator_delay = file.orchestrator_delay.unwrap_or(30);
-        if !(1..=600).contains(&orchestrator_delay) {
-            return invalid(format!(
-                "orchestratorDelay is {orchestrator_delay}: it is 1 to 600 seconds."
-            ));
-        }
-
         let stall_after = file.stall_after.unwrap_or(15 * 60);
         if !(1..=86_400).contains(&stall_after) {
             return invalid(format!(
@@ -584,7 +573,6 @@ impl Config {
             council: file.council,
             vault_says_keychain: file.vault.as_ref().is_some_and(|v| v.store == "keychain"),
             vault,
-            orchestrator_delay: std::time::Duration::from_secs(orchestrator_delay),
             stall_after: std::time::Duration::from_secs(stall_after),
             park_after: std::time::Duration::from_secs(park_after),
             job_ceiling: std::time::Duration::from_secs(job_ceiling_hours * 3600),
@@ -900,7 +888,6 @@ mod tests {
         }
     }
 
-    /// The event orchestrator waits 30 seconds for nearby events, or 1 to 600 as configured.
     #[test]
     fn the_keychain_is_as_the_owner_set_it_or_left_to_obid() {
         let parse = |extra| Config::parse(&with(extra)).unwrap().claude_keychain;
@@ -1050,21 +1037,6 @@ mod tests {
     }
 
     #[test]
-    fn the_orchestrator_delay_is_1_to_600_seconds() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert_eq!(
-            config.orchestrator_delay,
-            std::time::Duration::from_secs(30)
-        );
-        let config = Config::parse(&with(serde_json::json!({"orchestratorDelay": 1}))).unwrap();
-        assert_eq!(config.orchestrator_delay, std::time::Duration::from_secs(1));
-        for wrong in [0, 601] {
-            let text = with(serde_json::json!({"orchestratorDelay": wrong}));
-            assert!(problem(&text).contains("orchestratorDelay"), "{wrong}");
-        }
-    }
-
-    #[test]
     fn listen_is_only_ever_127_0_0_1() {
         for listen in [
             "0.0.0.0:7811",
@@ -1195,6 +1167,8 @@ mod tests {
         }
         let config = Config::parse(&file.to_string()).unwrap();
         assert!(config.ignored.contains(&"conversation.harness".to_owned()));
+        // The event orchestrator's delay, retired with it (recovery.md, "End-of-job rules").
+        assert!(config.ignored.contains(&"orchestratorDelay".to_owned()));
     }
 
     #[test]
