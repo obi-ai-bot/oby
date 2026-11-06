@@ -80,9 +80,19 @@ nested() {
     fi
 }
 code core/crates/obid/src/sandbox.rs 1
+code core/crates/obid/src/foo.rs 1
 code core/crates/obid/tests/sandbox.rs 1
 code core/crates/obid/tests/plugins_api.rs 1
+code core/crates/obid/tests/foo.rs 1
+# Not nested, they run.
+if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+    expect ' --test sandbox' 'not nested, tests/sandbox.rs runs'
+fi
 said=$(nested)
+grep -q -- '--test foo' <<<"$said" || {
+    echo "oby-check-test: nested, it didn't plan an ordinary test binary: $said" >&2
+    exit 1
+}
 ! grep -qE -- '--test (sandbox|plugins_api)' <<<"$said" || {
     echo "oby-check-test: nested, it planned a sandbox test binary: $said" >&2
     exit 1
@@ -91,6 +101,8 @@ grep -q 'tests/sandbox.rs makes a sandbox of its own' <<<"$said" || {
     echo "oby-check-test: nested, it didn't say tests/sandbox.rs wasn't run: $said" >&2
     exit 1
 }
+rm core/crates/obid/src/foo.rs core/crates/obid/tests/foo.rs
+said=$(nested)
 ! grep -q 'cargo --quiet test .*-p obid$' <<<"$said" || {
     echo "oby-check-test: nested, it planned a test step with no binary left: $said" >&2
     exit 1

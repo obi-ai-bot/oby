@@ -154,8 +154,9 @@ if [[ -n "$rust" ]]; then
         name=${test##*/}
         name=${name%.rs}
         [[ -f "$test" ]] || continue
-        # They make a sandbox of their own, which can't nest in a job's.
-        if [[ -n "$nested" && "$name" =~ ^(sandbox|plugins_api)$ ]]; then
+        # They make a sandbox of their own, which can't nest in a job's on a Mac. On Linux, where
+        # nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
+        if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api)$ ]]; then
             echo "oby-check: tests/$name.rs makes a sandbox of its own, which can't nest in a job's: not run here, run it on the Mac before merging"
             continue
         fi
