@@ -33,6 +33,12 @@ pub const CANCEL_START: &str = "Cancel";
 pub const CONFIRM: &str = "Confirm";
 pub const CANCEL: &str = "Cancel";
 
+/// What settles Oby's own `question` about a job once the owner has looked (#710): a stalled
+/// job's (crate::brain::supervisor), or an escalation the retired event orchestrator left.
+pub const DONE: &str = "Done";
+/// How the retired event orchestrator's escalation ids start: old ones still close (TASKS-13).
+pub const ESCALATION: &str = "orchestrator-";
+
 /// What a `confirm` item does on the owner's Confirm (runner-api.md, "Inbox item"): a typed
 /// action, what it acts on, and what it needs. One dispatcher carries every action out
 /// (`Link::carry_out`); a new action is a new name and a new case there, the shape the same.

@@ -12,19 +12,29 @@ The business behavior contract for what obid does by itself when a job's run is 
 
 ### Actors and ownership
 
-- **obid** decides, counts and continues. It spends no model turn deciding: no supervisor or orchestrator turn runs while a job is being tried again. The job's own agent hears a marked message in its own session.
+- **obid** decides, counts and continues. It spends no model turn deciding: no supervisor turn runs while a job is being tried again, and no model turn at all once its tries are spent ("End-of-job rules"). The job's own agent hears a marked message in its own session.
 - **The apps** only show `status` and `step`: no new API key, status or enum value. The counts stay in the job's file, never in the API.
 
-### Triggers and tries
+### End-of-job rules
 
-| Kind | Trigger | Tries | Waits | Past them |
+Every way a job's run ends has one rule, and obid applies it itself: no model turn reads the end and decides (the event orchestrator that did, and whose turns mostly left a second card with only Done, is retired). Past its tries a job shows its own card, with its real reason, and nothing else.
+
+| Kind | Trigger | Tries | Waits | Past them: obid's rule, and what the owner sees |
 |---|---|---|---|---|
-| A passing error | A turn ends on the transient allowlist (`API Error: 5xx` or `429`, overloaded, a dropped connection or stream), or the CLI ends with no result while there's a session | 3 | 1, 5, 15 minutes (never longer than `stallAfter`) | The job's end today: `interrupted`, `Try again`, the real reason |
-| obid or the Mac went down, or obid's own bug | obid starts with a job at work; or a panic in the job's task before publishing began | 3 | None | `interrupted` with `obid or the Mac went down 4 times…` and `Try again`; after a panic, today's `failed` and its item |
-| Gone quiet | No progress for `stallAfter` | 5, shared with the turn limit | None | Today's stalled path, where the parent decides |
-| The 200-turn limit (Claude Code only) | `error_max_turns` | 5, shared with quiet | None | Today's stalled path |
+| A passing error | A turn ends on the transient allowlist (`API Error: 5xx` or `429`, overloaded, a dropped connection or stream), or the CLI ends with no result while there's a session | 3 | 1, 5, 15 minutes (never longer than `stallAfter`) | `interrupted`: its card says the real reason and offers `Try again` |
+| obid or the Mac went down | obid starts with a job at work | 3 | None | `interrupted`: `obid or the Mac went down 4 times…` and `Try again` |
+| obid's own bug | A panic in the job's task before publishing began | 3, shared with the restarts | None | `failed`, a `crash` record and one `failed` item |
+| Gone quiet | No progress for `stallAfter` | 5, shared with the turn limit | None | Stalled (below) |
+| The 200-turn limit (Claude Code only) | `error_max_turns` | 5, shared with quiet | None | Stalled (below) |
+| A loop, the 12-hour ceiling, the token budget | The loop detector, `jobCeilingHours`, `jobTokenBudget` | None | None | Stalled (below); past a ceiling or budget only the owner's own words carry it on |
 | A session too long for its model | The tool says so (RECOVERY-7) | 1 new session, until the owner's own words | None | `interrupted` with the tool's words and `Try again`, which starts a new session again |
 | A check that keeps failing | A `fix`, `build` or `test` job with a check and no `rounds` named fails it the same way two rounds running with no passing run between (its runs' `signature`: the failing step, its failing tests and their messages, else its whole output; temporary paths, UUIDs, runs of hex, timings and numbers taken out, but not a count of what's left) (RECOVERY-9) | Until then, at most 8 rounds | None | `interrupted`, `Stopped at a limit: \`<check>\` still fails after <n> round(s). …` and `One more round`; a `rounds` named is counted to its end instead |
+| A login error, a session that's gone, an error off the allowlist | The tool's own fields, else whole words on stderr (RECOVERY-7) | None | None | Ends as the tool said (`failed` or `interrupted`), with its words |
+| A usage limit | The account's usage or the tool says it's full | Its own ([account-limits.md](account-limits.md)) | Until the reset, five-hour limits only (LIMITS-5) | Any other limit: the limit card, asked once (#1563) |
+| The owner's Stop | Stop | None | None | `stopped`: never continued by itself |
+| Done with commits | The agent's turn ends well | None | None | Published, reviewed and merged by [publishing.md](publishing.md) and [merging.md](merging.md); their own items when they can't |
+
+**Stalled** is `interrupted` with `stalled` set and the agent's handoff note. A job a conversation started goes to one supervisor turn in that conversation (its 3 steps); its conversation gone, the owner is asked with a `supervisor-` question. A job no conversation started stays stalled, its own card offering `Try again`.
 
 ### What the agent hears
 
@@ -63,12 +73,12 @@ A status beats the words about a status: `API Error: 400 … overloaded` isn't p
 - With no session to continue: a passing error runs the same prompt again, as it did. A CLI that ended with no result, a restart, a panic or a stall ends as today.
 - A panic once publishing began (its claim, its phase, its step, or a branch already pushed) ends as today: nothing can run twice mid-publish.
 - A restart while checking or publishing picks up at that phase with no agent turn ("After any restart"): it isn't counted, since no agent is told anything.
-- #915's guard stands first: a job picked up twice in 30 minutes after obid went down stays `interrupted`, its item in the inbox. Past RECOVERY-2's tries it's the same: one `failed` item and a `crash` record, and the orchestrator leaves it to the owner.
+- #915's guard stands first: a job picked up twice in 30 minutes after obid went down stays `interrupted`, its item in the inbox. Past RECOVERY-2's tries it's the same: one `failed` item and a `crash` record, the owner's.
 - A job `queued` for a slot when obid went down wasn't cut: it isn't counted, or told it was. 3 per job covers clean stops too (a quit, an update), which had no limit before: a job restarted 4 times by obid's own updates stops with a card.
 
 ### Invariants
 
-- Retried tries count together. They live on the job, survive restarts, and start again only on the owner's own words (signed, their Confirm, or `oby_tell_job` in a turn of a conversation they're watching, which needs their message): never on a good turn, an unwatched supervisor's or orchestrator's words, or the legacy API's. So no retry multiplies another. A job's tree may still reach 11 tries per job, plus the supervisor's 3 steps.
+- Retried tries count together. They live on the job, survive restarts, and start again only on the owner's own words (signed, their Confirm, or `oby_tell_job` in a turn of a conversation they're watching, which needs their message): never on a good turn, an unwatched supervisor's words, or the legacy API's. So no retry multiplies another. A job's tree reaches at most 11 tries per job (3 passing errors, 3 restarts or bugs, 5 quiet or turn-limit), plus, for a job a conversation started, the supervisor's 3 steps; no other turn adds any.
 - A retry never resets the 12-hour ceiling or the token budget, and never touches the loop detector: those are the guards against burning accounts, and they stall at once. A waiting job's time counts toward its ceiling, saved as it waits.
 - Claude Code reports tokens only on its `result` line, so a run cut before that counts nothing until a resumed run reports: up to 11 cut runs a job can pass the budget unseen. The 12-hour ceiling is the guard there.
 - A retry never answers a permission, merges or changes a setting, and keeps the job's untrusted mark, mode and box.
@@ -88,7 +98,7 @@ Claude Code's side is what the 2.1.302 binary, the app-managed 2.1.309 binary an
 | The Mac sleeps | Interrupts the hung turn on waking and tells it | obid isn't restarted by a sleep: what the sleep broke arrives as a passing error or a quiet job | **Differs:** no sleep detection |
 | A crash loop | Backs off and parks at 5 in a row or 15 in all (inferred) | Picked up twice in 30 minutes, then left (#915) | Differs in the numbers |
 | Workflow agent stalls | 90 seconds without progress: aborted and retried up to 5 times, then `stalled on all N attempts` | **15 minutes** without progress: stopped and continued up to 5 times, then stalled | **Differs on purpose:** 90 seconds fits an agent with no long commands, and a job runs them (a build, a test suite). The desktop app's own session timeout is about 16 minutes |
-| Subagent fails | Aborted, marked failed; the parent model decides, with no automatic restart | Past the tries, the job's conversation supervises it; a job with none goes to the orchestrator | Same shape |
+| Subagent fails | Aborted, marked failed; the parent model decides, with no automatic restart | Past the tries, the job's conversation supervises it; a job with none stays stalled with its own card | Same shape |
 | Turn limit | `max_turns` ends the turn; no continuation | Continued, counted with quiet | **Differs on purpose**, by the owner's direction; Claude Code only, since Codex and Cursor have no such switch |
 | Its own retrying seen as progress | `system/api_retry` in stream-json | Any line is progress; `api_retry` also shows on the step | Same |
 | Usage limit | Desktop app resumes after the reset, five-hour only, skipping unattended sessions | Resumes after the reset, five-hour only, unattended jobs too; any other limit is the owner's choice ([account-limits.md](account-limits.md), LIMITS-5 to 13) | **Differs on unattended jobs**, the owner's decision of 2026-11-02 |
@@ -112,7 +122,7 @@ On a real account, on a scratch obid and haiku (2026-11-03): a job stopped mid-r
 
 - **RECOVERY-1** A turn cut by a passing error, or a CLI that ends with no result, stays `running` in its same session and worker, and continues with the marked message quoting the error, after 1, 5, then 15 minutes, 3 tries, then ends as today with the real reason. A login or an unknown error isn't retried, and a usage limit goes to #1563. `long_jobs::recovery_1_a_passing_error_continues_the_same_session`, `long_jobs::recovery_1_three_tries_then_the_real_reason`, `long_jobs::recovery_1_a_good_turn_gives_no_more_tries`, `long_jobs::recovery_1_a_login_or_a_limit_is_not_retried`, `long_jobs::recovery_1_the_words_a_turn_died_on_go_with_its_next_try`, `long_jobs::recovery_1_the_owners_words_end_a_wait_and_give_more_tries`, `long_jobs::recovery_1_an_earlier_runs_stderr_is_no_reason`, `long_jobs::recovery_1_the_agents_last_words_are_not_the_error`, `long_jobs::recovery_1_a_retry_keeps_the_ceiling_and_the_budget`, `long_jobs::recovery_1_a_retry_keeps_the_mode_and_the_mark`, `jobs::tests::recovery_1_only_whole_words_say_trying_again_wont_mend`, `adapters::recovery_1_codex_and_cursor_continue_after_a_cut`, `adapters::recovery_1_a_cursor_that_cant_load_its_session_starts_no_new_one`.
 - **RECOVERY-2** A run cut by obid or the Mac going down continues in its same session when obid starts again, told what happened, at most 3 per job; the fourth stays `interrupted`. A panic before publishing began does the same; one after it began, or with no session, ends as today, and a job the owner stopped stays stopped. `long_jobs::recovery_2_a_run_cut_by_a_restart_continues_at_most_three_times`, `jobs::tests::recovery_2_a_panic_before_publishing_continues_its_session`, `jobs::tests::recovery_2_a_real_panic_is_scheduled_again`, `long_jobs::recovery_2_the_run_after_a_panic_hears_of_it`, `long_jobs::recovery_2_the_words_a_run_went_down_with_go_with_the_next`; #915's guard: `failures_api::a_job_obid_keeps_going_down_with_stays_interrupted`.
-- **RECOVERY-3** A job gone quiet is stopped and continued in its session, with no supervisor or orchestrator turn, up to 5 tries, and only then takes today's stalled path. `long_jobs::recovery_3_a_quiet_job_continues_in_its_session`, `long_jobs::recovery_3_five_tries_then_it_stalls`, `adapters::recovery_3_codex_and_cursor_continue_when_quiet`.
+- **RECOVERY-3** A job gone quiet is stopped and continued in its session, with no supervisor turn, up to 5 tries, and only then takes today's stalled path. `long_jobs::recovery_3_a_quiet_job_continues_in_its_session`, `long_jobs::recovery_3_five_tries_then_it_stalls`, `adapters::recovery_3_codex_and_cursor_continue_when_quiet`.
 - **RECOVERY-4** The 200-turn limit continues the same session, counted in RECOVERY-3's 5. The ceiling, the budget and the loop detector stall at once, as they did. `long_jobs::recovery_4_the_turn_limit_continues_and_counts_with_quiet`; the guards: `long_jobs::a_looping_job_stalls`, `long_jobs::the_token_budget_stalls_and_only_the_owners_confirm_carries_on`, `long_jobs::the_ceiling_counts_every_run`.
 - **RECOVERY-5** While it's tried again, the job shows as running and nothing says it failed; its step says it's trying again and when, the real error only from the third try; Stop ends a wait. `long_jobs::recovery_5_a_retry_shows_as_running_with_the_error_held_back`; on the desktop card, under the steps it already has: `liveTask.test.tsx`, "RECOVERY-5".
 - **RECOVERY-6** Claude Code's own `system/api_retry` counts as activity, so its retrying trips no quiet window, and shows the same way. `long_jobs::recovery_6_claude_codes_own_retrying_is_activity`.

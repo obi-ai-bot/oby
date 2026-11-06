@@ -1591,10 +1591,10 @@ impl Link {
                 self.save_item(&item);
                 return Err(api(StatusCode::CONFLICT, refused));
             }
-            // Oby's own question about a job event (the event orchestrator's escalation): the
-            // owner's answer, or Done, settles it, and nothing else is carried out (#710). It isn't
-            // another Obi's request, whose exchange it would look for.
-            if item.obi.is_none() && item.id.starts_with(crate::brain::orchestrator::ESCALATION) {
+            // Oby's own question about a job event (the retired event orchestrator's escalation):
+            // the owner's answer, or Done, settles it, and nothing else is carried out (#710). It
+            // isn't another Obi's request, whose exchange it would look for.
+            if item.obi.is_none() && item.id.starts_with(crate::sphere::inbox::ESCALATION) {
                 let mut item = item;
                 match &given {
                     Given::Later(at) => item.later = Some(*at),

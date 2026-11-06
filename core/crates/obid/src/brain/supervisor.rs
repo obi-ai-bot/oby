@@ -370,7 +370,7 @@ pub fn spawn(shared: Arc<Shared>) {
                 else {
                     return false;
                 };
-                // A job no conversation started is the event orchestrator's.
+                // A job no conversation started ends by obid's own rules (recovery.md).
                 let Some(conversation) = job.conversation.clone() else {
                     return false;
                 };
@@ -578,7 +578,7 @@ fn ask_owner(
         job: job.id.clone(),
         title: format!("{title} stalled"),
         text,
-        options: vec![super::orchestrator::DONE.into()],
+        options: vec![crate::sphere::inbox::DONE.into()],
         details: None,
         recommended: None,
         created: obi_protocol::time::now(),
@@ -625,7 +625,6 @@ mod tests {
             room: "/nowhere/room".into(),
             artifacts: Mutex::new(vec![]),
             supervising,
-            event: None,
             shell_out: Mutex::default(),
             written: Mutex::default(),
         }

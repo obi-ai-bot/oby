@@ -1,8 +1,9 @@
 //! `POST /v1/plans`: one turn of the conversation with Oby. The conversation is a Claude Code (or
 //! Codex) session on the conversation harness ([`harness`]), with Oby's own tools over MCP
 //! ([`tools`]); every action a tool takes is checked as a typed plan ([`plan::Plan::problems`])
-//! and carried out by [`actions`]. The turns nobody watches run there too: a stalled job's
-//! ([`supervisor`]) and obid's own events' ([`orchestrator`]).
+//! and carried out by [`actions`]. The turn nobody watches runs there too: a stalled job's
+//! ([`supervisor`]). What happens when a job ends is obid's own rule, never a model turn
+//! (docs/contracts/recovery.md, "End-of-job rules").
 
 /// How Oby speaks of its work to the owner, in Sangam's words (TASKS-14): written once, and every
 /// prompt that writes to them takes it whole (`concat!`), before the modules that use it.
@@ -20,7 +21,6 @@ pub mod find;
 pub mod harness;
 pub mod harness_codex;
 pub mod harness_cursor;
-pub mod orchestrator;
 pub mod owners_word;
 pub mod plan;
 pub mod read;

@@ -231,10 +231,6 @@ pub async fn handle(shared: &Arc<Shared>, session: &Session, body: Value) -> Opt
     let id = body.get("id").cloned().filter(|id| !id.is_null())?;
     let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
     let result = match method {
-        // A turn nobody watches about an event lists only what it may call (super::orchestrator).
-        "tools/list" if session.event.is_some() => {
-            json!({"tools": super::orchestrator::tools(&list())})
-        }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params
@@ -353,13 +349,6 @@ async fn call(
     // A turn nobody watches reads only its own job, and archives nothing (super::supervisor).
     if let Some(why) = super::supervisor::refused(session, name, &args) {
         return Err(why.into());
-    }
-    // An event turn calls only its allow-list, within its bounds (super::orchestrator); its read
-    // of the event's job is answered as any.
-    if let Some(watch) = &session.event
-        && let Some(answered) = super::orchestrator::call(shared, watch, name, &args).await
-    {
-        return answered;
     }
     if let Some(why) = reads_foreign(shared, name, &args) {
         shared.conversations.mark(&session.conversation, why);

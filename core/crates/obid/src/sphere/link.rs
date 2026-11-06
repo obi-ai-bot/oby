@@ -3060,7 +3060,7 @@ fn closed_start(mut item: Item, why: &str, now: i64) -> Item {
 /// jobs (its question, permission, plan, merge card, limit, or obid's crash or review failure),
 /// and that job is gone, or ended let go or with its pull request merged or closed (an Oby review's
 /// is the one it reviewed, `reviewed`'s); or it's Oby's
-/// own escalation (`orchestrator::escalate`, only Done) on an ended job with an open merge card,
+/// own escalation (`inbox::ESCALATION`, only Done) on an ended job with an open merge card,
 /// crash or review failure or limit, where obid offers the decision now (MERGING-8's). A queued or running job's items stay,
 /// as does everything not about a job: confirms, offers, GitHub's, another Obi's, a teammate
 /// approval to remove on GitHub. `open`: every open item.
@@ -3094,7 +3094,7 @@ pub(crate) fn is_stale(
     };
     job.dismissed.is_some()
         || pr_ended
-        || (item.id.starts_with(crate::brain::orchestrator::ESCALATION)
+        || (item.id.starts_with(inbox::ESCALATION)
             && open.iter().any(|o| o.job == item.job && offers(o)))
 }
 
@@ -4238,10 +4238,7 @@ mod tests {
             kind: kind.into(),
             ..inbox::crash_item(&ended(None), 1)
         };
-        let escalation = of(
-            &format!("{}1", crate::brain::orchestrator::ESCALATION),
-            "question",
-        );
+        let escalation = of(&format!("{}1", inbox::ESCALATION), "question");
         let merge = of("merge-1", "merge");
         let crash = inbox::crash_item(&ended(None), 1);
         let dismissal = of("approval-dismissal-c1", "failed");

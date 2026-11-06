@@ -172,16 +172,6 @@ impl Turns {
         for earlier in underway.iter().filter(|c| c.conversation == conversation) {
             earlier.cancelled.store(true, Ordering::SeqCst);
         }
-        // A user's words preempt the event orchestrator's turn: it stops after the action under
-        // way (#590).
-        if conversation != super::orchestrator::CONVERSATION {
-            for event in underway
-                .iter()
-                .filter(|c| c.conversation == super::orchestrator::CONVERSATION)
-            {
-                event.stopped.store(true, Ordering::SeqCst);
-            }
-        }
         underway.push(control.clone());
         control
     }
@@ -247,13 +237,6 @@ impl Turns {
             any = true;
         }
         any
-    }
-
-    /// Whether a user's turn is under way: the event orchestrator waits for it (#590).
-    pub fn user_turn_underway(&self) -> bool {
-        self.lock()
-            .iter()
-            .any(|c| c.conversation != super::orchestrator::CONVERSATION)
     }
 
     /// Whether a turn is under way in `conversation`: a supervisor turn waits for it to end.
