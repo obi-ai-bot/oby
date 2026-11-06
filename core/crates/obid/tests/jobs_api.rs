@@ -1461,7 +1461,8 @@ fn a_check_that_keeps_failing_stops_at_a_limit() {
 }
 
 /// RECOVERY-9: with no number of rounds named, the same failure in two rounds running stops the
-/// job at a limit, with One more round, and each failed run carries what it failed on.
+/// job at a limit, with One more round, and each failed run carries what it failed on; One more
+/// round runs exactly one round more when the failure repeats.
 #[test]
 fn recovery_9_the_same_failure_twice_stops() {
     let folder = Folder::new("same-failure");
@@ -1494,6 +1495,28 @@ fn recovery_9_the_same_failure_twice_stops() {
     assert_eq!(signatures.len(), 2, "{detail}");
     assert!(signatures[0].is_string(), "{detail}");
     assert_eq!(signatures[0], signatures[1]);
+
+    // One more round runs exactly one more: the same failure again stops it at round 3.
+    let more = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(
+            &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."})
+                .to_string(),
+        ),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    until(&obid, &id, |j| j["round"] == 3);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["round"], 3, "{job}");
+    assert_eq!(job["rounds"], 8, "{job}");
+    assert_eq!(
+        job["limit"],
+        "`echo the check failed; false` still fails after 3 round(s)"
+    );
+    assert_eq!(job["nextStep"], "One more round");
 }
 
 /// RECOVERY-9: a failure that changes every round goes on to the ceiling of 8 rounds.

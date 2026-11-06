@@ -6906,18 +6906,8 @@ impl Jobs {
             let Some(last) = job.checks.last_mut() else {
                 return;
             };
-            let signature = crate::facts::signature(last, output);
-            last.signature = Some(signature.clone());
-            let this = last.round;
-            repeated = job.rounds.is_none()
-                && job
-                    .checks
-                    .iter()
-                    .rev()
-                    .skip(1)
-                    .find(|c| c.round < this)
-                    .and_then(|c| c.signature.as_deref())
-                    == Some(signature.as_str());
+            last.signature = Some(crate::facts::signature(last, output));
+            repeated = job.rounds.is_none() && crate::facts::repeats(&job.checks);
         });
         if repeated || round >= job.max_rounds() {
             let limit = format!("`{command}` still fails after {round} round(s)");

@@ -110,50 +110,95 @@ pub struct CheckRecord {
     pub signature: Option<String>,
 }
 
-/// The lines of a failed run's output its [`signature`] reads when it names no failing test.
-const SIGNATURE_LINES: usize = 30;
-/// A temporary path, a timing and a number: what changes between two runs of the same failure.
+/// What changes between two runs of the same failure: temporary paths, UUIDs, runs of hex
+/// (addresses, ids, the check's own folder), timings and other numbers.
 static TEMP_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(?i)\S*(?:/tmp|/var/folders/|\.tmp)\S*").expect("a valid pattern")
 });
+static UUID: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+        .expect("a valid pattern")
+});
+static HEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)[0-9a-f]{6,}").expect("a valid pattern"));
 static TIMING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"\d+(?:\.\d+)?\s*(?:ns|µs|us|ms|s|secs?|seconds?|m|mins?|minutes?)\b")
         .expect("a valid pattern")
 });
 static DIGITS: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"\d+").expect("a valid pattern"));
+/// A line that counts what's left (`due to 5 previous errors`, `3 failed`, `2 problems`): its
+/// number is progress, so it stays.
+static COUNT_LINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b\d+\s+(?:previous\s+)?(?:errors?|warnings?|failed|failures?|problems?|passed|tests?)\b")
+        .expect("a valid pattern")
+});
+
+/// `text` with what changes between two runs of the same failure taken out, line by line; a
+/// line that counts what's left keeps its numbers.
+fn normalized(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|line| {
+            let line = TEMP_PATH.replace_all(line, "<tmp>");
+            let line = UUID.replace_all(&line, "<id>");
+            let line = TIMING.replace_all(&line, "<time>");
+            if COUNT_LINE.is_match(&line) {
+                return line.into_owned();
+            }
+            let line = HEX.replace_all(&line, "<hex>");
+            DIGITS.replace_all(&line, "#").into_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// What a failed check run (`record`, its `output`) failed on, to tell the same failure from a
-/// new one (RECOVERY-9): the failing step's command and its failing tests' names, sorted; when
-/// it names none, a hash of its output's last lines with temporary paths, timings and digits
-/// taken out.
+/// new one (RECOVERY-9): the failing step's command, its failing tests' names, sorted, and a hash
+/// of their messages; when it names none, a hash of its whole output. Both read [`normalized`].
 pub fn signature(record: &CheckRecord, output: &str) -> String {
     let step = record
         .steps
         .iter()
         .find(|s| s.passed == Some(false))
         .map_or("", |s| s.command.as_str());
-    let mut tests: Vec<&str> = record.failing.iter().map(|f| f.test.as_str()).collect();
+    let mut tests: Vec<(&str, String)> = record
+        .failing
+        .iter()
+        .map(|f| (f.test.as_str(), normalized(&f.message)))
+        .collect();
     tests.sort_unstable();
     tests.dedup();
-    if !tests.is_empty() {
-        return format!("{step}: {}", tests.join(", "));
-    }
-    let lines: Vec<&str> = output
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let tail = lines[lines.len().saturating_sub(SIGNATURE_LINES)..].join("\n");
-    let tail = TEMP_PATH.replace_all(&tail, "<tmp>");
-    let tail = TIMING.replace_all(&tail, "<time>");
-    let tail = DIGITS.replace_all(&tail, "#");
+    let names: Vec<&str> = tests.iter().map(|(name, _)| *name).collect();
     // ponytail: std's SipHash with its fixed keys, steady within one obid build; a new build
     // may hash differently, which costs at most one more round.
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    tail.hash(&mut hasher);
-    format!("{step}: #{:016x}", hasher.finish())
+    if tests.is_empty() {
+        normalized(output).hash(&mut hasher);
+        format!("{step}: #{:016x}", hasher.finish())
+    } else {
+        tests.hash(&mut hasher);
+        format!("{step}: {} #{:016x}", names.join(", "), hasher.finish())
+    }
+}
+
+/// Whether the last of `checks` failed as the round before's last did (RECOVERY-9): the same
+/// [`signature`], with no run that passed between them.
+pub fn repeats(checks: &[CheckRecord]) -> bool {
+    let failed = |c: &CheckRecord| c.steps.iter().any(|s| s.passed == Some(false));
+    let Some((last, earlier)) = checks.split_last() else {
+        return false;
+    };
+    let Some(signature) = last.signature.as_deref().filter(|_| failed(last)) else {
+        return false;
+    };
+    earlier
+        .iter()
+        .rev()
+        .find(|c| c.round < last.round || !failed(c))
+        .is_some_and(|c| failed(c) && c.signature.as_deref() == Some(signature))
 }
 
 /// The parts of a command line between top-level `&&`s, or the whole line as one part when it
@@ -865,53 +910,113 @@ pub fn estimate<'a>(
 mod tests {
     use super::*;
 
-    /// RECOVERY-9: a signature names the failing step and its tests, sorted, else hashes the
-    /// output's tail with what changes between runs of the same failure taken out.
-    #[test]
-    fn recovery_9_signature_reads_the_failure_not_its_noise() {
-        let step = |command: &str, passed| CheckStep {
-            command: command.into(),
-            passed,
-            started: None,
-            seconds: None,
-            running: false,
-            tests: None,
-        };
-        let failing = |test: &str| Failing {
-            test: test.into(),
-            message: "boom 42".into(),
-        };
+    fn signed(round: u32, passed: bool, failing: &[(&str, &str)], output: &str) -> CheckRecord {
         let mut record = CheckRecord {
-            round: 1,
+            round,
             steps: vec![
-                step("cargo fmt", Some(true)),
-                step("cargo test", Some(false)),
+                CheckStep {
+                    command: "cargo fmt".into(),
+                    passed: Some(true),
+                    started: None,
+                    seconds: None,
+                    running: false,
+                    tests: None,
+                },
+                CheckStep {
+                    command: "cargo test".into(),
+                    passed: Some(passed),
+                    started: None,
+                    seconds: None,
+                    running: false,
+                    tests: None,
+                },
             ],
-            failing: vec![failing("b::two"), failing("a::one"), failing("b::two")],
+            failing: failing
+                .iter()
+                .map(|(test, message)| Failing {
+                    test: (*test).into(),
+                    message: (*message).into(),
+                })
+                .collect(),
             signature: None,
         };
-        assert_eq!(signature(&record, "anything"), "cargo test: a::one, b::two");
-        record.failing.clear();
-        let one = signature(
-            &record,
-            "error at /private/var/folders/ab/T/.tmpXy12/src.rs:10\nfinished in 0.81s\n",
+        if !passed {
+            record.signature = Some(signature(&record, output));
+        }
+        record
+    }
+
+    /// RECOVERY-9: a signature names the failing step and its tests, sorted, and reads their
+    /// messages: the same test failing at another assertion is progress.
+    #[test]
+    fn recovery_9_signature_reads_failing_tests_and_their_messages() {
+        let one = signed(
+            1,
+            false,
+            &[("b::two", "left: 1"), ("a::one", "boom at 0x7ffe12ab")],
+            "",
         );
-        let two = signature(
-            &record,
-            "error at /private/var/folders/cd/T/.tmpQq34/src.rs:11\n\nfinished in 1.2ms\n",
+        let sig = one.signature.unwrap();
+        assert!(sig.starts_with("cargo test: a::one, b::two #"), "{sig}");
+        let again = signed(
+            2,
+            false,
+            &[("a::one", "boom at 0x7ffd99cd"), ("b::two", "left: 2")],
+            "",
+        );
+        assert_eq!(again.signature.unwrap(), sig);
+        let moved = signed(
+            2,
+            false,
+            &[
+                ("a::one", "boom at 0x7ffe12ab"),
+                ("b::two", "right is empty"),
+            ],
+            "",
+        );
+        assert_ne!(moved.signature.unwrap(), sig);
+    }
+
+    /// RECOVERY-9: with no test named, the whole output counts, with temporary paths, UUIDs,
+    /// runs of hex, timings and numbers taken out, but a line counting what's left keeps its
+    /// numbers, and an error fixed anywhere in it is a change.
+    #[test]
+    fn recovery_9_signature_reads_the_failure_not_its_noise() {
+        let sig = |output: &str| signed(1, false, &[], output).signature.unwrap();
+        let one = sig(
+            "error at /private/var/folders/ab/T/.tmpXy12/src.rs:10\nin checks/9ce02785-a1b2c3d4 \
+             for 123e4567-e89b-12d3-a456-426614174000\nfinished in 0.81s\n",
+        );
+        let two = sig(
+            "error at /private/var/folders/cd/T/.tmpQq34/src.rs:11\n\nin checks/0f9e8d7c-e5f6a7b8 \
+             for 00000000-0000-4000-8000-0000000000ff\nfinished in 1.2ms\n",
         );
         assert_eq!(one, two);
         assert!(one.starts_with("cargo test: #"), "{one}");
+        assert_ne!(one, sig("a different error\nfinished in 0.81s"));
         assert_ne!(
-            one,
-            signature(&record, "a different error\nfinished in 0.81s")
+            sig("error: could not compile `obid` due to 5 previous errors"),
+            sig("error: could not compile `obid` due to 3 previous errors")
         );
-        // Only the last lines count: what scrolled past them doesn't.
-        let long = |head: &str| format!("{head}\n{}", "same line\n".repeat(SIGNATURE_LINES));
-        assert_eq!(
-            signature(&record, &long("early")),
-            signature(&record, &long("other"))
+        let long = |head: &str| format!("{head}\n{}", "same line\n".repeat(50));
+        assert_ne!(
+            sig(&long("error[E0308] in a.rs")),
+            sig(&long("error[E0425] in b.rs"))
         );
+    }
+
+    /// RECOVERY-9: a run repeats only the round before's failure, with no pass between them.
+    #[test]
+    fn recovery_9_a_pass_between_two_failures_is_no_repeat() {
+        let fails = |round| signed(round, false, &[], "the same error");
+        assert!(repeats(&[fails(1), fails(2)]));
+        assert!(!repeats(&[fails(1)]));
+        assert!(!repeats(&[
+            fails(1),
+            signed(2, false, &[], "another error")
+        ]));
+        assert!(!repeats(&[fails(1), signed(2, true, &[], ""), fails(2)]));
+        assert!(!repeats(&[fails(1), fails(2), signed(3, true, &[], "")]));
     }
 
     #[test]
