@@ -2442,7 +2442,7 @@ fn a_job_hears_the_owners_words_and_the_agents_only_quoted() {
 
 /// `oby_jobs` lists obid's own fields only, never a job's step (its agent's own words could steer
 /// the turn): reading the list leaves the turn trusted, so the work it starts next publishes by
-/// itself. A fix with a check started from the conversation gets 3 rounds (#958).
+/// itself. A fix with a check started from the conversation gets up to 8 rounds (#958, RECOVERY-9).
 #[test]
 fn listing_jobs_reads_nothing_an_agent_wrote() {
     let (_folder, obid) = obid("harness-jobs-list", true);
@@ -2469,7 +2469,7 @@ fn listing_jobs_reads_nothing_an_agent_wrote() {
     let id = next.body["jobs"][0]["id"].as_str().expect(&next.text);
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["untrusted"], Value::Null, "{job}");
-    assert_eq!(job["rounds"], 3, "{job}");
+    assert_eq!(job["rounds"], 8, "{job}");
 }
 
 /// One turn starts at most ten jobs and tells jobs at most ten times: past that a tool says why.

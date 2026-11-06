@@ -93,9 +93,6 @@ const SETTLE_AFTER: i64 = 24 * 60 * 60;
 pub const MCP_CONFIG_FILE: &str = "obi-mcp.json";
 /// The kinds whose work is commits: one that ends with none committed says so.
 pub(crate) const COMMITTING: [&str; 3] = ["build", "fix", "test"];
-/// The rounds a committing job with a check gets when nobody named a number (#958): its agent
-/// hears the check's failure and fixes it, and the last one still stops and asks.
-const CHECK_ROUNDS: u32 = 3;
 /// How many times in a row the same call may fail before the job stalls as looping.
 pub const LOOP_REPEATS: u32 = 5;
 /// How long the agent has to write its handoff note when its job stalls.
@@ -3333,11 +3330,10 @@ impl Jobs {
             .check
             .or(repo.check.clone())
             .filter(|c| !c.trim().is_empty());
-        // Left out, a fix, build or test with a check gets fix rounds however it started (#958);
-        // a number given is kept, 1 included.
-        job.rounds = new.rounds.or_else(|| {
-            (COMMITTING.contains(&job.kind.as_str()) && job.check.is_some()).then_some(CHECK_ROUNDS)
-        });
+        // Left out, a fix, build or test with a check runs fix rounds until the same failure
+        // twice or `Job::max_rounds`'s ceiling (#958, RECOVERY-9); a number given is kept, 1
+        // included, and counted.
+        job.rounds = new.rounds;
         job.model = new.model.map(|m| m.trim().to_owned());
         job.complex = new.complex;
         let offered = Tool::from_id(&job.agent)
@@ -6884,7 +6880,8 @@ impl Jobs {
     /// A failure the agent says (`said`) the task asked for (a test meant to fail) ends the rounds:
     /// another round would undo what the owner asked. It isn't a pass, so nothing goes out: only
     /// checks that pass publish (AGENTS.md), whatever the agent says, and nothing publishes it by
-    /// hand either: the owner's words decide. Past its last round it stops at a limit.
+    /// hand either: the owner's words decide. Past its last round, or with no number named on the
+    /// same failure as the round before (RECOVERY-9), it stops at a limit.
     fn after_failed_check(
         &self,
         id: &str,
@@ -6902,7 +6899,27 @@ impl Jobs {
                 None,
             ));
         }
-        if round >= job.max_rounds() {
+        // What it failed on, kept on its run; with no number named, the same as the round
+        // before's stops it (RECOVERY-9).
+        let mut repeated = false;
+        self.update(id, |job| {
+            let Some(last) = job.checks.last_mut() else {
+                return;
+            };
+            let signature = crate::facts::signature(last, output);
+            last.signature = Some(signature.clone());
+            let this = last.round;
+            repeated = job.rounds.is_none()
+                && job
+                    .checks
+                    .iter()
+                    .rev()
+                    .skip(1)
+                    .find(|c| c.round < this)
+                    .and_then(|c| c.signature.as_deref())
+                    == Some(signature.as_str());
+        });
+        if repeated || round >= job.max_rounds() {
             let limit = format!("`{command}` still fails after {round} round(s)");
             self.update(id, |job| job.limit = Some(limit.clone()));
             return Err(End::needs_you(

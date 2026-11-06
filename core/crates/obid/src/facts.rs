@@ -104,6 +104,56 @@ pub struct CheckRecord {
     pub round: u32,
     pub steps: Vec<CheckStep>,
     pub failing: Vec<Failing>,
+    /// What a failed run failed on ([`signature`]), set once it failed: the same one two rounds
+    /// running stops the rounds (RECOVERY-9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+/// The lines of a failed run's output its [`signature`] reads when it names no failing test.
+const SIGNATURE_LINES: usize = 30;
+/// A temporary path, a timing and a number: what changes between two runs of the same failure.
+static TEMP_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\S*(?:/tmp|/var/folders/|\.tmp)\S*").expect("a valid pattern")
+});
+static TIMING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\d+(?:\.\d+)?\s*(?:ns|µs|us|ms|s|secs?|seconds?|m|mins?|minutes?)\b")
+        .expect("a valid pattern")
+});
+static DIGITS: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\d+").expect("a valid pattern"));
+
+/// What a failed check run (`record`, its `output`) failed on, to tell the same failure from a
+/// new one (RECOVERY-9): the failing step's command and its failing tests' names, sorted; when
+/// it names none, a hash of its output's last lines with temporary paths, timings and digits
+/// taken out.
+pub fn signature(record: &CheckRecord, output: &str) -> String {
+    let step = record
+        .steps
+        .iter()
+        .find(|s| s.passed == Some(false))
+        .map_or("", |s| s.command.as_str());
+    let mut tests: Vec<&str> = record.failing.iter().map(|f| f.test.as_str()).collect();
+    tests.sort_unstable();
+    tests.dedup();
+    if !tests.is_empty() {
+        return format!("{step}: {}", tests.join(", "));
+    }
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let tail = lines[lines.len().saturating_sub(SIGNATURE_LINES)..].join("\n");
+    let tail = TEMP_PATH.replace_all(&tail, "<tmp>");
+    let tail = TIMING.replace_all(&tail, "<time>");
+    let tail = DIGITS.replace_all(&tail, "#");
+    // ponytail: std's SipHash with its fixed keys, steady within one obid build; a new build
+    // may hash differently, which costs at most one more round.
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tail.hash(&mut hasher);
+    format!("{step}: #{:016x}", hasher.finish())
 }
 
 /// The parts of a command line between top-level `&&`s, or the whole line as one part when it
@@ -536,6 +586,7 @@ impl CheckWatch {
             round,
             steps,
             failing,
+            signature: None,
         }
     }
 }
@@ -813,6 +864,55 @@ pub fn estimate<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RECOVERY-9: a signature names the failing step and its tests, sorted, else hashes the
+    /// output's tail with what changes between runs of the same failure taken out.
+    #[test]
+    fn recovery_9_signature_reads_the_failure_not_its_noise() {
+        let step = |command: &str, passed| CheckStep {
+            command: command.into(),
+            passed,
+            started: None,
+            seconds: None,
+            running: false,
+            tests: None,
+        };
+        let failing = |test: &str| Failing {
+            test: test.into(),
+            message: "boom 42".into(),
+        };
+        let mut record = CheckRecord {
+            round: 1,
+            steps: vec![
+                step("cargo fmt", Some(true)),
+                step("cargo test", Some(false)),
+            ],
+            failing: vec![failing("b::two"), failing("a::one"), failing("b::two")],
+            signature: None,
+        };
+        assert_eq!(signature(&record, "anything"), "cargo test: a::one, b::two");
+        record.failing.clear();
+        let one = signature(
+            &record,
+            "error at /private/var/folders/ab/T/.tmpXy12/src.rs:10\nfinished in 0.81s\n",
+        );
+        let two = signature(
+            &record,
+            "error at /private/var/folders/cd/T/.tmpQq34/src.rs:11\n\nfinished in 1.2ms\n",
+        );
+        assert_eq!(one, two);
+        assert!(one.starts_with("cargo test: #"), "{one}");
+        assert_ne!(
+            one,
+            signature(&record, "a different error\nfinished in 0.81s")
+        );
+        // Only the last lines count: what scrolled past them doesn't.
+        let long = |head: &str| format!("{head}\n{}", "same line\n".repeat(SIGNATURE_LINES));
+        assert_eq!(
+            signature(&record, &long("early")),
+            signature(&record, &long("other"))
+        );
+    }
 
     #[test]
     fn numstat_counts_every_file_and_reads_binaries_as_none() {
@@ -1108,6 +1208,7 @@ mod tests {
             round: 1,
             steps: vec![step(100), step(50)],
             failing: Vec::new(),
+            signature: None,
         }];
         past.push(checked);
         let mut job = new_job();
