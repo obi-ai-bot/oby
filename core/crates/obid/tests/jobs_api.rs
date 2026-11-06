@@ -1383,6 +1383,82 @@ fn tasks_11_a_stopped_task_with_only_a_wip_commit_asks_before_its_deleted() {
     assert!(worktree.join("notes.txt").exists());
 }
 
+/// TASKS-18: a stopped job says who stopped it and why in its `reason`: Stop through obid's API,
+/// with "while its question waited" when its agent's question or permission was open, and obid
+/// itself when the pull request it waited on was closed.
+#[test]
+fn tasks_18_a_stopped_job_says_who_stopped_it() {
+    let folder = Folder::new("tasks-18");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    // Waiting on a pull request closed since, for a five-hour limit's reset: obid stops it.
+    let mut closed = obid::job::Job::new(
+        "aaaa1801".into(),
+        "obi-e2e/fixture-app".into(),
+        "fix".into(),
+        "Look around".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    closed.branch = "oby/fix-aaaa1801".into();
+    closed.status = obid::job::Status::Queued;
+    closed.commits = Some(1);
+    closed.pushed = Some(1);
+    closed.published = Some("https://github.com/obi-e2e/fixture-app/pull/7".into());
+    closed.pull_request = Some(
+        serde_json::from_value(
+            json!({"state": "CLOSED", "base": "main", "checkedAt": obi_protocol::time::now()}),
+        )
+        .unwrap(),
+    );
+    closed.resumes_at = Some(obi_protocol::time::now() + 3600);
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(
+        jobs.join("aaaa1801.json"),
+        serde_json::to_vec(&closed).unwrap(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config);
+
+    let running = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "DRAFT: notes.txt SLEEP"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    beat(&obid, &running);
+    let stopped = request(&obid, "POST", &format!("/v1/jobs/{running}/stop"), None);
+    assert_eq!(stopped.body["status"], "stopped", "{}", stopped.text);
+    assert_eq!(stopped.body["reason"], obid::jobs::STOPPED_BY_API);
+
+    let asking = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+               "task": format!("ASK: {}", json!({"tool": "Glob", "input": {"pattern": "/etc/*"}}))}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until(&obid, &asking, |j| j["permission"].is_object());
+    let stopped = request(&obid, "POST", &format!("/v1/jobs/{asking}/stop"), None);
+    assert_eq!(stopped.body["status"], "stopped", "{}", stopped.text);
+    assert_eq!(
+        stopped.body["reason"],
+        format!(
+            "{}{}",
+            obid::jobs::STOPPED_BY_API,
+            obid::jobs::WHILE_ITS_QUESTION_WAITED
+        )
+    );
+
+    let gone = until(&obid, "aaaa1801", |j| j["status"] == "stopped");
+    assert_eq!(gone["reason"], obid::jobs::PULL_REQUEST_ENDED, "{gone}");
+}
+
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:
 /// it needs you, with One more round, its branch kept. Dismiss lets it go.
 #[test]

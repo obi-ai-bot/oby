@@ -597,12 +597,12 @@ async fn a_received_reviews_check_gets_nothing() {
         .unwrap();
     let why = follow.check_refuses_secrets().unwrap();
     assert!(why.contains("another Oby asked for this job"), "{why}");
-    jobs.stop(&follow.id);
+    jobs.stop(&follow.id, obid::jobs::STOPPED_BY_API);
     let again = jobs
         .create(obid::jobs::follow_up(&follow, "and the tests"))
         .unwrap();
     assert!(again.check_refuses_secrets().is_some());
-    jobs.stop(&again.id);
+    jobs.stop(&again.id, obid::jobs::STOPPED_BY_API);
 
     // A job made untrusted keeps to a clone apart: nothing it fetches, commits or keeps lands in
     // the owner's own clone, which other jobs' checks read.
@@ -635,7 +635,7 @@ async fn a_received_reviews_check_gets_nothing() {
         "{pointer}"
     );
     assert!(!home.join("clones/obi-e2e/fixture-app").exists());
-    jobs.stop(&untrusted.id);
+    jobs.stop(&untrusted.id, obid::jobs::STOPPED_BY_API);
 
     // The owner's chosen Bypass applies after a foreign read too (the owner's decision of
     // 2026-10-27): the job keeps its mark, its clone apart, and a check its words can't have
@@ -655,7 +655,7 @@ async fn a_received_reviews_check_gets_nothing() {
     assert_eq!(bypassed.mode.as_deref(), Some("bypass"));
     assert!(bypassed.untrusted && bypassed.apart);
     assert!(bypassed.check_refuses_secrets().is_some());
-    jobs.stop(&bypassed.id);
+    jobs.stop(&bypassed.id, obid::jobs::STOPPED_BY_API);
 }
 
 /// Words that no app of the owner's signed (anything else holding obid's token: oby-mcp, a script,

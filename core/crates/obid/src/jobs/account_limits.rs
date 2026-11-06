@@ -105,7 +105,7 @@ impl Jobs {
                 .and_then(|of| self.get(of))
                 .is_some_and(|author| job.read_another_head(&author))
             {
-                self.stop(&id);
+                self.stop(&id, "Stopped: its job pushed a newer head to review");
                 continue;
             }
             if !self.limit_source_is_connected(&job.agent, &job.account) {

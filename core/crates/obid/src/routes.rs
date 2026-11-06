@@ -297,7 +297,7 @@ pub async fn stop(
 ) -> Result<Response, ApiError> {
     let job = shared
         .jobs
-        .stop(&id)
+        .stop(&id, crate::jobs::STOPPED_BY_API)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
     Ok(json(StatusCode::OK, job.to_json()))
 }
@@ -316,7 +316,7 @@ pub async fn start(
 
 /// `POST /v1/stop-all`.
 pub async fn stop_all(State(shared): State<Arc<Shared>>) -> Response {
-    let stopped = shared.jobs.stop_all();
+    let stopped = shared.jobs.stop_all(crate::jobs::STOPPED_BY_API);
     json(
         StatusCode::OK,
         json!({"stopped": stopped.len(), "jobs": stopped.iter().map(|j| j.to_json()).collect::<Vec<_>>()}),

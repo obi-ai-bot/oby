@@ -666,6 +666,22 @@ fn consent_words(name: &str) -> String {
 const BACKGROUND_OFF: &str =
     "You turned off work I run by myself on this ChatGPT plan, so I stopped.";
 
+/// What [`Jobs::stop`] adds to who stopped a job that waited on the owner (TASKS-18): a failure
+/// record keeps it (crate::failures).
+pub const WHILE_ITS_QUESTION_WAITED: &str = " while its question waited";
+
+/// Who stopped a job ([`Jobs::stop`], TASKS-18), when obid's API was asked to.
+pub const STOPPED_BY_API: &str = "Stopped through Oby's API";
+
+/// Who stopped a job when a conversation asked to (`oby_stop_job`, "stop everything").
+pub const STOPPED_BY_CONVERSATION: &str = "Stopped by a conversation";
+
+/// Who stopped a job when the pull request it reviewed or waited on was merged or closed.
+pub const PULL_REQUEST_ENDED: &str = "Stopped: its pull request was merged or closed";
+
+/// Who stopped a job when the exchange with the Oby that asked for it was revoked.
+pub const EXCHANGE_REVOKED: &str = "Stopped: the exchange with the Oby that asked for it ended";
+
 /// What a job waiting for the owner's yes says when the account it waited on was removed.
 const WAITED_ON_GONE: &str =
     "The account it was waiting on was removed, and nothing else can take it.";
@@ -2714,7 +2730,7 @@ impl Jobs {
                     .collect()
             };
             for id in stopping {
-                self.stop(&id);
+                self.stop(&id, BACKGROUND_OFF);
                 self.update(&id, |job| job.reason = Some(BACKGROUND_OFF.to_owned()));
             }
         }
@@ -3151,7 +3167,7 @@ impl Jobs {
     fn hold_for_consent(&self, id: &str) {
         let Some(job) = self.get(id) else { return };
         if job.review_of.is_some() || job.obi.is_some() {
-            self.stop(id);
+            self.stop(id, BACKGROUND_OFF);
             self.update(id, |job| job.reason = Some(BACKGROUND_OFF.to_owned()));
             return;
         }
@@ -3214,7 +3230,7 @@ impl Jobs {
             let Some((tool, account)) = found else {
                 // What it waited on is gone, and nothing else takes it: nothing would ever start it.
                 if for_consent && was.is_none() {
-                    self.stop(&job.id);
+                    self.stop(&job.id, WAITED_ON_GONE);
                     self.update(&job.id, |job| {
                         job.reason = Some(WAITED_ON_GONE.to_owned());
                     });
@@ -3789,11 +3805,27 @@ impl Jobs {
 
     /// Stops a queued or running job: its agent and check end within 2 seconds, with everything they
     /// started. A job that already ended comes back as it is. `None` for one obid doesn't have.
-    pub fn stop(&self, id: &str) -> Option<Job> {
+    /// `by` says who stopped it, in plain words, as its `reason` (TASKS-18), with " while its
+    /// question waited" when it waited on the owner: its agent's question or permission, a choice
+    /// about an account's limit, or a yes to a login. A caller that has its own reason writes it
+    /// after.
+    pub fn stop(&self, id: &str, by: &str) -> Option<Job> {
         let job = self.get(id)?;
         if !job.status.is_active() {
             return Some(job);
         }
+        let asked = job.permission.is_some()
+            || job.account_limit_blocked
+            || job.waiting.as_ref().is_some_and(Waiting::for_consent)
+            || {
+                let state = self.lock();
+                state.asks.get(id).is_some_and(|a| !a.is_empty()) || state.asked.contains_key(id)
+            };
+        let reason = if asked {
+            format!("{by}{WHILE_ITS_QUESTION_WAITED}")
+        } else {
+            by.to_owned()
+        };
         let worked = match self.lock().workers.get(id) {
             Some(worker) => {
                 let _ = worker.send(Signal::Stop);
@@ -3804,6 +3836,7 @@ impl Jobs {
         self.drop_asks(id, false);
         let stopped = self.update(id, |job| {
             job.status = Status::Stopped;
+            job.reason = Some(reason);
             job.step = String::new();
             job.waiting = None;
             job.resumes_at = None;
@@ -3824,8 +3857,8 @@ impl Jobs {
         stopped
     }
 
-    /// Stops every queued and running job: answers the ones it stopped.
-    pub fn stop_all(&self) -> Vec<Job> {
+    /// Stops every queued and running job, `by` as [`Jobs::stop`]'s: answers the ones it stopped.
+    pub fn stop_all(&self, by: &str) -> Vec<Job> {
         let ids: Vec<String> = self
             .lock()
             .jobs
@@ -3833,7 +3866,7 @@ impl Jobs {
             .filter(|j| j.status.is_active())
             .map(|j| j.id.clone())
             .collect();
-        ids.iter().filter_map(|id| self.stop(id)).collect()
+        ids.iter().filter_map(|id| self.stop(id, by)).collect()
     }
 
     /// The owner tells the job's agent something (`POST /v1/jobs/{id}/messages`). A job whose
@@ -12433,7 +12466,7 @@ impl Jobs {
             (ended, outlived)
         };
         for id in &outlived {
-            self.stop(id);
+            self.stop(id, PULL_REQUEST_ENDED);
         }
         for id in ended.iter().chain(&outlived) {
             self.update(id, |job| {
@@ -17324,7 +17357,7 @@ mod tests {
             })
             .unwrap()
             .id;
-        jobs.stop(&queued);
+        jobs.stop(&queued, STOPPED_BY_API);
         let moved = |account: &str| {
             jobs.change(&queued, None, Some(account), "by test", Source::Owner)
                 .unwrap()
@@ -19931,7 +19964,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(confirmed.mode.as_deref(), Some("sandbox"));
-        jobs.stop_all();
+        jobs.stop_all(STOPPED_BY_API);
         let _ = std::fs::remove_dir_all(&root);
     }
 
