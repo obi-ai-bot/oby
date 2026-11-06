@@ -92,7 +92,7 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 - **CONVERSATION-AGENT-7:** A turn on Cursor counts as untrusted from its start, and that stays after it leaves. One that never started leaves no mark. One reached without the owner choosing it says what that costs.
 - **CONVERSATION-AGENT-8:** A conversation's Cursor gets out through the proxy only, to Cursor's own services only; with no such box, choosing it is `422` with `talk-needs-egress-box`.
 - **CONVERSATION-AGENT-9:** Cursor's commands are refused, what it plants is gone before its next start, its login copy goes when the turn ends, and its folder goes with the conversation.
-- **CONVERSATION-AGENT-10:** Retired: no turn runs unwatched since the conversation supervisor was deleted ([rules-delete-supervisor](PRLINK)).
+- **CONVERSATION-AGENT-10:** Retired: no turn runs unwatched since the conversation supervisor was deleted ([rules-delete-supervisor, obi-ai-bot/oby#1952](https://github.com/obi-ai-bot/oby/pull/1952)).
 - **CONVERSATION-AGENT-11:** An account that's removed is no choice any more: the setting and every conversation's choice are cleared, and that conversation talks on Auto.
 - **CONVERSATION-AGENT-12:** The picker and its list show each account's percentage (the fuller of its week and its session), one held full "Full", one with no figure "No usage" (Cursor's when its read gives none), the dot yellow past 80% and red past 90%, red when held full, and every connected account under its tool.
 - **CONVERSATION-AGENT-13:** The picker names the chosen account, at once; moved off it or on Auto, where it last talked, else what obid says is next, each only while it can run.
