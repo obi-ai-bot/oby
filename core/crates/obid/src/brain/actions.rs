@@ -863,7 +863,7 @@ pub(crate) fn told_line(shared: &Shared, job: &Job, heard: &Job) -> String {
             account_name(shared, &heard.account)
         );
     }
-    let after = if heard.rounds.unwrap_or(1) > 1 {
+    let after = if heard.max_rounds() > 1 {
         "this round"
     } else {
         "its current step"

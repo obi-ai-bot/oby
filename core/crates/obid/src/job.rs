@@ -39,6 +39,9 @@ impl Status {
 
 /// A next step: another round of a job that stopped at one of obid's limits.
 pub const ONE_MORE_ROUND: &str = "One more round";
+/// The most rounds a committing job with a check runs when nobody named a number (#958): its
+/// agent hears each failure and fixes it, and the same failure twice stops it sooner (RECOVERY-9).
+pub const SAME_FAILURE_CEILING: u32 = 8;
 /// A next step: the agent's session picked up again where it stopped.
 pub const TRY_AGAIN: &str = "Try again";
 /// How the reason of a job obid's own bug (a panic in its task) ended starts (#914).
@@ -1139,8 +1142,18 @@ impl Job {
         self.unattended || self.routine.is_some() || self.review_of.is_some() || self.obi.is_some()
     }
 
+    /// The rounds it may run: the number named, else [`SAME_FAILURE_CEILING`] for a committing
+    /// job with a check, whose rounds stop sooner on the same failure twice (RECOVERY-9), else 1.
     pub fn max_rounds(&self) -> u32 {
-        self.rounds.unwrap_or(1).max(1)
+        match self.rounds {
+            Some(rounds) => rounds.max(1),
+            None if crate::jobs::COMMITTING.contains(&self.kind.as_str())
+                && self.check.is_some() =>
+            {
+                SAME_FAILURE_CEILING
+            }
+            None => 1,
+        }
     }
 
     pub fn current_round(&self) -> u32 {

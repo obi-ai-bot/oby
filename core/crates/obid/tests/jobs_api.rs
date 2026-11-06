@@ -1460,6 +1460,92 @@ fn a_check_that_keeps_failing_stops_at_a_limit() {
     assert_eq!(publish["detail"], "Dismissed");
 }
 
+/// RECOVERY-9: with no number of rounds named, the same failure in two rounds running stops the
+/// job at a limit, with One more round, and each failed run carries what it failed on; One more
+/// round runs exactly one round more when the failure repeats.
+#[test]
+fn recovery_9_the_same_failure_twice_stops() {
+    let folder = Folder::new("same-failure");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt", "check": "echo the check failed; false"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["round"], 2, "{job}");
+    assert_eq!(job["rounds"], 8, "{job}");
+    assert_eq!(
+        job["reason"],
+        "Stopped at a limit: `echo the check failed; false` still fails after 2 round(s). The branch is kept and nothing was pushed."
+    );
+    assert_eq!(job["nextStep"], "One more round");
+    let detail = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let signatures: Vec<Value> = detail["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["signature"].clone())
+        .collect();
+    assert_eq!(signatures.len(), 2, "{detail}");
+    assert!(signatures[0].is_string(), "{detail}");
+    assert_eq!(signatures[0], signatures[1]);
+
+    // One more round runs exactly one more: the same failure again stops it at round 3.
+    let more = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(
+            &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."})
+                .to_string(),
+        ),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    until(&obid, &id, |j| j["round"] == 3);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["round"], 3, "{job}");
+    assert_eq!(job["rounds"], 8, "{job}");
+    assert_eq!(
+        job["limit"],
+        "`echo the check failed; false` still fails after 3 round(s)"
+    );
+    assert_eq!(job["nextStep"], "One more round");
+}
+
+/// RECOVERY-9: a failure that changes every round goes on to the ceiling of 8 rounds.
+#[test]
+fn recovery_9_a_changing_failure_goes_on_to_the_ceiling() {
+    let folder = Folder::new("changing-failure");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    // Each run prints random letters (its checkout is clean, and digits don't count), so no two
+    // rounds fail the same way.
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt", "check": "head -c 256 /dev/urandom | LC_ALL=C tr -dc a-z; false"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["round"], 8, "{job}");
+    assert_eq!(job["rounds"], 8, "{job}");
+    assert_eq!(
+        job["limit"],
+        "`head -c 256 /dev/urandom | LC_ALL=C tr -dc a-z; false` still fails after 8 round(s)"
+    );
+    assert_eq!(job["nextStep"], "One more round");
+}
+
 /// A provider limit stops work and groups jobs on that account for one owner decision (#1563).
 #[test]
 fn usage_limit_jobs_wait_for_one_owner_decision() {
@@ -2397,10 +2483,11 @@ fn taskconv_14_words_wait_for_a_job_that_isnt_at_work() {
     assert_eq!(asked[1], "One more thing: list the tests too.\n");
 }
 
-/// #958: a fix, build or test with a check gets 3 rounds when nobody named a number, however it
-/// started; a number given is kept, 1 included; a review, or a job with no check, keeps 1.
+/// #958, RECOVERY-9: a fix, build or test with a check reads 8 rounds (its ceiling) when nobody
+/// named a number, however it started; a number given is kept, 1 included; a review, or a job
+/// with no check, keeps 1.
 #[test]
-fn a_fix_with_a_check_gets_three_rounds_unless_told() {
+fn a_fix_with_a_check_gets_eight_rounds_unless_told() {
     let folder = Folder::new("rounds-default");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));
@@ -2420,7 +2507,7 @@ fn a_fix_with_a_check_gets_three_rounds_unless_told() {
         job
     };
     for kind in ["fix", "build", "test"] {
-        assert_eq!(rounds(job(kind, Some("true"), None)), 3, "{kind}");
+        assert_eq!(rounds(job(kind, Some("true"), None)), 8, "{kind}");
     }
     assert_eq!(rounds(job("fix", Some("true"), Some(1))), 1);
     assert_eq!(rounds(job("fix", Some("true"), Some(5))), 5);
@@ -2429,7 +2516,7 @@ fn a_fix_with_a_check_gets_three_rounds_unless_told() {
     assert_eq!(rounds(job("investigate", Some("true"), None)), 1);
 }
 
-/// A check that keeps failing, with no rounds named: the agent is told it has 3 rounds and that
+/// A check that keeps failing, with 3 rounds named: the agent is told it has 3 rounds and that
 /// the check runs offline, hears the check's output in rounds 2 and 3, and the job stops at its
 /// limit after round 3, nothing pushed. One more round (Try again's words) picks the session up
 /// with the check's output in front of them, as the orchestrator's retry does.
@@ -2442,7 +2529,7 @@ fn a_failing_check_is_heard_every_round_and_on_one_more_round() {
     let check = "echo CHECK-SAID-7e1; false";
     let id = post_job(
         &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "KEEP PROMPTS COMMIT: a.txt", "check": check}),
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "KEEP PROMPTS COMMIT: a.txt", "check": check, "rounds": 3}),
     )
     .body["id"]
         .as_str()
