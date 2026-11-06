@@ -4515,3 +4515,74 @@ fn a_job_alone_gets_the_whole_rise_of_its_accounts_windows() {
     let one = wait(&obid, one.body["id"].as_str().unwrap());
     assert!(one.get("windowShare").is_none(), "{one}");
 }
+
+/// PUBLISHING-16: a check that runs past its limit judged nothing. It doesn't pass, its output
+/// still says why it ended, and it comes back unchecked, which the job's worker ends done on with
+/// nothing published by itself and Publish by hand offered (as PUBLISHING-8), spending no fix
+/// round. A stop is no timeout: it stays a plain end, never unchecked.
+#[test]
+fn publishing_16_a_check_that_times_out_spends_no_round() {
+    use obid::process::Signal;
+    let folder = Folder::new("check-limit");
+    // A group of its own, as the job sandbox's first program makes, so the limit ends it at once.
+    let argv: Vec<std::ffi::OsString> = vec![
+        "/usr/bin/perl".into(),
+        "-e".into(),
+        "setpgrp(0, 0); sleep 30".into(),
+    ];
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_send, signal) = tokio::sync::watch::channel(Signal::Run);
+    let started = Instant::now();
+    let run = runtime
+        .block_on(obid::jobs::run_check(
+            &argv,
+            &[],
+            &folder.0,
+            Duration::from_secs(1),
+            signal,
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "it ran to its end"
+    );
+    assert!(!run.passed);
+    assert!(
+        run.output.ends_with(obid::jobs::CHECK_TOO_LONG),
+        "{}",
+        run.output
+    );
+    assert_eq!(
+        run.unchecked.as_deref(),
+        Some(
+            "Not published: the check ran past its 1-second limit, so nothing counts as checked. Read its change, then Publish it by hand."
+        )
+    );
+
+    let (send, signal) = tokio::sync::watch::channel(Signal::Run);
+    let stopped = runtime.block_on(async {
+        let run = obid::jobs::run_check(
+            &argv,
+            &[],
+            &folder.0,
+            Duration::from_secs(60),
+            signal,
+            None,
+            None,
+            None,
+        );
+        tokio::pin!(run);
+        tokio::select! {
+            _ = &mut run => panic!("it ended before the stop"),
+            () = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        send.send(Signal::Stop).unwrap();
+        run.await.unwrap()
+    });
+    assert!(!stopped.passed);
+    assert!(stopped.unchecked.is_none(), "{:?}", stopped.unchecked);
+    assert!(!stopped.output.contains(obid::jobs::CHECK_TOO_LONG));
+}
