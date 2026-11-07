@@ -935,6 +935,78 @@ fn sign_in_14_a_login_in_several_organizations_reaches_tetrix_once_its_address_n
     }
 }
 
+/// FIELD-3: Tetrix refusing a login in several organizations (no `?org=` in its address) shows on
+/// the connection, and new jobs stop getting Tetrix's tools until it's connected again.
+#[test]
+fn an_org_error_shows_on_the_connection_and_jobs_stop_getting_tetrix() {
+    let folder = Folder::new("tetrix-org-error");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    seen.lock().unwrap().mode = "orgs";
+    let run = || {
+        let made = call(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            Some(
+                &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "REPORT TETRIX_CALL"}}),
+            ),
+        );
+        assert_eq!(made.status, 201, "{}", made.text);
+        let id = made.body["id"].as_str().unwrap().to_owned();
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+        let report: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                obid.home
+                    .join("worktrees")
+                    .join(&id)
+                    .join(".obi/report.json"),
+            )
+            .unwrap_or_else(|e| panic!("{e}: {job}")),
+        )
+        .unwrap();
+        (job, report)
+    };
+    let refused = "multiple organizations in token; org query param required. Add ?org=<your organization's id> to Tetrix's address and connect again.";
+
+    // The first refusal shows on the connection, which stays connected.
+    sign_in(&obid, &base);
+    run();
+    let status = call(&obid, "GET", "/v1/tetrix", None).body;
+    assert_eq!(status["connected"], true, "{status}");
+    assert!(
+        status["error"].as_str().unwrap_or("").contains(refused),
+        "{status}"
+    );
+
+    // The next job gets no Tetrix server and asks Tetrix nothing.
+    let asked = seen.lock().unwrap().requests.len();
+    let (job, report) = run();
+    assert_eq!(
+        report["mcp"]["mcpServers"]["tetrix"],
+        Value::Null,
+        "{report}"
+    );
+    assert_eq!(seen.lock().unwrap().requests.len(), asked, "{job}");
+
+    // Connected again with the organization: the error clears and jobs use Tetrix again.
+    sign_in_at(&obid, &format!("{base}/mcp?org={ORG}"));
+    assert_eq!(
+        call(&obid, "GET", "/v1/tetrix", None).body["error"],
+        Value::Null
+    );
+    let (job, report) = run();
+    assert_ne!(
+        report["mcp"]["mcpServers"]["tetrix"],
+        Value::Null,
+        "{report}"
+    );
+    assert_eq!(job["tetrix"]["saved"], json!(["sess-agent-1"]), "{job}");
+}
+
 /// A stand-in `gh` in `folder/bin` that opens a pull request and keeps its description in
 /// `folder/gh/body`.
 fn body_keeping_gh(folder: &Path) -> PathBuf {

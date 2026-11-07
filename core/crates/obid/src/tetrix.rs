@@ -231,12 +231,18 @@ fn with_org(url: &str) -> String {
 /// `error` with what to do when Tetrix refused because Oby's login is in several organizations
 /// and its address doesn't say which.
 fn org_hint(error: String) -> String {
-    if error.contains("org query param required") {
+    if org_refused(&error) {
         // Short: a job's record keeps 200 characters of it.
         format!("{error} Add ?org=<your organization's id> to Tetrix's address and connect again.")
     } else {
         error
     }
+}
+
+/// Whether `error` is Tetrix refusing a login in several organizations at an address that names
+/// none: every call fails the same way until the owner connects again.
+fn org_refused(error: &str) -> bool {
+    error.contains("org query param required")
 }
 
 /// Whether `url` is on this machine (127.0.0.1, localhost, ::1).
@@ -429,6 +435,24 @@ impl Tetrix {
     /// Whether obid holds a login it can use or refresh.
     pub fn connected(&self) -> bool {
         self.saved().connected_at.is_some()
+    }
+
+    /// Whether a new job gets Tetrix: connected, and not refused for naming no organization
+    /// (FIELD-3: every call would fail until the owner connects again). Other errors pass: a
+    /// refresh that failed once is tried again at the next call.
+    pub fn usable(&self) -> bool {
+        let saved = self.saved();
+        saved.connected_at.is_some() && !saved.error.as_deref().is_some_and(org_refused)
+    }
+
+    /// `error` with [`org_hint`]'s words; Tetrix refusing for the organization also shows on
+    /// the connection, once, so Settings says it and new jobs stop getting Tetrix.
+    fn hint(&self, error: String) -> String {
+        let error = org_hint(error);
+        if org_refused(&error) && self.saved().error.as_deref() != Some(error.as_str()) {
+            self.set_error(error.clone());
+        }
+        error
     }
 
     pub fn status_json(&self) -> Value {
@@ -989,7 +1013,10 @@ impl Tetrix {
             Ok(tokens) => {
                 self.keep(&tokens, false)?;
                 saved.expires = tokens.expires_in.map(|s| now + s);
-                saved.error = None;
+                // A refresh doesn't change the address: only connecting again clears its refusal.
+                if !saved.error.as_deref().is_some_and(org_refused) {
+                    saved.error = None;
+                }
                 self.save(saved)?;
                 Ok(tokens.access)
             }
@@ -1067,9 +1094,9 @@ impl Tetrix {
                 connections
                     .upstream_tools(job, &c, true)
                     .await
-                    .map_err(org_hint)?
+                    .map_err(|e| self.hint(e))?
             }
-            other => other.map_err(org_hint)?,
+            other => other.map_err(|e| self.hint(e))?,
         };
         let mut tools: Vec<Value> = listed
             .into_iter()
@@ -1124,7 +1151,7 @@ impl Tetrix {
             }
             other => other,
         }
-        .map_err(org_hint)?;
+        .map_err(|e| self.hint(e))?;
         Ok(connections.clean(answer))
     }
 
