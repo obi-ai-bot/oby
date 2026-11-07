@@ -11,8 +11,8 @@ pub struct Event {
     pub data: Value,
 }
 
-/// Where events go out. An app that falls too far behind loses the oldest and fetches again
-/// (the document says to fetch after every reconnect).
+/// Where events go out. An app that falls more than a channel's 1024 events behind has its
+/// stream ended (`routes::events`), and fetches again when it reconnects, as every app does.
 #[derive(Clone)]
 pub struct Events {
     sender: broadcast::Sender<Event>,

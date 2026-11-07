@@ -943,6 +943,7 @@ event: recap
 data: {"text": "Two jobs are done. Pick a base branch needs you.", "since": "2026-10-17T08:10:00Z", "at": "2026-10-17T09:02:00Z"}
 ```
 
+- An app that falls more than 1,024 events behind, on either of obid's two queues (`transcript` events, below, and every other), has its stream ended there, instead of skipping those events and staying open, so the app reconnects and fetches again, as after every reconnect.
 - A `job` event comes with every change: a new step, a status, the summary, `commits`, `published`, `publishError`, `pipeline`, `pullRequest`, `pullRequestError`, `dismissed`, `macCheck`, `mergeError`, a move to another account. The app replaces the job with that `id`.
 - `stalled` (obid only) comes once when a job stalls (`limit`, above), with the job as its `job` event carries it, `stalled` and the handoff note included: what the conversation supervises (continue, split or restart).
 - `transcript` (obid only) comes with each transcript entry that comes or changes: `{"job": "<id>", "entry": {…}}`, and with each line the agent writes: `{"job": "<id>", "n": 9, "append": "…"}` (add it to entry `n`'s `text`), the entry as `GET /v1/jobs/{id}/transcript` has it. Update by `n`: a call comes again under its `n` when it ends. These events have a queue of their own in obid, so a busy job's calls never push another event (a job's end, say) out of a slow app's backlog; an app that falls behind on them fetches the transcript again with `after`.
