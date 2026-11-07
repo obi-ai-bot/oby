@@ -1517,8 +1517,7 @@ pub fn job_report(job: &Value) -> Option<(String, String)> {
     let title = crate::brain::briefing::line(job["title"].as_str().unwrap_or("A job"), 80);
     let status = job["status"].as_str()?;
     let said = match (status, job["stalled"]["text"].as_str()) {
-        // A stall says why in obid's words (`stalled.text`), whatever status it ended in, and its
-        // conversation decides next.
+        // A stall says why in obid's words (`stalled.text`), whatever status it ended in.
         ("failed" | "interrupted", Some(why)) => format!(
             "{title} stalled: {}. Its branch is kept and nothing was pushed.",
             crate::brain::briefing::line(why, 120)

@@ -7136,7 +7136,7 @@ impl Jobs {
                 if matches!(end, End::AccountLimit { .. }) && resume_at.is_none() {
                     self.record_account_limit(id);
                 }
-                // What the conversation supervises: continue, split or restart (docs/runner-api.md).
+                // The `stalled` event (docs/runner-api.md): the job stays on its own card.
                 if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
                     self.events.send("stalled", job.to_json());
                 }

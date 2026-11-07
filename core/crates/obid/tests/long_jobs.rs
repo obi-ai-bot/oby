@@ -870,7 +870,8 @@ fn recovery_3_a_quiet_job_continues_in_its_session() {
     assert!(!seen.iter().any(|(name, _)| name == "stalled"), "{seen:?}");
 }
 
-/// RECOVERY-3: after 5 tries, today's stalled path, where its parent decides.
+/// RECOVERY-3: after 5 tries it stalls on its own card, though a conversation started it: no turn
+/// takes it on by itself.
 #[test]
 fn recovery_3_five_tries_then_it_stalls() {
     let (_folder, obid) = obid("recovery-3-out");
@@ -878,10 +879,25 @@ fn recovery_3_five_tries_then_it_stalls() {
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(job["stalled"]["why"], "quiet", "{job}");
+    // POST /v1/jobs gives it a conversation of its own (TASKCONV-1).
+    assert!(job["conversation"].is_string(), "{job}");
     let told = prompts(&job);
     // Its first turn, 5 continued, and the handoff note's.
     assert_eq!(told.len(), 7, "{told:?}");
     assert!(told[6].contains("handoff note"), "{told:?}");
+    // The deleted supervisor took a stall on within seconds; nothing does now.
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(!job["stalled"].is_null(), "{job}");
+    assert_eq!(job["supervised"], json!([]), "{job}");
+    let inbox = call(&obid, "GET", "/v1/inbox", None).body;
+    assert!(
+        !inbox.as_array().unwrap().iter().any(|i| i["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("supervisor-"))),
+        "{inbox}"
+    );
 }
 
 /// RECOVERY-4: the turn limit continues the same session, and counts with a quiet job's tries.
