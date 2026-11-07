@@ -79,6 +79,10 @@
 //                    the session save_session answered
 //   QUIET            says nothing and writes nothing until it is ended (a stalled job), again in
 //                    each turn obid continues by itself; QUIET ONCE, only this turn (RECOVERY-3)
+//   BUSY             says nothing and writes nothing, but keeps its CPU busy (a tenth of a core,
+//                    as a quiet command building outside the worktree does) until it is ended,
+//                    again in each turn obid continues by itself; BUSY: <ms>, for that long, then
+//                    ends the turn with "Built quietly." (RECOVERY-12)
 //   DIE              says it's working and exits with no result; DIE ALWAYS in each turn after;
 //                    DIE LOGIN says on stderr that it isn't logged in (RECOVERY-1)
 //   DIE FLAKY        exits with no result in every turn but those obid continues (RECOVERY-1)
@@ -288,7 +292,7 @@ rl.on("line", (line) => {
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
   // What obid cut, it does again when obid continues its session (its marked message).
-  const stuck = prompt.match(/QUIET|MAXTURNS|SLEEP|STDERR TOKEN|BACKGROUND: \d+ (?:SILENT|FOREVER)/)?.[0];
+  const stuck = prompt.match(/QUIET|BUSY(?!:)|MAXTURNS|SLEEP|STDERR TOKEN|BACKGROUND: \d+ (?:SILENT|FOREVER)/)?.[0];
   if (prompt.includes("Your run was cut")) {
     if (existsSync(".obi/stuck")) prompt += ` ${readFileSync(".obi/stuck", "utf8")}`;
   } else if (stuck && !prompt.includes("ONCE")) {
@@ -685,6 +689,13 @@ rl.on("line", (line) => {
     result("Claude AI usage limit reached.", true);
   } else if (prompt.includes("LIMITED NO EVENT")) {
     limitEnds("You've hit your session limit · resets 4:36am (America/Sao_Paulo)");
+  } else if (prompt.includes("BUSY")) {
+    const spin = setInterval(() => {
+      const until = Date.now() + 10;
+      while (Date.now() < until);
+    }, 100);
+    const ms = prompt.match(/BUSY: (\d+)/);
+    if (ms) setTimeout(() => (clearInterval(spin), result("Built quietly.")), Number(ms[1]));
   } else if (prompt.includes("QUIET")) {
     if (prompt.includes("NO NOTE")) {
       mkdirSync(".obi", { recursive: true });

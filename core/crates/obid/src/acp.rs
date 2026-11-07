@@ -112,6 +112,7 @@ pub async fn run_turn(
     }
     turn.timed_out = run.conn.timed_out;
     turn.quiet = run.conn.quiet_out;
+    turn.idle = run.conn.idle_out;
     turn.stopped = run.conn.stopped;
     turn.exit = run.conn.finish().await;
     Ok(turn)

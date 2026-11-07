@@ -82,18 +82,30 @@ pub fn roots_in(folder: &Path, checks: bool) -> Vec<u32> {
         .collect()
 }
 
-/// A process: its parent, its group and its resident memory in bytes.
+/// A process: its parent, its group, its resident memory in bytes and the CPU time it has used, user
+/// and system, in nanoseconds (0 when it can't be read).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Process {
     pub pid: u32,
     pub ppid: u32,
     pub pgid: u32,
     pub rss: u64,
+    pub cpu: u64,
 }
 
 /// The resident memory of `roots`' trees together: each root, every process descended from
 /// one, and every process still in a root's group (one whose parent ended), each counted once.
 pub fn tree_rss(table: &[Process], roots: &[u32]) -> u64 {
+    tree_sum(table, roots, |p| p.rss)
+}
+
+/// The CPU time `roots`' trees have used together, in nanoseconds, each process counted once as
+/// [`tree_rss`] counts it. A process that ended takes its time with it.
+pub fn tree_cpu(table: &[Process], roots: &[u32]) -> u64 {
+    tree_sum(table, roots, |p| p.cpu)
+}
+
+fn tree_sum(table: &[Process], roots: &[u32], value: impl Fn(&Process) -> u64) -> u64 {
     if roots.is_empty() {
         return 0;
     }
@@ -111,7 +123,7 @@ pub fn tree_rss(table: &[Process], roots: &[u32]) -> u64 {
         if !seen.insert(process.pid) {
             continue;
         }
-        total += process.rss;
+        total += value(process);
         stack.extend(children.get(&process.pid).into_iter().flatten());
     }
     total
@@ -166,15 +178,20 @@ pub fn processes() -> Vec<Process> {
         )
         .map(|out| {
             let mut table = parse_ps(&out);
+            let ns = mach_tick_ns();
             for process in &mut table {
                 // An ad-hoc ps can read identities, but loses Apple's task-port
                 // entitlement for other processes' RSS. rusage needs no task port.
-                if process.rss == 0
-                    && let Ok(pid) = i32::try_from(process.pid)
+                if let Ok(pid) = i32::try_from(process.pid)
                     && let Ok(usage) =
                         libproc::pid_rusage::pidrusage::<libproc::pid_rusage::RUsageInfoV2>(pid)
                 {
-                    process.rss = usage.ri_resident_size;
+                    if process.rss == 0 {
+                        process.rss = usage.ri_resident_size;
+                    }
+                    // In Mach ticks, not nanoseconds, on Apple silicon.
+                    let ticks = usage.ri_user_time.saturating_add(usage.ri_system_time);
+                    process.cpu = (u128::from(ticks) * ns.0 / ns.1) as u64;
                 }
             }
             table
@@ -190,10 +207,15 @@ pub fn processes() -> Vec<Process> {
             .flatten()
             .filter_map(|entry| {
                 let pid = entry.file_name().to_str()?.parse().ok()?;
-                parse_status(
+                let mut process = parse_status(
                     pid,
                     &std::fs::read_to_string(entry.path().join("status")).ok()?,
-                )
+                )?;
+                process.cpu = std::fs::read_to_string(entry.path().join("stat"))
+                    .ok()
+                    .and_then(|stat| stat_cpu(&stat, CLOCK_TICKS))
+                    .unwrap_or(0);
+                Some(process)
             })
             .collect()
     }
@@ -316,6 +338,48 @@ fn linux_machine(meminfo: &str, psi: &str) -> Option<Machine> {
     })
 }
 
+/// A Mach tick in nanoseconds, as a fraction (numerator, denominator): 1/1 on Intel, 125/3 on
+/// Apple silicon. Read once from obid's own CPU time, which `getrusage` gives in microseconds and
+/// rusage in ticks: `mach_timebase_info` would need `unsafe`, which this workspace forbids.
+#[cfg(target_os = "macos")]
+fn mach_tick_ns() -> (u128, u128) {
+    static TICK: std::sync::OnceLock<(u128, u128)> = std::sync::OnceLock::new();
+    *TICK.get_or_init(|| {
+        use nix::sys::resource::{UsageWho, getrusage};
+        let ticks = i32::try_from(std::process::id()).ok().and_then(|pid| {
+            libproc::pid_rusage::pidrusage::<libproc::pid_rusage::RUsageInfoV2>(pid).ok()
+        });
+        let Ok(usage) = getrusage(UsageWho::RUSAGE_SELF) else {
+            return (1, 1);
+        };
+        let micros = |t: nix::sys::time::TimeVal| {
+            u128::try_from(t.tv_sec()).unwrap_or(0) * 1_000_000
+                + u128::try_from(t.tv_usec()).unwrap_or(0)
+        };
+        let ns = (micros(usage.user_time()) + micros(usage.system_time())) * 1000;
+        match ticks.map(|t| u128::from(t.ri_user_time) + u128::from(t.ri_system_time)) {
+            Some(ticks) if ticks > 0 && ns > 0 => (ns, ticks),
+            _ => (1, 1),
+        }
+    })
+}
+
+/// The kernel's clock ticks a second (`USER_HZ`), the unit of `/proc/<pid>/stat`'s times.
+// ponytail: 100 on x86_64 and arm64, the ABI's; sysconf(_SC_CLK_TCK) if obid runs where it isn't.
+#[cfg(target_os = "linux")]
+const CLOCK_TICKS: u64 = 100;
+
+/// `/proc/<pid>/stat`'s `utime` and `stime` (its 14th and 15th fields), in nanoseconds. The
+/// command's name, in parentheses, may hold spaces and parentheses itself.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn stat_cpu(stat: &str, ticks_per_second: u64) -> Option<u64> {
+    let mut fields = stat.get(stat.rfind(')')? + 1..)?.split_whitespace();
+    // After the name comes the state (the 3rd field): utime is 11 fields on, stime 12.
+    let utime: u64 = fields.nth(11)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+    Some((utime + stime).saturating_mul(1_000_000_000) / ticks_per_second.max(1))
+}
+
 /// `ps -axo pid=,ppid=,pgid=,rss=` (resident memory in KiB), read.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn parse_ps(out: &str) -> Vec<Process> {
@@ -328,6 +392,7 @@ fn parse_ps(out: &str) -> Vec<Process> {
                 ppid: u32::try_from(next()?).ok()?,
                 pgid: u32::try_from(next()?).ok()?,
                 rss: next()? * 1024,
+                cpu: 0,
             })
         })
         .collect()
@@ -350,6 +415,7 @@ fn parse_status(pid: u32, status: &str) -> Option<Process> {
             .and_then(|g| u32::try_from(g).ok())
             .unwrap_or(0),
         rss: field("VmRSS").unwrap_or(0) * 1024,
+        cpu: 0,
     })
 }
 
@@ -421,6 +487,33 @@ Pages occupied by compressor:                 347536.
     }
 
     #[test]
+    fn sums_a_trees_cpu_once() {
+        let mut table = parse_ps(
+            "  100     1   100   1000\n  101   100   100   2000\n  102   101   102   3000\n  103     1   100   4000\n  200     1   200   5000\n",
+        );
+        for (process, cpu) in table.iter_mut().zip([1, 2, 4, 8, 16]) {
+            process.cpu = cpu;
+        }
+        // 100, its child 101, 101's child 102 in a group of its own, and 103 left in 100's group.
+        assert_eq!(tree_cpu(&table, &[100]), 15);
+        assert_eq!(tree_cpu(&table, &[100, 101, 102]), 15);
+        assert_eq!(tree_cpu(&table, &[200]), 16);
+        assert_eq!(tree_cpu(&table, &[]), 0);
+        // utime 300 and stime 200 ticks of 100 a second: 5 seconds, a name with ") (" in it read past.
+        let stat = "42 (a) (b c) S 41 40 40 0 -1 4194304 10 0 0 0 300 200 0 0 20 0 1 0 5 0 0\n";
+        assert_eq!(stat_cpu(stat, 100), Some(5_000_000_000));
+        assert_eq!(stat_cpu("42 (cut", 100), None);
+        // This process, busy for a moment, has used some CPU of its own.
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(50) {
+            std::hint::black_box(0u64);
+        }
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            assert!(tree_cpu(&processes(), &[std::process::id()]) > 0);
+        }
+    }
+
+    #[test]
     fn reads_proc_status() {
         let status = "Name:\tcargo\nPPid:\t41\nNSpgid:\t40\t1\nVmRSS:\t  2048 kB\n";
         assert_eq!(
@@ -429,7 +522,8 @@ Pages occupied by compressor:                 347536.
                 pid: 42,
                 ppid: 41,
                 pgid: 40,
-                rss: 2048 * 1024
+                rss: 2048 * 1024,
+                cpu: 0,
             })
         );
         let thread = "Name:\tkthreadd\nPPid:\t0\n";

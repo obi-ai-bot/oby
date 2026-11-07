@@ -896,11 +896,12 @@ fn recovery_3_a_quiet_job_continues_in_its_session() {
 }
 
 /// RECOVERY-3: after 5 tries it stalls on its own card, though a conversation started it: no turn
-/// takes it on by itself.
+/// takes it on by itself. Its agent stays busy without a word past the windows CPU counts for; an
+/// idle one gets 2 (RECOVERY-12).
 #[test]
 fn recovery_3_five_tries_then_it_stalls() {
-    let (_folder, obid) = obid("recovery-3-out");
-    let id = post_job(&obid, "QUIET KEEP PROMPTS");
+    let (_folder, obid) = obid_with("recovery-3-out", json!({"stallAfter": 1}), &[]);
+    let id = post_job(&obid, "BUSY KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(job["stalled"]["why"], "quiet", "{job}");
@@ -923,6 +924,36 @@ fn recovery_3_five_tries_then_it_stalls() {
             .is_some_and(|id| id.starts_with("supervisor-"))),
         "{inbox}"
     );
+}
+
+/// RECOVERY-12: an agent busy without a word or a change in its worktree (a command building
+/// outside it) uses CPU, which counts as progress: it runs past 2 quiet windows and ends done in its
+/// one turn.
+#[test]
+fn recovery_12_a_silent_busy_command_keeps_its_slot() {
+    let (_folder, obid) = obid("recovery-12-busy");
+    let id = post_job(&obid, "BUSY: 8000 KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "Built quietly.", "{job}");
+    assert!(job["stalled"].is_null(), "{job}");
+    assert_eq!(prompts(&job).len(), 1, "{job}");
+}
+
+/// RECOVERY-12: an agent quiet and idle (no CPU, nothing changed: a hung CLI) is continued at once,
+/// twice at most, then stalls with its handoff note.
+#[test]
+fn recovery_12_a_silent_idle_agent_is_continued_at_most_twice() {
+    let (_folder, obid) = obid("recovery-12-idle");
+    let id = post_job(&obid, "QUIET KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["stalled"]["why"], "quiet", "{job}");
+    let told = prompts(&job);
+    // Its first turn, 2 continued, and the handoff note's.
+    assert_eq!(told.len(), 4, "{told:?}");
+    assert!(told[1].contains("no progress for 3 seconds"), "{told:?}");
+    assert!(told[3].contains("handoff note"), "{told:?}");
 }
 
 /// RECOVERY-4: the turn limit continues the same session, and counts with a quiet job's tries.
