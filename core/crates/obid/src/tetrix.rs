@@ -239,10 +239,14 @@ fn org_hint(error: String) -> String {
     }
 }
 
-/// Whether `error` is Tetrix refusing a login in several organizations at an address that names
-/// none: every call fails the same way until the owner connects again.
+/// Tetrix's reason for refusing a login in several organizations at an address that names none
+/// (its mcp_service/app/org_request.py): every call fails the same way until the owner connects
+/// again.
+const ORG_REFUSAL: &str = "multiple organizations in token; org query param required";
+
+/// Whether `error` is [`ORG_REFUSAL`]'s.
 fn org_refused(error: &str) -> bool {
-    error.contains("org query param required")
+    error.contains(ORG_REFUSAL)
 }
 
 /// Whether `url` is on this machine (127.0.0.1, localhost, ::1).
@@ -445,14 +449,24 @@ impl Tetrix {
         saved.connected_at.is_some() && !saved.error.as_deref().is_some_and(org_refused)
     }
 
-    /// `error` with [`org_hint`]'s words; Tetrix refusing for the organization also shows on
-    /// the connection, once, so Settings says it and new jobs stop getting Tetrix.
-    fn hint(&self, error: String) -> String {
-        let error = org_hint(error);
-        if org_refused(&error) && self.saved().error.as_deref() != Some(error.as_str()) {
-            self.set_error(error.clone());
+    /// Tetrix's own refusal of a listing at `c`'s address for the organization (`error` exactly
+    /// its HTTP 400) shows on the connection, once, so Settings says it and new jobs stop getting
+    /// Tetrix (FIELD-3). Only a listing's: it carries no agent's words, where a call's error can
+    /// echo its arguments. Never once the owner connected again meanwhile: the error was the old
+    /// address's.
+    async fn refused_for_org(&self, c: &Connection, error: &str) {
+        if error != format!("{} answered HTTP 400: {ORG_REFUSAL}.", c.host()) {
+            return;
         }
-        error
+        let _held = self.changing.lock().await;
+        let saved = self.saved();
+        let hinted = org_hint(error.to_owned());
+        if saved.connected_at.is_some()
+            && saved.url == c.mcp
+            && saved.error.as_deref() != Some(hinted.as_str())
+        {
+            self.set_error(hinted);
+        }
     }
 
     pub fn status_json(&self) -> Value {
@@ -1091,12 +1105,16 @@ impl Tetrix {
         let listed = match connections.upstream_tools(job, &c, false).await {
             Err(e) if e.ends_with("answered HTTP 401.") => {
                 self.access(Some(&token)).await?;
-                connections
-                    .upstream_tools(job, &c, true)
-                    .await
-                    .map_err(|e| self.hint(e))?
+                connections.upstream_tools(job, &c, true).await
             }
-            other => other.map_err(|e| self.hint(e))?,
+            other => other,
+        };
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(e) => {
+                self.refused_for_org(&c, &e).await;
+                return Err(org_hint(e));
+            }
         };
         let mut tools: Vec<Value> = listed
             .into_iter()
@@ -1151,7 +1169,7 @@ impl Tetrix {
             }
             other => other,
         }
-        .map_err(|e| self.hint(e))?;
+        .map_err(org_hint)?;
         Ok(connections.clean(answer))
     }
 
@@ -2326,6 +2344,106 @@ mod tests {
         // Plain HTTP on this machine only for a Tetrix on this machine.
         assert!(endpoint(Some("http://127.0.0.1:9/token"), false).is_none());
         assert!(endpoint(Some("http://127.0.0.1:9/token"), true).is_some());
+    }
+
+    /// A Tetrix connected at `url`, its login in `home`'s vault (FIELD-3's tests).
+    fn connected_at(home: &Path, url: &str, token_endpoint: Option<String>) -> Arc<Tetrix> {
+        let _ = std::fs::remove_dir_all(home);
+        let vault = Arc::new(crate::vault::Vault::file(
+            home.join("vault"),
+            Arc::new(crate::secrets::Secrets::default()),
+        ));
+        vault.add("tetrix-access-old-0f9e8d7c6b5a", ACCESS).unwrap();
+        vault
+            .add("tetrix-refresh-old-5e4d3c2b1a0f", REFRESH)
+            .unwrap();
+        let tetrix = Tetrix::open(home, Vec::new(), vault, crate::events::Events::new());
+        tetrix
+            .save(Saved {
+                url: Some(url.into()),
+                connected_at: Some("2026-11-07T00:00:00Z".into()),
+                token_endpoint,
+                client_id: Some("oby".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        tetrix
+    }
+
+    fn mcp_at(url: &str) -> Connection {
+        Connection {
+            name: "Tetrix".into(),
+            mcp: Some(url.into()),
+            api: None,
+            secret: ACCESS.into(),
+            header: None,
+            created: String::new(),
+        }
+    }
+
+    /// FIELD-3: only Tetrix's own refusal, at the address the connection still has, marks it.
+    #[tokio::test]
+    async fn an_org_refusal_marks_only_the_address_it_came_from() {
+        let home =
+            std::env::temp_dir().join(format!("obid-tetrix-org-race-{}", std::process::id()));
+        let old = "http://127.0.0.1:9/mcp";
+        let refusal = format!("127.0.0.1 answered HTTP 400: {ORG_REFUSAL}.");
+        // The owner connected again with `?org=` while a listing at the old address was out.
+        let tetrix = connected_at(
+            &home,
+            &format!("{old}?org=0b5e1a2c-7d3f-4e6a-9c8b-1f2e3d4c5b6a"),
+            None,
+        );
+        tetrix.refused_for_org(&mcp_at(old), &refusal).await;
+        assert_eq!(tetrix.saved().error, None);
+        assert!(tetrix.usable());
+        // Words that only hold the phrase (an echoed argument) mark nothing.
+        let tetrix = connected_at(&home, old, None);
+        let echoed = format!("127.0.0.1 answered HTTP 400: bad query: {ORG_REFUSAL}.");
+        tetrix.refused_for_org(&mcp_at(old), &echoed).await;
+        assert!(tetrix.usable());
+        // Tetrix's own refusal at the address it still has does.
+        tetrix.refused_for_org(&mcp_at(old), &refusal).await;
+        assert_eq!(tetrix.saved().error, Some(org_hint(refusal)));
+        assert!(tetrix.connected() && !tetrix.usable());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// FIELD-3: a token refresh doesn't change the address, so it keeps the org refusal.
+    #[tokio::test]
+    async fn a_token_refresh_keeps_the_org_refusal() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"access_token": "tetrix-access-new-a1b2c3d4e5f6", "token_type": "Bearer", "expires_in": 3600}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        let home =
+            std::env::temp_dir().join(format!("obid-tetrix-org-refresh-{}", std::process::id()));
+        let tetrix = connected_at(
+            &home,
+            "http://127.0.0.1:9/mcp",
+            Some(format!("http://127.0.0.1:{port}/token")),
+        );
+        let refusal = org_hint(format!("127.0.0.1 answered HTTP 400: {ORG_REFUSAL}."));
+        tetrix.set_error(refusal.clone());
+        // The old token is stale: obid refreshes it.
+        let fresh = tetrix
+            .access(Some("tetrix-access-old-0f9e8d7c6b5a"))
+            .await
+            .unwrap();
+        assert_eq!(fresh, "tetrix-access-new-a1b2c3d4e5f6");
+        assert_eq!(tetrix.saved().error, Some(refusal));
+        assert!(!tetrix.usable());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The scan of what goes to Tetrix works in obid's own `home/tmp`, never in a job's folder
