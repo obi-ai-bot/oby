@@ -28,9 +28,9 @@ pub enum Cut {
     Stopped,
 }
 
-/// How many quiet windows in a row a change in the worktree, or a background task still running
-/// (`Conn::holding`), alone stands for progress: a quiet build is, a loop touching a file or a
-/// server that never ends isn't.
+/// How many quiet windows in a row a change in the worktree, CPU its processes used, or a background
+/// task still running (`Conn::holding`), alone stands for progress: a quiet build is, a loop
+/// touching a file or spinning, or a server that never ends, isn't.
 pub const FILE_WINDOWS: u32 = 4;
 
 /// Something outside the agent the turn waits on (an Apple check on a Mac): while it says so, the
@@ -39,8 +39,8 @@ pub type Waiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// How long a turn may take: `most` at all, and, with `quiet`, no longer than that without a line
 /// from the agent, a wait (`waiting`) or, for [`FILE_WINDOWS`] windows at most, a change in `watch`
-/// (a job's worktree): a job runs as long as it makes progress (docs/runner-api.md, `limit`). A
-/// plain `Duration` is a fixed limit.
+/// (a job's worktree) or CPU its processes used: a job runs as long as it makes progress
+/// (docs/runner-api.md, `limit`). A plain `Duration` is a fixed limit.
 #[derive(Clone)]
 pub struct Limit {
     pub most: Duration,
@@ -110,6 +110,8 @@ pub struct Conn {
     /// change in `watch` filled.
     heard_at: SystemTime,
     file_windows: u32,
+    /// The CPU time the agent's processes had used at the last quiet window, in nanoseconds.
+    cpu: u64,
     buffer: Vec<u8>,
     next_id: u64,
     /// Every message obid writes carries `"jsonrpc": "2.0"` (ACP does; Codex's app-server leaves
@@ -119,6 +121,9 @@ pub struct Conn {
     pub timed_out: bool,
     /// It timed out for being quiet (`Limit::quiet`), not at its most.
     pub quiet_out: bool,
+    /// Its last quiet window had no change in `watch` and no CPU used either: the agent is idle
+    /// (hung), not busy without a word (RECOVERY-12).
+    pub idle_out: bool,
     /// The agent ended its turn and waits for a background task of its own that is still running
     /// (crate::agent): the task stands for progress as a change in `watch` does, for
     /// [`FILE_WINDOWS`] windows at most without a line (a server or a `--watch` never ends).
@@ -198,12 +203,14 @@ impl Conn {
             waiting: limit.waiting,
             heard_at: SystemTime::now(),
             file_windows: 0,
+            cpu: 0,
             buffer: Vec::new(),
             next_id: 0,
             jsonrpc,
             stopped,
             timed_out: false,
             quiet_out: false,
+            idle_out: false,
             holding: false,
             _metered: crate::meter::root(pgid, &launch.cwd),
             _recorded: recorded,
@@ -229,6 +236,7 @@ impl Conn {
         self.stop = stop;
         self.timed_out = false;
         self.quiet_out = false;
+        self.idle_out = false;
         self.holding = false;
     }
 
@@ -246,6 +254,24 @@ impl Conn {
                 .as_mut()
                 .reset(tokio::time::Instant::now() + quiet);
         }
+    }
+
+    /// The agent's processes used CPU since the last quiet window: at least a thousandth of one core
+    /// over the window (an idle event loop's timers use less), or a busy process ended.
+    async fn cpu_used(&mut self) -> bool {
+        let pgid = self.pgid;
+        let now = tokio::task::spawn_blocking(move || {
+            let table = crate::meter::processes();
+            (!table.is_empty()).then(|| crate::meter::tree_cpu(&table, &[pgid]))
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(now) = now else { return false };
+        let least = self.quiet.unwrap_or_default().as_nanos() / 1000;
+        let used = u128::from(now.abs_diff(self.cpu)) >= least.max(1);
+        self.cpu = now;
+        used
     }
 
     /// Nothing waits to be read and the agent hasn't closed its output, which is how a running
@@ -283,22 +309,26 @@ impl Conn {
                 }
                 () = &mut self.quiet_at, if self.quiet.is_some() => {
                     let since = self.heard_at;
+                    let counts = self.file_windows < FILE_WINDOWS;
                     let changed = match self.watch.clone() {
-                        Some(dir) if self.file_windows < FILE_WINDOWS => {
+                        Some(dir) if counts => {
                             tokio::task::spawn_blocking(move || changed_since(&dir, since))
                                 .await
                                 .unwrap_or(false)
                         }
                         _ => false,
                     };
+                    // Measured past the cap too: a spinning agent isn't an idle one.
+                    let busy = self.cpu_used().await;
                     if self.waiting.as_ref().is_some_and(|waiting| waiting()) {
                         self.heard();
-                    } else if changed || (self.holding && self.file_windows < FILE_WINDOWS) {
+                    } else if counts && (changed || busy || self.holding) {
                         self.file_windows += 1;
                         self.rearm();
                     } else {
                         self.timed_out = true;
                         self.quiet_out = true;
+                        self.idle_out = !changed && !busy;
                     }
                 }
                 changed = self.stop.changed() => {
