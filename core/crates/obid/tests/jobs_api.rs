@@ -1383,9 +1383,9 @@ fn tasks_11_a_stopped_task_with_only_a_wip_commit_asks_before_its_deleted() {
     assert!(worktree.join("notes.txt").exists());
 }
 
-/// TASKS-18: a stopped job says who stopped it and why in its `reason`: Stop through obid's API,
-/// with "while its question waited" when its agent's question or permission was open, and obid
-/// itself when the pull request it waited on was closed.
+/// TASKS-18: a stopped job says who stopped it and why in its `stoppedBy`, its `reason` left as it
+/// was: Stop through obid's API, with "while its question waited" when its agent's question or
+/// permission was open, and obid itself when the pull request it waited on was closed.
 #[test]
 fn tasks_18_a_stopped_job_says_who_stopped_it() {
     let folder = Folder::new("tasks-18");
@@ -1432,7 +1432,8 @@ fn tasks_18_a_stopped_job_says_who_stopped_it() {
     beat(&obid, &running);
     let stopped = request(&obid, "POST", &format!("/v1/jobs/{running}/stop"), None);
     assert_eq!(stopped.body["status"], "stopped", "{}", stopped.text);
-    assert_eq!(stopped.body["reason"], obid::jobs::STOPPED_BY_API);
+    assert_eq!(stopped.body["stoppedBy"], obid::jobs::STOPPED_BY_API);
+    assert!(stopped.body["reason"].is_null(), "{}", stopped.text);
 
     let asking = post_job(
         &obid,
@@ -1447,7 +1448,7 @@ fn tasks_18_a_stopped_job_says_who_stopped_it() {
     let stopped = request(&obid, "POST", &format!("/v1/jobs/{asking}/stop"), None);
     assert_eq!(stopped.body["status"], "stopped", "{}", stopped.text);
     assert_eq!(
-        stopped.body["reason"],
+        stopped.body["stoppedBy"],
         format!(
             "{}{}",
             obid::jobs::STOPPED_BY_API,
@@ -1456,7 +1457,8 @@ fn tasks_18_a_stopped_job_says_who_stopped_it() {
     );
 
     let gone = until(&obid, "aaaa1801", |j| j["status"] == "stopped");
-    assert_eq!(gone["reason"], obid::jobs::PULL_REQUEST_ENDED, "{gone}");
+    assert_eq!(gone["stoppedBy"], obid::jobs::PULL_REQUEST_ENDED, "{gone}");
+    assert!(gone["reason"].is_null(), "{gone}");
 }
 
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:

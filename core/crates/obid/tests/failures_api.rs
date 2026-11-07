@@ -185,8 +185,9 @@ fn the_api_lists_failures_and_fixes_them() {
     assert_eq!(failures(&obid, ""), list);
 }
 
-/// TASKS-18: a job stopped while its agent's question waited on the owner is recorded, as
-/// `failed`, saying who stopped it: the question may be why. A plain stop isn't (above).
+/// TASKS-18: a job the owner stopped while its agent's question waited on them is recorded, as
+/// `failed`, saying who stopped it (`stoppedBy`): the question may be why. A plain stop isn't
+/// (above).
 #[test]
 fn tasks_18_a_job_stopped_while_its_question_waited_is_recorded() {
     let folder = Folder::new("failures-question");

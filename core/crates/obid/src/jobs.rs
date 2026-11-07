@@ -666,8 +666,8 @@ fn consent_words(name: &str) -> String {
 const BACKGROUND_OFF: &str =
     "You turned off work I run by myself on this ChatGPT plan, so I stopped.";
 
-/// What [`Jobs::stop`] adds to who stopped a job that waited on the owner (TASKS-18): a failure
-/// record keeps it (crate::failures).
+/// What [`Jobs::stop`] adds to who stopped a job the owner stopped while it waited on them
+/// (TASKS-18): a failure record keeps it (crate::failures).
 pub const WHILE_ITS_QUESTION_WAITED: &str = " while its question waited";
 
 /// Who stopped a job ([`Jobs::stop`], TASKS-18), when obid's API was asked to.
@@ -675,6 +675,10 @@ pub const STOPPED_BY_API: &str = "Stopped through Oby's API";
 
 /// Who stopped a job when a conversation asked to (`oby_stop_job`, "stop everything").
 pub const STOPPED_BY_CONVERSATION: &str = "Stopped by a conversation";
+
+/// The stops the owner asked for: only these say a question waited, which a failure record keeps.
+/// ponytail: matched by their words, a flag on `Jobs::stop` if a third kind of owner's stop comes.
+const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
 
 /// Who stopped a job when the pull request it reviewed or waited on was merged or closed.
 pub const PULL_REQUEST_ENDED: &str = "Stopped: its pull request was merged or closed";
@@ -3805,23 +3809,25 @@ impl Jobs {
 
     /// Stops a queued or running job: its agent and check end within 2 seconds, with everything they
     /// started. A job that already ended comes back as it is. `None` for one obid doesn't have.
-    /// `by` says who stopped it, in plain words, as its `reason` (TASKS-18), with " while its
-    /// question waited" when it waited on the owner: its agent's question or permission, a choice
-    /// about an account's limit, or a yes to a login. A caller that has its own reason writes it
-    /// after.
+    /// `by` says who stopped it, in obid's words, as its `stoppedBy` (TASKS-18); its `reason` is
+    /// its caller's to write. A stop the owner asked for ([`OWNERS_STOPS`]) adds " while its
+    /// question waited" when the job waited on them: its agent's question or permission, a choice
+    /// about an account's limit, or a yes to a login.
     pub fn stop(&self, id: &str, by: &str) -> Option<Job> {
         let job = self.get(id)?;
         if !job.status.is_active() {
             return Some(job);
         }
-        let asked = job.permission.is_some()
-            || job.account_limit_blocked
-            || job.waiting.as_ref().is_some_and(Waiting::for_consent)
-            || {
-                let state = self.lock();
-                state.asks.get(id).is_some_and(|a| !a.is_empty()) || state.asked.contains_key(id)
-            };
-        let reason = if asked {
+        let asked = OWNERS_STOPS.contains(&by)
+            && (job.permission.is_some()
+                || job.account_limit_blocked
+                || job.waiting.as_ref().is_some_and(Waiting::for_consent)
+                || {
+                    let state = self.lock();
+                    state.asks.get(id).is_some_and(|a| !a.is_empty())
+                        || state.asked.contains_key(id)
+                });
+        let by = if asked {
             format!("{by}{WHILE_ITS_QUESTION_WAITED}")
         } else {
             by.to_owned()
@@ -3836,7 +3842,7 @@ impl Jobs {
         self.drop_asks(id, false);
         let stopped = self.update(id, |job| {
             job.status = Status::Stopped;
-            job.reason = Some(reason);
+            job.stopped_by = Some(by);
             job.step = String::new();
             job.waiting = None;
             job.resumes_at = None;
@@ -14005,6 +14011,7 @@ fn next_round(job: &mut Job) {
     job.archived = None;
     job.limit = None;
     job.reason = None;
+    job.stopped_by = None;
     job.next_step = None;
     job.resumes_at = None;
     job.account_limit_blocked = false;
@@ -17995,6 +18002,39 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap()
+    }
+
+    /// TASKS-18: only a stop the owner asked for says a question waited; obid's own stop of a job
+    /// waiting on the owner says only who stopped it, and neither touches its `reason`.
+    #[tokio::test]
+    async fn tasks_18_only_the_owners_stop_says_a_question_waited() {
+        let root = std::env::temp_dir().join(format!("obid-stopped-by-{}", uuid::Uuid::new_v4()));
+        let jobs = jobs_with_kept(&root.join("home"), &[]);
+        let stopped = |id: &str, by: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c1".into(),
+            );
+            job.account_limit_blocked = true;
+            jobs.insert(job);
+            jobs.stop(id, by).unwrap()
+        };
+        let owners = stopped("aaaa1801", STOPPED_BY_API);
+        assert_eq!(
+            owners.stopped_by.as_deref(),
+            Some("Stopped through Oby's API while its question waited")
+        );
+        assert_eq!(owners.reason, None);
+        let obids = stopped("aaaa1802", PULL_REQUEST_ENDED);
+        assert_eq!(obids.stopped_by.as_deref(), Some(PULL_REQUEST_ENDED));
+        assert_eq!(obids.reason, None);
+        assert!(crate::failures::found(&obids, obi_protocol::time::now()).is_none());
+        assert!(crate::failures::found(&owners, obi_protocol::time::now()).is_some());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Each `job` event is its job a revision on, the answer the same copy as its event, and a
