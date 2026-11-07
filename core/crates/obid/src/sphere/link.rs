@@ -201,11 +201,6 @@ struct State {
     /// Every envelope id obid has handled: the messages of its exchanges, and the ones it dropped.
     seen: HashSet<String>,
     dropped: Vec<String>,
-    /// Requests the Council's convener sent whose post didn't answer (`504`): the envelope as
-    /// signed, by its id, so that a repeated call posts the same bytes again (an Obysphere answers a
-    /// byte-identical envelope with its first receipt, sphere-api.md section 6.1, check 8) rather
-    /// than send the seat a second request. Kept while obid runs.
-    unconfirmed: HashMap<String, Value>,
 }
 
 impl State {
@@ -625,13 +620,6 @@ pub(crate) struct Meant<'a> {
     pub by_owner: bool,
 }
 
-/// When a request obid sends expires: a lifetime from the moment it's built, or an instant.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Expiry {
-    In(i64),
-    At(i64),
-}
-
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -899,7 +887,6 @@ impl Link {
             all_self_answers: Vec::new(),
             seen,
             dropped: Vec::new(),
-            unconfirmed: HashMap::new(),
         };
         let link = Arc::new(Link {
             config,
