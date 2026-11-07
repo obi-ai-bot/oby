@@ -126,7 +126,7 @@ impl Repos {
         // Outside the lists' lock: find, get and names never wait on the disk.
         let _writing = self.0.writing.lock().unwrap_or_else(|e| e.into_inner());
         match file {
-            Some(file) => add_to_file(&file, repo, None),
+            Some(file) => add_to_file(&file, repo, None, None),
             None => Ok(()),
         }
     }
@@ -152,7 +152,7 @@ impl Repos {
         };
         let _writing = self.0.writing.lock().unwrap_or_else(|e| e.into_inner());
         match file {
-            Some(file) => add_to_file(&file, &repo, Some(check)),
+            Some(file) => add_to_file(&file, &repo, Some(check), None),
             None => Ok(()),
         }
     }
@@ -173,11 +173,42 @@ impl Repos {
         true
     }
 
-    /// GitHub's list as gh just read it for `user`, unless gh's login changed meanwhile.
+    /// GitHub's list as gh just read it for `user`, unless gh's login changed meanwhile. A listed
+    /// repository on GitHub whose default branch GitHub renamed takes the new name, in the
+    /// configuration file too, so jobs there branch from it (WORK-13).
     fn read_for(&self, user: &str, github: Vec<Repo>) {
-        let mut state = self.write();
-        if state.user.as_deref() == Some(user) {
+        let (renamed, file) = {
+            let mut state = self.write();
+            if state.user.as_deref() != Some(user) {
+                return;
+            }
+            let mut renamed = Vec::new();
+            for listed in state
+                .listed
+                .iter_mut()
+                .filter(|r| crate::github::is_remote(&r.remote))
+            {
+                if let Some(g) = github.iter().find(|g| same(&g.repo, &listed.repo))
+                    && g.default_branch != listed.default_branch
+                {
+                    tracing::info!(
+                        "{}'s default branch is {} on GitHub now",
+                        listed.repo,
+                        g.default_branch
+                    );
+                    listed.default_branch = g.default_branch.clone();
+                    renamed.push(listed.clone());
+                }
+            }
             state.github = github;
+            (renamed, state.file.clone())
+        };
+        let Some(file) = file else { return };
+        let _writing = self.0.writing.lock().unwrap_or_else(|e| e.into_inner());
+        for repo in renamed {
+            if let Err(e) = add_to_file(&file, &repo, None, Some(&repo.default_branch)) {
+                tracing::warn!("{e}");
+            }
         }
     }
 
@@ -202,9 +233,15 @@ impl PartialEq for Repos {
 impl Eq for Repos {}
 
 /// `repo` added to the `repos` of the configuration at `file`, with `check` as its check when
-/// given (`Some(None)` takes it out), written through a temporary file (0600). ponytail: rewritten
-/// as a JSON value, so the file's keys come out sorted; a text edit if that ever matters to someone.
-fn add_to_file(file: &Path, repo: &Repo, check: Option<Option<&str>>) -> Result<(), String> {
+/// given (`Some(None)` takes it out) and `branch` as its `defaultBranch` when given, written through
+/// a temporary file (0600). ponytail: rewritten as a JSON value, so the file's keys come out
+/// sorted; a text edit if that ever matters to someone.
+fn add_to_file(
+    file: &Path,
+    repo: &Repo,
+    check: Option<Option<&str>>,
+    branch: Option<&str>,
+) -> Result<(), String> {
     let unkept =
         |e: &dyn std::fmt::Display| format!("{} isn't in {} yet: {e}", repo.repo, file.display());
     let text = std::fs::read(file).map_err(|e| unkept(&e))?;
@@ -235,6 +272,9 @@ fn add_to_file(file: &Path, repo: &Repo, check: Option<Option<&str>>) -> Result<
             entry.remove("check");
         }
         _ => {}
+    }
+    if let (Some(branch), Some(entry)) = (branch, repos[at].as_object_mut()) {
+        entry.insert("defaultBranch".into(), json!(branch));
     }
     let mut text = serde_json::to_vec_pretty(&config).map_err(|e| unkept(&e))?;
     text.push(b'\n');
@@ -724,6 +764,53 @@ mod tests {
         other.keep(&repo("ACME/APP")).unwrap();
         let after: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         assert_eq!(after, before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GitHub renamed a listed repository's default branch: the next read of gh's list gives the
+    /// listed entry the new name, in the configuration file too, its other keys as they were; one
+    /// whose remote isn't GitHub's keeps its own.
+    #[test]
+    fn a_listed_repositorys_default_branch_follows_github() {
+        let dir = std::env::temp_dir().join(format!("obid-repos-branch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let before = json!({"owner": "o", "repos": [
+            {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "master", "check": "make"},
+            {"repo": "octo/mirror", "remote": "https://gitlab.com/octo/mirror.git", "defaultBranch": "trunk"},
+        ]});
+        std::fs::write(&file, before.to_string()).unwrap();
+        let repos = Repos::new(vec![
+            Repo {
+                default_branch: "master".into(),
+                check: Some("make".into()),
+                ..repo("octo/app")
+            },
+            Repo {
+                remote: "https://gitlab.com/octo/mirror.git".into(),
+                default_branch: "trunk".into(),
+                ..repo("octo/mirror")
+            },
+        ]);
+        repos.open(&file);
+        repos.follow(Some("octo"));
+        repos.read_for("octo", vec![repo("Octo/App"), repo("octo/mirror")]);
+        assert_eq!(repos.find("octo/app").unwrap().default_branch, "main");
+        assert_eq!(
+            repos.find("octo/app").unwrap().check.as_deref(),
+            Some("make")
+        );
+        assert_eq!(repos.find("octo/mirror").unwrap().default_branch, "trunk");
+        let after: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(after["owner"], "o");
+        assert_eq!(
+            after["repos"],
+            json!([
+                {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "main", "check": "make"},
+                before["repos"][1],
+            ])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
