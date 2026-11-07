@@ -234,3 +234,58 @@ fn a_repository_with_no_check_is_asked_once_and_the_answer_kept() {
     assert_eq!(over.body["repo"]["noCheck"], false);
     assert!(settings().get("noCheck").is_none(), "{}", settings());
 }
+
+/// PUBLISHING-6: the check runs in a clean checkout, with no `node_modules` or `.venv`, so a
+/// guessed Node or uv check installs from the job home's caches first, frozen and offline, with
+/// the tool's own flags; Bun, with no offline install, and a guess with no lockfile stay bare.
+#[test]
+fn publishing_6_a_guessed_node_check_installs_offline_first() {
+    let guess = |names: &[&str], package: &str| {
+        let names: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+        obid::repos::guess_check(&names, |name| match name {
+            "package.json" => Some(package.to_owned()),
+            "pyproject.toml" => Some("[tool.pytest.ini_options]\n".to_owned()),
+            _ => None,
+        })
+    };
+    let tested = r#"{"scripts": {"test": "vitest run"}}"#;
+    let linted = r#"{"scripts": {"lint": "eslint ."}}"#;
+    let cases = [
+        (
+            &["package.json", "pnpm-lock.yaml"][..],
+            tested,
+            "pnpm install --offline --frozen-lockfile && pnpm test",
+        ),
+        (
+            &["package.json", "package-lock.json"],
+            tested,
+            "npm ci --offline && npm test",
+        ),
+        (
+            &["package.json", "package-lock.json"],
+            linted,
+            "npm ci --offline && npm run lint",
+        ),
+        (
+            &["package.json", "yarn.lock"],
+            tested,
+            "yarn install --offline --frozen-lockfile && yarn test",
+        ),
+        (
+            &["package.json", "yarn.lock"],
+            r#"{"packageManager": "yarn@4.5.0", "scripts": {"test": "jest"}}"#,
+            "yarn install --immutable && yarn test",
+        ),
+        (&["package.json", "bun.lock"], tested, "bun run test"),
+        (&["package.json"], tested, "npm test"),
+        (
+            &["pyproject.toml", "uv.lock"],
+            "",
+            "uv run --frozen --offline pytest",
+        ),
+    ];
+    for (names, package, check) in cases {
+        assert_eq!(guess(names, package).as_deref(), Some(check), "{names:?}");
+        assert!(obid::brain::plan::is_check(check), "{check}");
+    }
+}
