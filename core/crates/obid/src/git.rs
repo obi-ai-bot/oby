@@ -402,12 +402,13 @@ pub async fn foreign_in(clone: &Path) -> Option<String> {
 /// ([`crate::publish::fetch_credentials`]).
 fn clone_args<'a>(signed: &'a [String], remote: &'a str, partial: &'a Path) -> Vec<&'a OsStr> {
     let mut args: Vec<&OsStr> = signed.iter().map(OsStr::new).collect();
-    args.extend::<[&OsStr; 8]>([
+    args.extend::<[&OsStr; 7]>([
         "clone".as_ref(),
         "--no-checkout".as_ref(),
         "--single-branch".as_ref(),
-        "--quiet".as_ref(),
-        // On stderr even with no terminal: what tells [`TRANSFER`] the clone goes on.
+        // On stderr even with no terminal: what tells [`TRANSFER`] the clone goes on. Never with
+        // `--quiet`, which keeps git's own `Receiving objects` silent and lets only the server's
+        // early `remote:` lines through.
         "--progress".as_ref(),
         "--".as_ref(),
         remote.as_ref(),
@@ -416,7 +417,7 @@ fn clone_args<'a>(signed: &'a [String], remote: &'a str, partial: &'a Path) -> V
     args
 }
 
-/// `git fetch --quiet --progress --no-tags --no-write-fetch-head origin <refspecs>` in `clone`,
+/// `git fetch --progress --no-tags --no-write-fetch-head origin <refspecs>` in `clone`,
 /// under [`TRANSFER`], an `https`
 /// `remote` signed in with gh's login alone, as a clone is ([`crate::publish::fetch_credentials`]):
 /// a private repository fetches with nothing set up but gh's sign-in.
@@ -433,8 +434,9 @@ pub async fn fetch(clone: &Path, remote: &str, refspecs: &[String]) -> Result<St
 pub(crate) fn fetch_args<'a>(signed: &'a [String], refspecs: &'a [String]) -> Vec<&'a str> {
     let mut args: Vec<&str> = signed.iter().map(String::as_str).collect();
     args.extend([
+        // `--progress` and never `--quiet`, as a clone ([`clone_args`]); with
+        // `--no-write-fetch-head` nothing goes to stdout.
         "fetch",
-        "--quiet",
         "--progress",
         "--no-tags",
         "--no-write-fetch-head",
@@ -602,7 +604,6 @@ mod tests {
             fetch[4..],
             [
                 "fetch",
-                "--quiet",
                 "--progress",
                 "--no-tags",
                 "--no-write-fetch-head",
@@ -627,12 +628,12 @@ mod tests {
     #[tokio::test]
     async fn recovery_13_a_clone_that_keeps_printing_progress_isnt_cut() {
         let child = sh(
-            "for i in 1 2 3 4 5 6; do printf 'Receiving objects: %s\\r' $i >&2; sleep 0.2; done; echo done",
+            "for i in $(seq 15); do printf 'Receiving objects: %s\\r' $i >&2; sleep 0.2; done; echo done",
         );
         let output = watch(
             child,
             "git clone",
-            Duration::from_millis(600),
+            Duration::from_secs(2),
             Duration::from_secs(30),
         )
         .await
@@ -640,7 +641,7 @@ mod tests {
         .unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("Receiving objects: 6"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Receiving objects: 15"));
     }
 
     /// A clone that goes silent is cut after the quiet window, long before the ceiling, and says
@@ -675,6 +676,25 @@ mod tests {
             "{}",
             err.0
         );
+    }
+
+    /// A clone's and a fetch's real arguments ask for `--progress` and never `--quiet`, which
+    /// silences git's own progress so a long download looks stalled.
+    #[test]
+    fn recovery_13_clones_and_fetches_print_progress_without_quiet() {
+        let signed = crate::publish::fetch_credentials(
+            "https://github.com/o/r.git",
+            Some(Path::new("/opt/gh")),
+        );
+        let clone = clone_args(&signed, "https://github.com/o/r.git", Path::new("/c/.r"));
+        let refspecs = ["main".to_owned()];
+        let fetch = fetch_args(&signed, &refspecs);
+        assert!(clone.contains(&OsStr::new("--progress")));
+        assert!(fetch.contains(&"--progress"));
+        for quiet in ["--quiet", "-q"] {
+            assert!(!clone.contains(&OsStr::new(quiet)));
+            assert!(!fetch.contains(&quiet));
+        }
     }
 
     #[test]
