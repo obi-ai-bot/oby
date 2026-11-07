@@ -1721,3 +1721,177 @@ async fn folders_7_a_phone_on_the_relay_adds_no_folder() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["folders"], json!([]));
 }
+
+/// A stand-in gh for one pull request, open, green and clean into dev at `head`, whose merge waits
+/// in GitHub until the test lets it go: it says `merging` when it starts, waits for `go`, then
+/// says `merged`.
+fn waiting_gh(folder: &Path, repo: &str, head: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = folder.join("bin");
+    let state = folder.join("gh");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    let view = json!({
+        "state": "OPEN", "reviewDecision": "", "mergedAt": null, "baseRefName": "dev",
+        "headRefOid": head,
+        "statusCheckRollup": [{"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "author": {"login": "octo-cat"},
+    });
+    let pull = json!({
+        "state": "open", "merged": false, "title": "Fix the thing",
+        "base": {"ref": "dev", "repo": {"full_name": repo}},
+        "head": {"ref": "oby/fix-7", "sha": head, "repo": {"full_name": repo}},
+        "mergeable": true, "mergeable_state": "clean",
+    });
+    std::fs::write(state.join("view.json"), view.to_string()).unwrap();
+    std::fs::write(state.join("pull.json"), pull.to_string()).unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+dir='{state}'
+case "$*" in
+  "auth status --hostname github.com --active --json hosts")
+    echo '{{"hosts": {{"github.com": [{{"active": true, "state": "success", "login": "octo-cat"}}]}}}}' ;;
+  "pr view 7 --repo {repo} --json "*) cat "$dir/view.json" ;;
+  "api --paginate --slurp repos/{repo}/pulls/7/reviews?per_page=100") echo '[[]]' ;;
+  "api --paginate --slurp repos/{repo}/pulls/7/commits?per_page=100") echo '[[{{"commit": {{"message": "Fix the thing"}}}}]]' ;;
+  "api repos/{repo} --jq .permissions.push") echo true ;;
+  "api repos/{repo}/rules/branches/"*) echo '[]' ;;
+  "api repos/{repo}/branches/"*"/protection/required_pull_request_reviews")
+    echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
+  "api repos/{repo}/pulls/7") cat "$dir/pull.json" ;;
+  "api -X PUT repos/{repo}/pulls/7/merge "*)
+    touch "$dir/merging"
+    i=0; while [ ! -f "$dir/go" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+    touch "$dir/merged"; echo '{{"merged": true}}' ;;
+  "api repos/{repo}/compare/"*) echo '{{"behind_by": 0}}' ;;
+  "api -X DELETE repos/{repo}/git/refs/heads/oby/fix-7") exit 0 ;;
+  *) echo "gh: not in this test" >&2; exit 1 ;;
+esac
+"#,
+        state = state.display()
+    );
+    std::fs::write(bin.join("gh"), script).unwrap();
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// WIRE-1: a phone's Merge goes on after its session ends mid-answer (it said hello again, as an
+/// iPhone does coming back from the background): only the answer is lost, and the merge shows
+/// when the phone reads the job in its new session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phones_merge_finishes_after_its_session_ends() {
+    const REPO: &str = "obi-e2e/fixture-app";
+    const ID: &str = "a1b2c3d4";
+    let folder = Folder::new("gateway-relay-merge");
+    let head = "a".repeat(40);
+    // A job done and published at `head` into dev, which Oby's own review approved.
+    let mut job = obid::job::Job::new(
+        ID.into(),
+        REPO.into(),
+        "fix".into(),
+        "Fix the thing".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.status = obid::job::Status::Done;
+    job.branch = "oby/fix-7".into();
+    job.base = Some("dev".into());
+    job.commits = Some(1);
+    job.pushed = Some(1);
+    job.published = Some("https://github.com/obi-e2e/fixture-app/pull/7".into());
+    job.finished = Some(job.created);
+    job.outgoing.push(obid::publish::Outgoing::new(
+        "push",
+        REPO,
+        &head,
+        Some("oby/fix-7"),
+    ));
+    job.scan = Some(obid::publish::Scanned {
+        ran: true,
+        clean: Some(true),
+        ..Default::default()
+    });
+    job.review = Some(obid::job::Review {
+        verdict: "approved".into(),
+        job: "r1b2c3d4".into(),
+        agent: "codex".into(),
+        account: "default".into(),
+        same_account: false,
+        round: 1,
+        date: job.created,
+        commit: head.clone(),
+        two_reviews: None,
+    });
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    config["gateway"] = json!("127.0.0.1:0");
+    let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::write(
+        home.join(format!("jobs/{ID}.json")),
+        serde_json::to_vec(&job).unwrap(),
+    )
+    .unwrap();
+    let bin = waiting_gh(&folder.0, REPO, &head);
+    let sphere = FakeSphere::start().await;
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_FOLLOW_SECONDS", "1")],
+    );
+    let membership =
+        tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
+    assert_eq!(membership["state"], "joined");
+    let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+    let card = format!("merge-ready-{ID}-{head}");
+    tokio::task::block_in_place(|| {
+        within(30, "the ready card", || {
+            let inbox = call(&obid, "GET", "/v1/inbox", None).body;
+            inbox
+                .as_array()?
+                .iter()
+                .any(|i| i["id"] == card && i["done"].is_null())
+                .then_some(())
+        })
+    });
+
+    // The phone's Merge reaches GitHub, and its session ends while GitHub is still merging.
+    phone
+        .ask(
+            "POST",
+            &format!("/v1/inbox/{card}/answer"),
+            Some(&token),
+            Some(&json!({"answer": "Merge"})),
+        )
+        .await;
+    let gh = folder.0.join("gh");
+    // A new hello within a second of the session's start is ignored.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    tokio::task::block_in_place(|| {
+        within(30, "the merge at GitHub", || {
+            gh.join("merging").exists().then_some(())
+        })
+    });
+    phone.hello_again().await;
+    std::fs::write(gh.join("go"), "").unwrap();
+
+    // The merge finished all the same, and the phone's next read shows it.
+    let until = tokio::time::Instant::now() + Duration::from_secs(30);
+    let merged = loop {
+        let (status, job) = phone
+            .call("GET", &format!("/v1/jobs/{ID}"), Some(&token), None)
+            .await;
+        assert_eq!(status, 200, "{job}");
+        if !job["mergedBy"].is_null() {
+            break job;
+        }
+        assert!(
+            tokio::time::Instant::now() < until,
+            "the merge never showed: {job}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert!(gh.join("merged").exists());
+    assert_eq!(merged["mergedBy"]["by"], "owner", "{merged}");
+}

@@ -573,8 +573,10 @@ fn request(head: &Value, body: Vec<u8>, device: &str) -> Option<Request> {
 
 /// Answers one request through the gateway's router, and sends the answer back on its stream:
 /// its status and headers, its body a chunk at a time (an event stream as it comes), its end.
-/// Each frame waits for room in the phone's lane, so a phone that's slow to take them only slows
-/// its own answers.
+/// Each frame waits for room in the phone's lane, so a phone that's slow to take them holds up
+/// this answer, and its session's end (a new hello, a reset, the phone gone quiet) aborts it.
+/// Anything but a GET runs detached, so that abort stops only the answer: a Merge, a Confirm or a
+/// Publish the phone sent still finishes, and the phone reads what came of it when it's back.
 async fn answer(
     shared: Arc<Shared>,
     gateway: Router,
@@ -589,9 +591,15 @@ async fn answer(
         relay.push(&device, epoch, Frame::new(stream, kind, payload))
     };
     let response = match request(&head, body, &device) {
-        Some(request) => match gateway.oneshot(request).await {
+        Some(request) if request.method() == Method::GET => match gateway.oneshot(request).await {
             Ok(response) => response,
             Err(never) => match never {},
+        },
+        // ponytail: a lost answer is lost; the phone refetches on its next session.
+        Some(request) => match tokio::spawn(gateway.oneshot(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(never)) => match never {},
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
         None => (
             StatusCode::BAD_REQUEST,
