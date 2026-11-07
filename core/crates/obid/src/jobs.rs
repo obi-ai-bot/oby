@@ -1644,16 +1644,11 @@ impl Jobs {
     fn sweep_checks(&self) {
         let home = &self.config.home;
         let _ = std::fs::remove_dir_all(home.join("checks"));
-        let read = |dir: &Path| -> Vec<PathBuf> {
-            std::fs::read_dir(dir)
-                .map(|d| d.flatten().map(|e| e.path()).collect())
-                .unwrap_or_default()
-        };
         let mut roots = vec![home.clone(), home.join("apart"), self.received_home()];
         // And the clones moved aside, `marked/<when>/clones/…`: kept while a job still uses one,
         // removed once none does (PUBLISHING-21).
         let (used, unsure) = self.marked_in_use();
-        for root in read(&home.join("marked")) {
+        for root in entries(&home.join("marked")) {
             let canon = root.canonicalize().unwrap_or_else(|_| root.clone());
             if unsure
                 || used
@@ -1669,9 +1664,9 @@ impl Jobs {
             }
         }
         for root in roots {
-            for owner in read(&root.join("clones")) {
-                for clone in read(&owner) {
-                    for admin in read(&clone.join(".git/worktrees")) {
+            for owner in entries(&root.join("clones")) {
+                for clone in entries(&owner) {
+                    for admin in entries(&clone.join(".git/worktrees")) {
                         if admin
                             .file_name()
                             .is_some_and(|n| n.to_string_lossy().starts_with("check-"))
@@ -1684,37 +1679,61 @@ impl Jobs {
         }
     }
 
-    /// Where jobs' work lives that a marked clone could hold, each path as given and resolved:
-    /// the git folder every job's worktree's `.git` file points to, and the clone a job yet to
-    /// end, or one with a worktree, keeps to ([`Job::clone_root`]; a follow-up gets its worktree
-    /// there). True as well when a
-    /// worktree's `.git` didn't read, so nothing is taken as unused.
+    /// Where work lives that a marked clone could hold, each path as given and resolved: the git
+    /// folder each worktree's `.git` file points to (every job's, and every one in
+    /// `home/worktrees`, whatever the jobs say); a marked clone's own worktree folder whose
+    /// worktree is still there; and the clone a job keeps to ([`Job::clone_root`], its own or
+    /// along its follow-ups, [`moved_clone_of`]) while it's yet to end, has a worktree, or is
+    /// neither dismissed nor merged, so a follow-up still finds its branch. True as well when a
+    /// worktree's `.git` or a job's file didn't read, so nothing is taken as unused.
     fn marked_in_use(&self) -> (Vec<PathBuf>, bool) {
-        let (worktrees, roots): (Vec<PathBuf>, Vec<PathBuf>) = {
+        let home = &self.config.home;
+        let (mut worktrees, roots, mut unsure) = {
             let state = self.lock();
-            let jobs = state.jobs.values();
-            (
-                jobs.clone()
-                    .flat_map(|job| {
-                        let own = self.worktree_path(&job.id);
-                        job.worktree.iter().map(PathBuf::from).chain([own])
-                    })
-                    .collect(),
-                // A worktree `git worktree repair` missed still points where the clone was.
-                jobs.filter(|job| {
+            let get = |id: &str| state.jobs.get(id).cloned();
+            let has_worktree = |job: &Job| {
+                self.worktree_path(&job.id).exists()
+                    || job
+                        .worktree
+                        .as_deref()
+                        .is_some_and(|w| Path::new(w).exists())
+            };
+            let worktrees: Vec<PathBuf> = state
+                .jobs
+                .values()
+                .flat_map(|job| job.worktree.iter().map(PathBuf::from))
+                .collect();
+            let roots: Vec<PathBuf> = state
+                .jobs
+                .values()
+                .filter(|job| {
                     job.status.is_active()
-                        || self.worktree_path(&job.id).exists()
-                        || job
-                            .worktree
-                            .as_deref()
-                            .is_some_and(|w| Path::new(w).exists())
+                        || has_worktree(job)
+                        || (job.dismissed.is_none() && !job.merged())
                 })
-                .filter_map(|job| job.clone_root.as_deref().map(PathBuf::from))
-                .collect(),
-            )
+                .flat_map(|job| {
+                    job.clone_root
+                        .clone()
+                        .into_iter()
+                        .chain(moved_clone_of(job, get))
+                })
+                .map(PathBuf::from)
+                .collect();
+            // A job file obid didn't read may keep to one too.
+            let unread = match std::fs::read_dir(home.join("jobs")) {
+                Ok(files) => files.flatten().any(|file| {
+                    let path = file.path();
+                    path.extension().is_some_and(|e| e == "json")
+                        && path
+                            .file_stem()
+                            .is_some_and(|id| !state.jobs.contains_key(&*id.to_string_lossy()))
+                }),
+                Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+            };
+            (worktrees, roots, unread)
         };
+        worktrees.extend(entries(&crate::api::worktrees(home)));
         let mut used = Vec::new();
-        let mut unsure = false;
         for worktree in worktrees {
             let file = worktree.join(".git");
             match std::fs::read_to_string(&file) {
@@ -1725,6 +1744,21 @@ impl Jobs {
                 },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound || file.is_dir() => {}
                 Err(_) => unsure = true,
+            }
+        }
+        // Git's own record, in each marked clone, of where its worktrees are.
+        for root in entries(&home.join("marked")) {
+            for owner in entries(&root.join("clones")) {
+                for clone in entries(&owner) {
+                    for admin in entries(&clone.join(".git/worktrees")) {
+                        match std::fs::read_to_string(admin.join("gitdir")) {
+                            Ok(to) if admin.join(to.trim()).exists() => used.push(admin),
+                            Ok(_) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(_) => unsure = true,
+                        }
+                    }
+                }
             }
         }
         used.extend(roots);
@@ -13362,6 +13396,13 @@ struct OwnersMerge {
     learned: Option<crate::memory::Workflow>,
     workflow: crate::memory::Workflow,
     number: u64,
+}
+
+/// What `dir` holds, or nothing when it doesn't read.
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
 }
 
 /// Where the clone `job` follows up on was moved to, from the nearest job back along its follow-ups
