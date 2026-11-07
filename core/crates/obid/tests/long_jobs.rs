@@ -802,6 +802,31 @@ fn recovery_2_a_run_cut_by_a_restart_continues_at_most_three_times() {
     );
 }
 
+/// RECOVERY-2: a stop obid was asked for (a quit, an update) costs no try: four in a row leave the
+/// job running in its session, told each time it was stopped, never left for the owner.
+#[test]
+fn recovery_2_a_clean_restart_costs_no_try() {
+    let (folder, mut obid) = obid("recovery-2-clean");
+    let id = post_job(&obid, "PAUSE: 60000 KEEP PROMPTS");
+    at_work(&obid, &id);
+    let settings = std::fs::read_to_string(folder.0.join("config.json")).unwrap();
+    let settings: Value = serde_json::from_str(&settings).unwrap();
+    for restart in 1..=4 {
+        obid.stop();
+        obid = start(&folder.0, &settings, None);
+        let job = within(30, "its turn after the restart", || {
+            let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+            (job["status"] == "running" && prompts(&job).len() == restart + 1).then_some(job)
+        });
+        let told = prompts(&job);
+        assert!(told[restart].contains("Your run was cut"), "{told:?}");
+        assert!(told[restart].contains("was stopped"), "{told:?}");
+    }
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["status"], "running", "{job}");
+    assert!(job["reason"].is_null(), "{job}");
+}
+
 /// RECOVERY-2: obid going down mid-turn loses nothing that turn was sent: the owner's words were
 /// taken from the job to send, so its next run hears them again.
 #[test]
