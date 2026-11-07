@@ -1662,18 +1662,23 @@ impl Job {
     }
 
     /// Stamps its stages' times at `now` (#733): how the time since the last stamp counts follows
-    /// the job as it was then. Whether a stage started or finished.
+    /// the job as it was then. Whether a stage started or finished. A job that left an active
+    /// status has no current stage, so every open clock stops at `now` (FIELD-11).
     pub fn stamp(&mut self, now: i64) -> bool {
+        let active = self.status.is_active();
         let pipeline = self.pipeline();
         let stages: Vec<(String, String)> = pipeline["stages"]
             .as_array()
             .into_iter()
             .flatten()
             .map(|s| {
-                (
-                    s["id"].as_str().unwrap_or("").to_owned(),
-                    s["state"].as_str().unwrap_or("").to_owned(),
-                )
+                let state = s["state"].as_str().unwrap_or("");
+                let state = if active || state != "current" {
+                    state
+                } else {
+                    "ended"
+                };
+                (s["id"].as_str().unwrap_or("").to_owned(), state.to_owned())
             })
             .collect();
         use crate::facts::Clock;
@@ -2263,6 +2268,33 @@ mod tests {
             (json!(30), json!(30))
         );
         assert!(stages[3].get("started").is_none());
+    }
+
+    /// An interrupted job stays on its stage until it's dismissed, but its clock stops when it
+    /// leaves an active status (FIELD-11), and Try again opens a new interval.
+    #[test]
+    fn an_ended_jobs_stage_clock_stops() {
+        let mut job = job();
+        job.kind = "fix".into();
+        job.pr = None;
+        job.check = Some("node --test".into());
+        let t0 = job.created;
+        job.status = Status::Running;
+        job.started = Some(t0);
+        job.phase = Some(Phase::Check);
+        job.stamp(t0);
+        job.status = Status::Interrupted;
+        job.finished = Some(t0 + 10);
+        assert!(job.stamp(t0 + 10));
+        assert!(!job.stamp(t0 + 16_197));
+        let check = job.stage_times.iter().find(|t| t.id == "check").unwrap();
+        assert_eq!((check.seconds, check.finished), (10, Some(t0 + 10)));
+        job.status = Status::Running;
+        job.finished = None;
+        assert!(job.stamp(t0 + 20_000));
+        job.stamp(t0 + 20_005);
+        let check = job.stage_times.iter().find(|t| t.id == "check").unwrap();
+        assert_eq!((check.seconds, check.finished), (15, None));
     }
 
     #[test]
