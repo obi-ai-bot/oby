@@ -726,7 +726,8 @@ fn on_tool(job: &mut Job, tool: Tool) {
 
 /// The model and effort `job` runs on, on its account as it is now (#1574): a model it named
 /// itself stays; else its account's, as Settings › Agents set them (`tuning`, by account); neither,
-/// the tool's own. Again whenever it changes account. `offered` is that account's own list.
+/// the tool's own. Again whenever it changes account. `offered` is that account's own list, empty
+/// while none was read since obid started (`ModelLists::to_check`): the saved model stands.
 fn tune(
     job: &mut Job,
     tuning: &std::collections::BTreeMap<String, crate::settings::Tuning>,
@@ -3280,7 +3281,7 @@ impl Jobs {
                     && (job.waiting.as_ref() != Some(&now) || job.account != first.id)
                 {
                     let tuning = crate::settings::load(&self.config.home).tuning;
-                    let offered = self.model_lists.for_account(tool, &first.id);
+                    let offered = self.model_lists.to_check(tool, &first.id);
                     self.update(&job.id, |job| {
                         on_tool(job, tool);
                         job.account = first.id.clone();
@@ -3293,7 +3294,7 @@ impl Jobs {
             };
             let on = format!("{} · {}", tool.name(), account.name);
             let tuning = crate::settings::load(&self.config.home).tuning;
-            let offered = self.model_lists.for_account(tool, &account.id);
+            let offered = self.model_lists.to_check(tool, &account.id);
             // It has run: its session and its login copy are the old account's (CHATGPT-23).
             let carried = job.session.is_some() && job.account != account.id;
             let from = was.map_or(job.account.clone(), |(tool, account)| {
@@ -3389,7 +3390,7 @@ impl Jobs {
         job.model = new.model.map(|m| m.trim().to_owned());
         job.complex = new.complex;
         let offered = Tool::from_id(&job.agent)
-            .map(|tool| self.model_lists.for_account(tool, &job.account))
+            .map(|tool| self.model_lists.to_check(tool, &job.account))
             .unwrap_or_default();
         tune(
             &mut job,
@@ -6032,7 +6033,7 @@ impl Jobs {
             account.is_some_and(|a| !a.trim().is_empty() && !a.eq_ignore_ascii_case("auto"));
         let mut blocked = false;
         let tuning = crate::settings::load(&self.config.home).tuning;
-        let offered = self.model_lists.for_account(tool, &chosen.id);
+        let offered = self.model_lists.to_check(tool, &chosen.id);
         let changed = self.update(id, |job| {
             if job.account_limit_blocked && !source.approves_limit() {
                 blocked = true;
@@ -16956,6 +16957,42 @@ mod tests {
         job.model = Some("explicit-model".into());
         tune(&mut job, &tuning, &offered);
         assert_eq!(job.model.as_deref(), Some("explicit-model"));
+    }
+
+    #[test]
+    fn agents_6_a_restart_keeps_the_saved_model() {
+        let lists = crate::model_lists::ModelLists::default();
+        let mut tuning = std::collections::BTreeMap::new();
+        tuning.insert(
+            "x".into(),
+            crate::settings::Tuning {
+                model: Some("gpt-live-only".into()),
+                ..Default::default()
+            },
+        );
+        let mut job = on("j", "work", "codex", "x", Status::Queued);
+        // Just started: no live list read yet, so the choice saved from it stands.
+        assert!(!lists.read(Tool::Codex, "x"));
+        tune(&mut job, &tuning, &lists.to_check(Tool::Codex, "x"));
+        assert_eq!(job.model.as_deref(), Some("gpt-live-only"));
+        assert!(job.model_from_account);
+        // Once a live list is read, a model it no longer offers falls back.
+        lists.keep(
+            "x",
+            vec![crate::model_lists::Offered {
+                id: "gpt-other".into(),
+                name: "Other".into(),
+            }],
+        );
+        assert!(lists.read(Tool::Codex, "x"));
+        tune(&mut job, &tuning, &lists.to_check(Tool::Codex, "x"));
+        assert_eq!(job.model, None);
+        // Claude's list is the fixed one: it's always known.
+        assert!(lists.read(Tool::Claude, "c"));
+        assert_eq!(
+            lists.to_check(Tool::Claude, "c"),
+            crate::model_lists::fallback(Tool::Claude)
+        );
     }
 
     fn on(id: &str, kind: &str, agent: &str, account: &str, status: Status) -> Job {

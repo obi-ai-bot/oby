@@ -47,6 +47,28 @@ impl ModelLists {
             .unwrap_or_else(|| fallback(tool))
     }
 
+    /// Whether this account's list is known (AGENTS-6): Claude's is the fixed list (its CLI lists
+    /// none); Codex's and Cursor's only once a live read was kept since obid started.
+    pub fn read(&self, tool: Tool, account: &str) -> bool {
+        tool == Tool::Claude
+            || self
+                .lists
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(account)
+    }
+
+    /// What a saved account model is checked against when a job takes it (AGENTS-6): the
+    /// account's list once [`Self::read`], else none, so the saved choice stands (one really gone
+    /// fails with the tool's own error).
+    pub fn to_check(&self, tool: Tool, account: &str) -> Vec<Offered> {
+        if self.read(tool, account) {
+            self.for_account(tool, account)
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Keep a non-empty read; true when the kept list changed (so apps should hear).
     pub fn keep(&self, account: &str, list: Vec<Offered>) -> bool {
         if list.is_empty() {
