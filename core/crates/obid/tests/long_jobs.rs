@@ -362,8 +362,8 @@ fn recovery_1_a_passing_error_continues_the_same_session() {
     assert!(told[1].contains("stopped without finishing"), "{told:?}");
 }
 
-/// RECOVERY-1: tries count together: 3, then today's end with the real reason. Only the owner's
-/// own words start them again, never a good turn in between.
+/// RECOVERY-1: tries count together: 3 in a row, then today's end with the real reason. The
+/// owner's own words start them again, never words that aren't theirs.
 #[test]
 fn recovery_1_three_tries_then_the_real_reason() {
     let (_folder, obid) = obid("recovery-1-out");
@@ -398,21 +398,26 @@ fn recovery_1_three_tries_then_the_real_reason() {
     assert_eq!(prompts(&job).len(), 9, "{job}");
 }
 
-/// RECOVERY-1: a good turn between two cuts gives no more tries: the 3 are the job's, so a
-/// worker's retries can't multiply.
+/// RECOVERY-1: tries count cuts in a row: a good turn between two cuts gives the 3 back, so a
+/// long job isn't stopped by passing errors far apart. Its rounds still bound it.
 #[test]
-fn recovery_1_a_good_turn_gives_no_more_tries() {
+fn recovery_1_a_good_turn_gives_the_tries_back() {
     let (_folder, obid) = obid("recovery-1-flaky");
     let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 9,
                      "check": "false", "task": "DIE FLAKY KEEP PROMPTS"});
     let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
     assert_eq!(answer.status, 201, "{}", answer.text);
     let job = wait(&obid, answer.body["id"].as_str().unwrap());
-    assert_eq!(job["status"], "interrupted", "{job}");
-    let reason = job["reason"].as_str().unwrap();
-    assert!(reason.contains("stopped without finishing"), "{job}");
-    // Cut, continued, cut, continued, cut, continued, cut: no more.
-    assert_eq!(prompts(&job).len(), 7, "{job}");
+    let reason = job["reason"].as_str().unwrap_or_default();
+    assert!(!reason.contains("stopped without finishing"), "{job}");
+    // Each round cut and continued, well past 3 cuts: every continued turn ended well.
+    let told = prompts(&job);
+    let continued = told
+        .iter()
+        .filter(|p| p.contains("Your run was cut"))
+        .count();
+    assert!(continued > 3, "{told:?}");
+    assert_eq!(told.len(), 2 * continued, "{told:?}");
 }
 
 /// RECOVERY-1: a login and an unknown error aren't tried again, and a usage limit goes to its own
