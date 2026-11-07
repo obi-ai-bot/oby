@@ -415,12 +415,12 @@ impl Gateway {
     /// The id of the paired device `token` is, while it still works.
     pub fn device(&self, token: &str, now: SystemTime) -> Option<String> {
         let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
-        self.used(&mut devices, token, now).map(|d| d.id)
+        self.used(&mut devices, token, now, |_| true)?.ok()
     }
 
     /// [`Gateway::device`], only where that device may be reached: a device paired through the
     /// relay only `via` its own relay token's socket, sealed; any other only on the listener
-    /// (`via` none). `Err` is a working token in the wrong place.
+    /// (`via` none). `Err` is a working token in the wrong place, and doesn't extend it.
     pub fn device_via(
         &self,
         token: &str,
@@ -428,40 +428,40 @@ impl Gateway {
         via: Option<&str>,
     ) -> Option<Result<String, ()>> {
         let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
-        let device = self.used(&mut devices, token, now)?;
-        Some(if device.relay.as_deref() == via {
-            Ok(device.id)
-        } else {
-            Err(())
-        })
+        self.used(&mut devices, token, now, |d| d.relay.as_deref() == via)
     }
 
-    /// The device `token` is, while it still works, its token given a fresh [`LIFETIME`] once it
-    /// has under [`SLIDE`] left (PAIRING-6). Saved only when extended; if the save fails the old
-    /// expiry stays, so the next request tries again.
+    /// The id of the device `token` is, while it still works: `Err` when it isn't `right` here.
+    /// Only a right use gives it a fresh [`LIFETIME`], once it has under [`SLIDE`] left
+    /// (PAIRING-6), so a request that always fails can't keep a leaked token alive. Saved only
+    /// when extended; if the save fails the old expiry stays, so the next request tries again.
     fn used(
         &self,
         devices: &mut HashMap<String, Device>,
         token: &str,
         now: SystemTime,
-    ) -> Option<Device> {
+        right: impl Fn(&Device) -> bool,
+    ) -> Option<Result<String, ()>> {
         let key = digest(token);
         let device = devices
             .get_mut(&key)
             .filter(|d| d.expires_at > seconds(now))?;
+        if !right(device) {
+            return Some(Err(()));
+        }
+        let id = device.id.clone();
         if device.expires_at >= seconds(now + SLIDE) {
-            return Some(device.clone());
+            return Some(Ok(id));
         }
         let before = device.expires_at;
         device.expires_at = seconds(now + LIFETIME);
-        let found = device.clone();
         if let Err(e) = self.save(devices) {
-            tracing::warn!("couldn't extend paired device {}: {e}", found.id);
+            tracing::warn!("couldn't extend paired device {id}: {e}");
             if let Some(d) = devices.get_mut(&key) {
                 d.expires_at = before;
             }
         }
-        Some(found)
+        Some(Ok(id))
     }
 
     /// The relay tokens' digests the Obysphere must know (crate::relay): every device paired
@@ -1227,6 +1227,48 @@ mod tests {
             Some(Ok(listened.device_id.clone()))
         );
         assert!(gateway.accepts(&listened.token, now + 45 * day));
+        // A request the wrong way (a listener-paired token through a relay) is refused and
+        // doesn't extend it.
+        let wrong = pair("Wrong");
+        assert_eq!(
+            gateway.device_via(&wrong.token, now + 16 * day, Some("relay")),
+            Some(Err(()))
+        );
+        assert_eq!(kept(&wrong.token), seconds(now + LIFETIME));
+        assert!(!gateway.accepts(&wrong.token, now + LIFETIME + Duration::from_secs(1)));
+        // A device paired through the Obysphere: sent unsealed to the listener it's refused and
+        // not extended; on its own relay token's socket it slides.
+        let relay = |name: &str| {
+            let invitation = gateway.invite(
+                "https://sphere.example",
+                "Mac",
+                "mac.example",
+                now,
+                Some(RelayInvite {
+                    sphere: "https://sphere.example".into(),
+                    relay: "relay-id".into(),
+                    token: format!("relay token of {name}"),
+                    key: "key".into(),
+                }),
+                false,
+            );
+            let via = digest(&format!("relay token of {name}"));
+            let redeemed = gateway
+                .redeem(&invitation.secret, name, now, Some(&via))
+                .unwrap();
+            (redeemed, via)
+        };
+        let (sealed, via) = relay("Sealed");
+        assert_eq!(
+            gateway.device_via(&sealed.token, now + 16 * day, None),
+            Some(Err(()))
+        );
+        assert_eq!(kept(&sealed.token), seconds(now + LIFETIME));
+        assert_eq!(
+            gateway.device_via(&sealed.token, now + 16 * day, Some(&via)),
+            Some(Ok(sealed.device_id.clone()))
+        );
+        assert_eq!(kept(&sealed.token), seconds(now + 16 * day + LIFETIME));
         // The unused one still ends at day 30.
         assert!(!gateway.accepts(&idle.token, now + LIFETIME + Duration::from_secs(1)));
         // Revoke stays instant.
