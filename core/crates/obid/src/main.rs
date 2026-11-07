@@ -116,7 +116,13 @@ fn main() -> ExitCode {
 
     // The runtime, then SIGTERM and SIGINT caught, before anything else: from here on a stop
     // signal, however early, ends obid with exit 0 (docs/runner-api.md, "obid only").
-    let runtime = match tokio::runtime::Runtime::new() {
+    // 8 MiB worker stacks: Tokio's default 2 MiB is near debug runs' depth, and an overflow
+    // aborts obid and every running job. Only the pages a thread touches are committed.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(e) => {
             fatal(&format!("can't start the runtime: {e}"));
