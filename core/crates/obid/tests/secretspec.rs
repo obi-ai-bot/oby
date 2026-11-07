@@ -1128,7 +1128,8 @@ fn publishing_21_a_clone_with_no_declared_secrets_isnt_made_again() {
 /// PUBLISHING-21: obid's start removes a marked clone no job uses, and keeps every one work still
 /// lives in: a running follow-up's; one a done job's worktree belongs to, by its `.git` file alone;
 /// one a worktree on disk belongs to, with no job loaded; and a settled task's, which still holds
-/// its branch for a follow-up. One only a dismissed job named goes.
+/// its branch for a follow-up, dismissed or not. One only a merged job named goes, plain files
+/// (`.DS_Store`) where worktrees are kept notwithstanding.
 #[test]
 fn publishing_21_an_unused_marked_clone_is_swept() {
     use obid::job::{Job, Status};
@@ -1202,10 +1203,31 @@ fn publishing_21_an_unused_marked_clone_is_swept() {
             &task,
             &["worktree", "remove", "--force", gone.to_str().unwrap()],
         );
-        // A task the owner dismissed.
-        let (dismissed_root, _) = marked("5-dismissed");
+        // A task the owner dismissed, unmerged: Try again takes it up again.
+        let (dismissed_root, dismissed_clone) = marked("5-dismissed");
+        let gone = home.parent().unwrap().join("cleaned/dismissed");
+        worked(&dismissed_clone, "oby/dismissed", &gone);
+        git(
+            &dismissed_clone,
+            &["worktree", "remove", "--force", gone.to_str().unwrap()],
+        );
         let mut dismissed = job("dismissed", Status::Done, Some(&dismissed_root), None);
         dismissed.dismissed = Some(1);
+        // A merged one, and files that are no worktrees.
+        let (merged_root, merged_clone) = marked("6-merged");
+        let mut merged = job("merged", Status::Done, Some(&merged_root), None);
+        merged.dismissed = Some(1);
+        merged.pull_request = Some(obid::github::PullRequest {
+            state: "MERGED".into(),
+            review_decision: None,
+            base: "main".into(),
+            merged_at: Some(1),
+            checked_at: 1,
+            head: None,
+        });
+        std::fs::create_dir_all(merged_clone.join(".git/worktrees")).unwrap();
+        std::fs::write(merged_clone.join(".git/worktrees/.DS_Store"), "").unwrap();
+        std::fs::write(worktrees.join(".DS_Store"), "").unwrap();
         let jobs = home.join("jobs");
         std::fs::create_dir_all(&jobs).unwrap();
         for job in [
@@ -1218,18 +1240,20 @@ fn publishing_21_an_unused_marked_clone_is_swept() {
             job("parsed", Status::Done, None, Some(&elsewhere)),
             job("task", Status::Done, Some(&task_root), None),
             dismissed,
+            merged,
         ] {
             let path = jobs.join(format!("{}.json", job.id));
             std::fs::write(path, serde_json::to_vec(&job).unwrap()).unwrap();
         }
     });
     let marked = obid.home.join("marked");
-    assert!(!marked.join("5-dismissed").exists(), "{}", obid.log());
+    assert!(!marked.join("6-merged").exists(), "{}", obid.log());
     for (root, branch) in [
         ("1-follow", "oby/follow"),
         ("2-parsed", "oby/parsed"),
         ("3-stray", "oby/stray"),
         ("4-task", "oby/task"),
+        ("5-dismissed", "oby/dismissed"),
     ] {
         let clone = marked.join(root).join("clones/obi-e2e/fixture-app");
         assert!(clone.exists(), "{root} was removed\n{}", obid.log());

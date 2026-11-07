@@ -1683,8 +1683,8 @@ impl Jobs {
     /// folder each worktree's `.git` file points to (every job's, and every one in
     /// `home/worktrees`, whatever the jobs say); a marked clone's own worktree folder whose
     /// worktree is still there; and the clone a job keeps to ([`Job::clone_root`], its own or
-    /// along its follow-ups, [`moved_clone_of`]) while it's yet to end, has a worktree, or is
-    /// neither dismissed nor merged, so a follow-up still finds its branch. True as well when a
+    /// along its follow-ups, [`moved_clone_of`]) while it's yet to end, has a worktree, or isn't
+    /// merged, so a follow-up still finds its branch. True as well when a
     /// worktree's `.git` or a job's file didn't read, so nothing is taken as unused.
     fn marked_in_use(&self) -> (Vec<PathBuf>, bool) {
         let home = &self.config.home;
@@ -1707,9 +1707,8 @@ impl Jobs {
                 .jobs
                 .values()
                 .filter(|job| {
-                    job.status.is_active()
-                        || has_worktree(job)
-                        || (job.dismissed.is_none() && !job.merged())
+                    // A dismissed one too: Try again, or a follow-up, takes it up again.
+                    job.status.is_active() || has_worktree(job) || !job.merged()
                 })
                 .flat_map(|job| {
                     job.clone_root
@@ -1734,7 +1733,8 @@ impl Jobs {
         };
         worktrees.extend(entries(&crate::api::worktrees(home)));
         let mut used = Vec::new();
-        for worktree in worktrees {
+        // A plain file there (`.DS_Store`) is no worktree.
+        for worktree in worktrees.into_iter().filter(|w| w.is_dir()) {
             let file = worktree.join(".git");
             match std::fs::read_to_string(&file) {
                 Ok(text) => match text.trim().strip_prefix("gitdir:") {
@@ -1751,6 +1751,9 @@ impl Jobs {
             for owner in entries(&root.join("clones")) {
                 for clone in entries(&owner) {
                     for admin in entries(&clone.join(".git/worktrees")) {
+                        if !admin.is_dir() {
+                            continue;
+                        }
                         match std::fs::read_to_string(admin.join("gitdir")) {
                             Ok(to) if admin.join(to.trim()).exists() => used.push(admin),
                             Ok(_) => {}
