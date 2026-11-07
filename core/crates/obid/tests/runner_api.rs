@@ -534,6 +534,69 @@ fn admission_3_a_seventh_job_waits_for_a_slot_and_says_so() {
     assert_eq!(all.body["stopped"], 6);
 }
 
+/// ADMISSION-4 (docs/contracts/admission.md): a job waiting to try again after a passing error, or
+/// in the queue for the one check at a time, gives its slot back: with `maxRunning` 2, one job
+/// waits on its retry's timer, one checks and one waits for that check, and a fourth still starts
+/// at once; `running` counts the two at work.
+#[test]
+fn admission_4_a_job_waiting_on_a_check_or_a_retry_takes_no_slot() {
+    let folder = Folder::new("idle-slot");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    // Its retry waits its whole minute (RECOVERY-1), not a quiet window's few seconds.
+    config["stallAfter"] = json!(600);
+    let obid = start(&folder.0, &config, None);
+    let two = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 2})),
+    );
+    assert_eq!(two.status, 200, "{}", two.text);
+    let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
+    let at = |id: &str, what: &str, step: &'static str| {
+        within(60, what, || {
+            let body = job(&obid, id);
+            body["step"]
+                .as_str()
+                .is_some_and(|s| s.starts_with(step))
+                .then_some(body)
+        })
+    };
+    let retrying =
+        id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "DIE ALWAYS"}));
+    at(
+        &retrying,
+        "its wait to try again",
+        "Trying again in 1 minute",
+    );
+    let checking = id(
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+                             "check": "sleep 60"}),
+    );
+    within(60, "its check to run", || {
+        (job(&obid, &checking)["checks"][0]["steps"][0]["running"] == true).then_some(())
+    });
+    let queued = id(
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: b.txt",
+                           "check": "true"}),
+    );
+    at(
+        &queued,
+        "its wait for the check",
+        "Waiting for another job's check to finish",
+    );
+    let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
+    let running = within(60, "the fourth starts", || {
+        let body = job(&obid, &fourth);
+        (body["status"] == "running").then_some(body)
+    });
+    assert!(running["waiting"].is_null(), "{running}");
+    assert_eq!(call(&obid, "GET", "/v1/status", None).body["running"], 2);
+    let all = call(&obid, "POST", "/v1/stop-all", None);
+    assert_eq!(all.body["stopped"], 4, "{}", all.text);
+}
+
 /// ClaimTests.aClientMayClaimFilesAtDispatch, its dispatch half (the other, a plan's files from
 /// its issues, needs `POST /v1/plans`, which obid doesn't serve): a client's `files` are checked,
 /// every one, and kept cleaned, each once; a path outside the repository refuses the job.
@@ -1521,9 +1584,10 @@ fn taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report
     assert_eq!(left["status"], "done", "{left}");
     assert_eq!(left["commits"], 0);
     assert_eq!(left["round"], 2);
-    // The fixture's own check (`node --test`) gives a fix 3 rounds when none was named (#958), and
-    // the owner's round adds one.
-    assert_eq!(left["rounds"], 4);
+    // The 4 was #958's default of 3 rounds for a fix with a check (the fixture's own `node --test`)
+    // plus the owner's round. Since #1947 (RECOVERY-9) nobody named a number, so its rounds run to
+    // the same-failure ceiling, which the owner's round fits under rather than raising.
+    assert_eq!(left["rounds"], obid::job::SAME_FAILURE_CEILING);
 }
 
 /// DismissTests.theAPIDismissesAndSaysWhenItCant, its last line: publishing a dismissed job by hand
