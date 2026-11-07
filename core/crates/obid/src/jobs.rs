@@ -14569,7 +14569,7 @@ fn owner_prompt(job: &Job) -> String {
     }
     if let Some(check) = &job.check {
         // TASKS-15: no round count; PUBLISHING-6: where the check really runs.
-        lines.push(format!("The work counts as done only when `{check}` succeeds. obid runs it after you finish, in its own clean checkout of your last commit, with no network: nothing uncommitted, untracked or ignored is there (node_modules, .venv, .env, build folders); only the caches in your HOME (cargo's, npm's) carry over. So what it needs must be committed, or installed by the command itself from those caches. Run it yourself first, from a clean state."));
+        lines.push(format!("The work counts as done only when `{check}` succeeds. obid runs it after you finish, in its own clean checkout of your last commit, with no network: nothing uncommitted, untracked or ignored is there (node_modules, .venv, .env, build folders); usually only the caches in your HOME (cargo's, npm's) carry over, and when the repository declares secrets for its check, not even those. So what it needs must be committed, or installed by the command itself from those caches. Run it yourself first, from a clean state."));
     }
     lines.join("\n\n")
 }
