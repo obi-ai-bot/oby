@@ -1983,3 +1983,72 @@ fn an_android_phone_hands_over_its_fcm_token() {
     );
     assert!(!obid.log().contains(&der[..40]), "the key reached the log");
 }
+
+/// WIRE-4: an app that falls more than a queue's 1,024 events behind has its `GET /v1/events`
+/// stream ended, never left open with events skipped: every app fetches again when it reconnects
+/// (docs/runner-api.md, "GET /v1/events").
+#[test]
+fn an_event_stream_that_falls_behind_ends() {
+    use std::io::{BufRead, BufReader, Read};
+    let folder = Folder::new("events-behind");
+    let (obid, _) = obid(&folder);
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/routines",
+        Some(
+            &json!({"name": "Flood", "repo": "obi-e2e/fixture-app", "kind": "investigate",
+                     "task": "Say what the README covers.",
+                     "schedule": {"every": "weekdays", "at": "09:00"}, "zone": "UTC"}),
+        ),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    let paused = call(
+        &obid,
+        "PATCH",
+        &format!("/v1/routines/{id}"),
+        Some(&json!({"enabled": false})),
+    );
+    assert_eq!(paused.status, 200, "{}", paused.text);
+
+    // An app that follows and then reads nothing.
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    stream
+        .write_all(format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+
+    // Each change is a `routine` event of about 2 KB: 3,000 of them are far more than the
+    // connection's buffers and the queue's 1,024 hold.
+    let sent = 3000;
+    for n in 0..sent {
+        let task = format!("{n:04}{}", "x".repeat(1990));
+        let changed = call(
+            &obid,
+            "PATCH",
+            &format!("/v1/routines/{id}"),
+            Some(&json!({"task": task})),
+        );
+        assert_eq!(changed.status, 200, "{}", changed.text);
+    }
+
+    // Read now: what was buffered comes, then the stream ends. One left open would go on with a
+    // ping every 15 seconds.
+    let (read, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut rest = Vec::new();
+        let _ = reader.read_to_end(&mut rest);
+        let _ = read.send(rest);
+    });
+    let rest = ended
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the stream that fell behind stayed open");
+    let heard = String::from_utf8_lossy(&rest)
+        .matches("event: routine")
+        .count();
+    assert!(heard < sent, "heard all {heard} events");
+}

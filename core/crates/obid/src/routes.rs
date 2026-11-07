@@ -550,6 +550,9 @@ pub async fn events(
         tokio_stream::wrappers::BroadcastStream::new(receiver),
         tokio_stream::wrappers::BroadcastStream::new(transcripts),
     )
+    // An app that fell behind lost events: its stream ends there, and the app fetches again when
+    // it reconnects (docs/runner-api.md, "GET /v1/events").
+    .take_while(|event| std::future::ready(event.is_ok()))
     .filter_map(|event| async move {
         let event = event.ok()?;
         Some(Ok(SseEvent::default()
