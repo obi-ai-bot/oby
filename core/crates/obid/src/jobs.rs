@@ -12159,10 +12159,12 @@ impl Jobs {
         struct Claim<'a>(&'a Jobs, &'a str, bool);
         impl Drop for Claim<'_> {
             fn drop(&mut self) {
-                self.0.lock().publishing.remove(self.1);
+                // The step first: a publish that marks its step before it claims the job (a
+                // job's own) can't have its step cleared once the claim is free.
                 if !self.2 {
                     self.0.update(self.1, |job| job.publish_step = None);
                 }
+                self.0.lock().publishing.remove(self.1);
             }
         }
         let mut claim = Claim(self, id, false);
@@ -18413,11 +18415,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A publish dropped part way (a Publish by hand whose request went) leaves no claim on
-    /// publishing the job: held while it waits on its repository's lock, gone once dropped (#914's
-    /// review).
+    /// MERGING-29: a publish dropped part way (a Publish by hand whose request went) leaves no
+    /// claim on publishing the job and no publish step: held while it waits on its repository's
+    /// lock, gone once dropped (#914's review).
     #[tokio::test]
-    async fn a_dropped_publish_leaves_no_claim() {
+    async fn merging_29_a_dropped_publish_leaves_no_claim_nor_step() {
         let root = std::env::temp_dir().join(format!("obid-claim-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         let mut job = Job::new(
@@ -18439,6 +18441,7 @@ mod tests {
         cleanup_git(&clone, &["commit", "-q", "--allow-empty", "-m", "work"]);
         cleanup_git(&clone, &["branch", "oby/build-eeee0001"]);
         job.checked_head = Some(cleanup_git(&clone, &["rev-parse", "HEAD"]));
+        job.publish_step = Some(crate::publish::Step::Scan);
         let jobs = jobs_with_kept(&home, &[&job]);
         // Its base's fetch waits for the repository's lock, held here.
         let preparing = jobs.preparing("o/r");
@@ -18453,6 +18456,11 @@ mod tests {
         );
         drop(publishing);
         assert!(jobs.lock().publishing.is_empty(), "released once dropped");
+        assert_eq!(
+            jobs.get("eeee0001").unwrap().publish_step,
+            None,
+            "no step left"
+        );
         drop(held);
         let _ = std::fs::remove_dir_all(&root);
     }

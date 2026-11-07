@@ -106,7 +106,7 @@ The words of MERGING-14's card and stage, and MERGING-17's Merge, are obid's own
 | MERGING-26 | `merge_api::merging_26_no_merge_card_while_obys_review_is_at_work`, `merge_api::merging_26_a_review_stopped_at_its_limit_leaves_the_card`, `merge::tests::merging_2_where_the_check_doesnt_count_the_owners_merge_does` |
 | MERGING-27 | `merge_api::merging_27_the_owners_word_merges_while_obys_review_is_at_work`, `merge::tests::merging_27_the_owners_word_lifts_what_a_card_never_named`, `brain::owners_word::tests::merging_27_oby_says_what_was_still_open`, `brain::actions::tests::merging_27_merge_in_their_words_on_a_card_is_their_word` |
 | MERGING-28 | `merge_api::merging_28_the_card_says_which_device_answered_it`, `sphere::inbox::tests::merging_28_only_the_answer_that_settled_it_names_a_device` |
-| MERGING-29 | `merge::tests::merging_29_a_dropped_merge_frees_its_job` |
+| MERGING-29 | `merge::tests::merging_29_a_dropped_merge_frees_its_job`, `jobs::tests::merging_29_a_dropped_publish_leaves_no_claim_nor_step` |
 
 ## Test it when it's done (on a real Mac)
 
