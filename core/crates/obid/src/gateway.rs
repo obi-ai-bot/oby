@@ -45,6 +45,10 @@ const INVITATION: Duration = Duration::from_secs(120);
 const ATTEMPTS: u32 = 5;
 /// How long a device token works (Devices.swift, `GatewayToken.lifetime`).
 const LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// A device token used with less than this left gets a fresh [`LIFETIME`] (PAIRING-6): a phone in
+/// use stays paired, one unused for 30 days still expires. Half the lifetime, so the file is written
+/// at most about twice a month per device, never on every request.
+const SLIDE: Duration = Duration::from_secs(15 * 24 * 60 * 60);
 /// How long after redeeming an invitation the owner made a phone may add its publishing key: it
 /// registers on the connection right after pairing.
 const KEYABLE: Duration = Duration::from_secs(600);
@@ -410,11 +414,8 @@ impl Gateway {
 
     /// The id of the paired device `token` is, while it still works.
     pub fn device(&self, token: &str, now: SystemTime) -> Option<String> {
-        let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
-        devices
-            .get(&digest(token))
-            .filter(|d| d.expires_at > seconds(now))
-            .map(|d| d.id.clone())
+        let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
+        self.used(&mut devices, token, now).map(|d| d.id)
     }
 
     /// [`Gateway::device`], only where that device may be reached: a device paired through the
@@ -426,15 +427,41 @@ impl Gateway {
         now: SystemTime,
         via: Option<&str>,
     ) -> Option<Result<String, ()>> {
-        let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
-        let device = devices
-            .get(&digest(token))
-            .filter(|d| d.expires_at > seconds(now))?;
+        let mut devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
+        let device = self.used(&mut devices, token, now)?;
         Some(if device.relay.as_deref() == via {
-            Ok(device.id.clone())
+            Ok(device.id)
         } else {
             Err(())
         })
+    }
+
+    /// The device `token` is, while it still works, its token given a fresh [`LIFETIME`] once it
+    /// has under [`SLIDE`] left (PAIRING-6). Saved only when extended; if the save fails the old
+    /// expiry stays, so the next request tries again.
+    fn used(
+        &self,
+        devices: &mut HashMap<String, Device>,
+        token: &str,
+        now: SystemTime,
+    ) -> Option<Device> {
+        let key = digest(token);
+        let device = devices
+            .get_mut(&key)
+            .filter(|d| d.expires_at > seconds(now))?;
+        if device.expires_at >= seconds(now + SLIDE) {
+            return Some(device.clone());
+        }
+        let before = device.expires_at;
+        device.expires_at = seconds(now + LIFETIME);
+        let found = device.clone();
+        if let Err(e) = self.save(devices) {
+            tracing::warn!("couldn't extend paired device {}: {e}", found.id);
+            if let Some(d) = devices.get_mut(&key) {
+                d.expires_at = before;
+            }
+        }
+        Some(found)
     }
 
     /// The relay tokens' digests the Obysphere must know (crate::relay): every device paired
@@ -1156,6 +1183,55 @@ mod tests {
         // Only its digest is kept.
         let kept = std::fs::read_to_string(home.join("gateway-devices.json")).unwrap();
         assert!(!kept.contains(&redeemed.token));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// PAIRING-6: a device used with under 15 days left gets 30 more, kept on disk; one left
+    /// unused still expires at day 30, and Revoke still ends it at once.
+    #[test]
+    fn pairing_6_a_used_device_stays_paired() {
+        let home = folder("sliding");
+        let gateway = Gateway::open(&home);
+        let now = SystemTime::now();
+        let day = Duration::from_secs(24 * 60 * 60);
+        let pair = |name: &str| {
+            let invitation = gateway.invite(
+                "https://mac.example",
+                "Mac",
+                "mac.example",
+                now,
+                None,
+                false,
+            );
+            gateway.redeem(&invitation.secret, name, now, None).unwrap()
+        };
+        let used = pair("Used");
+        let idle = pair("Idle");
+        let listened = pair("Listened");
+        // Day 10: 20 days left, nothing changes.
+        assert!(gateway.accepts(&used.token, now + 10 * day));
+        let kept = |token: &str| {
+            let devices: HashMap<String, Device> =
+                serde_json::from_slice(&std::fs::read(home.join("gateway-devices.json")).unwrap())
+                    .unwrap();
+            devices[&digest(token)].expires_at
+        };
+        assert_eq!(kept(&used.token), seconds(now + LIFETIME));
+        // Day 16: under 15 left, so it slides to day 46, on disk too (a restart keeps it).
+        assert!(gateway.accepts(&used.token, now + 16 * day));
+        assert_eq!(kept(&used.token), seconds(now + 16 * day + LIFETIME));
+        assert!(Gateway::open(&home).accepts(&used.token, now + 45 * day));
+        // `device_via`, the per-request lookup of the gateway and the relay, slides too.
+        assert_eq!(
+            gateway.device_via(&listened.token, now + 16 * day, None),
+            Some(Ok(listened.device_id.clone()))
+        );
+        assert!(gateway.accepts(&listened.token, now + 45 * day));
+        // The unused one still ends at day 30.
+        assert!(!gateway.accepts(&idle.token, now + LIFETIME + Duration::from_secs(1)));
+        // Revoke stays instant.
+        assert!(gateway.revoke(&used.device_id).unwrap());
+        assert!(!gateway.accepts(&used.token, now + 17 * day));
         let _ = std::fs::remove_dir_all(home);
     }
 

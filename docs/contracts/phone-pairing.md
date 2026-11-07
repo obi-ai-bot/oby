@@ -33,3 +33,4 @@ The business behavior contract for showing the pairing QR code in the Electron a
 - **PAIRING-3** Not in an Obysphere, the group says so and offers no button. (Real Mac.)
 - **PAIRING-4** The iPhone scans the QR code, pairs through the Obysphere, and shows the Mac's conversations and tasks on cellular, Wi-Fi off. (Real iPhone, TestFlight.)
 - **PAIRING-5** The paired iPhone shows in Paired devices; Revoke ends its session and it must pair again. (Real iPhone.)
+- **PAIRING-6** A paired device's token lasts 30 days from its last use, not from pairing: obid's lookup of a request's device token gives it a fresh 30 days once it has under 15 left, and keeps that on disk, so a phone in use never stops on day 30. A device unused for 30 days still expires, and Revoke still ends it at once. No new route and no change on the phone. (`pairing_6_a_used_device_stays_paired`, in `core/crates/obid/src/gateway.rs`)
