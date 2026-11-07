@@ -305,18 +305,35 @@ pub fn guess_check(names: &[String], read: impl Fn(&str) -> Option<String>) -> O
             .unwrap_or_default();
         let scripts = &package["scripts"];
         // The tool the repository names (Corepack's `packageManager`), else its lockfile's.
-        let runner = match package["packageManager"]
+        let (named, version) = package["packageManager"]
             .as_str()
-            .and_then(|named| named.split('@').next())
-        {
-            Some("pnpm") => "pnpm",
-            Some("yarn") => "yarn",
-            Some("bun") => "bun",
-            Some("npm") => "npm",
+            .map(|named| named.split_once('@').unwrap_or((named, "")))
+            .unwrap_or_default();
+        let runner = match named {
+            "pnpm" => "pnpm",
+            "yarn" => "yarn",
+            "bun" => "bun",
+            "npm" => "npm",
             _ if has("pnpm-lock.yaml") => "pnpm",
             _ if has("yarn.lock") => "yarn",
             _ if has("bun.lock") || has("bun.lockb") => "bun",
             _ => "npm",
+        };
+        // The check's clean checkout has no `node_modules`: install first, from the caches the
+        // agent filled in the job's home, with each tool's own frozen, offline install. A frozen
+        // install needs its lockfile, so with none the guess stays bare. ponytail: Bun has no
+        // offline install, so its guess stays bare too; add one when Bun does.
+        let berry = version
+            .split('.')
+            .next()
+            .and_then(|major| major.parse::<u32>().ok())
+            .is_some_and(|major| major >= 2);
+        let install = match runner {
+            "pnpm" if has("pnpm-lock.yaml") => "pnpm install --offline --frozen-lockfile && ",
+            "npm" if has("package-lock.json") => "npm ci --offline && ",
+            "yarn" if has("yarn.lock") && berry => "yarn install --immutable && ",
+            "yarn" if has("yarn.lock") => "yarn install --offline --frozen-lockfile && ",
+            _ => "",
         };
         // npm init's own placeholder fails on purpose.
         if scripts["test"]
@@ -326,11 +343,11 @@ pub fn guess_check(names: &[String], read: impl Fn(&str) -> Option<String>) -> O
             // `bun test` is Bun's own test runner, not the script.
             return Some(match runner {
                 "bun" => "bun run test".into(),
-                runner => format!("{runner} test"),
+                runner => format!("{install}{runner} test"),
             });
         }
         if scripts["lint"].is_string() {
-            return Some(format!("{runner} run lint"));
+            return Some(format!("{install}{runner} run lint"));
         }
     }
     // pytest only where the repository uses it (one that collects no tests fails), and only through
@@ -341,7 +358,7 @@ pub fn guess_check(names: &[String], read: impl Fn(&str) -> Option<String>) -> O
     let pytest = if !uses_pytest {
         None
     } else if has("uv.lock") {
-        Some("uv run pytest")
+        Some("uv run --frozen --offline pytest")
     } else if has("poetry.lock") {
         Some("poetry run pytest")
     } else {
@@ -603,15 +620,24 @@ mod tests {
         let tested = r#"{"scripts": {"test": "vitest run", "lint": "eslint ."}}"#;
         let linted = r#"{"scripts": {"test": "echo \"Error: no test specified\" && exit 1", "lint": "eslint ."}}"#;
         let package = ["package.json", "pnpm-lock.yaml"];
-        assert_eq!(guess(&package, "", tested).as_deref(), Some("pnpm test"));
+        // The check's clean checkout has no node_modules: a frozen, offline install comes first.
+        assert_eq!(
+            guess(&package, "", tested).as_deref(),
+            Some("pnpm install --offline --frozen-lockfile && pnpm test")
+        );
         assert_eq!(
             guess(&package, "", linted).as_deref(),
-            Some("pnpm run lint")
+            Some("pnpm install --offline --frozen-lockfile && pnpm run lint")
         );
         assert_eq!(
             guess(&["package.json", "yarn.lock"], "", tested).as_deref(),
-            Some("yarn test")
+            Some("yarn install --offline --frozen-lockfile && yarn test")
         );
+        assert_eq!(
+            guess(&["package.json", "package-lock.json"], "", tested).as_deref(),
+            Some("npm ci --offline && npm test")
+        );
+        // With no lockfile a frozen install can't run, so the guess stays bare.
         assert_eq!(
             guess(&["package.json"], "", tested).as_deref(),
             Some("npm test")
@@ -624,6 +650,15 @@ mod tests {
         assert_eq!(
             guess(&["package.json", "yarn.lock"], "", &named("pnpm")).as_deref(),
             Some("pnpm test")
+        );
+        assert_eq!(
+            guess(&["package.json", "yarn.lock"], "", &named("yarn")).as_deref(),
+            Some("yarn install --immutable && yarn test")
+        );
+        let classic = r#"{"packageManager": "yarn@1.22.22", "scripts": {"test": "jest"}}"#;
+        assert_eq!(
+            guess(&["package.json", "yarn.lock"], "", classic).as_deref(),
+            Some("yarn install --offline --frozen-lockfile && yarn test")
         );
         assert_eq!(
             guess(&["package.json"], "", &named("evil; rm -rf /")).as_deref(),
@@ -645,7 +680,7 @@ mod tests {
         assert_eq!(guess(&["conftest.py", "requirements.txt"], "", ""), None);
         assert_eq!(
             guess_with(&["pyproject.toml", "uv.lock"], "", "", pytested).as_deref(),
-            Some("uv run pytest")
+            Some("uv run --frozen --offline pytest")
         );
         assert_eq!(
             guess(&["conftest.py", "poetry.lock"], "", "").as_deref(),
