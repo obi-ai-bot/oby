@@ -27,8 +27,8 @@
 # SwiftPM build in the job's HOME doesn't fit the check's 20 minutes. Nothing runs them by itself
 # since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
 # for the owner, who runs them on the Mac.
-# obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) fail there,
-# not verified: they're verified outside a job's sandbox only.
+# obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) can't run
+# there either: they aren't run, and the owner runs them on the Mac.
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
@@ -152,12 +152,17 @@ if [[ -n "$rust" ]]; then
     binaries=()
     while IFS= read -r test; do
         name=${test##*/}
-        [[ ! -f "$test" ]] || binaries+=(--test "${name%.rs}")
+        name=${name%.rs}
+        [[ -f "$test" ]] || continue
+        # They make a sandbox of their own, which can't nest in a job's on a Mac. On Linux, where
+        # nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
+        if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api)$ ]]; then
+            echo "oby-check: tests/$name.rs makes a sandbox of its own, which can't nest in a job's: not run here, run it on the Mac before merging"
+            continue
+        fi
+        binaries+=(--test "$name")
     done < <(each "$tests")
     if [[ ${#binaries[@]} -gt 0 ]]; then
-        if [[ -n "$nested" && " ${binaries[*]} " =~ " "(sandbox|plugins_api)" " ]]; then
-            echo "oby-check: tests/sandbox.rs and the plug-in tests make a sandbox of their own, which can't nest in a job's: they fail here, not verified, and pass only outside one"
-        fi
         step "${cargo[@]}" test "${manifest[@]}" -p obid "${binaries[@]}"
     fi
     while IFS= read -r crate; do
