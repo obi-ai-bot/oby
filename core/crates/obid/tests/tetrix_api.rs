@@ -36,7 +36,8 @@ struct Seen {
     /// seconds, all of them past the check's 30. "flaky": its first `tools/list` answers 503.
     /// "down": its MCP server refuses every token and its sign-in server answers 503. "orgs":
     /// its login is in several organizations, so its MCP server answers 400 to a call whose
-    /// address doesn't say `?org=` [`ORG`] (Tetrix's mcp_service/app/org_request.py).
+    /// address doesn't say `?org=` [`ORG`] (Tetrix's mcp_service/app/org_request.py). "quiet":
+    /// every call answers nothing, so no job gets context from it.
     mode: &'static str,
     /// The "flaky" 503 was sent.
     flaked: bool,
@@ -243,6 +244,7 @@ fn fake_tetrix() -> (String, Arc<Mutex<Seen>>) {
                                 .collect();
                             json!({"tools": tools})
                         }
+                        "tools/call" if seen.mode == "quiet" => json!({"content": []}),
                         "tools/call" => match tool.as_str() {
                             "search_entities" => {
                                 let query = message["params"]["arguments"]["query"].as_str().unwrap_or("");
@@ -1402,6 +1404,49 @@ fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
         .unwrap_or_else(|| panic!("{}", answer.text));
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["untrusted"], true, "{job}");
+}
+
+/// MERGING-30 (docs/contracts/merging.md, the owner's decision of 2026-11-06): a job whose agent
+/// is given Tetrix's tools, and lists them but calls none, with nothing of Tetrix's quoted as its
+/// context, stays the owner's own: no mark, so one review merges it.
+#[test]
+fn merging_30_tetrix_tools_given_leave_the_job_the_owners() {
+    let folder = Folder::new("tetrix-given");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    sign_in(&obid, &base);
+    seen.lock().unwrap().mode = "quiet";
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(&json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "REPORT"}})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+    let worktree = obid.home.join("worktrees").join(&id);
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(worktree.join(".obi/report.json"))
+            .unwrap_or_else(|e| panic!("{e}: {job}")),
+    )
+    .unwrap();
+    assert!(
+        report["answers"]["tetrix"]["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty()),
+        "the agent has Tetrix's tools: {report}"
+    );
+    assert!(!worktree.join(".obi/context/tetrix.md").exists());
+    // The mark is obid's own, in the job's file (`Job::foreign`), never in the API.
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    assert!(kept["foreign"].is_null(), "{kept}");
+    assert_ne!(job["untrusted"], true, "{job}");
 }
 
 /// Signing in to another Tetrix whose sign-in server is another one takes back the login it

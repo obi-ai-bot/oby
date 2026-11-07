@@ -5038,16 +5038,8 @@ impl Jobs {
         if let Some(tool) = Tool::from_id(&job.agent)
             && crate::egress::tools_own(tool, host, port)
         {
-            // Past its model's API, a vendor's other hosts serve what people share there.
-            if !crate::egress::tools_api(tool, host) {
-                self.mark_foreign(
-                    id,
-                    format!(
-                        "its agent reached {}, beyond its tool's API (a vendor's other hosts serve what people share)",
-                        crate::egress::site(host, port)
-                    ),
-                );
-            }
+            // Its vendor's other hosts too (Codex's chatgpt.com) leave the job the owner's
+            // (MERGING-30, the owner's decision of 2026-11-06).
             return Some(Ok(()));
         }
         // Telemetry a CLI sends elsewhere (Datadog, Sentry) is a site like any other: the job's
@@ -10385,16 +10377,8 @@ impl Jobs {
                     Tool::Claude => None,
                     Tool::Codex | Tool::Cursor => self.ask_mcp(id),
                 };
-                // Each server's tool descriptions reach the model before any call: someone
-                // else's words (crate::secretspec). Oby's own question to the owner is all that
-                // Cursor's, and Codex's without connected apps, carries.
-                let given: Vec<&str> = tetrix.iter().map(|_| "tetrix").collect();
-                if !given.is_empty() {
-                    self.mark_foreign(
-                        id,
-                        format!("its agent was given the tools of {}, whose descriptions are someone else's words", given.join(", ")),
-                    );
-                }
+                // Being given Tetrix's tools leaves the job the owner's; what a call answers marks
+                // it where it's read (MERGING-30, the owner's decision of 2026-11-06).
                 let mut mcp_rules = Vec::new();
                 if broker.is_some() {
                     mcp_rules.push(if tool == Tool::Cursor {
@@ -18377,6 +18361,25 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap()
+    }
+
+    /// MERGING-30: a CLI reaching its own vendor's hosts past the model's API (Codex's
+    /// chatgpt.com on a ChatGPT login) goes through and leaves the job the owner's.
+    #[tokio::test]
+    async fn merging_30_codex_reaching_chatgpt_leaves_the_job_the_owners() {
+        let root = std::env::temp_dir().join(format!("obid-vendor-host-{}", uuid::Uuid::new_v4()));
+        let job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "x1".into(),
+        );
+        let jobs = jobs_with_kept(&root.join("home"), &[&job]);
+        assert_eq!(jobs.reach_now("j", "chatgpt.com", 443), Some(Ok(())));
+        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// TASKS-18: only a stop the owner asked for says a question waited; obid's own stop of a job
