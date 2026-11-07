@@ -268,7 +268,8 @@ fn a_brain_turn_records_what_its_call_reported() {
     call.as_object_mut().unwrap().remove("wall_ms");
     assert_eq!(
         call,
-        json!({"adapter":"claude", "model":"claude-sonnet-5-5", "outcome":"answered", "subtype":"success", "duration_ms":40, "num_turns":2, "total_cost_usd":0.002, "input_tokens":11, "output_tokens":7, "cache_read_input_tokens":5, "cache_creation_input_tokens":3})
+        // The model the turn ran on: with no per-account choice, the tool's default (#1926).
+        json!({"adapter":"claude", "model":obid::settings::default_model(obid::agent::Tool::Claude), "outcome":"answered", "subtype":"success", "duration_ms":40, "num_turns":2, "total_cost_usd":0.002, "input_tokens":11, "output_tokens":7, "cache_read_input_tokens":5, "cache_creation_input_tokens":3})
     );
 }
 
