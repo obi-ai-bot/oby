@@ -148,6 +148,14 @@ async function runTurn(turnId, prompt) {
   }
   if (prompt.includes("obid paused you") && !prompt.includes("The owner allowed it")) return complete(turnId, `heard: ${prompt}`);
   const asked = ".obi/inputs/asked.md";
+  // Oby's review of work asked with CODEX READS calls its own GitHub tool first, or with CODEX
+  // READS TETRIX, Tetrix.
+  const reads = task.includes(asked) && existsSync(asked) ? readFileSync(asked, "utf8").match(/CODEX READS( TETRIX)?/) : null;
+  if (reads) {
+    const fetched = item("mcpToolCall", { server: reads[1] ? "tetrix" : "github", tool: reads[1] ? "get_entity" : "fetch_issue", arguments: {}, status: "inProgress" });
+    send({ method: "item/started", params: { threadId: thread, turnId, item: fetched } });
+    send({ method: "item/completed", params: { threadId: thread, turnId, item: { ...fetched, status: "completed" } } });
+  }
   if (task.includes(asked) && existsSync(asked) && readFileSync(asked, "utf8").includes("CODEX REFUSED"))
     return complete(turnId, null, "failed", { message: "workspace routing discovery unauthorized (401)" });
   if (task.includes(asked) && existsSync(asked)) return complete(turnId, "Codex read it.\nLooks right.\nVERDICT: APPROVE");

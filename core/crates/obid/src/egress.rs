@@ -250,7 +250,7 @@ impl Egress {
         // What the agent read there could be anyone's code: from now on the job's check gets none
         // of the owner's secrets (crate::secretspec).
         if decided.is_ok() && crate::secretspec::site_is_foreign(host) {
-            jobs.mark_foreign(
+            jobs.mark_read(
                 job,
                 format!("its agent reached {}, beyond its tool's own services and the package registries", site(host, port)),
             );

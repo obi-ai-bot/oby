@@ -676,6 +676,11 @@ pub struct Job {
     /// Carried to its follow-ups. Never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub memory_from_others: bool,
+    /// What an Oby review read by itself, on the review; on the task it approves, what a review
+    /// with a verdict read, so its pull request merges only after two reviews. Nothing else reads
+    /// it: its check keeps what it gets. Carried to its follow-ups. Never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_read: Option<String>,
     /// Why the code it runs isn't only its owner's own, when it follows up a job whose check got
     /// none of the owner's secrets (crate::secretspec): a received review, a job that ran on a
     /// teammate's Mac, another person's pull request. Carried to every follow-up of it, so a
@@ -897,6 +902,7 @@ impl Job {
                 self.memory_from_others
                     .then(|| "a memory learned from someone else's words reached its agent".into())
             })
+            .or_else(|| self.review_read.clone())
     }
 
     /// Why its pull request's head merges only after two approving reviews by different tools:
@@ -1067,6 +1073,7 @@ impl Job {
             untrusted: false,
             unsigned: false,
             memory_from_others: false,
+            review_read: None,
             foreign: None,
             made: Vec::new(),
             apart: false,

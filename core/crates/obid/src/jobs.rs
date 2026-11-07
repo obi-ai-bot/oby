@@ -3369,6 +3369,7 @@ impl Jobs {
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         job.unsigned = of.as_ref().is_some_and(|of| of.unsigned);
         job.memory_from_others = of.as_ref().is_some_and(|of| of.memory_from_others);
+        job.review_read = of.as_ref().and_then(|of| of.review_read.clone());
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
         job.apart = match &of {
             // A follow-up of another Oby's review starts afresh, apart: never in the owner's clone.
@@ -4959,13 +4960,18 @@ impl Jobs {
         {
             // Past its model's API, a vendor's other hosts serve what people share there.
             if !crate::egress::tools_api(tool, host) {
-                self.mark_foreign(
-                    id,
-                    format!(
-                        "its agent reached {}, beyond its tool's API (a vendor's other hosts serve what people share)",
-                        crate::egress::site(host, port)
-                    ),
+                let why = format!(
+                    "its agent reached {}, beyond its tool's API (a vendor's other hosts serve what people share)",
+                    crate::egress::site(host, port)
                 );
+                // Every Codex review on a ChatGPT login calls its model here, and the proxy sees
+                // only the host: it can't tell that from a shared conversation, so a review keeps
+                // nothing from it for its task (#1812, a limit in docs/contracts/merging.md).
+                if tool == Tool::Codex && host == "chatgpt.com" {
+                    self.mark_foreign(id, why);
+                } else {
+                    self.mark_read(id, why);
+                }
             }
             return Some(Ok(()));
         }
@@ -7981,12 +7987,15 @@ impl Jobs {
             if let AgentEvent::Tool { name, .. } = &event
                 && !crate::secretspec::tool_is_known_safe(name)
             {
-                jobs.mark_foreign(
-                    id,
-                    format!(
-                        "its agent used {name}, which brings it content obid's proxy doesn't see"
-                    ),
+                let why = format!(
+                    "its agent used {name}, which brings it content obid's proxy doesn't see"
                 );
+                // Tetrix is the owner's open question (#1821): nothing about it counts more here.
+                if name.starts_with("mcp__tetrix__") {
+                    jobs.mark_foreign(id, why);
+                } else {
+                    jobs.mark_read(id, why);
+                }
             }
             match event {
                 AgentEvent::Tokens(tokens) => {
@@ -8841,6 +8850,19 @@ impl Jobs {
     /// own clone marks that clone too ([`git::taint`]): what it has already committed, fetched or
     /// kept there is visible to every other job's worktree, so no check in the repository gets
     /// values from then on.
+    /// [`Jobs::mark_foreign`] for what its agent itself read. A review also keeps it for the task
+    /// it approves, which gets it when the verdict lands ([`Jobs::reviewed`], MERGING-14).
+    pub(crate) fn mark_read(&self, id: &str, why: String) {
+        if self.get(id).is_some_and(|job| job.review_of.is_some()) {
+            self.update(id, |job| {
+                job.review_read.get_or_insert_with(|| {
+                    format!("Oby's review of it read something Oby didn't write: {why}")
+                });
+            });
+        }
+        self.mark_foreign(id, why);
+    }
+
     pub(crate) fn mark_foreign(&self, id: &str, why: String) {
         let Some(job) = self.get(id) else { return };
         if job.foreign.is_some() {
@@ -11772,6 +11794,16 @@ impl Jobs {
                     .clone()
                     .unwrap_or_else(|| status.as_str().to_owned()),
             ),
+        };
+        // What it read by itself counts against the task where its verdict counts: one that ended
+        // with none steered nothing (MERGING-14).
+        let author = match (&why, &review.review_read) {
+            (None, Some(read)) => self
+                .update(&of, |job| {
+                    job.review_read.get_or_insert_with(|| read.clone());
+                })
+                .unwrap_or(author),
+            _ => author,
         };
         // It ended before a verdict (a login refused, the tool crashing): on the next reviewer
         // that may take it, once; then the owner's, in one item. Never one the owner let go.
@@ -16466,6 +16498,59 @@ mod tests {
         );
     }
 
+    /// MERGING-14 (#1812): only what a review read by itself is kept for the task it approves, and
+    /// the task gets it when the verdict lands; being given something is a mark on the review
+    /// alone, and no mark of either kind touches what the task's check gets.
+    #[tokio::test]
+    async fn merging_14_a_review_keeps_what_it_read_not_what_it_was_given() {
+        let (jobs, _clone, root) = jobs_with_a_clone("review-reads").await;
+        jobs.update("j", |job| job.vetted = true);
+        let mut review = jobs.get("j").unwrap();
+        review.id = "r".into();
+        review.review_of = Some("j".into());
+        jobs.insert(review);
+
+        jobs.mark_foreign("r", "its agent was given the tools of tetrix".into());
+        assert!(jobs.get("r").unwrap().foreign.is_some());
+        assert_eq!(jobs.get("r").unwrap().review_read, None);
+        assert_eq!(jobs.get("j").unwrap().untrusted_why(), None);
+
+        let read = "its agent used mcp__github__fetch_issue";
+        jobs.mark_read("r", read.into());
+        let kept = jobs.get("r").unwrap().review_read.unwrap();
+        assert!(kept.contains(read), "{kept}");
+        // Not the task's yet: a review that ends with no verdict leaves it nothing.
+        assert_eq!(jobs.get("j").unwrap().untrusted_why(), None);
+
+        // A job that reviews nothing keeps no such thing, only its mark.
+        jobs.mark_read("j", "its agent reached e.com".into());
+        let task = jobs.get("j").unwrap();
+        assert_eq!(task.review_read, None);
+        assert!(task.foreign.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A Codex review calls its model on chatgpt.com with a ChatGPT login: it keeps nothing from
+    /// that host for its task, and any job reaching it is marked as ever, so its check gets no
+    /// values. Another of its vendor's hosts counts (#1812).
+    #[tokio::test]
+    async fn merging_14_a_codex_review_keeps_nothing_from_its_model_host() {
+        let (jobs, _clone, root) = jobs_with_a_clone("model-host").await;
+        jobs.update("j", |job| job.agent = Tool::Codex.id().into());
+        let mut review = jobs.get("j").unwrap();
+        review.id = "r".into();
+        review.review_of = Some("j".into());
+        jobs.insert(review);
+        assert_eq!(jobs.reach_now("j", "chatgpt.com", 443), Some(Ok(())));
+        assert!(jobs.get("j").unwrap().foreign.is_some());
+        assert_eq!(jobs.reach_now("r", "chatgpt.com", 443), Some(Ok(())));
+        assert!(jobs.get("r").unwrap().foreign.is_some());
+        assert_eq!(jobs.get("r").unwrap().review_read, None);
+        assert_eq!(jobs.reach_now("r", "cdn.openai.com", 443), Some(Ok(())));
+        assert!(jobs.get("r").unwrap().review_read.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// MERGING-18 (#1659): what reaches a job is the owner's own only when they said it: a
     /// signed message, cut to their part before Oby's fenced addition, and a conversation turn
     /// that read something untrusted; never an event turn's words or obid's Try again.
@@ -20412,6 +20497,21 @@ mod tests {
         let (status_line, stream) = connect(format!("localhost:{up}"), Some(auth.clone())).await;
         assert_eq!(status_line, "200");
         assert_eq!(echoed(stream, hello.clone()).await, Some(hello));
+        // What a review reaches through the proxy, it read (MERGING-14, #1812).
+        let mut review = jobs.get("j").unwrap();
+        review.id = "r".into();
+        review.review_of = Some("j".into());
+        jobs.lock().jobs.insert("r".into(), review);
+        let its = egress.open("r");
+        let its = its
+            .trim_start_matches("http://")
+            .rsplit_once('@')
+            .unwrap()
+            .0;
+        let its = base64::engine::general_purpose::STANDARD.encode(its);
+        assert_eq!(connect(format!("localhost:{up}"), Some(its)).await.0, "200");
+        let read = jobs.get("r").unwrap().review_read.unwrap_or_default();
+        assert!(read.contains("reached localhost"), "{read}");
         // Another name in its hello (a CDN would serve that site), an encrypted hello, or no TLS
         // at all: the tunnel closes, and nothing reached the echo.
         for bytes in [
