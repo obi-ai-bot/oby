@@ -8639,6 +8639,22 @@ impl Jobs {
         }
         record(Some(run.as_ref().is_ok_and(|run| run.passed)));
         let mut run = run.map_err(|e| format!("obid couldn't run the check: {e}"))?;
+        // A check the machine failed, not the code, judged nothing: no fix round for it, the
+        // owner's Publish by hand (PUBLISHING-17). Read from the check's own output, before obid's
+        // notes join it, and never when its runner named a test that failed.
+        let tests_failed = self
+            .get(id)
+            .and_then(|job| job.checks.last().map(|c| !c.failing.is_empty()))
+            .unwrap_or(false);
+        if !run.passed
+            && run.unchecked.is_none()
+            && !tests_failed
+            && let Some(label) = environment_signature(command, &run.output)
+        {
+            run.unchecked = Some(format!(
+                "Not published: {label}, which is this Mac's doing, not the change's, so nothing counts as checked. Read its change, then Publish it by hand."
+            ));
+        }
         // What a `mac` workflow's merge counts (crate::merge): a pass, on the clean head it ran.
         let checked = match run.passed {
             true => self.checked(id, command).await,
@@ -14678,6 +14694,73 @@ fn check_failed(command: &str, output: &str, failing: &[crate::facts::Failing]) 
     )
 }
 
+/// Why a failed check of `command` shows, in its `output`, that the machine failed, not the code
+/// (PUBLISHING-17): a host that didn't resolve, a registry it couldn't fetch from, a compiler that
+/// doesn't match what built its dependencies, or a step whose own first word isn't installed.
+/// Each sign starts a line of what the check printed (trimmed), so a source line a compiler or
+/// linter quotes (`NN |`) or a diff's `+`/`-` line never matches.
+/// ponytail: a short list of the common toolchains' words; a tool that words it otherwise still
+/// goes back to the agent. Add a line here when one shows up in a real check.
+fn environment_signature(command: &str, output: &str) -> Option<&'static str> {
+    const HOST: &str = "the check couldn't resolve a host";
+    const FETCH: &str = "the check couldn't fetch a dependency";
+    // A line that starts with the first and holds the second.
+    const SIGNS: &[(&str, &str, &str)] = &[
+        ("fatal: unable to access", "Could not resolve host", HOST),
+        ("curl: (6) Could not resolve host", "", HOST),
+        ("Error: getaddrinfo ENOTFOUND", "", HOST),
+        ("Error: getaddrinfo EAI_AGAIN", "", HOST),
+        ("npm ERR! code ENOTFOUND", "", HOST),
+        ("npm error code ENOTFOUND", "", HOST),
+        ("npm ERR! code EAI_AGAIN", "", HOST),
+        ("npm error code EAI_AGAIN", "", HOST),
+        ("npm ERR! code ENOTCACHED", "", FETCH),
+        ("npm error code ENOTCACHED", "", FETCH),
+        ("ERR_PNPM_NO_OFFLINE", "", FETCH),
+        (
+            "error[E0514]",
+            "",
+            "its compiler doesn't match the one that built its dependencies",
+        ),
+    ];
+    // What cargo says caused a `failed to get` when it was the network: a bad `path` isn't.
+    const CARGO_OFFLINE: &[&str] = &[
+        "attempting to make an HTTP request, but --offline was specified",
+        "[6] Couldn't resolve host name",
+        "[7] Couldn't connect to server",
+        "spurious network error",
+    ];
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    let starts = |sign: &str| lines.iter().any(|line| line.starts_with(sign));
+    if let Some(&(_, _, label)) = SIGNS.iter().find(|(sign, holds, _)| {
+        lines
+            .iter()
+            .any(|line| line.starts_with(sign) && line.contains(holds))
+    }) {
+        return Some(label);
+    }
+    if starts("error: failed to get `") && CARGO_OFFLINE.iter().any(|cause| starts(cause)) {
+        return Some(FETCH);
+    }
+    // `/bin/sh: cargo: command not found` (bash) or `/bin/sh: 1: cargo: not found` (dash), for
+    // the first word of one of its steps: not a pipe's second command, a `$(…)` or a recipe's.
+    let firsts: Vec<String> = crate::facts::steps(command)
+        .iter()
+        .filter_map(|step| step.split_whitespace().find(|word| !word.contains('=')))
+        .map(str::to_owned)
+        .collect();
+    lines
+        .iter()
+        .filter_map(|line| line.strip_prefix("/bin/sh: "))
+        .filter_map(|rest| {
+            rest.strip_suffix(": command not found")
+                .or_else(|| rest.strip_suffix(": not found"))
+        })
+        .filter_map(|said| said.rsplit(": ").next())
+        .any(|name| firsts.iter().any(|first| first == name))
+        .then_some("a command its check runs isn't installed")
+}
+
 /// The worktree as a check starts ([`Jobs::before_check`]).
 struct CheckStart {
     head: String,
@@ -15432,6 +15515,103 @@ mod tests {
             "",
         ] {
             assert_eq!(super::noreply(not), None, "{not}");
+        }
+    }
+
+    /// PUBLISHING-17: a check the machine failed, not the code, is named for what failed; a real
+    /// test failure, a line a linter or a diff quotes, a bad `path` in Cargo.toml, or a command
+    /// missing anywhere but a step's first word, isn't.
+    #[test]
+    fn publishing_17_environment_failures_are_no_ones_fault() {
+        let host = Some("the check couldn't resolve a host");
+        let fetch = Some("the check couldn't fetch a dependency");
+        let missing = Some("a command its check runs isn't installed");
+        for (command, output, label) in [
+            (
+                "git fetch",
+                "fatal: unable to access 'https://github.com/a/b/': Could not resolve host: github.com",
+                host,
+            ),
+            (
+                "curl -fsS https://example.com",
+                "curl: (6) Could not resolve host: example.com",
+                host,
+            ),
+            (
+                "npm ci",
+                "npm error code ENOTFOUND\nnpm error syscall getaddrinfo\nnpm error request to https://registry.npmjs.org/x failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org",
+                host,
+            ),
+            (
+                "node fetch.js",
+                "Error: getaddrinfo EAI_AGAIN api.example.com",
+                host,
+            ),
+            ("npm ci", "npm ERR! code EAI_AGAIN", host),
+            (
+                "cargo test",
+                "error: failed to get `serde` as a dependency of package `app v0.1.0 (/w)`\n\nCaused by:\n  failed to query replaced source registry `crates-io`\n\nCaused by:\n  download of config.json failed\n\nCaused by:\n  failed to download from `https://index.crates.io/config.json`\n\nCaused by:\n  [6] Couldn't resolve host name (Could not resolve host: index.crates.io)",
+                fetch,
+            ),
+            (
+                "cargo test --offline",
+                "error: failed to get `serde` as a dependency of package `app v0.1.0 (/w)`\n\nCaused by:\n  attempting to make an HTTP request, but --offline was specified",
+                fetch,
+            ),
+            (
+                "pnpm install --offline",
+                " ERR_PNPM_NO_OFFLINE  No matching version found for left-pad@1.3.0 in the cache",
+                fetch,
+            ),
+            ("npm ci --offline", "npm ERR! code ENOTCACHED", fetch),
+            (
+                "cargo build",
+                "error[E0514]: found crate `serde` compiled by an incompatible version of rustc",
+                Some("its compiler doesn't match the one that built its dependencies"),
+            ),
+            (
+                "cargo fmt --check && cargo test",
+                "/bin/sh: cargo: command not found",
+                missing,
+            ),
+            ("CI=1 pnpm test", "/bin/sh: 1: pnpm: not found", missing),
+            // A real failure goes back to the agent.
+            (
+                "cargo test",
+                "test tests::adds ... FAILED\nthread 'tests::adds' panicked at src/lib.rs:9:5:\nassertion `left == right` failed\n  left: 3\n right: 4\ntest result: FAILED. 1 passed; 1 failed",
+                None,
+            ),
+            // A source line clippy quotes, and a line `cargo fmt --check`'s diff adds.
+            (
+                "cargo clippy -- -D warnings",
+                "error: empty line after doc comment\n    --> src/jobs.rs:14706:13\n      |\n14706 |             \"Could not resolve host\",\n      |             ^^^^^^^^^^^^^^^^^^^^^^^^",
+                None,
+            ),
+            (
+                "cargo fmt --check",
+                "Diff in /w/src/lib.rs:3:\n-        (\"error[E0514]\", \"\"),\n+        (\n+            \"error[E0514]\",\n+            \"\",\n+        ),",
+                None,
+            ),
+            // A typo in a `path` dependency is the change's.
+            (
+                "cargo test",
+                "error: failed to get `foo` as a dependency of package `app v0.1.0 (/w)`\n\nCaused by:\n  failed to load source for dependency `foo`\n\nCaused by:\n  Unable to update /w/../fooo\n\nCaused by:\n  failed to read `/w/../fooo/Cargo.toml`\n\nCaused by:\n  No such file or directory (os error 2)",
+                None,
+            ),
+            // A command missing in a pipe, inside the step's own script, or under npm's `sh`.
+            (
+                "cargo metadata | jq -e .packages",
+                "/bin/sh: jq: command not found",
+                None,
+            ),
+            (
+                "sh scripts/check.sh",
+                "scripts/check.sh: line 3: jq: command not found",
+                None,
+            ),
+            ("npm test", "sh: jest: command not found", None),
+        ] {
+            assert_eq!(environment_signature(command, output), label, "{output}");
         }
     }
 
