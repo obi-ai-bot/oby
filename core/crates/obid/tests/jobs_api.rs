@@ -2594,8 +2594,8 @@ fn a_fix_with_a_check_gets_eight_rounds_unless_told() {
     assert_eq!(rounds(job("investigate", Some("true"), None)), 1);
 }
 
-/// A check that keeps failing, with 3 rounds named: the agent is told it has 3 rounds and that
-/// the check runs offline, hears the check's output in rounds 2 and 3, and the job stops at its
+/// A check that keeps failing, with 3 rounds named: the agent is told the check runs offline in a
+/// clean checkout (never how many rounds it has, TASKS-15), hears the check's output in rounds 2 and 3, and the job stops at its
 /// limit after round 3, nothing pushed. One more round (Try again's words) picks the session up
 /// with the check's output in front of them, as the orchestrator's retry does.
 #[test]
@@ -2628,13 +2628,9 @@ fn a_failing_check_is_heard_every_round_and_on_one_more_round() {
     assert_eq!(job["pushed"], Value::Null, "{job}");
     let said = prompts(&obid, &id);
     assert_eq!(said.len(), 3, "{said:?}");
+    assert!(!said[0].contains("rounds"), "{}", said[0]);
     assert!(
-        said[0].contains("You have 3 rounds: if the check fails, obid sends you its output."),
-        "{}",
-        said[0]
-    );
-    assert!(
-        said[0].contains("with no network: fetch what it needs"),
+        said[0].contains("in its own clean checkout of your last commit, with no network"),
         "{}",
         said[0]
     );
