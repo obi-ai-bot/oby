@@ -1354,7 +1354,7 @@ impl Jobs {
     fn tetrix_for(&self, job: &Job) -> Option<&Arc<crate::tetrix::Tetrix>> {
         self.tetrix
             .get()
-            .filter(|t| job.obi.is_none() && t.connected())
+            .filter(|t| job.obi.is_none() && t.usable())
     }
 
     /// Oby's Tetrix server for `job`'s agent (URL and the job's token), when it gets one.
