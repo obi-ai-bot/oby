@@ -115,7 +115,8 @@ const CUT_WAITS: [Duration; 3] = [
 const STALL_TRIES: usize = 5;
 /// The new sessions a job gets by itself when its last grew too long for its model (RECOVERY-8).
 const NEW_SESSIONS: usize = 1;
-/// How many times a run obid or the Mac cut is continued when obid starts again (RECOVERY-2).
+/// How many times a run cut by obid or the Mac going down (not a clean stop) is continued when
+/// obid starts again (RECOVERY-2).
 const RESTART_TRIES: usize = 3;
 /// What a resumed session is told when obid went down without a stop it was asked for.
 const WENT_DOWN: &str =
@@ -1138,19 +1139,16 @@ impl Jobs {
                 && job.session.is_some()
                 && job.cut.is_none()
                 && !matches!(job.phase, Some(Phase::Check | Phase::Publish));
+            // A stop obid was asked for (a quit, an update) costs no try: only going down some other
+            // way counts, and #915's guard above catches a crash loop.
             if continues {
-                if job.recovery.restarts >= RESTART_TRIES {
+                if stopped_cleanly {
+                    job.recovery.cut = Some(WAS_STOPPED.into());
+                } else if job.recovery.restarts >= RESTART_TRIES {
                     left_here = Some(crate::job::RESTARTS_SPENT);
                 } else {
                     job.recovery.restarts += 1;
-                    job.recovery.cut = Some(
-                        if stopped_cleanly {
-                            WAS_STOPPED
-                        } else {
-                            WENT_DOWN
-                        }
-                        .into(),
-                    );
+                    job.recovery.cut = Some(WENT_DOWN.into());
                 }
             }
             if let Some(why) = left_here {
@@ -1175,12 +1173,13 @@ impl Jobs {
             }
             if job.status == Status::Running {
                 job.status = Status::Queued;
-                job.step = match continues {
-                    true => format!(
+                job.step = match (continues, stopped_cleanly) {
+                    (true, true) => "Oby restarted while this ran: continuing it".into(),
+                    (true, false) => format!(
                         "Oby restarted while this ran: continuing it ({} of {RESTART_TRIES})",
                         job.recovery.restarts
                     ),
-                    false => "Oby restarted while this ran: starting it again".into(),
+                    (false, _) => "Oby restarted while this ran: starting it again".into(),
                 };
                 // Cut short while checking or publishing: its run picks up there.
                 job.cut = job
