@@ -4681,6 +4681,33 @@ fn a_job_alone_gets_the_whole_rise_of_its_accounts_windows() {
     assert!(one.get("windowShare").is_none(), "{one}");
 }
 
+/// PUBLISHING-17: a check that fails because the machine couldn't reach the network judged
+/// nothing: it spends no fix round, and the job ends done with why, nothing published by itself,
+/// and Publish by hand offered (as PUBLISHING-8).
+#[test]
+fn publishing_17_a_check_that_cant_reach_the_network_spends_no_round() {
+    let folder = Folder::new("check-no-network");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": "echo 'fatal: unable to access: Could not resolve host: github.com'; exit 1"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["round"], 1, "{job}");
+    assert_eq!(
+        job["reason"],
+        "Not published: the check couldn't resolve a host, which is this Mac's doing, not the change's, so nothing counts as checked. Read its change, then Publish it by hand.",
+        "{job}"
+    );
+}
+
 /// PUBLISHING-16: a check that runs past its limit judged nothing. It doesn't pass, its output
 /// still says why it ended, and it comes back unchecked, which the job's worker ends done on with
 /// nothing published by itself and Publish by hand offered (as PUBLISHING-8), spending no fix
