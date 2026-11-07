@@ -185,11 +185,13 @@ pub struct Tuning {
 
 impl Tuning {
     /// A retired account choice falls back; an explicit job model is handled separately.
-    /// `offered` is that account's own list ([`crate::model_lists`]), else today's fixed list.
+    /// `offered` is that account's own list ([`crate::model_lists`]), else today's fixed list; empty
+    /// when no live list was read yet ([`crate::model_lists::ModelLists::to_check`]): the saved
+    /// choice stands (AGENTS-6).
     pub fn offered_model<'a>(&'a self, offered: &[crate::model_lists::Offered]) -> Option<&'a str> {
         self.model
             .as_deref()
-            .filter(|model| offered.iter().any(|m| m.id == *model))
+            .filter(|model| offered.is_empty() || offered.iter().any(|m| m.id == *model))
     }
     /// The effort a job runs at: a complex one's own, else the routine one.
     pub fn effort(&self, complex: bool) -> Option<&str> {
