@@ -89,6 +89,9 @@ fn command(folder: &Path, config_path: &Path) -> Command {
         .env("OBID_MEMORY_AVAILABLE", "1099511627776")
         // No usage read by itself (support::start).
         .env("OBID_USAGE_READS", "off")
+        // No first failing check run again on the base (PUBLISHING-18): tests' checks fail
+        // everywhere to drive their rounds. Its own tests turn it on.
+        .env("OBID_BASE_CHECK", "off")
         .env(
             "OBID_SECURITY_BIN",
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-security"),
