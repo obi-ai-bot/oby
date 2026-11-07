@@ -82,7 +82,7 @@ A status beats the words about a status: `API Error: 400 … overloaded` isn't p
 - A retry never resets the 12-hour ceiling or the token budget, and never touches the loop detector: those are the guards against burning accounts, and they stall at once. A waiting job's time counts toward its ceiling, saved as it waits.
 - Claude Code reports tokens only on its `result` line, so a run cut before that counts nothing until a resumed run reports: up to 11 cut runs a job can pass the budget unseen. The 12-hour ceiling is the guard there.
 - A retry never answers a permission, merges or changes a setting, and keeps the job's untrusted mark, mode and box.
-- A job waiting holds its slot.
+- A job waiting to try again takes no slot meanwhile, and takes it back at once when its wait ends (ADMISSION-4).
 
 ## Claude Code, beside Oby
 

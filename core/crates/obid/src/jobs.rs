@@ -104,9 +104,7 @@ const RETRY_WAITS: [Duration; 3] = [
     Duration::from_secs(5 * 60),
 ];
 /// The waits before each continuation of a turn a passing error cut (RECOVERY-1), as Claude's
-/// desktop app waits on a lost connection. A waiting job holds its slot.
-// ponytail: at `maxRunning` jobs all waiting, nothing else starts for up to 21 minutes; give the
-// slot back during a wait if that shows up.
+/// desktop app waits on a lost connection. A waiting job gives its slot back ([`Idle`], ADMISSION-4).
 const CUT_WAITS: [Duration; 3] = [
     Duration::from_secs(60),
     Duration::from_secs(5 * 60),
@@ -832,6 +830,38 @@ struct State {
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
+    /// The jobs whose worker waits on the check queue or a retry's timer: they take no slot
+    /// ([`Idle`], ADMISSION-4).
+    idle: std::collections::HashSet<String>,
+}
+
+impl State {
+    /// The slots taken: jobs a worker runs, less those idle ([`Idle`], ADMISSION-4).
+    fn taken(&self) -> usize {
+        self.workers.len().saturating_sub(self.idle.len())
+    }
+}
+
+/// A job waiting on the check queue or a retry's timer, until this is dropped: its slot is free
+/// for another job meanwhile (ADMISSION-4). Back from the wait it takes its slot again at once, as
+/// a round does, never waiting for one, so the count can briefly pass `maxRunning`.
+struct Idle<'a> {
+    jobs: &'a Arc<Jobs>,
+    id: &'a str,
+}
+
+impl<'a> Idle<'a> {
+    fn new(jobs: &'a Arc<Jobs>, id: &'a str) -> Self {
+        jobs.lock().idle.insert(id.to_string());
+        jobs.schedule();
+        Idle { jobs, id }
+    }
+}
+
+impl Drop for Idle<'_> {
+    fn drop(&mut self) {
+        self.jobs.lock().idle.remove(self.id);
+    }
 }
 
 /// An account being signed in or removed ([`Jobs::begin_change`]), until this is dropped.
@@ -1176,6 +1206,7 @@ impl Jobs {
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
                 changing: std::collections::HashSet::new(),
+                idle: std::collections::HashSet::new(),
             }),
             limit_decisions,
             limit_execution: tokio::sync::Mutex::new(()),
@@ -2020,16 +2051,18 @@ impl Jobs {
         Ok(max)
     }
 
-    /// How many slots are taken: jobs a worker runs.
+    /// How many slots are taken: jobs a worker runs, but those waiting on the check queue or a
+    /// retry's timer ([`Idle`], ADMISSION-4).
     pub fn running(&self) -> usize {
-        self.lock().workers.len()
+        self.lock().taken()
     }
 
     /// Reads the machine's memory and each running job's processes every [`METER_TICK`] while
     /// any job runs, and nothing otherwise (crate::meter).
     pub async fn meter(self: Arc<Self>, mut stopping: watch::Receiver<bool>) {
         loop {
-            if self.running() == 0 {
+            // Every worker, idle ones too: one back from its wait sends no word to start again.
+            if self.lock().workers.is_empty() {
                 tokio::select! {
                     () = self.metering.notified() => continue,
                     _ = stopping.changed() => return,
@@ -3567,7 +3600,7 @@ impl Jobs {
                 {
                     continue;
                 }
-                if state.workers.len() >= self.max_running() {
+                if state.taken() >= self.max_running() {
                     waiting.push(id);
                     continue;
                 }
@@ -3664,6 +3697,7 @@ impl Jobs {
                     let mut state = jobs.lock();
                     state.workers.remove(&id);
                     state.wrapping.remove(&id);
+                    state.idle.remove(&id);
                 }
                 // Once its slot is back: a reading under way can't measure it again ([`Jobs::record`]).
                 jobs.metered(&id);
@@ -8454,7 +8488,7 @@ impl Jobs {
     /// [`Jobs::base_checkout`]), with no network but, for an owner's job run here, loopback; one at
     /// a time, its limit counted from when it starts.
     async fn check(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         command: &str,
         head: &str,
@@ -8487,7 +8521,9 @@ impl Jobs {
         }
         let mut stop = signal.clone();
         // Memory never holds a check back: it runs as soon as it has its turn, its build sized to
-        // what's there ([`Jobs::build_env`]). A stop ends the wait for the turn.
+        // what's there ([`Jobs::build_env`]). A stop ends the wait for the turn, and the wait
+        // takes no slot (ADMISSION-4).
+        let idle = waiting.then(|| Idle::new(self, id));
         let _turn = tokio::select! {
             turn = self.checking.acquire() => {
                 turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
@@ -8496,6 +8532,7 @@ impl Jobs {
                 return Ok(CheckRun { passed: false, output: String::new(), unchecked: None });
             }
         };
+        drop(idle);
         if waiting {
             self.update(id, |job| job.step = step);
         }
@@ -10589,6 +10626,8 @@ impl Jobs {
                         tracing::info!("job {id}: {error}: trying again in {wait:?}");
                         let mut left = wait;
                         let heard = || self.get(id).is_some_and(|j| !j.heard.is_empty());
+                        // The wait takes no slot (ADMISSION-4).
+                        let _idle = Idle::new(self, id);
                         'wait: while !left.is_zero() && !heard() {
                             let step = trying_again(error, left, attempt, CUT_WAITS.len());
                             self.update(id, |job| {
