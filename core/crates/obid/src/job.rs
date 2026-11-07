@@ -64,9 +64,11 @@ pub fn obids_doing(reason: &str) -> bool {
     reason.starts_with(CRASHED) || kept_going_down(reason)
 }
 
-/// What obid did by itself to carry a job's cut run on (docs/contracts/recovery.md). Only the
-/// owner's own words start the counts again: no good turn, restart, follow-on or automatic retry
-/// does, so one kind of retry never multiplies another. Kept in its file, never in the API.
+/// What obid did by itself to carry a job's cut run on (docs/contracts/recovery.md). `errors` and
+/// `stalls` count failures in a row: a turn that ends well, or a run that moved the worktree's
+/// head, starts them again, as the owner's own words start every count; the ceiling, token budget
+/// and loop detector bound a job that alternates. No restart, follow-on or automatic retry starts
+/// the others, so one kind of retry never multiplies another. Kept in its file, never in the API.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recovery {

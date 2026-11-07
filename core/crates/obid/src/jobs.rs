@@ -10528,6 +10528,9 @@ impl Jobs {
                 // `agent.log` keeps every run: only what this one prints says why it ended.
                 let log_from =
                     std::fs::metadata(self.log_path(id, "agent.log")).map_or(0, |log| log.len());
+                // Read just before the run, so only its agent's commits count, never obid's own
+                // rebase between rounds: a run that moved it got somewhere (RECOVERY-1).
+                let head_before = self.worktree_head(id).await;
                 let turn = self
                     .turn(
                         id,
@@ -10552,6 +10555,15 @@ impl Jobs {
                 self.update(id, |job| job.ran_secs = Some(ran()));
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
+                }
+                // Tries count failures in a row: a run that moved the head, or a turn that ends well
+                // (below), gives them back. The ceiling, budget and loop detector still bound it.
+                let head = self.worktree_head(id).await;
+                if git::is_sha(&head) && git::is_sha(&head_before) && head != head_before {
+                    self.update(id, |job| {
+                        job.recovery.errors = 0;
+                        job.recovery.stalls = 0;
+                    });
                 }
                 if turn.over_budget {
                     return Err(stall(Stall::Budget).await);
@@ -10772,6 +10784,8 @@ impl Jobs {
                 }
                 self.update(id, |job| {
                     job.recovery.sent = None;
+                    job.recovery.errors = 0;
+                    job.recovery.stalls = 0;
                     // A turn that said nothing (its last message a tool call, say) keeps the
                     // earlier round's summary and adds no empty one to the rounds' (#764).
                     if said.trim().is_empty() {
