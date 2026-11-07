@@ -16,6 +16,22 @@ pub const NO_PUSH_URL: &str = "obid-agents-cannot-push:///";
 /// How long one git command may take before obid gives up on it.
 const GIT_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How a git call is cut.
+#[derive(Clone, Copy)]
+enum Limit {
+    /// After [`GIT_TIMEOUT`], whatever it does.
+    Fixed,
+    /// After `quiet` with nothing new on stderr, or after `ceiling` in all: a clone or fetch that
+    /// keeps printing `--progress` is never cut for its size (RECOVERY-13).
+    Stall { quiet: Duration, ceiling: Duration },
+}
+
+/// A clone's or fetch's [`Limit`]: 5 minutes with no progress, 6 hours in all.
+const TRANSFER: Limit = Limit::Stall {
+    quiet: Duration::from_secs(300),
+    ceiling: Duration::from_secs(6 * 3600),
+};
+
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct GitError(pub String);
@@ -44,6 +60,22 @@ pub async fn run_bytes(
     args: &[&OsStr],
     extra: &[(&str, &str)],
     input: Option<Vec<u8>>,
+) -> Result<Vec<u8>, GitError> {
+    run_limited(dir, args, extra, input, Limit::Fixed).await
+}
+
+/// A clone or fetch: [`run`] under [`TRANSFER`], with git's `--progress` on stderr.
+async fn transfer(dir: &Path, args: &[&OsStr]) -> Result<String, GitError> {
+    let output = run_limited(dir, args, &[], None, TRANSFER).await?;
+    Ok(String::from_utf8_lossy(&output).trim().to_owned())
+}
+
+async fn run_limited(
+    dir: &Path,
+    args: &[&OsStr],
+    extra: &[(&str, &str)],
+    input: Option<Vec<u8>>,
+    limit: Limit,
 ) -> Result<Vec<u8>, GitError> {
     use tokio::io::AsyncWriteExt;
     let mut command = Command::new("git");
@@ -84,19 +116,25 @@ pub async fn run_bytes(
             let _ = stdin.write_all(&input).await;
         });
     }
-    let output = tokio::time::timeout(GIT_TIMEOUT, child.wait_with_output())
-        .await
-        .map_err(|_| {
-            GitError(format!(
-                "git {shown} took more than {} seconds",
-                GIT_TIMEOUT.as_secs()
-            ))
-        })?
-        .map_err(|e| GitError(format!("git can't run: {e}")))?;
+    let output = match limit {
+        Limit::Fixed => tokio::time::timeout(GIT_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| {
+                GitError(format!(
+                    "git {shown} took more than {} seconds",
+                    GIT_TIMEOUT.as_secs()
+                ))
+            })?,
+        Limit::Stall { quiet, ceiling } => {
+            watch(child, &format!("git {shown}"), quiet, ceiling).await?
+        }
+    }
+    .map_err(|e| GitError(format!("git can't run: {e}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // `--progress` redraws its line with `\r`: git's last words are after the last of either.
         let line = stderr
-            .lines()
+            .split(['\n', '\r'])
             .rfind(|l| !l.trim().is_empty())
             .unwrap_or("")
             .trim()
@@ -104,6 +142,63 @@ pub async fn run_bytes(
         return Err(GitError(format!("git {shown} failed: {line}")));
     }
     Ok(output.stdout)
+}
+
+/// Waits for `child`, whose stderr is piped, and cuts it (dropping it kills it) once its stderr
+/// has said nothing new for `quiet`, or once it has run `ceiling` in all; the error names the rule
+/// that cut it. Its stderr is kept (the last 64 KiB) for the caller to read its last line.
+async fn watch(
+    mut child: tokio::process::Child,
+    shown: &str,
+    quiet: Duration,
+    ceiling: Duration,
+) -> Result<std::io::Result<std::process::Output>, GitError> {
+    use tokio::io::AsyncReadExt;
+    use tokio::time::{Instant, sleep, sleep_until};
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let output = child.wait_with_output();
+    tokio::pin!(output);
+    let over = sleep(ceiling);
+    tokio::pin!(over);
+    let mut said = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut open = true;
+    let mut last = Instant::now();
+    let done = loop {
+        tokio::select! {
+            done = &mut output => break done,
+            read = stderr.read(&mut chunk), if open => match read {
+                Ok(0) | Err(_) => open = false,
+                Ok(n) => {
+                    said.extend_from_slice(&chunk[..n]);
+                    // ponytail: only the last line is read, so 64 KiB is kept.
+                    if said.len() > 64 * 1024 {
+                        said.drain(..said.len() - 64 * 1024);
+                    }
+                    last = Instant::now();
+                }
+            },
+            () = sleep_until(last + quiet) => {
+                return Err(GitError(format!(
+                    "{shown} made no progress for {} seconds, so obid stopped it",
+                    quiet.as_secs()
+                )));
+            }
+            () = &mut over => {
+                return Err(GitError(format!(
+                    "{shown} was still running after {} seconds, obid's ceiling for a clone or fetch",
+                    ceiling.as_secs()
+                )));
+            }
+        }
+    };
+    if open {
+        let _ = stderr.read_to_end(&mut said).await;
+    }
+    Ok(done.map(|mut output| {
+        output.stderr = said;
+        output
+    }))
 }
 
 /// Indexes `pack` (what a job committed, packed in its sandbox) into the clone. `index-pack`
@@ -209,7 +304,7 @@ pub async fn ensure_clone(
         ));
         let _ = std::fs::remove_dir_all(&partial);
         let signed = crate::publish::fetch_credentials(remote, crate::github::gh().as_deref());
-        run(parent, &clone_args(&signed, remote, &partial), &[]).await?;
+        transfer(parent, &clone_args(&signed, remote, &partial)).await?;
         git(&partial, &["config", "remote.origin.pushurl", NO_PUSH_URL]).await?;
         // Only the default branch: what else the clone holds comes in by obid's own fetches,
         // which say when it's someone else's ([`taint`]; crate::secretspec).
@@ -311,7 +406,10 @@ fn clone_args<'a>(signed: &'a [String], remote: &'a str, partial: &'a Path) -> V
         "clone".as_ref(),
         "--no-checkout".as_ref(),
         "--single-branch".as_ref(),
-        "--quiet".as_ref(),
+        // On stderr even with no terminal: what tells [`TRANSFER`] the clone goes on. Never with
+        // `--quiet`, which keeps git's own `Receiving objects` silent and lets only the server's
+        // early `remote:` lines through.
+        "--progress".as_ref(),
         "--".as_ref(),
         remote.as_ref(),
         partial.as_os_str(),
@@ -319,20 +417,27 @@ fn clone_args<'a>(signed: &'a [String], remote: &'a str, partial: &'a Path) -> V
     args
 }
 
-/// `git fetch --quiet --no-tags --no-write-fetch-head origin <refspecs>` in `clone`, an `https`
+/// `git fetch --progress --no-tags --no-write-fetch-head origin <refspecs>` in `clone`,
+/// under [`TRANSFER`], an `https`
 /// `remote` signed in with gh's login alone, as a clone is ([`crate::publish::fetch_credentials`]):
 /// a private repository fetches with nothing set up but gh's sign-in.
 pub async fn fetch(clone: &Path, remote: &str, refspecs: &[String]) -> Result<String, GitError> {
     let signed = crate::publish::fetch_credentials(remote, crate::github::gh().as_deref());
-    git(clone, &fetch_args(&signed, refspecs)).await
+    let args: Vec<&OsStr> = fetch_args(&signed, refspecs)
+        .into_iter()
+        .map(OsStr::new)
+        .collect();
+    transfer(clone, &args).await
 }
 
 /// `git fetch` of `refspecs` from origin, after the credential settings `signed`.
 pub(crate) fn fetch_args<'a>(signed: &'a [String], refspecs: &'a [String]) -> Vec<&'a str> {
     let mut args: Vec<&str> = signed.iter().map(String::as_str).collect();
     args.extend([
+        // `--progress` and never `--quiet`, as a clone ([`clone_args`]); with
+        // `--no-write-fetch-head` nothing goes to stdout.
         "fetch",
-        "--quiet",
+        "--progress",
         "--no-tags",
         "--no-write-fetch-head",
         "origin",
@@ -499,13 +604,97 @@ mod tests {
             fetch[4..],
             [
                 "fetch",
-                "--quiet",
+                "--progress",
                 "--no-tags",
                 "--no-write-fetch-head",
                 "origin",
                 "main"
             ]
         );
+    }
+
+    /// `sh -c script` with its stderr piped, as [`run_limited`] spawns git.
+    fn sh(script: &str) -> tokio::process::Child {
+        Command::new("sh")
+            .args(["-c", script])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
+
+    /// A clone that runs past its quiet window in all, printing all along, isn't cut.
+    #[tokio::test]
+    async fn recovery_13_a_clone_that_keeps_printing_progress_isnt_cut() {
+        let child = sh(
+            "for i in $(seq 15); do printf 'Receiving objects: %s\\r' $i >&2; sleep 0.2; done; echo done",
+        );
+        let output = watch(
+            child,
+            "git clone",
+            Duration::from_secs(2),
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Receiving objects: 15"));
+    }
+
+    /// A clone that goes silent is cut after the quiet window, long before the ceiling, and says
+    /// which rule cut it; one that keeps printing still meets the ceiling.
+    #[tokio::test]
+    async fn recovery_13_a_silent_clone_is_cut_after_the_stall() {
+        let started = std::time::Instant::now();
+        let err = watch(
+            sh("printf 'Receiving objects: 1%%\\r' >&2; sleep 30"),
+            "git clone",
+            Duration::from_millis(300),
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            err.0.starts_with("git clone made no progress for "),
+            "{}",
+            err.0
+        );
+        let err = watch(
+            sh("while true; do echo x >&2; sleep 0.05; done"),
+            "git clone",
+            Duration::from_secs(5),
+            Duration::from_millis(400),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.0.contains("obid's ceiling for a clone or fetch"),
+            "{}",
+            err.0
+        );
+    }
+
+    /// A clone's and a fetch's real arguments ask for `--progress` and never `--quiet`, which
+    /// silences git's own progress so a long download looks stalled.
+    #[test]
+    fn recovery_13_clones_and_fetches_print_progress_without_quiet() {
+        let signed = crate::publish::fetch_credentials(
+            "https://github.com/o/r.git",
+            Some(Path::new("/opt/gh")),
+        );
+        let clone = clone_args(&signed, "https://github.com/o/r.git", Path::new("/c/.r"));
+        let refspecs = ["main".to_owned()];
+        let fetch = fetch_args(&signed, &refspecs);
+        assert!(clone.contains(&OsStr::new("--progress")));
+        assert!(fetch.contains(&"--progress"));
+        for quiet in ["--quiet", "-q"] {
+            assert!(!clone.contains(&OsStr::new(quiet)));
+            assert!(!fetch.contains(&quiet));
+        }
     }
 
     #[test]
