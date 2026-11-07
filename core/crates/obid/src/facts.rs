@@ -58,7 +58,7 @@ pub fn numstat(text: &str) -> Diff {
 }
 
 /// The most failing tests a check run lists.
-const FAILING_MAX: usize = 20;
+pub(crate) const FAILING_MAX: usize = 20;
 /// What a failing test's line the secret scan flags reads instead.
 const HIDDEN_LINE: &str = "[possible secret hidden]";
 /// The lines and characters a failing test's message keeps.

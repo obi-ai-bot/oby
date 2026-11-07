@@ -941,7 +941,8 @@ pub struct Jobs {
     /// One check at a time, whatever the job ([`Jobs::check`]).
     checking: tokio::sync::Semaphore,
     /// How each base's check went, run once on a job's first failure ([`Jobs::fails_on_base`],
-    /// PUBLISHING-18): by repository, base commit and command, `None` for one that passed.
+    /// PUBLISHING-18): by repository, the start commit with the base commit its scripts came
+    /// from, and command; `None` for one that passed.
     /// ponytail: in memory, so a restart forgets it and the next first failure runs the base again.
     base_runs: Mutex<HashMap<(String, String, String), Option<BaseFailure>>>,
     /// Whether a first failure runs on the base at all: `OBID_BASE_CHECK=off` turns it off.
@@ -8697,7 +8698,7 @@ impl Jobs {
                 .join(format!("{id}-{}", random_check_id()?)),
         };
         let base_spec = spec.clone();
-        let (spec, notes) =
+        let (spec, notes, scripts_from) =
             match Box::pin(self.base_checkout(id, command, head, &spec, gate, &at)).await {
                 Ok(check) => check,
                 Err(why) => {
@@ -8797,9 +8798,18 @@ impl Jobs {
             && run.unchecked.is_none()
             && round == 1
             && self.base_check
-            && let Some(why) =
-                Box::pin(self.fails_on_base(id, command, head, &base_spec, signal, &run.output))
-                    .await
+            // With the owner's secrets the job's check ran with values the base run wouldn't get.
+            && kept
+            && let Some(why) = Box::pin(self.fails_on_base(
+                id,
+                command,
+                head,
+                &scripts_from,
+                &base_spec,
+                signal,
+                &run.output,
+            ))
+            .await
         {
             run.unchecked = Some(why);
         }
@@ -8814,44 +8824,66 @@ impl Jobs {
         Ok(run)
     }
 
-    /// Why job `id`'s failed first check of `command` on `head` (its `output`) isn't the change's
-    /// doing (PUBLISHING-18): the same command, run once on the commit its work started from, in a
-    /// checkout of its own with no declared secrets, failed the same way: with the same
-    /// [`crate::facts::signature`], or with every test it named failing there too. Each base's run
-    /// is kept ([`Jobs::base_runs`]); one that couldn't run, or was stopped, judges nothing.
+    /// Why job `id`'s failed first check of `command` on `head` (its `output`, its scripts as the
+    /// base had them at `scripts_from`) isn't the change's doing (PUBLISHING-18): the same command,
+    /// run once on the commit its work started from, in a checkout of its own with no declared
+    /// secrets, failed the same way: with the same [`crate::facts::signature`], or in the same
+    /// step with every test it named failing there too, when those names explain its whole failure.
+    /// Only for a job whose start is its base's tip (no pull request's head, no first job's branch,
+    /// no review), never once it stopped. Each base's run is kept ([`Jobs::base_runs`]); one that
+    /// couldn't run, or was stopped, judges nothing.
+    #[allow(clippy::too_many_arguments)]
     async fn fails_on_base(
         &self,
         id: &str,
         command: &str,
         head: &str,
+        scripts_from: &str,
         spec: &Spec,
         signal: &watch::Receiver<Signal>,
         output: &str,
     ) -> Option<String> {
-        let job = self.get(id)?;
+        if *signal.borrow() != Signal::Run {
+            return None;
+        }
+        let job = self.get(id).filter(|job| {
+            job.pr.is_none() && job.start_from.is_none() && job.review_of.is_none()
+        })?;
         let start = job.start_commit.clone().filter(|c| git::is_sha(c))?;
         let mine = BaseFailure::of(job.checks.last()?, output);
-        let key = (job.repo.clone(), start.clone(), command.to_owned());
+        let key = |from: &str| {
+            (
+                job.repo.clone(),
+                format!("{start} {from}"),
+                command.to_owned(),
+            )
+        };
         let kept = self
             .base_runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key)
+            .get(&key(scripts_from))
             .cloned();
         let base = match kept {
             Some(base) => base,
-            // Nothing changed: its own run is the base's.
-            None if start == head => Some(mine.clone()),
-            None => Box::pin(self.run_on_base(id, command, &start, spec, signal)).await?,
-        };
-        self.base_runs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, base.clone());
-        let base = base?;
-        let same = base.signature == mine.signature
-            || (!mine.failing.is_empty() && mine.failing.iter().all(|t| base.failing.contains(t)));
-        if !same {
+            None => {
+                // Nothing changed: its own run is the base's.
+                let (base, from) = match start == head {
+                    true => (Some(mine.clone()), scripts_from.to_owned()),
+                    false => Box::pin(self.run_on_base(id, command, &start, spec, signal)).await?,
+                };
+                self.base_runs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(key(&from), base.clone());
+                // Its scripts as the base had them later than the job's: no like for like.
+                if from != scripts_from {
+                    return None;
+                }
+                base
+            }
+        }?;
+        if !base.same_as(&mine) {
             return None;
         }
         let what = match mine.failing.as_slice() {
@@ -8867,8 +8899,9 @@ impl Jobs {
     }
 
     /// Job `id`'s check `command` run on `start` (PUBLISHING-18), at a path of its own under
-    /// `home/checks`, removed after: how it failed, `Some(None)` when it passed, `None` when it
-    /// judged nothing (it couldn't run, ran past its limit, or the job stopped).
+    /// `home/checks`, removed after: how it failed, `None` when it passed, with the base commit its
+    /// scripts came from; `None` when it judged nothing (it couldn't run, ran past its limit, or
+    /// the job stopped).
     async fn run_on_base(
         &self,
         id: &str,
@@ -8876,14 +8909,15 @@ impl Jobs {
         start: &str,
         spec: &Spec,
         signal: &watch::Receiver<Signal>,
-    ) -> Option<Option<BaseFailure>> {
+    ) -> Option<(Option<BaseFailure>, String)> {
         let sandbox = self.sandbox.as_ref().ok()?;
         let at = self
             .config
             .home
             .join("checks")
             .join(format!("{id}-base-{}", random_check_id().ok()?));
-        let (check, _) =
+        let marker = format!("obid-step-{}", random_check_id().ok()?);
+        let (check, _, from) =
             match Box::pin(self.base_checkout(id, command, start, spec, None, &at)).await {
                 Ok(check) => check,
                 Err(why) => {
@@ -8893,7 +8927,6 @@ impl Jobs {
             };
         tracing::info!("job {id}: running its check on the base {start}");
         // A watch of its own, never the job's: it reads the base's steps and failing tests.
-        let marker = format!("obid-step-{}", random_check_id().ok()?);
         let watch = Arc::new(Mutex::new(crate::facts::CheckWatch::new(
             marker,
             crate::facts::steps(command),
@@ -8926,13 +8959,13 @@ impl Jobs {
             .ok()
             .filter(|run| run.unchecked.is_none() && *signal.borrow() == Signal::Run)?;
         if run.passed {
-            return Some(None);
+            return Some((None, from));
         }
         let record = watch
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record(1, Some(false));
-        Some(Some(BaseFailure::of(&record, &run.output)))
+        Some((Some(BaseFailure::of(&record, &run.output)), from))
     }
 
     /// The checkout job `id`'s check of `command` runs in, at `at` (PUBLISHING-6): of `head`, the
@@ -8952,7 +8985,7 @@ impl Jobs {
         spec: &Spec,
         gate: Option<(String, String)>,
         at: &Path,
-    ) -> Result<(Spec, Vec<String>), String> {
+    ) -> Result<(Spec, Vec<String>, String), String> {
         let unchecked = |why: String| {
             format!(
                 "Not published: {why}, so nothing counts as checked. Read its change, then Publish it by hand."
@@ -9098,7 +9131,7 @@ impl Jobs {
                     .join(", ")
             ),
         };
-        Ok((check, vec![note]))
+        Ok((check, vec![note], base_commit))
     }
 
     /// Why the code job `job`'s check would run isn't only its owner's own, so the check gets none
@@ -15173,16 +15206,38 @@ struct CheckStart {
 #[derive(Debug, Clone)]
 struct BaseFailure {
     signature: String,
+    /// The step that failed.
+    step: String,
     /// Its failing tests' names.
     failing: Vec<String>,
+    /// Whether those names are the whole of its failure: its step's runner counted as many failed,
+    /// and the list wasn't cut at the most a run lists.
+    named: bool,
 }
 
 impl BaseFailure {
     fn of(record: &crate::facts::CheckRecord, output: &str) -> BaseFailure {
+        let failed = record.steps.iter().find(|s| s.passed == Some(false));
+        let failing: Vec<String> = record.failing.iter().map(|f| f.test.clone()).collect();
         BaseFailure {
             signature: crate::facts::signature(record, output),
-            failing: record.failing.iter().map(|f| f.test.clone()).collect(),
+            step: failed.map(|s| s.command.clone()).unwrap_or_default(),
+            named: !failing.is_empty()
+                && failing.len() < crate::facts::FAILING_MAX
+                && failed
+                    .and_then(|s| s.tests)
+                    .is_some_and(|t| t.failed == failing.len() as u64),
+            failing,
         }
+    }
+
+    /// Whether the base (this) fails as the job's run `job` does.
+    fn same_as(&self, job: &BaseFailure) -> bool {
+        self.signature == job.signature
+            || (job.named
+                && self.step == job.step
+                && self.failing.len() < crate::facts::FAILING_MAX
+                && job.failing.iter().all(|t| self.failing.contains(t)))
     }
 }
 

@@ -4732,8 +4732,8 @@ fn publishing_18_a_base_that_already_fails_spends_no_round() {
     let folder = Folder::new("check-red-base");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start_checking(&folder.0, &config(&folder.0, &remote), None, true);
-    // The base fails TestRed and TestOther; the change, with a.txt, fails TestRed alone.
-    let check = "echo '--- FAIL: TestRed (0.01s)'; test -f a.txt || echo '--- FAIL: TestOther (0.01s)'; exit 1";
+    // The base fails red and other; the change, with a.txt, fails red alone, as cargo says.
+    let check = "echo 'test red ... FAILED'; n=1; test -f a.txt || { echo 'test other ... FAILED'; n=2; }; echo \"test result: FAILED. 0 passed; $n failed\"; exit 1";
     let run = |task: &str| {
         let id = post_job(
             &obid,
@@ -4745,10 +4745,7 @@ fn publishing_18_a_base_that_already_fails_spends_no_round() {
             .to_owned();
         wait(&obid, &id)
     };
-    for (task, tests) in [
-        ("COMMIT: a.txt", "TestRed"),
-        ("COMMIT: b.txt", "TestRed, TestOther"),
-    ] {
+    for (task, tests) in [("COMMIT: a.txt", "red"), ("COMMIT: b.txt", "red, other")] {
         let job = run(task);
         assert_eq!(job["status"], "done", "{job}");
         assert_eq!(job["round"], 1, "{job}");
@@ -4792,6 +4789,91 @@ fn publishing_18_a_base_that_passes_keeps_the_fix_rounds() {
             .unwrap_or_default()
             .contains("already fails on the base"),
         "{job}"
+    );
+    let log = std::fs::read_to_string(&obid.stderr).unwrap();
+    assert_eq!(
+        log.matches("running its check on the base").count(),
+        1,
+        "{log}"
+    );
+}
+
+/// PUBLISHING-18: a follow-up starts from its first job's branch, not its base's tip, so its
+/// failure is never laid on the base: no base run, and its rounds run as before.
+#[test]
+fn publishing_18_a_follow_up_never_blames_the_base() {
+    let folder = Folder::new("check-base-follow-up");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start_checking(&folder.0, &config(&folder.0, &remote), None, true);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": "test ! -f a.txt", "rounds": 1}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    let told = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "Go on with it."}).to_string()),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    let follow = wait(&obid, told.body["id"].as_str().unwrap());
+    assert_eq!(follow["followUpOf"], id.as_str(), "{follow}");
+    assert!(
+        !follow["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already fails on the base"),
+        "{follow}"
+    );
+    // The first job's base run (its base passed), and none for the follow-up.
+    let log = std::fs::read_to_string(&obid.stderr).unwrap();
+    assert_eq!(
+        log.matches("running its check on the base").count(),
+        1,
+        "{log}"
+    );
+}
+
+/// PUBLISHING-18: a job stopped during its check keeps no base run: the next job on the same base
+/// runs its own.
+#[test]
+fn publishing_18_a_stopped_check_keeps_no_base_run() {
+    let folder = Folder::new("check-base-stopped");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start_checking(&folder.0, &config(&folder.0, &remote), None, true);
+    let check = "test -f a.txt || sleep 3; exit 1";
+    let post = |task: &str| {
+        post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": task, "check": check}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // Nothing changed: its own run would have counted as the base's.
+    let first = post("Nothing to do");
+    until(&obid, &first, |job| {
+        job["checks"].as_array().is_some_and(|c| !c.is_empty())
+    });
+    request(&obid, "POST", &format!("/v1/jobs/{first}/stop"), None);
+    wait(&obid, &first);
+    let second = wait(&obid, &post("COMMIT: a.txt"));
+    assert_eq!(second["round"], 1, "{second}");
+    assert!(
+        second["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already fails on the base"),
+        "{second}"
     );
     let log = std::fs::read_to_string(&obid.stderr).unwrap();
     assert_eq!(

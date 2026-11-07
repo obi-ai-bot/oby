@@ -311,6 +311,38 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
     holds_none(&obid_log, &fake(), "obid's log");
 }
 
+/// PUBLISHING-18: an owner's check that got the base's values never runs again on the base, where
+/// it would get none and fail more: its rounds run as before.
+#[cfg(target_os = "macos")]
+#[test]
+fn publishing_18_a_check_with_the_owners_secrets_never_runs_on_the_base() {
+    let folder = Folder::new("secretspec-base-run");
+    let remote = fixture(&folder.0.join("fixture"));
+    declare_on_main(&folder.0, &remote);
+    let config = config(&folder.0, &remote, &agent());
+    put_token(&config, TOKEN);
+    let path = folder.0.join("config.json");
+    std::fs::write(&path, config.to_string()).unwrap();
+    add(&path, "check.FAKE_CHECK_TOKEN", &fake());
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&github(&folder.0)),
+        &[("OBID_BASE_CHECK", "on")],
+    );
+    let log = dispatch_and_log(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "Make the check pass", "check": "sh check.sh", "rounds": 2}),
+    );
+    assert!(got_it(&log), "{log}");
+    let obid_log = std::fs::read_to_string(folder.0.join("obid.stderr")).unwrap();
+    assert!(
+        !obid_log.contains("running its check on the base"),
+        "{obid_log}"
+    );
+}
+
 /// Starts obid with the fixture, `main` declaring FAKE_CHECK_TOKEN, the fake value in the vault,
 /// and the stand-in gh; runs one job `job`, as the owner typed it in Oby's apps, to its end: obid,
 /// and the job's check log.
