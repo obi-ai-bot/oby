@@ -1044,7 +1044,11 @@ impl Push {
             .filter(|r| r.device.as_ref().is_none_or(|d| paired.contains(d)))
             .cloned()
             .collect();
-        if !to.is_empty() {
+        if to.is_empty() {
+            // No phone heard any of it: what was told stays as it was (none, on a first look), so
+            // the first look after one registers says everything still waiting.
+            now = before;
+        } else {
             let mut clean = Vec::new();
             for alert in send {
                 // One the scan stops is never sent, nor tried again.
@@ -2630,6 +2634,37 @@ mod tests {
         );
         look(j.clone()).await;
         assert!(calls(&heard).is_empty());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// An ask that came while no phone was registered is said once one is (XALERTS-6): with no
+    /// phone, nothing is recorded as told, not even on the first look.
+    #[tokio::test]
+    async fn nothing_is_told_while_no_phone_is_registered() {
+        let home = std::env::temp_dir().join(format!("obid-push-nophone-{}", std::process::id()));
+        let scratch = home.join("tmp");
+        let (relay, heard, _) = relay_stub().await;
+        let (_, key) = iphone();
+        let push = Push::open(&home, &relay);
+        let mut j = job("j1");
+        j.status = Status::Running;
+        j.permission = Some(permission());
+        let none = HashSet::new();
+        for _ in 0..2 {
+            push.look(std::slice::from_ref(&j), &[], &none, &scratch)
+                .await;
+        }
+        let kept = std::fs::read(home.join("push/said.json")).unwrap();
+        assert_eq!(kept, b"{}");
+        push.keep_relayed(relayed("phone", None, &key, &relay))
+            .unwrap();
+        push.look(std::slice::from_ref(&j), &[], &none, &scratch)
+            .await;
+        assert_eq!(heard.lock().unwrap().len(), 1);
+        // Said now: the next look says nothing more.
+        push.look(std::slice::from_ref(&j), &[], &none, &scratch)
+            .await;
+        assert_eq!(heard.lock().unwrap().len(), 1);
         std::fs::remove_dir_all(&home).unwrap();
     }
 }
