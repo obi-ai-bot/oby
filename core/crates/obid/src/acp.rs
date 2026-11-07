@@ -1089,6 +1089,9 @@ pub mod cursor {
             // Its login in a file under its HOME ([`crate::jobs::cursor_login_file`]), never the
             // macOS Keychain, which a job's box denies: the job gets a copy of that file.
             ("AGENT_CLI_CREDENTIAL_STORE", "file".into()),
+            // ponytail: no telemetry switch here, as Claude Code has (crate::jobs, `Launch`):
+            // cursor-agent documents none in its environment, so what it sends is decided as any
+            // site is (PERMISSIONS-2). Add it here once Cursor documents one.
         ]
     }
 

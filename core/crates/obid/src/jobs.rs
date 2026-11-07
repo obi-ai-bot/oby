@@ -45,6 +45,10 @@ pub const FILES_ALONE: &str = "Look at the files I attached.";
 pub const CHECK_TOO_LONG: &str = "obid stopped it after 45 minutes, the most a test run may take.";
 /// How much of a check's output obid keeps: its end.
 const CHECK_OUTPUT_MAX: usize = 64 * 1024;
+
+/// Claude Code's own switches for its telemetry (Datadog) and error reports (Sentry), each `1` in
+/// every job's environment ([`Jobs::launch`]).
+const CLAUDE_TELEMETRY_OFF: [&str; 2] = ["DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING"];
 /// Why a job that commits ended done with nothing to publish.
 const NOTHING_COMMITTED: &str = "Nothing committed, so nothing was published.";
 /// In the changes of a task obid let go itself (TASKS-13): not the owner's Dismiss.
@@ -7501,6 +7505,15 @@ impl Jobs {
                 if tool == Tool::Claude {
                     extra.push((process::CLAUDE_TMPDIR, spec.temp.clone().into_os_string()));
                     extra.push((process::CLAUDE_TODO_TOOLS, "1".into()));
+                    // Claude Code's documented switches: no Datadog telemetry, no Sentry reports,
+                    // in both lanes. Through the egress proxy they were a site like any other, a
+                    // card for the owner and a foreign mark (PERMISSIONS-2).
+                    // ponytail: Codex and Cursor document no environment switch for theirs (Codex's
+                    // is `config.toml`'s `[analytics]` and `[otel]`, its OTel off by default), so
+                    // what they send is still decided as any site is.
+                    for name in CLAUDE_TELEMETRY_OFF {
+                        extra.push((name, "1".into()));
+                    }
                 }
                 process::sandbox_env(&process::tools_path(), &spec.temp, &extra)
             },
@@ -15092,6 +15105,75 @@ mod tests {
         assert_eq!(moved_clone_of(&next, get).as_deref(), Some("/marked/1"));
         assert_eq!(moved_clone_of(&failed, get).as_deref(), Some("/marked/1"));
         assert_eq!(moved_clone_of(&task, get), None);
+    }
+
+    /// PERMISSIONS-2 (docs/contracts/permissions.md): a Claude Code job starts with its telemetry
+    /// and error reports off, in obid's box and in its own sandbox (`claudeOwnSandbox`) alike.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn permissions_2_an_agent_runs_with_its_telemetry_off() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-telemetry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let home = root.join("home");
+        let session = root.join("session");
+        std::fs::write(&session, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let login =
+            json!({"claudeAiOauth": {"accessToken": "t", "expiresAt": 9_999_999_999_999u64}});
+        let mut accounts = Vec::new();
+        for id in ["boxed", "own"] {
+            let dir = root.join("accounts").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(".credentials.json"), login.to_string()).unwrap();
+            accounts.push(json!({"id": id, "name": id, "configDir": dir}));
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": accounts}},
+                "claudeOwnSandbox": ["own"]})
+            .to_string(),
+        )
+        .unwrap();
+        let sandbox = Sandbox::detect(&session);
+        let jobs = Jobs::open(config, crate::events::Events::new(), sandbox).unwrap();
+        for id in ["boxed", "own"] {
+            let job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                id.into(),
+            );
+            let [worktree, admin, common, temp] =
+                ["worktree", "admin", "common", "temp"].map(|d| root.join(id).join(d));
+            for dir in [&worktree, &admin, &common, &temp] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
+            let account = jobs
+                .accounts(Tool::Claude)
+                .into_iter()
+                .find(|a| a.id == id)
+                .unwrap();
+            let launch = jobs
+                .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
+                .unwrap();
+            assert_eq!(launch.own_sandbox, id == "own");
+            for name in CLAUDE_TELEMETRY_OFF {
+                assert!(
+                    launch
+                        .env
+                        .iter()
+                        .any(|(set, value)| set == name && value == "1"),
+                    "{id}: {name}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// What a Claude Code run in its own sandbox gets, checked without running it: git pinned to
