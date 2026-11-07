@@ -310,10 +310,14 @@ pub async fn at_base(clone: &Path, base: &str) -> Result<(String, Option<String>
     .await
     .map_err(|_| format!("obid's clone doesn't have {base} yet."))?;
     let path = format!("{commit}:{FILE}");
-    match crate::git::git(clone, &["cat-file", "-t", &path]).await {
-        Ok(kind) if kind == "blob" => {}
-        Ok(_) => return Err(format!("{FILE} on {base} isn't a file.")),
-        Err(_) => return Ok((commit, None)),
+    // Only a tree that lists no such entry has none: git failing to read it is no answer.
+    let listed = crate::git::git(clone, &["ls-tree", &commit, "--", FILE])
+        .await
+        .map_err(|e| format!("obid couldn't read {FILE} on {base}: {e}"))?;
+    match listed.split_whitespace().nth(1) {
+        None => return Ok((commit, None)),
+        Some("blob") => {}
+        Some(_) => return Err(format!("{FILE} on {base} isn't a file.")),
     }
     let bytes = crate::git::run_bytes(
         clone,
