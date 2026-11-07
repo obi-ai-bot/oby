@@ -67,9 +67,6 @@ struct File {
     allow_file_remotes: bool,
     #[serde(default)]
     telemetry: bool,
-    /// Whether this obid may convene a Council review panel (`POST /v1/obid/sphere/council`).
-    #[serde(default)]
-    council: bool,
     /// How long a job may go without progress before it stalls, in seconds: 1 to 86,400, 900
     /// when left out.
     stall_after: Option<u64>,
@@ -243,9 +240,6 @@ pub struct Config {
     pub allow_file_remotes: bool,
     /// False unless the owner turns it on; obid sends nothing to anyone otherwise.
     pub telemetry: bool,
-    /// False unless the owner turns it on: then obid may convene a Council review panel, one
-    /// `review_request` per seat (crate::sphere::council). It has no UI.
-    pub council: bool,
     /// Where the owner's vault is (crate::vault).
     pub vault: crate::vault::Location,
     /// Whether the configuration still says `{"store": "keychain"}`, which is the file since #1679:
@@ -570,7 +564,6 @@ impl Config {
             repos: crate::repos::Repos::new(file.repos),
             allow_file_remotes: file.allow_file_remotes,
             telemetry: file.telemetry,
-            council: file.council,
             vault_says_keychain: file.vault.as_ref().is_some_and(|v| v.store == "keychain"),
             vault,
             stall_after: std::time::Duration::from_secs(stall_after),
@@ -826,11 +819,9 @@ mod tests {
     }
 
     #[test]
-    fn council_panels_are_off_unless_turned_on() {
-        let config = Config::parse(&with(serde_json::json!({}))).unwrap();
-        assert!(!config.council);
+    fn a_retired_council_key_still_loads() {
         let config = Config::parse(&with(serde_json::json!({"council": true}))).unwrap();
-        assert!(config.council);
+        assert!(config.ignored.contains(&"council".to_owned()));
     }
 
     #[test]

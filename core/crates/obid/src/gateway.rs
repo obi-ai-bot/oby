@@ -1070,7 +1070,6 @@ mod tests {
             (Method::POST, "/v1/obid/sphere/card"),
             (Method::GET, "/v1/obid/sphere/pins"),
             (Method::POST, "/v1/obid/sphere/pins/ernesto"),
-            (Method::POST, "/v1/obid/sphere/council"),
         ] {
             assert!(!allows(&method, path), "{method} {path}");
         }
