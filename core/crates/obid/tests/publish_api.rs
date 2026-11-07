@@ -155,6 +155,35 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+/// The fixture's `main` with a `secretspec.toml` that declares no secret, pushed: a marked clone of a
+/// repository that declares one is made again (PUBLISHING-21), and its checks get nothing.
+fn declare_secrets(folder: &Path, remote: &Path) {
+    let work = folder.join("work-secretspec");
+    let (remote_text, work_text) = (remote.to_str().unwrap(), work.to_str().unwrap());
+    git(
+        folder,
+        &["clone", "-q", "--branch", "main", remote_text, work_text],
+    );
+    std::fs::write(work.join("secretspec.toml"), "[profiles.default]\n").unwrap();
+    git(&work, &["add", "secretspec.toml"]);
+    git(
+        &work,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "Declare the check's secrets",
+        ],
+    );
+    git(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+}
+
 /// The commit `branch` is at on the remote, or none.
 fn remote_branch(remote: &Path, branch: &str) -> Option<String> {
     let listed = git(
@@ -3166,7 +3195,8 @@ fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
 fn merging_19_a_review_finds_the_pushed_head_in_a_clone_made_again() {
     let folder = Folder::new("publish-review-steered");
     let bin = fake_gh(&folder.0);
-    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    declare_secrets(&folder.0, &remote);
     let one = call(
         &obid,
         "PUT",
@@ -3236,7 +3266,8 @@ fn merging_19_a_review_finds_the_pushed_head_in_a_clone_made_again() {
 fn publishing_15_a_follow_up_finds_its_branch_in_a_clone_made_again() {
     let folder = Folder::new("publish-follow-up-remade");
     let bin = fake_gh(&folder.0);
-    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    declare_secrets(&folder.0, &remote);
     let one = call(
         &obid,
         "PUT",
