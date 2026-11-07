@@ -297,6 +297,9 @@ pub fn start_with(
         .env("OBID_USAGE_READS", "off")
         // The brains' time never depends on how busy the machine running the tests is.
         .env("OBID_LOAD", "0")
+        // No first failing check run again on the base (PUBLISHING-18): tests' checks fail
+        // everywhere to drive their rounds. Its own tests turn it on.
+        .env("OBID_BASE_CHECK", "off")
         .envs(env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(
