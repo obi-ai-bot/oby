@@ -961,6 +961,37 @@ fn recovery_12_a_silent_idle_agent_is_continued_at_most_twice() {
     assert!(told[3].contains("handoff note"), "{told:?}");
 }
 
+/// RECOVERY-12: the CPU an idle agent's window starts from is read once it has gone quiet, so what
+/// it used starting and talking isn't counted: its first cut comes after one window, not two.
+#[test]
+fn recovery_12_an_idle_jobs_first_cut_comes_after_one_window() {
+    let (_folder, obid) = obid_with("recovery-12-one-window", json!({"stallAfter": 6}), &[]);
+    let id = post_job(&obid, "QUIET ONCE");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    // Its rounds' starts: the first, and the one Oby continued once the window cut it.
+    let transcript = call(&obid, "GET", &format!("/v1/jobs/{id}/transcript"), None).body;
+    let starts: Vec<i64> = transcript["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "start")
+        .map(|e| {
+            e["at"]
+                .as_str()
+                .unwrap()
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .as_second()
+        })
+        .collect();
+    assert_eq!(starts.len(), 2, "{transcript}");
+    // One 6-second window and the seconds the first round takes to start its agent (`at` is to
+    // the second); two windows would be 12 seconds and more.
+    let took = starts[1] - starts[0];
+    assert!((6..12).contains(&took), "{took} seconds: {transcript}");
+}
+
 /// RECOVERY-4: the turn limit continues the same session, and counts with a quiet job's tries.
 #[test]
 fn recovery_4_the_turn_limit_continues_and_counts_with_quiet() {

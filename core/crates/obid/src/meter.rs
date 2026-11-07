@@ -82,8 +82,8 @@ pub fn roots_in(folder: &Path, checks: bool) -> Vec<u32> {
         .collect()
 }
 
-/// A process: its parent, its group, its resident memory in bytes and the CPU time it has used, user
-/// and system, in nanoseconds (0 when it can't be read).
+/// A process: its parent, its group, its resident memory in bytes and the CPU time it and the
+/// children it reaped have used, user and system, in nanoseconds (0 when it can't be read).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Process {
     pub pid: u32,
@@ -190,7 +190,14 @@ pub fn processes() -> Vec<Process> {
                         process.rss = usage.ri_resident_size;
                     }
                     // In Mach ticks, not nanoseconds, on Apple silicon.
-                    let ticks = usage.ri_user_time.saturating_add(usage.ri_system_time);
+                    let ticks = [
+                        usage.ri_user_time,
+                        usage.ri_system_time,
+                        usage.ri_child_user_time,
+                        usage.ri_child_system_time,
+                    ]
+                    .into_iter()
+                    .fold(0u64, u64::saturating_add);
                     process.cpu = (u128::from(ticks) * ns.0 / ns.1) as u64;
                 }
             }
@@ -369,15 +376,18 @@ fn mach_tick_ns() -> (u128, u128) {
 #[cfg(target_os = "linux")]
 const CLOCK_TICKS: u64 = 100;
 
-/// `/proc/<pid>/stat`'s `utime` and `stime` (its 14th and 15th fields), in nanoseconds. The
-/// command's name, in parentheses, may hold spaces and parentheses itself.
+/// `/proc/<pid>/stat`'s `utime`, `stime`, `cutime` and `cstime` (its 14th to 17th fields: its own
+/// and its reaped children's), in nanoseconds. The command's name, in parentheses, may hold spaces
+/// and parentheses itself.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn stat_cpu(stat: &str, ticks_per_second: u64) -> Option<u64> {
     let mut fields = stat.get(stat.rfind(')')? + 1..)?.split_whitespace();
-    // After the name comes the state (the 3rd field): utime is 11 fields on, stime 12.
-    let utime: u64 = fields.nth(11)?.parse().ok()?;
-    let stime: u64 = fields.next()?.parse().ok()?;
-    Some((utime + stime).saturating_mul(1_000_000_000) / ticks_per_second.max(1))
+    // After the name comes the state (the 3rd field): utime is 11 fields on.
+    let mut ticks: u64 = fields.nth(11)?.parse().ok()?;
+    for _ in 0..3 {
+        ticks = ticks.saturating_add(fields.next()?.parse().ok()?);
+    }
+    Some(ticks.saturating_mul(1_000_000_000) / ticks_per_second.max(1))
 }
 
 /// `ps -axo pid=,ppid=,pgid=,rss=` (resident memory in KiB), read.
@@ -499,9 +509,10 @@ Pages occupied by compressor:                 347536.
         assert_eq!(tree_cpu(&table, &[100, 101, 102]), 15);
         assert_eq!(tree_cpu(&table, &[200]), 16);
         assert_eq!(tree_cpu(&table, &[]), 0);
-        // utime 300 and stime 200 ticks of 100 a second: 5 seconds, a name with ") (" in it read past.
-        let stat = "42 (a) (b c) S 41 40 40 0 -1 4194304 10 0 0 0 300 200 0 0 20 0 1 0 5 0 0\n";
-        assert_eq!(stat_cpu(stat, 100), Some(5_000_000_000));
+        // utime 300, stime 200, cutime 400 and cstime 100 ticks of 100 a second: 10 seconds, a
+        // name with ") (" in it read past.
+        let stat = "42 (a) (b c) S 41 40 40 0 -1 4194304 10 0 0 0 300 200 400 100 20 0 1 0 5 0 0\n";
+        assert_eq!(stat_cpu(stat, 100), Some(10_000_000_000));
         assert_eq!(stat_cpu("42 (cut", 100), None);
         // This process, busy for a moment, has used some CPU of its own.
         let start = std::time::Instant::now();
