@@ -1650,8 +1650,24 @@ impl Jobs {
                 .unwrap_or_default()
         };
         let mut roots = vec![home.clone(), home.join("apart"), self.received_home()];
-        // And the clones moved aside, `marked/<when>/clones/…`, which jobs still use.
-        roots.extend(read(&home.join("marked")));
+        // And the clones moved aside, `marked/<when>/clones/…`: kept while a job still uses one,
+        // removed once none does (PUBLISHING-21).
+        let (used, unsure) = self.marked_in_use();
+        for root in read(&home.join("marked")) {
+            let canon = root.canonicalize().unwrap_or_else(|_| root.clone());
+            if unsure
+                || used
+                    .iter()
+                    .any(|u| u.starts_with(&root) || u.starts_with(&canon))
+            {
+                roots.push(root);
+            } else if std::fs::remove_dir_all(&root).is_ok() {
+                tracing::info!(
+                    "{}: no job uses this marked clone, so it's removed",
+                    root.display()
+                );
+            }
+        }
         for root in roots {
             for owner in read(&root.join("clones")) {
                 for clone in read(&owner) {
@@ -1666,6 +1682,55 @@ impl Jobs {
                 }
             }
         }
+    }
+
+    /// Where jobs' work lives that a marked clone could hold, each path as given and resolved:
+    /// the git folder every job's worktree's `.git` file points to, and the clone a job yet to
+    /// end, or one with a worktree, keeps to ([`Job::clone_root`]; a follow-up gets its worktree
+    /// there). True as well when a
+    /// worktree's `.git` didn't read, so nothing is taken as unused.
+    fn marked_in_use(&self) -> (Vec<PathBuf>, bool) {
+        let (worktrees, roots): (Vec<PathBuf>, Vec<PathBuf>) = {
+            let state = self.lock();
+            let jobs = state.jobs.values();
+            (
+                jobs.clone()
+                    .flat_map(|job| {
+                        let own = self.worktree_path(&job.id);
+                        job.worktree.iter().map(PathBuf::from).chain([own])
+                    })
+                    .collect(),
+                // A worktree `git worktree repair` missed still points where the clone was.
+                jobs.filter(|job| {
+                    job.status.is_active()
+                        || self.worktree_path(&job.id).exists()
+                        || job
+                            .worktree
+                            .as_deref()
+                            .is_some_and(|w| Path::new(w).exists())
+                })
+                .filter_map(|job| job.clone_root.as_deref().map(PathBuf::from))
+                .collect(),
+            )
+        };
+        let mut used = Vec::new();
+        let mut unsure = false;
+        for worktree in worktrees {
+            let file = worktree.join(".git");
+            match std::fs::read_to_string(&file) {
+                Ok(text) => match text.trim().strip_prefix("gitdir:") {
+                    // A relative one is the worktree's own; `join` keeps an absolute one.
+                    Some(dir) => used.push(worktree.join(dir.trim())),
+                    None => unsure = true,
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound || file.is_dir() => {}
+                Err(_) => unsure = true,
+            }
+        }
+        used.extend(roots);
+        let resolved: Vec<PathBuf> = used.iter().filter_map(|p| p.canonicalize().ok()).collect();
+        used.extend(resolved);
+        (used, unsure)
     }
 
     /// Lets git tidy each clone once a day ([`Jobs::tidy_clone`]).
@@ -9120,6 +9185,13 @@ impl Jobs {
         let Some(why) = git::foreign_in(&clone).await else {
             return;
         };
+        // The mark only keeps declared secrets from someone else's code: a base that declares none
+        // has nothing a fresh clone would give back, so the marked one stays (PUBLISHING-21). A
+        // base obid can't read is made again, as before.
+        let base = job.base.as_deref().unwrap_or(&repo.default_branch);
+        if let Ok((_, None)) = crate::secretspec::at_base(&clone, base).await {
+            return;
+        }
         let users: Vec<Job> = {
             let state = self.lock();
             state
@@ -16424,6 +16496,32 @@ mod tests {
     #[tokio::test]
     async fn a_marked_clone_is_made_again_for_the_next_job() {
         let (jobs, clone, root) = jobs_with_a_clone("remake").await;
+        // Its base declares secrets, which the mark keeps from someone else's code (PUBLISHING-21).
+        let remote = root.join("remote");
+        std::fs::write(remote.join("secretspec.toml"), "[profiles.default]\n").unwrap();
+        crate::git::git(&remote, &["add", "secretspec.toml"])
+            .await
+            .unwrap();
+        crate::git::git(
+            &remote,
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-qm",
+                "d",
+            ],
+        )
+        .await
+        .unwrap();
+        crate::git::git(
+            &clone,
+            &["fetch", "-q", "origin", "+main:refs/remotes/origin/main"],
+        )
+        .await
+        .unwrap();
         crate::git::taint(&clone, "a test's").await;
         let repo = jobs.repo("o/r").unwrap().clone();
         // One that ran in it, and one running there now, which holds it.

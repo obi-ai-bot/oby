@@ -1080,3 +1080,128 @@ fn words_5_signed_words_keep_a_task_vetted_and_its_follow_up_in_bypass() {
     assert_ne!(unsigned["vetted"], true, "{unsigned}");
     assert_ne!(unsigned["mode"], "bypass", "{unsigned}");
 }
+
+/// obid with the fixture, whose `main` declares no secrets, and the stand-in gh; `jobs` kept in its
+/// home before it starts.
+fn undeclared(name: &str, seed: impl FnOnce(&Path, &Path)) -> (Folder, Obid) {
+    let folder = Folder::new(name);
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agent());
+    put_token(&config, TOKEN);
+    seed(&folder.0.join("home"), &remote);
+    let obid = start(&folder.0, &config, Some(&github(&folder.0)));
+    (folder, obid)
+}
+
+/// PUBLISHING-21: a marked clone of a repository whose base declares no secrets has nothing a fresh
+/// one would give back: the next job works in it as it is, still marked, and nothing moves aside.
+#[test]
+fn publishing_21_a_clone_with_no_declared_secrets_isnt_made_again() {
+    let (_folder, obid) = undeclared("secretspec-no-remake", |_, _| {});
+    let job = |base: &str| {
+        let answer = call_typed(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build",
+                            "task": "Nothing to do here", "base": base, "check": "true"}}),
+        );
+        assert_eq!(answer.status, 201, "{}", answer.text);
+        let id = answer.body["id"].as_str().unwrap().to_owned();
+        call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body
+    };
+    job("feature/average");
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let marked = git(&clone, &["config", "--get", "obid.foreign"]);
+    assert!(marked.contains("the branch feature/average"), "{marked}");
+    let next = job("main");
+    assert_eq!(next["status"], "done", "{next}\n{}", obid.log());
+    assert!(
+        !obid.log().contains("its clone is made again"),
+        "{}",
+        obid.log()
+    );
+    assert!(!obid.home.join("marked").exists());
+    assert_eq!(git(&clone, &["config", "--get", "obid.foreign"]), marked);
+}
+
+/// PUBLISHING-21: obid's start removes a marked clone no job uses (one whose job ended keeps it no
+/// longer), and keeps the one a running follow-up's worktree belongs to, with its commits.
+#[test]
+fn publishing_21_an_unused_marked_clone_is_swept() {
+    use obid::job::{Job, Status};
+    let (_folder, obid) = undeclared("secretspec-sweep", |home, remote| {
+        let remote = remote.to_str().unwrap();
+        let marked = |name: &str| {
+            let root = home.join("marked").join(name);
+            let clone = root.join("clones/obi-e2e/fixture-app");
+            std::fs::create_dir_all(clone.parent().unwrap()).unwrap();
+            git(home, &["clone", "-q", remote, clone.to_str().unwrap()]);
+            (root, clone)
+        };
+        let ((used_root, used), (unused_root, _)) = (marked("1-used"), marked("2-unused"));
+        let worktree = home.join("worktrees/follow");
+        git(
+            &used,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "oby/follow",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(worktree.join("kept.txt"), "kept").unwrap();
+        git(&worktree, &["add", "kept.txt"]);
+        git(
+            &worktree,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "Its follow-up's work",
+            ],
+        );
+        let job = |id: &str, status: Status, root: &Path, worktree: Option<&Path>| {
+            let mut job = Job::new(
+                id.into(),
+                "obi-e2e/fixture-app".into(),
+                "build".into(),
+                "SLOW: kept.txt".into(),
+                "claude".into(),
+                "stub".into(),
+            );
+            job.status = status;
+            job.clone_root = Some(root.to_string_lossy().into_owned());
+            job.worktree = worktree.map(|w| w.to_string_lossy().into_owned());
+            job.branch = format!("oby/{id}");
+            job
+        };
+        let jobs = home.join("jobs");
+        std::fs::create_dir_all(&jobs).unwrap();
+        for job in [
+            job("follow", Status::Running, &used_root, Some(&worktree)),
+            job("ended", Status::Done, &unused_root, None),
+        ] {
+            let path = jobs.join(format!("{}.json", job.id));
+            std::fs::write(path, serde_json::to_vec(&job).unwrap()).unwrap();
+        }
+    });
+    let marked = obid.home.join("marked");
+    assert!(!marked.join("2-unused").exists(), "{}", obid.log());
+    let used = marked.join("1-used/clones/obi-e2e/fixture-app");
+    let work = git(&used, &["log", "--format=%s", "oby/follow"]);
+    assert!(work.contains("Its follow-up's work"), "{work}");
+    assert!(
+        obid.log().contains("no job uses this marked clone"),
+        "{}",
+        obid.log()
+    );
+}
