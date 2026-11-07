@@ -769,8 +769,10 @@ async fn a_change_to_approve_isnt_reviewed_without_its_base() {
 
 /// PERMISSIONS-14: Oby's own review of published work runs with nobody watching, so what Plan would
 /// ask the owner (a command that reaches the network or writes, a fetch, its question) is refused at
-/// once, telling it to write what it couldn't run in its review: no card, nothing in the inbox, and
-/// the review is never parked. It goes on and gives its verdict (tests/agents/asking-reviewer).
+/// once, by obid's own rule (kept in `answered`), naming only the program or the site and telling it
+/// to write what it couldn't run in its review. It goes on and gives its verdict
+/// (tests/agents/asking-reviewer): before, its first call waited on the owner's card until the
+/// review was parked, and this test timed out.
 #[tokio::test(flavor = "multi_thread")]
 async fn permissions_14_a_review_refuses_instead_of_asking() {
     let folder = Folder::new("refuses");
@@ -813,37 +815,36 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
     );
     let summary = &ended.summary;
     for (tool, what) in [
-        ("Bash", "curl -sS https://example.com/"),
-        ("Bash", "touch notes.md"),
-        ("WebFetch", "https://example.com/"),
+        ("Bash", "curl"),
+        ("Bash", "touch"),
+        ("WebFetch", "example.com"),
     ] {
         let line = summary
             .lines()
-            .find(|l| l.contains(&format!("couldn't run {what}")))
+            .find(|l| l.contains(&format!("couldn't run {what}\"")))
             .unwrap_or_else(|| panic!("{what} wasn't refused for the review: {summary}"));
         assert!(
             line.starts_with(&format!("{tool}: deny (Nobody is watching this review")),
             "{line}"
         );
+        // obid answered it by its own rule, at once: kept in `answered`, never a card.
+        assert!(
+            ended.answered.iter().any(|a| a.tool == tool
+                && a.decision == "refused"
+                && a.reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains(&format!("couldn't run {what}\"")))),
+            "{what} isn't in answered: {shown}"
+        );
     }
-    // Plan refuses a file write by itself, as before: it never asked.
-    assert!(summary.contains("Write: deny (Plan mode"), "{summary}");
+    // Only the program or the site is said back: never a command's arguments or an address.
+    assert!(!summary.contains("-sS"), "{summary}");
+    assert!(!summary.contains("notes.md"), "{summary}");
+    assert!(!summary.contains("https://example.com/"), "{summary}");
     assert!(
         summary.contains("AskUserQuestion: deny (Nobody is watching this review to answer"),
         "{summary}"
     );
-    // Nothing waited for the owner: no permission or question reached the inbox.
-    let inbox = std::fs::read_dir(home.join("inbox"))
-        .map(|dir| {
-            dir.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    assert!(
-        !inbox
-            .iter()
-            .any(|name| name.contains("permission") || name.contains("question")),
-        "{inbox:?}"
-    );
+    // Plan refuses a file write by itself, as before: it never asked.
+    assert!(summary.contains("Write: deny (Plan mode"), "{summary}");
 }

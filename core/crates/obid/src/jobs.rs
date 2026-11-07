@@ -13885,9 +13885,12 @@ async fn count_commits(
 }
 
 /// Whether `job`'s agent asks the owner with `oby_ask_owner`: an owner's Codex or Cursor job.
-/// Claude Code asks with its own AskUserQuestion, and another Obi's job has nobody to ask.
+/// Claude Code asks with its own AskUserQuestion, and another Obi's job, or Oby's own review
+/// (PERMISSIONS-14), has nobody to ask.
 pub fn asks_through_oby(job: &Job) -> bool {
-    job.obi.is_none() && matches!(Tool::from_id(&job.agent), Some(Tool::Codex | Tool::Cursor))
+    job.obi.is_none()
+        && job.review_of.is_none()
+        && matches!(Tool::from_id(&job.agent), Some(Tool::Codex | Tool::Cursor))
 }
 
 /// The owner's `decision` on `permission`, with `words` from `source`: what its inbox item says they
@@ -14498,19 +14501,22 @@ fn unwatched_review(job: &Job, call: &Call) -> Option<String> {
     if call.tool == permissions::ASK_USER_QUESTION {
         return Some("Nobody is watching this review to answer a question: decide what you can from what's here, and write in your review what you couldn't settle without the user.".into());
     }
-    let what: String = call
+    // Only the program, the site or the tool: never a command's variables or arguments, nor an
+    // address's login, path or query, which the agent copies into its review.
+    let what = call
         .command
-        .clone()
-        .or_else(|| call.url.clone())
+        .as_deref()
+        .and_then(|command| command.split_whitespace().find(|word| !word.contains('=')))
+        .map(str::to_owned)
         .or_else(|| {
-            call.paths
-                .first()
-                .map(|path| format!("{} {path}", call.tool))
+            call.url
+                .as_deref()
+                .and_then(|url| url.split("://").nth(1))
+                .and_then(|rest| rest.split(['/', '?', '#']).next())
+                .and_then(|site| site.rsplit('@').next())
+                .map(str::to_owned)
         })
-        .unwrap_or_else(|| call.tool.clone())
-        .chars()
-        .take(120)
-        .collect();
+        .unwrap_or_else(|| call.tool.clone());
     Some(format!(
         "Nobody is watching this review, so `{what}` did not run and changed nothing. Don't ask again or reach the same result another way: write \"couldn't run {what}\" in your review and go on with what you can read here."
     ))
@@ -20773,7 +20779,9 @@ mod tests {
     }
 
     /// PERMISSIONS-14: a site Oby's own review reaches through the egress proxy is refused at
-    /// once, saying so, where a review the owner dispatched by hand still asks with a card.
+    /// once, naming only the site, where a review the owner dispatched by hand still asks with a
+    /// card; and a Codex or Cursor review of Oby's own has no `oby_ask_owner` to ask with, where the
+    /// owner's own review does.
     #[test]
     fn permissions_14_a_reviews_site_is_refused_not_carded() {
         use crate::egress::Asked;
@@ -20792,13 +20800,18 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap();
-        for (id, of) in [("own", Some("a".to_owned())), ("hand", None)] {
+        for (id, of, agent) in [
+            ("own", Some("a".to_owned()), "claude"),
+            ("hand", None, "claude"),
+            ("own-codex", Some("a".to_owned()), "codex"),
+            ("hand-codex", None, "codex"),
+        ] {
             let mut job = Job::new(
                 id.into(),
                 "o/r".into(),
                 "review".into(),
                 "Review it".into(),
-                "claude".into(),
+                agent.into(),
                 "a".into(),
             );
             job.status = Status::Running;
@@ -20810,7 +20823,26 @@ mod tests {
             panic!("Oby's review asked about example.com");
         };
         assert!(why.starts_with("Nobody is watching this review"), "{why}");
-        assert!(why.contains("couldn't run https://example.com/"), "{why}");
+        assert!(why.contains("couldn't run example.com\""), "{why}");
+        let refused = jobs.get("own").unwrap().answered;
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0].decision, "refused");
+        // Only the program is said back, past its variables: never its arguments.
+        let call = Call::new(
+            "Bash",
+            &json!({"command": "GH_TOKEN=abc123 curl -H 'Authorization: Bearer abc123' https://x.test/"}),
+        );
+        let why = unwatched_review(&jobs.get("own").unwrap(), &call).unwrap();
+        assert!(why.contains("couldn't run curl\""), "{why}");
+        assert!(!why.contains("abc123") && !why.contains("x.test"), "{why}");
+        // A Codex review of Oby's own is offered no `oby_ask_owner`, and a call of it asks nobody.
+        let own = jobs.get("own-codex").unwrap();
+        assert!(!asks_through_oby(&own));
+        assert_eq!(
+            jobs.ask_owner("own-codex", &json!({"question": "Round it?"})),
+            Err(permissions::NO_ONE_TO_ASK.to_owned())
+        );
+        assert!(asks_through_oby(&jobs.get("hand-codex").unwrap()));
         assert!(jobs.get("own").unwrap().permission.is_none());
         assert!(matches!(
             jobs.ask_about("hand", "example.com", 443, false),
