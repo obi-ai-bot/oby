@@ -48,6 +48,7 @@ pub mod model_lists;
 pub mod obi_dir;
 pub mod permissions;
 pub mod policy;
+pub mod power;
 pub mod process;
 pub mod profiles;
 pub mod publish;

@@ -67,6 +67,9 @@ struct File {
     allow_file_remotes: bool,
     #[serde(default)]
     telemetry: bool,
+    /// Whether obid keeps the Mac from idle sleep while a job's worker runs (crate::power); true
+    /// when left out.
+    keep_awake: Option<bool>,
     /// How long a job may go without progress before it stalls, in seconds: 1 to 86,400, 900
     /// when left out.
     stall_after: Option<u64>,
@@ -287,6 +290,10 @@ pub struct Config {
     /// `tetrixPresets`: the Tetrix servers Settings offers by name before a URL field (crate::tetrix);
     /// none when left out, so an open-source build names no one's server.
     pub tetrix_presets: Vec<crate::tetrix::Preset>,
+    /// `keepAwake`: obid holds `caffeinate -i` while any job's worker runs, so idle sleep doesn't
+    /// freeze agents, checks and retry clocks (crate::power, RECOVERY-10); a closed lid still
+    /// sleeps. On unless it's `false`.
+    pub keep_awake: bool,
 }
 
 impl Config {
@@ -577,6 +584,7 @@ impl Config {
             claude_own_sandbox: file.claude_own_sandbox,
             push_relay,
             tetrix_presets: file.tetrix_presets,
+            keep_awake: file.keep_awake.unwrap_or(true),
             conversation: Conversation {
                 agent,
                 model,
@@ -877,6 +885,14 @@ mod tests {
             let text = with(serde_json::json!({"conversation": wrong}));
             assert!(problem(&text).contains(field), "{text}");
         }
+    }
+
+    #[test]
+    fn recovery_10_keep_awake_is_on_unless_set_false() {
+        let parse = |extra| Config::parse(&with(extra)).unwrap().keep_awake;
+        assert!(parse(serde_json::json!({})));
+        assert!(parse(serde_json::json!({"keepAwake": true})));
+        assert!(!parse(serde_json::json!({"keepAwake": false})));
     }
 
     #[test]
