@@ -664,6 +664,26 @@ fn consent_words(name: &str) -> String {
 const BACKGROUND_OFF: &str =
     "You turned off work I run by myself on this ChatGPT plan, so I stopped.";
 
+/// What [`Jobs::stop`] adds to who stopped a job the owner stopped while it waited on them
+/// (TASKS-18): a failure record keeps it (crate::failures).
+pub const WHILE_ITS_QUESTION_WAITED: &str = " while its question waited";
+
+/// Who stopped a job ([`Jobs::stop`], TASKS-18), when obid's API was asked to.
+pub const STOPPED_BY_API: &str = "Stopped through Oby's API";
+
+/// Who stopped a job when a conversation asked to (`oby_stop_job`, "stop everything").
+pub const STOPPED_BY_CONVERSATION: &str = "Stopped by a conversation";
+
+/// The stops the owner asked for: only these say a question waited, which a failure record keeps.
+/// ponytail: matched by their words, a flag on `Jobs::stop` if a third kind of owner's stop comes.
+const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
+
+/// Who stopped a job when the pull request it reviewed or waited on was merged or closed.
+pub const PULL_REQUEST_ENDED: &str = "Stopped: its pull request was merged or closed";
+
+/// Who stopped a job when the exchange with the Oby that asked for it was revoked.
+pub const EXCHANGE_REVOKED: &str = "Stopped: the exchange with the Oby that asked for it ended";
+
 /// What a job waiting for the owner's yes says when the account it waited on was removed.
 const WAITED_ON_GONE: &str =
     "The account it was waiting on was removed, and nothing else can take it.";
@@ -2747,7 +2767,7 @@ impl Jobs {
                     .collect()
             };
             for id in stopping {
-                self.stop(&id);
+                self.stop(&id, BACKGROUND_OFF);
                 self.update(&id, |job| job.reason = Some(BACKGROUND_OFF.to_owned()));
             }
         }
@@ -3184,7 +3204,7 @@ impl Jobs {
     fn hold_for_consent(&self, id: &str) {
         let Some(job) = self.get(id) else { return };
         if job.review_of.is_some() || job.obi.is_some() {
-            self.stop(id);
+            self.stop(id, BACKGROUND_OFF);
             self.update(id, |job| job.reason = Some(BACKGROUND_OFF.to_owned()));
             return;
         }
@@ -3247,7 +3267,7 @@ impl Jobs {
             let Some((tool, account)) = found else {
                 // What it waited on is gone, and nothing else takes it: nothing would ever start it.
                 if for_consent && was.is_none() {
-                    self.stop(&job.id);
+                    self.stop(&job.id, WAITED_ON_GONE);
                     self.update(&job.id, |job| {
                         job.reason = Some(WAITED_ON_GONE.to_owned());
                     });
@@ -3823,11 +3843,23 @@ impl Jobs {
 
     /// Stops a queued or running job: its agent and check end within 2 seconds, with everything they
     /// started. A job that already ended comes back as it is. `None` for one obid doesn't have.
-    pub fn stop(&self, id: &str) -> Option<Job> {
+    /// `by` says who stopped it, in obid's words, as its `stoppedBy` (TASKS-18); its `reason` is
+    /// its caller's to write. A stop the owner asked for ([`OWNERS_STOPS`]) adds " while its
+    /// question waited" when the job waited on them for what they were shown: its agent's question
+    /// or permission (`permission`, the first of its asks), or a yes to a login. An `oby_ask_owner`
+    /// question of a turn still under way isn't shown yet, so it doesn't count.
+    pub fn stop(&self, id: &str, by: &str) -> Option<Job> {
         let job = self.get(id)?;
         if !job.status.is_active() {
             return Some(job);
         }
+        let asked = OWNERS_STOPS.contains(&by)
+            && (job.permission.is_some() || job.waiting.as_ref().is_some_and(Waiting::for_consent));
+        let by = if asked {
+            format!("{by}{WHILE_ITS_QUESTION_WAITED}")
+        } else {
+            by.to_owned()
+        };
         let worked = match self.lock().workers.get(id) {
             Some(worker) => {
                 let _ = worker.send(Signal::Stop);
@@ -3838,6 +3870,7 @@ impl Jobs {
         self.drop_asks(id, false);
         let stopped = self.update(id, |job| {
             job.status = Status::Stopped;
+            job.stopped_by = Some(by);
             job.step = String::new();
             job.waiting = None;
             job.resumes_at = None;
@@ -3858,8 +3891,8 @@ impl Jobs {
         stopped
     }
 
-    /// Stops every queued and running job: answers the ones it stopped.
-    pub fn stop_all(&self) -> Vec<Job> {
+    /// Stops every queued and running job, `by` as [`Jobs::stop`]'s: answers the ones it stopped.
+    pub fn stop_all(&self, by: &str) -> Vec<Job> {
         let ids: Vec<String> = self
             .lock()
             .jobs
@@ -3867,7 +3900,7 @@ impl Jobs {
             .filter(|j| j.status.is_active())
             .map(|j| j.id.clone())
             .collect();
-        ids.iter().filter_map(|id| self.stop(id)).collect()
+        ids.iter().filter_map(|id| self.stop(id, by)).collect()
     }
 
     /// The owner tells the job's agent something (`POST /v1/jobs/{id}/messages`). A job whose
@@ -12472,7 +12505,7 @@ impl Jobs {
             (ended, outlived)
         };
         for id in &outlived {
-            self.stop(id);
+            self.stop(id, PULL_REQUEST_ENDED);
         }
         for id in ended.iter().chain(&outlived) {
             self.update(id, |job| {
@@ -14011,6 +14044,7 @@ fn next_round(job: &mut Job) {
     job.archived = None;
     job.limit = None;
     job.reason = None;
+    job.stopped_by = None;
     job.next_step = None;
     job.resumes_at = None;
     job.account_limit_blocked = false;
@@ -17363,7 +17397,7 @@ mod tests {
             })
             .unwrap()
             .id;
-        jobs.stop(&queued);
+        jobs.stop(&queued, STOPPED_BY_API);
         let moved = |account: &str| {
             jobs.change(&queued, None, Some(account), "by test", Source::Owner)
                 .unwrap()
@@ -18001,6 +18035,45 @@ mod tests {
             Err("no sandbox".into()),
         )
         .unwrap()
+    }
+
+    /// TASKS-18: only a stop the owner asked for says a question waited; obid's own stop of a job
+    /// waiting on the owner says only who stopped it, and neither touches its `reason`.
+    #[tokio::test]
+    async fn tasks_18_only_the_owners_stop_says_a_question_waited() {
+        let root = std::env::temp_dir().join(format!("obid-stopped-by-{}", uuid::Uuid::new_v4()));
+        let jobs = jobs_with_kept(&root.join("home"), &[]);
+        let stopped = |id: &str, by: &str| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c1".into(),
+            );
+            // Waiting for the owner's yes to a login, as `consent_wait` leaves it.
+            job.waiting = Some(Waiting {
+                kind: "limit".into(),
+                text: "your yes".into(),
+                reserved: Some(Vec::new()),
+                tool: None,
+            });
+            jobs.insert(job);
+            jobs.stop(id, by).unwrap()
+        };
+        let owners = stopped("aaaa1801", STOPPED_BY_API);
+        assert_eq!(
+            owners.stopped_by.as_deref(),
+            Some("Stopped through Oby's API while its question waited")
+        );
+        assert_eq!(owners.reason, None);
+        let obids = stopped("aaaa1802", PULL_REQUEST_ENDED);
+        assert_eq!(obids.stopped_by.as_deref(), Some(PULL_REQUEST_ENDED));
+        assert_eq!(obids.reason, None);
+        assert!(crate::failures::found(&obids, obi_protocol::time::now()).is_none());
+        assert!(crate::failures::found(&owners, obi_protocol::time::now()).is_some());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Each `job` event is its job a revision on, the answer the same copy as its event, and a
@@ -19970,7 +20043,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(confirmed.mode.as_deref(), Some("sandbox"));
-        jobs.stop_all();
+        jobs.stop_all(STOPPED_BY_API);
         let _ = std::fs::remove_dir_all(&root);
     }
 

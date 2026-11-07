@@ -324,7 +324,7 @@ impl Link {
             self.save_item(&item);
         }
         if let Some(job) = exchange.job.as_deref() {
-            self.jobs.stop(job);
+            self.jobs.stop(job, crate::jobs::EXCHANGE_REVOKED);
         }
         self.settle_host_approvals(
             |i| {

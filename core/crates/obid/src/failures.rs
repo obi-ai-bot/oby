@@ -166,7 +166,20 @@ pub fn found(job: &Job, now: i64) -> Option<(String, Trigger, String)> {
             Trigger::PublishError,
             "Its publish failed; Publish by hand is offered.".to_owned(),
         ),
-        // A job the owner stopped isn't a failure.
+        // The owner stopped it while it waited on them: the question may be why, so it's kept
+        // (TASKS-18). obid's own stops never say so.
+        Status::Stopped
+            if job
+                .stopped_by
+                .as_deref()
+                .is_some_and(|by| by.ends_with(crate::jobs::WHILE_ITS_QUESTION_WAITED)) =>
+        {
+            (
+                Trigger::Failed,
+                format!("{}.", job.stopped_by.as_deref().unwrap_or_default()),
+            )
+        }
+        // Any other stop isn't a failure.
         _ => return None,
     };
     Some((

@@ -341,7 +341,7 @@ impl Link {
             Some(REVOKED),
         );
         for job in settled.iter().filter_map(|e| e.job.as_deref()) {
-            self.jobs.stop(job);
+            self.jobs.stop(job, crate::jobs::EXCHANGE_REVOKED);
         }
         self.settle_host_approvals(
             |_| true,

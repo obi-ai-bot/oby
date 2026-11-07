@@ -550,6 +550,10 @@ pub struct Job {
     /// or, ended done, what it didn't do (nothing committed). None while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Who stopped it and why, in obid's words (`Jobs::stop`, TASKS-18), ending " while its
+    /// question waited" when the owner stopped it while it waited on them. None unless stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
     /// The one next step of a job that needs the owner (`interrupted`), as its button says it:
     /// [`ONE_MORE_ROUND`] or [`TRY_AGAIN`]; both send Try again's words. None when only the owner's
     /// own words, or Dismiss, can take it on.
@@ -1035,6 +1039,7 @@ impl Job {
             owner_spoke: false,
             reason: None,
             next_step: None,
+            stopped_by: None,
             resumes_at: None,
             account_limit_blocked: false,
             account_limit_episode: None,
@@ -1563,6 +1568,7 @@ impl Job {
         // Why it stopped and its one next step (#725), out of the literal above: json!'s recursion
         // limit.
         value["reason"] = json!(self.reason);
+        value["stoppedBy"] = json!(self.stopped_by);
         // Whether obid offers Publish by hand (`can_publish`): its check passed on the branch's
         // commit (`checked_head`, kept in its file only), so the apps follow obid, never guess (#1772).
         value["canPublish"] = json!(self.can_publish());
@@ -2164,6 +2170,7 @@ mod tests {
             "turn",
             "followUpOf",
             "reason",
+            "stoppedBy",
             "nextStep",
             "resumesAt",
             "accountLimit",
@@ -2174,8 +2181,8 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-three, `supervised` and `revision`.
-        assert_eq!(object.len(), 90);
+        // The Swift runner's 65 keys, obid's twenty-four, `supervised` and `revision`.
+        assert_eq!(object.len(), 91);
         assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);

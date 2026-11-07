@@ -1162,7 +1162,7 @@ fn stop(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
         return Outcome::NeedsWhich("Say which task to stop, or “stop everything”.".into());
     }
     if named.is_empty() {
-        let stopped = shared.jobs.stop_all();
+        let stopped = shared.jobs.stop_all(crate::jobs::STOPPED_BY_CONVERSATION);
         return Outcome::Done(if stopped.is_empty() {
             "Nothing is running.".into()
         } else {
@@ -1176,7 +1176,9 @@ fn stop(shared: &Arc<Shared>, plan: &Plan) -> Outcome {
     let mut stopped: Vec<String> = vec![];
     for id in named {
         if let Some(job) = shared.jobs.get(id).filter(|j| j.status.is_active()) {
-            shared.jobs.stop(&job.id);
+            shared
+                .jobs
+                .stop(&job.id, crate::jobs::STOPPED_BY_CONVERSATION);
             stopped.push(job.short_title());
         }
     }

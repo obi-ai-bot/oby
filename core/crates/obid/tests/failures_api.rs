@@ -185,6 +185,36 @@ fn the_api_lists_failures_and_fixes_them() {
     assert_eq!(failures(&obid, ""), list);
 }
 
+/// TASKS-18: a job the owner stopped while its agent's question waited on them is recorded, as
+/// `failed`, saying who stopped it (`stoppedBy`): the question may be why. A plain stop isn't
+/// (above).
+#[test]
+fn tasks_18_a_job_stopped_while_its_question_waited_is_recorded() {
+    let folder = Folder::new("failures-question");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
+    let ask = json!({"tool": "Glob", "input": {"pattern": "/etc/*"}});
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": format!("ASK: {ask}")}),
+    );
+    within(30, "the job asks", || {
+        call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body["permission"]
+            .is_object()
+            .then_some(())
+    });
+    let answer = call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(answer.body["status"], "stopped", "{}", answer.text);
+    let list = failures(&obid, "");
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["job"], id.as_str());
+    assert_eq!(list[0]["trigger"], "failed");
+    assert_eq!(
+        list[0]["what"],
+        "Stopped through Oby's API while its question waited."
+    );
+}
+
 /// A job obid kept going down with stays `interrupted` (#915): picked up twice in the last 30
 /// minutes after obid went down while it ran, the next start leaves it for the owner, with a
 /// failure record (trigger `crash`) and one `failed` item (Try again, Dismiss), made once across
