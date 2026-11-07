@@ -940,6 +940,14 @@ pub struct Jobs {
     identity: Mutex<(String, String)>,
     /// One check at a time, whatever the job ([`Jobs::check`]).
     checking: tokio::sync::Semaphore,
+    /// How each base's check went, run once on a job's first failure ([`Jobs::fails_on_base`],
+    /// PUBLISHING-18): by repository, base commit and command, `None` for one that passed.
+    /// ponytail: in memory, so a restart forgets it and the next first failure runs the base again.
+    base_runs: Mutex<HashMap<(String, String, String), Option<BaseFailure>>>,
+    /// Whether a first failure runs on the base at all: `OBID_BASE_CHECK=off` turns it off.
+    /// ponytail: a test seam, for obid's tests whose checks fail everywhere to drive their rounds;
+    /// on everywhere else.
+    base_check: bool,
     /// One preparation at a time per repository (Engine/Desk.swift, `setups`): its clone is
     /// fetched and its worktrees added one after the other, never at once.
     preparing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -1243,6 +1251,8 @@ impl Jobs {
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             identity: Mutex::new(identity),
             checking: tokio::sync::Semaphore::new(1),
+            base_runs: Mutex::new(HashMap::new()),
+            base_check: std::env::var_os("OBID_BASE_CHECK").is_none_or(|v| v != "off"),
             preparing: Mutex::new(HashMap::new()),
             review_hook: std::sync::OnceLock::new(),
             permission_hook: std::sync::OnceLock::new(),
@@ -8686,6 +8696,7 @@ impl Jobs {
                 .join("checks")
                 .join(format!("{id}-{}", random_check_id()?)),
         };
+        let base_spec = spec.clone();
         let (spec, notes) =
             match Box::pin(self.base_checkout(id, command, head, &spec, gate, &at)).await {
                 Ok(check) => check,
@@ -8780,6 +8791,18 @@ impl Jobs {
                 "Not published: {label}, which is this Mac's doing, not the change's, so nothing counts as checked. Read its change, then Publish it by hand."
             ));
         }
+        // A first failure the base already has isn't the change's: no fix round for it, the
+        // owner's Publish by hand (PUBLISHING-18). Still holding the check's turn.
+        if !run.passed
+            && run.unchecked.is_none()
+            && round == 1
+            && self.base_check
+            && let Some(why) =
+                Box::pin(self.fails_on_base(id, command, head, &base_spec, signal, &run.output))
+                    .await
+        {
+            run.unchecked = Some(why);
+        }
         // What a `mac` workflow's merge counts (crate::merge): a pass, on the clean head it ran.
         let checked = match run.passed {
             true => self.checked(id, command).await,
@@ -8789,6 +8812,127 @@ impl Jobs {
         run.output = declared.noted(&format!("{}\n{}", notes.join("\n"), run.output));
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
+    }
+
+    /// Why job `id`'s failed first check of `command` on `head` (its `output`) isn't the change's
+    /// doing (PUBLISHING-18): the same command, run once on the commit its work started from, in a
+    /// checkout of its own with no declared secrets, failed the same way: with the same
+    /// [`crate::facts::signature`], or with every test it named failing there too. Each base's run
+    /// is kept ([`Jobs::base_runs`]); one that couldn't run, or was stopped, judges nothing.
+    async fn fails_on_base(
+        &self,
+        id: &str,
+        command: &str,
+        head: &str,
+        spec: &Spec,
+        signal: &watch::Receiver<Signal>,
+        output: &str,
+    ) -> Option<String> {
+        let job = self.get(id)?;
+        let start = job.start_commit.clone().filter(|c| git::is_sha(c))?;
+        let mine = BaseFailure::of(job.checks.last()?, output);
+        let key = (job.repo.clone(), start.clone(), command.to_owned());
+        let kept = self
+            .base_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        let base = match kept {
+            Some(base) => base,
+            // Nothing changed: its own run is the base's.
+            None if start == head => Some(mine.clone()),
+            None => Box::pin(self.run_on_base(id, command, &start, spec, signal)).await?,
+        };
+        self.base_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, base.clone());
+        let base = base?;
+        let same = base.signature == mine.signature
+            || (!mine.failing.is_empty() && mine.failing.iter().all(|t| base.failing.contains(t)));
+        if !same {
+            return None;
+        }
+        let what = match mine.failing.as_slice() {
+            [] => "the same way".to_owned(),
+            tests => format!("on {}", tests.join(", ")),
+        };
+        let short = |sha: &str| sha.chars().take(7).collect::<String>();
+        Some(format!(
+            "Not published: `{command}` already fails on the base {} as it fails on this change's {}, {what}, so nothing counts as checked. Read its change, then Publish it by hand.",
+            short(&start),
+            short(head)
+        ))
+    }
+
+    /// Job `id`'s check `command` run on `start` (PUBLISHING-18), at a path of its own under
+    /// `home/checks`, removed after: how it failed, `Some(None)` when it passed, `None` when it
+    /// judged nothing (it couldn't run, ran past its limit, or the job stopped).
+    async fn run_on_base(
+        &self,
+        id: &str,
+        command: &str,
+        start: &str,
+        spec: &Spec,
+        signal: &watch::Receiver<Signal>,
+    ) -> Option<Option<BaseFailure>> {
+        let sandbox = self.sandbox.as_ref().ok()?;
+        let at = self
+            .config
+            .home
+            .join("checks")
+            .join(format!("{id}-base-{}", random_check_id().ok()?));
+        let (check, _) =
+            match Box::pin(self.base_checkout(id, command, start, spec, None, &at)).await {
+                Ok(check) => check,
+                Err(why) => {
+                    tracing::info!("job {id}: no check on the base {start}: {why}");
+                    return None;
+                }
+            };
+        tracing::info!("job {id}: running its check on the base {start}");
+        // A watch of its own, never the job's: it reads the base's steps and failing tests.
+        let marker = format!("obid-step-{}", random_check_id().ok()?);
+        let watch = Arc::new(Mutex::new(crate::facts::CheckWatch::new(
+            marker,
+            crate::facts::steps(command),
+        )));
+        let script = watch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .script();
+        let argv = sandbox.wrap(&check, &["/bin/sh".into(), "-c".into(), script.into()]);
+        let mut extra = check.git_env();
+        extra.extend(process::show_rust(&check.temp));
+        extra.extend(self.build_env(id, true));
+        let env = process::sandbox_env(&process::tools_path(), &check.temp, &extra);
+        let group = self.recording(id, &check);
+        let run = run_check(
+            &argv,
+            &env,
+            &check.worktree,
+            CHECK_LIMIT,
+            signal.clone(),
+            Some(watch.clone()),
+            None,
+            Some(&group),
+        )
+        .await;
+        if let Err(why) = Box::pin(crate::secretspec::remove_checkout(&check, &at)).await {
+            tracing::warn!("job {id}: {why}");
+        }
+        let run = run
+            .ok()
+            .filter(|run| run.unchecked.is_none() && *signal.borrow() == Signal::Run)?;
+        if run.passed {
+            return Some(None);
+        }
+        let record = watch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record(1, Some(false));
+        Some(Some(BaseFailure::of(&record, &run.output)))
     }
 
     /// The checkout job `id`'s check of `command` runs in, at `at` (PUBLISHING-6): of `head`, the
@@ -15023,6 +15167,23 @@ fn environment_signature(command: &str, output: &str) -> Option<&'static str> {
 struct CheckStart {
     head: String,
     dirty: bool,
+}
+
+/// What a failed check run failed on, to tell whether a base fails as a job does (PUBLISHING-18).
+#[derive(Debug, Clone)]
+struct BaseFailure {
+    signature: String,
+    /// Its failing tests' names.
+    failing: Vec<String>,
+}
+
+impl BaseFailure {
+    fn of(record: &crate::facts::CheckRecord, output: &str) -> BaseFailure {
+        BaseFailure {
+            signature: crate::facts::signature(record, output),
+            failing: record.failing.iter().map(|f| f.test.clone()).collect(),
+        }
+    }
 }
 
 /// How a run of the check went.
