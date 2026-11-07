@@ -1212,10 +1212,21 @@ pub async fn merge(
     if !busy().insert(scratch.clone()) {
         return Err(wait("Not merged yet: Oby is merging it already."));
     }
-    let merged = merging(gh, job, workflow, reviewers, lift, &scratch, go).await;
-    let _ = std::fs::remove_dir_all(&scratch);
-    busy().remove(&scratch);
-    merged
+    // Its claim and folder go however this ends: a panic, or a future dropped part way, never
+    // leaves the job "merging already" until a restart (MERGING-29). A dropped `gh` is killed
+    // with it (`kill_on_drop`).
+    struct Claim(std::path::PathBuf);
+    impl Drop for Claim {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+            MERGING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.0);
+        }
+    }
+    let claim = Claim(scratch);
+    merging(gh, job, workflow, reviewers, lift, &claim.0, go).await
 }
 
 /// The jobs being merged now, by their folder (`home/tmp/merge-<job id>`).
@@ -3870,6 +3881,29 @@ esac
         });
         change(&mut value);
         value
+    }
+
+    /// MERGING-29: a merge whose future is dropped part way (its request went, obid moved on)
+    /// frees its job at once: the next merge isn't told Oby is merging it already.
+    #[tokio::test]
+    async fn merging_29_a_dropped_merge_frees_its_job() {
+        let gh = Gh::new("dropped");
+        // GitHub never answers: the merge waits on its first read.
+        gh.write("gh", "#!/bin/sh\nexec sleep 30\n");
+        let (job, workflow) = (job(), obis());
+        let merge = gh.merge(&job, &workflow);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), merge)
+                .await
+                .is_err()
+        );
+        assert!(!merging_now(&gh.dir, &job.id));
+        assert!(
+            !gh.dir
+                .join("tmp")
+                .join(format!("merge-{}", job.id))
+                .exists()
+        );
     }
 
     #[tokio::test]
