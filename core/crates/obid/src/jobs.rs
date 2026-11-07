@@ -849,6 +849,8 @@ struct State {
     /// The jobs whose worker waits on the check queue or a retry's timer: they take no slot
     /// ([`Idle`], ADMISSION-4).
     idle: std::collections::HashSet<String>,
+    /// Keeps the Mac from idle sleep while `workers` isn't empty, idle ones too (RECOVERY-10).
+    awake: crate::power::Awake,
 }
 
 impl State {
@@ -1207,6 +1209,7 @@ impl Jobs {
         });
         let usage = crate::usage::Usages::open(&config.home);
         let github = identity.1.ends_with(NO_EMAIL);
+        let awake = crate::power::Awake::new(config.keep_awake);
         let made = Arc::new(Jobs {
             config,
             store,
@@ -1223,6 +1226,7 @@ impl Jobs {
                 followed: HashMap::new(),
                 changing: std::collections::HashSet::new(),
                 idle: std::collections::HashSet::new(),
+                awake,
             }),
             limit_decisions,
             limit_execution: tokio::sync::Mutex::new(()),
@@ -3626,6 +3630,7 @@ impl Jobs {
                 }
                 let (sender, receiver) = watch::channel(Signal::Run);
                 state.workers.insert(id.clone(), sender);
+                state.awake.keep(true);
                 start.push((id, receiver));
             }
         }
@@ -3715,6 +3720,8 @@ impl Jobs {
                     state.workers.remove(&id);
                     state.wrapping.remove(&id);
                     state.idle.remove(&id);
+                    let working = !state.workers.is_empty();
+                    state.awake.keep(working);
                 }
                 // Once its slot is back: a reading under way can't measure it again ([`Jobs::record`]).
                 jobs.metered(&id);

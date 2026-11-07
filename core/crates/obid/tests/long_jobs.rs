@@ -1102,3 +1102,30 @@ fn the_ceiling_counts_every_run() {
     assert_eq!(job["stalled"]["why"], "ceiling");
     assert_eq!(job["stalled"]["noteBy"], "obid");
 }
+
+/// While a job's worker runs, obid holds `caffeinate -i -w <its pid>` so idle sleep doesn't freeze
+/// it, and lets it go once no worker is left (RECOVERY-10).
+#[cfg(target_os = "macos")]
+#[test]
+fn recovery_10_a_running_job_keeps_the_mac_awake() {
+    let (_folder, obid) = obid("long-awake");
+    let pattern = format!("/usr/bin/caffeinate -i -w {}", obid.child.id());
+    let awake = || {
+        std::process::Command::new("/usr/bin/pgrep")
+            .args(["-fx", &pattern])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(!awake(), "no job, no caffeinate");
+    let id = post_job(&obid, "CHATTY: 4000");
+    within(30, "caffeinate while the job runs", || {
+        awake().then_some(())
+    });
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    within(30, "caffeinate gone after the job", || {
+        (!awake()).then_some(())
+    });
+}
