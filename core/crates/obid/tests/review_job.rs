@@ -766,3 +766,85 @@ async fn a_change_to_approve_isnt_reviewed_without_its_base() {
     assert!(ended.started.is_none(), "the agent never started");
     assert_eq!(ended.review_result.unwrap()["outcome"], "failed");
 }
+
+/// PERMISSIONS-14: Oby's own review of published work runs with nobody watching, so what Plan would
+/// ask the owner (a command that reaches the network or writes, a fetch, its question) is refused at
+/// once, by obid's own rule (kept in `answered`), naming only the program or the site and telling it
+/// to write what it couldn't run in its review. It goes on and gives its verdict
+/// (tests/agents/asking-reviewer): before, its first call waited on the owner's card until the
+/// review was parked, and this test timed out.
+#[tokio::test(flavor = "multi_thread")]
+async fn permissions_14_a_review_refuses_instead_of_asking() {
+    let folder = Folder::new("refuses");
+    let remote = fixture(&folder.0.join("fixture"));
+    // Oby's review of a job it published, as `start_review` makes it, queued when obid starts.
+    let mut review = obid::job::Job::new(
+        "r14a2b3c".into(),
+        "obi-e2e/fixture-app".into(),
+        "review".into(),
+        "Make average round to two places.".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    review.review_of = Some("a14a2b3c".into());
+    review.branch = "oby/review-r14a2b3c".into();
+    review.base = Some("main".into());
+    review.start_commit = Some(HEAD_SHA.into());
+    review.mode = Some("plan".into());
+    review.round = Some(1);
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::write(
+        home.join(format!("jobs/{}.json", review.id)),
+        serde_json::to_vec(&review).unwrap(),
+    )
+    .unwrap();
+    let (jobs, _) = reading_jobs(&folder.0, &remote, "asking-reviewer");
+    jobs.resume();
+    let ended = tokio::time::timeout(Duration::from_secs(120), jobs.wait(&review.id))
+        .await
+        .unwrap()
+        .unwrap();
+    let shown = serde_json::to_string(&ended).unwrap();
+    assert_eq!(ended.status, Status::Done, "{shown}");
+    assert!(ended.permission.is_none(), "{shown}");
+    assert!(ended.parked.is_none(), "{shown}");
+    assert!(
+        !ended.changes.iter().any(|c| c.what.starts_with("Parked")),
+        "{shown}"
+    );
+    let summary = &ended.summary;
+    for (tool, what) in [
+        ("Bash", "curl"),
+        ("Bash", "touch"),
+        ("WebFetch", "example.com"),
+    ] {
+        let line = summary
+            .lines()
+            .find(|l| l.contains(&format!("couldn't run {what}\"")))
+            .unwrap_or_else(|| panic!("{what} wasn't refused for the review: {summary}"));
+        assert!(
+            line.starts_with(&format!("{tool}: deny (Nobody is watching this review")),
+            "{line}"
+        );
+        // obid answered it by its own rule, at once: kept in `answered`, never a card.
+        assert!(
+            ended.answered.iter().any(|a| a.tool == tool
+                && a.decision == "refused"
+                && a.reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains(&format!("couldn't run {what}\"")))),
+            "{what} isn't in answered: {shown}"
+        );
+    }
+    // Only the program or the site is said back: never a command's arguments or an address.
+    assert!(!summary.contains("-sS"), "{summary}");
+    assert!(!summary.contains("notes.md"), "{summary}");
+    assert!(!summary.contains("https://example.com/"), "{summary}");
+    assert!(
+        summary.contains("AskUserQuestion: deny (Nobody is watching this review to answer"),
+        "{summary}"
+    );
+    // Plan refuses a file write by itself, as before: it never asked.
+    assert!(summary.contains("Write: deny (Plan mode"), "{summary}");
+}

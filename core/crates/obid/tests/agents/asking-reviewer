@@ -1,0 +1,46 @@
+#!/usr/bin/env node
+// A reviewer that asks, for PERMISSIONS-14 (tests/review_job.rs): as Oby's own review of published
+// work (stream-json, --permission-prompt-tool stdio), it asks obid for a command that reaches the
+// network, a write and a command that writes, a fetch and a question, each as Claude Code would in Plan, and ends its review
+// with what obid answered each, then `VERDICT: APPROVE`. A review that waited on the owner instead
+// never ends.
+import { createInterface } from "node:readline";
+
+const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
+const session = "00000000-0000-4000-8000-000000000014";
+const probes = [
+  ["Bash", { command: "curl -sS https://example.com/", description: "Fetch the page" }],
+  ["Write", { file_path: "notes.md", content: "notes\n" }],
+  ["Bash", { command: "touch notes.md", description: "Write a note" }],
+  ["WebFetch", { url: "https://example.com/", prompt: "Read it" }],
+  ["AskUserQuestion", { questions: [{ question: "Is the change meant to round?", header: "Rounding", multiSelect: false,
+    options: [{ label: "Yes", description: "It rounds" }, { label: "No", description: "It doesn't" }] }] }],
+];
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+const lines = rl[Symbol.asyncIterator]();
+
+async function next(type) {
+  for (;;) {
+    const { value, done } = await lines.next();
+    if (done) return null;
+    try {
+      const message = JSON.parse(value);
+      if (message.type === type) return message;
+    } catch {}
+  }
+}
+
+(async () => {
+  if (!(await next("user"))) return;
+  emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: probes.map(([tool]) => tool), mcp_servers: [], model: "asking", permissionMode: "plan", apiKeySource: "none" });
+  const answers = [];
+  for (const [index, [tool, input]] of probes.entries()) {
+    emit({ type: "control_request", request_id: `ask-${index}`, request: { subtype: "can_use_tool", tool_name: tool, input, tool_use_id: `toolu_${index}` } });
+    const answer = (await next("control_response"))?.response?.response ?? {};
+    answers.push(`${tool}: ${answer.behavior}${answer.message ? ` (${answer.message})` : ""}`);
+  }
+  const text = `${answers.join("\n")}\nVERDICT: APPROVE`;
+  emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: text, session_id: session, total_cost_usd: 0 });
+  rl.close();
+})();
