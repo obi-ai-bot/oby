@@ -812,7 +812,9 @@ fn recovery_2_a_run_cut_by_a_restart_continues_at_most_three_times() {
 #[test]
 fn recovery_2_a_clean_restart_costs_no_try() {
     let (folder, mut obid) = obid("recovery-2-clean");
-    let id = post_job(&obid, "PAUSE: 60000 KEEP PROMPTS");
+    // SLEEP works on in every run that continues it until it's ended, as a job cut mid-work does; a
+    // PAUSE continued ends by itself at once ("Nothing to do."), racing the next restart's stop.
+    let id = post_job(&obid, "SLEEP KEEP PROMPTS");
     at_work(&obid, &id);
     let settings = std::fs::read_to_string(folder.0.join("config.json")).unwrap();
     let settings: Value = serde_json::from_str(&settings).unwrap();
