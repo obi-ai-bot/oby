@@ -14590,13 +14590,8 @@ fn owner_prompt(job: &Job) -> String {
         lines.push(brief_section(brief));
     }
     if let Some(check) = &job.check {
-        lines.push(format!("The work counts as done only when `{check}` succeeds in this directory; obid runs it after you finish, with no network: fetch what it needs (dependencies, packages) while you work, and what you fetched stays for it. Run it yourself first."));
-        if job.max_rounds() > 1 {
-            lines.push(format!(
-                "You have {} rounds: if the check fails, obid sends you its output.",
-                job.max_rounds()
-            ));
-        }
+        // TASKS-15: no round count; PUBLISHING-6: where the check really runs.
+        lines.push(format!("The work counts as done only when `{check}` succeeds. obid runs it after you finish, in its own clean checkout of your last commit, with no network: nothing uncommitted, untracked or ignored is there (node_modules, .venv, .env, build folders); usually only the caches in your HOME (cargo's, npm's) carry over, and when the repository declares secrets for its check, not even those. So what it needs must be committed, or installed by the command itself from those caches. Run it yourself first, from a clean state."));
     }
     lines.join("\n\n")
 }
@@ -16897,6 +16892,41 @@ mod tests {
                 agent != "claude",
                 "{told}"
             );
+        }
+    }
+
+    /// TASKS-15: no prompt states a round limit, named or not, and the check is told as it runs:
+    /// in obid's own clean checkout of the commit, offline.
+    #[test]
+    fn tasks_15_no_prompt_states_a_round_limit() {
+        for rounds in [None, Some(3)] {
+            let mut job = Job::new(
+                "j".into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "default".into(),
+            );
+            job.check = Some("node --test".into());
+            job.rounds = rounds;
+            assert!(job.max_rounds() > 1);
+            let told = format!(
+                "{}\n\n{}",
+                owner_prompt(&job),
+                standing_rules(&job).unwrap()
+            )
+            .to_lowercase();
+            let words: Vec<&str> = told.split(|c: char| !c.is_alphanumeric()).collect();
+            assert!(
+                !words.contains(&"round") && !words.contains(&"rounds"),
+                "{told}"
+            );
+            assert!(
+                told.contains("clean checkout of your last commit"),
+                "{told}"
+            );
+            assert!(!told.contains("in this directory"), "{told}");
         }
     }
 
