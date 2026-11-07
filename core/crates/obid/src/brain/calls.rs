@@ -2,7 +2,7 @@
 //! side calls (triage sorting the inbox, memory finding what the owner keeps repeating, the recap
 //! after time away) run here: the first Claude Code account's `claude -p` with a JSON schema, one
 //! attempt, boxed when it reads a quoted file. Every brain call, those and each run of a harness
-//! turn (the owner's, a supervisor's, an event's), is kept in `home/brain-turns.jsonl` with the
+//! turn, is kept in `home/brain-turns.jsonl` with the
 //! numbers its CLI reported (#533), and `GET /v1/brain/usage` adds them up.
 
 use std::collections::BTreeMap;
@@ -541,7 +541,8 @@ impl Call {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     pub at: String,
-    /// `conversation`, `supervisor` or `event` for a harness turn; `triage`, `memory` or `recap`
+    /// `conversation` for a harness turn (`supervisor` or `event` in records from before they
+    /// were retired); `triage`, `memory` or `recap`
     /// for a side call; `plan` for the plan loop's records from before 2026-10-27.
     #[serde(default = "plan_loop")]
     pub kind: String,

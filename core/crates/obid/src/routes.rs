@@ -748,7 +748,6 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         // Set by `dispatch` only for words an app of the owner's signed (crate::secretspec).
         vetted: false,
         foreign: None,
-        split: false,
         adding: None,
         heard: Vec::new(),
         owners: Vec::new(),

@@ -43,10 +43,6 @@
 //                  (a refused rate_limit_event) and ends the turn with Claude Code's usage-limit
 //                  error; elsewhere says "answered"
 //   anything else  says "Nothing to do." (what it says as a job's agent)
-// A turn nobody watches (the prompt starts "Oby here, not the owner": a supervisor's or an event's)
-// does what supervise.txt in its room says instead, when there is one ($JOB the stalled job it
-// names, $EVENTJOB and $ITEM an event's job and inbox item): each line but the last an OBY call,
-// the last as above.
 // As a job's agent: a prompt holding STALLS-ALWAYS, or any later one of that job, goes quiet for
 // two minutes (so obid's stall watch holds it), and one holding STALLS-ONCE only until it stalled; one
 // holding JOB-FAILS ends its turn with an error result, as an agent stopped mid-round; one holding
@@ -211,28 +207,8 @@ rl.on("line", (line) => {
     setTimeout(() => say("woke"), 120000);
     return;
   }
-  // (A try after a cut has obid's note first.)
-  if (prompt.includes("Oby here, not the owner") && existsSync("supervise.txt")) {
-    // $JOB is the stalled job the prompt names.
-    const job = /Job (\S+) \(/.exec(prompt)?.[1] ?? "";
-    const eventJob = /job=([^,\s]+),/.exec(prompt)?.[1] ?? "";
-    const item = /item=([^,\s]+),/.exec(prompt)?.[1] ?? "";
-    const script = readFileSync("supervise.txt", "utf8").replaceAll("$JOB", job).replaceAll("$EVENTJOB", eventJob).replaceAll("$ITEM", item);
-    supervise(script.trim().split("\n"), prompt).catch(failed);
-    return;
-  }
   act(prompt.split("\n").pop(), prompt, before).catch(failed);
 });
-
-async function supervise(lines, prompt) {
-  for (const [at, line] of lines.slice(0, -1).entries()) {
-    const [, tool, ...rest] = line.split(" ");
-    use(`s${at}`, `mcp__oby__${tool}`, JSON.parse(rest.join(" ")));
-    const answer = await oby(tool, JSON.parse(rest.join(" ")));
-    used(`s${at}`, answer.result?.content?.[0]?.text ?? "", answer.result?.isError);
-  }
-  await act(lines[lines.length - 1], prompt);
-}
 
 // What 2.1.302 ends with when the prompt doesn't fit its model.
 const toolong = () => emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "prompt_too_long", api_error_status: 400, result: "Prompt is too long · the request is ~250000 tokens (limit 200000)", session_id: session });

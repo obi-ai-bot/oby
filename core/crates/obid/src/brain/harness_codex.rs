@@ -45,7 +45,7 @@ pub(crate) const OFF: &[&str] = &[
     "daemon_auto_start",
     "worktrees",
     // No memory from earlier threads, or of other conversations' history (all off by default in
-    // 0.162.1; pinned, so a fresh supervisor thread starts with nothing but its prompt).
+    // 0.162.1; pinned, so a fresh thread starts with nothing but its prompt).
     "memories",
     "external_agent_memory_import",
     "guardian_conversation_history_tools",
@@ -61,7 +61,7 @@ const SETTINGS: &[&str] = &[
 
 /// The `app-server` to run for one attempt of the turn, and what its thread is started with:
 /// `resume`'s thread when there is one, the conversation's orientation, the configured model;
-/// obid's Tetrix server at `tetrix` when it's given; `web` false for a turn nobody watches.
+/// obid's Tetrix server at `tetrix` when it's given; web search live.
 /// Refuses, saying why, a Codex that keeps a feature of [`OFF`] on and a login copy near its end
 /// ([`crate::jobs::codex_copy_ready`]).
 #[allow(clippy::too_many_arguments)]
@@ -73,8 +73,6 @@ pub(super) async fn launch(
     tetrix: Option<&str>,
     token: &str,
     resume: &Option<String>,
-    web: bool,
-    watched: bool,
 ) -> Result<(Launch, Option<crate::codex::Options>), String> {
     // Oby's server and Tetrix's as a job's are given ([`crate::codex::argv`]: its `-c` settings).
     let argv = crate::codex::argv(Default::default(), Some((url, token)), tetrix);
@@ -93,9 +91,7 @@ pub(super) async fn launch(
             &url.replace("/v1/agent/mcp/", "/v1/agent/chatgpt/"),
         ));
     }
-    // Web search is on, but for a turn nobody watches (super::supervisor).
-    let search = if web { "live" } else { "disabled" };
-    flags.extend(["-c".into(), format!(r#"web_search="{search}""#).into()]);
+    flags.extend(["-c".into(), r#"web_search="live""#.into()]);
     // Whatever repeats the turn's token (a tool's answer, the agent) is redacted.
     crate::secrets::known().learn(
         &format!("conversation {} MCP token", place.folder.display()),
@@ -140,7 +136,7 @@ pub(super) async fn launch(
         model,
         effort: None,
         plan: false,
-        instructions: Some(orientation(shared, tetrix.is_some(), watched)),
+        instructions: Some(orientation(shared, tetrix.is_some())),
         no_commands: true,
         usage: false,
         priced: None,

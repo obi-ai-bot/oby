@@ -1168,9 +1168,6 @@ pub async fn background(
     })
     .map_err(|e| unkept(Path::new("settings.json"), e))?;
     shared.jobs.background_answered(&id, given);
-    if !given {
-        shared.turns.cancel_unattended_on(&id);
-    }
     send_accounts(&shared).await;
     Ok(answer(
         StatusCode::OK,

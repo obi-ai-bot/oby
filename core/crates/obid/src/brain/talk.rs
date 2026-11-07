@@ -216,52 +216,6 @@ pub fn next(shared: &Shared) -> Option<String> {
         .map(|(_, account)| account.id)
 }
 
-/// The account a turn nobody watches runs on (a supervisor's, an event's): the first with room of
-/// Claude Code and Codex, whose own tools obid can take away. Never Cursor, whose can't be: such a
-/// turn reads only its job.
-pub(super) fn unattended(shared: &Shared) -> Option<(Tool, Account)> {
-    let tools = unwatched(tools(shared));
-    let apart = nothing_else(shared);
-    // Nobody's watching, so a ChatGPT login only with the owner's yes (CHATGPT-20).
-    let lists = tools
-        .into_iter()
-        .map(|tool| {
-            let mut list = shared.jobs.thinking_accounts(tool);
-            list.retain(|account| shared.jobs.takes_background(account));
-            (tool, list)
-        })
-        .collect();
-    keep_apart(
-        order(None, None, lists, true, |id| shared.jobs.has_room(id)),
-        &apart,
-    )
-    .into_iter()
-    .next()
-}
-
-/// Why [`unattended`] found no account, in one line, for the owner. It names the yes only when the
-/// yes would help: with another login on this Mac, full or not, a ChatGPT one isn't taken anyway.
-pub(super) fn why_unattended(shared: &Shared) -> String {
-    let not_yet = matches!(nothing_else(shared), Apart::OnlyThese)
-        .then(|| {
-            let mut logins = shared.jobs.thinking_accounts(Tool::Codex).into_iter();
-            logins.find(|account| !shared.jobs.takes_background(account))
-        })
-        .flatten();
-    match not_yet {
-        Some(account) => format!(
-            "it needs your OK for work I run by myself to use the ChatGPT plan on {}: you can allow it in Settings › Agents.",
-            account.name
-        ),
-        None => shared.jobs.none_signed_in(shared.config.conversation.agent),
-    }
-}
-
-fn unwatched(mut tools: Vec<Tool>) -> Vec<Tool> {
-    tools.retain(|tool| *tool != Tool::Cursor);
-    tools
-}
-
 /// The account the turn is off, having answered on `answered`: the one that failed this turn, else
 /// the chosen one, else the one its session was on. [`crate::conversation::Conversations::moved_off`]
 /// keeps it, so the turn says so once.
@@ -496,11 +450,6 @@ mod tests {
             ids(order(Some("u1"), None, lists(), true, |_| true)),
             ["u1", "x1"]
         );
-    }
-
-    #[test]
-    fn conversation_agent_10_a_turn_nobody_watches_never_runs_on_cursor() {
-        assert_eq!(unwatched(Tool::ALL.to_vec()), [Tool::Claude, Tool::Codex]);
     }
 
     #[test]

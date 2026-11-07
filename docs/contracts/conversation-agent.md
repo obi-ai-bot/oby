@@ -6,7 +6,7 @@ The business behavior contract for which account a conversation talks through.
 
 - **Outcome:** The owner connects any number of accounts, sees each one's percentage in the chat window, picks which one Oby talks through with one click (or leaves it on Auto), and when that one fills Oby moves by itself, says so in a line, and the chat keeps going.
 - **Status:** **Implemented**, on obid and in the Electron app, proven in the real app on real Claude Code, Codex 0.162 and cursor-agent 2026.10.01 (2026-11-02): each answers, knows the earlier turns and keeps its session; Cursor's `oby_jobs` runs, its own shell is refused, a job started from it runs; a full account moves. The Mac it ran on is one, on a debug build.
-- **Scope:** A conversation's turns, the turns nobody watches (a supervisor's, an event's), and the message-box account model menu. **Out of scope:** where jobs run (`defaultAccount`, routing, #1563), saying "talk on Codex" in words.
+- **Scope:** A conversation's turns and the message-box account model menu. **Out of scope:** where jobs run (`defaultAccount`, routing, #1563), saying "talk on Codex" in words.
 
 ## What the design shows (proposed: Sangam's to change)
 
@@ -52,7 +52,6 @@ Cursor's own reads and edits never ask and no flag takes its tools away (docs/cu
 - Every command asks, and obid's rule refuses it (`oby_shell` is the conversation's shell). A call is an MCP tool by its title only when it's of no other kind: a command titled like one is a command.
 - A Cursor that can't load its session (no `loadSession`) fails that attempt, and the next starts a new session with the earlier turns handed over.
 - What it plants is gone before its next start: `.cursor`, `.grok`, `.cursorrules` and the rest in its room; its settings, sandbox file, hooks, MCP servers, rules, skills (`skills`, `skills-cursor`, `cloud-skills`, `~/.grok`) and a shell's start-up files in its `HOME`. That list is what cursor-agent 2026.10.01 loads; a later version may add names.
-- A turn nobody watches never runs on it.
 - Auto or a move can reach it unasked, only behind every Claude Code and Codex account the turn could try. The line then says what that costs.
 - Known limits:
   - **What Cursor's servers carry.** Cursor's own web search runs on its servers, and reaches obid only as a `search`. A Cursor that's been talked into it by what it read can put what it read in a search: the room's memories, and its login copy's `accessToken` and `apiKey`. obid can't gate that, and hasn't seen it against a real `cursor-agent`. The login copy holds no refresh token and goes when the turn ends, which bounds it, and doesn't stop it. So the rest of the box and proxy keep what it read from any other host, not from Cursor's.
@@ -93,7 +92,7 @@ Nothing can run: the turn says why in one line, naming what holds each signed-in
 - **CONVERSATION-AGENT-7:** A turn on Cursor counts as untrusted from its start, and that stays after it leaves. One that never started leaves no mark. One reached without the owner choosing it says what that costs.
 - **CONVERSATION-AGENT-8:** A conversation's Cursor gets out through the proxy only, to Cursor's own services only; with no such box, choosing it is `422` with `talk-needs-egress-box`.
 - **CONVERSATION-AGENT-9:** Cursor's commands are refused, what it plants is gone before its next start, its login copy goes when the turn ends, and its folder goes with the conversation.
-- **CONVERSATION-AGENT-10:** A turn nobody watches never runs on Cursor, and runs on Claude Code or Codex, whichever has room.
+- **CONVERSATION-AGENT-10:** Retired: no turn runs unwatched since the conversation supervisor was deleted ([rules-delete-supervisor, obi-ai-bot/oby#1952](https://github.com/obi-ai-bot/oby/pull/1952)).
 - **CONVERSATION-AGENT-11:** An account that's removed is no choice any more: the setting and every conversation's choice are cleared, and that conversation talks on Auto.
 - **CONVERSATION-AGENT-12:** The picker and its list show each account's percentage (the fuller of its week and its session), one held full "Full", one with no figure "No usage" (Cursor's when its read gives none), the dot yellow past 80% and red past 90%, red when held full, and every connected account under its tool.
 - **CONVERSATION-AGENT-13:** The picker names the chosen account, at once; moved off it or on Auto, where it last talked, else what obid says is next, each only while it can run.

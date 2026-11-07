@@ -275,11 +275,6 @@ const CONFIRMS: &[&str] = &[
     "oby_ask",
 ];
 
-/// Why a supervisor turn (super::supervisor) starts no job past its own bounds: after something
-/// untrusted, a watched turn's jobs start with the owner there to see them, but nobody watches
-/// this one.
-const UNWATCHED_START: &str = "A turn nobody watches starts no other work: say what should happen, and the owner can start it.";
-
 /// Why Oby's tool `name`'s answer isn't on obid's allowlist (crate::secretspec), which marks the
 /// conversation: none only for an answer in obid's own words, the brain's, or those of a job that
 /// is the owner's own throughout. Fail closed: a tool this doesn't name marks it.
@@ -345,10 +340,6 @@ async fn call(
     }
     if !ONLY_READ.contains(&name) {
         session.acted.store(true, Ordering::SeqCst);
-    }
-    // A turn nobody watches reads only its own job, and archives nothing (super::supervisor).
-    if let Some(why) = super::supervisor::refused(session, name, &args) {
-        return Err(why.into());
     }
     if let Some(why) = reads_foreign(shared, name, &args) {
         shared.conversations.mark(&session.conversation, why);
@@ -420,15 +411,6 @@ async fn call(
         "oby_github" => github(shared, session, args),
         "oby_answer" => {
             let Reply { item, answer } = parse(args)?;
-            // A turn nobody watches settles none of the owner's decisions.
-            if session.unwatched()
-                && let Some(why) = shared
-                    .link
-                    .item(&item)
-                    .and_then(|i| owners_only(&i.kind, &answer))
-            {
-                return Err(why.into());
-            }
             let mut plan = Plan::of(Action::AnswerInbox, "");
             plan.item = Some(item);
             plan.answer = Some(answer);
@@ -607,7 +589,6 @@ fn waits(session: &Session, job: &crate::job::Job) -> Option<&'static str> {
 pub(super) fn owners_word(shared: &Shared, session: &Session) -> Option<i64> {
     (session.control.signed()
         && !session.web.load(Ordering::SeqCst)
-        && !session.unwatched()
         // The conversation's own mark: `web` is the session's, whose file may not have kept it.
         && !shared.conversations.read_untrusted(&session.conversation))
     .then_some(session.control.begun)
@@ -877,38 +858,6 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
         shown.push(format!("What Oby adds for its agent:\n{words}"));
     }
     let shown = crate::secrets::known().redact(&shown.join("\n\n"));
-    // A supervisor turn carries its stalled job on by itself, within obid's bounds
-    // (super::supervisor): the job hears Try again and the conversation's words, quoted, never
-    // obid's prompt as the owner's.
-    if let Some(allowed) =
-        super::supervisor::allowed(shared, session, &job, super::supervisor::Kind::Continue)
-    {
-        allowed?;
-        let words = match words.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
-            Some(words) => Some(super::supervisor::quoted(words, &session.nonce)?),
-            None => None,
-        };
-        let foreign = super::written_after(shared, &session.conversation);
-        return match shared.jobs.continue_job(
-            &id,
-            words.as_deref(),
-            BY_OBY,
-            crate::jobs::Source::Event,
-            foreign,
-        ) {
-            Some(Ok(job)) => {
-                super::supervisor::record(
-                    shared,
-                    session,
-                    super::supervisor::Kind::Continue,
-                    vec![],
-                );
-                Ok(format!("Continuing {name}: round {}.", job.current_round()))
-            }
-            Some(Err(refused)) => Err(format!("Couldn't continue {name}: {}", refused.0)),
-            None => Err("That task isn't here any more.".into()),
-        };
-    }
     let why = waits(session, &job).or(bypass.then_some("it runs in Bypass mode, never asking"));
     if let Some(why) = why {
         return confirm_waits(
@@ -1523,17 +1472,13 @@ struct CheckInArgs {
 
 /// oby_check_in: the owner's words turn their check-ins on, change them or turn them off, at once
 /// (#1116). A check-in only posts in its conversation and never starts, approves or answers
-/// anything, so it waits for no Confirm; but a turn that read what others wrote turns none on, and
-/// a turn nobody watches changes none.
+/// anything, so it waits for no Confirm; but a turn that read what others wrote turns none on.
 fn check_in(shared: &Shared, session: &Session, args: Value) -> Result<String, String> {
     let CheckInArgs {
         schedule,
         zone,
         off,
     } = parse(args)?;
-    if session.supervising.is_some() {
-        return Err("A turn nobody watches changes no check-in.".into());
-    }
     let home = &shared.config.home;
     let unkept = |e: std::io::Error| format!("Oby couldn't keep that: {e}");
     let now = obi_protocol::time::now();
@@ -1712,11 +1657,7 @@ async fn act(
 /// Whose words this turn's actions pass on: the owner's, or after the turn read something
 /// untrusted, the owner's only as a proposal.
 pub(super) fn source(session: &Session) -> crate::jobs::Source {
-    // A turn nobody watches (a supervisor's, an event's) says obid's own prompt, never the
-    // owner's words (#1659).
-    if session.unwatched() {
-        crate::jobs::Source::Event
-    } else if session.web.load(Ordering::SeqCst) {
+    if session.web.load(Ordering::SeqCst) {
         crate::jobs::Source::Untrusted
     } else {
         crate::jobs::Source::Owner
@@ -1755,41 +1696,6 @@ fn capped(count: &AtomicUsize, what: &str, owners_word: bool) -> Result<(), Stri
     Ok(())
 }
 
-/// Why answering an item of `kind` with `answer` is the owner's own call in a conversation, when
-/// it is: letting a job's permission through, even once. Saying no to it is Oby's to say.
-fn owners_only(kind: &str, answer: &str) -> Option<&'static str> {
-    use crate::permissions::{Decision, inbox_decision};
-    // A job's plan is the owner's to approve or send back, either way (#609).
-    if kind == "plan" {
-        return Some(
-            "Only the owner approves a job's plan or sends it back, in their inbox: Oby can't answer it.",
-        );
-    }
-    // A merge card is the owner's to answer, either way (#853).
-    if kind == "merge" {
-        return Some(
-            "Only the owner merges, asks a teammate, or leaves it open, in their inbox: Oby can't answer it.",
-        );
-    }
-    // So is Merge on Oby's review item whose changes were left to the owner (MERGING-17).
-    if kind == "failed" && answer.trim().eq_ignore_ascii_case(crate::merge::MERGE) {
-        return Some(
-            "Only the owner merges it, with Merge on its card in their inbox: Oby can't answer it.",
-        );
-    }
-    // A job's agent's question is the owner's to answer (#858).
-    if kind == crate::sphere::inbox::QUESTION_KIND {
-        return Some(
-            "Only the owner answers a job's question, in their inbox: Oby can't answer it.",
-        );
-    }
-    // A conversation may only refuse a job's permission, and only with a bare no: words to the
-    // job's agent, or anything but a plain deny, are the owner's own (N3).
-    (kind == "permission" && inbox_decision(answer) != (Decision::Deny, None)).then_some(
-        "Oby may only refuse a job's permission, with a bare \"Deny\" and no words. Allowing it, or sending the agent words, is the owner's own, in their inbox.",
-    )
-}
-
 /// What a job hears from this turn: the owner's own words, then what the conversation's agent
 /// adds, quoted as data (#542: never the agent's restatement in their place).
 fn told(owner: &str, agent: &str, nonce: &str) -> String {
@@ -1813,7 +1719,6 @@ async fn tell(
     words: &str,
     title: Option<String>,
 ) -> Result<String, String> {
-    let added = words;
     let words = told(&session.said, words, &session.nonce);
     let mut plan = Plan::of(Action::MessageJob, "");
     plan.jobs = Some(vec![id.clone()]);
@@ -1851,21 +1756,6 @@ async fn tell(
     let agent_ready = |text: &str| -> Result<String, String> {
         Ok(crate::secrets::known().redact(&crate::vault::for_agent(text.trim())?))
     };
-    // A supervisor turn starts its stalled job fresh from its handoff note by itself, within
-    // obid's bounds (super::supervisor).
-    if let Some(allowed) =
-        super::supervisor::allowed(shared, session, &job, super::supervisor::Kind::Restart)
-    {
-        allowed?;
-        let new = super::supervisor::follow_up(&job, added, None, &session.nonce)?;
-        let new = super::written_in(shared, &session.conversation, new);
-        let outcome = actions::follow_up(shared, &job, new);
-        if let Outcome::Started(_, next) = &outcome {
-            let started = next["id"].as_str().map(str::to_owned).into_iter().collect();
-            super::supervisor::record(shared, session, super::supervisor::Kind::Restart, started);
-        }
-        return outcome_answer(session, outcome);
-    }
     // Its follow-up is working already (this turn's or an earlier one's): that one hears them.
     if let Some(next) = shared.jobs.following(&id) {
         let words = agent_ready(&words)?;
@@ -1880,9 +1770,6 @@ async fn tell(
                 &session.conversation,
             ),
         );
-    }
-    if session.supervising.is_some() {
-        return Err(UNWATCHED_START.into());
     }
     // Past its safety limit, a follow-up would start its counters again: the owner confirms.
     if crate::jobs::past_safety(&job) {
@@ -1933,53 +1820,6 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
         owners_word(shared, session).is_some(),
     )?;
     let start: Start = parse(args)?;
-    // A supervisor turn splits what's left of its stalled job into new jobs by itself, within
-    // obid's bounds (super::supervisor): each part a follow-up from its branch.
-    if let Some(job) = super::supervisor::part_of(
-        shared,
-        session,
-        &start.repo,
-        start.agent.as_deref(),
-        start.account.as_deref(),
-        start.mode.as_deref(),
-    ) && let Some(allowed) =
-        super::supervisor::allowed(shared, session, &job, super::supervisor::Kind::Split)
-    {
-        allowed?;
-        let part = Some(super::supervisor::part(session));
-        let mut new = super::supervisor::follow_up(&job, &start.task, part, &session.nonce)?;
-        new = super::written_in(shared, &session.conversation, new);
-        new.split = true;
-        let outcome = match shared.jobs.create(new) {
-            Ok(part) => {
-                super::supervisor::record(
-                    shared,
-                    session,
-                    super::supervisor::Kind::Split,
-                    vec![part.id.clone()],
-                );
-                Outcome::Started(
-                    format!(
-                        "Started {} for part of what {} left.",
-                        part.short_title(),
-                        job.short_title()
-                    ),
-                    part.to_json(),
-                )
-            }
-            Err(refused) => Outcome::Failed(format!(
-                "Couldn't start that part of {}: {}",
-                job.short_title(),
-                refused.0
-            )),
-        };
-        return outcome_answer(session, outcome);
-    }
-    // Past its own bounds, a turn nobody watches starts nothing: what an agent's note says would
-    // otherwise start work no one asked for.
-    if session.supervising.is_some() {
-        return Err(UNWATCHED_START.into());
-    }
     let dispatch = planned(start)?;
     let bypass =
         dispatch.mode.is_some_and(|m| m.as_str() == "bypass") && shared.jobs.bypass_widens();
@@ -2073,7 +1913,7 @@ fn asked(session: &Session) -> Asked<'_> {
 /// oby_offer: the job planned and checked as oby_dispatch's, offered instead of started
 /// (actions::offer): a `start` item in this conversation that only the owner's own Start, Dispatch
 /// on its card, starts. Every offer of one turn is on one card: the turn's. It counts toward the
-/// turn's dispatches; a turn nobody watches offers nothing (super::supervisor::refused).
+/// turn's dispatches.
 async fn offer(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<String, String> {
     capped(
         &session.dispatched,
@@ -3076,37 +2916,6 @@ mod tests {
         assert!(glob("*.{md,txt}", "a.txt"));
         assert!(!glob("a?c", "a/c"));
         assert!(glob_regex("{a,b").is_err());
-    }
-
-    /// A conversation may refuse a job's permission, never let it through, even once.
-    #[test]
-    fn only_the_owner_lets_a_permission_through() {
-        // Allowing, and a no with words for the agent, are the owner's own (N3).
-        for owners in [
-            "Allow",
-            "Always allow",
-            "allow",
-            "Yes",
-            "no, run only the runner tests",
-        ] {
-            assert!(owners_only("permission", owners).is_some(), "{owners}");
-        }
-        // Only a bare no is Oby's to give.
-        for no in ["Deny", "deny", "No", " no "] {
-            assert_eq!(owners_only("permission", no), None, "{no}");
-        }
-        // A plan is the owner's either way (#609).
-        for any in ["Approve", "Keep planning", "Deny", "add tests first"] {
-            assert!(owners_only("plan", any).is_some(), "{any}");
-        }
-        assert_eq!(owners_only("question", "Yes"), None);
-        // A merge card, either way (#853).
-        for any in ["Merge", "Merge, and remember", "Leave it open", "Dismiss"] {
-            assert!(owners_only("merge", any).is_some(), "{any}");
-        }
-        // Merge on Oby's review item (MERGING-17); One more round stays Oby's to give.
-        assert!(owners_only("failed", "merge").is_some());
-        assert_eq!(owners_only("failed", "One more round"), None);
     }
 
     /// TASKCONV-13: oby_dispatch carries the owner's base branch, branch and rounds into its plan;

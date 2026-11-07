@@ -58,22 +58,6 @@ pub fn section(job: &Job, home: &Path) -> String {
     if let Some(next) = &job.next_step {
         lines.push(format!("Next step: {next}"));
     }
-    // What its conversation did each time it stalled (super::supervisor), in obid's words.
-    for step in &job.supervised {
-        let started = if step.jobs.is_empty() {
-            String::new()
-        } else {
-            format!(", started {}", step.jobs.join(", "))
-        };
-        lines.push(match step.decision.as_str() {
-            "asked" => "When it stalled, the next step was left to the owner".to_owned(),
-            decision => format!(
-                "When it stalled, Oby's conversation chose {decision} ({} of {} automatic steps{started})",
-                step.count,
-                super::supervisor::MOST
-            ),
-        });
-    }
     lines.extend([String::new(), "### What was asked".into()]);
     lines.push(cut(&job.request, 1500));
     lines.extend([String::new(), "### Report".into()]);

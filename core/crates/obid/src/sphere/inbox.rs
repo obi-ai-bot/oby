@@ -33,9 +33,6 @@ pub const CANCEL_START: &str = "Cancel";
 pub const CONFIRM: &str = "Confirm";
 pub const CANCEL: &str = "Cancel";
 
-/// What settles Oby's own `question` about a job once the owner has looked (#710): a stalled
-/// job's (crate::brain::supervisor), or an escalation the retired event orchestrator left.
-pub const DONE: &str = "Done";
 /// How the retired event orchestrator's escalation ids start: old ones still close (TASKS-13).
 pub const ESCALATION: &str = "orchestrator-";
 
