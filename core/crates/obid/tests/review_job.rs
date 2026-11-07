@@ -766,3 +766,84 @@ async fn a_change_to_approve_isnt_reviewed_without_its_base() {
     assert!(ended.started.is_none(), "the agent never started");
     assert_eq!(ended.review_result.unwrap()["outcome"], "failed");
 }
+
+/// PERMISSIONS-14: Oby's own review of published work runs with nobody watching, so what Plan would
+/// ask the owner (a command that reaches the network or writes, a fetch, its question) is refused at
+/// once, telling it to write what it couldn't run in its review: no card, nothing in the inbox, and
+/// the review is never parked. It goes on and gives its verdict (tests/agents/asking-reviewer).
+#[tokio::test(flavor = "multi_thread")]
+async fn permissions_14_a_review_refuses_instead_of_asking() {
+    let folder = Folder::new("refuses");
+    let remote = fixture(&folder.0.join("fixture"));
+    // Oby's review of a job it published, as `start_review` makes it, queued when obid starts.
+    let mut review = obid::job::Job::new(
+        "r14a2b3c".into(),
+        "obi-e2e/fixture-app".into(),
+        "review".into(),
+        "Make average round to two places.".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    review.review_of = Some("a14a2b3c".into());
+    review.branch = "oby/review-r14a2b3c".into();
+    review.base = Some("main".into());
+    review.start_commit = Some(HEAD_SHA.into());
+    review.mode = Some("plan".into());
+    review.round = Some(1);
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::write(
+        home.join(format!("jobs/{}.json", review.id)),
+        serde_json::to_vec(&review).unwrap(),
+    )
+    .unwrap();
+    let (jobs, _) = reading_jobs(&folder.0, &remote, "asking-reviewer");
+    jobs.resume();
+    let ended = tokio::time::timeout(Duration::from_secs(120), jobs.wait(&review.id))
+        .await
+        .unwrap()
+        .unwrap();
+    let shown = serde_json::to_string(&ended).unwrap();
+    assert_eq!(ended.status, Status::Done, "{shown}");
+    assert!(ended.permission.is_none(), "{shown}");
+    assert!(ended.parked.is_none(), "{shown}");
+    assert!(
+        !ended.changes.iter().any(|c| c.what.starts_with("Parked")),
+        "{shown}"
+    );
+    let summary = &ended.summary;
+    for (tool, what) in [
+        ("Bash", "curl -sS https://example.com/"),
+        ("Bash", "touch notes.md"),
+        ("WebFetch", "https://example.com/"),
+    ] {
+        let line = summary
+            .lines()
+            .find(|l| l.contains(&format!("couldn't run {what}")))
+            .unwrap_or_else(|| panic!("{what} wasn't refused for the review: {summary}"));
+        assert!(
+            line.starts_with(&format!("{tool}: deny (Nobody is watching this review")),
+            "{line}"
+        );
+    }
+    // Plan refuses a file write by itself, as before: it never asked.
+    assert!(summary.contains("Write: deny (Plan mode"), "{summary}");
+    assert!(
+        summary.contains("AskUserQuestion: deny (Nobody is watching this review to answer"),
+        "{summary}"
+    );
+    // Nothing waited for the owner: no permission or question reached the inbox.
+    let inbox = std::fs::read_dir(home.join("inbox"))
+        .map(|dir| {
+            dir.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        !inbox
+            .iter()
+            .any(|name| name.contains("permission") || name.contains("question")),
+        "{inbox:?}"
+    );
+}

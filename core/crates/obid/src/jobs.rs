@@ -4942,10 +4942,16 @@ impl Jobs {
                 self.answered(id, &call, worktree, Some(&why));
                 Ruling::Now(Answer::Deny(why))
             }
-            permissions::Verdict::Ask => Ruling::Ask(
-                self.wait_for_owner(id, call, input, &job.repo, &bounds, None, None)
-                    .expect("no limit to wait under"),
-            ),
+            permissions::Verdict::Ask => match unwatched_review(&job, &call) {
+                Some(why) => {
+                    self.answered(id, &call, worktree, Some(&why));
+                    Ruling::Now(Answer::Deny(why))
+                }
+                None => Ruling::Ask(
+                    self.wait_for_owner(id, call, input, &job.repo, &bounds, None, None)
+                        .expect("no limit to wait under"),
+                ),
+            },
         }
     }
 
@@ -5077,6 +5083,11 @@ impl Jobs {
                 Asked::Now(Ok(()))
             }
             permissions::Verdict::Deny(why) => {
+                self.answered(id, &call, &worktree, Some(&why));
+                Asked::Now(Err(why))
+            }
+            permissions::Verdict::Ask if job.review_of.is_some() => {
+                let why = unwatched_review(&job, &call).unwrap_or_default();
                 self.answered(id, &call, &worktree, Some(&why));
                 Asked::Now(Err(why))
             }
@@ -14478,6 +14489,33 @@ fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String,
     (first.task, first.request, later)
 }
 
+/// Oby's own review runs with nobody watching (PERMISSIONS-14): what it would ask the owner is
+/// refused at once, saying so, instead of a card that waits until the review is parked. A review
+/// the owner dispatched by hand (no `review_of`) keeps its cards. Oby's default for its own
+/// unattended work, never a refusal of the owner. Proposed words, Sangam's to change.
+fn unwatched_review(job: &Job, call: &Call) -> Option<String> {
+    job.review_of.as_ref()?;
+    if call.tool == permissions::ASK_USER_QUESTION {
+        return Some("Nobody is watching this review to answer a question: decide what you can from what's here, and write in your review what you couldn't settle without the user.".into());
+    }
+    let what: String = call
+        .command
+        .clone()
+        .or_else(|| call.url.clone())
+        .or_else(|| {
+            call.paths
+                .first()
+                .map(|path| format!("{} {path}", call.tool))
+        })
+        .unwrap_or_else(|| call.tool.clone())
+        .chars()
+        .take(120)
+        .collect();
+    Some(format!(
+        "Nobody is watching this review, so `{what}` did not run and changed nothing. Don't ask again or reach the same result another way: write \"couldn't run {what}\" in your review and go on with what you can read here."
+    ))
+}
+
 /// What `job`'s agent is told of Tetrix: Oby's review only reads, and holds no change to the
 /// author's commit stamps (#1659).
 fn tetrix_line(job: &Job) -> &'static str {
@@ -20731,6 +20769,53 @@ mod tests {
             jobs.answer_permission("j", &card.id, Decision::Deny, None)
                 .unwrap();
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PERMISSIONS-14: a site Oby's own review reaches through the egress proxy is refused at
+    /// once, saying so, where a review the owner dispatched by hand still asks with a card.
+    #[test]
+    fn permissions_14_a_reviews_site_is_refused_not_carded() {
+        use crate::egress::Asked;
+
+        let root = std::env::temp_dir().join(format!("obid-review-site-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let config = crate::config::Config::parse(
+            &serde_json::json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        for (id, of) in [("own", Some("a".to_owned())), ("hand", None)] {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "review".into(),
+                "Review it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.status = Status::Running;
+            job.mode = Some("plan".into());
+            job.review_of = of;
+            jobs.lock().jobs.insert(id.into(), job);
+        }
+        let Asked::Now(Err(why)) = jobs.ask_about("own", "example.com", 443, false) else {
+            panic!("Oby's review asked about example.com");
+        };
+        assert!(why.starts_with("Nobody is watching this review"), "{why}");
+        assert!(why.contains("couldn't run https://example.com/"), "{why}");
+        assert!(jobs.get("own").unwrap().permission.is_none());
+        assert!(matches!(
+            jobs.ask_about("hand", "example.com", 443, false),
+            Asked::Card { .. }
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
