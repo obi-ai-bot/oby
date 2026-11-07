@@ -1584,9 +1584,10 @@ fn taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report
     assert_eq!(left["status"], "done", "{left}");
     assert_eq!(left["commits"], 0);
     assert_eq!(left["round"], 2);
-    // The fixture's own check (`node --test`) gives a fix 3 rounds when none was named (#958), and
-    // the owner's round adds one.
-    assert_eq!(left["rounds"], 4);
+    // The 4 was #958's default of 3 rounds for a fix with a check (the fixture's own `node --test`)
+    // plus the owner's round. Since #1947 (RECOVERY-9) nobody named a number, so its rounds run to
+    // the same-failure ceiling, which the owner's round fits under rather than raising.
+    assert_eq!(left["rounds"], obid::job::SAME_FAILURE_CEILING);
 }
 
 /// DismissTests.theAPIDismissesAndSaysWhenItCant, its last line: publishing a dismissed job by hand
