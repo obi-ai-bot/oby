@@ -3811,22 +3811,16 @@ impl Jobs {
     /// started. A job that already ended comes back as it is. `None` for one obid doesn't have.
     /// `by` says who stopped it, in obid's words, as its `stoppedBy` (TASKS-18); its `reason` is
     /// its caller's to write. A stop the owner asked for ([`OWNERS_STOPS`]) adds " while its
-    /// question waited" when the job waited on them: its agent's question or permission, a choice
-    /// about an account's limit, or a yes to a login.
+    /// question waited" when the job waited on them for what they were shown: its agent's question
+    /// or permission (`permission`, the first of its asks), or a yes to a login. An `oby_ask_owner`
+    /// question of a turn still under way isn't shown yet, so it doesn't count.
     pub fn stop(&self, id: &str, by: &str) -> Option<Job> {
         let job = self.get(id)?;
         if !job.status.is_active() {
             return Some(job);
         }
         let asked = OWNERS_STOPS.contains(&by)
-            && (job.permission.is_some()
-                || job.account_limit_blocked
-                || job.waiting.as_ref().is_some_and(Waiting::for_consent)
-                || {
-                    let state = self.lock();
-                    state.asks.get(id).is_some_and(|a| !a.is_empty())
-                        || state.asked.contains_key(id)
-                });
+            && (job.permission.is_some() || job.waiting.as_ref().is_some_and(Waiting::for_consent));
         let by = if asked {
             format!("{by}{WHILE_ITS_QUESTION_WAITED}")
         } else {
@@ -18019,7 +18013,13 @@ mod tests {
                 "claude".into(),
                 "c1".into(),
             );
-            job.account_limit_blocked = true;
+            // Waiting for the owner's yes to a login, as `consent_wait` leaves it.
+            job.waiting = Some(Waiting {
+                kind: "limit".into(),
+                text: "your yes".into(),
+                reserved: Some(Vec::new()),
+                tool: None,
+            });
             jobs.insert(job);
             jobs.stop(id, by).unwrap()
         };
