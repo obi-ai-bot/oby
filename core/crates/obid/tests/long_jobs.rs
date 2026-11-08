@@ -418,8 +418,7 @@ fn recovery_1_three_tries_then_the_real_reason() {
 #[test]
 fn recovery_1_a_good_turn_gives_the_tries_back() {
     let (_folder, obid) = obid("recovery-1-flaky");
-    // 6 rounds: more than 3 cuts, fewer than the 8 tries a job gets in all (below).
-    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 6,
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 9,
                      "check": "false", "task": "DIE FLAKY KEEP PROMPTS"});
     let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
     assert_eq!(answer.status, 201, "{}", answer.text);
@@ -434,33 +433,6 @@ fn recovery_1_a_good_turn_gives_the_tries_back() {
         .count();
     assert!(continued > 3, "{told:?}");
     assert_eq!(told.len(), 2 * continued, "{told:?}");
-}
-
-/// RECOVERY-1: good turns give the tries in a row back, but a job gets 8 error and stall tries in
-/// all (the owner's answer of 2026-11-08): a job cut in every round is continued 8 times, then ends
-/// with the real reason, however many rounds it has left.
-#[test]
-fn recovery_1_a_job_gets_eight_tries_in_all() {
-    let (_folder, obid) = obid("recovery-1-all");
-    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 10,
-                     "check": "false", "task": "DIE FLAKY KEEP PROMPTS"});
-    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
-    assert_eq!(answer.status, 201, "{}", answer.text);
-    let job = wait(&obid, answer.body["id"].as_str().unwrap());
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert!(
-        job["reason"]
-            .as_str()
-            .unwrap()
-            .contains("stopped without finishing"),
-        "{job}"
-    );
-    let told = prompts(&job);
-    let continued = told
-        .iter()
-        .filter(|p| p.contains("Your run was cut"))
-        .count();
-    assert_eq!(continued, 8, "{told:?}");
 }
 
 /// RECOVERY-1: a login isn't tried again, and a usage limit goes to its own decision (#1563),
@@ -796,6 +768,65 @@ fn recovery_1_a_retry_keeps_the_mode_and_the_mark() {
     let log = Path::new(job["worktree"].as_str().unwrap()).join(".obi/args.log");
     let runs = std::fs::read_to_string(log).unwrap();
     assert_eq!(runs.matches("--permission-mode plan").count(), 2, "{runs}");
+}
+
+/// RECOVERY-17: obid carries a job on by itself 10 times in all, whatever cut it and however well
+/// it went between, then the job waits for the owner, interrupted, its branch kept, the reason
+/// naming the cap and the last error. With 9 used, an error's try takes the 10th and the next error
+/// gets none; a restart obid went down with takes one too; a job at its 10th when obid went down
+/// isn't continued.
+#[test]
+fn recovery_17_ten_continuations_in_all_then_the_owner() {
+    let job = |id: &str, task: &str, tries: usize, status: obid::job::Status| {
+        let mut job = stored(id, task);
+        job.status = status;
+        job.recovery.tries = tries;
+        job
+    };
+    let (_folder, obid) = obid_with(
+        "recovery-17",
+        json!({}),
+        &[
+            // Queued when obid went down: it starts with its task, and dies in every turn.
+            job(
+                "ffff0001",
+                "DIE ALWAYS KEEP PROMPTS",
+                9,
+                obid::job::Status::Queued,
+            ),
+            job("ffff0002", "KEEP PROMPTS", 10, obid::job::Status::Running),
+            job("ffff0003", "KEEP PROMPTS", 9, obid::job::Status::Running),
+        ],
+    );
+    let capped = |job: &Value, last: &str| {
+        assert_eq!(job["status"], "interrupted", "{job}");
+        assert_eq!(job["nextStep"], "Try again", "{job}");
+        let id = job["id"].as_str().unwrap();
+        assert_eq!(job["branch"], format!("oby/investigate-{id}"), "{job}");
+        let reason = job["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("by itself 10 times") && reason.contains(last),
+            "{reason}"
+        );
+    };
+    let died = wait(&obid, "ffff0001");
+    capped(&died, "stopped without finishing");
+    // Its first turn, and the one try it had left.
+    assert_eq!(prompts(&died).len(), 2, "{died}");
+    capped(
+        &wait(&obid, "ffff0002"),
+        "obid or the Mac went down while it ran",
+    );
+    let restarted = wait(&obid, "ffff0003");
+    assert_eq!(restarted["status"], "done", "{restarted}");
+    assert!(
+        prompts(&restarted)[0].contains("Your run was cut"),
+        "{restarted}"
+    );
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join("jobs/ffff0003.json")).unwrap())
+            .unwrap();
+    assert_eq!(kept["recovery"]["tries"], 10, "{kept}");
 }
 
 /// RECOVERY-2: a run obid went down with goes on in its session when obid starts again, told what

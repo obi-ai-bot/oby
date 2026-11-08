@@ -62,6 +62,7 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
 mod logins;
+mod slots;
 pub use logins::person_homes;
 pub(crate) use logins::*;
 const SANDBOXED_GIT_STDERR_MAX: usize = 64 * 1024;
@@ -108,7 +109,7 @@ const RETRY_WAITS: [Duration; 3] = [
     Duration::from_secs(5 * 60),
 ];
 /// The waits before each continuation of a turn a passing error cut (RECOVERY-1), as Claude's
-/// desktop app waits on a lost connection. A waiting job gives its slot back ([`Idle`], ADMISSION-4).
+/// desktop app waits on a lost connection. A waiting job keeps its slot (ADMISSION-4).
 const CUT_WAITS: [Duration; 3] = [
     Duration::from_secs(60),
     Duration::from_secs(5 * 60),
@@ -862,7 +863,7 @@ struct State {
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
-    /// The jobs whose worker waits on the check queue or a retry's timer: they take no slot
+    /// The jobs whose worker waits on the check queue, then checks: they take no slot
     /// ([`Idle`], ADMISSION-4).
     idle: std::collections::HashSet<String>,
     /// The idle jobs back from their wait while every slot is taken: the next free slot is theirs,
@@ -870,69 +871,6 @@ struct State {
     returning: std::collections::HashSet<String>,
     /// Keeps the Mac from idle sleep while `workers` isn't empty, idle ones too (RECOVERY-10).
     awake: crate::power::Awake,
-}
-
-impl State {
-    /// The slots taken: jobs a worker runs, less those idle ([`Idle`], ADMISSION-4).
-    fn taken(&self) -> usize {
-        self.workers.len().saturating_sub(self.idle.len())
-    }
-}
-
-/// A job waiting on the check queue or a retry's timer, until this is dropped: its slot is free
-/// for another job meanwhile, and it takes one back ([`Idle::back`]) before it goes on, so no more
-/// than `maxRunning` jobs ever work at once (ADMISSION-4).
-struct Idle<'a> {
-    jobs: &'a Arc<Jobs>,
-    id: &'a str,
-}
-
-impl<'a> Idle<'a> {
-    fn new(jobs: &'a Arc<Jobs>, id: &'a str) -> Self {
-        jobs.lock().idle.insert(id.to_string());
-        jobs.schedule();
-        Idle { jobs, id }
-    }
-
-    /// Back from the wait: a slot again as soon as one is free, before any queued job's; false if
-    /// the job was stopped meanwhile.
-    async fn back(self, signal: &watch::Receiver<Signal>) -> bool {
-        let mut stop = signal.clone();
-        loop {
-            // Every slot freed tells `changed` ([`Jobs::schedule`]); listened to before looking.
-            let free = self.jobs.changed.notified();
-            tokio::pin!(free);
-            free.as_mut().enable();
-            let max = self.jobs.max_running();
-            let step = {
-                let mut state = self.jobs.lock();
-                if state.taken() < max {
-                    state.idle.remove(self.id);
-                    return true;
-                }
-                state.returning.insert(self.id.to_string());
-                format!(
-                    "Waiting for a free slot: {} of {max} jobs running",
-                    state.taken()
-                )
-            };
-            if self.jobs.get(self.id).is_some_and(|job| job.step != step) {
-                self.jobs.update(self.id, |job| job.step = step);
-            }
-            tokio::select! {
-                () = free => {}
-                _ = stop.wait_for(|s| *s != Signal::Run) => return false,
-            }
-        }
-    }
-}
-
-impl Drop for Idle<'_> {
-    fn drop(&mut self) {
-        let mut state = self.jobs.lock();
-        state.idle.remove(self.id);
-        state.returning.remove(self.id);
-    }
 }
 
 /// An account being signed in or removed ([`Jobs::begin_change`]), until this is dropped.
@@ -1168,6 +1106,15 @@ impl Jobs {
             let waited = job.permission.is_some();
             job.permission = None;
             job.question_call = None;
+            // ponytail: before #525 every published job said obid didn't review it; drop it once
+            // no saved job says so.
+            if job
+                .review_error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("obid doesn't run Oby's review yet"))
+            {
+                job.review_error = None;
+            }
             // At work when obid went down some other way than a stop it was asked for: running, or
             // queued with nothing it waits for (a worker getting it ready). Picked up twice in the
             // last 30 minutes after that already, it stays here for the owner, rather than take
@@ -1178,7 +1125,7 @@ impl Jobs {
             if at_work && !stopped_cleanly && !waited {
                 job.crash_resumes.retain(|at| now - at < CRASH_WINDOW);
                 if job.crash_resumes.len() >= CRASH_RESUMES {
-                    left_here = Some(crate::job::LOOPED);
+                    left_here = Some(crate::job::LOOPED.to_owned());
                 } else {
                     job.crash_resumes.push(now);
                 }
@@ -1199,9 +1146,12 @@ impl Jobs {
                 if stopped_cleanly {
                     job.recovery.cut = Some(WAS_STOPPED.into());
                 } else if job.recovery.restarts >= RESTART_TRIES {
-                    left_here = Some(crate::job::RESTARTS_SPENT);
+                    left_here = Some(crate::job::RESTARTS_SPENT.to_owned());
+                } else if job.recovery.spent() {
+                    left_here = Some(crate::job::capped("obid or the Mac went down while it ran"));
                 } else {
                     job.recovery.restarts += 1;
+                    job.recovery.tries += 1;
                     job.recovery.cut = Some(WENT_DOWN.into());
                 }
             }
@@ -1212,7 +1162,7 @@ impl Jobs {
                     "" => why.to_owned(),
                     said => format!("{why}\n\n{said}"),
                 };
-                job.reason = Some(why.into());
+                job.reason = Some(why);
                 job.next_step = Some(crate::job::TRY_AGAIN.into());
                 job.finished = Some(now);
                 job.step = String::new();
@@ -2222,8 +2172,7 @@ impl Jobs {
         Ok(max)
     }
 
-    /// How many slots are taken: jobs a worker runs, but those waiting on the check queue or a
-    /// retry's timer ([`Idle`], ADMISSION-4).
+    /// How many slots are taken: jobs a worker runs, but those idle for the check ([`Idle`]).
     pub fn running(&self) -> usize {
         self.lock().taken()
     }
@@ -3899,6 +3848,7 @@ impl Jobs {
                 j.obi.is_none()
                     && j.session.is_some()
                     && j.recovery.restarts < RESTART_TRIES
+                    && !j.recovery.spent()
                     && j.phase != Some(Phase::Publish)
                     && j.cut != Some(Phase::Publish)
                     && j.publish_step.is_none()
@@ -3908,6 +3858,7 @@ impl Jobs {
         {
             self.update(id, |job| {
                 job.recovery.restarts += 1;
+                job.recovery.tries += 1;
                 job.recovery.cut = Some("obid hit a bug and ended your run".into());
                 job.status = Status::Queued;
                 job.step = format!(
@@ -8534,7 +8485,13 @@ impl Jobs {
         // It needs the owner (#725): Try again carries it on in its session (past a safety stall,
         // only once they confirm), and the handoff note is in `stalled`, beside the agent's own
         // summary.
-        let needs_you = || End::needs_you(format!("Stalled: {text}."), Some(crate::job::TRY_AGAIN));
+        // Out of continuations in all, it says so (RECOVERY-17).
+        let spent = before.as_ref().is_some_and(|j| j.recovery.spent());
+        let said = match spent && matches!(why, Stall::Quiet | Stall::Turns) {
+            true => crate::job::capped(&text),
+            false => format!("Stalled: {text}."),
+        };
+        let needs_you = || End::needs_you(said.clone(), Some(crate::job::TRY_AGAIN));
         let Some(job) = self.get(id).or(before) else {
             return needs_you();
         };
@@ -8628,10 +8585,10 @@ impl Jobs {
     }
 
     /// Runs the repository's check on commit `head` in the job sandbox (in a checkout of its own,
-    /// [`Jobs::base_checkout`]), with no network but, for an owner's job run here, loopback; one at
-    /// a time, its limit counted from when it starts.
-    async fn check(
-        self: &Arc<Self>,
+    /// [`Jobs::base_checkout`]), with no network but, for an owner's job run here, loopback, its
+    /// limit counted from when it starts.
+    async fn checking_with_turn(
+        &self,
         id: &str,
         command: &str,
         head: &str,
@@ -8651,38 +8608,6 @@ impl Jobs {
         // anyway; another Obi's branch, or commits from a teammate's Mac, get no network at all.
         spec.loopback = self.get(id).is_some_and(|job| job.check_keeps_loopback());
         spec.accounts.clear();
-        // One check at a time: two of this repository's, each building obid with every core,
-        // swapped a 16 GB Mac until both ran out of their 20 minutes (2026-10-24). The wait isn't
-        // part of the limit, and a stop ends it. ponytail: one for every machine; a setting when
-        // a bigger one wants more.
-        let waiting = self.checking.available_permits() == 0;
-        let step = self.get(id).map(|job| job.step).unwrap_or_default();
-        if waiting {
-            self.update(id, |job| {
-                job.step = "Waiting for another job's check to finish".into()
-            });
-        }
-        let mut stop = signal.clone();
-        // Memory never holds a check back: it runs as soon as it has its turn, its build sized to
-        // what's there ([`Jobs::build_env`]). A stop ends the wait for the turn, and the wait
-        // takes no slot (ADMISSION-4).
-        let idle = waiting.then(|| Idle::new(self, id));
-        let _turn = tokio::select! {
-            turn = self.checking.acquire() => {
-                turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
-            }
-            _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
-                return Ok(CheckRun::default());
-            }
-        };
-        if let Some(idle) = idle
-            && !idle.back(signal).await
-        {
-            return Ok(CheckRun::default());
-        }
-        if waiting {
-            self.update(id, |job| job.step = step);
-        }
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
         let round = self.get(id).map_or(1, |job| job.current_round());
         let marker = format!("obid-step-{}", random_check_id()?);
@@ -11004,8 +10929,6 @@ impl Jobs {
                         tracing::info!("job {id}: {error}: trying again in {wait:?}");
                         let mut left = wait;
                         let heard = || self.get(id).is_some_and(|j| !j.heard.is_empty());
-                        // The wait takes no slot (ADMISSION-4).
-                        let idle = Idle::new(self, id);
                         'wait: while !left.is_zero() && !heard() {
                             let step = trying_again(error, left, attempt, of);
                             self.update(id, |job| {
@@ -11029,9 +10952,6 @@ impl Jobs {
                                 }
                             }
                             left -= tick;
-                        }
-                        if !idle.back(signal).await {
-                            return Ok(());
                         }
                         if session {
                             cut_note =
@@ -11092,6 +11012,9 @@ impl Jobs {
                             reason,
                             reset: reset.filter(|at| *at > now),
                         });
+                    }
+                    if tries < of && recovery.spent() {
+                        reason = crate::job::capped(&reason);
                     }
                     let resumes = None;
                     return Err(End::NeedsYou {

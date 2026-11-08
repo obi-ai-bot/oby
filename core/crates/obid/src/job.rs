@@ -66,9 +66,10 @@ pub fn obids_doing(reason: &str) -> bool {
 
 /// What obid did by itself to carry a job's cut run on (docs/contracts/recovery.md). `errors` and
 /// `stalls` count failures in a row: a turn that ends well, or a run that moved the worktree's
-/// head, starts them again, as the owner's own words start every count; the ceiling, token budget
-/// and loop detector bound a job that alternates. No restart, follow-on or automatic retry starts
-/// the others, so one kind of retry never multiplies another. Kept in its file, never in the API.
+/// head, starts them again. `tries` counts every continuation obid made by itself, and stops the
+/// job at [`Recovery::ALL_TRIES`] (RECOVERY-17), progress or not. Only the owner's own words start
+/// the counts again, so one kind of retry never multiplies another. Kept in its file, never in the
+/// API.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recovery {
@@ -76,7 +77,7 @@ pub struct Recovery {
     pub errors: usize,
     /// Runs gone quiet or at the turn limit (RECOVERY-3, RECOVERY-4).
     pub stalls: usize,
-    /// Every error and stall try it got, in a row or not ([`Recovery::spent`]).
+    /// Every continuation obid made by itself, in a row or not ([`Recovery::spent`]).
     pub tries: usize,
     /// Runs cut by obid or the Mac going down, or obid's own bug (RECOVERY-2).
     pub restarts: usize,
@@ -94,16 +95,27 @@ pub struct Recovery {
 }
 
 impl Recovery {
-    /// The error and stall tries a job gets in all, RECOVERY-1's 3 and RECOVERY-3's 5: a good turn
-    /// gives `errors` and `stalls` back, never these (the owner's answer of 2026-11-08). Only the
-    /// owner's words do.
-    pub const ALL_TRIES: usize = 8;
+    /// The continuations obid makes by itself in all (RECOVERY-17, the owner's word of
+    /// 2026-11-08): an error's, a stall's, an unclean restart's and a crash's. A clean restart, a
+    /// five-hour limit's resume, a new session (RECOVERY-8) and a fix round take none.
+    pub const ALL_TRIES: usize = 10;
 
-    /// Whether it got every try it gets in all.
+    /// Whether it got every continuation it gets in all.
     pub fn spent(&self) -> bool {
         self.tries >= Self::ALL_TRIES
     }
+}
 
+/// Why a job stops at [`Recovery::ALL_TRIES`] (RECOVERY-17): the cap, and what cut it last.
+pub fn capped(last: &str) -> String {
+    let last = last.trim().trim_end_matches('.');
+    format!(
+        "Oby carried this on by itself {} times, so it left it here. The last time: {last}. Try again carries it on.",
+        Recovery::ALL_TRIES
+    )
+}
+
+impl Recovery {
     fn is_unused(&self) -> bool {
         *self == Recovery::default()
     }
@@ -1163,15 +1175,16 @@ impl Job {
         self.unattended || self.routine.is_some() || self.review_of.is_some() || self.obi.is_some()
     }
 
-    /// The rounds it may run: the number named, else [`SAME_FAILURE_CEILING`] for a committing
-    /// job with a check, whose rounds stop sooner on the same failure twice (RECOVERY-9), else 1.
+    /// The rounds it may run: the number named, else [`SAME_FAILURE_CEILING`] (or the owner's
+    /// `rounds` limit when it's lower) for a committing job with a check, whose rounds stop sooner
+    /// on the same failure twice (RECOVERY-9), else 1.
     pub fn max_rounds(&self) -> u32 {
         match self.rounds {
             Some(rounds) => rounds.max(1),
             None if crate::jobs::COMMITTING.contains(&self.kind.as_str())
                 && self.check.is_some() =>
             {
-                SAME_FAILURE_CEILING
+                SAME_FAILURE_CEILING.min(crate::settings::limits().rounds())
             }
             None => 1,
         }
