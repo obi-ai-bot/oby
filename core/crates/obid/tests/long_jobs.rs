@@ -1262,6 +1262,28 @@ fn tasks_19_goal_not_met_with_commits_ends_interrupted_and_unpublished() {
     );
 }
 
+/// TASKS-19: a round's `GOAL NOT MET` holds only that round: the next round that ends with no line
+/// is told once to say it, rather than ending on the earlier round's line.
+#[test]
+fn tasks_19_a_silent_round_after_goal_not_met_is_asked_again() {
+    let (_folder, obid) = obid_with("tasks-19-silent", json!({"/repos/0/check": null}), &[]);
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "rounds": 2,
+                     "task": "COMMIT: a.txt SILENT ROUND KEEP PROMPTS ENDS: GOAL NOT MET: the tests"});
+    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["round"], 2, "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 3, "{told:?}");
+    assert!(
+        told[1..]
+            .iter()
+            .all(|p| p.starts_with("Your last line didn't say `GOAL MET`")),
+        "{told:?}"
+    );
+}
+
 /// TASKS-19: a one-round committing job with no check is asked for its GOAL line, and a turn that
 /// ends without one is told once, spending no round, before it goes out.
 #[test]

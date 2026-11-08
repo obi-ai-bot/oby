@@ -10400,7 +10400,20 @@ impl Jobs {
                 None => Onto::Same,
             };
             match (job.check.clone(), onto) {
-                (None, _) => to_publish = true,
+                (None, _) => {
+                    to_publish = true;
+                    // Its last GOAL line, from the replies it kept, so a restart holds what its
+                    // agent said wasn't met (TASKS-19).
+                    if asks_goal_line(&job) {
+                        goal = job
+                            .summaries
+                            .iter()
+                            .flatten()
+                            .rev()
+                            .find_map(|s| goal_line(s))
+                            .map(str::to_owned);
+                    }
+                }
                 (Some(_), Onto::Conflict(files)) => {
                     rebase_round = true;
                     message = rebase_prompt(&job, &start_commit, &files);
@@ -11039,17 +11052,14 @@ impl Jobs {
                     message =
                         self.after_failed_check(id, &job, command, &run.output, &said, round)?;
                 } else if asks_goal_line(&job) {
-                    let last = said
-                        .lines()
-                        .rev()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .trim();
-                    // A reply with no line (to obid's commit or rebase prompt, say) keeps the last.
-                    if last == "GOAL MET" || last.starts_with("GOAL NOT MET") {
-                        goal = Some(last.to_owned());
+                    // A reply with no line (to obid's commit or rebase prompt, say) keeps the
+                    // round's last; a new round starts with none (below).
+                    if let Some(line) = goal_line(&said) {
+                        goal = Some(line.to_owned());
                     }
-                    if last == "GOAL MET" || (!more_rounds && (goal.is_some() || goal_nudged)) {
+                    if goal.as_deref() == Some("GOAL MET")
+                        || (!more_rounds && (goal.is_some() || goal_nudged))
+                    {
                         // The last turn, unless the owner's words came meanwhile: those are the next.
                         let (words, owners) = self.last_turn(id);
                         if words.is_empty() {
@@ -11068,7 +11078,6 @@ impl Jobs {
                         goal_nudged = true;
                         // Its reply leaves the job's summary to the work's.
                         noted = true;
-                        continue;
                     }
                 } else {
                     // The last turn, unless the owner's words came meanwhile: those are the next.
@@ -11085,7 +11094,13 @@ impl Jobs {
                 if !turn.notes.is_empty() {
                     message = format!("{}\n\n{message}", turn.notes.join("\n"));
                 }
+                // The last round's nudge (just above) spends no round.
+                if goal_nudged && !more_rounds {
+                    continue;
+                }
                 round_due = true;
+                // The next round's own line decides, never this one's (TASKS-19).
+                goal = None;
             }
 
             // With no check to run on it, it's put on its base as it is now before it publishes.
@@ -14846,6 +14861,12 @@ fn asks_goal_line(job: &Job) -> bool {
         && (COMMITTING.contains(&job.kind.as_str()) || job.max_rounds() > 1)
         && job.review_of.is_none()
         && job.kind != "review"
+}
+
+/// A reply's `GOAL MET` or `GOAL NOT MET: …` line, when it ends with one (TASKS-19).
+fn goal_line(said: &str) -> Option<&str> {
+    let last = said.lines().rev().find(|l| !l.trim().is_empty())?.trim();
+    (last == "GOAL MET" || last.starts_with("GOAL NOT MET")).then_some(last)
 }
 
 /// What a job's agent is told on every run, apart from its task (TASKS-15): Claude Code's
