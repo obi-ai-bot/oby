@@ -10377,6 +10377,11 @@ impl Jobs {
         let mut rebase_round = false;
         // The round a failed check gave it, counted when its turn launches.
         let mut round_due = false;
+        // Its agent's last `GOAL MET` or `GOAL NOT MET: …` line, for a job asked for one
+        // ([`asks_goal_line`]), and whether a turn that ended its last round without one was told
+        // to say it (TASKS-19).
+        let mut goal: Option<String> = None;
+        let mut goal_nudged = false;
         // Picked up where a restart cut it: its check run again on what it committed rather than
         // its agent's turn (one with no check goes straight on), and a pass goes on to publish as
         // after its last round. Running at once, at the phase it was in, so another restart cuts
@@ -10395,7 +10400,20 @@ impl Jobs {
                 None => Onto::Same,
             };
             match (job.check.clone(), onto) {
-                (None, _) => to_publish = true,
+                (None, _) => {
+                    to_publish = true;
+                    // Its last GOAL line, from the replies it kept, so a restart holds what its
+                    // agent said wasn't met (TASKS-19).
+                    if asks_goal_line(&job) {
+                        goal = job
+                            .summaries
+                            .iter()
+                            .flatten()
+                            .rev()
+                            .find_map(|s| goal_line(s))
+                            .map(str::to_owned);
+                    }
+                }
                 (Some(_), Onto::Conflict(files)) => {
                     rebase_round = true;
                     message = rebase_prompt(&job, &start_commit, &files);
@@ -11033,14 +11051,15 @@ impl Jobs {
                     }
                     message =
                         self.after_failed_check(id, &job, command, &run.output, &said, round)?;
-                } else if job.max_rounds() > 1 {
-                    let last = said
-                        .lines()
-                        .rev()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .trim();
-                    if last == "GOAL MET" || !more_rounds {
+                } else if asks_goal_line(&job) {
+                    // A reply with no line (to obid's commit or rebase prompt, say) keeps the
+                    // round's last; a new round starts with none (below).
+                    if let Some(line) = goal_line(&said) {
+                        goal = Some(line.to_owned());
+                    }
+                    if goal.as_deref() == Some("GOAL MET")
+                        || (!more_rounds && (goal.is_some() || goal_nudged))
+                    {
                         // The last turn, unless the owner's words came meanwhile: those are the next.
                         let (words, owners) = self.last_turn(id);
                         if words.is_empty() {
@@ -11049,9 +11068,17 @@ impl Jobs {
                         message = words.join("\n\n");
                         noted = true;
                         steered = owners;
+                        // Their words decide: the reply to them says the goal again.
+                        goal = None;
                         continue;
                     }
                     message = "Your last line didn't say `GOAL MET`: carry on with what's left, then end with `GOAL MET` or `GOAL NOT MET: <what's left>`.".into();
+                    // Its last round with no line: told once, spending no round (TASKS-19).
+                    if !more_rounds {
+                        goal_nudged = true;
+                        // Its reply leaves the job's summary to the work's.
+                        noted = true;
+                    }
                 } else {
                     // The last turn, unless the owner's words came meanwhile: those are the next.
                     let (words, owners) = self.last_turn(id);
@@ -11067,7 +11094,13 @@ impl Jobs {
                 if !turn.notes.is_empty() {
                     message = format!("{}\n\n{message}", turn.notes.join("\n"));
                 }
+                // The last round's nudge (just above) spends no round.
+                if goal_nudged && !more_rounds {
+                    continue;
+                }
                 round_due = true;
+                // The next round's own line decides, never this one's (TASKS-19).
+                goal = None;
             }
 
             // With no check to run on it, it's put on its base as it is now before it publishes.
@@ -11141,6 +11174,19 @@ impl Jobs {
                 });
                 self.offer_owner_review(id).await;
                 return Ok(());
+            }
+            // Its agent says the goal isn't met: its commits are kept and nothing goes out by
+            // itself, though the owner's Publish still sends them (TASKS-19, PUBLISHING-9).
+            if let Some(left) = goal.as_deref().filter(|l| l.starts_with("GOAL NOT MET"))
+                && commits > 0
+            {
+                return Err(End::needs_you(
+                    format!(
+                        "{} The branch is kept and nothing was pushed: tell it what's left, or Publish it as it is.",
+                        one_line(left, 300)
+                    ),
+                    None,
+                ));
             }
             // Carrying only commits whose pull request was closed unmerged: Publish is the owner's.
             if let Some(first) = self.first_turned_down(&job)
@@ -14807,6 +14853,22 @@ fn owner_prompt(job: &Job) -> String {
     lines.join("\n\n")
 }
 
+/// A job with no check that commits, or has rounds, is asked to end with `GOAL MET` or
+/// `GOAL NOT MET: <what's left>`, which decides its rounds and whether it goes out by itself
+/// (TASKS-19). Not a review: its last line is its verdict.
+fn asks_goal_line(job: &Job) -> bool {
+    job.check.is_none()
+        && (COMMITTING.contains(&job.kind.as_str()) || job.max_rounds() > 1)
+        && job.review_of.is_none()
+        && job.kind != "review"
+}
+
+/// A reply's `GOAL MET` or `GOAL NOT MET: …` line, when it ends with one (TASKS-19).
+fn goal_line(said: &str) -> Option<&str> {
+    let last = said.lines().rev().find(|l| !l.trim().is_empty())?.trim();
+    (last == "GOAL MET" || last.starts_with("GOAL NOT MET")).then_some(last)
+}
+
 /// What a job's agent is told on every run, apart from its task (TASKS-15): Claude Code's
 /// `--append-system-prompt` and Codex's `developerInstructions`, which a summary of the session never
 /// loses; Cursor, with no system prompt over ACP, hears them with each prompt. Only obid's own words:
@@ -14824,7 +14886,7 @@ fn standing_rules(job: &Job) -> Option<String> {
         lines.push("Commit each small step that works as you go, with a Conventional Commits message, unsigned (`git -c commit.gpgsign=false commit`), and always before you end a turn: work left uncommitted when a turn ends is only kept as a `wip:` commit.".into());
         lines.push(format!("If you can't commit, say why in your summary's first line: a {} job that ends with no commits counts as nothing committed.", job.kind));
     }
-    if job.check.is_none() && job.max_rounds() > 1 {
+    if asks_goal_line(job) {
         lines.push("End your summary with a last line that is exactly `GOAL MET` when the user's goal is fully met, or `GOAL NOT MET: <what's left>` when it isn't.".into());
     }
     lines.push("To show the user something to look at (a page, a document, a chart, an image, a PDF), put it in .obi/artifacts/: one file, or one folder with an index.html, per thing. obid shows each one when the job ends; keep secrets out, or it shows none of it.".into());
@@ -14839,7 +14901,7 @@ fn standing_rules(job: &Job) -> Option<String> {
     if job.agent != Tool::Claude.id() {
         lines.push("Long work is fine: no clock ends a job that's making progress, so never cut the work short or skip a step to finish sooner.".into());
     }
-    lines.push("Change files with Edit or Write, never a script (sed -i, python -c, a heredoc into a file), and run commands from this worktree's root without cd, naming paths instead (`cargo test --manifest-path core/Cargo.toml`), and keep scratch files in your own $TMPDIR, never /tmp: obid can't see what a script writes or where a cd leads, and /tmp is outside the worktree, so each of these stops the job until the user says yes.".into());
+    lines.push("Change files with your own file-editing tool, never a script (sed -i, python -c, a heredoc into a file), and run commands from this worktree's root without cd, naming paths instead (`cargo test --manifest-path core/Cargo.toml`), and keep scratch files in your own $TMPDIR, never /tmp: obid can't see what a script writes or where a cd leads, and /tmp is outside the worktree, so each of these stops the job until the user says yes.".into());
     if job.kind == "review" {
         lines.push("Your summary is the review, posted on the pull request once the user approves it. End it with a line that is exactly `VERDICT: APPROVE` when the change can merge as it is, or `VERDICT: REQUEST CHANGES` when something must change first.".into());
     }
@@ -17109,7 +17171,7 @@ mod tests {
         // Seen live (2026-10-18): python3 -c and sed -i edits, and `cd ../..` before cargo, each
         // stopped a job for the owner's OK, since obid can't see what they reach.
         assert!(
-            prompt.contains("with Edit or Write, never a script"),
+            prompt.contains("with your own file-editing tool, never a script"),
             "{prompt}"
         );
         assert!(prompt.contains("without cd"), "{prompt}");
@@ -17268,6 +17330,20 @@ mod tests {
         assert!(prompt.contains("CHECK-WORDS"), "{prompt}");
         assert!(!prompt.contains("Finish with a short summary"), "{prompt}");
         assert!(!prompt.contains("Commit each small step"), "{prompt}");
+        // Codex and Cursor have no tools named Edit or Write.
+        assert!(rules.contains("your own file-editing tool"), "{rules}");
+        assert!(!rules.contains("Edit or Write"), "{rules}");
+        // Checked: the check decides, not a GOAL line. Unchecked, one round too (TASKS-19).
+        assert!(!rules.contains("GOAL MET"), "{rules}");
+        job.check = None;
+        assert_eq!(job.max_rounds(), 1);
+        assert!(
+            standing_rules(&job)
+                .unwrap()
+                .contains("`GOAL NOT MET: <what's left>`")
+        );
+        job.kind = "review".into();
+        assert!(!standing_rules(&job).unwrap().contains("GOAL MET"));
     }
 
     /// A follow-up starts from the first job's unmerged work: on its branch while its pull request

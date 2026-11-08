@@ -2739,7 +2739,12 @@ fn uncommitted_work_gets_one_commit_turn() {
     assert_eq!(job["summary"], "Nothing to do.", "{job}");
     assert_eq!(
         job["summaries"],
-        json!(["Nothing to do.", "Committed the draft."]),
+        // Its first turn ended without its GOAL line: told once (TASKS-19).
+        json!([
+            "Nothing to do.",
+            "Carried on.\n\nGOAL MET",
+            "Committed the draft."
+        ]),
         "{job}"
     );
     let branch = format!("oby/fix-{id}");

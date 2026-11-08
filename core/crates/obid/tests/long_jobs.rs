@@ -24,8 +24,12 @@ fn obid_with(name: &str, more: Value, jobs: &[obid::job::Job]) -> (Folder, Obid)
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
     let mut config = config(&folder.0, &remote, &agent);
     config["stallAfter"] = json!(3);
+    // A key that starts with `/` is a JSON pointer into it (`/repos/0/check`).
     for (key, value) in more.as_object().unwrap() {
-        config[key] = value.clone();
+        match key.starts_with('/') {
+            true => *config.pointer_mut(key).unwrap() = value.clone(),
+            false => config[key] = value.clone(),
+        }
     }
     let dir = folder.0.join("home/jobs");
     std::fs::create_dir_all(&dir).unwrap();
@@ -1222,4 +1226,88 @@ fn recovery_10_a_running_job_keeps_the_mac_awake() {
     within(30, "caffeinate gone after the job", || {
         (!awake()).then_some(())
     });
+}
+
+/// TASKS-19: a committing job with no check whose agent ends `GOAL NOT MET: …` doesn't go out by
+/// itself: it needs you, its commits kept and its line the reason, and the owner's Publish still
+/// sends them (PUBLISHING-9).
+#[test]
+fn tasks_19_goal_not_met_with_commits_ends_interrupted_and_unpublished() {
+    let (_folder, obid) = obid_with("tasks-19-not-met", json!({"/repos/0/check": null}), &[]);
+    let id = post_kind(
+        &obid,
+        "build",
+        "COMMIT: a.txt ENDS: GOAL NOT MET: the tests are left",
+    );
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("GOAL NOT MET: the tests are left"),
+        "{job}"
+    );
+    assert!(job["nextStep"].is_null(), "{job}");
+    assert_eq!(job["commits"], 1, "{job}");
+    assert!(
+        job["published"].is_null() && job["pushed"].is_null(),
+        "{job}"
+    );
+    assert!(job["outgoing"].as_array().unwrap().is_empty(), "{job}");
+    assert_eq!(job["canPublishAnyway"], true, "{job}");
+    assert_eq!(
+        job["summary"],
+        "Added a.txt.\n\nGOAL NOT MET: the tests are left"
+    );
+}
+
+/// TASKS-19: a round's `GOAL NOT MET` holds only that round: the next round that ends with no line
+/// is told once to say it, rather than ending on the earlier round's line.
+#[test]
+fn tasks_19_a_silent_round_after_goal_not_met_is_asked_again() {
+    let (_folder, obid) = obid_with("tasks-19-silent", json!({"/repos/0/check": null}), &[]);
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "rounds": 2,
+                     "task": "COMMIT: a.txt SILENT ROUND KEEP PROMPTS ENDS: GOAL NOT MET: the tests"});
+    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["round"], 2, "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 3, "{told:?}");
+    assert!(
+        told[1..]
+            .iter()
+            .all(|p| p.starts_with("Your last line didn't say `GOAL MET`")),
+        "{told:?}"
+    );
+}
+
+/// TASKS-19: a one-round committing job with no check is asked for its GOAL line, and a turn that
+/// ends without one is told once, spending no round, before it goes out.
+#[test]
+fn tasks_19_a_one_round_job_with_no_check_is_asked_for_its_goal_line() {
+    let (_folder, obid) = obid_with("tasks-19-asked", json!({"/repos/0/check": null}), &[]);
+    let id = post_kind(&obid, "build", "COMMIT: a.txt KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["rounds"], 1, "{job}");
+    assert_eq!(job["round"], 1, "{job}");
+    assert_eq!(job["commits"], 1, "{job}");
+    let args =
+        std::fs::read_to_string(Path::new(job["worktree"].as_str().unwrap()).join(".obi/args.log"))
+            .unwrap();
+    assert!(
+        args.contains("`GOAL MET` when the user's goal is fully met"),
+        "{args}"
+    );
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(
+        told[1].starts_with("Your last line didn't say `GOAL MET`"),
+        "{told:?}"
+    );
+    // Its reply to obid's word leaves the job's summary to the work's.
+    assert_eq!(job["summary"], "Added a.txt.", "{job}");
 }
