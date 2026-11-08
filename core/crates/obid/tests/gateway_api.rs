@@ -1895,3 +1895,78 @@ async fn a_phones_merge_finishes_after_its_session_ends() {
     assert!(gh.join("merged").exists());
     assert_eq!(merged["mergedBy"]["by"], "owner", "{merged}");
 }
+
+/// WIRE-1: a phone's 32 requests at once hold across its sessions. Writes it no longer waits for
+/// (it said hello again) still count until they're done, so its 33rd is refused; once they're
+/// done, it's let in again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phones_writes_count_toward_its_32_after_its_session_ends() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("gateway-relay-32-writes");
+    // A gh that waits in GitHub while `gh/hold` is there, so each refresh waits for the one read.
+    let bin = folder.0.join("bin");
+    let gh = folder.0.join("gh");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(
+        bin.join("gh"),
+        format!(
+            "#!/bin/sh\ndir='{}'\ni=0\nwhile [ -f \"$dir/hold\" ] && [ $i -lt 300 ]; do touch \"$dir/held\"; sleep 0.1; i=$((i+1)); done\necho 'gh: not in this test' >&2\nexit 1\n",
+            gh.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agent());
+    config["gateway"] = json!("127.0.0.1:0");
+    let sphere = FakeSphere::start().await;
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_GITHUB_REFRESH_SECONDS", "0")],
+    );
+    let membership =
+        tokio::task::block_in_place(|| join_a(&obid, &sphere, &Owner::new("wellington")));
+    assert_eq!(membership["state"], "joined");
+    let (mut phone, token, _) = relay_paired(&obid, &sphere, "Alice's iPhone").await;
+
+    // 32 writes at once, all waiting on GitHub; then the phone starts a new session.
+    std::fs::write(gh.join("hold"), "").unwrap();
+    for _ in 0..32 {
+        phone
+            .ask("POST", "/v1/github/work/refresh", Some(&token), None)
+            .await;
+    }
+    tokio::task::block_in_place(|| {
+        within(30, "a refresh at GitHub", || {
+            gh.join("held").exists().then_some(())
+        })
+    });
+    // A new hello within a second of the session's start is ignored.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    phone.hello_again().await;
+
+    // The 33rd is refused while the 32 still run.
+    let (status, refused) = phone
+        .call("POST", "/v1/github/work/refresh", Some(&token), None)
+        .await;
+    assert_eq!(status, 429, "{refused}");
+    assert_eq!(refused["error"], "Too many requests at once.");
+
+    // Once they're done, the phone's requests go through again.
+    std::fs::remove_file(gh.join("hold")).unwrap();
+    let until = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let (status, body) = phone
+            .call("POST", "/v1/github/work/refresh", Some(&token), None)
+            .await;
+        if status == 200 {
+            break;
+        }
+        assert_eq!(status, 429, "{body}");
+        assert!(tokio::time::Instant::now() < until, "still refused: {body}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}

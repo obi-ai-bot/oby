@@ -56,7 +56,8 @@ const RENEWING: Duration = Duration::from_secs(10);
 const CHECK_EVERY: Duration = Duration::from_secs(60);
 /// The most body one data frame carries.
 const CHUNK: usize = 65_536;
-/// The most requests one phone has open at once.
+/// The most requests one phone has open at once, across its sessions: a write a session no longer
+/// waits for still counts until it's done.
 const STREAMS: usize = 32;
 /// The largest request a phone may send (the gateway's), and the most its unfinished requests hold.
 const BODY: usize = 4 << 20;
@@ -100,6 +101,7 @@ enum Stream {
     Asking {
         head: Value,
         body: Vec<u8>,
+        slot: OwnedSemaphorePermit,
     },
     Answering(tokio::task::AbortHandle),
 }
@@ -188,6 +190,8 @@ pub struct Relay {
     file: PathBuf,
     kept: Mutex<Option<Arc<Kept>>>,
     sessions: Mutex<HashMap<String, Live>>,
+    /// Each phone's [`STREAMS`], kept across its sessions.
+    slots: Mutex<HashMap<String, Arc<Semaphore>>>,
     epochs: AtomicU64,
     lanes: Mutex<Lanes>,
     /// A frame waits in a lane.
@@ -232,6 +236,7 @@ impl Relay {
             file: home.join("keys").join("relay.json"),
             kept: Mutex::new(None),
             sessions: Mutex::new(HashMap::new()),
+            slots: Mutex::new(HashMap::new()),
             epochs: AtomicU64::new(0),
             lanes: Mutex::new(Lanes::default()),
             queued: Notify::new(),
@@ -339,6 +344,7 @@ impl Relay {
     /// The device `device` (its relay token's digest) is forgotten: its session ends now.
     pub fn forget(&self, device: &str) {
         self.end(device);
+        lock(&self.slots).remove(device);
         self.wake();
     }
 
@@ -488,15 +494,20 @@ impl Relay {
                     self.refuse(live, device, stream, 400, "That request can't be read.");
                     return None;
                 };
-                if live.streams.len() >= STREAMS {
+                let slots = lock(&self.slots)
+                    .entry(device.to_owned())
+                    .or_insert_with(|| Arc::new(Semaphore::new(STREAMS)))
+                    .clone();
+                let Ok(slot) = slots.try_acquire_owned() else {
                     self.refuse(live, device, stream, 429, "Too many requests at once.");
                     return None;
-                }
+                };
                 live.streams.insert(
                     stream,
                     Stream::Asking {
                         head,
                         body: Vec::new(),
+                        slot,
                     },
                 );
             }
@@ -520,15 +531,15 @@ impl Relay {
                 }
             }
             Kind::End => {
-                if let Some(Stream::Asking { head, body }) = live.streams.remove(&stream) {
+                if let Some(Stream::Asking { head, body, slot }) = live.streams.remove(&stream) {
                     let task = tokio::spawn(answer(
                         shared.clone(),
                         gateway.clone(),
                         device.to_owned(),
                         live.epoch,
                         stream,
-                        head,
-                        body,
+                        request(&head, body, device),
+                        slot,
                     ));
                     live.streams
                         .insert(stream, Stream::Answering(task.abort_handle()));
@@ -583,29 +594,35 @@ async fn answer(
     device: String,
     epoch: u64,
     stream: u32,
-    head: Value,
-    body: Vec<u8>,
+    request: Option<Request>,
+    slot: OwnedSemaphorePermit,
 ) {
     let relay = &shared.relay;
     let send = |kind: Kind, payload: Vec<u8>| {
         relay.push(&device, epoch, Frame::new(stream, kind, payload))
     };
-    let response = match request(&head, body, &device) {
+    // The phone's slot is held until this answer is out, and a write's until the write is done.
+    let (response, _slot) = match request {
         Some(request) if request.method() == Method::GET => match gateway.oneshot(request).await {
-            Ok(response) => response,
+            Ok(response) => (response, Some(slot)),
             Err(never) => match never {},
         },
         // ponytail: a lost answer is lost; the phone refetches on its next session.
-        Some(request) => match tokio::spawn(gateway.oneshot(request)).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(never)) => match never {},
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        },
+        Some(request) => {
+            match tokio::spawn(async move { (gateway.oneshot(request).await, slot) }).await {
+                Ok((Ok(response), slot)) => (response, Some(slot)),
+                Ok((Err(never), _)) => match never {},
+                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR.into_response(), None),
+            }
+        }
         None => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": "That request can't be read."})),
-        )
-            .into_response(),
+            (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({"error": "That request can't be read."})),
+            )
+                .into_response(),
+            Some(slot),
+        ),
     };
     let (parts, body) = response.into_parts();
     let headers: Map<String, Value> = parts
