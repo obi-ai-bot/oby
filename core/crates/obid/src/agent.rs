@@ -209,6 +209,8 @@ pub enum Cause {
     Busy,
     /// The account's usage limit, in the tool's own words.
     Limit,
+    /// The login was refused, as the tool's fields say: a 401 or 403, Codex's `unauthorized`.
+    Login,
     Other,
 }
 
@@ -271,6 +273,7 @@ impl Cause {
     fn of_status(status: Option<u16>) -> Cause {
         match status {
             Some(429) => Cause::Busy,
+            Some(401 | 403) => Cause::Login,
             Some(500..=599) => Cause::Passing,
             _ => Cause::Other,
         }
@@ -366,7 +369,9 @@ impl Turn {
     pub fn says_limit(&self, words: &str) -> bool {
         match self.cause() {
             Some(Cause::Limit) => true,
-            Some(Cause::Busy | Cause::Passing | Cause::TooLong | Cause::SessionGone) => false,
+            Some(
+                Cause::Busy | Cause::Passing | Cause::TooLong | Cause::SessionGone | Cause::Login,
+            ) => false,
             Some(Cause::Other) | None => crate::limits::is_limit(words),
         }
     }
@@ -1283,7 +1288,7 @@ mod tests {
             json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
             "api_error_status": 401, "result": "Invalid API key · Fix external API key"}),
         );
-        assert_eq!(login.cause, Cause::Other);
+        assert_eq!(login.cause, Cause::Login);
         let other = of(
             json!({"subtype": "success", "is_error": true, "terminal_reason": "api_error",
             "api_error_status": 400, "result": "API Error: 400 the service is overloaded, it says"}),

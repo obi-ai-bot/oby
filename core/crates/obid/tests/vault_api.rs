@@ -1005,7 +1005,9 @@ fn a_check_run_names_its_failing_tests_and_masks_the_vault() {
     let folder = Folder::new("vault-check");
     let remote = fixture(&folder.0.join("fixture"));
     let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
-    let config = config(&folder.0, &remote, &fake);
+    let mut config = config(&folder.0, &remote, &fake);
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    config["stallAfter"] = json!(3);
     let path = write_config(&folder.0, &config);
     let obid = start(&folder.0, &config, None);
     let value = ["check-", "secret-", "7Q2m9x"].concat();

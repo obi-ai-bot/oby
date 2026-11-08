@@ -372,23 +372,17 @@ fn waits_for_later(said: &str) -> bool {
 }
 
 /// How many tries in a row a failed turn gets (RECOVERY-1): anything but a login (the tool's
-/// `words`, whole), a usage limit (`full`: the account's usage says so), or a session too long or
-/// gone. A passing error ([`agent::Failure`]: a 5xx or 429, overloaded, a dropped connection) and a
-/// CLI that ended with no result get [`CUT_WAITS`]'; an unknown error one, in its `session`. The
-/// tool's own fields decide first (RECOVERY-7): a 529 whose words hold `401` is still passing.
-fn retries(
-    cause: Option<agent::Cause>,
-    words: &str,
-    full: bool,
-    session: bool,
-    no_result: bool,
-) -> usize {
+/// fields, else its `words`, whole, or Codex's refusal), a usage limit (the caller's: the account's
+/// usage, the tool's reset or its words), or a session too long or gone. A passing error
+/// ([`agent::Failure`]: a 5xx or 429, overloaded, a dropped connection) and a CLI that ended with
+/// no result get [`CUT_WAITS`]'; an unknown error one, in its `session`. The tool's own fields
+/// decide first (RECOVERY-7): a 529 whose words hold `401` is still passing.
+fn retries(cause: Option<agent::Cause>, words: &str, session: bool, no_result: bool) -> usize {
     use agent::Cause;
     match cause {
-        Some(Cause::Passing) => CUT_WAITS.len(),
-        Some(Cause::Busy) if !full => CUT_WAITS.len(),
-        Some(Cause::Busy | Cause::Limit | Cause::TooLong | Cause::SessionGone) => 0,
-        _ if retrying_wont_mend(words) => 0,
+        Some(Cause::Passing | Cause::Busy) => CUT_WAITS.len(),
+        Some(Cause::Limit | Cause::Login | Cause::TooLong | Cause::SessionGone) => 0,
+        _ if retrying_wont_mend(words) || codex_login_refused(words) => 0,
         _ if no_result => CUT_WAITS.len(),
         Some(Cause::Other) if session => 1,
         _ => 0,
@@ -10811,7 +10805,7 @@ impl Jobs {
                         None if !chatgpt && limit_said => 0,
                         None => {
                             let words = if no_result { &ended } else { &error };
-                            retries(turn.cause(), words, false, session, no_result)
+                            retries(turn.cause(), words, session, no_result)
                         }
                     };
                     let tries = self.get(id).map_or(0, |j| j.recovery.errors);
@@ -16061,8 +16055,8 @@ mod tests {
     #[test]
     fn transient_errors_are_the_ones_trying_again_mends() {
         use super::retries;
-        use crate::agent::Cause;
-        let tries = |error: &str| retries(Some(Cause::read(error)), error, false, true, false);
+        use crate::agent::{Cause, Failure};
+        let tries = |error: &str| retries(Some(Cause::read(error)), error, true, false);
         for error in [
             r#"API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}"#,
             "API Error: 500 Internal server error",
@@ -16085,38 +16079,27 @@ mod tests {
             "Invalid API key · Please run /login (request 5004)",
             "Prompt is too long",
             "No conversation found with session ID: x",
+            // Codex's refused login, whose words name none of a login's (`codex_login_refused`).
+            "Codex hit an error: Encountered invalidated oauth token for user, failing request",
+            "Codex hit an error: token_revoked",
         ] {
             assert_eq!(tries(error), 0, "{error}");
         }
+        // A login only the tool's fields report: Claude's `api_error_status`, Codex's `unauthorized`.
+        for status in [401, 403] {
+            let failure = Failure::with_status("it broke", Some(status));
+            assert_eq!(
+                retries(Some(failure.cause), "it broke", true, false),
+                0,
+                "{status}"
+            );
+        }
+        assert_eq!(retries(Some(Cause::Login), "it broke", true, false), 0);
         // An unknown error with no session to continue in runs nothing again.
-        assert_eq!(
-            retries(Some(Cause::Other), "it broke", false, false, false),
-            0
-        );
+        assert_eq!(retries(Some(Cause::Other), "it broke", false, false), 0);
         // A CLI that ended with no result: its stderr says a login, or it gets 3 tries.
-        assert_eq!(retries(None, "Not logged in", false, true, true), 0);
-        assert_eq!(retries(None, "exit 1", false, true, true), 3);
-        // A 429 while the account's usage says it is full is its limit, not a blip.
-        assert_eq!(
-            retries(
-                Some(Cause::read("API Error: 429 rate limit exceeded")),
-                "",
-                true,
-                true,
-                false
-            ),
-            0
-        );
-        assert_eq!(
-            retries(
-                Some(Cause::read("API Error: 529 overloaded")),
-                "",
-                true,
-                true,
-                false
-            ),
-            3
-        );
+        assert_eq!(retries(None, "Not logged in", true, true), 0);
+        assert_eq!(retries(None, "exit 1", true, true), 3);
     }
 
     #[test]

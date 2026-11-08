@@ -1149,10 +1149,12 @@ fn failure(turn: &Value) -> Option<Failure> {
         | "responseStreamDisconnected"
         | "responseTooManyFailedAttempts" => match status {
             Some(429) => Cause::Busy,
+            Some(401 | 403) => Cause::Login,
             Some(400..=499) => Cause::Other,
             _ => Cause::Passing,
         },
-        "unauthorized" | "badRequest" | "sandboxError" => Cause::Other,
+        "unauthorized" => Cause::Login,
+        "badRequest" | "sandboxError" => Cause::Other,
         _ => return Some(Failure::said(words)),
     };
     Some(Failure { words, cause })
@@ -1674,7 +1676,7 @@ exec sleep 30
         assert_eq!(of(json!("usageLimitExceeded"), "x").cause, Cause::Limit);
         assert_eq!(of(json!("rateLimitExceeded"), "x").cause, Cause::Busy);
         assert_eq!(of(json!("serverOverloaded"), "x").cause, Cause::Passing);
-        assert_eq!(of(json!("unauthorized"), "x").cause, Cause::Other);
+        assert_eq!(of(json!("unauthorized"), "x").cause, Cause::Login);
         assert_eq!(
             of(
                 json!({"responseStreamDisconnected": {"httpStatusCode": null}}),
@@ -1694,6 +1696,14 @@ exec sleep 30
         assert_eq!(
             of(
                 json!({"httpConnectionFailed": {"httpStatusCode": 401}}),
+                "x"
+            )
+            .cause,
+            Cause::Login
+        );
+        assert_eq!(
+            of(
+                json!({"httpConnectionFailed": {"httpStatusCode": 404}}),
                 "x"
             )
             .cause,

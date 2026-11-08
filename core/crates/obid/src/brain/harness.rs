@@ -1810,7 +1810,10 @@ async fn attempts(
         // image the API refuses, a broken history). A new one, once, if nothing but reading happened.
         if attempt == 2
             && !renewed
-            && matches!(turn.cause(), Some(agent::Cause::Other) | None)
+            && matches!(
+                turn.cause(),
+                Some(agent::Cause::Other | agent::Cause::Login) | None
+            )
             && !session.acted.load(Ordering::SeqCst)
         {
             renewed = true;
