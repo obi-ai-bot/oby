@@ -216,9 +216,17 @@ fn started_harness(folder: &Folder) -> Obid {
 }
 
 fn started_harness_jobs(folder: &Folder) -> Obid {
+    started_harness_jobs_with(folder, json!({}))
+}
+
+/// [`started_harness_jobs`], with `more` in its configuration.
+fn started_harness_jobs_with(folder: &Folder, more: serde_json::Value) -> Obid {
     let remote = fixture(&folder.0.join("fixture"));
     let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness-jobs");
-    let config = config(&folder.0, &remote, &harness);
+    let mut config = config(&folder.0, &remote, &harness);
+    for (key, value) in more.as_object().unwrap() {
+        config[key] = value.clone();
+    }
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
     std::fs::write(account.join(".credentials.json"), "{}").unwrap();
@@ -1055,7 +1063,8 @@ fn get_job(obid: &Obid, id: &str) -> serde_json::Value {
 #[test]
 fn one_message_tries_a_failed_job_again_and_dismisses_the_old_one() {
     let folder = Folder::new("brain-try-again");
-    let obid = started_harness_jobs(&folder);
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    let obid = started_harness_jobs_with(&folder, json!({"stallAfter": 3}));
     // both started in one conversation, the turn's own: another conversation's job (a task started
     // on its own has its own, TASKCONV-1) is acted on only on the owner's Confirm (#631)
     let first = said_anew(
@@ -1317,7 +1326,8 @@ fn words_from_a_task_page_join_its_conversation() {
 #[test]
 fn a_dismissed_job_gets_a_follow_up_too() {
     let folder = Folder::new("brain-message-dismissed");
-    let obid = started_harness_jobs(&folder);
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    let obid = started_harness_jobs_with(&folder, json!({"stallAfter": 3}));
     let job = job_that(&obid, "Docs line", "FAIL", None, "interrupted");
     let id = job["id"].as_str().unwrap().to_owned();
     let dismissed = call(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None);

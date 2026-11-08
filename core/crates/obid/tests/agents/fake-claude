@@ -17,7 +17,7 @@
 //   HOG: <mb> <s>    holds <mb> MB of random bytes, as a build does, for <s> seconds, then
 //                    ends the turn with "Held." (scripts measuring memory admission)
 //   FAIL             ends the turn with an error result ("it broke"; with FAIL TOKEN, one holding
-//                    a made-up GitHub token)
+//                    a made-up GitHub token), and again when obid continues it (RECOVERY-1)
 //   STDERR TOKEN     prints "Authorization failed for token " and a made-up GitHub token
 //                    (ghp_ and 36 Zs) to stderr and exits 1 without a result, as a CLI that dies does
 //   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
@@ -104,7 +104,7 @@
 //                    tool's own (RECOVERY-7); continued, ends with "Carried on."
 //   REJECTED 429     ends the turn as 2.1.302 does on a 429, its status only in `api_error_status`;
 //                    REJECTED 429 ALWAYS, in each turn obid continues by itself too
-//   LONG WHEN TOLD   ends its first turn with an error of the tool's, then too long for its model
+//   LONG WHEN TOLD   ends its first turn with a login error (never retried), then too long for its model
 //                    until told it has a new session (RECOVERY-8)
 //   TOO LONG         ends the turn too long for its model, until told it has a new session;
 //                    TOO LONG ALWAYS every turn (RECOVERY-8)
@@ -295,9 +295,14 @@ rl.on("line", (line) => {
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
   // What obid cut, it does again when obid continues its session (its marked message).
-  const stuck = prompt.match(/QUIET|BUSY(?!:)|MAXTURNS|SLEEP|STDERR TOKEN|BACKGROUND: \d+ (?:SILENT|FOREVER)/)?.[0];
+  const stuck = prompt.match(/QUIET|BUSY(?!:)|MAXTURNS|SLEEP|STDERR TOKEN|BACKGROUND: \d+ (?:SILENT|FOREVER)|\bFAIL\b/)?.[0];
   if (prompt.includes("Your run was cut")) {
     if (existsSync(".obi/stuck")) prompt += ` ${readFileSync(".obi/stuck", "utf8")}`;
+    // A failing task a restart continued fails again when obid continues it once more.
+    else if (stuck === "FAIL") {
+      mkdirSync(".obi", { recursive: true });
+      writeFileSync(".obi/stuck", stuck);
+    }
   } else if (stuck && !prompt.includes("ONCE")) {
     mkdirSync(".obi", { recursive: true });
     writeFileSync(".obi/stuck", stuck);
@@ -335,7 +340,7 @@ rl.on("line", (line) => {
   if (prompt.includes("LONG WHEN TOLD") && !existsSync(".obi/long-when-told")) {
     mkdirSync(".obi", { recursive: true });
     writeFileSync(".obi/long-when-told", "");
-    return result("it broke", true);
+    return result("Not logged in · Please run /login", true);
   }
   if (existsSync(".obi/long-when-told") && !prompt.includes("grew too long")) {
     return emit({ type: "result", subtype: "success", is_error: true, num_turns: 1, terminal_reason: "prompt_too_long", api_error_status: 400, result: "Prompt is too long · the request is ~250000 tokens (limit 200000)", session_id: session, total_cost_usd: 0 });

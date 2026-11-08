@@ -1005,7 +1005,9 @@ fn a_check_run_names_its_failing_tests_and_masks_the_vault() {
     let folder = Folder::new("vault-check");
     let remote = fixture(&folder.0.join("fixture"));
     let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
-    let config = config(&folder.0, &remote, &fake);
+    let mut config = config(&folder.0, &remote, &fake);
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    config["stallAfter"] = json!(3);
     let path = write_config(&folder.0, &config);
     let obid = start(&folder.0, &config, None);
     let value = ["check-", "secret-", "7Q2m9x"].concat();
@@ -1025,8 +1027,10 @@ fn a_check_run_names_its_failing_tests_and_masks_the_vault() {
     assert_eq!(job["status"], "interrupted", "{job}");
     let checks = job["checks"].as_array().unwrap();
     assert_eq!(checks.len(), 1, "{job}");
+    // Its last run: the stand-in fails the round its check's words reach (they say FAILED), its one
+    // try carries on, and the same failing check ends it (RECOVERY-1, RECOVERY-9).
     let run = &checks[0];
-    assert_eq!(run["round"], 1);
+    assert_eq!(run["round"], job["round"], "{job}");
     let steps = run["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 2, "{run}");
     assert_eq!(steps[0]["command"], "true");

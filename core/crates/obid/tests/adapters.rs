@@ -428,7 +428,8 @@ fn a_review_that_commits_publishes_nothing() {
 #[test]
 fn codex_resumes_fails_and_stops() {
     let folder = Folder::new("codex-rounds");
-    let obid = obid(&folder, false);
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 3}));
     let twice = dispatch(
         &obid,
         json!({"agent": "codex", "task": "TWICE", "rounds": 2, "check": "test -f \"$HOME/twice\""}),
@@ -855,7 +856,8 @@ fn cursor_signed_out_failures_and_stop() {
     drop(obid);
 
     let folder = Folder::new("cursor-fails");
-    let obid = self::obid(&folder, false);
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 3}));
     let fail = dispatch(&obid, json!({"agent": "cursor", "task": "FAIL"}));
     let refuse = dispatch(&obid, json!({"agent": "cursor", "task": "REFUSE"}));
     let sleep = dispatch(&obid, json!({"agent": "cursor", "task": "SLEEP"}));

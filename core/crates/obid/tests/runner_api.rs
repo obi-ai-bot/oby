@@ -1596,7 +1596,11 @@ fn taskconv_14_a_running_job_hears_the_words_next_and_its_reply_joins_the_report
 #[test]
 fn publish_by_hand_is_off_a_dismissed_job() {
     let folder = Folder::new("publish");
-    let (obid, _) = obid(&folder);
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    config["stallAfter"] = json!(3);
+    let obid = start(&folder.0, &config, None);
     let id = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "FAIL"}),
