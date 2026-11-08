@@ -18883,6 +18883,17 @@ mod tests {
             vendor_reach("cursor", "api2.cursor.sh").await,
             (false, true)
         );
+        // The other hosts the CLIs call for their logins, settings and flags (the owner's answer of
+        // 2026-11-08).
+        for (agent, host) in [
+            ("claude", "statsig.anthropic.com"),
+            ("claude", "console.anthropic.com"),
+            ("codex", "auth.openai.com"),
+            ("cursor", "api3.cursor.sh"),
+            ("cursor", "api4.cursor.sh"),
+        ] {
+            assert_eq!(vendor_reach(agent, host).await, (false, true), "{host}");
+        }
     }
 
     /// MERGING-30: Codex's chatgpt.com, a ChatGPT login's API that serves shared chats too,
