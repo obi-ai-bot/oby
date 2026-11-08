@@ -4798,6 +4798,37 @@ fn publishing_18_a_base_that_passes_keeps_the_fix_rounds() {
     );
 }
 
+/// PUBLISHING-18: a job asked to fix a failing test keeps its fix rounds when that test fails on the
+/// base too: the failure its task names is the one it was asked to fix, so obid doesn't run the base.
+#[test]
+fn publishing_18_a_task_that_names_its_failing_test_keeps_its_rounds() {
+    let folder = Folder::new("check-base-named");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start_checking(&folder.0, &config(&folder.0, &remote), None, true);
+    let check =
+        "echo 'test red ... FAILED'; echo 'test result: FAILED. 0 passed; 1 failed'; exit 1";
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix the failing test red. COMMIT: a.txt",
+               "check": check, "rounds": 2}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["round"], 2, "{job}");
+    assert!(
+        !job["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already fails on the base"),
+        "{job}"
+    );
+    let log = std::fs::read_to_string(&obid.stderr).unwrap();
+    assert!(!log.contains("running its check on the base"), "{log}");
+}
+
 /// PUBLISHING-18: a follow-up starts from its first job's branch, not its base's tip, so its
 /// failure is never laid on the base: no base run, and its rounds run as before.
 #[test]
