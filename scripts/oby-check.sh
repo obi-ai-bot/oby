@@ -28,8 +28,9 @@
 # since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
 # for the owner, who runs them on the Mac.
 # obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) can't run
-# there either: a change they'd test fails the check there, so it can't merge untested (the
-# owner's review of #1944), and passes only outside a job's sandbox.
+# there either: a change they'd test ends the check there with `couldn't judge: …`, so it never
+# merges untested (the owner's review of #1944) and obid leaves it to the owner's Publish by hand
+# (docs/contracts/publishing.md, PUBLISHING-22); it passes only outside a job's sandbox.
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
@@ -158,7 +159,8 @@ if [[ -n "$rust" ]]; then
         # They make a sandbox of their own, which can't nest in a job's on a Mac. On Linux, where
         # nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
         if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api)$ ]]; then
-            echo "oby-check: tests/$name.rs makes a sandbox of its own, which can't nest in a job's, so this change to the box can't be verified here: it fails, and passes only when the check runs on the Mac outside a job" >&2
+            # obid reads this line: the job ends unjudged, for the owner's Publish by hand (PUBLISHING-22).
+            echo "couldn't judge: tests/$name.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job"
             failed+=("tests/$name.rs, which can't run in a job's sandbox")
             continue
         fi

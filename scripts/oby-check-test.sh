@@ -99,11 +99,13 @@ grep -q -- '--test foo' <<<"$said" || {
     echo "oby-check-test: nested, it planned a sandbox test binary: $said" >&2
     exit 1
 }
-grep -q 'tests/sandbox.rs makes a sandbox of its own' <<<"$said" || {
-    echo "oby-check-test: nested, it didn't say tests/sandbox.rs wasn't run: $said" >&2
+# The line obid reads (PUBLISHING-22), a line of its own.
+judge="couldn't judge: tests/sandbox.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job"
+grep -qxF "$judge" <<<"$said" || {
+    echo "oby-check-test: nested, it didn't say it couldn't judge tests/sandbox.rs: $said" >&2
     exit 1
 }
-# Skipped, they fail the check: a change to the box never merges untested.
+# Skipped, they end the check unjudged, never passed: a change to the box never merges untested.
 if ran=$(OBY_CHECK_PLAN= nested_run 2>&1); then
     echo 'oby-check-test: nested, a change to the box passed with tests/sandbox.rs not run' >&2
     exit 1
