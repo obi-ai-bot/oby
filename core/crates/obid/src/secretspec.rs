@@ -58,10 +58,14 @@
 //! - **Tool calls of kinds obid knows are safe** ([`tool_is_known_safe`]): a file read, write, edit
 //!   or search, a command inside the job's sandbox, its own to-do list, obid's own question to the
 //!   owner. Anything else (a vendor's own web search or fetch, any MCP tool or resource, a helper
-//!   agent, an MCP server's tool descriptions given at launch, and any kind an agent adds later or
-//!   obid doesn't parse: Claude Code's unparsed blocks, Codex's helper threads and unknown items,
-//!   Cursor's unknown kinds and its `search`, which its web search reports as too) marks the job.
-//!   So does network egress past the tool's API and the default registries (2).
+//!   agent, and any kind an agent adds later or obid doesn't parse: Claude Code's unparsed blocks,
+//!   Codex's helper threads and unknown items, Cursor's unknown kinds and its `search`, which its
+//!   web search reports as too) marks the job. So does network egress past the tool's own services
+//!   and the default registries (2). Being given an MCP server's tools (Tetrix's) doesn't, nor does
+//!   a reach to its own tool's vendor domains ([`crate::egress::tools_own`]: Claude Code's
+//!   `anthropic.com`, `claude.ai` and `claude.com`, Codex's `openai.com` and `chatgpt.com`,
+//!   Cursor's `cursor.sh` and `cursor.com`, with their subdomains), by the CLI or by anything in
+//!   its box: the owner's decision of 2026-11-06 (MERGING-30).
 //!
 //! What that takes:
 //!
@@ -79,10 +83,10 @@
 //!    before clones were narrow gets none either. An agent can't fetch anything itself: it has no
 //!    code host's login (an empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way
 //!    off the Mac is obid's egress proxy, which lets its tool's own services through and decides
-//!    every other site. A vendor host past its tool's API ([`crate::egress::tools_api`]) and any
-//!    site but the default registries, which serve only published versions on an edge that
+//!    every other site. Any site past its tool's own services ([`crate::egress::tools_own`])
+//!    but the default registries, which serve only published versions on an edge that
 //!    answers only the TLS hello's host (`crate::egress::REGISTRIES`; never
-//!    `crate::egress::ROUTED_BY_HOST`), mark the job ([`site_is_foreign`]): the proxy reads a
+//!    `crate::egress::ROUTED_BY_HOST`), marks the job ([`site_is_foreign`]): the proxy reads a
 //!    connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
 //!    the proxy: a vendor's own web search or fetch and any MCP server's answer in the turn
 //!    ([`tool_brings_content`]), a connected app's answer, and the context obid gives (Tetrix's,
