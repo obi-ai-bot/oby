@@ -28,9 +28,10 @@
 # since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
 # for the owner, who runs them on the Mac.
 # obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) can't run
-# there either: a change they'd test ends the check there with `couldn't judge: …`, so it never
-# merges untested (the owner's review of #1944) and obid leaves it to the owner's Publish by hand
-# (docs/contracts/publishing.md, PUBLISHING-22); it passes only outside a job's sandbox.
+# there either: a change they'd test, with nothing else failing, ends the check there with
+# `couldn't judge: …`, so it never merges untested (the owner's review of #1944) and obid leaves it
+# to the owner's Publish by hand (docs/contracts/publishing.md, PUBLISHING-22); it passes only
+# outside a job's sandbox.
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
@@ -61,7 +62,7 @@ obid_lines() {
         awk '{ total += $1 } END { print total + 0 }'
 }
 
-failed=()
+failed=() unjudged=()
 # Inside a job's sandbox, where Seatbelt can't make another.
 nested=''
 /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null || nested=1
@@ -159,8 +160,7 @@ if [[ -n "$rust" ]]; then
         # They make a sandbox of their own, which can't nest in a job's on a Mac. On Linux, where
         # nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
         if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api)$ ]]; then
-            # obid reads this line: the job ends unjudged, for the owner's Publish by hand (PUBLISHING-22).
-            echo "couldn't judge: tests/$name.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job"
+            unjudged+=("tests/$name.rs")
             failed+=("tests/$name.rs, which can't run in a job's sandbox")
             continue
         fi
@@ -219,6 +219,12 @@ else
     failed+=(gitleaks)
 fi
 
+# obid reads this line: the job ends unjudged, for the owner's Publish by hand (PUBLISHING-22). Only
+# when the suites that couldn't run are all that failed: fmt, clippy, a build or gitleaks failing
+# too is the change's to fix, never one the owner could publish by hand.
+if [[ ${#unjudged[@]} -gt 0 && ${#failed[@]} -eq ${#unjudged[@]} ]]; then
+    printf "couldn't judge: %s makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job\n" "${unjudged[@]}"
+fi
 if [[ -n "${OBY_CHECK_PLAN:-}" ]]; then
     echo "oby-check: planned, nothing run"
 elif [[ ${#failed[@]} -gt 0 ]]; then

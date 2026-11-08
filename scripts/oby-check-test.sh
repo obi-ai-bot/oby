@@ -114,6 +114,12 @@ grep -q "failed: tests/sandbox.rs, which can't run in a job's sandbox" <<<"$ran"
     echo "oby-check-test: nested, a change to the box failed without naming tests/sandbox.rs: $ran" >&2
     exit 1
 }
+# Here its cargo steps fail too (the fixture's files aren't Rust): that's the change's to fix, so it
+# doesn't say it couldn't judge, or a change that doesn't build could be published by hand.
+grep -q "failed: .*cargo" <<<"$ran" && ! grep -q "^couldn't judge:" <<<"$ran" || {
+    echo "oby-check-test: nested, it said it couldn't judge a change that also failed elsewhere: $ran" >&2
+    exit 1
+}
 rm core/crates/obid/src/foo.rs core/crates/obid/tests/foo.rs
 said=$(nested)
 ! grep -q 'cargo --quiet test .*-p obid$' <<<"$said" || {
