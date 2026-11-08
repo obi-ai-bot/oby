@@ -9981,7 +9981,15 @@ impl Jobs {
             // Detached at the branch: the sandbox never writes the clone's refs, so obid moves the
             // branch to the job's commits itself (git::keep_commits).
             let branch_ref = format!("refs/heads/{}", job.branch);
+            // LFS files stay pointers, as the check sees them (PUBLISHING-6, 20): the person's own
+            // `filter.lfs` would run git-lfs here with no login and fail the worktree.
             let args: Vec<&std::ffi::OsStr> = vec![
+                "-c".as_ref(),
+                "filter.lfs.smudge=".as_ref(),
+                "-c".as_ref(),
+                "filter.lfs.process=".as_ref(),
+                "-c".as_ref(),
+                "filter.lfs.required=false".as_ref(),
                 "worktree".as_ref(),
                 "add".as_ref(),
                 "--quiet".as_ref(),
@@ -9992,11 +10000,27 @@ impl Jobs {
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
+            let missing = [
+                git::uses_lfs(&clone, &start_commit)
+                    .await
+                    .then_some("its Git LFS files are pointers"),
+                git::has_submodules(&clone, &start_commit)
+                    .await
+                    .then_some("its submodules are empty"),
+            ];
+            let missing: Vec<&str> = missing.into_iter().flatten().collect();
             let worktree_text = worktree.to_string_lossy().into_owned();
             self.update(id, |job| {
                 job.worktree = Some(worktree_text);
                 job.start_commit.get_or_insert(start_commit);
                 job.base = Some(base.clone());
+                if !missing.is_empty() {
+                    job.step = format!(
+                        "Getting {} ready: {}, so what needs them won't work",
+                        job.repo_name(),
+                        missing.join(" and ")
+                    );
+                }
             });
         }
         drop(prepared);

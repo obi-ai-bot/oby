@@ -4774,3 +4774,139 @@ fn publishing_16_a_check_that_times_out_spends_no_round() {
     assert!(stopped.unchecked.is_none(), "{:?}", stopped.unchecked);
     assert!(!stopped.output.contains(obid::jobs::CHECK_TOO_LONG));
 }
+
+/// PUBLISHING-20: a repository with Git LFS files and submodules gets its worktree even where the
+/// person's own git settings run git-lfs on checkout (`filter.lfs.required`, a smudge that fails):
+/// its LFS files are the pointers the check sees, and the job's first step says what won't work.
+#[test]
+fn publishing_20_an_lfs_repository_checks_out_pointers_and_says_so() {
+    let folder = Folder::new("lfs-pointers");
+    let remote = fixture(&folder.0.join("fixture"));
+    let work = folder.0.join("work-lfs");
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(
+        &folder.0,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 12\n",
+        "a".repeat(64)
+    );
+    std::fs::write(
+        work.join(".gitattributes"),
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    )
+    .unwrap();
+    std::fs::write(work.join("model.bin"), &pointer).unwrap();
+    std::fs::write(
+        work.join(".gitmodules"),
+        "[submodule \"lib\"]\n\tpath = lib\n\turl = https://example.com/lib.git\n",
+    )
+    .unwrap();
+    let plain = [
+        "-c",
+        "filter.lfs.process=",
+        "-c",
+        "filter.lfs.clean=",
+        "-c",
+        "filter.lfs.required=false",
+    ];
+    git(&work, &[&plain[..], &["add", "-A"]].concat());
+    git(
+        &work,
+        &[
+            &plain[..],
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "Track model.bin with LFS",
+            ],
+        ]
+        .concat(),
+    );
+    git(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    // The person's git-lfs, with no login to fetch with: a smudge that fails, and required.
+    std::fs::create_dir_all(folder.0.join("env-home")).unwrap();
+    std::fs::write(
+        folder.0.join("env-home/.gitconfig"),
+        "[filter \"lfs\"]\n\tsmudge = false\n\tprocess = false\n\trequired = true\n",
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .write_all(format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    std::thread::sleep(Duration::from_millis(200));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "Look around"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut steps = Vec::new();
+    let give_up_at = Instant::now() + Duration::from_secs(30);
+    let mut event = String::new();
+    while Instant::now() < give_up_at {
+        line.clear();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        let text = line.trim();
+        if let Some(name) = text.strip_prefix("event: ") {
+            event = name.to_owned();
+        } else if let Some(data) = text.strip_prefix("data: ")
+            && event == "job"
+        {
+            let job: Value = serde_json::from_str(data).unwrap();
+            if job["id"] != id.as_str() {
+                continue;
+            }
+            steps.push(job["step"].as_str().unwrap_or_default().to_owned());
+            if job["status"]
+                .as_str()
+                .is_some_and(|s| s != "queued" && s != "running")
+            {
+                break;
+            }
+        }
+    }
+    let job = wait(&obid, &id);
+    let log = std::fs::read_to_string(&obid.stderr).unwrap_or_default();
+    assert_eq!(job["status"], "done", "{job}\n{log}");
+    let said = "Getting fixture-app ready: its Git LFS files are pointers and its submodules are empty, so what needs them won't work";
+    assert!(steps.iter().any(|s| s == said), "{steps:#?}");
+    let worktree = job["worktree"].as_str().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(Path::new(worktree).join("model.bin")).unwrap(),
+        pointer
+    );
+}

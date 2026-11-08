@@ -834,6 +834,60 @@ fn forbidden_names() -> Vec<String> {
     names
 }
 
+/// The files `since..head` adds that are Git LFS pointers, read from their content (the spec's
+/// first line and an `oid sha256:` line, at most 1024 bytes), never from `.gitattributes`.
+async fn lfs_pointers_added(clone: &Path, since: &str, head: &str) -> Vec<String> {
+    const SPEC: &str = "version https://git-lfs.github.com/spec/v1";
+    let pickaxe = format!("-G^{SPEC}");
+    let Ok(names) = git_in(
+        clone,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=A",
+            &pickaxe,
+            since,
+            head,
+        ],
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    let mut pointers = Vec::new();
+    for name in names.split('\0').filter(|n| !n.is_empty()) {
+        let blob = format!("{head}:{name}");
+        let small = git_in(clone, &["cat-file", "-s", &blob])
+            .await
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_some_and(|size| size <= 1024);
+        if !small {
+            continue;
+        }
+        if let Ok(text) = git_in(clone, &["cat-file", "blob", &blob]).await
+            && text.starts_with(&format!("{SPEC}\n"))
+            && text.lines().any(|l| l.starts_with("oid sha256:"))
+        {
+            pointers.push(name.to_owned());
+        }
+    }
+    pointers
+}
+
+/// Why a job that adds LFS pointers isn't published by itself (PUBLISHING-19).
+fn lfs_held(files: &[String]) -> String {
+    let mut named = files.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    if files.len() > 3 {
+        named.push_str(&format!(" and {} more", files.len() - 3));
+    }
+    format!(
+        "Not published: it adds Git LFS files ({named}), and Oby doesn't upload LFS files, so the remote may not have what they point to. Read its change, then Publish it anyway."
+    )
+}
+
 /// Why a job isn't published when its branch moved since its check passed on it (PUBLISHING-2).
 pub fn branch_moved(branch: &str) -> String {
     format!(
@@ -976,6 +1030,14 @@ pub async fn publish(
         }
         Some(0) => return Err(Failure::AlreadyOnBase(base.to_owned())),
         Some(_) => {}
+    }
+    // obid never uploads LFS files, so pointers it adds would name files the remote may not
+    // have: held by itself, sent on the owner's word (PUBLISHING-19).
+    if !by_hand.asks() {
+        let added = lfs_pointers_added(clone, &since, &head).await;
+        if !added.is_empty() {
+            return Err(Failure::Failed(lfs_held(&added)));
+        }
     }
     // What the scan read and how it went, for the job (#735).
     let started = std::time::Instant::now();
