@@ -173,39 +173,52 @@ impl Repos {
         true
     }
 
+    /// The listed repositories whose `defaultBranch` isn't GitHub's default ([`githubs_other`]) and
+    /// is gone from GitHub (`gh api repos/{repo}/branches/{branch}` answers 404, [`branch_gone`]):
+    /// what GitHub's rename of it leaves behind. Each as its name and that branch.
+    async fn gone(&self, gh: &Path, github: &[Repo]) -> Vec<(String, String)> {
+        let mut gone = Vec::new();
+        for listed in self.get() {
+            if githubs_other(&listed, github).is_none()
+                || !crate::github::is_repo(&listed.repo)
+                || !crate::git::is_branch_name(&listed.default_branch)
+            {
+                continue;
+            }
+            let path = format!("repos/{}/branches/{}", listed.repo, listed.default_branch);
+            if branch_gone(&crate::github::output(gh, &["api", &path]).await) {
+                gone.push((listed.repo, listed.default_branch));
+            }
+        }
+        gone
+    }
+
     /// GitHub's list as gh just read it for `user`, unless gh's login changed meanwhile. A listed
-    /// repository on GitHub whose default branch GitHub renamed takes the new name, in the
-    /// configuration file too, so jobs there branch from it (WORK-13), but only while its branch is
-    /// still the one GitHub's last read listed: one the owner pinned to another (`dev` while
-    /// GitHub's is `main`) stays theirs. ponytail: the last read is in memory, so a rename while
-    /// obid was stopped isn't followed (the entry then looks pinned); persist it if that bites.
-    fn read_for(&self, user: &str, github: Vec<Repo>) {
+    /// repository on GitHub whose `defaultBranch` is in `gone` ([`Repos::gone`]: GitHub renamed
+    /// it) takes GitHub's default, in the configuration file too, so jobs there branch from it
+    /// (WORK-13). One whose branch still exists on GitHub is the owner's pin (`dev` while GitHub's
+    /// is `main`) and stays, whatever GitHub's default is.
+    fn read_for(&self, user: &str, github: Vec<Repo>, gone: &[(String, String)]) {
         let (renamed, file) = {
             let mut state = self.write();
             if state.user.as_deref() != Some(user) {
                 return;
             }
-            let Lists {
-                listed,
-                github: before,
-                ..
-            } = &mut *state;
             let mut renamed = Vec::new();
-            for listed in listed
-                .iter_mut()
-                .filter(|r| crate::github::is_remote(&r.remote))
-            {
-                let branch = |list: &[Repo]| {
-                    list.iter()
-                        .find(|g| same(&g.repo, &listed.repo))
-                        .map(|g| g.default_branch.clone())
-                };
-                let (Some(now), Some(last)) = (branch(&github), branch(before)) else {
+            for listed in state.listed.iter_mut() {
+                let Some(now) = githubs_other(listed, &github) else {
                     continue;
                 };
-                if now != listed.default_branch && last == listed.default_branch {
-                    tracing::info!("{}'s default branch is {now} on GitHub now", listed.repo);
-                    listed.default_branch = now;
+                if gone
+                    .iter()
+                    .any(|(r, b)| same(r, &listed.repo) && *b == listed.default_branch)
+                {
+                    tracing::info!(
+                        "{}'s default branch {} is gone from GitHub: it's {now} now",
+                        listed.repo,
+                        listed.default_branch
+                    );
+                    listed.default_branch = now.to_owned();
                     renamed.push(listed.clone());
                 }
             }
@@ -225,6 +238,29 @@ impl Repos {
     pub fn nudge(&self) {
         self.0.nudge.notify_one();
     }
+}
+
+/// GitHub's default branch for `listed` when its remote is GitHub's, GitHub lists it, and its
+/// default isn't `listed`'s `defaultBranch`.
+fn githubs_other<'a>(listed: &Repo, github: &'a [Repo]) -> Option<&'a str> {
+    if !crate::github::is_remote(&listed.remote) {
+        return None;
+    }
+    github
+        .iter()
+        .find(|g| same(&g.repo, &listed.repo))
+        .map(|g| g.default_branch.as_str())
+        .filter(|b| *b != listed.default_branch)
+}
+
+/// Whether gh's answer to `GET repos/{repo}/branches/{branch}` says the branch doesn't exist: a
+/// 404 (GitHub prints `{"message": "Branch not found", "status": "404"}`). Anything else (the
+/// branch, a rate limit, a 5xx, a timeout) keeps it.
+fn branch_gone(answer: &Result<String, (String, String)>) -> bool {
+    let Err((printed, _)) = answer else {
+        return false;
+    };
+    serde_json::from_str::<Value>(printed).is_ok_and(|v| v["status"] == "404")
 }
 
 impl std::fmt::Debug for Repos {
@@ -452,7 +488,8 @@ pub fn spawn(shared: Arc<Shared>) {
                 match list_github(&gh).await {
                     Ok(github) => {
                         tracing::info!("gh can push to {} repositories on GitHub", github.len());
-                        repos.read_for(&user, github);
+                        let gone = repos.gone(&gh, &github).await;
+                        repos.read_for(&user, github, &gone);
                     }
                     Err(e) => tracing::info!("GitHub's repositories weren't listed: {e}"),
                 }
@@ -811,54 +848,92 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// GitHub renamed a listed repository's default branch: the next read of gh's list gives the
-    /// listed entry the new name, in the configuration file too, its other keys as they were; one
-    /// whose remote isn't GitHub's keeps its own, and one the owner pinned to another branch than
-    /// GitHub's (`dev` while GitHub's is `main`) keeps theirs.
-    #[test]
-    fn a_listed_repositorys_default_branch_follows_github_unless_pinned() {
-        let dir = std::env::temp_dir().join(format!("obid-repos-branch-{}", std::process::id()));
+    /// A configuration file holding `repos`, in a folder of its own named after `name`.
+    fn config_with(name: &str, repos: Value) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("obid-repos-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
-        let before = json!({"owner": "o", "repos": [
+        std::fs::write(&file, json!({"owner": "o", "repos": repos}).to_string()).unwrap();
+        (dir, file)
+    }
+
+    /// The owner pinned `dev` while GitHub's default is `main`: `dev` still exists on GitHub, so
+    /// it stays, in memory and in the file (left as it was), even when GitHub's default passes
+    /// through `dev` and goes back to `main`.
+    #[test]
+    fn a_pinned_default_branch_that_still_exists_stays() {
+        let pinned = json!([
+            {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "dev"},
+        ]);
+        let (dir, file) = config_with("pinned", pinned);
+        let text = std::fs::read(&file).unwrap();
+        let repos = Repos::new(vec![Repo {
+            default_branch: "dev".into(),
+            ..repo("octo/app")
+        }]);
+        repos.open(&file);
+        repos.follow(Some("octo"));
+        for github in ["main", "dev", "main"] {
+            let app = Repo {
+                default_branch: github.into(),
+                ..repo("octo/app")
+            };
+            repos.read_for("octo", vec![app], &[]);
+            assert_eq!(repos.find("octo/app").unwrap().default_branch, "dev");
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A configured branch GitHub no longer has (GitHub renamed it) takes GitHub's default on the
+    /// first read, as after a restart: in the configuration file too, its other keys as they were.
+    /// So does an entry with no `defaultBranch`, whose `main` isn't there. One whose remote isn't
+    /// GitHub's keeps its own.
+    #[test]
+    fn a_default_branch_gone_from_github_follows_github() {
+        let before = json!([
             {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "master", "check": "make"},
+            {"repo": "octo/bare", "remote": "https://github.com/octo/bare.git"},
             {"repo": "octo/mirror", "remote": "https://gitlab.com/octo/mirror.git", "defaultBranch": "trunk"},
-            {"repo": "octo/pinned", "remote": "https://github.com/octo/pinned.git", "defaultBranch": "dev"},
-        ]});
-        std::fs::write(&file, before.to_string()).unwrap();
+        ]);
+        let (dir, file) = config_with("gone", before.clone());
         let repos = Repos::new(vec![
             Repo {
                 default_branch: "master".into(),
                 check: Some("make".into()),
                 ..repo("octo/app")
             },
+            repo("octo/bare"),
             Repo {
                 remote: "https://gitlab.com/octo/mirror.git".into(),
                 default_branch: "trunk".into(),
                 ..repo("octo/mirror")
             },
-            Repo {
-                default_branch: "dev".into(),
-                ..repo("octo/pinned")
-            },
         ]);
         repos.open(&file);
         repos.follow(Some("octo"));
-        let app_on = |branch: &str| Repo {
+        let on = |name: &str, branch: &str| Repo {
             default_branch: branch.into(),
-            ..repo("Octo/App")
+            ..repo(name)
         };
-        let github = |app: &str| vec![app_on(app), repo("octo/mirror"), repo("octo/pinned")];
-        repos.read_for("octo", github("master"));
-        assert_eq!(repos.find("octo/pinned").unwrap().default_branch, "dev");
-        repos.read_for("octo", github("main"));
+        let gone = [
+            ("Octo/App".to_owned(), "master".to_owned()),
+            ("octo/bare".to_owned(), "main".to_owned()),
+            ("octo/mirror".to_owned(), "trunk".to_owned()),
+        ];
+        let github = vec![
+            on("Octo/App", "main"),
+            on("octo/bare", "master"),
+            on("octo/mirror", "main"),
+        ];
+        repos.read_for("octo", github, &gone);
         assert_eq!(repos.find("octo/app").unwrap().default_branch, "main");
-        assert_eq!(repos.find("octo/pinned").unwrap().default_branch, "dev");
         assert_eq!(
             repos.find("octo/app").unwrap().check.as_deref(),
             Some("make")
         );
+        assert_eq!(repos.find("octo/bare").unwrap().default_branch, "master");
         assert_eq!(repos.find("octo/mirror").unwrap().default_branch, "trunk");
         let after: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         assert_eq!(after["owner"], "o");
@@ -866,11 +941,24 @@ mod tests {
             after["repos"],
             json!([
                 {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "main", "check": "make"},
-                before["repos"][1],
-                before["repos"][2],
+                {"repo": "octo/bare", "remote": "https://github.com/octo/bare.git", "defaultBranch": "master"},
+                before[2],
             ])
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only GitHub's 404 says a branch is gone; the branch itself, a rate limit or a timeout keep
+    /// it.
+    #[test]
+    fn only_githubs_404_says_a_branch_is_gone() {
+        let refused = |printed: &str| Err((printed.to_owned(), "gh: refused".to_owned()));
+        let not_found = r#"{"message":"Branch not found","status":"404"}"#;
+        assert!(branch_gone(&refused(not_found)));
+        let limited = r#"{"message":"API rate limit exceeded","status":"403"}"#;
+        assert!(!branch_gone(&refused(limited)));
+        assert!(!branch_gone(&refused("")));
+        assert!(!branch_gone(&Ok(r#"{"name":"dev"}"#.to_owned())));
     }
 
     /// GitHub's list is the signed-in gh account's only: signed out, or another account, and it's
@@ -880,15 +968,15 @@ mod tests {
     fn githubs_list_goes_with_its_account() {
         let repos = Repos::new(vec![]);
         assert!(repos.follow(Some("octo")));
-        repos.read_for("octo", vec![repo("octo/app")]);
+        repos.read_for("octo", vec![repo("octo/app")], &[]);
         assert!(!repos.follow(Some("octo")));
         assert!(repos.find("octo/app").is_some());
         assert!(repos.follow(None));
         assert!(repos.find("octo/app").is_none());
-        repos.read_for("octo", vec![repo("octo/app")]);
+        repos.read_for("octo", vec![repo("octo/app")], &[]);
         assert!(repos.github().is_empty());
         repos.follow(Some("octo"));
-        repos.read_for("octo", vec![repo("octo/app")]);
+        repos.read_for("octo", vec![repo("octo/app")], &[]);
         assert!(repos.follow(Some("someone-else")));
         assert!(repos.github().is_empty());
     }
