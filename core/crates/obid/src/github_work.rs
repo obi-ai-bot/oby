@@ -155,6 +155,16 @@ pub(crate) fn cut(text: &str, most: usize) -> String {
     text.chars().take(most).collect()
 }
 
+/// Someone else's words for one line: no control characters, at most `most`, `…` when cut.
+pub(crate) fn clean(text: &str, most: usize) -> String {
+    let chars: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+    let cut = if chars.len() > most { "…" } else { "" };
+    format!(
+        "{}{cut}",
+        chars[..chars.len().min(most)].iter().collect::<String>()
+    )
+}
+
 /// Whose words count as the owner's own on GitHub (the owner's decision of 2026-10-24): the
 /// owner's login and the GitHub organizations it's a member of, as obid's own `gh` login reads
 /// them. `orgs` is none when they couldn't be read: then no organization's member counts.

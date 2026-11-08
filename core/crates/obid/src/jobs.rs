@@ -62,8 +62,10 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
 mod logins;
+mod unjudged;
 pub use logins::person_homes;
 pub(crate) use logins::*;
+use unjudged::unchecked;
 const SANDBOXED_GIT_STDERR_MAX: usize = 64 * 1024;
 /// How long reading a round's diff stat may take, and how much it may print (#736): a round goes
 /// on without its stat rather than wait on it.
@@ -8788,16 +8790,10 @@ impl Jobs {
         // notes join it, and never when its runner named a test that failed.
         let tests_failed = self
             .get(id)
-            .and_then(|job| job.checks.last().map(|c| !c.failing.is_empty()))
-            .unwrap_or(false);
-        if !run.passed
-            && run.unchecked.is_none()
-            && !tests_failed
-            && let Some(label) = environment_signature(command, &run.output)
-        {
-            run.unchecked = Some(format!(
-                "Not published: {label}, which is this Mac's doing, not the change's, so nothing counts as checked. Read its change, then Publish it by hand."
-            ));
+            .is_some_and(|job| job.checks.last().is_some_and(|c| !c.failing.is_empty()));
+        // Nor one whose line says it couldn't judge it, `couldn't judge: <why>` (PUBLISHING-22).
+        if !run.passed && run.unchecked.is_none() && !tests_failed {
+            run.unchecked = unjudged::why(command, &run.output);
         }
         // A first failure the base already has isn't the change's: no fix round for it, the
         // owner's Publish by hand (PUBLISHING-18). Still holding the check's turn.
@@ -8900,9 +8896,9 @@ impl Jobs {
             [] => "the same way".to_owned(),
             tests => format!("on {}", tests.join(", ")),
         };
-        Some(format!(
-            "Not published: `{command}` already fails on the base {start:.7} as it fails on this change's {head:.7}, {what}, so nothing counts as checked. Read its change, then Publish it by hand."
-        ))
+        Some(unchecked(format!(
+            "`{command}` already fails on the base {start:.7} as it fails on this change's {head:.7}, {what}"
+        )))
     }
 
     /// Job `id`'s check `command` run on `start` (PUBLISHING-18), at a path of its own under
@@ -8993,15 +8989,10 @@ impl Jobs {
         gate: Option<(String, String)>,
         at: &Path,
     ) -> Result<(Spec, Vec<String>, String), String> {
-        let unchecked = |why: String| {
-            format!(
-                "Not published: {why}, so nothing counts as checked. Read its change, then Publish it by hand."
-            )
-        };
         let job = self.get(id).ok_or("the job is gone")?;
         if !git::is_sha(head) {
             return Err(unchecked(
-                "obid couldn't read the commit its worktree is at".into(),
+                "obid couldn't read the commit its worktree is at",
             ));
         }
         if gate.as_ref().is_some_and(|(_, gated)| gated != head) {
@@ -9009,7 +9000,7 @@ impl Jobs {
         }
         let repo = self
             .repo(&job.repo)
-            .ok_or_else(|| unchecked("obid doesn't know its repository's default branch".into()))?;
+            .ok_or_else(|| unchecked("obid doesn't know its repository's default branch"))?;
         let merges_into = crate::memory::workflow(&self.config.home, &job.repo)
             .and_then(|m| m.workflow)
             .map(|w| w.base);
@@ -15143,6 +15134,7 @@ fn check_failed(command: &str, output: &str, failing: &[crate::facts::Failing]) 
 fn environment_signature(command: &str, output: &str) -> Option<&'static str> {
     const HOST: &str = "the check couldn't resolve a host";
     const FETCH: &str = "the check couldn't fetch a dependency";
+    const COMPILER: &str = "its compiler doesn't match the one that built its dependencies";
     // A line that starts with the first and holds the second.
     const SIGNS: &[(&str, &str, &str)] = &[
         ("fatal: unable to access", "Could not resolve host", HOST),
@@ -15156,11 +15148,7 @@ fn environment_signature(command: &str, output: &str) -> Option<&'static str> {
         ("npm ERR! code ENOTCACHED", "", FETCH),
         ("npm error code ENOTCACHED", "", FETCH),
         ("ERR_PNPM_NO_OFFLINE", "", FETCH),
-        (
-            "error[E0514]",
-            "",
-            "its compiler doesn't match the one that built its dependencies",
-        ),
+        ("error[E0514]", "", COMPILER),
     ];
     // What cargo says caused a `failed to get` when it was the network: a bad `path` isn't.
     const CARGO_OFFLINE: &[&str] = &[
@@ -15401,9 +15389,7 @@ pub async fn run_check(
             secs if secs >= 60 => format!("{}-minute", secs / 60),
             secs => format!("{secs}-second"),
         };
-        format!(
-            "Not published: the check ran past its {limit} limit, so nothing counts as checked. Read its change, then Publish it by hand."
-        )
+        unchecked(format!("the check ran past its {limit} limit"))
     });
     Ok(CheckRun {
         passed,
