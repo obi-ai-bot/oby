@@ -123,7 +123,8 @@ function answer(prompt) {
     out = { answerable: true, text: `The key is ${"AKIA"}${"ABCDEFGHIJKLMNOP"}.`, refs: [], choice: null };
   } else {
     const wrote = (i) => Object.values(i.agentWrote ?? {}).map((line) => ` (${line})`).join("");
-    const said = items.map((i) => `${i.title ?? i.type}: ${i.state ?? i.result?.outcome ?? "?"}${wrote(i)}`).join("; ");
+    // The last exchange is quoted context, not a told item: it isn't listed as one.
+    const said = items.filter((i) => i.kind !== "lastExchange").map((i) => `${i.title ?? i.type}: ${i.state ?? i.result?.outcome ?? "?"}${wrote(i)}`).join("; ");
     out = { answerable: true, text: said || "Nothing to tell.", refs: items.slice(0, 10).map((_, i) => i), choice: null };
   }
   process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: out }) + "\n");
