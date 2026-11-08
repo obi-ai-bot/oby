@@ -68,6 +68,40 @@ step() {
     [[ -n "${OBY_CHECK_PLAN:-}" ]] || "$@" || failed+=("$*")
 }
 
+# obid's test binaries (`--test name` each), built once, then run `jobs` at a time, the longest
+# first, every one to its end, each one's output whole and in turn. `cargo test` runs them one
+# after another and stops at the first that fails, and most of their time is spent waiting on an
+# agent's stand-in, not working. Each binary gets 2 test threads (`OBY_TEST_THREADS`), so twice the
+# tests run at once as `cargo test` ran.
+# ponytail: the longest first by its source's lines; keep each binary's last time if that's off.
+test_binaries() {
+    local dir list status=0 exe name
+    dir=$(mktemp -d)
+    if ! "${cargo[@]}" test "${manifest[@]}" -p obid "$@" --no-run --message-format=json-render-diagnostics >"$dir/built"; then
+        rm -rf "$dir"
+        return 1
+    fi
+    list="$dir/list"
+    grep '"kind":\["test"\]' "$dir/built" |
+        sed -n 's/.*"src_path":"\([^"]*\)".*"executable":"\([^"]*\)".*/\1	\2/p' |
+        while IFS=$'\t' read -r src exe; do printf '%s\t%s\n' "$(wc -l <"$src")" "$exe"; done |
+        sort -rn | cut -f2 >"$list"
+    # Where cargo runs them: the crate's folder.
+    (cd core/crates/obid && RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" xargs -P "$jobs" -I{} \
+        sh -c '"$1" >"$2/${1##*/}.out" 2>&1; echo $? >"$2/${1##*/}.status"' _ {} "$dir" <"$list")
+    while IFS= read -r exe; do
+        name=${exe##*/}
+        echo "     Running ${name%-*}"
+        cat "$dir/$name.out"
+        [[ "$(cat "$dir/$name.status" 2>/dev/null)" == 0 ]] || {
+            echo "oby-check: tests/${name%-*}.rs failed" >&2
+            status=1
+        }
+    done <"$list"
+    rm -rf "$dir"
+    return "$status"
+}
+
 # The top-level types a Swift test file declares, its suites, each after `$1`.
 suites() {
     [[ ! -f "$2" ]] || sed -nE "s#^(@[A-Za-z]+(\([^)]*\))? )*(final )?(struct|class|enum) ([A-Za-z0-9_]+).*#$1\5#p" "$2"
@@ -163,7 +197,7 @@ if [[ -n "$rust" ]]; then
         binaries+=(--test "$name")
     done < <(each "$tests")
     if [[ ${#binaries[@]} -gt 0 ]]; then
-        step "${cargo[@]}" test "${manifest[@]}" -p obid "${binaries[@]}"
+        step test_binaries "${binaries[@]}"
     fi
     while IFS= read -r crate; do
         [[ "$crate" == obid ]] || step "${cargo[@]}" test "${manifest[@]}" -p "$crate"

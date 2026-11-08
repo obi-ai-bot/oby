@@ -103,8 +103,47 @@ grep -q 'tests/sandbox.rs makes a sandbox of its own' <<<"$said" || {
 }
 rm core/crates/obid/src/foo.rs core/crates/obid/tests/foo.rs
 said=$(nested)
-! grep -q 'cargo --quiet test .*-p obid$' <<<"$said" || {
+! grep -q '==> test_binaries *$' <<<"$said" || {
     echo "oby-check-test: nested, it planned a test step with no binary left: $said" >&2
+    exit 1
+}
+
+# obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
+# its failure is named, and every one's output comes out whole. Cargo is a stand-in here.
+fake=$(mktemp -d)
+trap 'rm -rf "$repo" "$fake"' EXIT
+cat >"$fake/cargo" <<EOF
+#!/bin/bash
+[[ " \$* " == *" --no-run "* ]] || exit 0
+for t in slow fails; do
+    printf '{"reason":"compiler-artifact","target":{"kind":["test"],"name":"%s","src_path":"%s"},"executable":"%s"}\n' \
+        "\$t" "\$PWD/core/crates/obid/tests/\$t.rs" "$fake/\$t-0123abcd"
+done
+printf '{"reason":"compiler-artifact","target":{"kind":["bin"],"name":"obid","src_path":"x"},"executable":"$fake/obid"}\n'
+EOF
+printf '#!/bin/bash\nsleep 2\necho "slow ran from $PWD"\necho "test result: ok. 1 passed"\n' >"$fake/slow-0123abcd"
+printf '#!/bin/bash\necho "test result: FAILED. 0 passed; 1 failed"\nexit 101\n' >"$fake/fails-0123abcd"
+printf '#!/bin/bash\necho "the obid binary ran as a test"\n' >"$fake/obid"
+chmod +x "$fake"/*
+code core/crates/obid/tests/slow.rs 3
+code core/crates/obid/tests/fails.rs 1
+if ran=$(PATH="$fake:$PATH" OBY_BUILD_JOBS=2 env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
+    echo "oby-check-test: a failing test binary passed the check: $ran" >&2
+    exit 1
+fi
+for said in 'failed: test_binaries' 'tests/fails.rs failed' 'slow ran from .*/core/crates/obid' \
+    'Running slow' 'Running fails'; do
+    grep -q "$said" <<<"$ran" || {
+        echo "oby-check-test: the test binaries' run didn't say \"$said\": $ran" >&2
+        exit 1
+    }
+done
+! grep -q 'the obid binary ran' <<<"$ran" || {
+    echo "oby-check-test: it ran a binary that isn't a test: $ran" >&2
+    exit 1
+}
+! grep -q 'tests/slow.rs failed' <<<"$ran" || {
+    echo "oby-check-test: it named a binary that passed: $ran" >&2
     exit 1
 }
 rm -r core/crates/obid
