@@ -208,6 +208,10 @@ pub struct Repo {
     pub default_branch: String,
     /// The one-line command that decides `tests_pass` and serves as the job's check.
     pub check: Option<String>,
+    /// A one-line command obid runs in a job's worktree, in its box, as each run of its agent
+    /// starts (`npm ci`), as the owner set it here, never the repository (PUBLISHING-23). None by
+    /// default.
+    pub setup: Option<String>,
     /// Folders a job's checks build in that its next check keeps (`core/target`), inside the
     /// repository: nothing else a check left is kept for the next (PUBLISHING-6). None by default.
     #[serde(default)]
@@ -1127,6 +1131,23 @@ mod tests {
                 "{says}"
             );
         }
+    }
+
+    /// A repository's `setup` reads from the configuration, and is none when left out.
+    #[test]
+    fn publishing_23_a_repositorys_setup_reads_from_the_configuration() {
+        let mut file = crate::app::default_config(Path::new("/Users/w"), "w", true);
+        file["repos"] = serde_json::json!([
+            {"repo": "o/r", "remote": "https://github.com/o/r.git", "setup": "npm ci"},
+            {"repo": "o/s", "remote": "https://github.com/o/s.git"}]);
+        let repos: Vec<Option<String>> = Config::parse(&file.to_string())
+            .unwrap()
+            .repos
+            .get()
+            .into_iter()
+            .map(|r| r.setup)
+            .collect();
+        assert_eq!(repos, [Some("npm ci".to_owned()), None]);
     }
 
     /// Every configuration Oby.app wrote from 0.2.0 to 0.4.5 (crate::app::default_config, the

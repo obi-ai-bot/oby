@@ -62,6 +62,7 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
 mod logins;
+mod setup;
 mod slots;
 mod unjudged;
 pub use logins::person_homes;
@@ -10378,14 +10379,11 @@ impl Jobs {
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
         // teammates for one). Words the owner sent meanwhile are its next turn instead.
         let cut = self.get(id).and_then(|j| j.cut);
-        if cut.is_some() {
-            self.update(id, |job| job.cut = None);
-        }
         let picks_up = cut.is_some() && words.is_empty();
         // What cut its last run, once (RECOVERY-2): none when a stop's own run picks this up.
         let was_cut = job.recovery.cut.clone();
-        if was_cut.is_some() {
-            self.update(id, |job| job.recovery.cut = None);
+        if cut.is_some() || was_cut.is_some() {
+            self.update(id, |job| (job.cut, job.recovery.cut) = (None, None));
         }
         // Its first turn goes to its own session only, when it's told to carry on there.
         let mut session_only = was_cut.is_some();
@@ -10434,6 +10432,9 @@ impl Jobs {
             }
             message
         };
+        if !Box::pin(self.setup(id, &job.repo, &spec, &mut message, signal)).await {
+            return Ok(());
+        }
         // What the secret scan found the last time it blocked publishing: the same again stops.
         let mut blocked_before: Option<Vec<crate::publish::Found>> = None;
         // The decision check gave its one round (crate::decisions), in this run or before a restart.
@@ -10461,8 +10462,7 @@ impl Jobs {
         let waiting: crate::conn::Waiting = Arc::new(|| false);
         // obid told the agent once to wait for what it left running (`WAIT_HERE`), and once to
         // commit what it left uncommitted (`COMMIT_HERE`).
-        let mut told_to_wait = false;
-        let mut told_to_commit = false;
+        let (mut told_to_wait, mut told_to_commit) = (false, false);
         // What its last passing check passed on, or why it didn't check its commits (PUBLISHING-5).
         let mut checked: Option<Result<String, String>> = None;
         // Why nothing counted as checked though its commits are kept for Publish by hand
@@ -10477,8 +10477,7 @@ impl Jobs {
         // Its agent's last `GOAL MET` or `GOAL NOT MET: …` line, for a job asked for one
         // ([`asks_goal_line`]), and whether a turn that ended its last round without one was told
         // to say it (TASKS-19).
-        let mut goal: Option<String> = None;
-        let mut goal_nudged = false;
+        let (mut goal, mut goal_nudged): (Option<String>, bool) = (None, false);
         // Picked up where a restart cut it: its check run again on what it committed rather than
         // its agent's turn (one with no check goes straight on), and a pass goes on to publish as
         // after its last round. Running at once, at the phase it was in, so another restart cuts

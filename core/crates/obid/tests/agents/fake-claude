@@ -59,6 +59,8 @@
 //                    "Listed the files." (tests/plans_api.rs: what a call printed never reaches the brain)
 //   REACH: [<dir>, …]   tries to list each folder and to write .obid-reached in it, and ends the turn
 //                    with "<dir> read=ok|no write=ok|no; …"
+//   SEES: <file>     ends the turn with "sees <file>: true" or "…: false": whether the file was in
+//                    the worktree when it started (PUBLISHING-23: a repository's setup ran first)
 //   ECHO             ends the turn with "heard: <the prompt> resume=<the session it resumed, or none>"
 //   TODOS            makes a to-do list with TaskCreate, runs `echo alpha` and `echo beta` on the first
 //                    item, ticks it 5 seconds later, then the second 5 seconds after that, and ends
@@ -640,6 +642,9 @@ rl.on("line", (line) => {
     // The model and effort obid ran it on (#1574).
     const arg = (flag) => (process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : "none");
     result(`model=${arg("--model")} effort=${arg("--effort")}`);
+  } else if (prompt.includes("SEES: ")) {
+    const file = prompt.match(/SEES: (\S+)/)[1];
+    result(`sees ${file}: ${existsSync(file)}`);
   } else if (prompt.startsWith("ECHO")) {
     const at = process.argv.indexOf("--resume");
     result(`heard: ${prompt} resume=${at >= 0 ? process.argv[at + 1] : "none"}`);
