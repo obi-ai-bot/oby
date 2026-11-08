@@ -28,10 +28,14 @@ pub enum Cut {
     Stopped,
 }
 
-/// How many quiet windows in a row a change in the worktree, or a background task still running
-/// (`Conn::holding`), alone stands for progress: a quiet build is, a loop touching a file or a
-/// server that never ends isn't.
+/// How many quiet windows in a row a change in the worktree, CPU its processes used, or a background
+/// task still running (`Conn::holding`), alone stands for progress: a quiet build is, a loop
+/// touching a file or spinning, or a server that never ends, isn't.
 pub const FILE_WINDOWS: u32 = 4;
+
+/// How long after a sign of progress the CPU its quiet window starts from is read (a quarter of a
+/// shorter window): by then the agent has gone quiet, so what it used talking isn't counted.
+const CPU_SETTLE: Duration = Duration::from_secs(1);
 
 /// Something outside the agent the turn waits on (an Apple check on a Mac): while it says so, the
 /// turn isn't quiet, as while it waits for the owner.
@@ -39,8 +43,8 @@ pub type Waiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// How long a turn may take: `most` at all, and, with `quiet`, no longer than that without a line
 /// from the agent, a wait (`waiting`) or, for [`FILE_WINDOWS`] windows at most, a change in `watch`
-/// (a job's worktree): a job runs as long as it makes progress (docs/runner-api.md, `limit`). A
-/// plain `Duration` is a fixed limit.
+/// (a job's worktree) or CPU its processes used: a job runs as long as it makes progress
+/// (docs/runner-api.md, `limit`). A plain `Duration` is a fixed limit.
 #[derive(Clone)]
 pub struct Limit {
     pub most: Duration,
@@ -85,6 +89,12 @@ pub fn changed_since(dir: &Path, since: SystemTime) -> bool {
     false
 }
 
+/// How long after a sign of progress a quiet window's CPU is read: [`CPU_SETTLE`], or a quarter of a
+/// shorter window.
+fn settle(quiet: Option<Duration>) -> Duration {
+    quiet.map_or(CPU_SETTLE, |quiet| CPU_SETTLE.min(quiet / 4))
+}
+
 /// A JSON-RPC error the agent answered with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RpcError {
@@ -110,6 +120,11 @@ pub struct Conn {
     /// change in `watch` filled.
     heard_at: SystemTime,
     file_windows: u32,
+    /// The CPU time the agent's processes had used when the quiet window began, in nanoseconds,
+    /// once read; `cpu_due` while it waits to be read, at `cpu_at` (`CPU_SETTLE`).
+    cpu: Option<u64>,
+    cpu_due: bool,
+    cpu_at: std::pin::Pin<Box<tokio::time::Sleep>>,
     buffer: Vec<u8>,
     next_id: u64,
     /// Every message obid writes carries `"jsonrpc": "2.0"` (ACP does; Codex's app-server leaves
@@ -119,6 +134,10 @@ pub struct Conn {
     pub timed_out: bool,
     /// It timed out for being quiet (`Limit::quiet`), not at its most.
     pub quiet_out: bool,
+    /// Its last quiet window had no change in `watch`, no background task held and no CPU used
+    /// either, as far as it could be read: the agent is idle (hung), not busy without a word
+    /// (RECOVERY-12).
+    pub idle_out: bool,
     /// The agent ended its turn and waits for a background task of its own that is still running
     /// (crate::agent): the task stands for progress as a change in `watch` does, for
     /// [`FILE_WINDOWS`] windows at most without a line (a server or a `--watch` never ends).
@@ -198,12 +217,16 @@ impl Conn {
             waiting: limit.waiting,
             heard_at: SystemTime::now(),
             file_windows: 0,
+            cpu: None,
+            cpu_due: true,
+            cpu_at: Box::pin(tokio::time::sleep(settle(limit.quiet))),
             buffer: Vec::new(),
             next_id: 0,
             jsonrpc,
             stopped,
             timed_out: false,
             quiet_out: false,
+            idle_out: false,
             holding: false,
             _metered: crate::meter::root(pgid, &launch.cwd),
             _recorded: recorded,
@@ -229,12 +252,17 @@ impl Conn {
         self.stop = stop;
         self.timed_out = false;
         self.quiet_out = false;
+        self.idle_out = false;
         self.holding = false;
     }
 
     /// A sign of progress from the agent (or a wait): the quiet window starts again.
     fn heard(&mut self) {
         self.file_windows = 0;
+        self.cpu_due = true;
+        self.cpu_at
+            .as_mut()
+            .reset(tokio::time::Instant::now() + settle(self.quiet));
         self.rearm();
     }
 
@@ -246,6 +274,31 @@ impl Conn {
                 .as_mut()
                 .reset(tokio::time::Instant::now() + quiet);
         }
+    }
+
+    /// The CPU time the agent's processes have used, in nanoseconds, or `None` when it can't be read.
+    async fn read_cpu(&self) -> Option<u64> {
+        let pgid = self.pgid;
+        tokio::task::spawn_blocking(move || {
+            let table = crate::meter::processes();
+            (!table.is_empty()).then(|| crate::meter::tree_cpu(&table, &[pgid]))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Whether the agent's processes used CPU over the quiet window just ended: at least a
+    /// thousandth of one core over it (an idle event loop's timers use less), or a busy process
+    /// ended. `None` when it couldn't be read, or the window's start wasn't. The next window starts
+    /// from now.
+    async fn cpu_used(&mut self) -> Option<bool> {
+        let now = self.read_cpu().await;
+        let since = if self.cpu_due { None } else { self.cpu };
+        self.cpu = now;
+        self.cpu_due = false;
+        let least = self.quiet.unwrap_or_default().as_nanos() / 1000;
+        Some(u128::from(now?.abs_diff(since?)) >= least.max(1))
     }
 
     /// Nothing waits to be read and the agent hasn't closed its output, which is how a running
@@ -281,24 +334,33 @@ impl Conn {
                 () = &mut self.give_up_at => {
                     self.timed_out = true;
                 }
+                () = &mut self.cpu_at, if self.cpu_due && self.quiet.is_some() => {
+                    self.cpu_due = false;
+                    self.cpu = self.read_cpu().await;
+                }
                 () = &mut self.quiet_at, if self.quiet.is_some() => {
                     let since = self.heard_at;
+                    let counts = self.file_windows < FILE_WINDOWS;
+                    // Both read past the cap too: a spinning agent, or one writing, isn't idle.
                     let changed = match self.watch.clone() {
-                        Some(dir) if self.file_windows < FILE_WINDOWS => {
+                        Some(dir) => {
                             tokio::task::spawn_blocking(move || changed_since(&dir, since))
                                 .await
                                 .unwrap_or(false)
                         }
                         _ => false,
                     };
+                    let busy = self.cpu_used().await;
                     if self.waiting.as_ref().is_some_and(|waiting| waiting()) {
                         self.heard();
-                    } else if changed || (self.holding && self.file_windows < FILE_WINDOWS) {
+                    } else if counts && (changed || busy == Some(true) || self.holding) {
                         self.file_windows += 1;
                         self.rearm();
                     } else {
                         self.timed_out = true;
                         self.quiet_out = true;
+                        // CPU that couldn't be read is never idle.
+                        self.idle_out = !changed && !self.holding && busy == Some(false);
                     }
                 }
                 changed = self.stop.changed() => {

@@ -812,7 +812,9 @@ fn recovery_2_a_run_cut_by_a_restart_continues_at_most_three_times() {
 #[test]
 fn recovery_2_a_clean_restart_costs_no_try() {
     let (folder, mut obid) = obid("recovery-2-clean");
-    let id = post_job(&obid, "PAUSE: 60000 KEEP PROMPTS");
+    // SLEEP works on in every run that continues it until it's ended, as a job cut mid-work does; a
+    // PAUSE continued ends by itself at once ("Nothing to do."), racing the next restart's stop.
+    let id = post_job(&obid, "SLEEP KEEP PROMPTS");
     at_work(&obid, &id);
     let settings = std::fs::read_to_string(folder.0.join("config.json")).unwrap();
     let settings: Value = serde_json::from_str(&settings).unwrap();
@@ -901,11 +903,12 @@ fn recovery_3_a_quiet_job_continues_in_its_session() {
 }
 
 /// RECOVERY-3: after 5 tries it stalls on its own card, though a conversation started it: no turn
-/// takes it on by itself.
+/// takes it on by itself. Its agent stays busy without a word past the windows CPU counts for; an
+/// idle one gets 2 (RECOVERY-12).
 #[test]
 fn recovery_3_five_tries_then_it_stalls() {
-    let (_folder, obid) = obid("recovery-3-out");
-    let id = post_job(&obid, "QUIET KEEP PROMPTS");
+    let (_folder, obid) = obid_with("recovery-3-out", json!({"stallAfter": 1}), &[]);
+    let id = post_job(&obid, "BUSY KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(job["stalled"]["why"], "quiet", "{job}");
@@ -928,6 +931,67 @@ fn recovery_3_five_tries_then_it_stalls() {
             .is_some_and(|id| id.starts_with("supervisor-"))),
         "{inbox}"
     );
+}
+
+/// RECOVERY-12: an agent busy without a word or a change in its worktree (a command building
+/// outside it) uses CPU, which counts as progress: it runs past 2 quiet windows and ends done in its
+/// one turn.
+#[test]
+fn recovery_12_a_silent_busy_command_keeps_its_slot() {
+    let (_folder, obid) = obid("recovery-12-busy");
+    let id = post_job(&obid, "BUSY: 8000 KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "Built quietly.", "{job}");
+    assert!(job["stalled"].is_null(), "{job}");
+    assert_eq!(prompts(&job).len(), 1, "{job}");
+}
+
+/// RECOVERY-12: an agent quiet and idle (no CPU, nothing changed: a hung CLI) is continued at once,
+/// twice at most, then stalls with its handoff note.
+#[test]
+fn recovery_12_a_silent_idle_agent_is_continued_at_most_twice() {
+    let (_folder, obid) = obid("recovery-12-idle");
+    let id = post_job(&obid, "QUIET KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["stalled"]["why"], "quiet", "{job}");
+    let told = prompts(&job);
+    // Its first turn, 2 continued, and the handoff note's.
+    assert_eq!(told.len(), 4, "{told:?}");
+    assert!(told[1].contains("no progress for 3 seconds"), "{told:?}");
+    assert!(told[3].contains("handoff note"), "{told:?}");
+}
+
+/// RECOVERY-12: the CPU an idle agent's window starts from is read once it has gone quiet, so what
+/// it used starting and talking isn't counted: its first cut comes after one window, not two.
+#[test]
+fn recovery_12_an_idle_jobs_first_cut_comes_after_one_window() {
+    let (_folder, obid) = obid_with("recovery-12-one-window", json!({"stallAfter": 6}), &[]);
+    let id = post_job(&obid, "QUIET ONCE");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    // Its rounds' starts: the first, and the one Oby continued once the window cut it.
+    let transcript = call(&obid, "GET", &format!("/v1/jobs/{id}/transcript"), None).body;
+    let starts: Vec<i64> = transcript["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "start")
+        .map(|e| {
+            e["at"]
+                .as_str()
+                .unwrap()
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .as_second()
+        })
+        .collect();
+    assert_eq!(starts.len(), 2, "{transcript}");
+    // One 6-second window and the seconds the first round takes to start its agent (`at` is to
+    // the second); two windows would be 12 seconds and more.
+    let took = starts[1] - starts[0];
+    assert!((6..12).contains(&took), "{took} seconds: {transcript}");
 }
 
 /// RECOVERY-4: the turn limit continues the same session, and counts with a quiet job's tries.

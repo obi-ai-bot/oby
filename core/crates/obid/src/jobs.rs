@@ -117,6 +117,9 @@ const CUT_WAITS: [Duration; 3] = [
 /// How many times a job gone quiet or at its turn limit is continued before it stalls
 /// (RECOVERY-3, RECOVERY-4), as Claude Code's workflow agents are.
 const STALL_TRIES: usize = 5;
+/// How many times a job gone quiet and idle (no CPU, nothing changed: a hung CLI) is continued
+/// before it stalls, counted with [`STALL_TRIES`]' (RECOVERY-12).
+const IDLE_TRIES: usize = 2;
 /// The new sessions a job gets by itself when its last grew too long for its model (RECOVERY-8).
 const NEW_SESSIONS: usize = 1;
 /// How many times a run cut by obid or the Mac going down (not a clean stop) is continued when
@@ -8344,18 +8347,18 @@ impl Jobs {
     }
 
     /// A job gone quiet or at its turn limit (`text`) goes on in its session, while it has tries left
-    /// (RECOVERY-3, RECOVERY-4): what its agent is told next. Without a session or tries, it stalls.
-    fn stall_try(&self, id: &str, text: &str) -> Option<String> {
+    /// of `tries` (RECOVERY-3, RECOVERY-4, RECOVERY-12): what its agent is told next. Without a session or tries, it stalls.
+    fn stall_try(&self, id: &str, text: &str, tries: usize) -> Option<String> {
         let job = self.get(id)?;
         job.session.as_ref()?;
-        if job.recovery.stalls >= STALL_TRIES {
+        if job.recovery.stalls >= tries {
             return None;
         }
         let attempt = job.recovery.stalls + 1;
-        tracing::info!("job {id}: {text}: continuing it ({attempt} of {STALL_TRIES})");
+        tracing::info!("job {id}: {text}: continuing it ({attempt} of {tries})");
         self.update(id, |job| {
             job.recovery.stalls = attempt;
-            job.step = format!("Trying again now ({attempt} of {STALL_TRIES})");
+            job.step = format!("Trying again now ({attempt} of {tries})");
         });
         Some(continue_message(text, None))
     }
@@ -10684,9 +10687,11 @@ impl Jobs {
                     if !turn.quiet {
                         return Err(stall(Stall::Ceiling).await);
                     }
-                    // RECOVERY-3: stopped and continued in its session, no model asked.
+                    // RECOVERY-3: stopped and continued in its session, no model asked; idle,
+                    // twice at most (RECOVERY-12).
                     let text = Stall::Quiet.text(&self.config);
-                    let Some(next) = self.stall_try(id, &text) else {
+                    let tries = if turn.idle { IDLE_TRIES } else { STALL_TRIES };
+                    let Some(next) = self.stall_try(id, &text, tries) else {
                         return Err(stall(Stall::Quiet).await);
                     };
                     cut_note = Some(next);
@@ -10704,7 +10709,7 @@ impl Jobs {
                     if subtype.and_then(Value::as_str) == Some("error_max_turns") {
                         // RECOVERY-4: the same session goes on, counted with RECOVERY-3's.
                         let text = Stall::Turns.text(&self.config);
-                        let Some(next) = self.stall_try(id, &text) else {
+                        let Some(next) = self.stall_try(id, &text, STALL_TRIES) else {
                             return Err(stall(Stall::Turns).await);
                         };
                         // 200 turns in, what it was sent reached it.

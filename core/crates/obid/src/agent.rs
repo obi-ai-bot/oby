@@ -157,6 +157,8 @@ pub struct Turn {
     pub timed_out: bool,
     /// What timed it out was a quiet spell (`conn::Limit::quiet`): no progress for so long.
     pub quiet: bool,
+    /// That quiet spell was idle too: no CPU used, nothing changed in the worktree (RECOVERY-12).
+    pub idle: bool,
     /// obid ended it for making the same failing call again and again (crate::jobs).
     pub looped: bool,
     /// obid ended it at the job's token budget (crate::jobs).
@@ -762,6 +764,7 @@ pub async fn turn_on(
     turn.left_running = !background.is_empty();
     turn.timed_out = conn.timed_out;
     turn.quiet = conn.quiet_out;
+    turn.idle = conn.idle_out;
     turn.stopped = conn.stopped;
     if keep && turn.result.is_some() && !turn.timed_out && !turn.stopped {
         turn.exit = "still running".into();
