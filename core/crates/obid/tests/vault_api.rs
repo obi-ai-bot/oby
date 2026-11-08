@@ -1025,8 +1025,10 @@ fn a_check_run_names_its_failing_tests_and_masks_the_vault() {
     assert_eq!(job["status"], "interrupted", "{job}");
     let checks = job["checks"].as_array().unwrap();
     assert_eq!(checks.len(), 1, "{job}");
+    // Its last run: the stand-in fails the round its check's words reach (they say FAILED), its one
+    // try carries on, and the same failing check ends it (RECOVERY-1, RECOVERY-9).
     let run = &checks[0];
-    assert_eq!(run["round"], 1);
+    assert_eq!(run["round"], job["round"], "{job}");
     let steps = run["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 2, "{run}");
     assert_eq!(steps[0]["command"], "true");

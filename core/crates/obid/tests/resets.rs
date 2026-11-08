@@ -91,7 +91,9 @@ fn a_job_cut_short_while_checking_picks_up_there() {
     let folder = Folder::new("cut-short");
     let remote = fixture(&folder.0.join("fixture"));
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
-    let config = config(&folder.0, &remote, &agent);
+    let mut config = config(&folder.0, &remote, &agent);
+    // A quiet window of 3 seconds: the failing turn's one try waits that long (RECOVERY-1).
+    config["stallAfter"] = json!(3);
     let checking = cut("bbbb0001", "check", Some("true"));
     let working = cut("bbbb0003", "work", Some("true"));
     put(&folder.0, &[&checking, &working]);

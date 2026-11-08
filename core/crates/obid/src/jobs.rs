@@ -371,14 +371,27 @@ fn waits_for_later(said: &str) -> bool {
     .any(|w| last.contains(w))
 }
 
-/// An error a turn ended on that trying again mends (docs/runner-api.md, `limit`): a 5xx or 429, an
-/// overloaded API, a dropped connection or stream, as the tool says ([`agent::Failure`]). Never an
-/// account's usage limit (its words, or `full`: its usage says so).
-fn transient(cause: agent::Cause, full: bool) -> bool {
+/// How many tries in a row a failed turn gets (RECOVERY-1): anything but a login (the tool's
+/// `words`, whole), a usage limit (`full`: the account's usage says so), or a session too long or
+/// gone. A passing error ([`agent::Failure`]: a 5xx or 429, overloaded, a dropped connection) and a
+/// CLI that ended with no result get [`CUT_WAITS`]'; an unknown error one, in its `session`. The
+/// tool's own fields decide first (RECOVERY-7): a 529 whose words hold `401` is still passing.
+fn retries(
+    cause: Option<agent::Cause>,
+    words: &str,
+    full: bool,
+    session: bool,
+    no_result: bool,
+) -> usize {
+    use agent::Cause;
     match cause {
-        agent::Cause::Passing => true,
-        agent::Cause::Busy => !full,
-        _ => false,
+        Some(Cause::Passing) => CUT_WAITS.len(),
+        Some(Cause::Busy) if !full => CUT_WAITS.len(),
+        Some(Cause::Busy | Cause::Limit | Cause::TooLong | Cause::SessionGone) => 0,
+        _ if retrying_wont_mend(words) => 0,
+        _ if no_result => CUT_WAITS.len(),
+        Some(Cause::Other) if session => 1,
+        _ => 0,
     }
 }
 
@@ -10791,26 +10804,23 @@ impl Jobs {
                     // On a ChatGPT login only the relay's refusal says it's a limit: a usage read
                     // doesn't exist, and OpenAI's limit names no time (the contract).
                     let chatgpt = crate::chatgpt::marker_of(&account).is_some();
-                    let passing = match &refusal {
-                        Some(refusal) => refusal.after == After::TryAgain,
-                        None if chatgpt => {
-                            turn.cause().is_some_and(|cause| transient(cause, false))
-                                || (no_result && !retrying_wont_mend(&ended))
-                        }
+                    // RECOVERY-1: one denylist, the tool's own fields first (RECOVERY-7).
+                    let of = match &refusal {
+                        Some(refusal) if refusal.after == After::TryAgain => CUT_WAITS.len(),
+                        Some(_) => 0,
+                        None if !chatgpt && limit_said => 0,
                         None => {
-                            (!full
-                                && turn.resets.is_none()
-                                && turn.cause().is_some_and(|cause| transient(cause, full)))
-                                || (no_result && !limit_said && !retrying_wont_mend(&ended))
+                            let words = if no_result { &ended } else { &error };
+                            retries(turn.cause(), words, false, session, no_result)
                         }
                     };
                     let tries = self.get(id).map_or(0, |j| j.recovery.errors);
-                    if passing && tries < CUT_WAITS.len() {
+                    if tries < of {
                         // RECOVERY-1: running, in its same session and worker, so Stop works, no
                         // card shows and the tries count with what came before them.
                         let error = match &refusal {
                             Some(refusal) => refusal.words.as_str(),
-                            None if no_result => ended.as_str(),
+                            None if no_result || first.is_empty() => ended.as_str(),
                             None => first.as_str(),
                         };
                         let wait = CUT_WAITS[tries].min(self.config.stall_after);
@@ -10822,7 +10832,7 @@ impl Jobs {
                         // The wait takes no slot (ADMISSION-4).
                         let _idle = Idle::new(self, id);
                         'wait: while !left.is_zero() && !heard() {
-                            let step = trying_again(error, left, attempt, CUT_WAITS.len());
+                            let step = trying_again(error, left, attempt, of);
                             self.update(id, |job| {
                                 job.step = step.clone();
                                 job.ran_secs = Some(ran());
@@ -16046,12 +16056,13 @@ mod tests {
         }
     }
 
-    /// Overloaded, failing or dropped APIs are retried; an account's usage limit, an auth error,
-    /// and a number that only looks like a status aren't.
+    /// RECOVERY-1: overloaded, failing or dropped APIs get 3 tries, an unknown error one; an
+    /// account's usage limit, a login, and a session too long or gone get none.
     #[test]
     fn transient_errors_are_the_ones_trying_again_mends() {
-        use super::transient;
+        use super::retries;
         use crate::agent::Cause;
+        let tries = |error: &str| retries(Some(Cause::read(error)), error, false, true, false);
         for error in [
             r#"API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}"#,
             "API Error: 500 Internal server error",
@@ -16060,25 +16071,52 @@ mod tests {
             "API Error: Request timed out.",
             "Codex hit an error: stream disconnected before completion",
             "API Error: 429 rate limit exceeded",
+            r#"API Error: 529 {"request_id":"req_401"}"#,
         ] {
-            assert!(transient(Cause::read(error), false), "{error}");
+            assert_eq!(tries(error), 3, "{error}");
+        }
+        for error in ["it broke", "the tests timed out after 500 ms"] {
+            assert_eq!(tries(error), 1, "{error}");
         }
         for error in [
             "Claude AI usage limit reached|1791582173",
             "Codex hit an error: You've hit your usage limit.",
-            "it broke",
             r#"API Error: 401 {"error":{"message":"invalid x-api-key","request_id":"req_500429"}}"#,
             "Invalid API key · Please run /login (request 5004)",
-            "the tests timed out after 500 ms",
+            "Prompt is too long",
+            "No conversation found with session ID: x",
         ] {
-            assert!(!transient(Cause::read(error), false), "{error}");
+            assert_eq!(tries(error), 0, "{error}");
         }
+        // An unknown error with no session to continue in runs nothing again.
+        assert_eq!(
+            retries(Some(Cause::Other), "it broke", false, false, false),
+            0
+        );
+        // A CLI that ended with no result: its stderr says a login, or it gets 3 tries.
+        assert_eq!(retries(None, "Not logged in", false, true, true), 0);
+        assert_eq!(retries(None, "exit 1", false, true, true), 3);
         // A 429 while the account's usage says it is full is its limit, not a blip.
-        assert!(!transient(
-            Cause::read("API Error: 429 rate limit exceeded"),
-            true
-        ));
-        assert!(transient(Cause::read("API Error: 529 overloaded"), true));
+        assert_eq!(
+            retries(
+                Some(Cause::read("API Error: 429 rate limit exceeded")),
+                "",
+                true,
+                true,
+                false
+            ),
+            0
+        );
+        assert_eq!(
+            retries(
+                Some(Cause::read("API Error: 529 overloaded")),
+                "",
+                true,
+                true,
+                false
+            ),
+            3
+        );
     }
 
     #[test]

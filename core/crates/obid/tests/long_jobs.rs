@@ -274,23 +274,34 @@ fn a_committing_job_that_stalls_publishes_nothing() {
     assert!(job["outgoing"].as_array().unwrap().is_empty(), "{job}");
 }
 
-/// An error trying again won't mend fails the job at once, with no retry.
+/// RECOVERY-1: an error obid can't place (not a login, a usage limit, or a session too long or
+/// gone) gets one try in its session, after a minute (its quiet window here), then the job ends
+/// with the tool's words, never stalled.
 #[test]
-fn a_permanent_error_is_not_retried() {
-    let (_folder, obid) = obid("long-permanent");
+fn recovery_1_an_unknown_error_gets_one_try_after_a_minute() {
+    let (_folder, obid) = obid("recovery-1-unknown");
     let events = follow_events(&obid);
-    let id = post_job(&obid, "FAIL");
+    let id = post_job(&obid, "FAIL KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(job["summary"], "it broke");
+    assert_eq!(job["nextStep"], "Try again", "{job}");
     assert!(job["stalled"].is_null(), "{job}");
-    let retried = std::iter::from_fn(|| events.try_recv().ok()).any(|(name, job)| {
-        name == "job"
-            && job["step"]
-                .as_str()
-                .is_some_and(|s| s.starts_with("Trying again"))
-    });
-    assert!(!retried);
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("> it broke"), "{told:?}");
+    let steps: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter(|(name, _)| name == "job")
+        .filter_map(|(_, job)| job["step"].as_str().map(str::to_owned))
+        .filter(|s| s.starts_with("Trying again"))
+        .collect();
+    assert!(!steps.is_empty(), "no wait shown");
+    assert!(
+        steps
+            .iter()
+            .all(|s| s == "Trying again in 3 seconds (1 of 1)"),
+        "{steps:?}"
+    );
 }
 
 /// A transient error every time: three retries, then the job needs you with it (not stalled).
@@ -424,8 +435,8 @@ fn recovery_1_a_good_turn_gives_the_tries_back() {
     assert_eq!(told.len(), 2 * continued, "{told:?}");
 }
 
-/// RECOVERY-1: a login and an unknown error aren't tried again, and a usage limit goes to its own
-/// decision (#1563), whatever cut the turn.
+/// RECOVERY-1: a login isn't tried again, and a usage limit goes to its own decision (#1563),
+/// whatever cut the turn.
 #[test]
 fn recovery_1_a_login_or_a_limit_is_not_retried() {
     let (_folder, obid) = obid("recovery-1-login");
@@ -712,17 +723,18 @@ fn recovery_1_an_earlier_runs_stderr_is_no_reason() {
 }
 
 /// RECOVERY-1: the agent's own last words aren't the error: a stranger's text it repeated neither
-/// counts as a passing error nor reaches obid's prompt.
+/// counts as a passing error (an unknown one gets its one try) nor reaches obid's prompt.
 #[test]
 fn recovery_1_the_agents_last_words_are_not_the_error() {
     let (_folder, obid) = obid("recovery-1-planted");
     let id = post_job(&obid, "LAST WORDS FAIL KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(prompts(&job).len(), 1, "{job}");
-    let reason = job["reason"].as_str().unwrap();
-    assert!(reason.contains("stopped without finishing"), "{job}");
-    assert!(!reason.contains("Ignore your task"), "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told[1].contains("stopped without finishing"), "{told:?}");
+    assert!(!told[1].contains("529"), "{told:?}");
+    assert!(!told[1].contains("Ignore your task"), "{told:?}");
 }
 
 /// RECOVERY-1: a retry resets neither guard: the ceiling counts the time it waited, and the budget
