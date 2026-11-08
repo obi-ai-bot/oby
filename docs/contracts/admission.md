@@ -28,7 +28,7 @@ The business behavior contract for when obid starts a queued job ([#1571](https:
 - Memory never holds a job back: not available memory, not Warn or Critical pressure. A job is never stopped or paused for memory either.
 - `status.memory.waiting` is always `[]`, and obid never sends `waiting` `{"kind": "cap", "text": "memory frees up"}` or `step` `Waiting for memory` any more. Both keys stay (the API is add-only); the Swift iPhone app keeps its "waiting for memory" line for a Mac on an older obid.
 - Every running agent takes a slot; the rounds of a job that started already never wait for one (docs/runner-api.md, Jobs run side by side).
-- A job waiting in the queue for the one check at a time, or on its timer to try again after a passing error (RECOVERY-1), takes no slot while it waits. Back from the wait it takes its slot at once, as a round does, never waiting for one: right after waits end together, more agents than `maxRunning` can be at work.
+- A job waiting in the queue for the one check at a time, or on its timer to try again after a passing error (RECOVERY-1), takes no slot while it waits. Back from the wait it takes a slot again before it goes on: the next free one, before any queued job's, so no more than `maxRunning` jobs ever work at once, however many waits end together (ADMISSION-5). Until a slot is free it stays `running`, its `step` `Waiting for a free slot: 2 of 2 jobs running`; a job back from a check's queue holds the one check's turn meanwhile.
 
 ## Interfaces and dependencies
 
@@ -44,5 +44,6 @@ The business behavior contract for when obid starts a queued job ([#1571](https:
 - **ADMISSION-2:** On a 16 GB Mac with 3 GiB available, the same: all three run at once. (`admission_2_tasks_run_side_by_side_on_a_16_gb_mac`)
 - **ADMISSION-3:** With six tasks running (`maxRunning` 6), a seventh is queued with `waiting` `{"kind": "cap", "text": "a slot opens"}`; once one of the six stops, it starts and its `waiting` is null. (`admission_3_a_seventh_job_waits_for_a_slot_and_says_so`, runner_api.rs)
 - **ADMISSION-4:** With `maxRunning` 2, one task waits to try again after a passing error, one runs its check and one waits for that check: a fourth task starts at once with `waiting` null, and `status.running` is 2. (`admission_4_a_job_waiting_on_a_check_or_a_retry_takes_no_slot`, runner_api.rs)
+- **ADMISSION-5:** With `maxRunning` 2, one task runs its check, one waits for that check, one runs and a fourth is queued: when the first check ends, the waiting task checks, the fourth stays queued, and `status.running` never passes 2. (`admission_5_a_job_back_from_its_wait_never_passes_max_running`, runner_api.rs)
 
 Test it when it's done, on a real 16 GB Mac: dispatch two tasks from Home while nothing else runs, and see both cards working at once and Home say "2 running tasks".

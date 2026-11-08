@@ -418,7 +418,8 @@ fn recovery_1_three_tries_then_the_real_reason() {
 #[test]
 fn recovery_1_a_good_turn_gives_the_tries_back() {
     let (_folder, obid) = obid("recovery-1-flaky");
-    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 9,
+    // 6 rounds: more than 3 cuts, fewer than the 8 tries a job gets in all (below).
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 6,
                      "check": "false", "task": "DIE FLAKY KEEP PROMPTS"});
     let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
     assert_eq!(answer.status, 201, "{}", answer.text);
@@ -433,6 +434,33 @@ fn recovery_1_a_good_turn_gives_the_tries_back() {
         .count();
     assert!(continued > 3, "{told:?}");
     assert_eq!(told.len(), 2 * continued, "{told:?}");
+}
+
+/// RECOVERY-1: good turns give the tries in a row back, but a job gets 8 error and stall tries in
+/// all (the owner's answer of 2026-11-08): a job cut in every round is continued 8 times, then ends
+/// with the real reason, however many rounds it has left.
+#[test]
+fn recovery_1_a_job_gets_eight_tries_in_all() {
+    let (_folder, obid) = obid("recovery-1-all");
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 10,
+                     "check": "false", "task": "DIE FLAKY KEEP PROMPTS"});
+    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert!(
+        job["reason"]
+            .as_str()
+            .unwrap()
+            .contains("stopped without finishing"),
+        "{job}"
+    );
+    let told = prompts(&job);
+    let continued = told
+        .iter()
+        .filter(|p| p.contains("Your run was cut"))
+        .count();
+    assert_eq!(continued, 8, "{told:?}");
 }
 
 /// RECOVERY-1: a login isn't tried again, and a usage limit goes to its own decision (#1563),

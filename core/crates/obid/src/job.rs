@@ -76,6 +76,8 @@ pub struct Recovery {
     pub errors: usize,
     /// Runs gone quiet or at the turn limit (RECOVERY-3, RECOVERY-4).
     pub stalls: usize,
+    /// Every error and stall try it got, in a row or not ([`Recovery::spent`]).
+    pub tries: usize,
     /// Runs cut by obid or the Mac going down, or obid's own bug (RECOVERY-2).
     pub restarts: usize,
     /// Times a five-hour limit's wait was armed for it (docs/contracts/account-limits.md, LIMITS-9).
@@ -92,6 +94,16 @@ pub struct Recovery {
 }
 
 impl Recovery {
+    /// The error and stall tries a job gets in all, RECOVERY-1's 3 and RECOVERY-3's 5: a good turn
+    /// gives `errors` and `stalls` back, never these (the owner's answer of 2026-11-08). Only the
+    /// owner's words do.
+    pub const ALL_TRIES: usize = 8;
+
+    /// Whether it got every try it gets in all.
+    pub fn spent(&self) -> bool {
+        self.tries >= Self::ALL_TRIES
+    }
+
     fn is_unused(&self) -> bool {
         *self == Recovery::default()
     }

@@ -598,6 +598,68 @@ fn admission_4_a_job_waiting_on_a_check_or_a_retry_takes_no_slot() {
     assert_eq!(all.body["stopped"], 4, "{}", all.text);
 }
 
+/// ADMISSION-5 (docs/contracts/admission.md): a job back from its wait takes the next free slot
+/// before any queued job, and never one past `maxRunning`. With `maxRunning` 2, one job checks, one
+/// waits for that check, one runs and one is queued: when the first check ends, the waiting job
+/// checks and the queued one still waits, and at no time do more than 2 run.
+#[test]
+fn admission_5_a_job_back_from_its_wait_never_passes_max_running() {
+    let folder = Folder::new("idle-back");
+    let (obid, _) = obid(&folder);
+    let two = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 2})),
+    );
+    assert_eq!(two.status, 200, "{}", two.text);
+    let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
+    let checking = |id: &str| job(&obid, id)["checks"][0]["steps"][0]["running"] == true;
+    let first = id(
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+                          "check": "sleep 8"}),
+    );
+    within(60, "the first check runs", || {
+        checking(&first).then_some(())
+    });
+    let second = id(
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: b.txt",
+                           "check": "sleep 30"}),
+    );
+    within(60, "the second waits for it", || {
+        (job(&obid, &second)["step"] == "Waiting for another job's check to finish").then_some(())
+    });
+    let third = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
+    within(60, "the third runs", || {
+        (job(&obid, &third)["status"] == "running").then_some(())
+    });
+    let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
+    within(30, "the fourth waits for a slot", || {
+        (job(&obid, &fourth)["waiting"]["kind"] == "cap").then_some(())
+    });
+    let mut most = 0;
+    within(60, "the second checks", || {
+        most = most.max(
+            call(&obid, "GET", "/v1/status", None).body["running"]
+                .as_u64()
+                .unwrap(),
+        );
+        checking(&second).then_some(())
+    });
+    for _ in 0..10 {
+        most = most.max(
+            call(&obid, "GET", "/v1/status", None).body["running"]
+                .as_u64()
+                .unwrap(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(most <= 2, "{most} ran at once");
+    let fourth = job(&obid, &fourth);
+    assert_eq!(fourth["status"], "queued", "{fourth}");
+    call(&obid, "POST", "/v1/stop-all", None);
+}
+
 /// ClaimTests.aClientMayClaimFilesAtDispatch, its dispatch half (the other, a plan's files from
 /// its issues, needs `POST /v1/plans`, which obid doesn't serve): a client's `files` are checked,
 /// every one, and kept cleaned, each once; a path outside the repository refuses the job.
