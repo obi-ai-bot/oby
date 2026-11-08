@@ -6769,26 +6769,23 @@ impl Jobs {
                 })
                 .unwrap_or_else(|_| vec![String::new()]);
         let (name, email) = &self.identity();
-        let rebased = self
-            .sandboxed_git(
-                id,
-                &[
-                    "-c",
-                    &format!("user.name={name}"),
-                    "-c",
-                    &format!("user.email={email}"),
-                    "-c",
-                    "commit.gpgsign=false",
-                    "rebase",
-                    "--quiet",
-                    "--no-autostash",
-                    "--onto",
-                    &now,
-                    start,
-                ],
-                None,
-            )
-            .await;
+        let (name, email) = (format!("user.name={name}"), format!("user.email={email}"));
+        let mut args = git::LFS_POINTERS.to_vec();
+        args.extend([
+            "-c",
+            &name,
+            "-c",
+            &email,
+            "-c",
+            "commit.gpgsign=false",
+            "rebase",
+            "--quiet",
+            "--no-autostash",
+            "--onto",
+            &now,
+            start,
+        ]);
+        let rebased = self.sandboxed_git(id, &args, None).await;
         if rebased.is_ok() {
             Box::pin(self.record_own(id, &now, &rewrote)).await;
             tracing::info!("job {id}: {base} moved, so its commits were rebased onto {now}");
@@ -9572,20 +9569,19 @@ impl Jobs {
         remove_worktree(&clone, &worktree).await;
         std::fs::create_dir_all(worktree.parent().expect("worktrees have a folder"))
             .map_err(|e| format!("obid can't make its worktrees folder: {e}"))?;
-        git::run(
-            &clone,
-            &[
-                "worktree".as_ref(),
-                "add".as_ref(),
-                "--quiet".as_ref(),
-                "--detach".as_ref(),
-                worktree.as_os_str(),
-                request.head_sha.as_ref(),
-            ],
-            &[],
-        )
-        .await
-        .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
+        let mut args: Vec<&std::ffi::OsStr> =
+            git::LFS_POINTERS.iter().map(|a| a.as_ref()).collect();
+        args.extend::<[&std::ffi::OsStr; 6]>([
+            "worktree".as_ref(),
+            "add".as_ref(),
+            "--quiet".as_ref(),
+            "--detach".as_ref(),
+            worktree.as_os_str(),
+            request.head_sha.as_ref(),
+        ]);
+        git::run(&clone, &args, &[])
+            .await
+            .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
         let worktree_text = worktree.to_string_lossy().into_owned();
         self.update(id, |job| {
             job.worktree = Some(worktree_text);
@@ -9981,22 +9977,16 @@ impl Jobs {
             // Detached at the branch: the sandbox never writes the clone's refs, so obid moves the
             // branch to the job's commits itself (git::keep_commits).
             let branch_ref = format!("refs/heads/{}", job.branch);
-            // LFS files stay pointers, as the check sees them (PUBLISHING-6, 20): the person's own
-            // `filter.lfs` would run git-lfs here with no login and fail the worktree.
-            let args: Vec<&std::ffi::OsStr> = vec![
-                "-c".as_ref(),
-                "filter.lfs.smudge=".as_ref(),
-                "-c".as_ref(),
-                "filter.lfs.process=".as_ref(),
-                "-c".as_ref(),
-                "filter.lfs.required=false".as_ref(),
+            let mut args: Vec<&std::ffi::OsStr> =
+                git::LFS_POINTERS.iter().map(|a| a.as_ref()).collect();
+            args.extend::<[&std::ffi::OsStr; 6]>([
                 "worktree".as_ref(),
                 "add".as_ref(),
                 "--quiet".as_ref(),
                 "--detach".as_ref(),
                 worktree.as_os_str(),
                 branch_ref.as_ref(),
-            ];
+            ]);
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
@@ -13692,6 +13682,10 @@ impl crate::publish::Hooks for PublishHooks {
         self.signal
             .as_ref()
             .is_none_or(|signal| *signal.borrow() == Signal::Run)
+    }
+
+    fn by_itself(&self) -> bool {
+        self.signal.is_some()
     }
 
     fn sent(&self, outgoing: crate::publish::Outgoing) {

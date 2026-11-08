@@ -728,6 +728,10 @@ pub trait Hooks: Send + Sync {
     fn sent(&self, outgoing: Outgoing);
     /// How the secret scan went, once it ended or couldn't run (#735).
     fn scanned(&self, _scanned: Scanned) {}
+    /// Whether the job publishes by itself, not on the owner's Publish.
+    fn by_itself(&self) -> bool {
+        false
+    }
 }
 
 /// Where a job publishes from and to.
@@ -834,8 +838,9 @@ fn forbidden_names() -> Vec<String> {
     names
 }
 
-/// The files `since..head` adds that are Git LFS pointers, read from their content (the spec's
-/// first line and an `oid sha256:` line, at most 1024 bytes), never from `.gitattributes`.
+/// The files `since...head` adds or changes (from their merge base, so what the base did since
+/// doesn't count) that are Git LFS pointers at `head`, read from their content (the spec's first
+/// line and an `oid sha256:` line, at most 1024 bytes), never from `.gitattributes`.
 async fn lfs_pointers_added(clone: &Path, since: &str, head: &str) -> Vec<String> {
     const SPEC: &str = "version https://git-lfs.github.com/spec/v1";
     let pickaxe = format!("-G^{SPEC}");
@@ -846,10 +851,9 @@ async fn lfs_pointers_added(clone: &Path, since: &str, head: &str) -> Vec<String
             "--name-only",
             "-z",
             "--no-renames",
-            "--diff-filter=A",
+            "--diff-filter=AM",
             &pickaxe,
-            since,
-            head,
+            &format!("{since}...{head}"),
         ],
     )
     .await
@@ -877,14 +881,14 @@ async fn lfs_pointers_added(clone: &Path, since: &str, head: &str) -> Vec<String
     pointers
 }
 
-/// Why a job that adds LFS pointers isn't published by itself (PUBLISHING-19).
+/// Why a job that adds or changes LFS pointers isn't published by itself (PUBLISHING-19).
 fn lfs_held(files: &[String]) -> String {
     let mut named = files.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
     if files.len() > 3 {
         named.push_str(&format!(" and {} more", files.len() - 3));
     }
     format!(
-        "Not published: it adds Git LFS files ({named}), and Oby doesn't upload LFS files, so the remote may not have what they point to. Read its change, then Publish it anyway."
+        "Not published: it adds or changes Git LFS files ({named}), and Oby doesn't upload LFS files, so the remote may not have what they point to. Read its change, then Publish it by hand."
     )
 }
 
@@ -1032,8 +1036,8 @@ pub async fn publish(
         Some(_) => {}
     }
     // obid never uploads LFS files, so pointers it adds would name files the remote may not
-    // have: held by itself, sent on the owner's word (PUBLISHING-19).
-    if !by_hand.asks() {
+    // have: held by itself, sent on any Publish of the owner's (PUBLISHING-19).
+    if hooks.by_itself() {
         let added = lfs_pointers_added(clone, &since, &head).await;
         if !added.is_empty() {
             return Err(Failure::Failed(lfs_held(&added)));
@@ -1454,7 +1458,7 @@ async fn pushed_objects(clone: &Path, range: &str) -> Result<Pushed, String> {
             "-r",
             "-t",
             "--no-renames",
-            "--diff-filter=A",
+            "--diff-filter=AM",
             "--raw",
             "--no-abbrev",
             "-z",

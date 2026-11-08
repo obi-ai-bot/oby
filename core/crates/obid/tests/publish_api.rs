@@ -3999,46 +3999,54 @@ fn merging_1_a_passing_check_keeps_its_head_and_a_failing_one_clears_it() {
     });
 }
 
-/// PUBLISHING-19: a job whose change adds Git LFS pointer files isn't published by itself (obid
-/// never uploads LFS files, so the remote may not have what they point to): it ends done with why,
-/// nothing pushed. The owner's Publish anyway sends it (PUBLISHING-9).
+/// PUBLISHING-19: a job whose change adds or changes Git LFS pointer files isn't published by
+/// itself (obid never uploads LFS files, so the remote may not have what they point to): it ends
+/// done with why, nothing pushed, and Publish offered. The owner's plain Publish sends it.
 #[test]
 fn publishing_19_an_automatic_publish_adding_lfs_pointers_is_held_and_the_owners_goes() {
     let folder = Folder::new("publish-lfs-pointers");
     let bin = fake_gh(&folder.0);
     let (obid, remote, _) = obid_with(&folder, &bin);
-    let id = dispatch(
-        &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "POINTER: model.bin",
-               "check": "test -f model.bin"}),
-    );
-    let job = ended(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
-    assert_eq!(job["published"], Value::Null, "{job}");
-    assert_eq!(
-        job["publishError"],
-        "Not published: it adds Git LFS files (model.bin), and Oby doesn't upload LFS files, so the remote may not have what they point to. Read its change, then Publish it anyway.",
-        "{job}"
-    );
-    let branch = format!("oby/build-{id}");
-    assert_eq!(remote_branch(&remote, &branch), None);
+    let held = |task: &str, file: &str| {
+        let id = dispatch(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": task,
+                   "check": "true"}),
+        );
+        let job = ended(&obid, &id);
+        assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+        assert_eq!(job["published"], Value::Null, "{job}");
+        assert_eq!(
+            job["publishError"].as_str().unwrap_or_default(),
+            format!(
+                "Not published: it adds or changes Git LFS files ({file}), and Oby doesn't upload LFS files, so the remote may not have what they point to. Read its change, then Publish it by hand."
+            ),
+            "{job}"
+        );
+        assert_eq!(job["canPublish"], true, "{job}");
+        assert_eq!(remote_branch(&remote, &format!("oby/build-{id}")), None);
+        id
+    };
+    // A file the base tracks, made a pointer: changed, not added.
+    held("POINTER: README.md", "README.md");
+    let id = held("POINTER: model.bin", "model.bin");
 
+    // The owner's Publish, as the apps offer it: no choice beyond Oby's default.
     let path = format!("/v1/jobs/{id}/publish");
     let (key, device_id) = registered(&obid, 19);
-    let offered = call(&obid, "GET", &format!("{path}?anyway=true"), None);
+    let offered = call(&obid, "GET", &path, None);
     assert_eq!(offered.status, 200, "{}", offered.text);
     let sentence = offered.body["action"].as_str().unwrap();
-    let mut body = approval(
+    let body = approval(
         &key,
         &device_id,
         &id,
         sentence,
         obi_protocol::time::now() + 1,
     );
-    body["anyway"] = json!(true);
-    body["head"] = offered.body["head"].clone();
     let published = call(&obid, "POST", &path, Some(&body));
     assert_eq!(published.status, 200, "{}\n{}", published.text, obid.log());
+    let branch = format!("oby/build-{id}");
     let clone = obid.home.join("clones/obi-e2e/fixture-app");
     assert_eq!(
         remote_branch(&remote, &branch),

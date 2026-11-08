@@ -565,6 +565,17 @@ pub fn is_branch_name(name: &str) -> bool {
         && !name.contains("/.")
 }
 
+/// What a checkout of obid's sets so Git LFS files stay pointers, as the check sees them
+/// (PUBLISHING-6, 20): the person's own `filter.lfs` would run git-lfs with no login and fail it.
+pub const LFS_POINTERS: [&str; 6] = [
+    "-c",
+    "filter.lfs.smudge=",
+    "-c",
+    "filter.lfs.process=",
+    "-c",
+    "filter.lfs.required=false",
+];
+
 /// Whether `commit` sends files to Git LFS: a `filter=lfs` that isn't a comment in any of its
 /// `.gitattributes`, nested ones too (PUBLISHING-20). A tree git can't read says no.
 pub async fn uses_lfs(clone: &Path, commit: &str) -> bool {
