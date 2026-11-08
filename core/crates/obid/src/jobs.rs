@@ -5142,16 +5142,14 @@ impl Jobs {
     /// else, and anything more for another Obi's review (it only reads, and never asks), don't.
     /// None for a site the job decides ([`Jobs::ask_about`]).
     pub(crate) fn reach_now(&self, id: &str, host: &str, port: u16) -> Option<Result<(), String>> {
+        let site = crate::egress::site(host, port);
         // A conversation's Cursor: its tool's own services, and nothing else ever.
         if id.starts_with(crate::brain::harness_cursor::DOOR) {
             return Some(
                 crate::egress::tools_own(Tool::Cursor, host, port)
                     .then_some(())
                     .ok_or_else(|| {
-                        format!(
-                            "A conversation on Cursor reaches only Cursor's own services, not {}.",
-                            crate::egress::site(host, port)
-                        )
+                        format!("A conversation on Cursor reaches only Cursor's own services, not {site}.")
                     }),
             );
         }
@@ -5161,18 +5159,19 @@ impl Jobs {
         if let Some(tool) = Tool::from_id(&job.agent)
             && crate::egress::tools_own(tool, host, port)
         {
-            // Every host of its tool's vendor domains, reached by the CLI or anything in its box,
-            // leaves the job the owner's (MERGING-30, the owner's decision of 2026-11-06).
+            // What a vendor's host does to the job: MERGING-30, crate::egress::tools_api.
+            if host == "chatgpt.com" {
+                self.unvet(id, "its agent reached chatgpt.com, past its tool's API");
+            } else if !crate::egress::tools_api(tool, host) {
+                self.mark_foreign(id, format!("its agent reached {site}, past its tool's API"));
+            }
             return Some(Ok(()));
         }
         // Telemetry a CLI sends elsewhere (Datadog, Sentry) is a site like any other: the job's
         // rules, its mode or the owner's card decide it (PERMISSIONS-2).
-        job.obi.is_some().then(|| {
-            Err(format!(
-                "This job doesn't reach {}.",
-                crate::egress::site(host, port)
-            ))
-        })
+        job.obi
+            .is_some()
+            .then(|| Err(format!("This job doesn't reach {site}.")))
     }
 
     /// How job `id` decides a site its agent wants to reach (`host` on `port`), once for its
@@ -18841,23 +18840,64 @@ mod tests {
         .unwrap()
     }
 
-    /// MERGING-30: a CLI reaching its own vendor's hosts past the model's API (Codex's
-    /// chatgpt.com on a ChatGPT login) goes through and leaves the job the owner's.
-    #[tokio::test]
-    async fn merging_30_codex_reaching_chatgpt_leaves_the_job_the_owners() {
+    /// MERGING-30: job `agent` of the owner's own words reaches `host` on 443 and goes through:
+    /// whether it was marked someone else's code, and whether its check still gets secrets.
+    async fn vendor_reach(agent: &str, host: &str) -> (bool, bool) {
         let root = std::env::temp_dir().join(format!("obid-vendor-host-{}", uuid::Uuid::new_v4()));
-        let job = Job::new(
+        let mut job = Job::new(
             "j".into(),
             "o/r".into(),
             "fix".into(),
             "Fix it".into(),
-            "codex".into(),
+            agent.into(),
             "x1".into(),
         );
+        job.vetted = true;
         let jobs = jobs_with_kept(&root.join("home"), &[&job]);
-        assert_eq!(jobs.reach_now("j", "chatgpt.com", 443), Some(Ok(())));
-        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        assert_eq!(jobs.reach_now("j", host, 443), Some(Ok(())));
+        let job = jobs.get("j").unwrap();
         let _ = std::fs::remove_dir_all(&root);
+        (job.foreign.is_some(), job.check_refuses_secrets().is_none())
+    }
+
+    /// MERGING-30: a CLI's own API host leaves the job as it was: not marked, secrets kept.
+    #[tokio::test]
+    async fn merging_30_a_cli_api_host_leaves_the_job_as_it_was() {
+        assert_eq!(
+            vendor_reach("claude", "api.anthropic.com").await,
+            (false, true)
+        );
+        assert_eq!(vendor_reach("codex", "api.openai.com").await, (false, true));
+        assert_eq!(
+            vendor_reach("cursor", "api2.cursor.sh").await,
+            (false, true)
+        );
+    }
+
+    /// MERGING-30: Codex's chatgpt.com, a ChatGPT login's API that serves shared chats too,
+    /// doesn't mark the job, but its check gets no declared secrets.
+    #[tokio::test]
+    async fn merging_30_chatgpt_withholds_secrets_without_marking() {
+        assert_eq!(vendor_reach("codex", "chatgpt.com").await, (false, false));
+    }
+
+    /// MERGING-30: a vendor's pages people write (shared chats, forums) mark the job someone
+    /// else's code, so its check gets no declared secrets.
+    #[tokio::test]
+    async fn merging_30_a_page_people_write_marks_the_job() {
+        assert_eq!(vendor_reach("claude", "claude.ai").await, (true, false));
+        assert_eq!(
+            vendor_reach("claude", "www.anthropic.com").await,
+            (true, false)
+        );
+        assert_eq!(
+            vendor_reach("codex", "community.openai.com").await,
+            (true, false)
+        );
+        assert_eq!(
+            vendor_reach("cursor", "forum.cursor.com").await,
+            (true, false)
+        );
     }
 
     /// TASKS-18: only a stop the owner asked for says a question waited; obid's own stop of a job
