@@ -5159,9 +5159,10 @@ impl Jobs {
         if let Some(tool) = Tool::from_id(&job.agent)
             && crate::egress::tools_own(tool, host, port)
         {
-            // What a vendor's host does to the job: MERGING-30, crate::egress::tools_api.
             if host == "chatgpt.com" {
-                self.unvet(id, "its agent reached chatgpt.com, past its tool's API");
+                self.update(id, |j| {
+                    j.withheld = Some("this job reached chatgpt.com".into())
+                });
             } else if !crate::egress::tools_api(tool, host) {
                 self.mark_foreign(id, format!("its agent reached {site}, past its tool's API"));
             }
@@ -9594,7 +9595,7 @@ impl Jobs {
         // The commit the check runs, taken once, after the job's turn ended: its sandbox's watcher
         // has killed what the turn started (crate::sandbox, `WATCHER`).
         let head = crate::secretspec::head_of(spec).await;
-        let refused = match (job.check_refuses_secrets(), &head) {
+        let refused = match (job.own_check_refuses_secrets(), &head) {
             (Some(why), _) => Some(why),
             (None, Err(why)) => Some(why.clone()),
             (None, Ok(head)) => {
@@ -18841,8 +18842,17 @@ mod tests {
     }
 
     /// MERGING-30: job `agent` of the owner's own words reaches `host` on 443 and goes through:
-    /// whether it was marked someone else's code, and whether its check still gets secrets.
+    /// whether it was marked someone else's code, and whether its own check still gets secrets.
     async fn vendor_reach(agent: &str, host: &str) -> (bool, bool) {
+        let job = reached(agent, host).await;
+        (
+            job.foreign.is_some(),
+            job.own_check_refuses_secrets().is_none(),
+        )
+    }
+
+    /// The job of [`vendor_reach`], after its reach.
+    async fn reached(agent: &str, host: &str) -> Job {
         let root = std::env::temp_dir().join(format!("obid-vendor-host-{}", uuid::Uuid::new_v4()));
         let mut job = Job::new(
             "j".into(),
@@ -18857,10 +18867,11 @@ mod tests {
         assert_eq!(jobs.reach_now("j", host, 443), Some(Ok(())));
         let job = jobs.get("j").unwrap();
         let _ = std::fs::remove_dir_all(&root);
-        (job.foreign.is_some(), job.check_refuses_secrets().is_none())
+        job
     }
 
-    /// MERGING-30: a CLI's own API host leaves the job as it was: not marked, secrets kept.
+    /// MERGING-30: a CLI's own API host leaves the job as it was: not marked, secrets kept (no
+    /// over-withholding: every job reaches its own API).
     #[tokio::test]
     async fn merging_30_a_cli_api_host_leaves_the_job_as_it_was() {
         assert_eq!(
@@ -18875,10 +18886,52 @@ mod tests {
     }
 
     /// MERGING-30: Codex's chatgpt.com, a ChatGPT login's API that serves shared chats too,
-    /// doesn't mark the job, but its check gets no declared secrets.
+    /// doesn't mark the job, but its own check gets no declared secrets. Nothing a conversation
+    /// reads of the job sees that: its summary when it ends (crate::conversation, `tell`), its
+    /// title and its line in a list (crate::brain::tools), routes and the harness all ask
+    /// `check_refuses_secrets`, which stays clear, so the conversation isn't marked.
     #[tokio::test]
     async fn merging_30_chatgpt_withholds_secrets_without_marking() {
         assert_eq!(vendor_reach("codex", "chatgpt.com").await, (false, false));
+        let job = reached("codex", "chatgpt.com").await;
+        assert_eq!(
+            job.own_check_refuses_secrets().as_deref(),
+            Some("this job reached chatgpt.com")
+        );
+        assert!(job.vetted);
+        assert_eq!(job.check_refuses_secrets(), None);
+        assert_eq!(job.untrusted_why(), None);
+    }
+
+    /// MERGING-30: what reaching chatgpt.com withheld is that job's only: a follow-up of it gets
+    /// its declared secrets.
+    #[tokio::test]
+    async fn merging_30_a_follow_up_of_a_chatgpt_job_gets_its_secrets() {
+        let (jobs, _clone, root) = jobs_with_a_clone("chatgpt-follow-up").await;
+        let first = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                vetted: true,
+                ..NewJob::default()
+            })
+            .unwrap();
+        // Its Codex: this home configures only Claude, which its follow-up runs on.
+        jobs.update(&first.id, |j| j.agent = "codex".into());
+        assert_eq!(jobs.reach_now(&first.id, "chatgpt.com", 443), Some(Ok(())));
+        let first = jobs.get(&first.id).unwrap();
+        assert!(first.own_check_refuses_secrets().is_some());
+        let next = jobs
+            .create(NewJob {
+                vetted: true,
+                agent: Some("claude".into()),
+                ..follow_up(&first, "and the docs")
+            })
+            .unwrap();
+        assert_eq!(next.follow_up_of.as_deref(), Some(first.id.as_str()));
+        assert_eq!(next.own_check_refuses_secrets(), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// MERGING-30: a vendor's pages people write (shared chats, forums) mark the job someone

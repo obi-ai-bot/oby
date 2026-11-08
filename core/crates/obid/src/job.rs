@@ -689,6 +689,11 @@ pub struct Job {
     /// follow-up never runs that code with the owner's values. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign: Option<String>,
+    /// Why its own check gets none of the declared secrets though the job stays the owner's own:
+    /// it reached chatgpt.com (MERGING-30). This job's only: no follow-up inherits it, and nothing
+    /// a conversation reads of the job sees it. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<String>,
     /// The commits obid saw this job make (crate::secretspec, "made"): its agent's turns' new
     /// commits that passed its look (made then, by whoever made them, not a copy of one elsewhere),
     /// its rebases of them and its "work left uncommitted" commit, recorded only while the job was
@@ -928,6 +933,13 @@ impl Job {
         })
     }
 
+    /// Why its own check gets none of the declared secrets: [`Job::check_refuses_secrets`], or
+    /// what withheld them from this job alone ([`Job::withheld`]).
+    pub fn own_check_refuses_secrets(&self) -> Option<String> {
+        self.check_refuses_secrets()
+            .or_else(|| self.withheld.clone())
+    }
+
     /// Its conversation was told of this end of it.
     pub fn told_of_end(&self) -> bool {
         self.told.is_some() && self.told == self.finished
@@ -1077,6 +1089,7 @@ impl Job {
             unsigned: false,
             memory_from_others: false,
             foreign: None,
+            withheld: None,
             made: Vec::new(),
             apart: false,
             clone_root: None,
