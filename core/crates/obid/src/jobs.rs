@@ -117,8 +117,8 @@ const CUT_WAITS: [Duration; 3] = [
 /// How many times a job gone quiet or at its turn limit is continued before it stalls
 /// (RECOVERY-3, RECOVERY-4), as Claude Code's workflow agents are.
 const STALL_TRIES: usize = 5;
-/// How many times a job gone quiet and idle (no CPU, nothing changed: a hung CLI) is continued
-/// before it stalls, counted with [`STALL_TRIES`]' (RECOVERY-12).
+/// How many times a job gone quiet with nothing changed, idle or only spinning its CPU, is
+/// continued before it stalls, counted with [`STALL_TRIES`]' (RECOVERY-12, RECOVERY-16).
 const IDLE_TRIES: usize = 2;
 /// The new sessions a job gets by itself when its last grew too long for its model (RECOVERY-8).
 const NEW_SESSIONS: usize = 1;

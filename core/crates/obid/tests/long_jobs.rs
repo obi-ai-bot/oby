@@ -924,7 +924,8 @@ fn recovery_3_a_quiet_job_continues_in_its_session() {
 #[test]
 fn recovery_3_five_tries_then_it_stalls() {
     let (_folder, obid) = obid_with("recovery-3-out", json!({"stallAfter": 1}), &[]);
-    let id = post_job(&obid, "BUSY KEEP PROMPTS");
+    // It writes in its worktree without a word: busy, so 5 tries (spinning gets 2, RECOVERY-16).
+    let id = post_job(&obid, "SLEEP KEEP PROMPTS");
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(job["stalled"]["why"], "quiet", "{job}");
@@ -976,6 +977,21 @@ fn recovery_12_a_silent_idle_agent_is_continued_at_most_twice() {
     // Its first turn, 2 continued, and the handoff note's.
     assert_eq!(told.len(), 4, "{told:?}");
     assert!(told[1].contains("no progress for 3 seconds"), "{told:?}");
+    assert!(told[3].contains("handoff note"), "{told:?}");
+}
+
+/// RECOVERY-16: an agent spinning its CPU without a word or a change in its worktree is continued
+/// twice at most, as an idle one is, then stalls with its handoff note.
+#[test]
+fn recovery_16_a_spinning_agent_is_continued_at_most_twice() {
+    let (_folder, obid) = obid_with("recovery-14-spin", json!({"stallAfter": 1}), &[]);
+    let id = post_job(&obid, "BUSY KEEP PROMPTS");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["stalled"]["why"], "quiet", "{job}");
+    let told = prompts(&job);
+    // Its first turn, 2 continued, and the handoff note's.
+    assert_eq!(told.len(), 4, "{told:?}");
     assert!(told[3].contains("handoff note"), "{told:?}");
 }
 

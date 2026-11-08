@@ -157,7 +157,7 @@ pub struct Turn {
     pub timed_out: bool,
     /// What timed it out was a quiet spell (`conn::Limit::quiet`): no progress for so long.
     pub quiet: bool,
-    /// That quiet spell was idle too: no CPU used, nothing changed in the worktree (RECOVERY-12).
+    /// Nothing changed in the worktree in that quiet spell: idle or only spinning (RECOVERY-12, 16).
     pub idle: bool,
     /// obid ended it for making the same failing call again and again (crate::jobs).
     pub looped: bool,

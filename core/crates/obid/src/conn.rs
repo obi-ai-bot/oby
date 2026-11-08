@@ -134,9 +134,9 @@ pub struct Conn {
     pub timed_out: bool,
     /// It timed out for being quiet (`Limit::quiet`), not at its most.
     pub quiet_out: bool,
-    /// Its last quiet window had no change in `watch`, no background task held and no CPU used
-    /// either, as far as it could be read: the agent is idle (hung), not busy without a word
-    /// (RECOVERY-12).
+    /// Its last quiet window had no change in `watch` and no background task held, and its CPU
+    /// could be read: the agent is idle (hung, RECOVERY-12) or only spinning (RECOVERY-16), not
+    /// working without a word.
     pub idle_out: bool,
     /// The agent ended its turn and waits for a background task of its own that is still running
     /// (crate::agent): the task stands for progress as a change in `watch` does, for
@@ -305,7 +305,8 @@ impl Conn {
     /// agent stays between turns: looked at without waiting. A line it wrote while idle would be
     /// taken for the next turn's.
     pub async fn quiet(&mut self) -> bool {
-        self.lines.buffer().is_empty()
+        self.buffer.is_empty()
+            && self.lines.buffer().is_empty()
             && tokio::time::timeout(Duration::ZERO, self.lines.fill_buf())
                 .await
                 .is_err()
@@ -320,14 +321,17 @@ impl Conn {
             if self.timed_out {
                 return Err(Cut::TimedOut);
             }
-            self.buffer.clear();
             tokio::select! {
                 read = self.lines.read_until(b'\n', &mut self.buffer) => {
                     match read {
                         Ok(0) | Err(_) => return Err(Cut::Closed),
                         Ok(_) => self.heard(),
                     }
-                    if let Ok(message) = serde_json::from_slice::<Value>(&self.buffer) {
+                    // Cleared only once its line is whole: a branch below that fires while a line
+                    // is half read leaves those bytes here for the next read to finish.
+                    let message = serde_json::from_slice::<Value>(&self.buffer);
+                    self.buffer.clear();
+                    if let Ok(message) = message {
                         return Ok(message);
                     }
                 }
@@ -359,8 +363,9 @@ impl Conn {
                     } else {
                         self.timed_out = true;
                         self.quiet_out = true;
-                        // CPU that couldn't be read is never idle.
-                        self.idle_out = !changed && !self.holding && busy == Some(false);
+                        // Idle, or spinning past the cap (RECOVERY-16); CPU that couldn't be read
+                        // is neither.
+                        self.idle_out = !changed && !self.holding && busy.is_some();
                     }
                 }
                 changed = self.stop.changed() => {
@@ -560,6 +565,36 @@ mod tests {
             .set_modified(SystemTime::now() + Duration::from_secs(3600))
             .unwrap();
         assert!(!changed_since(&dir, since));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RECOVERY-12: a message the agent writes in pieces, with the CPU read firing between them,
+    /// arrives whole.
+    #[tokio::test]
+    async fn recovery_12_a_message_split_across_reads_arrives_whole() {
+        let dir = std::env::temp_dir().join(format!("obid-split-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let launch = crate::agent::Launch {
+            argv: [
+                "/bin/sh",
+                "-c",
+                r#"printf '{"a":'; sleep 1; printf '"b","c"'; sleep 1; printf ':1}\n'"#,
+            ]
+            .map(Into::into)
+            .into(),
+            env: vec![("PATH".into(), "/bin:/usr/bin".into())],
+            cwd: dir.clone(),
+            stderr: dir.join("stderr"),
+            own_sandbox: false,
+            group: None,
+        };
+        let limit = Limit {
+            quiet: Some(Duration::from_secs(3)),
+            ..Duration::from_secs(30).into()
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let mut conn = Conn::spawn(&launch, limit, stop, false).await.unwrap();
+        assert_eq!(conn.next().await.unwrap(), json!({"a": "b", "c": 1}));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
