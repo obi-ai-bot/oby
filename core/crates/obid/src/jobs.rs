@@ -8837,8 +8837,8 @@ impl Jobs {
     /// secrets, failed the same way: with the same [`crate::facts::signature`], or in the same
     /// step with every test it named failing there too, when those names explain its whole failure.
     /// Only for a job whose start is its base's tip (no pull request's head, no first job's branch,
-    /// no review), never once it stopped. Each base's run is kept ([`Jobs::base_runs`]); one that
-    /// couldn't run, or was stopped, judges nothing.
+    /// no review) whose task names none of its failing tests, never once it stopped. Each base's
+    /// run is kept ([`Jobs::base_runs`]); one that couldn't run, or was stopped, judges nothing.
     #[allow(clippy::too_many_arguments)]
     async fn fails_on_base(
         &self,
@@ -8858,6 +8858,9 @@ impl Jobs {
         })?;
         let start = job.start_commit.clone().filter(|c| git::is_sha(c))?;
         let mine = BaseFailure::of(job.checks.last()?, output);
+        if crate::facts::names_any(&job.task, &mine.failing) {
+            return None;
+        }
         let key = |from: &str| {
             (
                 job.repo.clone(),
@@ -8897,11 +8900,8 @@ impl Jobs {
             [] => "the same way".to_owned(),
             tests => format!("on {}", tests.join(", ")),
         };
-        let short = |sha: &str| sha.chars().take(7).collect::<String>();
         Some(format!(
-            "Not published: `{command}` already fails on the base {} as it fails on this change's {}, {what}, so nothing counts as checked. Read its change, then Publish it by hand.",
-            short(&start),
-            short(head)
+            "Not published: `{command}` already fails on the base {start:.7} as it fails on this change's {head:.7}, {what}, so nothing counts as checked. Read its change, then Publish it by hand."
         ))
     }
 

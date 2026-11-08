@@ -59,6 +59,24 @@ pub fn numstat(text: &str) -> Diff {
 
 /// The most failing tests a check run lists.
 pub(crate) const FAILING_MAX: usize = 20;
+
+/// Whether `text` (a job's task) names any of `tests`, as a word of its own, in full or as its `::`
+/// path's end either way round (`red` names `tests::red`, `jobs_api::red` names `red`): the failure
+/// it was asked to fix, which its rounds are for (PUBLISHING-18).
+pub(crate) fn names_any(text: &str, tests: &[String]) -> bool {
+    let mut words = text
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+        .map(|word| word.trim_matches(':'))
+        .filter(|word| !word.is_empty());
+    words.any(|word| {
+        tests.iter().any(|test| {
+            word == test
+                || test.ends_with(&format!("::{word}"))
+                || word.ends_with(&format!("::{test}"))
+        })
+    })
+}
+
 /// What a failing test's line the secret scan flags reads instead.
 const HIDDEN_LINE: &str = "[possible secret hidden]";
 /// The lines and characters a failing test's message keeps.
@@ -909,6 +927,19 @@ pub fn estimate<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_names_a_test_as_a_word_in_full_or_by_its_end() {
+        let task = "Fix the failing test `jobs_api::publishing_18`, and red too.";
+        let names = |test: &str| names_any(task, &[test.to_owned()]);
+        assert!(names("publishing_18"));
+        assert!(names("jobs_api::publishing_18"));
+        assert!(names("tests::red"));
+        assert!(!names("publishing_1"));
+        assert!(!names("other::publishing_18"));
+        assert!(!names("re"));
+        assert!(!names_any(task, &[]));
+    }
 
     fn signed(round: u32, passed: bool, failing: &[(&str, &str)], output: &str) -> CheckRecord {
         let mut record = CheckRecord {
