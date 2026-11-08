@@ -2981,11 +2981,12 @@ fn review_of(obid: &Obid, id: &str, nth: usize) -> Value {
     })
 }
 
-/// A review that gives no verdict says so on the job (`reviewError`), and so does one whose verdict
-/// a restart kept from landing: once obid starts again, a `reviewing` whose review ended takes its
-/// end, and one whose review is gone gets a new review.
+/// RECOVERY-15: a review that gives no verdict tells the owner, never silently: `reviewError`,
+/// `reviewNeedsYou` and one `failed` item with Try again. So does one whose verdict a restart kept
+/// from landing: once obid starts again, a `reviewing` whose review ended takes its end, and one
+/// whose review is gone gets a new review, whose item replaces the old one.
 #[test]
-fn a_review_with_no_verdict_or_cut_off_by_a_restart_settles() {
+fn recovery_15_a_review_with_no_verdict_tells_the_owner() {
     let folder = Folder::new("publish-review-settle");
     let bin = fake_gh(&folder.0);
     let (mut obid, _remote, config) = obid_with(&folder, &bin);
@@ -3001,15 +3002,24 @@ fn a_review_with_no_verdict_or_cut_off_by_a_restart_settles() {
         })
     };
     let job = settled(&obid);
-    let none = "Oby's review didn't finish: it gave no verdict";
+    let none = "Oby couldn't review #7: it gave no verdict";
     assert_eq!(job["reviewError"], none, "{job}\n{}", obid.log());
     assert_eq!(job["review"], Value::Null);
-    assert_eq!(job["reviewNeedsYou"], false);
+    assert_eq!(job["reviewNeedsYou"], true);
     assert_eq!(
         stage(&job, "review")["detail"],
         format!("Waiting for review · {none}")
     );
     let review = reviews_of(&obid, &id)[0]["id"].as_str().unwrap().to_owned();
+    let item = |obid: &Obid, review: &str| {
+        let items = within(30, "the owner's item", || {
+            let items = review_items(obid, &id);
+            (items.len() == 1 && items[0]["id"] == format!("{id}-review-{review}")).then_some(items)
+        });
+        assert_eq!(items[0]["text"], none);
+        assert_eq!(items[0]["options"], json!(["Try again"]));
+    };
+    item(&obid, &review);
     // Stopped before its verdict landed, then started again: it lands.
     let stored = obid.home.join(format!("jobs/{id}.json"));
     let cut_off = |reviewing: &str| {
@@ -3023,13 +3033,20 @@ fn a_review_with_no_verdict_or_cut_off_by_a_restart_settles() {
     let mut obid = start(&folder.0, &config, Some(&bin));
     assert_eq!(settled(&obid)["reviewError"], none);
     assert_eq!(reviews_of(&obid, &id).len(), 1);
-    // Its review gone: a new one.
+    item(&obid, &review);
+    // Its review gone before it gave up (no reviewer of that head on record): a new one.
     obid.stop();
     cut_off("deadbeef");
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&stored).unwrap()).unwrap();
+    for key in ["review_failed", "reviewFailed"] {
+        kept.as_object_mut().unwrap().remove(key);
+    }
+    std::fs::write(&stored, kept.to_string()).unwrap();
     let obid = start(&folder.0, &config, Some(&bin));
     let again = review_of(&obid, &id, 1);
     assert_ne!(again["id"], review.as_str());
     assert_eq!(settled(&obid)["reviewError"], none);
+    item(&obid, again["id"].as_str().unwrap());
 }
 
 /// obid with the fixture repository, the publishing stand-in on Claude Code's account `stub`, and

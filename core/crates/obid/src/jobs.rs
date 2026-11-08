@@ -12216,14 +12216,12 @@ impl Jobs {
                     .unwrap_or_else(|| status.as_str().to_owned()),
             ),
         };
-        // It ended before a verdict (a login refused, the tool crashing): on the next reviewer
-        // that may take it, once; then the owner's, in one item. Never one the owner let go.
+        // Ended with no verdict: the owner's, in one item (RECOVERY-15), after the next reviewer
+        // that may take it, once, for a login refused or the tool crashing. Never one let go.
         let recorded = author
             .review_failed_here()
             .is_some_and(|f| f.reviews.iter().any(|(job, _)| job == id));
-        if matches!(review.status, Status::Failed | Status::Interrupted)
-            && (review.dismissed.is_none() || recorded)
-        {
+        if why.is_some() && (review.dismissed.is_none() || recorded) {
             let mut failed =
                 author
                     .review_failed_here()
@@ -12240,8 +12238,10 @@ impl Jobs {
             }
             let mut tried = author.clone();
             tried.review_failed = Some(failed.clone());
-            let retry =
-                !failed.needs_you && failed.reviews.len() < 2 && self.reviewer(&tried).is_ok();
+            let retry = matches!(review.status, Status::Failed | Status::Interrupted)
+                && !failed.needs_you
+                && failed.reviews.len() < 2
+                && self.reviewer(&tried).is_ok();
             failed.needs_you = !retry;
             let why = why.unwrap_or_default();
             let number = author
