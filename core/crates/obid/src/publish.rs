@@ -728,6 +728,10 @@ pub trait Hooks: Send + Sync {
     fn sent(&self, outgoing: Outgoing);
     /// How the secret scan went, once it ended or couldn't run (#735).
     fn scanned(&self, _scanned: Scanned) {}
+    /// Whether the job publishes by itself, not on the owner's Publish.
+    fn by_itself(&self) -> bool {
+        false
+    }
 }
 
 /// Where a job publishes from and to.
@@ -832,6 +836,61 @@ fn forbidden_names() -> Vec<String> {
         }
     }
     names
+}
+
+/// The files `since...head` adds or changes (from their merge base, so what the base did since
+/// doesn't count) that are Git LFS pointers at `head`, read from their content (the spec's first
+/// line and an `oid sha256:` line, at most 1024 bytes), never from `.gitattributes`.
+async fn lfs_pointers_added(clone: &Path, since: &str, head: &str) -> Vec<String> {
+    const SPEC: &str = "version https://git-lfs.github.com/spec/v1";
+    // A pointer's `oid` line is what an added or edited one always changes.
+    let pickaxe = "-G^oid sha256:";
+    let Ok(names) = git_in(
+        clone,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=AM",
+            pickaxe,
+            &format!("{since}...{head}"),
+        ],
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    let mut pointers = Vec::new();
+    for name in names.split('\0').filter(|n| !n.is_empty()) {
+        let blob = format!("{head}:{name}");
+        let small = git_in(clone, &["cat-file", "-s", &blob])
+            .await
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_some_and(|size| size <= 1024);
+        if !small {
+            continue;
+        }
+        if let Ok(text) = git_in(clone, &["cat-file", "blob", &blob]).await
+            && text.starts_with(&format!("{SPEC}\n"))
+            && text.lines().any(|l| l.starts_with("oid sha256:"))
+        {
+            pointers.push(name.to_owned());
+        }
+    }
+    pointers
+}
+
+/// Why a job that adds or changes LFS pointers isn't published by itself (PUBLISHING-19).
+fn lfs_held(files: &[String]) -> String {
+    let mut named = files.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    if files.len() > 3 {
+        named.push_str(&format!(" and {} more", files.len() - 3));
+    }
+    format!(
+        "Not published: it adds or changes Git LFS files ({named}), and Oby doesn't upload LFS files, so the remote may not have what they point to. Read its change, then Publish it by hand."
+    )
 }
 
 /// Why a job isn't published when its branch moved since its check passed on it (PUBLISHING-2).
@@ -976,6 +1035,14 @@ pub async fn publish(
         }
         Some(0) => return Err(Failure::AlreadyOnBase(base.to_owned())),
         Some(_) => {}
+    }
+    // obid never uploads LFS files, so pointers it adds would name files the remote may not
+    // have: held by itself, sent on any Publish of the owner's (PUBLISHING-19).
+    if hooks.by_itself() {
+        let added = lfs_pointers_added(clone, &since, &head).await;
+        if !added.is_empty() {
+            return Err(Failure::Failed(lfs_held(&added)));
+        }
     }
     // What the scan read and how it went, for the job (#735).
     let started = std::time::Instant::now();
@@ -1838,6 +1905,77 @@ mod tests {
             action(&job, "dev"),
             "Push the new commits on oby/fix-75 to deskree-inc/oby, for its pull request into dev."
         );
+    }
+
+    /// PUBLISHING-19: what holds a publish is a pointer the job's commits added or edited since
+    /// their merge base with the base, read by content: an edit that changes only its `oid` and
+    /// `size` counts; a pointer the base deleted since, or a file that only quotes the spec, doesn't.
+    #[tokio::test]
+    async fn publishing_19_pointers_added_or_edited_since_the_merge_base() {
+        let clone = std::env::temp_dir().join(format!("obid-lfs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&clone).unwrap();
+        let run = |args: &[&str]| {
+            let out = crate::git::command(&clone, &[])
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        let write = |name: &str, text: &str| std::fs::write(clone.join(name), text).unwrap();
+        let pointer = |oid: char, size: u32| {
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n",
+                oid.to_string().repeat(64)
+            )
+        };
+        let commit = |message: &str| {
+            run(&["add", "-A"]);
+            run(&["commit", "-q", "-m", message]);
+            run(&["rev-parse", "HEAD"])
+        };
+        run(&["init", "-q"]);
+        write("kept.bin", &pointer('a', 10));
+        write("gone.bin", &pointer('b', 10));
+        let base = commit("base");
+        // The base deletes a pointer after the job started from it.
+        run(&["rm", "-q", "gone.bin"]);
+        let moved = commit("the base moves on");
+        run(&["checkout", "-q", &base]);
+        write("hello.txt", "hello\n");
+        // Quotes the spec's first line, but is no pointer.
+        write(
+            "notes.md",
+            "version https://git-lfs.github.com/spec/v1\nnot a pointer\n",
+        );
+        let plain = commit("the job's plain files");
+        assert!(lfs_pointers_added(&clone, &moved, &plain).await.is_empty());
+        // Only `oid` and `size` change: the `version` line stays as context.
+        write("kept.bin", &pointer('c', 11));
+        let edited = commit("the job edits a pointer");
+        assert_eq!(
+            lfs_pointers_added(&clone, &moved, &edited).await,
+            ["kept.bin"]
+        );
+        write("new.bin", &pointer('d', 12));
+        let added = commit("the job adds one");
+        assert_eq!(
+            lfs_pointers_added(&clone, &moved, &added).await,
+            ["kept.bin", "new.bin"]
+        );
+        let _ = std::fs::remove_dir_all(&clone);
     }
 
     /// PUBLISHING-13: `lease`'s own read, for a branch made after [`stopped_being_own`] looked: by
