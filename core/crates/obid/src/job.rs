@@ -1393,6 +1393,14 @@ impl Job {
             && self.approving_tools().len() < 2
     }
 
+    /// A second review is due and none on this head ended without a verdict (RECOVERY-15).
+    pub fn second_review_waits(&self) -> bool {
+        self.review_due().is_some()
+            && self.second_review_due()
+            && self.review_failed_here().is_none()
+            && self.review_error.is_none()
+    }
+
     /// Oby's verdict on the head its pull request has now, if it has one: an approval here is
     /// what posting it and merging go on from.
     pub fn current_review(&self) -> Option<&Review> {

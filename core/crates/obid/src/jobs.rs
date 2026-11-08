@@ -12117,14 +12117,11 @@ impl Jobs {
                 })
                 .collect();
             // A second review that never started (a restart between the first's verdict and its
-            // start, say) starts now too.
+            // start, say) starts now too: none that gave no verdict, or that the owner ended.
             let waiting = state
                 .jobs
                 .values()
-                .filter(|job| {
-                    job.no_reviewer.is_some()
-                        || (job.review_due().is_some() && job.second_review_due())
-                })
+                .filter(|job| job.no_reviewer.is_some() || job.second_review_waits())
                 .map(|job| job.id.clone())
                 .collect();
             (hanging, waiting)

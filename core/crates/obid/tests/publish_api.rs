@@ -3168,10 +3168,94 @@ fn recovery_15_try_again_runs_a_second_review_that_gave_no_verdict() {
     });
 }
 
+/// The inbox items about job `id` still open, of every kind.
+fn open_items(obid: &Obid, id: &str) -> Vec<Value> {
+    let inbox = call(obid, "GET", "/v1/inbox", None).body;
+    let open = inbox.as_array().unwrap().iter();
+    open.filter(|i| i["job"] == id && i["done"].is_null())
+        .cloned()
+        .collect()
+}
+
+/// RECOVERY-15 on MERGING-14's second review: one that gives no verdict after Codex approved
+/// leaves the owner its one item, with no other Claude Code account tried by itself and no
+/// "yours to merge" card beside it, however many settle passes go by.
+#[test]
+fn recovery_15_a_second_review_with_no_verdict_tries_no_other_reviewer() {
+    let folder = Folder::new("publish-review-second-held");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex_following(&folder, &bin, true);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md MUTE REVIEW",
+               "check": "test -f AGENTS.md", "account": "stub"}),
+    );
+    let items = within(120, "the owner's item", || {
+        let items = review_items(&obid, &id);
+        (items.len() == 1).then_some(items)
+    });
+    assert_eq!(review_of(&obid, &id, 1)["account"], "other");
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
+    let open = open_items(&obid, &id);
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0]["id"], items[0]["id"]);
+}
+
+/// RECOVERY-15 on MERGING-14's second review: the owner's Stop of it holds. Its author says it
+/// was stopped, and no review starts again by itself, nor any item.
+#[test]
+fn recovery_15_a_second_review_the_owner_stopped_stays_stopped() {
+    let folder = Folder::new("publish-review-second-stopped");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex_following(&folder, &bin, false);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md HOLD REVIEW",
+               "check": "test -f AGENTS.md", "account": "stub"}),
+    );
+    let review = review_of(&obid, &id, 1)["id"].as_str().unwrap().to_owned();
+    within(120, "the second review runs", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{review}"), None).body;
+        (job["status"] == "running").then_some(())
+    });
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{review}/stop"), None);
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
+    let job = review_settled(&obid, &id);
+    assert_eq!(
+        job["reviewError"],
+        "Oby's review didn't finish: it was stopped"
+    );
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    assert_eq!(reviews_of(&obid, &id).len(), 2, "{}", obid.log());
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert!(job["reviewing"].is_null(), "{job}");
+    no_review_item_ever(&obid, &id);
+}
+
 /// obid with the fixture repository, the publishing stand-in on Claude Code's account `stub`, and
 /// a Codex account `codex` (an API key's login) on the stand-in Codex: Oby's review of Claude
 /// Code's work goes to Codex first.
 fn obid_with_codex(folder: &Folder, path_first: &Path) -> Obid {
+    start(&folder.0, &codex_config(folder), Some(path_first))
+}
+
+/// [`obid_with_codex`], following pull requests and settling reviews every second, with another
+/// Claude Code account `other` when `other` is set: a second review then goes to it first.
+fn obid_with_codex_following(folder: &Folder, path_first: &Path, other: bool) -> Obid {
+    let mut config = codex_config(folder);
+    if other {
+        let dir = sign_in(folder, "other");
+        config["agents"]["claude"]["accounts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "other", "name": "Other", "configDir": dir}));
+    }
+    let env = [("OBID_FOLLOW_SECONDS", "1")];
+    start_with(&folder.0, &config, Some(path_first), &env)
+}
+
+fn codex_config(folder: &Folder) -> Value {
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &agent());
     sign_in(folder, "stub");
@@ -3186,7 +3270,7 @@ fn obid_with_codex(folder: &Folder, path_first: &Path) -> Obid {
         "bin": Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-codex"),
         "accounts": [{"id": "codex", "name": "Codex", "configDir": codex}],
     });
-    start(&folder.0, &config, Some(path_first))
+    config
 }
 
 /// The tools of Oby's approving reviews of job `job`'s head, oldest first.
