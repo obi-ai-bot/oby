@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // A stand-in for Claude Code in obid's tests: stream-json in and out, as obid runs `claude`. What
 // it does comes from the prompt (the job's task):
-//   COMMIT: <file>   writes the file in the worktree and commits it
+//   COMMIT: <file>   writes the file in the worktree and commits it; with ENDS: <line>, its summary's
+//                    last line is that line (`GOAL NOT MET: …`). Told its last line didn't say
+//                    `GOAL MET`, it ends "Carried on." and `GOAL MET`
 //   EDIT: <file>     adds a line to the file and stages it, for COMMIT to commit with its own
 //   DRAFT: <file>    writes the file in the worktree and leaves it uncommitted, then goes on with
 //                    the rest of the prompt
@@ -521,6 +523,8 @@ rl.on("line", (line) => {
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "Add the draft"]);
     return result("Committed the draft.");
   }
+  // obid's word on a committing job's last line (TASKS-19): it carries on, then says it.
+  if (prompt.startsWith("Your last line didn't say `GOAL MET`")) return result("Carried on.\n\nGOAL MET");
   const commit = prompt.match(/COMMIT: (\S+)/);
   const ask = prompt.match(/ASK: (\{.*\})/);
   const asks = prompt.match(/ASKS: (\[.*\])/);
@@ -548,7 +552,8 @@ rl.on("line", (line) => {
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${commit[1]}`]);
     emit({ type: "assistant", session_id: session, message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Write", input: { file_path: commit[1] } }] } });
     if (prompt.includes("QUIET")) return setInterval(() => {}, 1000);
-    result(`Added ${commit[1]}.`);
+    const ends = prompt.match(/ENDS: (.+)/);
+    result(`Added ${commit[1]}.${ends ? `\n\n${ends[1]}` : ""}`);
   } else if (reach) {
     const tries = (f) => {
       try {
