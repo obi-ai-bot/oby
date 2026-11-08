@@ -1665,7 +1665,8 @@ impl Job {
 
     /// Stamps its stages' times at `now` (#733): how the time since the last stamp counts follows
     /// the job as it was then. Whether a stage started or finished. A job that left an active
-    /// status has no current stage, so every open clock stops at `now` (FIELD-11).
+    /// status runs none of its own stages, so their open clocks stop at `now` (FIELD-11); Review
+    /// and Merged follow GitHub, not the run, and keep counting while they're current.
     pub fn stamp(&mut self, now: i64) -> bool {
         let active = self.status.is_active();
         let pipeline = self.pipeline();
@@ -1674,13 +1675,15 @@ impl Job {
             .into_iter()
             .flatten()
             .map(|s| {
+                let id = s["id"].as_str().unwrap_or("");
                 let state = s["state"].as_str().unwrap_or("");
-                let state = if active || state != "current" {
+                let runs = active || matches!(id, "review" | "merged");
+                let state = if runs || state != "current" {
                     state
                 } else {
                     "ended"
                 };
-                (s["id"].as_str().unwrap_or("").to_owned(), state.to_owned())
+                (id.to_owned(), state.to_owned())
             })
             .collect();
         use crate::facts::Clock;
@@ -2297,6 +2300,58 @@ mod tests {
         job.stamp(t0 + 20_005);
         let check = job.stage_times.iter().find(|t| t.id == "check").unwrap();
         assert_eq!((check.seconds, check.finished), (15, None));
+    }
+
+    /// A finished job's Review and Merged stages follow GitHub, so their clocks run while they
+    /// wait ("Review · 3h so far") and stop when GitHub moves on.
+    #[test]
+    fn a_finished_jobs_review_and_merge_are_timed() {
+        let mut job = job();
+        job.kind = "fix".into();
+        job.pr = None;
+        job.status = Status::Done;
+        let t0 = job.created;
+        job.started = Some(t0);
+        job.finished = Some(t0 + 10);
+        job.commits = Some(1);
+        job.checked_head = Some("a".repeat(40));
+        job.was_published("https://github.com/deskree-inc/oby/pull/42".into());
+        job.pushed = Some(1);
+        assert!(job.stamp(t0 + 10));
+        let stage = |job: &Job, id: &str| -> Value {
+            let stages = job.pipeline()["stages"].clone();
+            stages
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["id"] == id)
+                .cloned()
+                .unwrap()
+        };
+        let review = stage(&job, "review");
+        assert_eq!(review["state"], "current");
+        assert_eq!(review["started"], obi_protocol::time::format(t0 + 10));
+        assert!(review.get("finished").is_none());
+        let pr = |state: &str, decision: Option<&str>| crate::github::PullRequest {
+            state: state.into(),
+            review_decision: decision.map(str::to_owned),
+            base: "dev".into(),
+            merged_at: (state == "MERGED").then_some(t0),
+            checked_at: t0,
+            head: None,
+        };
+        job.pull_request = Some(pr("OPEN", Some("APPROVED")));
+        assert!(job.stamp(t0 + 10_810));
+        let review = stage(&job, "review");
+        assert_eq!(review["seconds"], 10_800);
+        assert_eq!(review["finished"], obi_protocol::time::format(t0 + 10_810));
+        assert_eq!(
+            stage(&job, "merged")["started"],
+            obi_protocol::time::format(t0 + 10_810)
+        );
+        job.pull_request = Some(pr("MERGED", Some("APPROVED")));
+        assert!(job.stamp(t0 + 10_870));
+        assert_eq!(stage(&job, "merged")["seconds"], 60);
     }
 
     #[test]
