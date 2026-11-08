@@ -1413,6 +1413,13 @@ impl Job {
                 || self.review_failed_here().is_some_and(|f| f.needs_you))
     }
 
+    /// The owner ended it: let it go, or stopped it themself (`Jobs::stop`, the owner's stops).
+    pub fn ended_by_owner(&self) -> bool {
+        self.dismissed.is_some()
+            || (self.stopped_by.as_deref())
+                .is_some_and(|by| crate::jobs::OWNERS_STOPS.iter().any(|o| by.starts_with(o)))
+    }
+
     /// The reviews of the pull request's head, as obid pushed it, that couldn't give a verdict.
     pub fn review_failed_here(&self) -> Option<&ReviewFailed> {
         self.review_failed

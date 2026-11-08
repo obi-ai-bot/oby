@@ -687,7 +687,7 @@ pub const STOPPED_BY_CONVERSATION: &str = "Stopped by a conversation";
 
 /// The stops the owner asked for: only these say a question waited, which a failure record keeps.
 /// ponytail: matched by their words, a flag on `Jobs::stop` if a third kind of owner's stop comes.
-const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
+pub(crate) const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
 
 /// Who stopped a job when the pull request it reviewed or waited on was merged or closed.
 pub const PULL_REQUEST_ENDED: &str = "Stopped: its pull request was merged or closed";
@@ -12032,7 +12032,7 @@ impl Jobs {
     /// have; `Err` when its review isn't waiting for the owner.
     pub fn review_again(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
-        if !job.review_needs_you() || job.current_review().is_some() {
+        if !job.review_needs_you() || job.current_review().is_some_and(|r| !r.approved()) {
             return Some(Err(Refused(
                 "Oby's review of it isn't waiting for you.".into(),
             )));
@@ -12216,12 +12216,12 @@ impl Jobs {
                     .unwrap_or_else(|| status.as_str().to_owned()),
             ),
         };
-        // Ended with no verdict: the owner's, in one item (RECOVERY-15), after the next reviewer
-        // that may take it, once, for a login refused or the tool crashing. Never one let go.
+        // No verdict: the owner's (RECOVERY-15), in one item while its pull request is open, after
+        // the next reviewer that may take it once, for a login refused or a crash; none they ended.
         let recorded = author
             .review_failed_here()
             .is_some_and(|f| f.reviews.iter().any(|(job, _)| job == id));
-        if why.is_some() && (review.dismissed.is_none() || recorded) {
+        if why.is_some() && (!review.ended_by_owner() || recorded) {
             let mut failed =
                 author
                     .review_failed_here()
@@ -12264,7 +12264,7 @@ impl Jobs {
                     "job {of}: its review {id} ended before a verdict ({why}): another reviewer takes it"
                 );
                 self.start_review(&of);
-            } else if let (Some(author), Some(error)) = (author, error) {
+            } else if let (Some(author), Some(error)) = (author.filter(pull_request_open), error) {
                 self.review_items(
                     &of,
                     Some(crate::sphere::inbox::review_item(&author, id, &error)),

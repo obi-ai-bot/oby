@@ -3049,6 +3049,125 @@ fn recovery_15_a_review_with_no_verdict_tells_the_owner() {
     item(&obid, again["id"].as_str().unwrap());
 }
 
+/// Job `id`'s review settled: no `reviewing`, and a `reviewError`.
+fn review_settled(obid: &Obid, id: &str) -> Value {
+    within(120, "Oby's review settles", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["reviewing"].is_null() && job["reviewError"].is_string()).then_some(job)
+    })
+}
+
+/// RECOVERY-15: a review that made commits of its own tells the owner as one with no verdict does,
+/// with no other reviewer tried by itself: its verdict doesn't count.
+#[test]
+fn recovery_15_a_review_that_made_commits_tells_the_owner() {
+    let folder = Folder::new("publish-review-commits");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: hello.txt COMMITTING REVIEW", "check": "test -f hello.txt"}),
+    );
+    let job = review_settled(&obid, &id);
+    let why = "Oby couldn't review #7: it made commits, so its verdict doesn't count";
+    assert_eq!(job["reviewError"], why, "{job}\n{}", obid.log());
+    assert_eq!(job["reviewNeedsYou"], true);
+    assert_eq!(job["review"], Value::Null);
+    let reviews = reviews_of(&obid, &id);
+    assert_eq!(reviews.len(), 1, "{reviews:?}");
+    let items = within(30, "the owner's item", || {
+        let items = review_items(&obid, &id);
+        (items.len() == 1).then_some(items)
+    });
+    let review = reviews[0]["id"].as_str().unwrap();
+    assert_eq!(items[0]["id"], format!("{id}-review-{review}"));
+    assert_eq!(items[0]["text"], why);
+    assert_eq!(items[0]["options"], json!(["Try again"]));
+}
+
+/// No item about Oby's review of `id` was ever raised: none open, and none settled since.
+fn no_review_item_ever(obid: &Obid, id: &str) {
+    let inbox = call(obid, "GET", "/v1/inbox", None).body;
+    let raised: Vec<&Value> = inbox
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["job"] == id && i["id"].as_str().unwrap_or_default().contains("-review-"))
+        .collect();
+    assert!(raised.is_empty(), "{raised:?}");
+}
+
+/// RECOVERY-15: a review the owner stopped tells no one, as one they let go: its author's
+/// `reviewError` says it was stopped, with no `reviewNeedsYou`, alert or item.
+#[test]
+fn recovery_15_a_review_the_owner_stopped_tells_no_one() {
+    let folder = Folder::new("publish-review-stopped");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt HOLD REVIEW",
+               "check": "test -f hello.txt"}),
+    );
+    let review = review_of(&obid, &id, 0)["id"].as_str().unwrap().to_owned();
+    within(60, "the review runs", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{review}"), None).body;
+        (job["status"] == "running").then_some(())
+    });
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{review}/stop"), None);
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
+    let job = review_settled(&obid, &id);
+    let why = "Oby's review didn't finish: it was stopped";
+    assert_eq!(job["reviewError"], why, "{job}\n{}", obid.log());
+    assert_eq!(job["reviewNeedsYou"], false);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    no_review_item_ever(&obid, &id);
+}
+
+/// RECOVERY-15 with MERGING-14's second review: one that gives no verdict after the first
+/// approved asks the owner too, and their Try again runs it again.
+#[test]
+fn recovery_15_try_again_runs_a_second_review_that_gave_no_verdict() {
+    let folder = Folder::new("publish-review-second-mute");
+    let bin = fake_gh(&folder.0);
+    let obid = obid_with_codex(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: AGENTS.md MUTE REVIEW",
+               "check": "test -f AGENTS.md", "account": "stub"}),
+    );
+    let items = within(120, "the owner's item", || {
+        let items = review_items(&obid, &id);
+        (items.len() == 1).then_some(items)
+    });
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(
+        job["review"]["verdict"],
+        "approved",
+        "{job}\n{}",
+        obid.log()
+    );
+    assert_eq!(approvals(&job), ["codex"]);
+    assert_eq!(job["reviewNeedsYou"], true);
+    assert_eq!(
+        items[0]["text"],
+        "Oby couldn't review #7: it gave no verdict"
+    );
+    let again = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", items[0]["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Try again"})),
+    );
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(review_of(&obid, &id, 2)["agent"], "claude");
+    within(120, "the next give-up's item", || {
+        let open = review_items(&obid, &id);
+        (open.len() == 1 && open[0]["id"] != items[0]["id"]).then_some(())
+    });
+}
+
 /// obid with the fixture repository, the publishing stand-in on Claude Code's account `stub`, and
 /// a Codex account `codex` (an API key's login) on the stand-in Codex: Oby's review of Claude
 /// Code's work goes to Codex first.
