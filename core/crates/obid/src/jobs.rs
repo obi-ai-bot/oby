@@ -1126,8 +1126,13 @@ impl Jobs {
                 job.crash_resumes.retain(|at| now - at < CRASH_WINDOW);
                 if job.crash_resumes.len() >= CRASH_RESUMES {
                     left_here = Some(crate::job::LOOPED.to_owned());
+                } else if job.recovery.spent() {
+                    // Every job at work an unclean restart picks up takes one of its 10, whether
+                    // it continues, checks again or starts again (RECOVERY-17).
+                    left_here = Some(crate::job::capped("obid or the Mac went down while it ran"));
                 } else {
                     job.crash_resumes.push(now);
+                    job.recovery.tries += 1;
                 }
             }
             // Its agent's run was cut, and its session can take it on with a marked message
@@ -1147,11 +1152,8 @@ impl Jobs {
                     job.recovery.cut = Some(WAS_STOPPED.into());
                 } else if job.recovery.restarts >= RESTART_TRIES {
                     left_here = Some(crate::job::RESTARTS_SPENT.to_owned());
-                } else if job.recovery.spent() {
-                    left_here = Some(crate::job::capped("obid or the Mac went down while it ran"));
                 } else {
                     job.recovery.restarts += 1;
-                    job.recovery.tries += 1;
                     job.recovery.cut = Some(WENT_DOWN.into());
                 }
             }
@@ -3876,6 +3878,8 @@ impl Jobs {
             Some(review::failed_result(&body))
         });
         // Another Obi's review can't be tried again here: the Obi that asked is told it failed.
+        // Past its 10 continuations it says so, Try again its next step (RECOVERY-17).
+        let capped = review.is_none() && self.get(id).is_some_and(|j| j.recovery.spent());
         let reason = if review.is_some() {
             format!(
                 "{}{said}. The Obi that asked for this review was told it failed.",
@@ -3883,8 +3887,9 @@ impl Jobs {
             )
         } else {
             format!(
-                "{}{said}. Its branch and worktree are kept. Try again runs it again.",
-                crate::job::CRASHED
+                "{}{said}.{} Its branch and worktree are kept. Try again runs it again.",
+                crate::job::CRASHED,
+                if capped { crate::job::CAPPED } else { "" }
             )
         };
         self.update(id, |job| {
@@ -3893,7 +3898,7 @@ impl Jobs {
             job.reason = Some(reason.clone());
             job.finished = Some(obi_protocol::time::now());
             job.step = String::new();
-            job.next_step = None;
+            job.next_step = capped.then(|| crate::job::TRY_AGAIN.into());
             job.publish_step = None;
             job.resumes_at = None;
             job.crash_resumes.clear();
@@ -19643,6 +19648,62 @@ mod tests {
             assert_eq!(ended.status, Status::Failed, "{ended:?}");
             assert!(ended.reason.unwrap().starts_with(crate::job::CRASHED));
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// RECOVERY-17: a crash's continuation takes one of a job's 10; past them, the crash ends as a
+    /// crash past its tries does, its reason naming the cap and Try again its next step.
+    #[tokio::test]
+    async fn recovery_17_a_crash_takes_a_try_and_says_the_cap() {
+        let root = std::env::temp_dir().join(format!("obid-cap-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        for (id, tries) in [("cccc0001", 9), ("cccc0002", 10)] {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = Status::Stopped;
+            job.session = Some("s1".into());
+            job.recovery.tries = tries;
+            std::fs::write(
+                home.join(format!("jobs/{id}.json")),
+                serde_json::to_vec(&job).unwrap(),
+            )
+            .unwrap();
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        for id in ["cccc0001", "cccc0002"] {
+            jobs.update(id, |job| {
+                job.status = Status::Running;
+                job.phase = Some(Phase::Work);
+            });
+            jobs.crashed(id, "boom");
+        }
+        let went_on = jobs.get("cccc0001").unwrap();
+        assert_eq!(went_on.status, Status::Queued, "{went_on:?}");
+        assert_eq!(went_on.recovery.tries, 10);
+        let ended = jobs.get("cccc0002").unwrap();
+        assert_eq!(ended.status, Status::Failed, "{ended:?}");
+        let reason = ended.reason.unwrap();
+        assert!(reason.starts_with(crate::job::CRASHED), "{reason}");
+        assert!(reason.contains("by itself 10 times"), "{reason}");
+        assert_eq!(ended.next_step.as_deref(), Some(crate::job::TRY_AGAIN));
         let _ = std::fs::remove_dir_all(root);
     }
 

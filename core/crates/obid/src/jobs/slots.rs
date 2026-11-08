@@ -38,7 +38,9 @@ impl<'a> Idle<'a> {
             let step = {
                 let mut state = self.jobs.lock();
                 if state.taken() < max {
+                    // Out of both under this one lock: a `schedule` between can't count it twice.
                     state.idle.remove(self.id);
+                    state.returning.remove(self.id);
                     return;
                 }
                 state.returning.insert(self.id.to_string());

@@ -723,6 +723,8 @@ fn limits_5_a_five_hour_limit_resumes_by_itself_in_its_session() {
         "{prompts:?}"
     );
     assert!(prompts[1].contains("LIMITED ONCE: 300"), "{prompts:?}");
+    // A resume takes none of the 10 continuations a job gets in all (RECOVERY-17).
+    assert_eq!(read_job(&folder, &id).recovery.tries, 0);
 }
 
 /// LIMITS-5: a job that starts on an account a five-hour limit holds waits for the same reset, so

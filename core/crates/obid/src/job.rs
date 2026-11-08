@@ -106,12 +106,16 @@ impl Recovery {
     }
 }
 
+/// What a crash past [`Recovery::ALL_TRIES`] adds to its reason (RECOVERY-17).
+pub const CAPPED: &str = " Oby carried this on by itself 10 times, so it left it here.";
+const _: () = assert!(Recovery::ALL_TRIES == 10, "CAPPED says 10");
+
 /// Why a job stops at [`Recovery::ALL_TRIES`] (RECOVERY-17): the cap, and what cut it last.
 pub fn capped(last: &str) -> String {
     let last = last.trim().trim_end_matches('.');
     format!(
-        "Oby carried this on by itself {} times, so it left it here. The last time: {last}. Try again carries it on.",
-        Recovery::ALL_TRIES
+        "{} The last time: {last}. Try again carries it on.",
+        CAPPED.trim()
     )
 }
 

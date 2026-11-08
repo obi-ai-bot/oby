@@ -589,10 +589,10 @@ fn admission_4_a_job_waiting_on_a_check_takes_no_slot_and_a_retry_keeps_its_own(
 }
 
 /// ADMISSION-5 (docs/contracts/admission.md): a job back from the check queue takes a slot again
-/// only once one is free, never one past `maxRunning`, and holds no check's turn meanwhile. With
-/// `maxRunning` 2, one job checks, one waits for that check, one runs and a fourth is queued: when
-/// the first ends, the fourth starts and the second checks with no slot; when its check ends it
-/// waits for a free slot, and at no time do more than 2 run.
+/// only once one is free, never one past `maxRunning`, and gives the check's turn up before it
+/// waits for one. With `maxRunning` 2, one job checks, two wait for that check, one runs and a fifth
+/// is queued: when the first ends, the fifth starts and the second checks with no slot; once its
+/// check ends it waits for a free slot while the third checks, and at no time do more than 2 run.
 #[test]
 fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     let folder = Folder::new("idle-back");
@@ -606,27 +606,32 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     assert_eq!(two.status, 200, "{}", two.text);
     let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
     let checking = |id: &str| job(&obid, id)["checks"][0]["steps"][0]["running"] == true;
-    let first = id(
-        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
-                          "check": "sleep 15"}),
-    );
+    let for_the_check = |id: &str| {
+        within(60, "it waits for the check", || {
+            (job(&obid, id)["step"] == "Waiting for another job's check to finish").then_some(())
+        })
+    };
+    let committing = |file: &str, check: &str| {
+        id(
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("COMMIT: {file}"),
+                  "check": check}),
+        )
+    };
+    let first = committing("a.txt", "sleep 15");
     within(60, "the first check runs", || {
         checking(&first).then_some(())
     });
-    let second = id(
-        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: b.txt",
-                           "check": "sleep 3"}),
-    );
-    within(60, "the second waits for it", || {
-        (job(&obid, &second)["step"] == "Waiting for another job's check to finish").then_some(())
-    });
-    let third = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
-    within(60, "the third runs", || {
-        (job(&obid, &third)["status"] == "running").then_some(())
-    });
+    let second = committing("b.txt", "sleep 3");
+    for_the_check(&second);
+    let third = committing("c.txt", "sleep 60");
+    for_the_check(&third);
     let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
-    within(30, "the fourth waits for a slot", || {
-        (job(&obid, &fourth)["waiting"]["kind"] == "cap").then_some(())
+    within(60, "the fourth runs", || {
+        (job(&obid, &fourth)["status"] == "running").then_some(())
+    });
+    let fifth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
+    within(30, "the fifth waits for a slot", || {
+        (job(&obid, &fifth)["waiting"]["kind"] == "cap").then_some(())
     });
     let mut most = 0;
     let mut count = || {
@@ -640,11 +645,16 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
         let body = job(&obid, &second);
         (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
     });
-    assert_eq!(job(&obid, &fourth)["status"], "running");
-    for _ in 0..10 {
+    assert_eq!(job(&obid, &fifth)["status"], "running");
+    // It gave the check's turn up first: the third checks meanwhile.
+    within(30, "the third checks", || {
         count();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
+        checking(&third).then_some(())
+    });
+    assert_eq!(
+        job(&obid, &second)["step"],
+        "Waiting for a free slot: 2 of 2 jobs running"
+    );
     assert!(most <= 2, "{most} ran at once");
     call(&obid, "POST", "/v1/stop-all", None);
 }
