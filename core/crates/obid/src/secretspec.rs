@@ -83,11 +83,12 @@
 //!    before clones were narrow gets none either. An agent can't fetch anything itself: it has no
 //!    code host's login (an empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way
 //!    off the Mac is obid's egress proxy, which lets its tool's own services through and decides
-//!    every other site. Any site past its tool's API hosts ([`crate::egress::tools_api`])
-//!    but the default registries, which serve only published versions on an edge that
-//!    answers only the TLS hello's host (`crate::egress::REGISTRIES`; never
-//!    `crate::egress::ROUTED_BY_HOST`), marks the job ([`site_is_foreign`]): the proxy reads a
-//!    connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
+//!    every other site. Any site but its tool's API hosts ([`crate::egress::tools_api`]), Codex's
+//!    `chatgpt.com` (which takes the job's values away instead, `Job::vetted`) and the default
+//!    registries, which serve only published versions on an edge that answers only the TLS
+//!    hello's host (`crate::egress::REGISTRIES`; never `crate::egress::ROUTED_BY_HOST`), marks the
+//!    job ([`site_is_foreign`]; its vendor's other hosts too, which serve pages people write,
+//!    `Jobs::reach_now`): the proxy reads a connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
 //!    the proxy: a vendor's own web search or fetch and any MCP server's answer in the turn
 //!    ([`tool_brings_content`]), a connected app's answer, and the context obid gives (Tetrix's,
 //!    teammates' pull requests). A

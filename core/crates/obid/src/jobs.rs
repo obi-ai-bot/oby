@@ -18898,6 +18898,8 @@ mod tests {
             vendor_reach("cursor", "forum.cursor.com").await,
             (true, false)
         );
+        // chatgpt.com alone is a ChatGPT login's API: its subdomains are pages like any other.
+        assert_eq!(vendor_reach("codex", "x.chatgpt.com").await, (true, false));
     }
 
     /// TASKS-18: only a stop the owner asked for says a question waited; obid's own stop of a job
