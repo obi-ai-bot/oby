@@ -175,28 +175,37 @@ impl Repos {
 
     /// GitHub's list as gh just read it for `user`, unless gh's login changed meanwhile. A listed
     /// repository on GitHub whose default branch GitHub renamed takes the new name, in the
-    /// configuration file too, so jobs there branch from it (WORK-13).
+    /// configuration file too, so jobs there branch from it (WORK-13), but only while its branch is
+    /// still the one GitHub's last read listed: one the owner pinned to another (`dev` while
+    /// GitHub's is `main`) stays theirs. ponytail: the last read is in memory, so a rename while
+    /// obid was stopped isn't followed (the entry then looks pinned); persist it if that bites.
     fn read_for(&self, user: &str, github: Vec<Repo>) {
         let (renamed, file) = {
             let mut state = self.write();
             if state.user.as_deref() != Some(user) {
                 return;
             }
+            let Lists {
+                listed,
+                github: before,
+                ..
+            } = &mut *state;
             let mut renamed = Vec::new();
-            for listed in state
-                .listed
+            for listed in listed
                 .iter_mut()
                 .filter(|r| crate::github::is_remote(&r.remote))
             {
-                if let Some(g) = github.iter().find(|g| same(&g.repo, &listed.repo))
-                    && g.default_branch != listed.default_branch
-                {
-                    tracing::info!(
-                        "{}'s default branch is {} on GitHub now",
-                        listed.repo,
-                        g.default_branch
-                    );
-                    listed.default_branch = g.default_branch.clone();
+                let branch = |list: &[Repo]| {
+                    list.iter()
+                        .find(|g| same(&g.repo, &listed.repo))
+                        .map(|g| g.default_branch.clone())
+                };
+                let (Some(now), Some(last)) = (branch(&github), branch(before)) else {
+                    continue;
+                };
+                if now != listed.default_branch && last == listed.default_branch {
+                    tracing::info!("{}'s default branch is {now} on GitHub now", listed.repo);
+                    listed.default_branch = now;
                     renamed.push(listed.clone());
                 }
             }
@@ -804,9 +813,10 @@ mod tests {
 
     /// GitHub renamed a listed repository's default branch: the next read of gh's list gives the
     /// listed entry the new name, in the configuration file too, its other keys as they were; one
-    /// whose remote isn't GitHub's keeps its own.
+    /// whose remote isn't GitHub's keeps its own, and one the owner pinned to another branch than
+    /// GitHub's (`dev` while GitHub's is `main`) keeps theirs.
     #[test]
-    fn a_listed_repositorys_default_branch_follows_github() {
+    fn a_listed_repositorys_default_branch_follows_github_unless_pinned() {
         let dir = std::env::temp_dir().join(format!("obid-repos-branch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -814,6 +824,7 @@ mod tests {
         let before = json!({"owner": "o", "repos": [
             {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "master", "check": "make"},
             {"repo": "octo/mirror", "remote": "https://gitlab.com/octo/mirror.git", "defaultBranch": "trunk"},
+            {"repo": "octo/pinned", "remote": "https://github.com/octo/pinned.git", "defaultBranch": "dev"},
         ]});
         std::fs::write(&file, before.to_string()).unwrap();
         let repos = Repos::new(vec![
@@ -827,11 +838,23 @@ mod tests {
                 default_branch: "trunk".into(),
                 ..repo("octo/mirror")
             },
+            Repo {
+                default_branch: "dev".into(),
+                ..repo("octo/pinned")
+            },
         ]);
         repos.open(&file);
         repos.follow(Some("octo"));
-        repos.read_for("octo", vec![repo("Octo/App"), repo("octo/mirror")]);
+        let app_on = |branch: &str| Repo {
+            default_branch: branch.into(),
+            ..repo("Octo/App")
+        };
+        let github = |app: &str| vec![app_on(app), repo("octo/mirror"), repo("octo/pinned")];
+        repos.read_for("octo", github("master"));
+        assert_eq!(repos.find("octo/pinned").unwrap().default_branch, "dev");
+        repos.read_for("octo", github("main"));
         assert_eq!(repos.find("octo/app").unwrap().default_branch, "main");
+        assert_eq!(repos.find("octo/pinned").unwrap().default_branch, "dev");
         assert_eq!(
             repos.find("octo/app").unwrap().check.as_deref(),
             Some("make")
@@ -844,6 +867,7 @@ mod tests {
             json!([
                 {"repo": "octo/app", "remote": "https://github.com/octo/app.git", "defaultBranch": "main", "check": "make"},
                 before["repos"][1],
+                before["repos"][2],
             ])
         );
         let _ = std::fs::remove_dir_all(&dir);
