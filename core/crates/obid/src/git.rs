@@ -61,12 +61,14 @@ pub async fn run_bytes(
     extra: &[(&str, &str)],
     input: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, GitError> {
-    run_limited(dir, args, extra, input, Limit::Fixed).await
+    // Boxed, as is every big future here: a debug obid's poll frames hold their children's whole
+    // futures, near tokio's 2 MiB worker stack (jobs.rs).
+    Box::pin(run_limited(dir, args, extra, input, Limit::Fixed)).await
 }
 
 /// A clone or fetch: [`run`] under [`TRANSFER`], with git's `--progress` on stderr.
 async fn transfer(dir: &Path, args: &[&OsStr]) -> Result<String, GitError> {
-    let output = run_limited(dir, args, &[], None, TRANSFER).await?;
+    let output = Box::pin(run_limited(dir, args, &[], None, TRANSFER)).await?;
     Ok(String::from_utf8_lossy(&output).trim().to_owned())
 }
 
@@ -126,7 +128,7 @@ async fn run_limited(
                 ))
             })?,
         Limit::Stall { quiet, ceiling } => {
-            watch(child, &format!("git {shown}"), quiet, ceiling).await?
+            Box::pin(watch(child, &format!("git {shown}"), quiet, ceiling)).await?
         }
     }
     .map_err(|e| GitError(format!("git can't run: {e}")))?;
@@ -161,7 +163,7 @@ async fn watch(
     let over = sleep(ceiling);
     tokio::pin!(over);
     let mut said = Vec::new();
-    let mut chunk = [0u8; 8192];
+    let mut chunk = vec![0u8; 8192];
     let mut open = true;
     let mut last = Instant::now();
     let done = loop {
