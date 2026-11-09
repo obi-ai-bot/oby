@@ -10299,7 +10299,7 @@ impl Jobs {
                 // The security paths its head changes against its base, from the commit it reads
                 // (MERGING-15): none read counts as touching one.
                 let changed = match &job.start_commit {
-                    Some(head) => self.changed_files(&job, head).await,
+                    Some(head) => Box::pin(self.changed_files(&job, head)).await,
                     None => None,
                 };
                 let check = author.as_ref().and_then(|a| a.check.as_deref());
@@ -10308,12 +10308,21 @@ impl Jobs {
                 // What it changes, read by obid outside the box with no git settings but the
                 // clone's, before anything runs there: what the review's commands run can't move
                 // it. None read, no review.
-                let head = job.start_commit.as_deref().unwrap_or_default();
-                let mut change = git::change(&clone, &format!("refs/remotes/origin/{base}"), head)
-                    .await
-                    .map_err(|e| {
-                        format!("obid couldn't compare the head with {base}, so it didn't review it: {e}")
-                    })?;
+                let head = job
+                    .start_commit
+                    .as_deref()
+                    .ok_or("obid doesn't know the head to review, so it didn't review it")?;
+                let mut change = Box::pin(git::change(
+                    &clone,
+                    &format!("refs/remotes/origin/{base}"),
+                    head,
+                ))
+                .await
+                .map_err(|e| {
+                    format!(
+                        "obid couldn't compare the head with {base}, so it didn't review it: {e}"
+                    )
+                })?;
                 if change.len() > review::DIFF_MAX {
                     change.truncate(review::DIFF_MAX);
                     change.extend_from_slice(
@@ -10369,9 +10378,14 @@ impl Jobs {
         }
         let job = self.get(id).ok_or("the job is gone")?;
         let mut spec = self.spec(&worktree, &admin, &common, &temp, true, tool);
-        // The diff Oby's own review judges stays as obid wrote it, nor can its folders move.
+        // The diff Oby's own review judges, and every input obid quoted for it (what was asked,
+        // the issue, the base's rules), stay as obid wrote them, nor can their folders move.
         if own_diff.is_some() {
             spec.frozen.push(worktree.join(review::DIFF_FILE));
+            if let Ok(inputs) = std::fs::read_dir(worktree.join(".obi/inputs")) {
+                spec.frozen
+                    .extend(inputs.flatten().map(|entry| entry.path()));
+            }
             spec.fixed
                 .extend([worktree.join(".obi"), worktree.join(".obi/inputs")]);
         }
