@@ -727,6 +727,13 @@ pub struct Job {
     /// declares none never sets it, so its merge isn't held (crate::merge::check_apart).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub check_withheld: bool,
+    /// Why its check gets none of the owner's secrets though its code is still the owner's own:
+    /// its agent reached a site past the package registries (crate::secretspec, `site_is_foreign`;
+    /// `Jobs::mark`). Unlike [`Job::foreign`] it asks for no second review, but its check
+    /// can't stand for the Mac's either (MERGING-31).
+    /// In the API's job as `reached`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reached: Option<String>,
     /// The commits obid saw this job make (crate::secretspec, "made"): its agent's turns' new
     /// commits that passed its look (made then, by whoever made them, not a copy of one elsewhere),
     /// its rebases of them and its "work left uncommitted" commit, recorded only while the job was
@@ -954,16 +961,31 @@ impl Job {
             .or_else(|| self.untrusted_why())
     }
 
-    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
-    /// or none when it gets them, as far as the job itself says: someone else's code
+    /// What a follow-up of this job carries as its own [`Job::reached`]: it runs what this one
+    /// fetched past the registries too (MERGING-31).
+    pub fn reached_for_follow_up(&self) -> Option<String> {
+        let why = self.reached.as_ref()?;
+        Some(format!(
+            "it follows up a job that reached past the package registries ({why})"
+        ))
+    }
+
+    /// Why what it runs isn't only its owner's own words, or none: someone else's code
     /// ([`Job::someone_elses`]), and fail closed, any job that didn't start from the owner's own
-    /// words in Oby's apps ([`Job::vetted`]). What its check runs decides too (crate::jobs,
-    /// `declared_secrets`).
-    pub fn check_refuses_secrets(&self) -> Option<String> {
+    /// words in Oby's apps ([`Job::vetted`]).
+    pub fn not_owners_words(&self) -> Option<String> {
         self.someone_elses().or_else(|| {
             (!self.vetted)
                 .then(|| "it didn't start from the owner's own words in Oby's apps".into())
         })
+    }
+
+    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
+    /// or none when it gets them, as far as the job itself says: [`Job::not_owners_words`], or a
+    /// reach past the package registries ([`Job::reached`]). What its check runs decides too
+    /// (crate::jobs, `declared_secrets`).
+    pub fn check_refuses_secrets(&self) -> Option<String> {
+        self.not_owners_words().or_else(|| self.reached.clone())
     }
 
     /// Why its own check gets none of the declared secrets: [`Job::check_refuses_secrets`], or
@@ -1129,6 +1151,7 @@ impl Job {
             foreign: None,
             withheld: None,
             check_withheld: false,
+            reached: None,
             made: Vec::new(),
             apart: false,
             clone_root: None,
@@ -1605,6 +1628,9 @@ impl Job {
         }
         if self.untrusted {
             value["untrusted"] = json!(true);
+        }
+        if let Some(why) = &self.reached {
+            value["reached"] = json!(why);
         }
         if self.nothing_done() {
             value["nothingDone"] = json!(true);
@@ -2179,6 +2205,21 @@ mod tests {
             Some("it follows up a job that got none: x")
         );
         assert!(follow_up.to_json().get("foreign").is_none());
+        // A reach past the registries withholds secrets, but the code is still the owner's own:
+        // no second review, though its check can't stand for the Mac's (MERGING-31).
+        let mut reached = self::job();
+        reached.vetted = true;
+        reached.reached = Some("its agent reached docs.example.com:443".into());
+        assert_eq!(
+            reached.check_refuses_secrets().as_deref(),
+            Some("its agent reached docs.example.com:443")
+        );
+        assert_eq!(reached.not_owners_words(), None);
+        assert_eq!(reached.untrusted_why(), None);
+        assert_eq!(
+            reached.to_json()["reached"],
+            "its agent reached docs.example.com:443"
+        );
     }
 
     /// Ported from RunnerTests/RunnerTests.swift, `jobsHaveISODatesAndEveryKey`: every key the

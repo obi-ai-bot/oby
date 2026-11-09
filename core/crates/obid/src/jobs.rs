@@ -1507,7 +1507,7 @@ impl Jobs {
     /// A broker call belongs in the job report even after the call is over.
     pub fn connection_used(&self, id: &str, use_record: crate::connections::ConnectionUse) {
         // What a connected app answers is anyone's words (crate::secretspec).
-        self.mark_foreign(id, "its agent read a connected app's answer".into());
+        self.mark(id, "its agent read a connected app's answer".into(), false);
         self.update(id, |job| {
             crate::connections::keep_use(&mut job.connection_uses, use_record)
         });
@@ -1531,7 +1531,8 @@ impl Jobs {
                     .map(|(source, _)| *source)
                     .collect();
                 if !files.is_empty() && !from.is_empty() {
-                    self.mark_foreign(id, format!("context from {} came into it", from.join(", ")));
+                    let why = format!("context from {} came into it", from.join(", "));
+                    self.mark(id, why, false);
                 }
                 crate::tetrix::context_note(&files)
             }
@@ -2130,7 +2131,7 @@ impl Jobs {
         Some(heard.map(|job| {
             match &new.foreign {
                 Some(why) => {
-                    self.mark_foreign(&job.id, why.clone());
+                    self.mark(&job.id, why.clone(), false);
                     self.get(&job.id).unwrap_or(job)
                 }
                 None if !new.vetted => self
@@ -3512,11 +3513,12 @@ impl Jobs {
         // A follow-up runs the code of the job it follows: when that one's check got none of the
         // owner's secrets, neither does this one's (crate::secretspec).
         job.foreign = new.foreign.clone().or_else(|| {
-            of.as_ref().and_then(|of| {
-                of.someone_elses()
-                    .map(|why| format!("it follows up a job whose check got none of them ({why})"))
-            })
+            let why = of.as_ref()?.someone_elses()?;
+            Some(format!(
+                "it follows up a job whose check got none of them ({why})"
+            ))
         });
+        job.reached = of.as_ref().and_then(Job::reached_for_follow_up);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
         job.named = match &of {
@@ -4017,7 +4019,7 @@ impl Jobs {
         if let Some(why) = foreign
             && self.get(id).is_some_and(|job| job.obi.is_none())
         {
-            self.mark_foreign(id, why);
+            self.mark(id, why, false);
         }
         self.message_as(id, text, source, &[], false)
     }
@@ -4211,10 +4213,8 @@ impl Jobs {
         // Oby proposed) reach it from here on: obid's own Try again aside, it's someone else's code
         // for the owner's secrets from now on (crate::secretspec).
         if source != Source::Owner && text != crate::brain::actions::TRY_AGAIN {
-            self.mark_foreign(
-                id,
-                format!("words that weren't the owner's own reached it ({source:?})"),
-            );
+            let why = format!("words that weren't the owner's own reached it ({source:?})");
+            self.mark(id, why, false);
         }
         if let Some(Permission { id: permission, .. }) = waiting {
             let denied = self
@@ -5111,7 +5111,8 @@ impl Jobs {
             if host == "chatgpt.com" && job.withheld.is_none() {
                 self.update(id, Job::reached_chatgpt);
             } else if host != "chatgpt.com" && !crate::egress::tools_api(tool, host) {
-                self.mark_foreign(id, format!("its agent reached {site}, past its tool's API"));
+                let why = format!("its agent reached {site}, past its tool's API");
+                self.mark(id, why, false);
             }
             return Some(Ok(()));
         }
@@ -6164,7 +6165,7 @@ impl Jobs {
         let text = match words.map(str::trim).filter(|w| !w.is_empty()) {
             Some(words) => {
                 if let Some(why) = foreign {
-                    self.mark_foreign(id, why);
+                    self.mark(id, why, false);
                 }
                 format!("{}\n\n{words}", crate::brain::actions::TRY_AGAIN)
             }
@@ -8109,12 +8110,10 @@ impl Jobs {
             if let AgentEvent::Tool { name, .. } = &event
                 && !crate::secretspec::tool_is_known_safe(name)
             {
-                jobs.mark_foreign(
-                    id,
-                    format!(
-                        "its agent used {name}, which brings it content obid's proxy doesn't see"
-                    ),
+                let why = format!(
+                    "its agent used {name}, which brings it content obid's proxy doesn't see"
                 );
+                jobs.mark(id, why, false);
             }
             match event {
                 AgentEvent::Tokens(tokens) => {
@@ -9117,22 +9116,22 @@ impl Jobs {
             .err()
     }
 
-    /// Notes job `id` as someone else's code from now on ([`Job::foreign`]): its check, and its
-    /// follow-ups', get none of the owner's secrets. The first reason is kept. A job in the owner's
-    /// own clone marks that clone too ([`git::taint`]): what it has already committed, fetched or
-    /// kept there is visible to every other job's worktree, so no check in the repository gets
-    /// values from then on.
-    pub(crate) fn mark_foreign(&self, id: &str, why: String) {
+    /// Notes job `id` as someone else's code ([`Job::foreign`]), or with `reach` as having reached
+    /// past the registries ([`Job::reached`], MERGING-31): its check, and its follow-ups', get none
+    /// of the owner's secrets. The first reason is kept. A job in the owner's clone marks it too,
+    /// an inherited mark included ([`git::taint`]).
+    pub(crate) fn mark(&self, id: &str, why: String, reach: bool) {
         let Some(job) = self.get(id) else { return };
-        if job.foreign.is_some() {
-            return;
-        }
-        tracing::info!("job {id}: its check gets none of the owner's secrets from now on: {why}");
         if !job.apart && job.obi.is_none() {
             git::taint_now(&self.clone_for(&job), &format!("job {id}: {why}"));
         }
+        if (if reach { &job.reached } else { &job.foreign }).is_some() {
+            return;
+        }
+        tracing::info!("job {id}: its check gets none of the owner's secrets from now on: {why}");
         self.update(id, |job| {
-            job.foreign.get_or_insert(why);
+            let (foreign, reached) = (&mut job.foreign, &mut job.reached);
+            (if reach { reached } else { foreign }).get_or_insert(why);
         });
     }
 
@@ -9142,7 +9141,7 @@ impl Jobs {
         state
             .jobs
             .values()
-            .filter(|job| job.someone_elses().is_none())
+            .filter(|job| job.someone_elses().is_none() && job.reached.is_none())
             .flat_map(|job| job.made.iter().cloned())
             .collect()
     }
@@ -9293,15 +9292,13 @@ impl Jobs {
     /// what obid quoted of its issue for this run.
     async fn authors_as_it_starts(&self, job: &Job, shown: Option<&Value>, when: &str) {
         let Some(gh) = crate::github::gh() else {
-            self.mark_foreign(
-                &job.id,
-                format!("obid had no gh to ask who wrote what it works from {when}"),
-            );
+            let why = format!("obid had no gh to ask who wrote what it works from {when}");
+            self.mark(&job.id, why, false);
             return;
         };
         // Never asked again: a comment deleted in between would clear a job it reached.
         if let Some(why) = self.others_wrote(&gh, job, shown).await {
-            self.mark_foreign(&job.id, format!("{when}, {why}"));
+            self.mark(&job.id, format!("{when}, {why}"), false);
         }
     }
 
@@ -9374,7 +9371,7 @@ impl Jobs {
     }
 
     /// obid's record of the commits `job` made, with those of the jobs it follows up while each
-    /// of them is one whose check would get values too ([`Job::made`]).
+    /// of them is one whose check would get values too ([`Job::made`], [`Job::reached`]).
     fn record_of(&self, job: &Job) -> HashSet<String> {
         let mut record: HashSet<String> = job.made.iter().cloned().collect();
         let mut of = job.follow_up_of.clone();
@@ -9383,7 +9380,7 @@ impl Jobs {
             let Some(earlier) = of.as_deref().and_then(|id| self.get(id)) else {
                 break;
             };
-            if earlier.someone_elses().is_some() {
+            if earlier.someone_elses().is_some() || earlier.reached.is_some() {
                 break;
             }
             record.extend(earlier.made.iter().cloned());
@@ -9438,7 +9435,7 @@ impl Jobs {
             Ok(new) => {
                 self.update(id, |job| job.made.extend(new));
             }
-            Err(why) => self.mark_foreign(id, why),
+            Err(why) => self.mark(id, why, false),
         }
     }
 
@@ -9930,7 +9927,7 @@ impl Jobs {
         // Only a job that could get the owner's secrets asks GitHub (crate::secretspec).
         // A job on an issue asks once its issue is quoted, below.
         if !worktree.join(".git").exists()
-            && job.check_refuses_secrets().is_none()
+            && job.not_owners_words().is_none()
             && job.issue.is_none()
             && job.pr.is_some()
         {
@@ -9966,12 +9963,11 @@ impl Jobs {
                 git::ensure_clone(&self.clone_home(&job), &repo.repo, &repo.remote, &refspecs)
                     .await
                     .map_err(|e| format!("Couldn't get {} ready: {e}", repo.repo))?;
-            // A job that is someone else's code in the owner's own clone (a follow-up of one that
-            // turned so) makes the clone someone else's code for every check from now on, as does
-            // a branch or a pull request's head that isn't the owner's own (crate::secretspec).
+            // Someone else's code, or a reach past the registries (a follow-up of either), marks
+            // the owner's clone for every check from now on (crate::secretspec).
             if !job.apart
                 && job.obi.is_none()
-                && let Some(why) = job.someone_elses()
+                && let Some(why) = job.someone_elses().or(job.reached.clone())
             {
                 git::taint(&clone, &format!("job {id}: {why}")).await;
             }
@@ -10277,7 +10273,8 @@ impl Jobs {
                 };
                 quoted.push((
                     review::ASKED_FILE,
-                    review::asked(&task, &request, &later, untrusted.as_deref()),
+                    review::asked(&task, &request, &later, untrusted.as_deref())
+                        + &review::reached_note(author.as_ref().and_then(|a| a.reached.as_deref())),
                 ));
                 // The security paths its head changes against its base, from the commit it reads
                 // (MERGING-15): none read counts as touching one.
@@ -16743,8 +16740,66 @@ mod tests {
         assert!(!jobs.described_clean("o/r", 7));
         jobs.note_described("o/r", "https://github.com/o/r/pull/9", "j");
         assert!(jobs.described_clean("o/r", 9));
+        // One whose check got none of the owner's secrets (a reach past the registries) isn't
+        // clean either: its description could carry what it reached (MERGING-31).
+        jobs.update("j", |job| {
+            job.reached = Some("its agent reached docs.example.com:443".into())
+        });
+        assert!(!jobs.described_clean("o/r", 9));
+        jobs.update("j", |job| job.reached = None);
         jobs.update("j", |job| job.vetted = false);
         assert!(!jobs.described_clean("o/r", 7));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-14 and MERGING-31: what obid's proxy lets an agent reach marks its job. A host that
+    /// can serve anyone's source code makes it someone else's code (two reviews);
+    /// any other site past the registries is a reach (one review). Both mark the owner's clone, a
+    /// reach inherited from the job it follows up too.
+    #[tokio::test]
+    async fn merging_31_github_is_someone_elses_code_and_any_other_site_a_reach() {
+        let (jobs, clone, root) = jobs_with_a_clone("reach-marks").await;
+        jobs.update("j", |job| job.vetted = true);
+        let marked = || {
+            let clone = clone.clone();
+            async move { crate::git::git(&clone, &["config", "--get", "obid.foreign"]).await }
+        };
+        crate::egress::mark_reach(&jobs, "j", "registry.npmjs.org", 443);
+        assert_eq!(jobs.get("j").unwrap().check_refuses_secrets(), None);
+        assert!(marked().await.is_err());
+        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
+        let job = jobs.get("j").unwrap();
+        assert!(
+            job.reached
+                .as_deref()
+                .is_some_and(|why| why.contains("docs.example.com"))
+        );
+        assert_eq!((job.foreign.clone(), job.two_reviews_why()), (None, None));
+        assert!(marked().await.is_ok());
+        // Inherited, it still marks the clone this job's agent reached from.
+        crate::git::git(&clone, &["config", "--unset", "obid.foreign"])
+            .await
+            .unwrap();
+        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
+        assert!(marked().await.is_ok());
+        // A host that serves anyone's source code, and an edge that serves whichever of its sites
+        // `Host` names (the Go module proxy serves any public commit): someone else's code.
+        for host in [
+            "raw.githubusercontent.com",
+            "gitlab.com",
+            "proxy.golang.org",
+            "pypi.org",
+        ] {
+            jobs.update("j", |job| job.foreign = None);
+            crate::egress::mark_reach(&jobs, "j", host, 443);
+            let job = jobs.get("j").unwrap();
+            assert!(
+                job.foreign.as_deref().is_some_and(|why| why.contains(host)),
+                "{host}: {:?}",
+                job.foreign
+            );
+            assert!(job.two_reviews_why().is_some(), "{host}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
