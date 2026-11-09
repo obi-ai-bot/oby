@@ -96,8 +96,9 @@ pub struct Recovery {
 
 impl Recovery {
     /// The continuations obid makes by itself in all (RECOVERY-17, the owner's word of
-    /// 2026-11-08): an error's, a stall's, an unclean restart's and a crash's. A clean restart, a
-    /// five-hour limit's resume, a new session (RECOVERY-8) and a fix round take none.
+    /// 2026-11-08): an error's, a stall's, a first fetch's or launch's (RECOVERY-14), an unclean
+    /// restart's and a crash's. A clean restart, a five-hour limit's resume, a new session
+    /// (RECOVERY-8) and a fix round take none.
     pub const ALL_TRIES: usize = 10;
 
     /// Whether it got every continuation it gets in all.
