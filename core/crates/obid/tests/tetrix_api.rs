@@ -1406,6 +1406,66 @@ fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
     assert_eq!(job["untrusted"], true, "{job}");
 }
 
+/// FIELD-3 for conversations: a Tetrix that's connected but refused for naming no organization
+/// (not `usable`) gives a conversation's turn no Tetrix server, and its orientation says nothing of
+/// it, as it gives a job none.
+#[test]
+fn a_connected_but_unusable_tetrix_gives_a_conversation_no_tetrix() {
+    let folder = Folder::new("tetrix-conversation-org");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut config = config(&folder.0, &remote, &harness);
+    config["conversation"] = json!({"agent": "claude"});
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start(&folder.0, &config, None);
+    seen.lock().unwrap().mode = "orgs";
+    sign_in(&obid, &base);
+    let list = || {
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": "MCP tetrix tools/list {}", "new": true})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer.body
+    };
+
+    // Usable still: the turn gets Tetrix, and its listing meets Tetrix's refusal, which then
+    // shows on the connection.
+    let first = list();
+    assert_ne!(first["text"], "mcp: no tetrix", "{first}");
+    let status = call(&obid, "GET", "/v1/tetrix", None).body;
+    assert_eq!(status["connected"], true, "{status}");
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("org query param required"),
+        "{status}"
+    );
+
+    // Connected but not usable: the next conversation gets no Tetrix, nor a word of it.
+    let next = list();
+    assert_eq!(next["text"], "mcp: no tetrix", "{next}");
+    let conversation = next["conversation"].as_str().unwrap();
+    let turns = std::fs::read_to_string(
+        obid.home
+            .join("conversations")
+            .join(conversation)
+            .join("config/turns.jsonl"),
+    )
+    .unwrap();
+    let turn: Value = serde_json::from_str(turns.lines().last().unwrap()).unwrap();
+    assert!(
+        !turn["argv"].to_string().contains("the MCP server tetrix"),
+        "{turn}"
+    );
+}
+
 /// MERGING-30 (docs/contracts/merging.md, the owner's decision of 2026-11-06): a job whose agent
 /// is given Tetrix's tools, and lists them but calls none, with nothing of Tetrix's quoted as its
 /// context, stays the owner's own: no mark (`Job::foreign`).
