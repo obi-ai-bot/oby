@@ -10078,15 +10078,27 @@ impl Jobs {
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
-            let missing = [
-                git::uses_lfs(&clone, &start_commit)
-                    .await
-                    .then_some("its Git LFS files are pointers"),
-                git::has_submodules(&clone, &start_commit)
-                    .await
-                    .then_some("its submodules are empty"),
-            ];
-            let missing: Vec<&str> = missing.into_iter().flatten().collect();
+            let mut missing: Vec<String> = Vec::new();
+            if git::uses_lfs(&clone, &start_commit).await {
+                missing.push("its Git LFS files are pointers".into());
+            }
+            // Filled by obid, never by the agent (SETUP-1).
+            if git::has_submodules(&clone, &start_commit).await {
+                self.update(id, |job| {
+                    job.step = format!("Getting {}'s submodules", job.repo_name())
+                });
+                let allow_file = self.config.allow_file_remotes;
+                let filled =
+                    Box::pin(git::fill_submodules(&worktree, &repo.remote, allow_file)).await;
+                if let Some(url) = filled
+                    .urls
+                    .iter()
+                    .find(|u| !git::same_owner(&repo.remote, u.as_str()))
+                {
+                    git::taint(&clone, &format!("job {id}: a submodule from {url}")).await;
+                }
+                missing.extend(filled.failed.iter().map(|f| format!("its submodule {f}")));
+            }
             let worktree_text = worktree.to_string_lossy().into_owned();
             self.update(id, |job| {
                 job.worktree = Some(worktree_text);

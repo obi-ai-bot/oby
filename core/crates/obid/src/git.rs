@@ -611,6 +611,131 @@ pub async fn has_submodules(clone: &Path, commit: &str) -> bool {
         .is_ok()
 }
 
+/// What [`fill_submodules`] did: each submodule it couldn't fill (`` `<path>` wasn't filled
+/// (<why>) ``), and the URL of every one it did, nested ones too.
+pub struct Filled {
+    pub failed: Vec<String>,
+    pub urls: Vec<String>,
+}
+
+/// Fills the submodules of `worktree`'s checkout, by obid itself before the agent starts (SETUP-1):
+/// `git submodule update --init --recursive` for each one the commit has, run as obid's fetches
+/// are, with [`SAFE`], [`LFS_POINTERS`], `protocol.file.allow=never` (`always` with
+/// `allowFileRemotes`, the tests' fixture) and [`submodule_credentials`]. One that fails is named,
+/// and the others still fill.
+pub async fn fill_submodules(worktree: &Path, remote: &str, allow_file: bool) -> Filled {
+    let mut filled = Filled {
+        failed: Vec::new(),
+        urls: Vec::new(),
+    };
+    let listed = match git(worktree, &["ls-files", "--stage", "-z"]).await {
+        Ok(listed) => listed,
+        Err(e) => {
+            filled.failed.push(format!("list wasn't read ({e})"));
+            return filled;
+        }
+    };
+    let file = if allow_file { "always" } else { "never" };
+    let mut settings = submodule_credentials(remote, crate::github::gh().as_deref());
+    settings.extend(["-c".into(), format!("protocol.file.allow={file}")]);
+    settings.extend(LFS_POINTERS.map(str::to_owned));
+    // A gitlink is mode 160000: `160000 <sha> 0\t<path>`.
+    for path in listed
+        .split('\0')
+        .filter_map(|entry| entry.strip_prefix("160000 ")?.split_once('\t'))
+        .map(|(_, path)| path)
+    {
+        let mut command = tokio::process::Command::from(self::command(worktree, &[]));
+        command
+            .args(&settings)
+            .args(["submodule", "update", "--init", "--recursive", "--progress"])
+            .args(["--", path])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let Limit::Stall { quiet, ceiling } = TRANSFER else {
+            unreachable!("a transfer's limit is a stall's")
+        };
+        let why = match command.spawn() {
+            Err(e) => Some(format!("git can't run: {e}")),
+            Ok(child) => {
+                match Box::pin(watch(child, "git submodule update", quiet, ceiling)).await {
+                    Err(e) => Some(e.0),
+                    Ok(Err(e)) => Some(format!("git can't run: {e}")),
+                    Ok(Ok(out)) if out.status.success() => None,
+                    // git's first `fatal:` says why; its last says only that it gave up.
+                    Ok(Ok(out)) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let lines: Vec<&str> = stderr
+                            .split(['\n', '\r'])
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        let fatal = lines.iter().find(|l| l.starts_with("fatal: "));
+                        Some(fatal.or(lines.last()).copied().unwrap_or("").to_owned())
+                    }
+                }
+            }
+        };
+        if let Some(why) = why {
+            let why: String = why.chars().take(200).collect();
+            filled
+                .failed
+                .push(format!("`{path}` wasn't filled ({why})"));
+        }
+    }
+    let script = "git config --get remote.origin.url || true";
+    if let Ok(urls) = git(
+        worktree,
+        &["submodule", "foreach", "--quiet", "--recursive", script],
+    )
+    .await
+    {
+        filled.urls = urls.lines().map(str::to_owned).collect();
+    }
+    filled
+}
+
+/// The `-c` settings a submodule's fetch signs in with: git's own credential helpers reset for
+/// every host, then the owner's gh login ([`crate::publish::fetch_credentials`]) only for
+/// `remote`'s own host, so a submodule anywhere else gets no credentials (SETUP-1).
+pub(crate) fn submodule_credentials(remote: &str, gh: Option<&Path>) -> Vec<String> {
+    let mut args = crate::publish::fetch_credentials(remote, gh);
+    let host = remote
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|auth| auth.rsplit('@').next())
+        .filter(|host| !host.is_empty());
+    match (host, args.get_mut(3)) {
+        (Some(host), Some(helper)) => {
+            *helper = helper.replacen(
+                "credential.helper=",
+                &format!("credential.https://{host}.helper="),
+                1,
+            );
+        }
+        _ => args = vec!["-c".into(), "credential.helper=".into()],
+    }
+    args
+}
+
+/// Whether `url` is on `remote`'s code host under its owner (`github.com/<owner>/…`, as https,
+/// ssh or `git@host:owner/…`): a submodule from anywhere else is someone else's ([`taint`]).
+pub fn same_owner(remote: &str, url: &str) -> bool {
+    fn owner(url: &str) -> Option<(String, String)> {
+        let url = url.trim().to_ascii_lowercase();
+        let (auth, path) = match url.split_once("://") {
+            Some(("https" | "http" | "ssh" | "git", rest)) => rest.split_once('/')?,
+            Some(_) => return None,
+            None => url.split_once(':')?,
+        };
+        let host = auth.rsplit('@').next()?.split(':').next()?;
+        let owner = path.trim_start_matches('/').split('/').next()?;
+        (!host.is_empty() && !owner.is_empty()).then(|| (host.to_owned(), owner.to_owned()))
+    }
+    owner(url).is_some() && owner(url) == owner(remote)
+}
+
 /// A full commit id, lower-case hex.
 pub fn is_sha(text: &str) -> bool {
     (text.len() == 40 || text.len() == 64)
@@ -632,6 +757,93 @@ mod tests {
         );
         let dns = GitError("git clone https://h/acme/x failed: fatal: unable to access 'https://h/acme/x/': Could not resolve host: h".into());
         assert!(crate::publish::passes_later(&dns.said()));
+    }
+
+    /// SETUP-1: a submodule's fetch gets the owner's gh login for the repository's own host only.
+    /// Another host's, one whose name only starts like it, gets nothing: neither gh nor the
+    /// person's own credential helper, which is reset.
+    #[test]
+    fn setup_1_another_hosts_submodule_gets_no_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("obid-submodule-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let gh = root.join("gh");
+        std::fs::write(
+            &gh,
+            "#!/bin/sh\ncat >> \"$0.log\"\necho username=x\necho password=from-gh\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            root.join(".gitconfig"),
+            "[credential]\n\thelper = \"!f() { echo username=u; echo password=the-persons; }; f\"\n",
+        )
+        .unwrap();
+        let settings = submodule_credentials("https://github.com/o/r.git", Some(&gh));
+        for (host, signs_in) in [
+            ("github.com", true),
+            ("gitlab.com", false),
+            ("github.com.example.net", false),
+        ] {
+            let mut fill = command(&root, &[]);
+            let mut child = fill
+                .args(&settings)
+                .args(["credential", "fill"])
+                .env("HOME", &root)
+                .env("XDG_CONFIG_HOME", &root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            use std::io::Write;
+            let asked = format!("protocol=https\nhost={host}\npath=o/lib.git\n\n");
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(asked.as_bytes())
+                .unwrap();
+            let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+            assert_eq!(out.contains("password=from-gh"), signs_in, "{host}: {out}");
+            assert!(!out.contains("the-persons"), "{host}: {out}");
+        }
+        let log = std::fs::read_to_string(root.join("gh.log")).unwrap();
+        assert!(log.contains("host=github.com\n"), "{log}");
+        assert!(
+            !log.contains("gitlab.com") && !log.contains("example.net"),
+            "{log}"
+        );
+        // With no gh, every host's helpers are reset all the same.
+        assert_eq!(
+            submodule_credentials("https://github.com/o/r.git", None),
+            ["-c", "credential.helper="]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SETUP-1: a submodule is the owner's when it's on the repository's host under its owner.
+    #[test]
+    fn setup_1_a_submodule_elsewhere_is_someone_elses() {
+        let remote = "https://github.com/Obi-AI-Bot/oby.git";
+        for ours in [
+            "https://github.com/obi-ai-bot/lib.git",
+            "git@github.com:obi-ai-bot/lib.git",
+            "ssh://git@github.com/obi-ai-bot/lib",
+        ] {
+            assert!(same_owner(remote, ours), "{ours}");
+        }
+        for theirs in [
+            "https://github.com/someone/lib.git",
+            "https://gitlab.com/obi-ai-bot/lib.git",
+            "file:///tmp/lib",
+            "/tmp/lib",
+        ] {
+            assert!(!same_owner(remote, theirs), "{theirs}");
+        }
     }
 
     /// A clone and a fetch of an https remote with a gh reset git's own credential helpers before
