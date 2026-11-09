@@ -768,9 +768,10 @@ async fn a_change_to_approve_isnt_reviewed_without_its_base() {
 }
 
 /// PERMISSIONS-14: Oby's own review of published work runs with nobody watching, so what Plan would
-/// ask the owner (a command that reaches the network or writes, a fetch, its question) is refused at
+/// ask the owner (a command that reaches the network, a fetch, its question) is refused at
 /// once, by obid's own rule (kept in `answered`), naming only the program or the site and telling it
-/// to write what it couldn't run in its review. It goes on and gives its verdict
+/// to write what it couldn't run in its review, while a local command its box holds (`cargo test`)
+/// runs. It goes on and gives its verdict
 /// (tests/agents/asking-reviewer): before, its first call waited on the owner's card until the
 /// review was parked, and this test timed out.
 #[tokio::test(flavor = "multi_thread")]
@@ -816,7 +817,7 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
     let summary = &ended.summary;
     for (tool, what) in [
         ("Bash", "curl"),
-        ("Bash", "touch"),
+        ("Bash", "cargo"),
         ("WebFetch", "example.com"),
     ] {
         let line = summary
@@ -844,6 +845,15 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
     assert!(
         summary.contains("AskUserQuestion: deny (Nobody is watching this review to answer"),
         "{summary}"
+    );
+    // A local command the review's box holds runs: it reaches nothing outside.
+    assert!(summary.lines().any(|l| l == "Bash: allow"), "{summary}");
+    assert!(
+        ended
+            .answered
+            .iter()
+            .any(|a| a.tool == "Bash" && a.decision == "allowed"),
+        "{shown}"
     );
     // Plan refuses a file write by itself, as before: it never asked.
     assert!(summary.contains("Write: deny (Plan mode"), "{summary}");

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // A reviewer that asks, for PERMISSIONS-14 (tests/review_job.rs): as Oby's own review of published
 // work (stream-json, --permission-prompt-tool stdio), it asks obid for a command that reaches the
-// network, a write and a command that writes, a fetch and a question, each as Claude Code would in Plan, and ends its review
+// network, a write, a local command, one that downloads, a fetch and a question, each as Claude Code would in Plan, and ends its review
 // with what obid answered each, then `VERDICT: APPROVE`. A review that waited on the owner instead
 // never ends.
 import { createInterface } from "node:readline";
@@ -11,7 +11,8 @@ const session = "00000000-0000-4000-8000-000000000014";
 const probes = [
   ["Bash", { command: "curl -sS https://example.com/", description: "Fetch the page" }],
   ["Write", { file_path: "notes.md", content: "notes\n" }],
-  ["Bash", { command: "touch notes.md", description: "Write a note" }],
+  ["Bash", { command: "cargo test", description: "Run the tests" }],
+  ["Bash", { command: "cargo fetch", description: "Download the crates" }],
   ["WebFetch", { url: "https://example.com/", prompt: "Read it" }],
   ["AskUserQuestion", { questions: [{ question: "Is the change meant to round?", header: "Rounding", multiSelect: false,
     options: [{ label: "Yes", description: "It rounds" }, { label: "No", description: "It doesn't" }] }] }],

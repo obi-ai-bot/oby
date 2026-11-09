@@ -5034,6 +5034,16 @@ impl Jobs {
                 self.answered(id, &call, worktree, Some(&why));
                 Ruling::Now(Answer::Deny(why))
             }
+            // Oby's own review may run a local command its box holds, `cargo test` say (the
+            // owner's answer of 2026-11-08, PERMISSIONS-14): nothing it reaches leaves the box.
+            permissions::Verdict::Ask
+                if job.review_of.is_some()
+                    && call.tool == "Bash"
+                    && permissions::reach(&call, &bounds).is_none() =>
+            {
+                self.answered(id, &call, worktree, None);
+                Ruling::Now(Answer::Allow)
+            }
             permissions::Verdict::Ask => match unwatched_review(&job, &call) {
                 Some(why) => {
                     self.answered(id, &call, worktree, Some(&why));
