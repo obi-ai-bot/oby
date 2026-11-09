@@ -2354,6 +2354,9 @@ fn publishing_9_10_11_the_owners_publish_goes_where_they_say() {
     std::fs::write(&keys, format!("aws_key_id {}\nhello\n", leaked_key())).unwrap();
     let blob = git(&clone, &["hash-object", "-w", keys.to_str().unwrap()]);
     let mut mktree = std::process::Command::new("git")
+        // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .args(["mktree"])
         .current_dir(&clone)
         .stdin(std::process::Stdio::piped())
@@ -3743,6 +3746,8 @@ fn merging_18_the_review_has_the_issue_its_work_is_from() {
     let seed = folder.0.join("seed");
     let repo = |args: &[&str]| {
         let out = std::process::Command::new("git")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
             .args([
                 "-c",
                 "user.name=t",
