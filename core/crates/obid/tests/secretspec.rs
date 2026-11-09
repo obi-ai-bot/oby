@@ -454,6 +454,76 @@ fn an_agent_that_reaches_a_code_host_gets_nothing() {
     );
 }
 
+/// MERGING-31: a reach past the package registries (a docs host, say) withholds the owner's secrets
+/// from the job's check and marks its clone, but its code is still the owner's own: it needs one
+/// review, not two; its check doesn't stand for the Mac's. Its follow-up marks the clone again as
+/// it starts, should the mark be gone.
+#[cfg(target_os = "macos")]
+#[test]
+fn merging_31_a_package_fetch_withholds_secrets_but_needs_one_review() {
+    let (_folder, obid) = declared("secretspec-merging-31", &agent(), None);
+    let job = json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FETCH", "check": "sh check.sh", "mode": "bypass"}});
+    let started = call_typed(&obid, "POST", "/v1/jobs", &job);
+    assert_eq!(started.status, 201, "{}", started.text);
+    let id = started.body["id"].as_str().unwrap().to_owned();
+    let log = check_log(&obid, &id);
+    refused(&log, "its agent reached code.example.test");
+    let shown = call(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert!(
+        shown.body["reached"]
+            .as_str()
+            .is_some_and(|why| why.contains("reached code.example.test")),
+        "{}",
+        shown.text
+    );
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let marked = git(&clone, &["config", "--get", "obid.foreign"]);
+    assert!(marked.contains("reached code.example.test"), "{marked}");
+    // One review merges it: not someone else's code, not untrusted. Its check, run without the
+    // owner's secrets, doesn't stand for the Mac's.
+    let job: obid::job::Job = serde_json::from_value(kept(&obid, &id)).unwrap();
+    assert!(job.check_refuses_secrets().is_some());
+    assert_eq!(job.someone_elses(), None);
+    assert_eq!(job.untrusted_why(), None);
+    assert_eq!(job.two_reviews_why(), None);
+    assert!(
+        obid::merge::check_apart(&job, "sh check.sh", Some(&["app.js".to_owned()]))
+            .is_some_and(|why| why.contains("reached code.example.test")),
+    );
+    // The clone's mark gone, the follow-up's start puts it back.
+    git(&clone, &["config", "--unset", "obid.foreign"]);
+    // A follow-up runs what it fetched too: no values either, and still one review.
+    let next = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": "Nothing more to do"}),
+    );
+    assert_eq!(next.status, 201, "{}", next.text);
+    let follow = next.body["id"].as_str().unwrap().to_owned();
+    let log = check_log(&obid, &follow);
+    refused(
+        &log,
+        "it follows up a job that reached past the package registries",
+    );
+    let follow: obid::job::Job = serde_json::from_value(kept(&obid, &follow)).unwrap();
+    assert_eq!(follow.follow_up_of.as_deref(), Some(id.as_str()));
+    assert!(
+        follow
+            .reached
+            .as_deref()
+            .is_some_and(|why| why.contains("reached code.example.test")),
+        "{:?}",
+        follow.reached
+    );
+    assert_eq!(follow.two_reviews_why(), None);
+    let marked = git(&clone, &["config", "--get", "obid.foreign"]);
+    assert!(
+        marked.contains("follows up a job that reached past the package registries"),
+        "{marked}"
+    );
+}
+
 /// The reviewer's repro: a job that turns someone else's code (its agent reached a code host)
 /// commits a payload, which obid keeps on its branch in the owner's clone, and marks the clone. A
 /// plain job after it gets a clone made again, with no other job's branch in it: the payload

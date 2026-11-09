@@ -782,12 +782,12 @@ fn plain_why(job: &Job, why: &str) -> String {
 
 /// Why the job's own check, passed with `command`, can't stand for the Mac's checks at merge
 /// (`Job::checked`), in the owner's words, or none when it can. `changed`: the files its pull
-/// request changes against its base, as obid's git read them (none when they couldn't be read,
-/// and then it can't). It can't when its check isn't the owner's own to trust (it gets none of
-/// their secrets: `Job::check_refuses_secrets`), when the secrets its base declares were withheld
-/// from it (`Job::check_withheld`, MERGING-30), when the change edits the check itself ([`check_files`]), or
-/// when it touches what only the Mac tests ([`mac_only`]). Fails closed: the owner's Merge is
-/// asked.
+/// request changes against its base, as obid's git read them (none when they couldn't be read, and
+/// then it can't). It can't when its check got none of the owner's declared secrets
+/// (`Job::check_refuses_secrets`: not only the owner's own words, or a reach past the registries,
+/// MERGING-31), when the secrets its base declares were withheld from it (`Job::check_withheld`,
+/// MERGING-30), when the change edits the check itself ([`check_files`]), or when it touches what
+/// only the Mac tests ([`mac_only`]). Fails closed: the owner's Merge is asked.
 pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
     if let Some(why) = job.check_refuses_secrets() {
         let why = plain_why(job, &why);
@@ -3599,6 +3599,15 @@ mod tests {
             check_apart(&withheld, command, Some(&files(&["a.rs"]))).as_deref(),
             Some(
                 "Declared secrets withheld: this job reached chatgpt.com. Its check ran without them, so it's yours to merge."
+            )
+        );
+        // A check run without the owner's declared secrets never stands for the Mac's (MERGING-31).
+        let mut reached = own.clone();
+        reached.reached = Some("its agent reached docs.example.com:443".into());
+        assert_eq!(
+            check_apart(&reached, command, Some(&files(&["a.rs"]))).as_deref(),
+            Some(
+                "Its check passed, but its agent reached docs.example.com:443, so it's yours to merge."
             )
         );
         // The check's own files: what its command runs, never what it only reads.
