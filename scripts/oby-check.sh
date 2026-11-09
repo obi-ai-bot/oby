@@ -19,7 +19,8 @@
 #                         Cargo.toml, or the workspace's Cargo.toml or Cargo.lock), its touched
 #                         test binaries, tests/<module>.rs or tests/<module>_api.rs of a touched
 #                         module, and the binaries that name a touched folder under tests/
-#                         (support, agents, plugins); every test of another touched crate
+#                         (support, agents, plugins); tests/jobs_setup.rs for src/jobs/setup.rs,
+#                         sandbox.rs or egress.rs; every test of another touched crate
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   mcp/, Package.swift   swift test
@@ -32,11 +33,11 @@
 # SwiftPM build in the job's HOME doesn't fit the check's 45 minutes. Nothing runs them by itself
 # since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
 # for the owner, who runs them on the Mac.
-# obid's tests that make a sandbox of their own (tests/sandbox.rs, plug-ins' if they return) can't run
-# there either: a change they'd test, with nothing else failing, ends the check there with
-# `couldn't judge: …`, so it never merges untested (the owner's review of #1944) and obid leaves it
-# to the owner's Publish by hand (docs/contracts/publishing.md, PUBLISHING-22); it passes only
-# outside a job's sandbox.
+# obid's tests that make a sandbox of their own (tests/sandbox.rs, tests/jobs_setup.rs, plug-ins' if
+# they return) can't run there either: a change they'd test, with nothing else failing, ends the
+# check there with `couldn't judge: …`, so it never merges untested (the owner's review of #1944)
+# and obid leaves it to the owner's Publish by hand (docs/contracts/publishing.md, PUBLISHING-22);
+# it passes only outside a job's sandbox.
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
@@ -221,6 +222,12 @@ while IFS= read -r file; do
             crates=$(add "$crates" "${crate%%/*}") ;;
     esac
     case "$file" in
+        # A repository's setup in the box (PUBLISHING-23, 24): only its own and the box's code plan
+        # it, so a change to jobs.rs alone isn't left unjudged in a job's sandbox (below).
+        core/crates/obid/src/jobs/setup.rs | core/crates/obid/src/sandbox.rs | core/crates/obid/src/egress.rs)
+            tests=$(add "$tests" core/crates/obid/tests/jobs_setup.rs) ;;
+    esac
+    case "$file" in
         apps/ios/tests/*.swift) ios=1 ios_suites=$(add "$ios_suites" "$(suites iOSTests/ "$file")") ;;
         apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) ios=1 ;;
     esac
@@ -298,7 +305,7 @@ if [[ -n "$rust" ]]; then
         [[ -f "$test" ]] || continue
         # They make a sandbox of their own, which can't nest in a job's on a Mac. On Linux, where
         # nested is always set (no sandbox-exec), they still run: they test bubblewrap there.
-        if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api)$ ]]; then
+        if [[ -n "$nested" && "$OSTYPE" == darwin* && "$name" =~ ^(sandbox|plugins_api|jobs_setup)$ ]]; then
             unjudged+=("tests/$name.rs")
             failed+=("tests/$name.rs, which can't run in a job's sandbox")
             continue
