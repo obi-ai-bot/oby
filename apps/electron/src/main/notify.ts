@@ -110,6 +110,8 @@ export const waiting = (want: Map<string, { needs: boolean }>) => {
 
 export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string, Alert> {
   const want = new Map<string, Alert>();
+  // Jobs whose review alerts as the job: their review item is the same news (RECOVERY-15).
+  const reviewed = new Set<string>();
   for (const j of jobs.values()) {
     // another Obi's, or let go: nothing
     if (j.obi || j.dismissed) continue;
@@ -126,8 +128,9 @@ export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string,
       say(`permission:${p.id}`, true, p.question ? 'Question' : 'Needs your OK', shown, buttons);
       continue;
     }
-    // Oby's review left it to the owner, once per head
+    // Oby's review left it to the owner, once per head; its review item is the same news (RECOVERY-15)
     if (j.status === 'done' && !canPublish(j) && j.reviewNeedsYou) {
+      reviewed.add(j.id);
       if (j.reviewError) say(`review:${pushedHead(j)}`, true, 'Couldn’t review', plain(j.reviewError));
       else say(`review:${pushedHead(j)}`, true, 'Changes requested', 'Oby’s review still asks for changes. Take it from here.');
       continue;
@@ -169,6 +172,7 @@ export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string,
     const job = i.job || undefined;
     if (i.kind === 'limit' && job && [...limits.values()].some((d) => d.jobs.some((j) => j.id === job))) continue;
     if (i.kind === 'permission' && job) continue;
+    if (i.kind === 'failed' && i.id.includes('-review-') && job && reviewed.has(job)) continue;
     if (!['permission', 'confirm', 'start'].includes(i.kind) && i.triage !== 'needs_you') continue;
     const conversation = i.conversation ?? undefined;
     const many = offer ? open.filter((x) => x.offer?.id === offer).length : 1;
