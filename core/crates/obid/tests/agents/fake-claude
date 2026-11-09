@@ -18,6 +18,9 @@
 //                    ends the turn with "Held." (scripts measuring memory admission)
 //   FAIL             ends the turn with an error result ("it broke"; with FAIL TOKEN, one holding
 //                    a made-up GitHub token), and again when obid continues it (RECOVERY-1)
+//   OFFLINE ONCE     on its first run, before its session, says "API Error: Connection error." on
+//                    stderr and exits 1, as Claude Code with no network (RECOVERY-14); with
+//                    LIMITED, first says the account's 5-hour window is full, every run
 //   STDERR TOKEN     prints "Authorization failed for token " and a made-up GitHub token
 //                    (ghp_ and 36 Zs) to stderr and exits 1 without a result, as a CLI that dies does
 //   LIMITED: <s>     says the account is full (a rate_limit_event whose 5-hour window resets <s>
@@ -294,6 +297,13 @@ rl.on("line", (line) => {
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
   const told = prompt;
   if (prompt.includes("What you were last sent")) prompt = prompt.slice(0, prompt.indexOf("What you were last sent"));
+  if (prompt.includes("OFFLINE ONCE") && (prompt.includes("LIMITED") || !existsSync(".obi/offline"))) {
+    mkdirSync(".obi", { recursive: true });
+    writeFileSync(".obi/offline", "");
+    const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+    if (prompt.includes("LIMITED")) emit({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt, rateLimitType: "five_hour" } });
+    return process.stderr.write("API Error: Connection error.\n", () => process.exit(1));
+  }
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
   // What obid cut, it does again when obid continues its session (its marked message).

@@ -634,7 +634,7 @@ fn mcp_config(
     let api = shared.connections.api_url();
     let tetrix = shared
         .tetrix
-        .connected()
+        .usable()
         .then(|| format!("{api}/v1/agent/tetrix/conversation-{conversation}"));
     (
         place.temp.join(MCP_FILE),
@@ -1658,7 +1658,7 @@ async fn attempts(
                 &shared.config.home,
                 tool,
                 &account.id,
-                &shared.jobs.model_lists.for_account(tool, &account.id),
+                &shared.jobs.model_lists.to_check(tool, &account.id),
             )),
             turn.result.as_ref(),
             began,

@@ -36,6 +36,15 @@ const TRANSFER: Limit = Limit::Stall {
 #[error("{0}")]
 pub struct GitError(pub String);
 
+impl GitError {
+    /// What git itself said, without what it quotes ('a URL', 'a path') or the command it ran: the
+    /// repository's name and address can hold any word, `timeout` too (RECOVERY-14).
+    pub fn said(&self) -> String {
+        let said = self.0.split_once(" failed: ").map_or("", |(_, said)| said);
+        said.split('\'').step_by(2).collect()
+    }
+}
+
 /// The settings every git call of obid's carries.
 const SAFE: &[&str] = &[
     "-c",
@@ -611,6 +620,19 @@ pub fn is_sha(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RECOVERY-14: a repository whose name says `timeout` isn't a network failure.
+    #[test]
+    fn recovery_14_only_gits_own_words_say_it_passes() {
+        let gone = GitError("git clone https://h/acme/timeout-service failed: fatal: repository 'https://h/acme/timeout-service/' not found".into());
+        assert!(
+            !crate::publish::passes_later(&gone.said()),
+            "{}",
+            gone.said()
+        );
+        let dns = GitError("git clone https://h/acme/x failed: fatal: unable to access 'https://h/acme/x/': Could not resolve host: h".into());
+        assert!(crate::publish::passes_later(&dns.said()));
+    }
 
     /// A clone and a fetch of an https remote with a gh reset git's own credential helpers before
     /// gh's, so no other helper (Apple git's system-wide osxkeychain) stores gh's token.

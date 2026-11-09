@@ -218,14 +218,21 @@ impl Failure {
         let (Failure::Remote(why) | Failure::PullRequest(why)) = self else {
             return false;
         };
-        let why = why.to_lowercase();
-        PASSING.iter().any(|w| why.contains(w))
+        passes_later(why)
     }
 }
 
+/// Whether git's or gh's words `why` say a later try may go through: the network, an outage or a
+/// rate limit ([`Failure::may_pass_later`]; a job's prepare fetch and first launch, RECOVERY-14).
+pub fn passes_later(why: &str) -> bool {
+    let why = why.to_lowercase();
+    PASSING.iter().any(|w| why.contains(w))
+}
+
 /// What git and gh say of a failure a later try may not have.
-const PASSING: [&str; 16] = [
+const PASSING: [&str; 17] = [
     "could not resolve host",
+    "failed to connect to",
     "connection reset",
     "connection refused",
     "connection timed out",

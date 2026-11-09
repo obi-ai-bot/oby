@@ -41,7 +41,9 @@ if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
     exit 1
 fi
 grep -q "failed: the Rust core's line limit" <<<"$ran" || {
-    echo "oby-check-test: a run past the limit failed without naming it: $ran" >&2
+    echo "oby-check-test: a run past the limit failed without naming it:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
     exit 1
 }
 
@@ -67,18 +69,20 @@ expect 'lower obid_lines_limit' 'a cut asks for the limit to come down'
 code "$main" "$((limit - 1000))"
 expect no 'lower obid_lines_limit' 'a small cut leaves the limit'
 
-# Nested in a job's sandbox, the tests that make a sandbox of their own aren't run (HEALTH-13).
+# Nested in a job's sandbox, the tests that make a sandbox of their own aren't run, and a change
+# they'd test fails the check (HEALTH-13).
 # Here the check runs in a sandbox of this test's where its own sandbox-exec fails, as in a job's,
 # unless this test already runs in one.
-nested() {
+nested_run() {
     if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
-        OBY_CHECK_PLAN=1 /usr/bin/sandbox-exec -p \
+        /usr/bin/sandbox-exec -p \
             '(version 1)(allow default)(deny process-exec (literal "/usr/bin/sandbox-exec"))' \
-            scripts/oby-check.sh HEAD 2>&1
+            scripts/oby-check.sh HEAD
     else
-        planned
+        scripts/oby-check.sh HEAD
     fi
 }
+nested() { OBY_CHECK_PLAN=1 nested_run 2>&1; }
 code core/crates/obid/src/sandbox.rs 1
 code core/crates/obid/src/foo.rs 1
 code core/crates/obid/tests/sandbox.rs 1
@@ -90,21 +94,50 @@ if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/nu
 fi
 said=$(nested)
 grep -q -- '--test foo' <<<"$said" || {
-    echo "oby-check-test: nested, it didn't plan an ordinary test binary: $said" >&2
+    echo "oby-check-test: nested, it didn't plan an ordinary test binary:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
 ! grep -qE -- '--test (sandbox|plugins_api)' <<<"$said" || {
-    echo "oby-check-test: nested, it planned a sandbox test binary: $said" >&2
+    echo "oby-check-test: nested, it planned a sandbox test binary:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
-grep -q 'tests/sandbox.rs makes a sandbox of its own' <<<"$said" || {
-    echo "oby-check-test: nested, it didn't say tests/sandbox.rs wasn't run: $said" >&2
+# The line obid reads (PUBLISHING-22), a line of its own.
+judge="couldn't judge: tests/sandbox.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job"
+grep -qxF "$judge" <<<"$said" || {
+    echo "oby-check-test: nested, it didn't say it couldn't judge tests/sandbox.rs:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
+# Skipped, they end the check unjudged, never passed: a change to the box never merges untested.
+if ran=$(OBY_CHECK_PLAN= nested_run 2>&1); then
+    echo 'oby-check-test: nested, a change to the box passed with tests/sandbox.rs not run' >&2
+    exit 1
+fi
+grep -q "failed: tests/sandbox.rs, which can't run in a job's sandbox" <<<"$ran" || {
+    echo "oby-check-test: nested, a change to the box failed without naming tests/sandbox.rs:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
+    exit 1
+}
+# Here its cargo steps fail too (the fixture's files aren't Rust): that's the change's to fix, so it
+# doesn't say it couldn't judge, or a change that doesn't build could be published by hand.
+grep -q "failed: .*cargo" <<<"$ran" && ! grep -q "^couldn't judge:" <<<"$ran" || {
+    echo "oby-check-test: nested, it said it couldn't judge a change that also failed elsewhere:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
     exit 1
 }
 rm core/crates/obid/src/foo.rs core/crates/obid/tests/foo.rs
 said=$(nested)
 ! grep -q '==> test_binaries *$' <<<"$said" || {
-    echo "oby-check-test: nested, it planned a test step with no binary left: $said" >&2
+    echo "oby-check-test: nested, it planned a test step with no binary left:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
 
