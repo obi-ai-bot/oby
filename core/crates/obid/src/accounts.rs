@@ -1901,9 +1901,10 @@ async fn start(
                     && login.is_file()
                     && crate::jobs::codex_copy_ready(&login, &account.name).is_ok()
                 {
-                    shared.chatgpt.replaced_by_device_login(&account.id).await;
-                    // Whoever signs in with ChatGPT here next is asked anew.
+                    // Whoever signs in with ChatGPT here next is asked anew: the yes goes before
+                    // the account shows its new login, so no job takes the new one with the old yes.
                     forget_consent(&shared, &account.id);
+                    shared.chatgpt.replaced_by_device_login(&account.id).await;
                 }
                 let account = account.clone();
                 tokio::task::spawn_blocking(move || {

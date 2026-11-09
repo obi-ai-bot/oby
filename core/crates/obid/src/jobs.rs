@@ -4803,7 +4803,8 @@ impl Jobs {
     /// repository (the rule `RepositoryHooks(<digest>)`: a changed hook asks again). A no starts
     /// nothing, and says Claude Code and Codex don't run them; a stop ends the wait. The mode
     /// decides first (`permissions::decide`): in Bypass they run without a card, as the owner
-    /// chose, unless they touch secrets, which ask in every mode and no rule answers (#1570).
+    /// chose (secrets too since #1918: the job's box holds); in any other mode one that touches
+    /// secrets asks and no rule answers (#1570).
     async fn allow_repository_config(
         &self,
         id: &str,
