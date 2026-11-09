@@ -174,8 +174,8 @@ impl Repos {
     }
 
     /// The listed repositories whose `defaultBranch` isn't GitHub's default ([`githubs_other`]) and
-    /// is gone from GitHub (`gh api repos/{repo}/branches/{branch}` answers 404, [`branch_gone`]):
-    /// what GitHub's rename of it leaves behind. Each as its name and that branch.
+    /// is gone from GitHub (`gh api repos/{repo}/branches/{branch}` answers another branch, a
+    /// rename's redirect, or 404, a deletion: [`branch_gone`]). Each as its name and that branch.
     async fn gone(&self, gh: &Path, github: &[Repo]) -> Vec<(String, String)> {
         let mut gone = Vec::new();
         for listed in self.get() {
@@ -186,7 +186,8 @@ impl Repos {
                 continue;
             }
             let path = format!("repos/{}/branches/{}", listed.repo, listed.default_branch);
-            if branch_gone(&crate::github::output(gh, &["api", &path]).await) {
+            let answer = crate::github::output(gh, &["api", &path]).await;
+            if branch_gone(&answer, &listed.default_branch) {
                 gone.push((listed.repo, listed.default_branch));
             }
         }
@@ -253,14 +254,23 @@ fn githubs_other<'a>(listed: &Repo, github: &'a [Repo]) -> Option<&'a str> {
         .filter(|b| *b != listed.default_branch)
 }
 
-/// Whether gh's answer to `GET repos/{repo}/branches/{branch}` says the branch doesn't exist: a
-/// 404 (GitHub prints `{"message": "Branch not found", "status": "404"}`). Anything else (the
-/// branch, a rate limit, a 5xx, a timeout) keeps it.
-fn branch_gone(answer: &Result<String, (String, String)>) -> bool {
-    let Err((printed, _)) = answer else {
+/// Whether gh's answer to `GET repos/{repo}/branches/{branch}` says `branch` isn't there any more:
+/// another branch (GitHub answers a renamed branch with a 301 to its new name, which gh follows,
+/// printing that branch), or a 404 (it was deleted: `{"message": "Branch not found", "status":
+/// "404"}`). Anything else (`branch` itself, a rate limit, a 5xx, a timeout) keeps it.
+fn branch_gone(answer: &Result<String, (String, String)>, branch: &str) -> bool {
+    let (printed, answered) = match answer {
+        Ok(printed) => (printed, true),
+        Err((printed, _)) => (printed, false),
+    };
+    let Ok(value) = serde_json::from_str::<Value>(printed) else {
         return false;
     };
-    serde_json::from_str::<Value>(printed).is_ok_and(|v| v["status"] == "404")
+    if answered {
+        value["name"].as_str().is_some_and(|name| name != branch)
+    } else {
+        value["status"] == "404"
+    }
 }
 
 impl std::fmt::Debug for Repos {
@@ -488,7 +498,10 @@ pub fn spawn(shared: Arc<Shared>) {
                 match list_github(&gh).await {
                     Ok(github) => {
                         tracing::info!("gh can push to {} repositories on GitHub", github.len());
-                        let gone = repos.gone(&gh, &github).await;
+                        let gone = tokio::select! {
+                            gone = repos.gone(&gh, &github) => gone,
+                            _ = stopping.changed() => return,
+                        };
                         repos.read_for(&user, github, &gone);
                     }
                     Err(e) => tracing::info!("GitHub's repositories weren't listed: {e}"),
@@ -948,17 +961,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Only GitHub's 404 says a branch is gone; the branch itself, a rate limit or a timeout keep
-    /// it.
+    /// A branch is gone when GitHub answers with another (a rename's redirect, which gh follows:
+    /// `master` answered by `main`) or a 404 (deleted); the branch itself, a rate limit or a
+    /// timeout keep it.
     #[test]
-    fn only_githubs_404_says_a_branch_is_gone() {
+    fn a_branch_is_gone_when_github_answers_another_or_404() {
+        let answered = |printed: &str| Ok(printed.to_owned());
+        assert!(branch_gone(&answered(r#"{"name":"main"}"#), "master"));
+        assert!(!branch_gone(&answered(r#"{"name":"master"}"#), "master"));
+        assert!(!branch_gone(&answered("not json"), "master"));
         let refused = |printed: &str| Err((printed.to_owned(), "gh: refused".to_owned()));
         let not_found = r#"{"message":"Branch not found","status":"404"}"#;
-        assert!(branch_gone(&refused(not_found)));
+        assert!(branch_gone(&refused(not_found), "master"));
         let limited = r#"{"message":"API rate limit exceeded","status":"403"}"#;
-        assert!(!branch_gone(&refused(limited)));
-        assert!(!branch_gone(&refused("")));
-        assert!(!branch_gone(&Ok(r#"{"name":"dev"}"#.to_owned())));
+        assert!(!branch_gone(&refused(limited), "master"));
+        assert!(!branch_gone(&refused(""), "master"));
     }
 
     /// GitHub's list is the signed-in gh account's only: signed out, or another account, and it's
