@@ -1,6 +1,5 @@
 //! Waiting to try again (RECOVERY-1, RECOVERY-14): a turn the network cut, and a job's first fetch.
 
-use super::slots::Idle;
 use super::*;
 
 impl Jobs {
@@ -48,10 +47,10 @@ impl Jobs {
         true
     }
 
-    /// RECOVERY-14's wait before try `attempt` after `error`: queued, its slot free meanwhile
-    /// (ADMISSION-4) and taken back before it goes on (ADMISSION-5), and one of the job's tries in
-    /// all (RECOVERY-17): with none left, it's interrupted with the cap's reason. False when it was
-    /// stopped meanwhile.
+    /// RECOVERY-14's wait before try `attempt` after `error`: queued, keeping its slot as every
+    /// retry's wait does (ADMISSION-4: only the check queue's frees one, so an outage starts no new
+    /// jobs in their place), and one of the job's tries in all (RECOVERY-17): with none left, it's
+    /// interrupted with the cap's reason. False when it was stopped meanwhile.
     pub(super) async fn wait_queued(
         self: &Arc<Self>,
         id: &str,
@@ -69,18 +68,13 @@ impl Jobs {
         }
         self.update(id, |job| job.recovery.tries += 1);
         let (wait, of) = (RETRY_WAITS[attempt - 1], (attempt, RETRY_WAITS.len()));
-        let idle = Idle::new(self, id);
-        if !self.wait_to_try(id, signal, error, wait, of, queued).await {
-            return Ok(false);
-        }
-        idle.back(signal).await;
-        Ok(*signal.borrow() == Signal::Run)
+        Ok(self.wait_to_try(id, signal, error, wait, of, queued).await)
     }
 
     /// RECOVERY-14: the job's clone of `repo`, fetched with `refspecs`, under the clone's lock
     /// (`prepared`, of `preparing`), given back with it. A fetch git's own words say the network
-    /// failed waits and tries again, [`RETRY_WAITS`]', queued and taking no slot, the lock free
-    /// meanwhile. None when it was stopped meanwhile.
+    /// failed waits and tries again, [`RETRY_WAITS`]', queued and keeping its slot, the lock free
+    /// meanwhile. None when it was stopped meanwhile, waiting for the lock again too.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn ready_clone<'a>(
         self: &Arc<Self>,
@@ -109,7 +103,12 @@ impl Jobs {
             self.update(id, |job| {
                 job.step = format!("Trying again ({tries} of {})", RETRY_WAITS.len())
             });
-            prepared = preparing.lock().await;
+            // Another job's fetch may hold it for minutes: a stop doesn't wait for that.
+            let mut stop = signal.clone();
+            prepared = tokio::select! {
+                prepared = preparing.lock() => prepared,
+                _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(None),
+            };
         }
         unreachable!("tries are counted out above")
     }
@@ -155,16 +154,16 @@ fn queued(job: &mut Job) {
 mod tests {
     use super::*;
 
-    /// RECOVERY-14, RECOVERY-17: a job that got its 10 continuations doesn't wait to fetch again:
-    /// a first fetch the network failed leaves it interrupted with the cap's reason, at once.
-    #[tokio::test]
-    async fn recovery_14_a_job_at_the_cap_doesnt_retry_its_prepare() {
-        let root = std::env::temp_dir().join(format!("obid-cap-14-{}", uuid::Uuid::new_v4()));
+    const ID: &str = "eeee0001";
+
+    /// obid with job [`ID`] running on `o/r`, whose remote refuses every connection, its
+    /// continuations so far `tries`, and `stallAfter` `stall` seconds; and the folder it's all in.
+    fn running(tries: usize, stall: u64) -> (PathBuf, Arc<Jobs>) {
+        let root = std::env::temp_dir().join(format!("obid-retry-14-{}", uuid::Uuid::new_v4()));
         let home = root.join("home");
         std::fs::create_dir_all(home.join("jobs")).unwrap();
-        let id = "eeee0001";
         let mut job = Job::new(
-            id.into(),
+            ID.into(),
             "o/r".into(),
             "fix".into(),
             "Fix it".into(),
@@ -172,20 +171,69 @@ mod tests {
             "c".into(),
         );
         job.status = Status::Stopped;
-        job.recovery.tries = crate::job::Recovery::ALL_TRIES;
+        job.recovery.tries = tries;
         std::fs::write(
-            home.join(format!("jobs/{id}.json")),
+            home.join(format!("jobs/{ID}.json")),
             serde_json::to_vec(&job).unwrap(),
         )
         .unwrap();
         let config = Config::parse(
-            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o", "stallAfter": stall,
                 "repos": [{"repo": "o/r", "remote": "https://127.0.0.1:9/o/r.git"}]})
             .to_string(),
         )
         .unwrap();
         let jobs = Jobs::open(config, Events::new(), Err("no sandbox".into())).unwrap();
-        jobs.update(id, |job| job.status = Status::Running);
+        jobs.update(ID, |job| job.status = Status::Running);
+        (root, jobs)
+    }
+
+    /// RECOVERY-14: a stop while the job waits for its clone again, after a wait to fetch again,
+    /// ends it there, though another job's fetch holds the clone.
+    #[tokio::test]
+    async fn recovery_14_stop_while_waiting_for_the_clone_again_ends_it() {
+        let (root, jobs) = running(0, 1);
+        let job = jobs.get(ID).unwrap();
+        let repo = jobs.repo("o/r").unwrap();
+        let refspecs = ["+refs/heads/main:refs/remotes/origin/main".to_string()];
+        let (run, signal) = watch::channel(Signal::Run);
+        let preparing = tokio::sync::Mutex::new(());
+        let held = preparing.lock().await;
+        let ready = jobs.ready_clone(ID, &signal, &job, &repo, &refspecs, &preparing, held);
+        tokio::pin!(ready);
+        let step = || jobs.get(ID).map(|job| job.step).unwrap_or_default();
+        let (mut other, mut stopped) = (None, false);
+        let ended = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                tokio::select! {
+                    ended = &mut ready => break ended,
+                    () = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+                // Another job takes the clone while this one waits to fetch again.
+                if other.is_none() && step().starts_with("Trying again in ") {
+                    other = preparing.try_lock().ok();
+                }
+                // It has waited, and now waits for the clone: stopped there.
+                if other.is_some() && !stopped && step().starts_with("Trying again (") {
+                    run.send(Signal::Stop).unwrap();
+                    stopped = true;
+                }
+            }
+        })
+        .await
+        .expect("a stop didn't end its wait for the clone");
+        assert!(stopped, "it never waited for the clone again: {}", step());
+        assert!(matches!(ended, Ok(None)), "{ended:?}");
+        drop(other);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// RECOVERY-14, RECOVERY-17: a job that got its 10 continuations doesn't wait to fetch again:
+    /// a first fetch the network failed leaves it interrupted with the cap's reason, at once.
+    #[tokio::test]
+    async fn recovery_14_a_job_at_the_cap_doesnt_retry_its_prepare() {
+        let (root, jobs) = running(crate::job::Recovery::ALL_TRIES, 900);
+        let id = ID;
         let job = jobs.get(id).unwrap();
         let repo = jobs.repo("o/r").unwrap();
         let refspecs = ["+refs/heads/main:refs/remotes/origin/main".to_string()];

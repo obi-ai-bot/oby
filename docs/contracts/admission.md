@@ -29,7 +29,7 @@ The business behavior contract for when obid starts a queued job ([#1571](https:
 - `status.memory.waiting` is always `[]`, and obid never sends `waiting` `{"kind": "cap", "text": "memory frees up"}` or `step` `Waiting for memory` any more. Both keys stay (the API is add-only); the Swift iPhone app keeps its "waiting for memory" line for a Mac on an older obid.
 - Every running agent takes a slot; the rounds of a job that started already never wait for one (docs/runner-api.md, Jobs run side by side).
 - A job that has to wait in the queue for the one check at a time takes no slot while it waits, nor while its check then runs. Once it has given the check's turn back it takes a slot again before it goes on: the next free one, so no job holds the one check while it waits for a slot, and no more than `maxRunning` jobs ever work at once, however many come back together (ADMISSION-5). It goes before the queued jobs that look for a slot after it; one that looks in the moment before it does can take that slot first, never one past `maxRunning`. Until a slot is free it stays `running`, its `step` `Waiting for a free slot: 2 of 2 jobs running`.
-- A job waiting to try again after a passing error (RECOVERY-1) keeps its slot: when an outage cuts many jobs at once, no new job starts in their place and none comes back to more than `maxRunning`.
+- A job waiting to try again after a passing error (RECOVERY-1), or after its first fetch or launch the network failed (RECOVERY-14, `queued` meanwhile), keeps its slot: when an outage cuts many jobs at once, no new job starts in their place and none comes back to more than `maxRunning`.
 
 ## Interfaces and dependencies
 
