@@ -41,35 +41,68 @@ fn config(folder: &Path) -> Config {
 
 /// KEYCHAIN-10: on macOS, `prepare_home` makes `vault/` and `keys/` and excludes each from Time
 /// Machine (`tmutil isexcluded` says `[Excluded]`). Sticky, no admin; a failure never stops obid.
+/// The home is not under `temp_dir()`: macOS often excludes that ancestor already, so `[Excluded]`
+/// would not prove `addexclusion` ran.
 #[cfg(target_os = "macos")]
 #[test]
 fn keychain_10_vault_and_keys_are_excluded_from_backups() {
-    let folder = Folder::new("keychain-10");
+    let folder = included_folder("keychain-10");
     let config = config(&folder.0);
-    obid::prepare_home(&config).unwrap();
+    // Make the folders first so isexcluded names them, and prove they aren't excluded yet: then
+    // prepare_home's addexclusion is what the later [Excluded] measures.
     let vault = config.mac_home.join("vault");
     let keys = config.mac_home.join("keys");
-    assert!(vault.is_dir(), "prepare_home makes vault/");
-    assert!(keys.is_dir(), "prepare_home makes keys/");
     for path in [&vault, &keys] {
-        let out = std::process::Command::new("/usr/bin/tmutil")
-            .arg("isexcluded")
-            .arg(path)
-            .output()
-            .expect("tmutil isexcluded");
+        std::fs::create_dir_all(path).unwrap();
+        let text = tmutil_isexcluded(path);
         assert!(
-            out.status.success(),
-            "tmutil isexcluded {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            text.contains("[Excluded]"),
-            "{} should be excluded from Time Machine, got: {text}",
+            !text.contains("[Excluded]"),
+            "{} must start included so the test fails without addexclusion, got: {text}",
             path.display()
         );
     }
+    obid::prepare_home(&config).unwrap();
+    assert!(vault.is_dir(), "prepare_home makes vault/");
+    assert!(keys.is_dir(), "prepare_home makes keys/");
+    for path in [&vault, &keys] {
+        let text = tmutil_isexcluded(path);
+        assert!(
+            text.contains("[Excluded]"),
+            "{} should be excluded from Time Machine after prepare_home, got: {text}",
+            path.display()
+        );
+    }
+}
+
+/// A scratch folder under the person's home, not `temp_dir()`: Time Machine usually backs those
+/// up, and excludes temporary ancestors already.
+#[cfg(target_os = "macos")]
+fn included_folder(name: &str) -> Folder {
+    let home = std::env::var_os("HOME").expect("HOME");
+    let path = PathBuf::from(home).join(format!(
+        "Library/Application Support/Oby/obid-startup-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).unwrap();
+    Folder(path)
+}
+
+/// `tmutil isexcluded` stdout for `path`, or panics with stderr when the tool fails.
+#[cfg(target_os = "macos")]
+fn tmutil_isexcluded(path: &Path) -> String {
+    let out = std::process::Command::new("/usr/bin/tmutil")
+        .arg("isexcluded")
+        .arg(path)
+        .output()
+        .expect("tmutil isexcluded");
+    assert!(
+        out.status.success(),
+        "tmutil isexcluded {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// Worktrees enough that measuring them isn't instant.
