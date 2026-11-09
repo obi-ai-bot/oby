@@ -15,7 +15,6 @@ fn the_config(folder: &Folder, remote: &Path) -> Value {
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
     let mut config = config(&folder.0, remote, &agent);
     config["conversation"] = json!({"agent": "claude"});
-    config["orchestratorDelay"] = json!(1);
     config
 }
 

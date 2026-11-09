@@ -2,7 +2,7 @@
 
 The owner's decision (2026-10-17): talking to Oby works like talking to Claude Code, ChatGPT or Codex. A conversation is a real agent session with the agent's own harness (reading and searching code, the web, running things, sub-agents) plus Oby's own tools, and what it makes to be looked at is an artifact the apps show. Sangam's design stays as it is: this is the logic under it. Whichever agent runs the conversation (Claude Code, Codex or Cursor over ACP, the owner's choice at runtime: docs/contracts/conversation-agent.md), it gets the same Oby tools, so it works the same.
 
-This replaces obid's plan loop. Conversation turns and event orchestration both use the harness; side calls still use a short, separate model call.
+This replaces obid's plan loop. Conversation turns use the harness (the event orchestrator that also did is gone, #1946); side calls still use a short, separate model call.
 
 ## 1. Talking and work stay apart
 

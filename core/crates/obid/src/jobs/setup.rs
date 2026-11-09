@@ -25,7 +25,7 @@ impl Jobs {
         let Some(command) = self.repo(repo).and_then(|r| r.setup) else {
             return true;
         };
-        if message.is_empty() {
+        if runs_no_setup(self.get(id).as_ref(), message) {
             return true;
         }
         tracing::info!("job {id}: running its repository's setup");
@@ -126,9 +126,36 @@ fn setup_failed(command: &str, output: &str) -> String {
     )
 }
 
+/// A run whose agent hears nothing (a pick-up) runs no setup, and neither does Oby's own review:
+/// the reviewed commit's install scripts, with the job's door open, could rewrite what the review
+/// judges (PUBLISHING-23).
+fn runs_no_setup(job: Option<&Job>, message: &str) -> bool {
+    message.is_empty() || job.is_some_and(|job| job.review_of.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PUBLISHING-23: Oby's own review runs no setup; an ordinary job's run does.
+    #[test]
+    fn publishing_23_a_review_runs_no_setup() {
+        let new = || {
+            Job::new(
+                "j".into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            )
+        };
+        let mut review = new();
+        review.review_of = Some("author".into());
+        assert!(runs_no_setup(Some(&review), "Review it"));
+        assert!(!runs_no_setup(Some(&new()), "Fix it"));
+        assert!(runs_no_setup(Some(&new()), ""));
+    }
 
     /// A setup past its 10 minutes tells the agent so, never a check's 45 minutes or Publish by
     /// hand (run_check's words for a check).
