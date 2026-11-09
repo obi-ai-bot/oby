@@ -293,6 +293,18 @@ grep -qxF "couldn't judge: tests/jobs_setup.rs makes a sandbox of its own and ca
     sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
+# Not nested, the Mac's own check plans them with tests/jobs_api.rs: a change to jobs.rs runs them.
+if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+    code core/crates/obid/tests/jobs_api.rs 1
+    said=$(OBY_CHECK_PATHS=core/crates/obid/src/jobs.rs OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -q -- '--test jobs_setup' <<<"$said" || {
+        echo "oby-check-test: not nested, a change to jobs.rs didn't plan tests/jobs_setup.rs:" >&2
+        # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+    rm core/crates/obid/tests/jobs_api.rs
+fi
 rm core/crates/obid/tests/jobs_setup.rs "$main"
 
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
