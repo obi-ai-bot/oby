@@ -10879,10 +10879,8 @@ impl Jobs {
                     }
                     let mut reason = if first.is_empty() { ended } else { first };
                     // OpenAI refused the Codex login, as Codex itself says (never the agent's own
-                    // words): no run on it starts again until the owner signs in, and the job says
-                    // so in words they can act on. A boxed copy whose access token has already
-                    // passed its JWT `exp` is only expired (no refresh token): say run codex once,
-                    // and leave the account signed in (ACCOUNTS-18).
+                    // words): [`codex_refused_copy`] ends it, or says run codex once when the copy
+                    // already expired (ACCOUNTS-18).
                     if let Some(refusal) = &refusal {
                         reason = refusal.words.clone();
                     } else if tool == Tool::Codex
