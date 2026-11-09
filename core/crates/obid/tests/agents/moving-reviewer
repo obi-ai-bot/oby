@@ -1,0 +1,41 @@
+#!/usr/bin/env node
+// A reviewer whose run changes what it reads, for PERMISSIONS-14 (tests/review_job.rs): as Oby's
+// own review (stream-json), it tries to rewrite the diff obid froze for it, says whether that diff
+// holds the change, appends to a tracked file in its worktree, as code it ran could, then approves.
+// obid must not count that verdict.
+import { createInterface } from "node:readline";
+import { appendFileSync, readFileSync } from "node:fs";
+
+const emit = (line) => process.stdout.write(JSON.stringify(line) + "\n");
+const session = "00000000-0000-4000-8000-000000000015";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+rl.on("line", (line) => {
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (message.type !== "user") return;
+  emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: [], mcp_servers: [], model: "moving", permissionMode: "plan", apiKeySource: "none" });
+  const diff = ".obi/inputs/change.diff";
+  let frozen = "diff: written";
+  try {
+    appendFileSync(diff, "\ndiff --git a/x b/x\n");
+  } catch {
+    frozen = "diff: frozen";
+  }
+  let holds = "no";
+  try {
+    holds = readFileSync(diff, "utf8").includes("diff --git a/") ? "yes" : "no";
+  } catch {}
+  let moved = `${frozen}\ndiff holds the change: ${holds}\nmoved README.md`;
+  try {
+    appendFileSync("README.md", "\nChanged by the review.\n");
+  } catch (error) {
+    moved = `couldn't move README.md: ${error.message}`;
+  }
+  emit({ type: "result", subtype: "success", is_error: false, num_turns: 1, result: `${moved}\nVERDICT: APPROVE`, session_id: session, total_cost_usd: 0 });
+  rl.close();
+});

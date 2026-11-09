@@ -2733,6 +2733,97 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
         })
 }
 
+/// Programs that write, move or remove files, or run another program past where obid reads
+/// ([`writes`]).
+const WRITERS: &[&str] = &[
+    "touch",
+    "rm",
+    "rmdir",
+    "mv",
+    "cp",
+    "mkdir",
+    "ln",
+    "tee",
+    "chmod",
+    "chown",
+    "chgrp",
+    "dd",
+    "truncate",
+    "install",
+    "patch",
+    "rsync",
+    "unlink",
+    "shred",
+    "mktemp",
+    "tar",
+    "unzip",
+    "gzip",
+    "gunzip",
+    "zip",
+    "xargs",
+    "env",
+    "nohup",
+    "nice",
+    "timeout",
+    "exec",
+    "command",
+    "sudo",
+    "doas",
+    "osascript",
+    "open",
+];
+
+/// Whether `command` writes a file as obid reads it, so Oby's own review doesn't run it
+/// (PERMISSIONS-14): a redirect, a program that writes or runs another ([`WRITERS`]), git past a
+/// read, an in-place edit, `find`'s own actions. Code obid can't read counts as writing.
+/// Best-effort, like [`uses_network`]: what a program writes by itself (a test's build scripts)
+/// isn't seen here; the review's end checks its commit and tracked files (crate::jobs).
+pub fn writes(command: &str) -> bool {
+    simple_commands(command).is_none_or(|commands| {
+        commands.iter().any(|c| {
+            if c.redirected || c.unsure {
+                return true;
+            }
+            let mut words = c
+                .args
+                .iter()
+                .skip_while(|w| w.contains('=') && !w.starts_with('-'));
+            let Some(program) = words.next() else {
+                return false;
+            };
+            let program = program.rsplit('/').next().unwrap_or_default();
+            let rest: Vec<String> = words.cloned().collect();
+            let git = if rest.first().is_some_and(|w| w == "--no-pager") {
+                &rest[1..]
+            } else {
+                &rest[..]
+            };
+            WRITERS.contains(&program)
+                || (program == "git"
+                    && (!git_reads(git) || git.iter().any(|w| git_read_refuses(w))))
+                || (matches!(program, "sed" | "perl" | "ruby")
+                    && rest
+                        .iter()
+                        .any(|w| w.starts_with("-i") || w == "--in-place"))
+                || (program == "find"
+                    && rest.iter().any(|w| {
+                        matches!(
+                            w.as_str(),
+                            "-delete"
+                                | "-exec"
+                                | "-execdir"
+                                | "-ok"
+                                | "-okdir"
+                                | "-fprint"
+                                | "-fprint0"
+                                | "-fprintf"
+                                | "-fls"
+                        )
+                    }))
+        })
+    })
+}
+
 /// What takes `call` out of the job's sandbox, or none when it stays inside: the files of the
 /// worktree and the job's temporary folder, commands, tests.
 pub fn reach(call: &Call, bounds: &Bounds) -> Option<Reach> {
@@ -6287,5 +6378,36 @@ mod tests {
             "Edit a skill"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// PERMISSIONS-14: what Oby's own review doesn't run because it writes, and what it may.
+    #[test]
+    fn permissions_14_a_command_that_writes_isnt_a_reviews() {
+        for command in [
+            "touch notes.md",
+            "rm -rf src",
+            "echo x > a",
+            "cargo test > log",
+            "git commit -m x",
+            "git reset --hard HEAD~1",
+            "git checkout main",
+            "sed -i s/a/b/ f",
+            "find . -name a -delete",
+            "xargs rm",
+            "FOO=1 /bin/mv a b",
+            "ls | tee a",
+        ] {
+            assert!(writes(command), "{command}");
+        }
+        for command in [
+            "cargo test",
+            "npm test",
+            "node --test",
+            "ls -la",
+            "git status",
+            "RUST_LOG=debug cargo test -p obid",
+        ] {
+            assert!(!writes(command), "{command}");
+        }
     }
 }

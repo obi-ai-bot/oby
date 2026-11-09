@@ -103,6 +103,12 @@ const SETTLE_AFTER: i64 = 24 * 60 * 60;
 pub const MCP_CONFIG_FILE: &str = "obi-mcp.json";
 /// The kinds whose work is commits: one that ends with none committed says so.
 pub(crate) const COMMITTING: [&str; 3] = ["build", "fix", "test"];
+/// Oby's own review whose worktree moved while it ran: its HEAD left the commit it reviewed, or
+/// its tracked files changed (PERMISSIONS-14). Its verdict doesn't count ([`Jobs::reviewed`]).
+const REVIEW_MOVED: &str =
+    "The commit or the files it reviewed changed while it ran, so its verdict doesn't count.";
+/// What a review's tracked files say ([`REVIEW_MOVED`]): untracked ones, `.obi/inputs` too, aside.
+const TRACKED: [&str; 3] = ["status", "--porcelain", "--untracked-files=no"];
 /// How many times in a row the same call may fail before the job stalls as looping.
 pub const LOOP_REPEATS: u32 = 5;
 /// How long the agent has to write its handoff note when its job stalls.
@@ -5034,6 +5040,12 @@ impl Jobs {
                 self.answered(id, &call, worktree, Some(&why));
                 Ruling::Now(Answer::Deny(why))
             }
+            // Oby's own review may run a local command its box holds, `cargo test` say (the
+            // owner's answer of 2026-11-08, PERMISSIONS-14), where nothing it reaches leaves it.
+            permissions::Verdict::Ask if self.review_runs(&job, &call, &bounds) => {
+                self.answered(id, &call, worktree, None);
+                Ruling::Now(Answer::Allow)
+            }
             permissions::Verdict::Ask => match unwatched_review(&job, &call) {
                 Some(why) => {
                     self.answered(id, &call, worktree, Some(&why));
@@ -5045,6 +5057,23 @@ impl Jobs {
                 ),
             },
         }
+    }
+
+    /// Whether Oby's own review `job` may run `call` ([`review_may_run`]), as this machine boxes it.
+    fn review_runs(&self, job: &Job, call: &Call, bounds: &permissions::Bounds) -> bool {
+        job.review_of.is_some()
+            && review_may_run(
+                job,
+                job.review_of
+                    .as_deref()
+                    .and_then(|of| self.get(of))
+                    .as_ref(),
+                self.confines_egress(),
+                self.job_account(job)
+                    .is_ok_and(|(tool, account)| !self.own_sandbox(tool, &account)),
+                call,
+                bounds,
+            )
     }
 
     /// Puts `call` on job `id`'s card for the owner, saying which sites their yes opens; its
@@ -10210,6 +10239,8 @@ impl Jobs {
         // worktree's own rules files themselves.
         let reviews = job.review_of.is_some();
         let mut rules_quoted = false;
+        // The change Oby's own review judges (PERMISSIONS-14), frozen in its worktree.
+        let mut own_diff: Option<Vec<u8>> = None;
         if reviews || job.agent == Tool::Claude.id() {
             let mut files = Vec::new();
             for name in ["AGENTS.md", "CLAUDE.md"] {
@@ -10268,12 +10299,37 @@ impl Jobs {
                 // The security paths its head changes against its base, from the commit it reads
                 // (MERGING-15): none read counts as touching one.
                 let changed = match &job.start_commit {
-                    Some(head) => self.changed_files(&job, head).await,
+                    Some(head) => Box::pin(self.changed_files(&job, head)).await,
                     None => None,
                 };
                 let check = author.as_ref().and_then(|a| a.check.as_deref());
                 let touched = changed.map(|changed| crate::merge::security_paths(&changed, check));
                 self.update(id, |job| job.security_paths = touched);
+                // What it changes, read by obid outside the box with no git settings but the
+                // clone's, before anything runs there: what the review's commands run can't move
+                // it. None read, no review.
+                let head = job
+                    .start_commit
+                    .as_deref()
+                    .ok_or("obid doesn't know the head to review, so it didn't review it")?;
+                let mut change = Box::pin(git::change(
+                    &clone,
+                    &format!("refs/remotes/origin/{base}"),
+                    head,
+                ))
+                .await
+                .map_err(|e| {
+                    format!(
+                        "obid couldn't compare the head with {base}, so it didn't review it: {e}"
+                    )
+                })?;
+                if change.len() > review::DIFF_MAX {
+                    change.truncate(review::DIFF_MAX);
+                    change.extend_from_slice(
+                        b"\n[obid cut the diff here: it is longer than 8 MiB]\n",
+                    );
+                }
+                own_diff = Some(change);
             }
             if reviews || rules_quoted {
                 quoted.push((review::RULES_FILE, review::base_rules(&base, &files)));
@@ -10285,6 +10341,18 @@ impl Jobs {
                     let text = crate::secrets::known().redact(&crate::vault::for_agent(&text)?);
                     crate::obi_dir::write_new(&inputs, file, text.as_bytes())
                         .map_err(|e| format!("obid couldn't quote {file} for the agent: {e}"))?;
+                }
+                if let Some(change) = &own_diff {
+                    let file = Path::new(review::DIFF_FILE)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .expect("the diff file has a name");
+                    crate::obi_dir::write_new(
+                        &inputs,
+                        file,
+                        &crate::vault::for_agent_bytes(change)?,
+                    )
+                    .map_err(|e| format!("obid can't write the diff: {e}"))?;
                 }
             }
         }
@@ -10309,7 +10377,18 @@ impl Jobs {
             });
         }
         let job = self.get(id).ok_or("the job is gone")?;
-        let spec = self.spec(&worktree, &admin, &common, &temp, true, tool);
+        let mut spec = self.spec(&worktree, &admin, &common, &temp, true, tool);
+        // The diff Oby's own review judges, and every input obid quoted for it (what was asked,
+        // the issue, the base's rules), stay as obid wrote them, nor can their folders move.
+        if own_diff.is_some() {
+            spec.frozen.push(worktree.join(review::DIFF_FILE));
+            if let Ok(inputs) = std::fs::read_dir(worktree.join(".obi/inputs")) {
+                spec.frozen
+                    .extend(inputs.flatten().map(|entry| entry.path()));
+            }
+            spec.fixed
+                .extend([worktree.join(".obi"), worktree.join(".obi/inputs")]);
+        }
         // HEAD detached at the branch (a worktree from before may be on it), and the folder the
         // job's new objects go to (Spec::git_env).
         let folders = git_folders(&admin, &common, &worktree);
@@ -10415,6 +10494,12 @@ impl Jobs {
         if !Box::pin(self.setup(id, &job.repo, &spec, &mut message, signal)).await {
             return Ok(());
         }
+        // What Oby's own review must leave as it was given, past the repository's setup line: the
+        // code it runs could move what it reads (PERMISSIONS-14, [`REVIEW_MOVED`]).
+        let reviewed_tracked = match job.review_of {
+            Some(_) => Box::pin(self.sandboxed_git(id, &TRACKED, None)).await.ok(),
+            None => None,
+        };
         // What the secret scan found the last time it blocked publishing: the same again stops.
         let mut blocked_before: Option<Vec<crate::publish::Found>> = None;
         // The decision check gave its one round (crate::decisions), in this run or before a restart.
@@ -11239,6 +11324,20 @@ impl Jobs {
             if job.kind == "review" && commits > 0 {
                 self.end_done(id, commits, job.pushed, |job| {
                     job.reason = Some(crate::publish::REVIEW_COMMITTED.into());
+                });
+                self.offer_owner_review(id).await;
+                return Ok(());
+            }
+            // Oby's own review ran code (PERMISSIONS-14): its verdict counts only on the commit
+            // and the tracked files it was given, as they were when it started.
+            if job.review_of.is_some()
+                && (job.start_commit.as_deref() != Some(head.as_str())
+                    || reviewed_tracked.is_none()
+                    || Box::pin(self.sandboxed_git(id, &TRACKED, None)).await.ok()
+                        != reviewed_tracked)
+            {
+                self.end_done(id, 0, job.pushed, |job| {
+                    job.reason = Some(REVIEW_MOVED.into());
                 });
                 self.offer_owner_review(id).await;
                 return Ok(());
@@ -12106,6 +12205,9 @@ impl Jobs {
             (Status::Done, _) if review.commits.unwrap_or(0) > 0 => {
                 Some("it made commits, so its verdict doesn't count".to_owned())
             }
+            (Status::Done, _) if review.reason.as_deref() == Some(REVIEW_MOVED) => Some(
+                "what it reviewed changed while it ran, so its verdict doesn't count".to_owned(),
+            ),
             (Status::Done, None) => Some("it gave no verdict".to_owned()),
             (Status::Done, Some(_)) => None,
             (Status::Stopped, _) => Some("it was stopped".to_owned()),
@@ -14782,6 +14884,43 @@ fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String,
         job.said.iter().for_each(|w| add(w));
     }
     (first.task, first.request, later)
+}
+
+/// Whether Oby's own `review` may run `call` with nobody watching (PERMISSIONS-14, the owner's
+/// answer of 2026-11-08: local commands inside its box, with no network), fail-closed: only a Bash
+/// command that reaches nothing past the box ([`permissions::reach`]) and writes nothing as obid
+/// reads it ([`permissions::writes`]); only where the box holds its egress to obid's proxy
+/// (`confined`) and obid boxes the run itself (`boxed`: not Claude Code's own sandbox); and only in
+/// a review of the owner's own work (`author`, read afresh for each call: from the owner's own
+/// words, no one else's, no second review needed, nothing reached past the registries or
+/// withheld), so a stranger's code never runs beside a reviewer's login. Every other
+/// command is refused as [`unwatched_review`] says.
+fn review_may_run(
+    review: &Job,
+    author: Option<&Job>,
+    confined: bool,
+    boxed: bool,
+    call: &Call,
+    bounds: &permissions::Bounds,
+) -> bool {
+    review.review_of.is_some()
+        && confined
+        && boxed
+        && review.someone_elses().is_none()
+        && author.is_some_and(|author| {
+            // Someone else's, not from the owner's words, past the registries, withheld (all
+            // `own_check_refuses_secrets`), unsigned, from others' memory or a security path
+            // (`two_reviews`).
+            author.own_check_refuses_secrets().is_none()
+                && author.check_withheld.is_none()
+                && crate::merge::two_reviews(author, review.security_paths.as_deref()).is_none()
+        })
+        && call.tool == "Bash"
+        && permissions::reach(call, bounds).is_none()
+        && call
+            .command
+            .as_deref()
+            .is_some_and(|command| !permissions::writes(command))
 }
 
 /// Oby's own review runs with nobody watching (PERMISSIONS-14): what it would ask the owner is
@@ -21953,5 +22092,131 @@ mod tests {
             Asked::Card { .. }
         ));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PERMISSIONS-14: Oby's own review runs a local command only where its box holds it (egress
+    /// through obid's proxy, obid's own box), only in a review of the owner's own work, and never
+    /// one that writes or reaches the network.
+    #[test]
+    fn permissions_14_a_review_runs_a_command_only_where_its_box_holds_it() {
+        fn runs(
+            review: &Job,
+            author: Option<&Job>,
+            confined: bool,
+            boxed: bool,
+            command: &str,
+        ) -> bool {
+            review_may_run(
+                review,
+                author,
+                confined,
+                boxed,
+                &Call::new("Bash", &json!({ "command": command })),
+                &permissions::Bounds::of(Path::new("/tmp/obid-review-runs")),
+            )
+        }
+        let mut review = Job::new(
+            "r".into(),
+            "o/r".into(),
+            "review".into(),
+            "Review it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        review.review_of = Some("a".into());
+        review.security_paths = Some(Vec::new());
+        let author = Job::new(
+            "a".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        // The owner's own words, through Oby's apps.
+        let mut author = author;
+        author.vetted = true;
+        assert!(runs(&review, Some(&author), true, true, "cargo test"));
+        // 1: egress not held to obid's proxy (bubblewrap), or Claude Code's own sandbox.
+        assert!(!runs(&review, Some(&author), false, true, "cargo test"));
+        assert!(!runs(&review, Some(&author), true, false, "cargo test"));
+        // 2: only the owner's own work: never with its author unknown, untrusted, unsigned, past
+        // the registries, or a head that touches a security path or couldn't be read.
+        assert!(!runs(&review, None, true, true, "cargo test"));
+        let mut untrusted = author.clone();
+        untrusted.untrusted = true;
+        assert!(!runs(&review, Some(&untrusted), true, true, "cargo test"));
+        let mut unsigned = author.clone();
+        unsigned.unsigned = true;
+        assert!(!runs(&review, Some(&unsigned), true, true, "cargo test"));
+        let mut reached = author.clone();
+        reached.reached = Some("x.test".into());
+        assert!(!runs(&review, Some(&reached), true, true, "cargo test"));
+        let mut unvetted = author.clone();
+        unvetted.vetted = false;
+        assert!(!runs(&review, Some(&unvetted), true, true, "cargo test"));
+        let mut foreign = author.clone();
+        foreign.foreign = Some("it follows up someone else's pull request".into());
+        assert!(!runs(&review, Some(&foreign), true, true, "cargo test"));
+        let mut withheld = author.clone();
+        withheld.reached_chatgpt();
+        assert!(!runs(&review, Some(&withheld), true, true, "cargo test"));
+        let mut check_withheld = author.clone();
+        check_withheld.check_withheld = Some("its check ran without its secrets".into());
+        assert!(!runs(
+            &review,
+            Some(&check_withheld),
+            true,
+            true,
+            "cargo test"
+        ));
+        let mut remembered = author.clone();
+        remembered.memory_from_others = true;
+        assert!(!runs(&review, Some(&remembered), true, true, "cargo test"));
+        let mut security = review.clone();
+        security.security_paths = Some(vec!["AGENTS.md".into()]);
+        assert!(!runs(&security, Some(&author), true, true, "cargo test"));
+        let mut unread = review.clone();
+        unread.security_paths = None;
+        assert!(!runs(&unread, Some(&author), true, true, "cargo test"));
+        let mut hand = review.clone();
+        hand.review_of = None;
+        assert!(!runs(&hand, Some(&author), true, true, "cargo test"));
+        // 4: never a write, nor the network.
+        for command in [
+            "touch notes.md",
+            "cargo test > log",
+            "git reset --hard HEAD~1",
+            "cargo fetch",
+            "curl https://example.com/",
+        ] {
+            assert!(
+                !runs(&review, Some(&author), true, true, command),
+                "{command}"
+            );
+        }
+    }
+
+    /// PERMISSIONS-14: a review whose commit or tracked files changed while it ran gives no verdict
+    /// that counts, its APPROVE aside.
+    #[tokio::test]
+    async fn permissions_14_a_review_that_moved_what_it_read_gives_no_verdict() {
+        let jobs = jobs_on_a_plan(true, &[]);
+        reviewed_on_the_plan(&jobs, Status::Done);
+        jobs.update("r1", |review| {
+            review.summary = "Looks right.\nVERDICT: APPROVE".into();
+            review.reason = Some(REVIEW_MOVED.into());
+        });
+        jobs.reviewed("r1");
+        let author = jobs.get("a").unwrap();
+        assert!(author.review.is_none(), "{:?}", author.review);
+        assert!(
+            author
+                .review_error
+                .as_deref()
+                .is_some_and(|e| e.contains("changed while it ran")),
+            "{:?}",
+            author.review_error
+        );
     }
 }

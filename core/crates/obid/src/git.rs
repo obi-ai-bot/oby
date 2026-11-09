@@ -529,8 +529,15 @@ pub async fn change(dir: &Path, base: &str, head: &str) -> Result<Vec<u8>, GitEr
         "--",
     ];
     let args: Vec<&OsStr> = words.iter().map(OsStr::new).collect();
-    run_bytes(dir, &args, &[], None).await
+    run_bytes(dir, &args, NO_SETTINGS, None).await
 }
+
+/// No git settings but the repository's own: never the person's or the system's (a pager, a
+/// `diff.external`, a textconv), for what obid reads as a review's change ([`change`]).
+pub const NO_SETTINGS: &[(&str, &str)] = &[
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+];
 
 /// A worktree's git directories: its own (`<common>/worktrees/<name>`) and the common one.
 pub async fn worktree_dirs(worktree: &Path) -> Result<(PathBuf, PathBuf), GitError> {

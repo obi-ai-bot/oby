@@ -768,9 +768,10 @@ async fn a_change_to_approve_isnt_reviewed_without_its_base() {
 }
 
 /// PERMISSIONS-14: Oby's own review of published work runs with nobody watching, so what Plan would
-/// ask the owner (a command that reaches the network or writes, a fetch, its question) is refused at
+/// ask the owner (a command that reaches the network, a fetch, its question) is refused at
 /// once, by obid's own rule (kept in `answered`), naming only the program or the site and telling it
-/// to write what it couldn't run in its review. It goes on and gives its verdict
+/// to write what it couldn't run in its review, while a local command its box holds (`cargo test`)
+/// runs, in this review of the owner's own job, and one that writes (`touch`) doesn't. It goes on and gives its verdict
 /// (tests/agents/asking-reviewer): before, its first call waited on the owner's card until the
 /// review was parked, and this test timed out.
 #[tokio::test(flavor = "multi_thread")]
@@ -792,13 +793,33 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
     review.start_commit = Some(HEAD_SHA.into());
     review.mode = Some("plan".into());
     review.round = Some(1);
+    // The job it reviews, the owner's own, its head pushed: what lets the review run a command.
+    let mut author = obid::job::Job::new(
+        "a14a2b3c".into(),
+        "obi-e2e/fixture-app".into(),
+        "fix".into(),
+        "Make average round to two places.".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    author.status = Status::Done;
+    author.vetted = true;
+    author.branch = "oby/fix".into();
+    author.outgoing = vec![obid::publish::Outgoing::new(
+        "push",
+        "obi-e2e/fixture-app",
+        HEAD_SHA,
+        Some("oby/fix"),
+    )];
     let home = folder.0.join("home");
     std::fs::create_dir_all(home.join("jobs")).unwrap();
-    std::fs::write(
-        home.join(format!("jobs/{}.json", review.id)),
-        serde_json::to_vec(&review).unwrap(),
-    )
-    .unwrap();
+    for job in [&review, &author] {
+        std::fs::write(
+            home.join(format!("jobs/{}.json", job.id)),
+            serde_json::to_vec(job).unwrap(),
+        )
+        .unwrap();
+    }
     let (jobs, _) = reading_jobs(&folder.0, &remote, "asking-reviewer");
     jobs.resume();
     let ended = tokio::time::timeout(Duration::from_secs(120), jobs.wait(&review.id))
@@ -817,6 +838,7 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
     for (tool, what) in [
         ("Bash", "curl"),
         ("Bash", "touch"),
+        ("Bash", "cargo"),
         ("WebFetch", "example.com"),
     ] {
         let line = summary
@@ -845,6 +867,81 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
         summary.contains("AskUserQuestion: deny (Nobody is watching this review to answer"),
         "{summary}"
     );
+    // A local command the review's box holds runs: it reaches nothing outside and writes nothing.
+    assert!(summary.lines().any(|l| l == "Bash: allow"), "{summary}");
+    assert!(
+        !ended
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("changed while it ran")),
+        "{shown}"
+    );
+    assert!(
+        ended
+            .answered
+            .iter()
+            .any(|a| a.tool == "Bash" && a.decision == "allowed"),
+        "{shown}"
+    );
     // Plan refuses a file write by itself, as before: it never asked.
     assert!(summary.contains("Write: deny (Plan mode"), "{summary}");
+}
+
+/// PERMISSIONS-14: the code Oby's own review runs could change what it reads, so its verdict counts
+/// only on the commit and tracked files it was given: a reviewer that changes a tracked file
+/// (tests/agents/moving-reviewer) and approves ends with no verdict that counts. The diff it judges
+/// is obid's, frozen in its worktree: it can't rewrite it.
+#[tokio::test(flavor = "multi_thread")]
+async fn permissions_14_a_review_that_moves_what_it_read_doesnt_count() {
+    let folder = Folder::new("moves");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut review = obid::job::Job::new(
+        "r14b2b3c".into(),
+        "obi-e2e/fixture-app".into(),
+        "review".into(),
+        "Make average round to two places.".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    review.review_of = Some("a14b2b3c".into());
+    review.branch = "oby/review-r14b2b3c".into();
+    review.base = Some("main".into());
+    review.start_commit = Some(HEAD_SHA.into());
+    review.mode = Some("plan".into());
+    review.round = Some(1);
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::write(
+        home.join(format!("jobs/{}.json", review.id)),
+        serde_json::to_vec(&review).unwrap(),
+    )
+    .unwrap();
+    let (jobs, _) = reading_jobs(&folder.0, &remote, "moving-reviewer");
+    jobs.resume();
+    let ended = tokio::time::timeout(Duration::from_secs(120), jobs.wait(&review.id))
+        .await
+        .unwrap()
+        .unwrap();
+    let shown = serde_json::to_string(&ended).unwrap();
+    assert_eq!(ended.status, Status::Done, "{shown}");
+    assert!(ended.summary.contains("VERDICT: APPROVE"), "{shown}");
+    // The diff it judges is obid's, written before it ran and frozen: its code can't rewrite it.
+    // Inside a job's own box (obid's check run by an Oby job) Seatbelt can't lay the freeze on
+    // top of the enclosing box, so there it isn't asserted.
+    let enclosed = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid")))
+        .is_ok_and(|sandbox| sandbox.encloses());
+    if !enclosed {
+        assert!(ended.summary.contains("diff: frozen"), "{shown}");
+    }
+    assert!(
+        ended.summary.contains("diff holds the change: yes"),
+        "{shown}"
+    );
+    assert!(
+        ended
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("changed while it ran")),
+        "{shown}"
+    );
 }
