@@ -322,7 +322,7 @@ fn status_answers_with_engine_obid() {
         json!({"id": "default", "agent": "claude", "name": "Default", "payer": null, "label": null, "signedIn": false,
                "fiveHour": null, "sevenDay": null, "fiveHourResets": null, "sevenDayResets": null,
                "running": 0, "fullUntil": null, "tetrix": null, "tetrixJobs": 0, "tetrixUsed": 0,
-               "reserved": false, "reserveLiftedUntil": null})
+               "reserved": false, "reserveLiftedUntil": null, "modelsRead": true})
     );
     assert_eq!(accounts[1]["id"], "work");
     assert_eq!(accounts[1]["name"], "Work");

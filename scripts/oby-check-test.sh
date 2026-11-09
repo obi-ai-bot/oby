@@ -2,6 +2,8 @@
 # What scripts/oby-check.sh's line limit promises (AGENTS.md, "Dispatcher, not harness"), run on a
 # repository of its own. scripts/oby-check.sh runs this when it changes.
 set -eo pipefail
+# Each case plans what it changed: a full check's own OBY_CHECK_ALL or OBY_CHECK_PATHS isn't theirs.
+unset OBY_CHECK_ALL OBY_CHECK_PATHS
 script="$(cd "$(dirname "$0")" && pwd)/oby-check.sh"
 limit=$(sed -n 's/^obid_lines_limit=//p' "$script")
 repo=$(mktemp -d)
