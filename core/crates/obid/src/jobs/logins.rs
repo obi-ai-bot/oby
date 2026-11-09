@@ -1030,7 +1030,7 @@ pub(super) fn refresh_if_due(
 }
 
 /// A Keychain login the keeper keeps fresh: the default one (no `configDir`), or that of an account
-/// obid added itself (#877, [`keychain_ready`]).
+/// with a folder of its own ([`keychain_ready`]).
 pub(super) struct Kept {
     /// Its Keychain item ([`keychain_service`]).
     service: String,
@@ -1090,15 +1090,12 @@ pub(super) fn keep_one(service: &str, config_dir: Option<&Path>, bin: &Path) -> 
 /// Before a boxed Claude Code run on `account` that gets the Keychain's login
 /// ([`keychain_login`]): if its token ends within 5 minutes, the Mac's own Claude Code refreshes
 /// it first (or the run waits for the refresh that's going), off obid's async runtime, and the
-/// login is kept fresh from now on ([`keep_keychain_logins`]): the default one, and that of an
-/// account obid added itself (`made`: its folder is obid's `home/accounts/<id>`, #877), each its
-/// own Keychain item. Any other account with a folder of its own isn't refreshed: its login is good
-/// while its token is far from its end, and refused after ([`folder_login_ok`]). Throws one line
-/// when the login can't be used. obid never writes the Keychain.
+/// login is kept fresh from now on ([`keep_keychain_logins`]): the default one, and that of every
+/// account with a folder of its own, one obid added (#877) or one the configuration names, each its
+/// own Keychain item. Throws one line when the login can't be used. obid never writes the Keychain.
 pub(crate) async fn keychain_ready(
     bin: PathBuf,
     account: &crate::config::Account,
-    made: bool,
 ) -> Result<(), String> {
     if !keychain_on() {
         return Ok(());
@@ -1121,27 +1118,6 @@ pub(crate) async fn keychain_ready(
             keychain_unread(Tool::Claude, service)
         }
     };
-    if let Some(folder) = dir.clone().filter(|_| !made) {
-        // Never refreshed by obid while the Mac app may run unboxed on the folder (#655's open
-        // item, [`refresh_claude_login`]): good far from its end, else refused.
-        let service = keychain_service(Some(&folder));
-        let read = tokio::task::spawn_blocking(move || keychain(Some(&folder), true))
-            .await
-            .unwrap_or(None);
-        if read.is_none()
-            && let Some(why) = unread(&service)
-        {
-            return Err(why);
-        }
-        return if folder_login_ok(read.as_deref(), now_ms()) {
-            Ok(())
-        } else {
-            Err(format!(
-                "The Mac's Claude login for {} ends soon or has ended, and obid doesn't refresh an account's own folder while the Mac app may run on it unboxed ({SHARED_FOLDER_ISSUE}): run claude on that account to refresh it.",
-                account.name
-            ))
-        };
-    }
     let service = keychain_service(dir.as_deref());
     {
         let mut all = kept();
@@ -1178,12 +1154,6 @@ pub(crate) async fn keychain_ready(
     }
 }
 
-/// Whether the Keychain login of an account with a folder of its own, which obid doesn't refresh,
-/// is good to copy: there is none (nothing is copied from it), or its token is far from its end.
-pub(super) fn folder_login_ok(login: Option<&[u8]>, now: u64) -> bool {
-    login.is_none_or(|login| far_from_end(expires_at(login), now))
-}
-
 /// Whether the login copy a run was given in `login` (its `.credentials.json`, or its
 /// `.claude/.credentials.json`) is good for one more turn: there is none (none was copied), or its
 /// token doesn't end within 5 minutes ([`file_login_ok`]). A conversation's Claude Code kept
@@ -1210,15 +1180,11 @@ pub(super) fn login_copy_lasts_past(login: &Path, now: u64) -> bool {
     }
 }
 
-/// The issue for the Mac app's Swift engine still running agents unboxed on an account's folder,
-/// after which obid can refresh an account's own login too.
-pub(super) const SHARED_FOLDER_ISSUE: &str = "#655";
-
 /// Whether an account's login file is good to copy for a run (the Keychain isn't used): there is
 /// none (nothing is copied), it doesn't say when it ends (the tool decides), or its token is far
-/// from its end ([`far_from_end`]). A copy carries
-/// no refresh token, so it can't refresh itself in the box; the person refreshes the file by
-/// running the tool on the account, which no box can steer now (#655).
+/// from its end ([`far_from_end`]). A copy carries no refresh token, so it can't refresh itself in
+/// the box, and obid doesn't refresh a login file: the person does, by running the tool on the
+/// account's folder, which no box ever gets (#655).
 pub(super) fn file_login_ok(login: Option<&[u8]>, now: u64) -> bool {
     login.is_none_or(|login| expires_at(login).is_none_or(|ends| far_from_end(Some(ends), now)))
 }
@@ -1508,11 +1474,11 @@ pub(super) fn refresh_command(
 /// default login ([`refresh_command`]) within 60 seconds. Claude Code 2.1.302 has no command that
 /// only refreshes (`claude auth status` reads the login without refreshing it); its `/usage` is the
 /// nearest, refreshing without asking a model. What it says is
-/// never kept. For an account with a folder of its own (`config_dir`), only one obid added itself
-/// ([`keychain_ready`]'s `made`, #877): on a Mac the Swift engine still runs agents unboxed with
-/// the folders it knows ([`SHARED_FOLDER_ISSUE`]'s open item), never with obid's own. Claude Code
-/// keeps the item's refresh lock, write lock and plaintext fallback in the folder, so nothing runs
-/// unless those are the person's own and no link ([`crate::accounts::login_paths_safe`]).
+/// never kept. An account with a folder of its own (`config_dir`, one obid added or one the
+/// configuration names, [`keychain_ready`]) is refreshed the same way: no box ever gets that
+/// folder (#655). Claude Code keeps the item's refresh lock, write lock and plaintext fallback in
+/// the folder, so nothing runs unless those are the person's own and no link
+/// ([`crate::accounts::login_paths_safe`]).
 pub(super) fn refresh_claude_login(bin: &Path, config_dir: Option<&Path>) -> bool {
     if !bin.is_absolute()
         || config_dir.is_some_and(|dir| {

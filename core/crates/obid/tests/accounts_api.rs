@@ -1212,6 +1212,58 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
     );
 }
 
+/// USAGE-5: a Claude Code account with a `configDir` the configuration names is refreshed like
+/// one obid added: with its token near its end, the Mac's own Claude Code refreshes the folder's
+/// own Keychain item before a job's run, and the job runs on the renewed login.
+#[cfg(target_os = "macos")]
+#[test]
+fn usage_5_a_named_folder_login_is_refreshed_like_an_added_one() {
+    let folder = Folder::new("named-fresh");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &system_claude(&folder.0));
+    config["claudeKeychain"] = json!(true);
+    let dir = folder.0.join("named-claude");
+    std::fs::create_dir_all(&dir).unwrap();
+    config["agents"]["claude"]["accounts"] =
+        json!([{"id": "named", "name": "Named", "configDir": dir}]);
+    let digest = obi_protocol::keys::sha256(dir.as_os_str().as_encoded_bytes());
+    let item = folder.0.join(format!(
+        "tmp/obid-test-keychain/Claude Code-credentials-{}",
+        &hex::encode(digest)[..8]
+    ));
+    std::fs::create_dir_all(item.parent().unwrap()).unwrap();
+    let ends = (obi_protocol::time::now() + 60) * 1000;
+    // Put together here, so this file holds no value a secret scan takes for a credential.
+    let refresh = ["refresh", "plain", "test", "value"].join("-");
+    let access = ["tok", "old", "plain", "test", "login"].join("-");
+    let login = json!({"claudeAiOauth": {"accessToken": access,
+                                         "refreshToken": refresh, "expiresAt": ends}});
+    std::fs::write(&item, login.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
+                     "task": "TOKEN HOLDS: renewed REFRESH KEPT", "account": "Named"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let job_id = job.body["id"].as_str().unwrap().to_owned();
+    let ended = within(60, "the job ended", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body;
+        (job["status"] != "queued" && job["status"] != "running").then_some(job)
+    });
+    assert_eq!(ended["status"], "done", "{ended}");
+    assert_eq!(ended["summary"], "holds=true refresh=none", "{ended}");
+    assert!(
+        std::fs::read_to_string(&item).unwrap().contains("renewed"),
+        "the Mac's own Claude Code refreshed the named folder's item"
+    );
+}
+
 /// USAGE-2: a Mac whose Claude Code login in the Keychain ended days ago (the person runs Claude
 /// Code from elsewhere) shows the account's usage before any task: the read has the Mac's own
 /// Claude Code refresh it first, with its own `/usage`, which asks no model, then reads boxed.
