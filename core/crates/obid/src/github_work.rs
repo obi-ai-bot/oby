@@ -427,7 +427,8 @@ fn shown_by(login: &str, members: Option<(&Owner, &str)>, shown: &Value) -> bool
 }
 
 /// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every author in it is `login` (with
-/// `members`, theirs too: [`wrote`]) and every editor and renamer `login`, every list in it was
+/// `members`, theirs too: [`wrote`]), every text edited only by `login` or its own author, every
+/// renamer `login`, every list in it was
 /// given whole, and no text in it carries [`OBY_SIGNS`] (but its own body when `signed_body`).
 fn all_by(login: &str, members: Option<(&Owner, &str)>, item: &Value, signed_body: bool) -> bool {
     let by = |who: &Value| {
@@ -442,7 +443,15 @@ fn all_by(login: &str, members: Option<(&Owner, &str)>, item: &Value, signed_bod
                 .as_array()
                 .is_some_and(|nodes| nodes.iter().all(each))
     };
-    let edits = |node: &Value| whole(&node["userContentEdits"], &|e| by(&e["editor"]));
+    // Edited by `login` or by the text's own author, who already counts (`author` runs first).
+    let edits = |node: &Value| {
+        let own = |e: &Value| {
+            (e["editor"]["login"].as_str())
+                .zip(node["author"]["login"].as_str())
+                .is_some_and(|(editor, author)| editor.eq_ignore_ascii_case(author))
+        };
+        whole(&node["userContentEdits"], &|e| by(&e["editor"]) || own(e))
+    };
     let unsigned = |node: &Value| {
         node["body"]
             .as_str()
@@ -1715,6 +1724,30 @@ mod tests {
             None,
             &json!({"author": {"login": "wellington"}})
         ));
+    }
+
+    /// ISSUETASK-5: a member's comment, edited by that member, leaves the issue the members';
+    /// edited by anyone else, or with no member counting, it's someone else's.
+    #[test]
+    fn issuetask_5_a_members_own_edit_keeps_it_the_members() {
+        let owner = Owner {
+            login: "wellington".into(),
+            orgs: Some(vec!["obi-e2e".into()]),
+        };
+        let members = Some((&owner, "obi-e2e/app"));
+        let list = |nodes: Vec<Value>| json!({"pageInfo": {"hasNextPage": false}, "nodes": nodes});
+        let issue = |editor: &str| {
+            let edits = list(vec![json!({"editor": {"login": editor}})]);
+            let comment = json!({"author": {"login": "sangam"}, "authorAssociation": "MEMBER",
+                                 "body": "And a test", "userContentEdits": edits});
+            json!({"author": {"login": "wellington"}, "authorAssociation": "OWNER", "body": "Add a line",
+                   "userContentEdits": list(vec![]), "timelineItems": list(vec![]),
+                   "comments": list(vec![comment])})
+        };
+        assert!(all_by("wellington", members, &issue("Sangam"), false));
+        assert!(all_by("wellington", members, &issue("wellington"), false));
+        assert!(!all_by("wellington", members, &issue("mallory"), false));
+        assert!(!all_by("wellington", None, &issue("sangam"), false));
     }
 
     /// ISSUETASK-3 (#1660): who wrote an issue or a pull request is a read GitHub answers. Asking
