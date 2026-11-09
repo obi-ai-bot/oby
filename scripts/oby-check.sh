@@ -239,6 +239,12 @@ while IFS= read -r file; do
         scripts/oby-check*) check_script=1 ;;
     esac
 done <<< "$changed"
+# Not nested (the Mac's own check of a pull request), what plans tests/jobs_api.rs plans the setup's
+# tests too: jobs.rs, process.rs and secretspec.rs are on the setup's path, so a change to them is
+# judged before it merges (#1944). In a job's box they stay unplanned, and the job isn't sunk.
+if [[ -z "$nested" && "$tests" == *core/crates/obid/tests/jobs_api.rs* ]]; then
+    tests=$(add "$tests" core/crates/obid/tests/jobs_setup.rs)
+fi
 
 # OBY_CHECK_ALL=1: everything, as if every part had changed (a full check of a branch): obid, the
 # Electron app, swift test and the Apple apps' build (no suites named: build-for-testing). The secret
