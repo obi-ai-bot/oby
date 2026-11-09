@@ -62,6 +62,7 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
 mod authors;
+mod budget;
 mod logins;
 mod retry;
 mod secrets;
@@ -1053,14 +1054,15 @@ const BUDGET_FROM: usize = 10;
 struct Measured {
     machine: Option<(std::time::Instant, crate::meter::Machine)>,
     jobs: HashMap<String, JobMemory>,
-    /// What each job's agent turn was told to build with, in bytes ([`process::BUILD_JOB_MEMORY`]
-    /// a job), until its check's build or its worker ends: the other builds hold it back as at
-    /// least that much ([`Jobs::build_env`]). It only narrows builds: no job ever waits on it.
-    granted: HashMap<String, u64>,
+    /// What each job's last build, its agent's turn or its check, was told to build with, in bytes
+    /// ([`process::BUILD_JOB_MEMORY`] a job), `(agent, check)`, until its next or its worker ends:
+    /// the other builds hold it back as at least that much ([`Jobs::build_env`]). It only narrows
+    /// builds: no job ever waits on it.
+    granted: HashMap<String, (u64, u64)>,
 }
 
 impl Measured {
-    /// What each running job's agent and check hold now ([`Load`]).
+    /// What each running job's agent and check hold now ([`budget::Load`]).
     fn held(&self) -> HashMap<String, (u64, u64)> {
         self.jobs
             .iter()
@@ -2509,49 +2511,6 @@ impl Jobs {
             job.agent_peak_rss = larger(job.agent_peak_rss, memory.agent_peak_rss);
             job.check_peak_rss = larger(job.check_peak_rss, memory.check_peak_rss);
         });
-    }
-
-    /// [`process::build_env`] for a build of job `id` (its check's with `check`, else its agent's),
-    /// as wide as the room memory leaves it: what's spare ([`spare`]) less what the other running
-    /// agents here may still take ([`agents_held`]), each at least what its turn was told to build
-    /// with, and, for an agent, one of the other jobs' checks ([`check_held`]): any of them may
-    /// start its check during the turn; its own can't. Worked out at every turn and every check,
-    /// so a turn that starts next to others builds narrower. Nothing when memory can't be read:
-    /// the build keeps its own defaults. Memory only narrows a build this way: it never holds a
-    /// job or a check back (jobs start as soon as a slot is free, docs/runner-api.md).
-    fn build_env(&self, id: &str, check: bool) -> Vec<(&'static str, OsString)> {
-        let Some(machine) = self.reading() else {
-            return Vec::new();
-        };
-        // record()'s order: the jobs' lock, then the meter's.
-        let state = self.lock();
-        let mut measured = self.measured();
-        let held = measured.held();
-        let others: Vec<Load> = state
-            .workers
-            .keys()
-            .filter(|w| *w != id)
-            .filter_map(|w| state.jobs.get(w))
-            .map(|job| {
-                let load = Load::of(&state.jobs, job, &held);
-                let granted = measured.granted.get(&job.id).copied().unwrap_or(0);
-                Load {
-                    agent: load.agent.max(granted),
-                    ..load
-                }
-            })
-            .collect();
-        let checks = if check { 0 } else { check_held(&others, 0) };
-        let room = spare(&machine).saturating_sub(agents_held(&others) + checks);
-        let jobs = process::build_jobs(room);
-        if check {
-            measured.granted.remove(id);
-        } else {
-            measured
-                .granted
-                .insert(id.to_owned(), jobs as u64 * process::BUILD_JOB_MEMORY);
-        }
-        process::build_env(jobs)
     }
 
     fn measured(&self) -> std::sync::MutexGuard<'_, Measured> {
@@ -14421,50 +14380,6 @@ fn learned(mut peaks: Vec<(i64, u64)>) -> u64 {
     most.get(usize::from(most.len() >= 5)).copied().unwrap_or(0)
 }
 
-/// What a build's width weighs of a running job ([`Jobs::build_env`]): what its agent and its
-/// check may hold at once, what they hold now, and whether its agent runs here (not on a
-/// teammate's Mac, where it takes none of this Mac's memory; its check runs here all the same).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct Load {
-    agent: u64,
-    check: u64,
-    agent_now: u64,
-    check_now: u64,
-}
-
-impl Load {
-    fn of(jobs: &HashMap<String, Job>, job: &Job, held: &HashMap<String, (u64, u64)>) -> Load {
-        let (agent_now, check_now) = held.get(&job.id).copied().unwrap_or((0, 0));
-        Load {
-            agent: budget(jobs.values(), job),
-            check: check_budget(jobs.values(), job),
-            agent_now,
-            check_now,
-        }
-    }
-}
-
-/// What the agents of `running` jobs here may still take: each one's budget less what it holds.
-fn agents_held(running: &[Load]) -> u64 {
-    running
-        .iter()
-        .map(|l| l.agent.saturating_sub(l.agent_now))
-        .sum()
-}
-
-/// What one check may still take, checks running one at a time: the largest check budget of
-/// `running` jobs and `more` (one more job's), less what the check running holds.
-fn check_held(running: &[Load], more: u64) -> u64 {
-    let check_now: u64 = running.iter().map(|l| l.check_now).sum();
-    running
-        .iter()
-        .map(|l| l.check)
-        .chain([more])
-        .max()
-        .unwrap_or(0)
-        .saturating_sub(check_now)
-}
-
 /// What a build may take of `machine`'s available memory ([`Jobs::build_env`]): all but a fifth of
 /// the machine, kept free for the person's own apps. macOS compresses and swaps well before what's
 /// available runs out: on a 16 GB Mac, 3 jobs of 2 GB that fit with a tenth kept free took it to
@@ -20576,8 +20491,9 @@ mod tests {
     }
 
     /// A build is as wide as what memory leaves it: the other running agents' room, each at
-    /// least what its turn was told to build with, and, for an agent, one of the other jobs'
-    /// checks are held back; a check isn't held back from itself.
+    /// least what its turn was told to build with, and, for an agent, one check of each other
+    /// job's repository, at least what it was told, are held back; a check isn't held back from
+    /// its own repository's.
     #[tokio::test]
     async fn a_build_is_as_wide_as_memory_leaves_it() {
         use crate::meter::{Machine, Pressure};
@@ -20629,9 +20545,11 @@ mod tests {
             width(jobs.build_env("b", false)),
             Some(process::build_jobs(b))
         );
-        // a's check's build ends its turn's grant: its budget less what it holds, again.
-        jobs.build_env("a", true);
-        let b = spare(&machine) - (DEFAULT_BUDGET - 100 * 1024 * 1024) - DEFAULT_BUDGET;
+        // a's check's build ends its turn's grant: its agent's budget less what it holds, again,
+        // and its check is held back as at least what it was told (PUBLISHING-25).
+        let checked = width(jobs.build_env("a", true)).unwrap() as u64 * process::BUILD_JOB_MEMORY;
+        let b =
+            spare(&machine) - (DEFAULT_BUDGET - 100 * 1024 * 1024) - checked.max(DEFAULT_BUDGET);
         assert_eq!(
             width(jobs.build_env("b", false)),
             Some(process::build_jobs(b))
