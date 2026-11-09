@@ -6529,14 +6529,14 @@ impl Jobs {
         git::move_branch(&clone, &job.branch, &head)
             .await
             .map_err(|e| e.to_string())?;
-        // The jobs whose check passed on another commit of that branch can't publish it any more
-        // (PUBLISHING-2): they're offered no Publish that would be refused.
+        // PUBLISHING-2: others checked on another commit can't publish it; this one checks again.
         let moved: Vec<String> = self
             .lock()
             .jobs
             .values()
             .filter(|j| {
                 j.repo == job.repo
+                    && j.id != id
                     && same_branch(&j.branch, &job.branch)
                     && j.checked_head.as_ref().is_some_and(|c| *c != head)
             })
@@ -20245,6 +20245,36 @@ mod tests {
         job.finished = Some(now - 2 * SETTLE_AFTER);
         job.worktree = Some(path.into());
         (job, worktree)
+    }
+
+    /// PUBLISHING-2, RECOVERY-2: a job's own keep-commits never marks it "moved", even with a
+    /// checked commit an earlier pass left (a restart cut its check, and it rewrote its branch);
+    /// another job on that branch whose check passed elsewhere still is.
+    #[tokio::test]
+    async fn publishing_2_a_jobs_own_branch_move_is_never_branch_moved() {
+        let (root, clone, base, jobs) = cleanup_home("own-move", true);
+        let now = obi_protocol::time::now();
+        let (mut job, tree) = ended(&jobs, &clone, &base, "keep0001", now);
+        job.status = Status::Running;
+        job.checked_head = Some(base.clone());
+        let mut other = job.clone();
+        other.id = "keep0002".into();
+        {
+            let mut state = jobs.lock();
+            state.jobs.insert(job.id.clone(), job);
+            state.jobs.insert(other.id.clone(), other);
+        }
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "fixup"]);
+        let head = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+        assert_eq!(jobs.keep_commits("keep0001").await, Ok(head));
+        assert_eq!(jobs.get("keep0001").unwrap().publish_error, None);
+        let other = jobs.get("keep0002").unwrap();
+        assert_eq!(
+            other.publish_error,
+            Some(crate::publish::branch_moved("oby/keep0001"))
+        );
+        assert_eq!(other.checked_head, None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The cleanup pass (docs/runner-api.md, `cleanup`), in a home of its own, git in the job
