@@ -648,6 +648,15 @@ pub struct Status {
     /// obid takes working folders (crate::folders): `folders` on `POST /v1/plans`, conversations
     /// and `PATCH /v1/conversations/{id}`. Older obids don't send it.
     pub folders: bool,
+    /// The secret scanner publishing needs (crate::scan): `{gitleaks}`. Older obids don't send it.
+    pub scanner: ScannerJson,
+}
+
+/// `status.scanner`.
+#[derive(Serialize)]
+pub struct ScannerJson {
+    /// Whether gitleaks is there and runs; without it nothing with text is published.
+    pub gitleaks: bool,
 }
 
 /// `status.memory`, in bytes.
@@ -997,6 +1006,11 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                 waiting: serde_json::json!([]),
             }),
         folders: true,
+        scanner: ScannerJson {
+            gitleaks: tokio::task::spawn_blocking(crate::scan::gitleaks_runs)
+                .await
+                .unwrap_or(false),
+        },
     }))
 }
 

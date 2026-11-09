@@ -179,6 +179,15 @@ fn main() -> ExitCode {
         Err(e) => return fail(Some(&home), e, 1),
     };
 
+    // Without a scanner nothing with text is published: say so now, not at the first publish.
+    std::thread::spawn(|| {
+        if !obid::scan::gitleaks_runs() {
+            tracing::warn!(
+                "no gitleaks that runs: nothing with text is published until there is one \
+                 (Oby.app carries its own; elsewhere, put gitleaks on obid's PATH)"
+            );
+        }
+    });
     let result = runtime.block_on(obid::serve(config, token, stop.wait(), |address| {
         // One line on stdout that says where obid answers; never the token.
         println!("obid listening on http://{address}");

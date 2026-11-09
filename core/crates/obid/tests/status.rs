@@ -295,6 +295,41 @@ fn optional_parts_never_stop_obid() {
     }
 }
 
+/// A Mac whose gitleaks can't run (installed and broken, first on obid's `PATH`) publishes nothing:
+/// `status.scanner.gitleaks` says so from the start, and obid's log warns once.
+#[test]
+fn status_reports_a_missing_scanner() {
+    let folder = Folder::new("no-scanner");
+    let config = config(&folder.0, 0);
+    let broken = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/bin-broken-gitleaks");
+    let path = std::env::join_paths(std::iter::once(broken).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let obid = start_with(&folder.0, &config, Some(TOKEN), |command| {
+        command.env("PATH", &path);
+    });
+    let answer = get_status(&obid, "127.0.0.1", TOKEN);
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.body["scanner"], json!({"gitleaks": false}));
+
+    let warning = "no gitleaks that runs: nothing with text is published until there is one";
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let log = loop {
+        let log = std::fs::read_to_string(&obid.stderr).unwrap();
+        if log.contains(warning) || Instant::now() > deadline {
+            break log;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(log.matches(warning).count(), 1, "{log}");
+    // Asked again, it still says so, and the log doesn't repeat it.
+    let answer = get_status(&obid, "127.0.0.1", TOKEN);
+    assert_eq!(answer.body["scanner"], json!({"gitleaks": false}));
+    let log = std::fs::read_to_string(&obid.stderr).unwrap();
+    assert_eq!(log.matches(warning).count(), 1, "{log}");
+}
+
 #[test]
 fn status_answers_with_engine_obid() {
     let folder = Folder::new("status");

@@ -884,6 +884,50 @@ pub fn gitleaks_bin() -> Option<PathBuf> {
     crate::app::bundled("gitleaks").or_else(|| crate::process::resolve_bin("gitleaks"))
 }
 
+/// Whether obid has a gitleaks that runs (`gitleaks version` answers within 5 seconds):
+/// `status.scanner.gitleaks`. Without one nothing with text is published, so a Mac set up without
+/// it is told at start, not at its first publish. Once one ran it's taken as there; until then
+/// every call looks again, so one installed since obid started shows up without a restart.
+/// Blocking: off the runtime's threads.
+pub fn gitleaks_runs() -> bool {
+    static RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RAN.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    let runs = gitleaks_bin().is_some_and(|bin| answers_version(&bin));
+    if runs {
+        RAN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    runs
+}
+
+fn answers_version(bin: &Path) -> bool {
+    let child = std::process::Command::new(bin)
+        .arg("version")
+        .env("PATH", crate::process::tools_path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return false;
+    };
+    let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < give_up_at => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 async fn gitleaks_from(
     bin: Option<PathBuf>,
     lines: &[(String, usize, String)],
