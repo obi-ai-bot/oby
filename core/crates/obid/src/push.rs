@@ -1181,9 +1181,29 @@ impl Push {
 
     /// The FCM part of [`Push::look`]: each job whose need changed.
     async fn look_fcm(&self, jobs: &[Job], paired: &HashSet<String>, scratch: &Path) {
-        let changed = {
+        let tokens: Vec<String> = self
+            .tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|t| t.device.as_ref().is_none_or(|d| paired.contains(d)))
+            .map(|t| t.token.clone())
+            .collect();
+        let account = (!tokens.is_empty()).then(|| self.account()).flatten();
+        let (changed, account) = {
             let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
             let before = said.clone().unwrap_or_default();
+            let Some(account) = account else {
+                // No phone can hear it: what was said stays as it was (none, on a first look), so
+                // the first look once one can says everything still waiting.
+                if said.is_none() {
+                    if let Err(e) = self.write("notices.json", &before) {
+                        tracing::error!("can't keep what the pushes said: {e}");
+                    }
+                    *said = Some(before);
+                }
+                return;
+            };
             let (changed, now) = changes(jobs, &before);
             let first = said.is_none();
             if !first && now == before {
@@ -1196,21 +1216,7 @@ impl Push {
             if first {
                 return;
             }
-            changed
-        };
-        let tokens: Vec<String> = self
-            .tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|t| t.device.as_ref().is_none_or(|d| paired.contains(d)))
-            .map(|t| t.token.clone())
-            .collect();
-        if changed.is_empty() || tokens.is_empty() {
-            return;
-        }
-        let Some(account) = self.account() else {
-            return;
+            (changed, account)
         };
         for (job, notice) in changed {
             let data = match notice {
@@ -1766,25 +1772,24 @@ mod tests {
         std::fs::remove_dir_all(&home).unwrap();
     }
 
+    /// FCM's counterpart of [`nothing_is_told_while_no_phone_is_registered`] (XALERTS-6): with no
+    /// Android token, or one but no service account to send with, nothing is recorded as said,
+    /// not even on the first look, and a restart remembers that.
     #[tokio::test]
-    async fn the_first_look_is_no_news_and_a_restart_remembers() {
+    async fn nothing_is_told_while_no_android_token_is_registered() {
         let home = std::env::temp_dir().join(format!("obid-push-look-{}", std::process::id()));
         let mut failed = job("f1");
         failed.status = Status::Failed;
+        let (none, scratch) = (HashSet::new(), home.join("tmp"));
         let push = Push::open(&home, RELAY);
-        push.look(
-            std::slice::from_ref(&failed),
-            &[],
-            &HashSet::new(),
-            &home.join("tmp"),
-        )
-        .await;
-        let said: BTreeMap<String, Notice> =
-            serde_json::from_slice(&std::fs::read(home.join("push/notices.json")).unwrap())
-                .unwrap();
-        assert_eq!(said.get("f1"), Some(&Notice::Failed));
+        let look = || push.look(std::slice::from_ref(&failed), &[], &none, &scratch);
+        look().await;
+        push.keep("tok-1".into(), None).unwrap();
+        look().await;
+        let said = std::fs::read(home.join("push/notices.json")).unwrap();
+        assert_eq!(said, b"{}");
         let again = Push::open(&home, RELAY);
-        assert_eq!(again.said.lock().unwrap().as_ref(), Some(&said));
+        assert_eq!(again.said.lock().unwrap().as_ref(), Some(&BTreeMap::new()));
         std::fs::remove_dir_all(&home).unwrap();
     }
 
