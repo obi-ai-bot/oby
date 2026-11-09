@@ -784,8 +784,8 @@ fn plain_why(job: &Job, why: &str) -> String {
 /// (`Job::checked`), in the owner's words, or none when it can. `changed`: the files its pull
 /// request changes against its base, as obid's git read them (none when they couldn't be read,
 /// and then it can't). It can't when its check isn't the owner's own to trust (it gets none of
-/// their secrets: `Job::check_refuses_secrets`), when their secrets were withheld from it
-/// (`Job::withheld`, MERGING-30), when the change edits the check itself ([`check_files`]), or
+/// their secrets: `Job::check_refuses_secrets`), when the secrets its base declares were withheld
+/// from it (`Job::check_withheld`, MERGING-30), when the change edits the check itself ([`check_files`]), or
 /// when it touches what only the Mac tests ([`mac_only`]). Fails closed: the owner's Merge is
 /// asked.
 pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
@@ -795,7 +795,9 @@ pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Opti
             "Its check passed, but {why}, so it's yours to merge."
         ));
     }
-    if let Some(why) = &job.withheld {
+    if job.check_withheld
+        && let Some(why) = &job.withheld
+    {
         return Some(format!(
             "Declared secrets withheld: {why}. Its check ran without them, so it's yours to merge."
         ));
@@ -3584,9 +3586,15 @@ mod tests {
                 "Its check passed, but its task read something Oby didn't write, so it's yours to merge."
             )
         );
-        // MERGING-30: a job that reached chatgpt.com ran its check without the declared secrets.
+        // MERGING-30: a job that reached chatgpt.com, in a repository that declares no secrets,
+        // lost nothing: its check stands. One whose check ran without declared secrets doesn't.
         let mut withheld = own.clone();
-        withheld.withheld = Some("this job reached chatgpt.com".into());
+        withheld.reached_chatgpt();
+        assert_eq!(
+            check_apart(&withheld, command, Some(&files(&["a.rs"]))),
+            None
+        );
+        withheld.check_withheld = true;
         assert_eq!(
             check_apart(&withheld, command, Some(&files(&["a.rs"]))).as_deref(),
             Some(

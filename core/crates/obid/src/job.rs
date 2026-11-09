@@ -694,6 +694,11 @@ pub struct Job {
     /// a conversation reads of the job sees it. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<String>,
+    /// Its check ran without the secrets its base declares because of [`Job::withheld`]: set by
+    /// the check that found names to withhold (`Jobs::declared_secrets`). A repository that
+    /// declares none never sets it, so its merge isn't held (crate::merge::check_apart).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check_withheld: bool,
     /// The commits obid saw this job make (crate::secretspec, "made"): its agent's turns' new
     /// commits that passed its look (made then, by whoever made them, not a copy of one elsewhere),
     /// its rebases of them and its "work left uncommitted" commit, recorded only while the job was
@@ -940,6 +945,11 @@ impl Job {
             .or_else(|| self.withheld.clone())
     }
 
+    /// It reached chatgpt.com: its own check gets no declared secrets from then on (MERGING-30).
+    pub fn reached_chatgpt(&mut self) {
+        self.withheld = Some("this job reached chatgpt.com".into());
+    }
+
     /// Its conversation was told of this end of it.
     pub fn told_of_end(&self) -> bool {
         self.told.is_some() && self.told == self.finished
@@ -1090,6 +1100,7 @@ impl Job {
             memory_from_others: false,
             foreign: None,
             withheld: None,
+            check_withheld: false,
             made: Vec::new(),
             apart: false,
             clone_root: None,

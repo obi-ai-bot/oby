@@ -5145,13 +5145,9 @@ impl Jobs {
         let site = crate::egress::site(host, port);
         // A conversation's Cursor: its tool's own services, and nothing else ever.
         if id.starts_with(crate::brain::harness_cursor::DOOR) {
-            return Some(
-                crate::egress::tools_own(Tool::Cursor, host, port)
-                    .then_some(())
-                    .ok_or_else(|| {
-                        format!("A conversation on Cursor reaches only Cursor's own services, not {site}.")
-                    }),
-            );
+            let own = crate::egress::tools_own(Tool::Cursor, host, port);
+            let why = "A conversation on Cursor reaches only Cursor's own services, not";
+            return Some(own.then_some(()).ok_or_else(|| format!("{why} {site}.")));
         }
         let Some(job) = self.get(id) else {
             return Some(Err("The job is gone.".into()));
@@ -5159,11 +5155,9 @@ impl Jobs {
         if let Some(tool) = Tool::from_id(&job.agent)
             && crate::egress::tools_own(tool, host, port)
         {
-            if host == "chatgpt.com" {
-                self.update(id, |j| {
-                    j.withheld = Some("this job reached chatgpt.com".into())
-                });
-            } else if !crate::egress::tools_api(tool, host) {
+            if host == "chatgpt.com" && job.withheld.is_none() {
+                self.update(id, Job::reached_chatgpt);
+            } else if host != "chatgpt.com" && !crate::egress::tools_api(tool, host) {
                 self.mark_foreign(id, format!("its agent reached {site}, past its tool's API"));
             }
             return Some(Ok(()));
@@ -9612,6 +9606,7 @@ impl Jobs {
             }
         };
         if let Some(why) = refused {
+            self.update(id, |j| j.check_withheld = j.withheld.is_some());
             return (
                 Filled::refused(format!(
                     "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
@@ -18942,6 +18937,67 @@ mod tests {
             .unwrap();
         assert_eq!(next.follow_up_of.as_deref(), Some(first.id.as_str()));
         assert_eq!(next.own_check_refuses_secrets(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-30: reaching chatgpt.com holds the job's merge only where its check really ran
+    /// without declared secrets: in a repository that declares none it merges by itself.
+    #[tokio::test]
+    async fn merging_30_only_a_check_that_went_without_secrets_holds_the_merge() {
+        let (jobs, clone, root) = jobs_with_a_clone("chatgpt-declared").await;
+        let job = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                vetted: true,
+                ..NewJob::default()
+            })
+            .unwrap();
+        jobs.update(&job.id, Job::reached_chatgpt);
+        let spec = Spec {
+            worktree: root.join("none"),
+            ..Spec::default()
+        };
+        let apart = |jobs: &Jobs| {
+            let job = jobs.get(&job.id).unwrap();
+            crate::merge::check_apart(&job, "./check.sh", Some(&["a.rs".to_owned()]))
+        };
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        assert_eq!(apart(&jobs), None);
+        let remote = root.join("remote");
+        std::fs::write(
+            remote.join("secretspec.toml"),
+            "[profiles.default]\nTOKEN = { description = \"t\" }\n",
+        )
+        .unwrap();
+        for args in [
+            &["add", "secretspec.toml"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-qm",
+                "d",
+            ],
+        ] {
+            crate::git::git(&remote, args).await.unwrap();
+        }
+        crate::git::git(
+            &clone,
+            &["fetch", "-q", "origin", "+main:refs/remotes/origin/main"],
+        )
+        .await
+        .unwrap();
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        assert_eq!(
+            apart(&jobs).as_deref(),
+            Some(
+                "Declared secrets withheld: this job reached chatgpt.com. Its check ran without them, so it's yours to merge."
+            )
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
