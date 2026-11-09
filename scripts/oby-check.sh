@@ -132,7 +132,9 @@ step() {
 # ponytail: the longest first by its source's lines; keep each binary's last time if that's off.
 test_binaries() {
     local dir list status=0 exe name want got
-    dir=$(mktemp -d)
+    # In TMPDIR, named: macOS's `mktemp -d` alone ignores TMPDIR, and a job's box can't write the
+    # Mac's own temporary folder.
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/oby-check.XXXXXX")
     if ! "${cargo[@]}" test "${manifest[@]}" -p obid "$@" --no-run --message-format=json-render-diagnostics >"$dir/built"; then
         rm -rf "$dir"
         return 1
