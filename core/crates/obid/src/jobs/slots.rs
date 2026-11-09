@@ -13,13 +13,13 @@ impl State {
 /// A job waiting on the check queue and checking, until this is dropped: its slot is free for
 /// another job meanwhile, and it takes one back ([`Idle::back`]) before it goes on, so no more than
 /// `maxRunning` jobs ever work at once (ADMISSION-4, ADMISSION-5).
-pub(super) struct Idle<'a> {
+struct Idle<'a> {
     jobs: &'a Arc<Jobs>,
     id: &'a str,
 }
 
 impl<'a> Idle<'a> {
-    pub(super) fn new(jobs: &'a Arc<Jobs>, id: &'a str) -> Self {
+    fn new(jobs: &'a Arc<Jobs>, id: &'a str) -> Self {
         jobs.lock().idle.insert(id.to_string());
         jobs.schedule();
         Idle { jobs, id }
@@ -27,7 +27,7 @@ impl<'a> Idle<'a> {
 
     /// Back from the wait: a slot again as soon as one is free, before any queued job's that looks
     /// after it, or until the job is stopped.
-    pub(super) async fn back(self, signal: &watch::Receiver<Signal>) {
+    async fn back(self, signal: &watch::Receiver<Signal>) {
         let mut stop = signal.clone();
         loop {
             // Every slot freed tells `changed` ([`Jobs::schedule`]); listened to before looking.

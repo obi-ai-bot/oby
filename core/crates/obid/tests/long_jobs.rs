@@ -1469,7 +1469,7 @@ fn unreachable(folder: &Path, stall: u64) -> (PathBuf, Value) {
 }
 
 /// RECOVERY-14: a first fetch the network failed (git couldn't resolve the remote's host) leaves
-/// the job queued, saying when it tries again, and once the network is back the job starts by
+/// the job queued, keeping its slot and saying when it tries again, and once the network is back the job starts by
 /// itself and ends done.
 #[test]
 fn recovery_14_a_failed_first_fetch_waits_and_tries_again() {
@@ -1485,7 +1485,8 @@ fn recovery_14_a_failed_first_fetch_waits_and_tries_again() {
             .then_some(job)
     });
     assert_eq!(waiting["status"], "queued", "{waiting}");
-    assert_eq!(call(&obid, "GET", "/v1/status", None).body["running"], 0);
+    // It keeps its slot (ADMISSION-4): only the check queue's wait frees one.
+    assert_eq!(call(&obid, "GET", "/v1/status", None).body["running"], 1);
     // The network is back: git now finds the remote at the address it tried.
     let rewrite = format!(
         "[url \"file://{}\"]\n\tinsteadOf = {UNREACHABLE}\n",
