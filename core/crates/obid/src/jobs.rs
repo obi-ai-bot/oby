@@ -16687,8 +16687,8 @@ mod tests {
     }
 
     /// MERGING-14 and MERGING-31: what obid's proxy lets an agent reach marks its job. A host that
-    /// can serve anyone's source code makes it someone else's code (two reviews);
-    /// any other site past the registries is a reach (one review). Both mark the owner's clone, a
+    /// serves anyone's source code makes it someone else's code (two reviews); any other site past
+    /// the registries, a package registry routed by `Host` included, is a reach (one review). Both mark the owner's clone, a
     /// reach inherited from the job it follows up too.
     #[tokio::test]
     async fn merging_31_github_is_someone_elses_code_and_any_other_site_a_reach() {
@@ -16716,13 +16716,26 @@ mod tests {
             .unwrap();
         crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
         assert!(marked().await.is_ok());
-        // A host that serves anyone's source code, and an edge that serves whichever of its sites
-        // `Host` names (the Go module proxy serves any public commit): someone else's code.
+        // A package registry stays a reach, its edge routed by `Host` too (ROUTED_BY_HOST).
+        for host in ["proxy.golang.org", "pypi.org", "crates.io"] {
+            jobs.update("j", |job| job.reached = None);
+            crate::egress::mark_reach(&jobs, "j", host, 443);
+            let job = jobs.get("j").unwrap();
+            assert!(
+                job.reached.as_deref().is_some_and(|why| why.contains(host)),
+                "{host}"
+            );
+            assert_eq!(
+                (job.foreign.clone(), job.two_reviews_why()),
+                (None, None),
+                "{host}"
+            );
+        }
+        // A host that serves anyone's source code by its path: someone else's code.
         for host in [
             "raw.githubusercontent.com",
             "gitlab.com",
-            "proxy.golang.org",
-            "pypi.org",
+            "cdn.jsdelivr.net",
         ] {
             jobs.update("j", |job| job.foreign = None);
             crate::egress::mark_reach(&jobs, "j", host, 443);

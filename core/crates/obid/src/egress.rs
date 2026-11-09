@@ -1150,13 +1150,14 @@ fn hello_with(extensions: &[u8]) -> Vec<u8> {
 }
 
 /// What job `job`'s agent read at `host`, which obid's proxy let it reach, could be anyone's code:
-/// from now on its check gets none of the owner's secrets (crate::secretspec). A host that can
-/// serve anyone's source code (a code host, `secretspec::site_is_code_host`, and an edge that
-/// serves whichever of its sites `Host` names: [`ROUTED_BY_HOST`]) makes it someone else's code
-/// (two reviews); any other site past the registries, a reach (one review, MERGING-31).
+/// from now on its check gets none of the owner's secrets (crate::secretspec). A host that serves
+/// anyone's source code by its path (a code host, `secretspec::site_is_code_host`) makes it
+/// someone else's code (two reviews); any other site past the registries, a reach (one review,
+/// MERGING-31): a package registry whose edge serves whichever of its sites `Host` names
+/// ([`ROUTED_BY_HOST`]) too, though the proxy can't tell it from the edge's other sites.
 pub(crate) fn mark_reach(jobs: &Jobs, job: &str, host: &str, port: u16) {
     let site = site(host, port);
-    if crate::secretspec::site_is_code_host(host) || ROUTED_BY_HOST.contains(&host) {
+    if crate::secretspec::site_is_code_host(host) {
         let why = format!("its agent reached {site}, which can serve anyone's source code");
         jobs.mark(job, why, false);
     } else if crate::secretspec::site_is_foreign(host) {
