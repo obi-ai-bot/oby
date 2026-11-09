@@ -577,7 +577,7 @@ fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str
                 .conversation
                 .as_deref()
                 .is_some_and(|c| c != conversation);
-        let (line, done) = retry(shared, &job, theirs);
+        let (line, done) = retry(shared, &job, theirs, source == Source::Owner);
         any |= done;
         lines.push(line);
     }
@@ -593,7 +593,7 @@ fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str
 /// and the brain's prompt: "a failed, stopped or cut-off job"): obid has no
 /// failed-job inbox item, so it tells the job's agent to try again, which picks its session up.
 /// Another conversation's job (`theirs`) waits for the owner's Confirm.
-fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
+fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool, owners: bool) -> (String, bool) {
     let name = job.short_title();
     if job.status.is_active() {
         return (
@@ -635,6 +635,10 @@ fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool) -> (String, bool) {
             ),
             true,
         );
+    }
+    // The owner's Try again gives the 10 back (RECOVERY-17); the words still go as an event's.
+    if owners {
+        shared.jobs.owner_asked(&job.id);
     }
     // Try again's own words pick its session up again: they never start a follow-up.
     match shared.jobs.message(&job.id, TRY_AGAIN, Source::Event) {

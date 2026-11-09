@@ -1877,6 +1877,54 @@ fn a_stopped_job_is_tried_again() {
     assert_ne!(job["status"], "stopped", "{job}");
 }
 
+/// RECOVERY-17: the owner's Try again in a conversation gives a job at the cap its 10 back, though
+/// the words reach the job as an event's; one from a turn that read something untrusted waits
+/// for their Confirm and gives nothing back.
+#[test]
+fn recovery_17_the_owners_try_again_in_a_conversation_gives_the_tries_back() {
+    let folder = Folder::new("brain-retry-cap");
+    let kept = |id: &str, title: &str| {
+        let mut job = ended(id, title, obid::job::Status::Interrupted, 0, None);
+        job.session = Some("s1".into());
+        job.recovery.tries = obid::job::Recovery::ALL_TRIES;
+        job
+    };
+    let obid = started_with(
+        &folder,
+        &[
+            kept("ca9ed001", "Capped one"),
+            kept("ca9ed002", "Capped two"),
+        ],
+    );
+    let tries = |id: &str| {
+        let file = folder.0.join(format!("home/jobs/{id}.json"));
+        serde_json::from_slice::<obid::job::Job>(&std::fs::read(file).unwrap())
+            .unwrap()
+            .recovery
+            .tries
+    };
+    let answer = said(&obid, r#"OBY oby_continue_job {"id":"ca9ed001"}"#);
+    assert!(
+        answer["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("oby: Continuing Capped one: round"),
+        "{answer}"
+    );
+    // Back to 0, or 1 if its run already took a try: never left at the cap.
+    assert!(
+        tries("ca9ed001") < obid::job::Recovery::ALL_TRIES,
+        "{}",
+        tries("ca9ed001")
+    );
+    let answer = said(&obid, r#"WEB OBY oby_continue_job {"id":"ca9ed002"}"#);
+    assert!(
+        answer["text"].as_str().unwrap().contains("Confirm"),
+        "{answer}"
+    );
+    assert_eq!(tries("ca9ed002"), obid::job::Recovery::ALL_TRIES);
+}
+
 /// obid started with `jobs` already kept, as they were when it last stopped: no agent runs.
 fn started_with(folder: &Folder, jobs: &[obid::job::Job]) -> Obid {
     let remote = fixture(&folder.0.join("fixture"));
