@@ -2104,6 +2104,14 @@ fn publishing_22_a_check_that_couldnt_judge_publishes_only_by_hand() {
     );
     let quoted = ended(&obid, &quoted);
     assert_eq!(quoted["round"], 2, "{quoted}");
+    // Nor when its runner named a failing test: that's the change's to fix.
+    let named = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: c.txt",
+               "check": "echo 'test x ... FAILED'; echo \"couldn't judge: x\"; exit 1", "rounds": 2}),
+    );
+    let named = ended(&obid, &named);
+    assert_eq!(named["round"], 2, "{named}");
     let id = dispatch(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
@@ -2143,6 +2151,16 @@ fn publishing_22_a_check_that_couldnt_judge_publishes_only_by_hand() {
     );
     assert_eq!(published.status, 200, "{}\n{}", published.text, obid.log());
     assert!(remote_branch(&remote, &branch).is_some());
+    // A passing check's line changes nothing: it publishes by itself.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: d.txt",
+               "check": "echo \"couldn't judge: x\""}),
+    );
+    let passed = ended(&obid, &id);
+    assert_eq!(passed["status"], "done", "{passed}\n{}", obid.log());
+    assert!(passed["published"].is_string(), "{passed}");
+    assert!(remote_branch(&remote, &format!("oby/build-{id}")).is_some());
 }
 
 /// PUBLISHING-9, 10 and 11: a job whose check failed publishes nothing by itself, and Publish by
