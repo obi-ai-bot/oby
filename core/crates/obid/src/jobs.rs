@@ -1100,6 +1100,7 @@ impl Jobs {
         let now = obi_protocol::time::now();
         let mut jobs = HashMap::new();
         for mut job in store.load_all() {
+            job.upgrade();
             // The agent's question keeps waiting for the owner, `running` with no agent: its
             // answer picks the session up (#858, [`Jobs::answer_kept_question`]).
             if job.status == Status::Running && kept_question(&job).is_some() {
@@ -9453,6 +9454,8 @@ impl Jobs {
         };
         let base = job.base.clone().unwrap_or(repo.default_branch.clone());
         let clone = self.clone_for(&job);
+        // This check's own answer, whatever an earlier one's was: each path below says why it holds.
+        self.update(id, |j| j.check_withheld = None);
         let (base_commit, names) = match crate::secretspec::at_base(&clone, &base).await {
             Ok((_, None)) => return (Filled::default(), None),
             Ok((commit, Some(text))) => (commit, crate::secretspec::names(&text)),
@@ -9462,6 +9465,10 @@ impl Jobs {
             Ok(names) if names.is_empty() => return (Filled::default(), None),
             Ok(names) => names,
             Err(why) => {
+                // Unread, the declared secrets are refused all the same: the check holds its merge.
+                self.update(id, |j| {
+                    j.check_withheld = Some(format!("{FILE} couldn't be read: {why}"))
+                });
                 return (
                     Filled::refused(format!("obid gave this check no secrets: {why}")),
                     None,
@@ -9487,8 +9494,8 @@ impl Jobs {
                 .await
             }
         };
-        self.update(id, |j| j.check_withheld = refused.clone());
         if let Some(why) = refused {
+            self.update(id, |j| j.check_withheld = Some(why.clone()));
             return (
                 Filled::refused(format!(
                     "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
@@ -9498,6 +9505,14 @@ impl Jobs {
             );
         }
         let filled = Filled::fill(&names, crate::vault::value);
+        if filled.names().len() < names.len() {
+            let short = format!(
+                "the vault holds {} of its {} declared secrets",
+                filled.names().len(),
+                names.len()
+            );
+            self.update(id, |j| j.check_withheld = Some(short));
+        }
         tracing::info!(
             "job {id}: its check gets {} of the {} secret(s) {FILE} on {base} declares",
             filled.names().len(),
@@ -18949,6 +18964,59 @@ mod tests {
                 "Declared secrets withheld: {why}. Its check ran without them, so it's yours to merge."
             ))
         );
+        // A secretspec.toml obid can't read refuses the secrets all the same, and holds the merge.
+        std::fs::write(
+            remote.join("secretspec.toml"),
+            "[profiles.default]\nTOKEN = { description = \"t\" }\nTOKEN = { description = \"u\" }\n",
+        )
+        .unwrap();
+        for args in [
+            &["add", "secretspec.toml"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-qm",
+                "e",
+            ],
+        ] {
+            crate::git::git(&remote, args).await.unwrap();
+        }
+        crate::git::git(
+            &clone,
+            &["fetch", "-q", "origin", "+main:refs/remotes/origin/main"],
+        )
+        .await
+        .unwrap();
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        let why = jobs.get(&job.id).unwrap().check_withheld.unwrap();
+        assert!(why.contains("couldn't be read"), "{why}");
+        assert!(apart(&jobs).is_some());
+        // A later check that declares nothing went without nothing: the hold ends with it.
+        for args in [
+            &["rm", "-q", "secretspec.toml"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-qm",
+                "f",
+            ],
+        ] {
+            crate::git::git(&remote, args).await.unwrap();
+        }
+        crate::git::git(
+            &clone,
+            &["fetch", "-q", "origin", "+main:refs/remotes/origin/main"],
+        )
+        .await
+        .unwrap();
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        assert_eq!(jobs.get(&job.id).unwrap().check_withheld, None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
