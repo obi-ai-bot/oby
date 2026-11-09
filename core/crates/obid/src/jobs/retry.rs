@@ -67,6 +67,10 @@ impl Jobs {
                 resumes: None,
             });
         }
+        // A Stop during the fetch that failed spends no try.
+        if *signal.borrow() != Signal::Run {
+            return Ok(false);
+        }
         self.update(id, |job| job.recovery.tries += 1);
         let (wait, of) = (RETRY_WAITS[attempt - 1], (attempt, RETRY_WAITS.len()));
         let idle = Idle::new(self, id);

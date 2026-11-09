@@ -7261,14 +7261,14 @@ impl Jobs {
                             None,
                         ),
                     };
-                    // Needing the owner, with a session to pick up: the agent's own summary stays
-                    // (`summaries` has every round's), and why it stopped is said apart. A dead end,
-                    // or one with no session, failed, its summary why. A failure with a session
-                    // to pick up keeps its report and Try again (RECOVERY-14).
+                    // Needing the owner, with a session to pick up or at the cap: the agent's summary
+                    // stays (`summaries` has every round's), and why it stopped is said apart. Else
+                    // failed, its summary why; with a session, a failure keeps Try again (RECOVERY-14).
                     let owners_failed = matches!(end, End::Failed(_)) && job.obi.is_none();
                     let needs_you = matches!(end, End::AccountLimit { .. })
-                        || ((matches!(end, End::NeedsYou { .. }) || owners_failed)
-                            && job.session.is_some());
+                        || (matches!(end, End::NeedsYou { .. })
+                            && (job.session.is_some() || job.recovery.spent()))
+                        || (owners_failed && job.session.is_some());
                     if needs_you {
                         job.status = Status::Interrupted;
                         if job.summary.trim().is_empty() {
