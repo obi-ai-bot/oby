@@ -573,7 +573,8 @@ fn publishing_23_setup_runs_in_the_box_with_the_agents_reach() {
         .unwrap_or((seen.trim_end(), ""));
     assert!(!home.is_empty(), "{seen}");
     assert_ne!(Path::new(home), folder.0.join("env-home"), "{seen}");
-    assert!(!Path::new(home).starts_with(&obid.home), "{seen}");
+    // The box's HOME is the job's own temporary folder (its `spec.temp`), never the person's.
+    assert!(Path::new(home).starts_with(obid.home.join("tmp")), "{seen}");
     if cfg!(target_os = "macos") {
         assert!(proxy.starts_with("http://127.0.0.1:"), "{seen}");
     }
