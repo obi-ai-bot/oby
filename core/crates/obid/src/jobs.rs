@@ -5095,18 +5095,12 @@ impl Jobs {
     /// else, and anything more for another Obi's review (it only reads, and never asks), don't.
     /// None for a site the job decides ([`Jobs::ask_about`]).
     pub(crate) fn reach_now(&self, id: &str, host: &str, port: u16) -> Option<Result<(), String>> {
+        let site = crate::egress::site(host, port);
         // A conversation's Cursor: its tool's own services, and nothing else ever.
         if id.starts_with(crate::brain::harness_cursor::DOOR) {
-            return Some(
-                crate::egress::tools_own(Tool::Cursor, host, port)
-                    .then_some(())
-                    .ok_or_else(|| {
-                        format!(
-                            "A conversation on Cursor reaches only Cursor's own services, not {}.",
-                            crate::egress::site(host, port)
-                        )
-                    }),
-            );
+            let own = crate::egress::tools_own(Tool::Cursor, host, port);
+            let why = "A conversation on Cursor reaches only Cursor's own services, not";
+            return Some(own.then_some(()).ok_or_else(|| format!("{why} {site}.")));
         }
         let Some(job) = self.get(id) else {
             return Some(Err("The job is gone.".into()));
@@ -5114,18 +5108,18 @@ impl Jobs {
         if let Some(tool) = Tool::from_id(&job.agent)
             && crate::egress::tools_own(tool, host, port)
         {
-            // Every host of its tool's vendor domains, reached by the CLI or anything in its box,
-            // leaves the job the owner's (MERGING-30, the owner's decision of 2026-11-06).
+            if host == "chatgpt.com" && job.withheld.is_none() {
+                self.update(id, Job::reached_chatgpt);
+            } else if host != "chatgpt.com" && !crate::egress::tools_api(tool, host) {
+                self.mark_foreign(id, format!("its agent reached {site}, past its tool's API"));
+            }
             return Some(Ok(()));
         }
         // Telemetry a CLI sends elsewhere (Datadog, Sentry) is a site like any other: the job's
         // rules, its mode or the owner's card decide it (PERMISSIONS-2).
-        job.obi.is_some().then(|| {
-            Err(format!(
-                "This job doesn't reach {}.",
-                crate::egress::site(host, port)
-            ))
-        })
+        job.obi
+            .is_some()
+            .then(|| Err(format!("This job doesn't reach {site}.")))
     }
 
     /// How job `id` decides a site its agent wants to reach (`host` on `port`), once for its
@@ -9516,7 +9510,7 @@ impl Jobs {
         // The commit the check runs, taken once, after the job's turn ended: its sandbox's watcher
         // has killed what the turn started (crate::sandbox, `WATCHER`).
         let head = crate::secretspec::head_of(spec).await;
-        let refused = match (job.check_refuses_secrets(), &head) {
+        let refused = match (job.own_check_refuses_secrets(), &head) {
             (Some(why), _) => Some(why),
             (None, Err(why)) => Some(why.clone()),
             (None, Ok(head)) => {
@@ -9533,6 +9527,7 @@ impl Jobs {
             }
         };
         if let Some(why) = refused {
+            self.update(id, |j| j.check_withheld = j.withheld.is_some());
             return (
                 Filled::refused(format!(
                     "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
@@ -18778,23 +18773,190 @@ mod tests {
         .unwrap()
     }
 
-    /// MERGING-30: a CLI reaching its own vendor's hosts past the model's API (Codex's
-    /// chatgpt.com on a ChatGPT login) goes through and leaves the job the owner's.
-    #[tokio::test]
-    async fn merging_30_codex_reaching_chatgpt_leaves_the_job_the_owners() {
+    /// MERGING-30: job `agent` of the owner's own words reaches `host` on 443 and goes through:
+    /// whether it was marked someone else's code, and whether its own check still gets secrets.
+    async fn vendor_reach(agent: &str, host: &str) -> (bool, bool) {
+        let job = reached(agent, host).await;
+        (
+            job.foreign.is_some(),
+            job.own_check_refuses_secrets().is_none(),
+        )
+    }
+
+    /// The job of [`vendor_reach`], after its reach.
+    async fn reached(agent: &str, host: &str) -> Job {
         let root = std::env::temp_dir().join(format!("obid-vendor-host-{}", uuid::Uuid::new_v4()));
-        let job = Job::new(
+        let mut job = Job::new(
             "j".into(),
             "o/r".into(),
             "fix".into(),
             "Fix it".into(),
-            "codex".into(),
+            agent.into(),
             "x1".into(),
         );
+        job.vetted = true;
         let jobs = jobs_with_kept(&root.join("home"), &[&job]);
-        assert_eq!(jobs.reach_now("j", "chatgpt.com", 443), Some(Ok(())));
-        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        assert_eq!(jobs.reach_now("j", host, 443), Some(Ok(())));
+        let job = jobs.get("j").unwrap();
         let _ = std::fs::remove_dir_all(&root);
+        job
+    }
+
+    /// MERGING-30: a CLI's own API host leaves the job as it was: not marked, secrets kept (no
+    /// over-withholding: every job reaches its own API).
+    #[tokio::test]
+    async fn merging_30_a_cli_api_host_leaves_the_job_as_it_was() {
+        assert_eq!(
+            vendor_reach("claude", "api.anthropic.com").await,
+            (false, true)
+        );
+        assert_eq!(vendor_reach("codex", "api.openai.com").await, (false, true));
+        assert_eq!(
+            vendor_reach("cursor", "api2.cursor.sh").await,
+            (false, true)
+        );
+        // The other hosts the CLIs call for their logins, settings and flags (the owner's answer of
+        // 2026-11-08).
+        for (agent, host) in [
+            ("claude", "statsig.anthropic.com"),
+            ("claude", "console.anthropic.com"),
+            ("codex", "auth.openai.com"),
+            ("cursor", "api3.cursor.sh"),
+            ("cursor", "api4.cursor.sh"),
+        ] {
+            assert_eq!(vendor_reach(agent, host).await, (false, true), "{host}");
+        }
+    }
+
+    /// MERGING-30: Codex's chatgpt.com, a ChatGPT login's API that serves shared chats too,
+    /// doesn't mark the job, but its own check gets no declared secrets. Nothing a conversation
+    /// reads of the job sees that: its summary when it ends (crate::conversation, `tell`), its
+    /// title and its line in a list (crate::brain::tools), routes and the harness all ask
+    /// `check_refuses_secrets`, which stays clear, so the conversation isn't marked.
+    #[tokio::test]
+    async fn merging_30_chatgpt_withholds_secrets_without_marking() {
+        assert_eq!(vendor_reach("codex", "chatgpt.com").await, (false, false));
+        let job = reached("codex", "chatgpt.com").await;
+        assert_eq!(
+            job.own_check_refuses_secrets().as_deref(),
+            Some("this job reached chatgpt.com")
+        );
+        assert!(job.vetted);
+        assert_eq!(job.check_refuses_secrets(), None);
+        assert_eq!(job.untrusted_why(), None);
+    }
+
+    /// MERGING-30: what reaching chatgpt.com withheld is that job's only: a follow-up of it gets
+    /// its declared secrets.
+    #[tokio::test]
+    async fn merging_30_a_follow_up_of_a_chatgpt_job_gets_its_secrets() {
+        let (jobs, _clone, root) = jobs_with_a_clone("chatgpt-follow-up").await;
+        let first = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                vetted: true,
+                ..NewJob::default()
+            })
+            .unwrap();
+        // Its Codex: this home configures only Claude, which its follow-up runs on.
+        jobs.update(&first.id, |j| j.agent = "codex".into());
+        assert_eq!(jobs.reach_now(&first.id, "chatgpt.com", 443), Some(Ok(())));
+        let first = jobs.get(&first.id).unwrap();
+        assert!(first.own_check_refuses_secrets().is_some());
+        let next = jobs
+            .create(NewJob {
+                vetted: true,
+                agent: Some("claude".into()),
+                ..follow_up(&first, "and the docs")
+            })
+            .unwrap();
+        assert_eq!(next.follow_up_of.as_deref(), Some(first.id.as_str()));
+        assert_eq!(next.own_check_refuses_secrets(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-30: reaching chatgpt.com holds the job's merge only where its check really ran
+    /// without declared secrets: in a repository that declares none it merges by itself.
+    #[tokio::test]
+    async fn merging_30_only_a_check_that_went_without_secrets_holds_the_merge() {
+        let (jobs, clone, root) = jobs_with_a_clone("chatgpt-declared").await;
+        let job = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                vetted: true,
+                ..NewJob::default()
+            })
+            .unwrap();
+        jobs.update(&job.id, Job::reached_chatgpt);
+        let spec = Spec {
+            worktree: root.join("none"),
+            ..Spec::default()
+        };
+        let apart = |jobs: &Jobs| {
+            let job = jobs.get(&job.id).unwrap();
+            crate::merge::check_apart(&job, "./check.sh", Some(&["a.rs".to_owned()]))
+        };
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        assert_eq!(apart(&jobs), None);
+        let remote = root.join("remote");
+        std::fs::write(
+            remote.join("secretspec.toml"),
+            "[profiles.default]\nTOKEN = { description = \"t\" }\n",
+        )
+        .unwrap();
+        for args in [
+            &["add", "secretspec.toml"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-qm",
+                "d",
+            ],
+        ] {
+            crate::git::git(&remote, args).await.unwrap();
+        }
+        crate::git::git(
+            &clone,
+            &["fetch", "-q", "origin", "+main:refs/remotes/origin/main"],
+        )
+        .await
+        .unwrap();
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        assert_eq!(
+            apart(&jobs).as_deref(),
+            Some(
+                "Declared secrets withheld: this job reached chatgpt.com. Its check ran without them, so it's yours to merge."
+            )
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-30: a vendor's pages people write (shared chats, forums) mark the job someone
+    /// else's code, so its check gets no declared secrets.
+    #[tokio::test]
+    async fn merging_30_a_page_people_write_marks_the_job() {
+        assert_eq!(vendor_reach("claude", "claude.ai").await, (true, false));
+        assert_eq!(
+            vendor_reach("claude", "www.anthropic.com").await,
+            (true, false)
+        );
+        assert_eq!(
+            vendor_reach("codex", "community.openai.com").await,
+            (true, false)
+        );
+        assert_eq!(
+            vendor_reach("cursor", "forum.cursor.com").await,
+            (true, false)
+        );
+        // chatgpt.com alone is a ChatGPT login's API: its subdomains are pages like any other.
+        assert_eq!(vendor_reach("codex", "x.chatgpt.com").await, (true, false));
     }
 
     /// TASKS-18: only a stop the owner asked for says a question waited; obid's own stop of a job
