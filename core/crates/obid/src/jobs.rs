@@ -15920,6 +15920,11 @@ mod tests {
                 fetch,
             ),
             (
+                "cargo clippy",
+                "error: no matching package named `aws-lc-rs` found\nlocation searched: crates.io index\nrequired by package `obi-protocol v0.1.0 (/w/core/crates/obi-protocol)`\nnote: offline mode (via `--offline`) can sometimes cause surprising resolution failures\nhelp: if this error is too confusing you may wish to retry without `--offline`",
+                fetch,
+            ),
+            (
                 "pnpm install --offline",
                 " ERR_PNPM_NO_OFFLINE  No matching version found for left-pad@1.3.0 in the cache",
                 fetch,
