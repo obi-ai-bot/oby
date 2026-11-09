@@ -690,7 +690,7 @@ pub const STOPPED_BY_CONVERSATION: &str = "Stopped by a conversation";
 
 /// The stops the owner asked for: only these say a question waited, which a failure record keeps.
 /// ponytail: matched by their words, a flag on `Jobs::stop` if a third kind of owner's stop comes.
-const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
+pub(crate) const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
 
 /// Who stopped a job when the pull request it reviewed or waited on was merged or closed.
 pub const PULL_REQUEST_ENDED: &str = "Stopped: its pull request was merged or closed";
@@ -7019,17 +7019,9 @@ impl Jobs {
                 None,
             ));
         }
-        // What it failed on, kept on its run; with no number named, the same as the round
-        // before's stops it (RECOVERY-9).
-        let mut repeated = false;
-        self.update(id, |job| {
-            let Some(last) = job.checks.last_mut() else {
-                return;
-            };
-            last.signature = Some(crate::facts::signature(last, output));
-            repeated = job.rounds.is_none() && crate::facts::repeats(&job.checks);
-        });
-        if repeated || round >= job.max_rounds() {
+        let checks = self.get(id).map(|j| j.checks).unwrap_or_default();
+        // With no number named, the same failure as the round before's stops it (RECOVERY-9).
+        if round >= job.max_rounds() || job.rounds.is_none() && crate::facts::repeats(&checks) {
             let limit = format!("`{command}` still fails after {round} round(s)");
             self.update(id, |job| job.limit = Some(limit.clone()));
             return Err(End::needs_you(
@@ -7043,10 +7035,7 @@ impl Jobs {
             check_failed(
                 command,
                 output,
-                self.get(id)
-                    .and_then(|j| j.checks.last().map(|c| c.failing.clone()))
-                    .unwrap_or_default()
-                    .as_slice()
+                checks.last().map_or(&[], |c| &c.failing[..])
             )
         ))
     }
@@ -8744,7 +8733,12 @@ impl Jobs {
             true => self.checked(id, command).await,
             false => None,
         };
-        self.update(id, |job| job.checked = checked);
+        self.update(id, |job| {
+            job.checked = checked;
+            if let Some(last) = job.checks.last_mut().filter(|_| !run.passed) {
+                last.signature = Some(crate::facts::signature(last, &run.output));
+            }
+        });
         run.output = declared.noted(&format!("{}\n{}", notes.join("\n"), run.output));
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
@@ -11950,7 +11944,7 @@ impl Jobs {
     /// have; `Err` when its review isn't waiting for the owner.
     pub fn review_again(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
-        if !job.review_needs_you() || job.current_review().is_some() {
+        if !job.review_needs_you() || job.current_review().is_some_and(|r| !r.approved()) {
             return Some(Err(Refused(
                 "Oby's review of it isn't waiting for you.".into(),
             )));
@@ -12035,14 +12029,11 @@ impl Jobs {
                 })
                 .collect();
             // A second review that never started (a restart between the first's verdict and its
-            // start, say) starts now too.
+            // start, say) starts now too: none that gave no verdict, or that the owner ended.
             let waiting = state
                 .jobs
                 .values()
-                .filter(|job| {
-                    job.no_reviewer.is_some()
-                        || (job.review_due().is_some() && job.second_review_due())
-                })
+                .filter(|job| job.no_reviewer.is_some() || job.second_review_waits())
                 .map(|job| job.id.clone())
                 .collect();
             (hanging, waiting)
@@ -12134,14 +12125,12 @@ impl Jobs {
                     .unwrap_or_else(|| status.as_str().to_owned()),
             ),
         };
-        // It ended before a verdict (a login refused, the tool crashing): on the next reviewer
-        // that may take it, once; then the owner's, in one item. Never one the owner let go.
+        // No verdict: the owner's (RECOVERY-15), in one item while its pull request is open, after
+        // the next reviewer that may take it once, for a login refused or a crash; none they ended.
         let recorded = author
             .review_failed_here()
             .is_some_and(|f| f.reviews.iter().any(|(job, _)| job == id));
-        if matches!(review.status, Status::Failed | Status::Interrupted)
-            && (review.dismissed.is_none() || recorded)
-        {
+        if why.is_some() && (!review.ended_by_owner() || recorded) {
             let mut failed =
                 author
                     .review_failed_here()
@@ -12158,8 +12147,10 @@ impl Jobs {
             }
             let mut tried = author.clone();
             tried.review_failed = Some(failed.clone());
-            let retry =
-                !failed.needs_you && failed.reviews.len() < 2 && self.reviewer(&tried).is_ok();
+            let retry = matches!(review.status, Status::Failed | Status::Interrupted)
+                && !failed.needs_you
+                && failed.reviews.len() < 2
+                && self.reviewer(&tried).is_ok();
             failed.needs_you = !retry;
             let why = why.unwrap_or_default();
             let number = author
@@ -12182,7 +12173,7 @@ impl Jobs {
                     "job {of}: its review {id} ended before a verdict ({why}): another reviewer takes it"
                 );
                 self.start_review(&of);
-            } else if let (Some(author), Some(error)) = (author, error) {
+            } else if let (Some(author), Some(error)) = (author.filter(pull_request_open), error) {
                 self.review_items(
                     &of,
                     Some(crate::sphere::inbox::review_item(&author, id, &error)),
@@ -15120,24 +15111,18 @@ struct BaseFailure {
     step: String,
     /// Its failing tests' names.
     failing: Vec<String>,
-    /// Whether those names are the whole of its failure: its step's runner counted as many failed,
-    /// and the list wasn't cut at the most a run lists.
+    /// Whether those names are the whole of its failure ([`crate::facts::named`]).
     named: bool,
 }
 
 impl BaseFailure {
     fn of(record: &crate::facts::CheckRecord, output: &str) -> BaseFailure {
         let failed = record.steps.iter().find(|s| s.passed == Some(false));
-        let failing: Vec<String> = record.failing.iter().map(|f| f.test.clone()).collect();
         BaseFailure {
             signature: crate::facts::signature(record, output),
             step: failed.map(|s| s.command.clone()).unwrap_or_default(),
-            named: !failing.is_empty()
-                && failing.len() < crate::facts::FAILING_MAX
-                && failed
-                    .and_then(|s| s.tests)
-                    .is_some_and(|t| t.failed == failing.len() as u64),
-            failing,
+            named: crate::facts::named(record, output),
+            failing: record.failing.iter().map(|f| f.test.clone()).collect(),
         }
     }
 
@@ -15166,8 +15151,8 @@ pub struct CheckRun {
 /// everything it started when it runs too long or the job stops.
 ///
 /// `secrets` (the values its repository declares, crate::secretspec) are taken out of its output
-/// before it is cut to size or kept: when only its end was kept, the first line, which a value may
-/// have been cut in, goes too.
+/// before it is cut to size or kept. When only its end was kept, its first line, which a value or
+/// a word may have been cut in, goes too (RECOVERY-9).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_check(
     argv: &[OsString],
@@ -15270,14 +15255,15 @@ pub async fn run_check(
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
+    if cut {
+        // With no newline before its end, all of it stays, unless a declared secret may be in it.
+        let declared = secrets.is_some_and(|secrets| !secrets.is_empty());
+        let none = if declared { kept.len() } else { 0 };
+        let body = kept.strip_suffix(b"\n").unwrap_or(&kept);
+        let start = body.iter().position(|&b| b == b'\n');
+        kept.drain(..start.map_or(none, |at| at + 1));
+    }
     if let Some(secrets) = secrets.filter(|secrets| !secrets.is_empty()) {
-        if cut {
-            let start = kept
-                .iter()
-                .position(|&b| b == b'\n')
-                .map_or(kept.len(), |at| at + 1);
-            kept.drain(..start);
-        }
         kept = secrets.redact(&String::from_utf8_lossy(&kept)).into_bytes();
     }
     let mut output = String::from_utf8_lossy(&kept).into_owned();
@@ -15291,7 +15277,9 @@ pub async fn run_check(
             .collect();
     }
     if output.len() > CHECK_OUTPUT_MAX {
-        output = tail(&output, CHECK_OUTPUT_MAX).to_owned();
+        let end = tail(&output, CHECK_OUTPUT_MAX);
+        let start = end.strip_suffix('\n').unwrap_or(end).find('\n');
+        output = end[start.map_or(0, |at| at + 1)..].to_owned();
     }
     if timed_out {
         if !output.ends_with('\n') && !output.is_empty() {
