@@ -274,6 +274,26 @@ said=$(nested)
     sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
+# tests/jobs_setup.rs makes a sandbox of its own too, but only the setup's and the box's code plan
+# it: nested, a change to jobs.rs alone is judged, and one to jobs/setup.rs couldn't be.
+code core/crates/obid/tests/jobs_setup.rs 1
+code "$main" "$((limit - 500))"
+said=$(OBY_CHECK_PATHS=core/crates/obid/src/jobs.rs nested)
+! grep -qE -- "jobs_setup|^couldn't judge:" <<<"$said" || {
+    echo "oby-check-test: nested, a change to jobs.rs alone planned tests/jobs_setup.rs:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
+said=$(OBY_CHECK_PATHS=core/crates/obid/src/jobs/setup.rs nested)
+grep -qxF "couldn't judge: tests/jobs_setup.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job" <<<"$said" &&
+    ! grep -q -- '--test jobs_setup' <<<"$said" || {
+    echo "oby-check-test: nested, a change to jobs/setup.rs didn't leave tests/jobs_setup.rs unjudged:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
+rm core/crates/obid/tests/jobs_setup.rs "$main"
 
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
 # its failure is named and comes last, each runs quietly, and a binary cargo didn't build fails the
