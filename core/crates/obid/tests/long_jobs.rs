@@ -1454,8 +1454,9 @@ fn tasks_19_a_one_round_job_with_no_check_is_asked_for_its_goal_line() {
     assert_eq!(job["summary"], "Added a.txt.", "{job}");
 }
 
-/// A remote no network reaches: `.invalid` never resolves (RFC 2606).
-const UNREACHABLE: &str = "https://nonexistent.invalid/acme/hello.git";
+/// A remote no network reaches, refused at once: a name that doesn't resolve (`.invalid`) can
+/// take the resolver's 30 seconds to say so.
+const UNREACHABLE: &str = "https://127.0.0.1:9/acme/hello.git";
 
 /// The fixture's config with its remote at [`UNREACHABLE`], waiting `stall` seconds at most.
 fn unreachable(folder: &Path, stall: u64) -> (PathBuf, Value) {

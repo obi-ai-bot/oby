@@ -230,8 +230,9 @@ pub fn passes_later(why: &str) -> bool {
 }
 
 /// What git and gh say of a failure a later try may not have.
-const PASSING: [&str; 16] = [
+const PASSING: [&str; 17] = [
     "could not resolve host",
+    "failed to connect to",
     "connection reset",
     "connection refused",
     "connection timed out",

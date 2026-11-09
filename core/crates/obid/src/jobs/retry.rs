@@ -67,10 +67,6 @@ impl Jobs {
                 resumes: None,
             });
         }
-        // A Stop during the fetch that failed spends no try.
-        if *signal.borrow() != Signal::Run {
-            return Ok(false);
-        }
         self.update(id, |job| job.recovery.tries += 1);
         let (wait, of) = (RETRY_WAITS[attempt - 1], (attempt, RETRY_WAITS.len()));
         let idle = Idle::new(self, id);
@@ -184,7 +180,7 @@ mod tests {
         .unwrap();
         let config = Config::parse(
             &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
-                "repos": [{"repo": "o/r", "remote": "https://nonexistent.invalid/o/r.git"}]})
+                "repos": [{"repo": "o/r", "remote": "https://127.0.0.1:9/o/r.git"}]})
             .to_string(),
         )
         .unwrap();
