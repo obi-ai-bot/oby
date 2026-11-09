@@ -634,7 +634,7 @@ fn mcp_config(
     let api = shared.connections.api_url();
     let tetrix = shared
         .tetrix
-        .connected()
+        .usable()
         .then(|| format!("{api}/v1/agent/tetrix/conversation-{conversation}"));
     (
         place.temp.join(MCP_FILE),
