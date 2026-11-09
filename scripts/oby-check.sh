@@ -7,7 +7,11 @@
 #
 #   scripts/oby-check.sh [base]    what changed since the merge base with base (default origin/dev),
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
-#                                  with OBY_CHECK_ALL=1, runs everything, whatever changed
+#                                  with OBY_CHECK_ALL=1, runs everything, whatever changed;
+#                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
+#                                  obid sets it when it runs this on a job's base, which changed
+#                                  nothing, to see whether the base fails as the job does
+#                                  (docs/contracts/publishing.md, PUBLISHING-18)
 #
 #   core/                 the line limit below; cargo fmt --check; clippy -D warnings on the touched
 #                         crates; obid's lib tests of each touched module (src/a/b.rs: `a::b::`; all of them for
@@ -47,7 +51,11 @@ base=$(git merge-base "${1:-origin/dev}" HEAD) || {
     echo "oby-check: can't find where the change starts (${1:-origin/dev})" >&2
     exit 2
 }
-changed=$({ git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
+if [[ -n "${OBY_CHECK_PATHS:-}" ]]; then
+    changed=$OBY_CHECK_PATHS
+else
+    changed=$({ git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
+fi
 # Xcode's and SwiftPM's builds, kept between runs (in a job, in its HOME).
 cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 

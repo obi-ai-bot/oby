@@ -934,10 +934,10 @@ pub struct Jobs {
     /// One check at a time, whatever the job ([`Jobs::check`]).
     checking: tokio::sync::Semaphore,
     /// How each base's check went, run once on a job's first failure ([`Jobs::fails_on_base`],
-    /// PUBLISHING-18): by repository, the start commit with the base commit its scripts came
-    /// from, and command; `None` for one that passed.
+    /// PUBLISHING-18): by repository, start commit, the base commit its scripts came from, command
+    /// and the job's changed paths, NUL apart; `None` for one that passed.
     /// ponytail: in memory, so a restart forgets it and the next first failure runs the base again.
-    base_runs: Mutex<HashMap<(String, String, String), Option<BaseFailure>>>,
+    base_runs: Mutex<HashMap<String, Option<BaseFailure>>>,
     /// Whether a first failure runs on the base at all: `OBID_BASE_CHECK=off` turns it off.
     /// ponytail: a test seam, for obid's tests whose checks fail everywhere to drive their rounds;
     /// on everywhere else.
@@ -8787,12 +8787,11 @@ impl Jobs {
 
     /// Why job `id`'s failed first check of `command` on `head` (its `output`, its scripts as the
     /// base had them at `scripts_from`) isn't the change's doing (PUBLISHING-18): the same command,
-    /// run once on the commit its work started from, in a checkout of its own with no declared
-    /// secrets, failed the same way: with the same [`crate::facts::signature`], or in the same
-    /// step with every test it named failing there too, when those names explain its whole failure.
-    /// Only for a job whose start is its base's tip (no pull request's head, no first job's branch,
-    /// no review) whose task names none of its failing tests, never once it stopped. Each base's
-    /// run is kept ([`Jobs::base_runs`]); one that couldn't run, or was stopped, judges nothing.
+    /// run once on the commit its work started from, failed the same way: the same signature, or
+    /// the same step with every test it named, when those names are its whole failure. Only for a
+    /// job started at its base's tip (no pull request, first job's branch or review), not someone
+    /// else's code (its run would feed every job's [`Jobs::base_runs`]), whose task names none of
+    /// its failing tests, never once it stopped. Each run is kept; one that judged nothing isn't.
     #[allow(clippy::too_many_arguments)]
     async fn fails_on_base(
         &self,
@@ -8808,38 +8807,37 @@ impl Jobs {
             return None;
         }
         let job = self.get(id).filter(|job| {
-            job.pr.is_none() && job.start_from.is_none() && job.review_of.is_none()
+            job.pr.is_none()
+                && job.start_from.is_none()
+                && job.review_of.is_none()
+                && job.someone_elses().is_none()
         })?;
         let start = job.start_commit.clone().filter(|c| git::is_sha(c))?;
         let mine = BaseFailure::of(job.checks.last()?, output);
         if crate::facts::names_any(&job.task, &mine.failing) {
             return None;
         }
-        let key = |from: &str| {
-            (
-                job.repo.clone(),
-                format!("{start} {from}"),
-                command.to_owned(),
-            )
+        let paths = self.changed_files(&job, head).await.unwrap_or_default();
+        let paths = paths.join("\n");
+        let key = |from: &str| format!("{}\0{start}\0{from}\0{command}\0{paths}", job.repo);
+        let runs = || {
+            self.base_runs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
         };
-        let kept = self
-            .base_runs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key(scripts_from))
-            .cloned();
+        let kept = runs().get(&key(scripts_from)).cloned();
         let base = match kept {
             Some(base) => base,
             None => {
                 // Nothing changed: its own run is the base's.
                 let (base, from) = match start == head {
                     true => (Some(mine.clone()), scripts_from.to_owned()),
-                    false => Box::pin(self.run_on_base(id, command, &start, spec, signal)).await?,
+                    false => {
+                        Box::pin(self.run_on_base(id, command, &start, &paths, spec, signal))
+                            .await?
+                    }
                 };
-                self.base_runs
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(key(&from), base.clone());
+                runs().insert(key(&from), base.clone());
                 // Its scripts as the base had them later than the job's: no like for like.
                 if from != scripts_from {
                     return None;
@@ -8859,15 +8857,16 @@ impl Jobs {
         )))
     }
 
-    /// Job `id`'s check `command` run on `start` (PUBLISHING-18), at a path of its own under
-    /// `home/checks`, removed after: how it failed, `None` when it passed, with the base commit its
-    /// scripts came from; `None` when it judged nothing (it couldn't run, ran past its limit, or
-    /// the job stopped).
+    /// Job `id`'s check `command` run on `start` (PUBLISHING-18) with no declared secrets, told the
+    /// job's changed `paths` (`OBY_CHECK_PATHS`, for a check that runs only what changed), under
+    /// `home/checks`, removed after: how it failed (`None`: passed), with its scripts' base commit;
+    /// `None` when it judged nothing (it couldn't run, ran past its limit, or the job stopped).
     async fn run_on_base(
         &self,
         id: &str,
         command: &str,
         start: &str,
+        paths: &str,
         spec: &Spec,
         signal: &watch::Receiver<Signal>,
     ) -> Option<(Option<BaseFailure>, String)> {
@@ -8900,6 +8899,7 @@ impl Jobs {
         let mut extra = check.git_env();
         extra.extend(process::show_rust(&check.temp));
         extra.extend(self.build_env(id, true));
+        extra.push(("OBY_CHECK_PATHS", paths.into()));
         let env = process::sandbox_env(&process::tools_path(), &check.temp, &extra);
         let group = self.recording(id, &check);
         let run = run_check(
@@ -16727,6 +16727,38 @@ mod tests {
             })
             .unwrap();
         assert!(!of_event.vetted);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PUBLISHING-18: someone else's code never feeds every job's kept base runs. Here the job
+    /// changed nothing, so its own failure is its base's, and only the owner's own job is judged.
+    #[tokio::test]
+    async fn publishing_18_someone_elses_code_keeps_no_base_run() {
+        let (jobs, clone, root) = jobs_with_a_clone("base-someone-elses").await;
+        let head = crate::git::git(&clone, &["rev-parse", "HEAD"])
+            .await
+            .unwrap();
+        let head = head.trim().to_owned();
+        let record = crate::facts::CheckRecord {
+            round: 1,
+            steps: Vec::new(),
+            failing: Vec::new(),
+            signature: None,
+        };
+        jobs.update("j", |job| {
+            job.start_commit = Some(head.clone());
+            job.checks = vec![record.clone()];
+            job.untrusted = true;
+        });
+        let (_sender, signal) = watch::channel(Signal::Run);
+        let spec = Spec::default();
+        let judge = || jobs.fails_on_base("j", "false", &head, "s", &spec, &signal, "x");
+        assert_eq!(judge().await, None);
+        assert!(jobs.base_runs.lock().unwrap().is_empty());
+        jobs.update("j", |job| job.untrusted = false);
+        let why = judge().await.unwrap_or_default();
+        assert!(why.contains("already fails on the base"), "{why}");
+        assert_eq!(jobs.base_runs.lock().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

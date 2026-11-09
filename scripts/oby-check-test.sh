@@ -69,6 +69,12 @@ expect 'lower obid_lines_limit' 'a cut asks for the limit to come down'
 code "$main" "$((limit - 1000))"
 expect no 'lower obid_lines_limit' 'a small cut leaves the limit'
 
+# On a job's base, which changed nothing, obid names the paths the job changed (PUBLISHING-18):
+# those are what changed, not the diff (main.rs, which would plan every lib test).
+export OBY_CHECK_PATHS=core/crates/obid/src/facts.rs
+expect 'lib -- facts::$' 'OBY_CHECK_PATHS says what changed'
+unset OBY_CHECK_PATHS
+
 # Nested in a job's sandbox, the tests that make a sandbox of their own aren't run, and a change
 # they'd test ends the check couldn't judge (PUBLISHING-22).
 # Here the check runs in a sandbox of this test's where its own sandbox-exec fails, as in a job's,
