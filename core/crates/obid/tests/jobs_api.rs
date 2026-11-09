@@ -5007,7 +5007,8 @@ fn publishing_17_a_check_that_cant_reach_the_network_spends_no_round() {
 /// PUBLISHING-18: a first failure the base already has isn't the change's: obid runs the same
 /// check once on the commit the job started from, and when it fails there too (the same tests, or
 /// more), the job spends no fix round and ends done naming the base, nothing published by itself
-/// and Publish by hand offered (as PUBLISHING-8). A second job on the same base reuses that run.
+/// and Publish by hand offered (as PUBLISHING-8). A later job on the same base that changed other
+/// paths runs it again, told those (OBY_CHECK_PATHS).
 #[test]
 fn publishing_18_a_base_that_already_fails_spends_no_round() {
     let folder = Folder::new("check-red-base");
@@ -5041,7 +5042,7 @@ fn publishing_18_a_base_that_already_fails_spends_no_round() {
     let log = std::fs::read_to_string(&obid.stderr).unwrap();
     assert_eq!(
         log.matches("running its check on the base").count(),
-        1,
+        2,
         "{log}"
     );
 }
