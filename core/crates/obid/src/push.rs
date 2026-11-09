@@ -21,8 +21,11 @@
 //!   `needs_you`); never a result with nothing to decide, progress or Oby's own words. One alert
 //!   per thing, replaced in place, and a short "Settled" only for an urgent one. What was last
 //!   said is kept in `home/push/notices.json` and `home/push/said.json`, so a restart doesn't say
-//!   it again; the first time, what is already there isn't news. The phone's half of the rule
-//!   (nothing while Oby is in front) is the phone's: apps/ios/app/Notifications.swift.
+//!   it again; the first time, what is already there isn't news. While no phone can hear it (no
+//!   token or registration from a paired device; for FCM, no service account), nothing is
+//!   recorded as said, so a phone that registers later is told every alert still open. The
+//!   phone's half of the rule (nothing while Oby is in front) is the phone's:
+//!   apps/ios/app/Notifications.swift.
 //! - **What goes out.** Every builder reads the jobs and the inbox with the vault's secrets already
 //!   taken out ([`for_alerts`]): an alert keeps a first line and 100 or 200 characters, and a value
 //!   cut there is no value the scan knows. A vault that can't be read says nothing, and the next
@@ -1179,6 +1182,30 @@ impl Push {
         false
     }
 
+    /// What FCM says for `jobs` against what was said, kept in `notices.json`: the jobs whose need
+    /// changed; none on the first look, since what's already there isn't news. While no Android
+    /// phone can hear it (`hears` false: no token from a paired device, or no service account),
+    /// nothing is recorded as said: a first look records `{}`, so the next look that can be heard
+    /// says every alert still open.
+    fn noted(&self, jobs: &[Job], hears: bool) -> Vec<Change> {
+        let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
+        let first = said.is_none();
+        let before = said.clone().unwrap_or_default();
+        let (changed, now) = if hears {
+            changes(jobs, &before)
+        } else {
+            (Vec::new(), before.clone())
+        };
+        if !first && now == before {
+            return Vec::new();
+        }
+        if let Err(e) = self.write("notices.json", &now) {
+            tracing::error!("can't keep what the pushes said: {e}");
+        }
+        *said = Some(now);
+        if first { Vec::new() } else { changed }
+    }
+
     /// The FCM part of [`Push::look`]: each job whose need changed.
     async fn look_fcm(&self, jobs: &[Job], paired: &HashSet<String>, scratch: &Path) {
         let tokens: Vec<String> = self
@@ -1194,33 +1221,9 @@ impl Push {
         } else {
             self.account()
         };
-        let (changed, account) = {
-            let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
-            let before = said.clone().unwrap_or_default();
-            let Some(account) = account else {
-                // No phone can hear it: what was said stays as it was (none, on a first look), so
-                // the first look once one can says everything still waiting.
-                if said.is_none() {
-                    if let Err(e) = self.write("notices.json", &before) {
-                        tracing::error!("can't keep what the pushes said: {e}");
-                    }
-                    *said = Some(before);
-                }
-                return;
-            };
-            let (changed, now) = changes(jobs, &before);
-            let first = said.is_none();
-            if !first && now == before {
-                return;
-            }
-            if let Err(e) = self.write("notices.json", &now) {
-                tracing::error!("can't keep what the pushes said: {e}");
-            }
-            *said = Some(now);
-            if first {
-                return;
-            }
-            (changed, account)
+        let changed = self.noted(jobs, account.is_some());
+        let Some(account) = account else {
+            return;
         };
         for (job, notice) in changed {
             let data = match notice {
@@ -1773,6 +1776,25 @@ mod tests {
             0o600
         );
         assert_eq!(*Push::open(&home, RELAY).tokens.lock().unwrap(), saved);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// What FCM says, once a phone can hear it: the first look isn't news, and a restart
+    /// remembers what was said and doesn't say it again.
+    #[test]
+    fn the_first_look_is_no_news_and_a_restart_remembers() {
+        let home = std::env::temp_dir().join(format!("obid-push-noted-{}", std::process::id()));
+        let mut failed = job("f1");
+        failed.status = Status::Failed;
+        let push = Push::open(&home, RELAY);
+        assert!(push.noted(std::slice::from_ref(&failed), true).is_empty());
+        let said: BTreeMap<String, Notice> =
+            serde_json::from_slice(&std::fs::read(home.join("push/notices.json")).unwrap())
+                .unwrap();
+        assert_eq!(said, BTreeMap::from([("f1".to_owned(), Notice::Failed)]));
+        let again = Push::open(&home, RELAY);
+        assert_eq!(again.said.lock().unwrap().as_ref(), Some(&said));
+        assert!(again.noted(std::slice::from_ref(&failed), true).is_empty());
         std::fs::remove_dir_all(&home).unwrap();
     }
 
