@@ -10491,11 +10491,19 @@ impl Jobs {
             match (job.check.clone(), onto) {
                 (None, _) => {
                     to_publish = true;
-                    // Its last round's GOAL line, so a restart holds what its agent said wasn't met
-                    // (TASKS-19): each round is judged by its own line, never an earlier round's.
+                    // Its last GOAL line, from the replies it kept, so a restart holds what its
+                    // agent said wasn't met (TASKS-19).
+                    // ponytail: `summaries` is per turn, not per round, so this may hold an earlier
+                    // round's NOT MET after a restart: that fails safe (nothing goes out); keep the
+                    // loop's own `goal` on the job if it ever costs a publish.
                     if asks_goal_line(&job) {
-                        let last = job.summaries.as_ref().and_then(|s| s.last());
-                        goal = last.and_then(|s| goal_line(s)).map(str::to_owned);
+                        goal = job
+                            .summaries
+                            .iter()
+                            .flatten()
+                            .rev()
+                            .find_map(|s| goal_line(s))
+                            .map(str::to_owned);
                     }
                 }
                 (Some(_), Onto::Conflict(files)) => {

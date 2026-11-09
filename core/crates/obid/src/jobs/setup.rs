@@ -126,11 +126,14 @@ fn setup_failed(command: &str, output: &str) -> String {
     )
 }
 
-/// A run whose agent hears nothing (a pick-up) runs no setup, and neither does Oby's own review:
-/// the reviewed commit's install scripts, with the job's door open, could rewrite what the review
-/// judges (PUBLISHING-23).
+/// A run whose agent hears nothing (a pick-up) runs no setup, and neither does any review (Oby's
+/// own, another Oby's request, one dispatched by hand): the reviewed commit's install scripts, with
+/// the job's door open, could rewrite what the review judges (PUBLISHING-23).
 fn runs_no_setup(job: Option<&Job>, message: &str) -> bool {
-    message.is_empty() || job.is_some_and(|job| job.review_of.is_some())
+    message.is_empty()
+        || job.is_some_and(|job| {
+            crate::job::READ_ONLY.contains(&job.kind.as_str()) || job.review_of.is_some()
+        })
 }
 
 #[cfg(test)]
@@ -153,6 +156,10 @@ mod tests {
         let mut review = new();
         review.review_of = Some("author".into());
         assert!(runs_no_setup(Some(&review), "Review it"));
+        // Another Oby's request, or one dispatched by hand: a review all the same.
+        let mut asked = new();
+        asked.kind = "review".into();
+        assert!(runs_no_setup(Some(&asked), "Review it"));
         assert!(!runs_no_setup(Some(&new()), "Fix it"));
         assert!(runs_no_setup(Some(&new()), ""));
     }

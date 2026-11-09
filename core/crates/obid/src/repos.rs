@@ -199,8 +199,8 @@ impl Repos {
     /// GitHub's list as gh just read it for `user`, unless gh's login changed meanwhile. A listed
     /// repository on GitHub whose `defaultBranch` is in `gone` ([`Repos::gone`]) takes the name
     /// GitHub renamed it to, or GitHub's default once it was deleted, in the configuration file
-    /// too, so jobs there branch from it (WORK-13). One whose branch still exists on GitHub is the owner's pin (`dev` while GitHub's
-    /// is `main`) and stays, whatever GitHub's default is.
+    /// too, so jobs there branch from it (WORK-13). One whose branch still exists on GitHub is the
+    /// owner's pin (`dev` while GitHub's is `main`) and stays, whatever GitHub's default is.
     fn read_for(&self, user: &str, github: Vec<Repo>, gone: &[(String, String, Option<String>)]) {
         let (renamed, file) = {
             let mut state = self.write();
