@@ -625,9 +625,9 @@ pub struct NewJob {
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
-/// decision of 2026-10-18): the owner's own start a follow-up. Oby's event orchestrator's are the
-/// brain's own, and a turn that read something untrusted starts one marked untrusted
-/// (crate::brain::actions), so neither starts one here.
+/// decision of 2026-10-18): the owner's own start a follow-up. Events' are the brain's own, and a
+/// turn that read something untrusted starts one marked untrusted (crate::brain::actions), so
+/// neither starts one here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Owner,
@@ -10352,8 +10352,8 @@ impl Jobs {
             String::new()
         } else if !words.is_empty() && job.session.is_some() {
             // A round the owner asked for: the agent picks its session up and hears their words,
-            // after the check's output when a failing check stopped it: One more round, Try again
-            // and the orchestrator's retry alike.
+            // after the check's output when a failing check stopped it: One more round and Try
+            // again alike.
             let words = words.join("\n\n");
             let words = match self.stopping_check(&job) {
                 Some(failed) => format!("{failed}\n\n{words}"),
@@ -10458,6 +10458,9 @@ impl Jobs {
                     to_publish = true;
                     // Its last GOAL line, from the replies it kept, so a restart holds what its
                     // agent said wasn't met (TASKS-19).
+                    // ponytail: `summaries` is per turn, not per round, so this may hold an earlier
+                    // round's NOT MET after a restart: that fails safe (nothing goes out); keep the
+                    // loop's own `goal` on the job if it ever costs a publish.
                     if asks_goal_line(&job) {
                         goal = job
                             .summaries

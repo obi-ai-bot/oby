@@ -533,7 +533,7 @@ fn dispatch_problems(dispatch: &Dispatch, context: &Context) -> Vec<String> {
         && let Some(author) = context.review_authors.get(&review_key(&dispatch.repo, pr))
     {
         problems.push(format!(
-            "PR #{pr} has Oby author job {author}; use ask_review_again"
+            "PR #{pr} has Oby author job {author}; tell its author job (oby_tell_job), or answer its review item (Try again or One more round)"
         ));
     }
     if dispatch.issue.is_some_and(|issue| issue <= 0) {
@@ -809,7 +809,9 @@ mod tests {
         standalone.dispatches = vec![dispatch.clone()];
         assert_eq!(
             standalone.problems(&context, "zq9"),
-            ["PR #80 has Oby author job author; use ask_review_again"]
+            [
+                "PR #80 has Oby author job author; tell its author job (oby_tell_job), or answer its review item (Try again or One more round)"
+            ]
         );
         let mut other = dispatch;
         other.repo = "deskree-inc/another".into();

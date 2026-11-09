@@ -852,8 +852,8 @@ pub fn account_json(
         seven_day_resets: usage.seven_day_resets.map(time::format),
         running: shared.jobs.running_on(&account.id) as u32,
         full_until: usage.full_until_at(now).map(time::format),
-        // Every tool's agents get Tetrix through obid while Oby is signed in (crate::tetrix).
-        tetrix: shared.tetrix.connected().then_some(true),
+        // Every tool's agents get Tetrix through obid while its connection is usable (crate::tetrix).
+        tetrix: shared.tetrix.usable().then_some(true),
         tetrix_jobs: shared.jobs.tetrix_counts(&account.id).0,
         tetrix_used: shared.jobs.tetrix_counts(&account.id).1,
         reserved: usage.reserved(now),
