@@ -625,7 +625,7 @@ impl Jobs {
         let tuning = crate::settings::load(&self.config.home).tuning;
         let offered = target
             .as_ref()
-            .map(|(tool, account)| self.model_lists.for_account(*tool, &account.id));
+            .map(|(tool, account)| self.model_lists.to_check(*tool, &account.id));
         let changed = {
             let mut state = self.lock();
             if state.publishing.contains(id) {

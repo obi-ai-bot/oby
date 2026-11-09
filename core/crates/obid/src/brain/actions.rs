@@ -815,7 +815,7 @@ pub(super) async fn answer_inbox(
         })
         && let Some(why) = super::written_after(shared, conversation)
     {
-        shared.jobs.mark_foreign(&item.job, why);
+        shared.jobs.mark(&item.job, why, false);
     }
     if item.done.is_some() {
         return Outcome::Failed(format!(

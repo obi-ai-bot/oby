@@ -60,12 +60,17 @@
 //!   owner. Anything else (a vendor's own web search or fetch, any MCP tool or resource, a helper
 //!   agent, and any kind an agent adds later or obid doesn't parse: Claude Code's unparsed blocks,
 //!   Codex's helper threads and unknown items, Cursor's unknown kinds and its `search`, which its
-//!   web search reports as too) marks the job. So does network egress past the tool's API hosts
-//!   and the default registries (2), its vendor's other hosts included: they serve pages people
-//!   write. Being given an MCP server's tools (Tetrix's) doesn't, nor does a reach to its own
-//!   tool's API hosts ([`crate::egress::tools_api`]) or Codex's `chatgpt.com`, by the CLI or by
-//!   anything in its box, though `chatgpt.com` takes that job's own values away
-//!   (`Job::withheld`): the owner's decisions of 2026-11-06 and 2026-11-08 (MERGING-30).
+//!   web search reports as too) marks the job. Network egress past the tool's API hosts and the
+//!   default registries (2) takes its values away too, but only as a reach (`Job::reached`): the
+//!   code is still the owner's own, so its pull request needs one review, not two, though its check
+//!   doesn't stand for the Mac's (MERGING-31; the owner's decision of 2026-11-06, "Split it").
+//!   Hosts that serve anyone's source code ([`site_is_code_host`]),
+//!   `crate::egress::ROUTED_BY_HOST`'s and its vendor's other hosts, which serve pages people
+//!   write, make it someone else's code: two reviews. Being given an MCP server's tools (Tetrix's)
+//!   doesn't, nor does a reach to its own tool's API hosts ([`crate::egress::tools_api`]) or
+//!   Codex's `chatgpt.com`, by the CLI or by anything in its box, though `chatgpt.com` takes that
+//!   job's own values away (`Job::withheld`): the owner's decisions of 2026-11-06 and 2026-11-08
+//!   (MERGING-30).
 //!
 //! What that takes:
 //!
@@ -79,7 +84,7 @@
 //!    own fetch (a job's base, a pull request's head), and one
 //!    that isn't a reviewed branch and whose commits aren't all in obid's record of the owner's
 //!    jobs marks the clone (`crate::git::taint`), as a job there turning someone else's code does
-//!    (`Jobs::mark_foreign`): from then on no check in that repository gets values. A clone made
+//!    (`Jobs::mark`): from then on no check in that repository gets values. A clone made
 //!    before clones were narrow gets none either. An agent can't fetch anything itself: it has no
 //!    code host's login (an empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way
 //!    off the Mac is obid's egress proxy, which lets its tool's own services through and decides
@@ -87,10 +92,12 @@
 //!    `chatgpt.com` (which takes that job's own values away instead, `Job::withheld`) and the
 //!    default registries, which serve only published versions on an edge that answers only the TLS
 //!    hello's host (`crate::egress::REGISTRIES`; never `crate::egress::ROUTED_BY_HOST`), marks the
-//!    job ([`site_is_foreign`]; its vendor's other hosts too, which serve pages people write,
-//!    `Jobs::reach_now`): the proxy reads a connection's TLS name, not the `Host:` inside it. So
-//!    do the channels that bring content past the proxy: a vendor's own web search or fetch and
-//!    any MCP server's answer in the turn
+//!    job and its clone, as having reached past them ([`site_is_foreign`]; `Jobs::mark`,
+//!    MERGING-31) or as someone else's code (its vendor's other hosts, which serve pages people
+//!    write, `Jobs::reach_now`; [`site_is_code_host`]), so no follow-up counts the job's commits as
+//!    the owner's record (`Jobs::record_of`): the proxy reads a connection's TLS name, not the
+//!    `Host:` inside it. So do the channels that bring content past the proxy: a vendor's own web
+//!    search or fetch and any MCP server's answer in the turn
 //!    ([`tool_brings_content`]), a connected app's answer, and the context obid gives (Tetrix's,
 //!    teammates' pull requests). A
 //!    marked clone is made again for the next job once no job runs in it, the old one kept aside
@@ -669,6 +676,28 @@ pub fn platform_refusal() -> Option<String> {
 /// through.
 pub fn site_is_foreign(host: &str) -> bool {
     crate::egress::ROUTED_BY_HOST.contains(&host) || !crate::egress::REGISTRIES.contains(&host)
+}
+
+/// Whether `host` serves anyone's source code: a code host (GitHub, GitLab, Bitbucket, Codeberg),
+/// its pages, or jsDelivr, which serves any GitHub repository's files under `/gh/` the proxy can't
+/// see. Reaching it makes the job someone else's code (`Jobs::mark`, two reviews), not only a reach
+/// (MERGING-31), as [`crate::egress::ROUTED_BY_HOST`]'s do (`egress::mark_reach`). An artifact
+/// registry (`ghcr.io`) stays a reach.
+pub fn site_is_code_host(host: &str) -> bool {
+    const CODE_HOSTS: &[&str] = &[
+        "github.com",
+        "githubusercontent.com",
+        "github.io",
+        "gitlab.com",
+        "gitlab.io",
+        "bitbucket.org",
+        "codeberg.org",
+        "codeberg.page",
+        "jsdelivr.net",
+    ];
+    CODE_HOSTS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
 /// Whether a tool call named `name` is of a kind obid knows keeps the job the owner's own: a
@@ -1888,6 +1917,39 @@ required = false
             "cdn.cocoapods.org",
         ] {
             assert!(!site_is_foreign(host), "{host}");
+        }
+    }
+
+    /// MERGING-31: a host that serves anyone's source code is someone else's code, whole (the proxy
+    /// sees no path); an artifact registry and a look-alike aren't.
+    #[test]
+    fn merging_31_a_host_that_serves_anyones_code_is_someone_elses() {
+        for host in [
+            "github.com",
+            "api.github.com",
+            "codeload.github.com",
+            "raw.githubusercontent.com",
+            "someone.github.io",
+            "gitlab.com",
+            "someone.gitlab.io",
+            "bitbucket.org",
+            "api.bitbucket.org",
+            "codeberg.org",
+            "someone.codeberg.page",
+            "cdn.jsdelivr.net",
+            "fastly.jsdelivr.net",
+        ] {
+            assert!(site_is_code_host(host), "{host}");
+        }
+        for host in [
+            "ghcr.io",
+            "notgithub.com",
+            "github.com.example.com",
+            "mygitlab.com",
+            "docs.example.com",
+            "registry.npmjs.org",
+        ] {
+            assert!(!site_is_code_host(host), "{host}");
         }
     }
 

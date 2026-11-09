@@ -110,6 +110,14 @@ pub fn asked(task: &str, request: &str, later: &[String], untrusted: Option<&str
     text
 }
 
+/// What [`ASKED_FILE`] says of an author whose agent reached a site past the package registries
+/// (`Job::reached`, MERGING-31), in obid's words: not that it's untrusted, and no second review.
+pub fn reached_note(reached: Option<&str>) -> String {
+    reached.map_or_else(String::new, |why| {
+        format!("\nobid's note: {why}, so its check got none of the owner's declared secrets.\n")
+    })
+}
+
 /// Where Oby's review finds the repository's rules as they are on the base (its `AGENTS.md` and
 /// `CLAUDE.md` there), quoted: never the change's own, which the author wrote.
 pub const RULES_FILE: &str = "base-rules.md";
@@ -917,6 +925,13 @@ mod tests {
         );
         assert!(text.contains("that text isn't quoted here."), "{text}");
         assert!(!asked("Fix it", "Fix it", &[], None).contains("untrusted"));
+        // MERGING-31: a reach is said in obid's words, never as untrusted.
+        let reached = reached_note(Some(
+            "its agent reached docs.example.com:443, beyond its tool's own services and the package registries",
+        ));
+        assert_eq!(reached_note(None), "");
+        assert!(reached.contains("docs.example.com:443") && reached.contains("declared secrets"));
+        assert!(!reached.contains("untrusted"));
     }
 
     /// The owner's review is told where the author's words and the base's rules are, never the
