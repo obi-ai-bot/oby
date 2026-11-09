@@ -577,7 +577,11 @@ fn publishing_23_setup_runs_in_the_box_with_the_agents_reach() {
     let tmp = obid.home.canonicalize().unwrap().join("tmp");
     assert!(Path::new(home).starts_with(&tmp), "{seen}");
     if cfg!(target_os = "macos") {
-        assert!(proxy.starts_with("http://127.0.0.1:"), "{seen}");
+        // obid's own proxy on loopback, its login in the URL (`http://oby:<token>@127.0.0.1:…`).
+        assert!(
+            proxy.starts_with("http://") && proxy.contains("@127.0.0.1:"),
+            "{seen}"
+        );
     }
 }
 
