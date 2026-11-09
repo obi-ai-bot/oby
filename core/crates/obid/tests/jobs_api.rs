@@ -5007,7 +5007,8 @@ fn publishing_17_a_check_that_cant_reach_the_network_spends_no_round() {
 /// PUBLISHING-18: a first failure the base already has isn't the change's: obid runs the same
 /// check once on the commit the job started from, and when it fails there too (the same tests, or
 /// more), the job spends no fix round and ends done naming the base, nothing published by itself
-/// and Publish by hand offered (as PUBLISHING-8). A second job on the same base reuses that run.
+/// and Publish by hand offered (as PUBLISHING-8). A later job on the same base that changed other
+/// paths runs it again, told those (OBY_CHECK_PATHS).
 #[test]
 fn publishing_18_a_base_that_already_fails_spends_no_round() {
     let folder = Folder::new("check-red-base");
@@ -5041,7 +5042,7 @@ fn publishing_18_a_base_that_already_fails_spends_no_round() {
     let log = std::fs::read_to_string(&obid.stderr).unwrap();
     assert_eq!(
         log.matches("running its check on the base").count(),
-        1,
+        2,
         "{log}"
     );
 }
@@ -5108,6 +5109,38 @@ fn publishing_18_a_task_that_names_its_failing_test_keeps_its_rounds() {
     );
     let log = std::fs::read_to_string(&obid.stderr).unwrap();
     assert!(!log.contains("running its check on the base"), "{log}");
+}
+
+/// PUBLISHING-18: a check that runs only what changed (as `scripts/oby-check.sh` does) is told on
+/// the base, which changed nothing, the paths the job changed (`OBY_CHECK_PATHS`), so a failure the
+/// base has there too is the base's, not a pass that hands the agent its rounds.
+#[test]
+fn publishing_18_a_check_of_what_changed_is_told_the_jobs_paths_on_the_base() {
+    let folder = Folder::new("check-base-paths");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start_checking(&folder.0, &config(&folder.0, &remote), None, true);
+    // Fails red when a.txt is among what changed: the job's (its own diff), or the paths obid
+    // names; the base, with neither, would pass.
+    let check = "p=\"${OBY_CHECK_PATHS:-$(test -f a.txt && echo a.txt)}\"; [ \"$p\" != a.txt ] || { echo 'test red ... FAILED'; echo 'test result: FAILED. 0 passed; 1 failed'; exit 1; }";
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": check, "rounds": 2}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["round"], 1, "{job}");
+    let reason = job["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.starts_with(&format!(
+            "Not published: `{check}` already fails on the base "
+        )) && reason.contains(", on red, so nothing counts as checked."),
+        "{job}"
+    );
 }
 
 /// PUBLISHING-18: a follow-up starts from its first job's branch, not its base's tip, so its
