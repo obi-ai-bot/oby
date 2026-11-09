@@ -6,7 +6,7 @@ set -eo pipefail
 unset OBY_CHECK_ALL OBY_CHECK_PATHS
 script="$(cd "$(dirname "$0")" && pwd)/oby-check.sh"
 limit=$(sed -n 's/^obid_lines_limit=//p' "$script")
-repo=$(mktemp -d)
+repo=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-test.XXXXXX")
 trap 'rm -rf "$repo"' EXIT
 cd "$repo"
 git init --quiet
@@ -278,7 +278,7 @@ said=$(nested)
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
 # its failure is named and comes last, each runs quietly, and a binary cargo didn't build fails the
 # check. Cargo is a stand-in here: it builds each `--test` it's given, unless OBY_FAKE_BUILDS_NONE.
-fake=$(mktemp -d)
+fake=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-fake.XXXXXX")
 trap 'rm -rf "$repo" "$fake"' EXIT
 cat >"$fake/cargo" <<STANDIN
 #!/bin/bash
@@ -294,19 +294,22 @@ while [[ \$# -gt 0 ]]; do
 done
 printf '{"reason":"compiler-artifact","target":{"kind":["bin"],"name":"obid","src_path":"x"},"executable":"$fake/obid"}\n'
 STANDIN
-printf '#!/bin/bash\nsleep 2\necho "slow ran from $PWD with $* and $RUST_TEST_THREADS threads"\necho "test result: ok. 1 passed"\n' >"$fake/slow-0123abcd"
+printf '#!/bin/bash\nsleep 2\necho "slow ran from $PWD with $* and $RUST_TEST_THREADS threads"\necho "its output kept in $(ls -d "$TMPDIR"/oby-check.* 2>/dev/null)"\necho "test result: ok. 1 passed"\n' >"$fake/slow-0123abcd"
 printf '#!/bin/bash\necho "test result: FAILED. 0 passed; 1 failed"\nexit 101\n' >"$fake/fails-0123abcd"
 printf '#!/bin/bash\necho "the obid binary ran as a test"\n' >"$fake/obid"
 chmod +x "$fake"/*
 code core/crates/obid/tests/slow.rs 3
 code core/crates/obid/tests/fails.rs 1
-run() { env -u OBY_CHECK_PLAN PATH="$fake:$PATH" OBY_BUILD_JOBS=2 "$@" scripts/oby-check.sh HEAD 2>&1; }
+# Its own TMPDIR, as a job's box gives it: the Mac's temporary folder isn't one a box can write.
+mkdir "$fake/tmp"
+run() { env -u OBY_CHECK_PLAN PATH="$fake:$PATH" TMPDIR="$fake/tmp" OBY_BUILD_JOBS=2 "$@" scripts/oby-check.sh HEAD 2>&1; }
 if ran=$(run); then
     echo "oby-check-test: a failing test binary passed the check: $ran" >&2
     exit 1
 fi
 for said in 'failed: test_binaries' 'tests/fails.rs failed' \
-    'slow ran from .*/core/crates/obid with --quiet and 2 threads' 'Running slow' 'Running fails'; do
+    'slow ran from .*/core/crates/obid with --quiet and 2 threads' 'Running slow' 'Running fails' \
+    "its output kept in $fake/tmp/oby-check\."; do
     grep -q "$said" <<<"$ran" || {
         echo "oby-check-test: the test binaries' run didn't say \"$said\": $ran" >&2
         exit 1

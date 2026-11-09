@@ -1174,6 +1174,9 @@ mod tests {
                 .args(args)
                 .current_dir(&root)
                 .env("GIT_CONFIG_NOSYSTEM", "1")
+                // Inside a job's box, git's objects go to the job's folder: this repository's own.
+                .env_remove("GIT_OBJECT_DIRECTORY")
+                .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
                 .stdin(std::process::Stdio::piped())
                 .spawn()
                 .unwrap()
