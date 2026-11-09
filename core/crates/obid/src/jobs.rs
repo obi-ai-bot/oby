@@ -7018,17 +7018,9 @@ impl Jobs {
                 None,
             ));
         }
-        // What it failed on, kept on its run; with no number named, the same as the round
-        // before's stops it (RECOVERY-9).
-        let mut repeated = false;
-        self.update(id, |job| {
-            let Some(last) = job.checks.last_mut() else {
-                return;
-            };
-            last.signature = Some(crate::facts::signature(last, output));
-            repeated = job.rounds.is_none() && crate::facts::repeats(&job.checks);
-        });
-        if repeated || round >= job.max_rounds() {
+        let checks = self.get(id).map(|j| j.checks).unwrap_or_default();
+        // With no number named, the same failure as the round before's stops it (RECOVERY-9).
+        if round >= job.max_rounds() || job.rounds.is_none() && crate::facts::repeats(&checks) {
             let limit = format!("`{command}` still fails after {round} round(s)");
             self.update(id, |job| job.limit = Some(limit.clone()));
             return Err(End::needs_you(
@@ -7042,10 +7034,7 @@ impl Jobs {
             check_failed(
                 command,
                 output,
-                self.get(id)
-                    .and_then(|j| j.checks.last().map(|c| c.failing.clone()))
-                    .unwrap_or_default()
-                    .as_slice()
+                checks.last().map_or(&[], |c| &c.failing[..])
             )
         ))
     }
@@ -8745,7 +8734,12 @@ impl Jobs {
             true => self.checked(id, command).await,
             false => None,
         };
-        self.update(id, |job| job.checked = checked);
+        self.update(id, |job| {
+            job.checked = checked;
+            if let Some(last) = job.checks.last_mut().filter(|_| !run.passed) {
+                last.signature = Some(crate::facts::signature(last, &run.output));
+            }
+        });
         run.output = declared.noted(&format!("{}\n{}", notes.join("\n"), run.output));
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
@@ -15120,24 +15114,18 @@ struct BaseFailure {
     step: String,
     /// Its failing tests' names.
     failing: Vec<String>,
-    /// Whether those names are the whole of its failure: its step's runner counted as many failed,
-    /// and the list wasn't cut at the most a run lists.
+    /// Whether those names are the whole of its failure ([`crate::facts::named`]).
     named: bool,
 }
 
 impl BaseFailure {
     fn of(record: &crate::facts::CheckRecord, output: &str) -> BaseFailure {
         let failed = record.steps.iter().find(|s| s.passed == Some(false));
-        let failing: Vec<String> = record.failing.iter().map(|f| f.test.clone()).collect();
         BaseFailure {
             signature: crate::facts::signature(record, output),
             step: failed.map(|s| s.command.clone()).unwrap_or_default(),
-            named: !failing.is_empty()
-                && failing.len() < crate::facts::FAILING_MAX
-                && failed
-                    .and_then(|s| s.tests)
-                    .is_some_and(|t| t.failed == failing.len() as u64),
-            failing,
+            named: crate::facts::named(record, output),
+            failing: record.failing.iter().map(|f| f.test.clone()).collect(),
         }
     }
 
@@ -15166,8 +15154,8 @@ pub struct CheckRun {
 /// everything it started when it runs too long or the job stops.
 ///
 /// `secrets` (the values its repository declares, crate::secretspec) are taken out of its output
-/// before it is cut to size or kept: when only its end was kept, the first line, which a value may
-/// have been cut in, goes too.
+/// before it is cut to size or kept. When only its end was kept, its first line, which a value or
+/// a word may have been cut in, goes too (RECOVERY-9).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_check(
     argv: &[OsString],
@@ -15270,14 +15258,15 @@ pub async fn run_check(
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
+    if cut {
+        // With no newline before its end, all of it stays, unless a declared secret may be in it.
+        let declared = secrets.is_some_and(|secrets| !secrets.is_empty());
+        let none = if declared { kept.len() } else { 0 };
+        let body = kept.strip_suffix(b"\n").unwrap_or(&kept);
+        let start = body.iter().position(|&b| b == b'\n');
+        kept.drain(..start.map_or(none, |at| at + 1));
+    }
     if let Some(secrets) = secrets.filter(|secrets| !secrets.is_empty()) {
-        if cut {
-            let start = kept
-                .iter()
-                .position(|&b| b == b'\n')
-                .map_or(kept.len(), |at| at + 1);
-            kept.drain(..start);
-        }
         kept = secrets.redact(&String::from_utf8_lossy(&kept)).into_bytes();
     }
     let mut output = String::from_utf8_lossy(&kept).into_owned();
@@ -15291,7 +15280,9 @@ pub async fn run_check(
             .collect();
     }
     if output.len() > CHECK_OUTPUT_MAX {
-        output = tail(&output, CHECK_OUTPUT_MAX).to_owned();
+        let end = tail(&output, CHECK_OUTPUT_MAX);
+        let start = end.strip_suffix('\n').unwrap_or(end).find('\n');
+        output = end[start.map_or(0, |at| at + 1)..].to_owned();
     }
     if timed_out {
         if !output.ends_with('\n') && !output.is_empty() {
