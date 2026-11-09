@@ -932,8 +932,7 @@ pub struct Jobs {
     shutting_down: std::sync::atomic::AtomicBool,
     /// Who jobs' commits are by ([`commit_identity`], [`Jobs::identity`]).
     identity: Mutex<(String, String)>,
-    /// One check at a time per repository, by the job's repo, each made on first use
-    /// ([`Jobs::check`], PUBLISHING-25).
+    /// One check at a time per repository, made on first use ([`Jobs::check`], PUBLISHING-25).
     checking: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// How each base's check went, run once on a job's first failure ([`Jobs::fails_on_base`],
     /// PUBLISHING-18): by repository, start commit, the base commit its scripts came from, command
