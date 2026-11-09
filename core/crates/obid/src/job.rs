@@ -1446,6 +1446,14 @@ impl Job {
             && self.approving_tools().len() < 2
     }
 
+    /// A second review is due and none on this head ended without a verdict (RECOVERY-15).
+    pub fn second_review_waits(&self) -> bool {
+        self.review_due().is_some()
+            && self.second_review_due()
+            && self.review_failed_here().is_none()
+            && self.review_error.is_none()
+    }
+
     /// Oby's verdict on the head its pull request has now, if it has one: an approval here is
     /// what posting it and merging go on from.
     pub fn current_review(&self) -> Option<&Review> {
@@ -1464,6 +1472,13 @@ impl Job {
             && self.pull_request_open()
             && (self.current_review().is_some_and(|r| !r.approved())
                 || self.review_failed_here().is_some_and(|f| f.needs_you))
+    }
+
+    /// The owner ended it: let it go, or stopped it themself (`Jobs::stop`, the owner's stops).
+    pub fn ended_by_owner(&self) -> bool {
+        self.dismissed.is_some()
+            || (self.stopped_by.as_deref())
+                .is_some_and(|by| crate::jobs::OWNERS_STOPS.iter().any(|o| by.starts_with(o)))
     }
 
     /// The reviews of the pull request's head, as obid pushed it, that couldn't give a verdict.
