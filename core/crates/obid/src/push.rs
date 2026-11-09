@@ -398,7 +398,9 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
         }
         let job = item["job"].as_str().filter(|j| !j.is_empty());
         let review_item = item["kind"] == "failed"
-            && item["id"].as_str().is_some_and(|id| id.contains("-review-"));
+            && item["id"]
+                .as_str()
+                .is_some_and(|id| id.contains("-review-"));
         if review_item && job.is_some_and(|j| reviewed.contains(j)) {
             continue;
         }
