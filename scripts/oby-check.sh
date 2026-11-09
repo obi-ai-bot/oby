@@ -102,7 +102,9 @@ test_binaries() {
     # Stopped: say which binaries hadn't ended, so a hang is named, and leave nothing behind.
     stopped_binaries() {
         while IFS= read -r exe; do
-            [[ -f "$dir/${exe##*/}.status" ]] || echo "oby-check: tests/$(basename "${exe%-*}").rs was still running" >&2
+            # Started (its .out exists) and not ended: a binary still queued in xargs isn't named.
+            name=${exe##*/}
+            [[ -f "$dir/$name.out" && ! -f "$dir/$name.status" ]] && echo "oby-check: tests/${name%-*}.rs was still running" >&2
         done <"$list"
         rm -rf "$dir"
         exit 143
