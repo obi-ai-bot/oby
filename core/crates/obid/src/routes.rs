@@ -544,20 +544,12 @@ pub async fn events(
     let following = device.map(|_| shared.push.followed());
     // An app opened: the accounts' usage, if stale, is asked of their tools (crate::jobs).
     shared.jobs.want_usage();
-    let receiver = shared.events.subscribe();
-    let transcripts = shared.events.subscribe_transcripts();
-    let stream = stream::select(
-        tokio_stream::wrappers::BroadcastStream::new(receiver),
-        tokio_stream::wrappers::BroadcastStream::new(transcripts),
-    )
-    // An app that fell behind lost events: its stream ends there, and the app fetches again when
-    // it reconnects (docs/runner-api.md, "GET /v1/events").
-    .take_while(|event| std::future::ready(event.is_ok()))
-    .filter_map(|event| async move {
-        let event = event.ok()?;
-        Some(Ok(SseEvent::default()
+    // Behind on transcripts, the app hears so; behind on anything else, the stream ends
+    // (crate::events::Events::follow, docs/runner-api.md "GET /v1/events").
+    let stream = shared.events.follow().map(|event| {
+        Ok(SseEvent::default()
             .event(event.name)
-            .data(event.data.to_string())))
+            .data(event.data.to_string()))
     });
     let stream = stream
         .take_until(stopping(shared.stopping.clone()))
