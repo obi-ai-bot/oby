@@ -1,5 +1,5 @@
-//! Slots: which jobs take one of `maxRunning`, and how a job waiting for the one check at a time
-//! gives its own up and takes one back (docs/contracts/admission.md, ADMISSION-4, ADMISSION-5).
+//! Slots: which jobs take one of `maxRunning`, and how a job waiting for its repository's one
+//! check at a time gives its own up and takes one back (docs/contracts/admission.md, ADMISSION-4, ADMISSION-5).
 
 use super::*;
 
@@ -69,8 +69,8 @@ impl Drop for Idle<'_> {
 }
 
 impl Jobs {
-    /// Runs the repository's check on commit `head` ([`Jobs::checking_with_turn`]), one at a
-    /// time: a job that waits for its turn gives its slot up until it has given the turn back,
+    /// Runs the repository's check on commit `head` ([`Jobs::checking_with_turn`]), one of each
+    /// repository's at a time: a job that waits for its turn gives its slot up until it has given the turn back,
     /// then waits for a free one, so none holds the one check while it waits for a slot.
     pub(super) async fn check(
         self: &Arc<Self>,
@@ -80,12 +80,16 @@ impl Jobs {
         spec: &Spec,
         signal: &watch::Receiver<Signal>,
     ) -> Result<CheckRun, String> {
-        // One check at a time: two of this repository's, each building obid with every core,
-        // swapped a 16 GB Mac until both ran out of their 20 minutes (2026-10-24). The wait isn't
+        // One check at a time per repository: two of this repository's, each building obid with
+        // every core, swapped a 16 GB Mac until both ran out of their 20 minutes (2026-10-24); a
+        // check of another repository doesn't wait behind them (PUBLISHING-25). The wait isn't
         // part of the limit, and a stop ends it. Memory never holds a check back: it runs as soon
-        // as it has its turn, its build sized to what's there ([`Jobs::build_env`]). ponytail: one
-        // for every machine; a setting when a bigger one wants more.
-        let (turn, idle) = match self.checking.try_acquire() {
+        // as it has its turn, its build sized to what's there next to the other running jobs
+        // ([`Jobs::build_env`]). ponytail: one per repository on every machine, and two big
+        // repositories' checks share the Mac's memory; a setting when a machine wants otherwise.
+        let repo = self.get(id).map(|job| job.repo).unwrap_or_default();
+        let checking = self.check_turn(&repo);
+        let (turn, idle) = match checking.try_acquire() {
             Ok(turn) => (turn, None),
             Err(_) => {
                 let step = self.get(id).map(|job| job.step).unwrap_or_default();
@@ -94,7 +98,7 @@ impl Jobs {
                 let idle = Idle::new(self, id);
                 let mut stop = signal.clone();
                 let turn = tokio::select! {
-                    turn = self.checking.acquire() => {
+                    turn = checking.acquire() => {
                         turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
                     }
                     _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(CheckRun::default()),
@@ -111,5 +115,14 @@ impl Jobs {
             idle.back(signal).await;
         }
         run
+    }
+
+    /// The one check turn of `repo`'s jobs, made on first use (PUBLISHING-25).
+    pub(super) fn check_turn(&self, repo: &str) -> Arc<tokio::sync::Semaphore> {
+        let mut turns = self.checking.lock().unwrap();
+        turns
+            .entry(repo.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone()
     }
 }

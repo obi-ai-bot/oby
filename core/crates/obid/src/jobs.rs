@@ -932,8 +932,9 @@ pub struct Jobs {
     shutting_down: std::sync::atomic::AtomicBool,
     /// Who jobs' commits are by ([`commit_identity`], [`Jobs::identity`]).
     identity: Mutex<(String, String)>,
-    /// One check at a time, whatever the job ([`Jobs::check`]).
-    checking: tokio::sync::Semaphore,
+    /// One check at a time per repository, by the job's repo, each made on first use
+    /// ([`Jobs::check`], PUBLISHING-25).
+    checking: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// How each base's check went, run once on a job's first failure ([`Jobs::fails_on_base`],
     /// PUBLISHING-18): by repository, start commit, the base commit its scripts came from, command
     /// and the job's changed paths, NUL apart; `None` for one that passed.
@@ -1252,7 +1253,7 @@ impl Jobs {
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             identity: Mutex::new(identity),
-            checking: tokio::sync::Semaphore::new(1),
+            checking: Mutex::new(HashMap::new()),
             base_runs: Mutex::new(HashMap::new()),
             base_check: std::env::var_os("OBID_BASE_CHECK").is_none_or(|v| v != "off"),
             preparing: Mutex::new(HashMap::new()),
@@ -17645,6 +17646,70 @@ mod tests {
             );
         }
         assert_eq!(jobs.list(10).len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PUBLISHING-25 (docs/contracts/publishing.md): a check waits only for its own repository's.
+    /// While a check of `o/r` has its turn, one of `o/s` runs at once, and another of `o/r` waits,
+    /// with its step, until the turn is given back; a stop ends that wait.
+    #[tokio::test]
+    async fn publishing_25_checks_of_two_repositories_run_side_by_side() {
+        // With no sandbox, a check that has its turn ends at once, saying obid can't run it.
+        let (root, _, _, jobs) = cleanup_home("check-turns", false);
+        for (id, repo) in [("r", "o/r"), ("r2", "o/r"), ("s", "o/s")] {
+            let mut job = Job::new(
+                id.into(),
+                repo.into(),
+                "build".into(),
+                "Build it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.status = Status::Running;
+            jobs.lock().jobs.insert(id.into(), job);
+        }
+        let check = |id: &'static str, signal: watch::Receiver<Signal>| {
+            let jobs = jobs.clone();
+            tokio::spawn(async move {
+                jobs.check(id, "true", "head", &Spec::default(), &signal)
+                    .await
+            })
+        };
+        let ran = |run: Result<CheckRun, String>| run.unwrap_err().contains("can't run the check");
+        let (_run, signal) = watch::channel(Signal::Run);
+        let turn = jobs.check_turn("o/r").try_acquire_owned().unwrap();
+        let other = tokio::time::timeout(Duration::from_secs(10), check("s", signal.clone()))
+            .await
+            .expect("o/s's check waited for o/r's")
+            .unwrap();
+        assert!(ran(other));
+        let waiting = "Waiting for another job's check to finish";
+        let same = check("r", signal.clone());
+        let (stop, stopped) = watch::channel(Signal::Run);
+        let cut = check("r2", stopped);
+        for id in ["r", "r2"] {
+            for _ in 0..100 {
+                if jobs.get(id).unwrap().step == waiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert_eq!(jobs.get(id).unwrap().step, waiting, "{id}");
+        }
+        stop.send(Signal::Stop).unwrap();
+        let cut = tokio::time::timeout(Duration::from_secs(10), cut)
+            .await
+            .expect("a stop ended the wait")
+            .unwrap();
+        assert!(cut.unwrap().unchecked.is_none());
+        assert!(!same.is_finished());
+        drop(turn);
+        let same = tokio::time::timeout(Duration::from_secs(10), same)
+            .await
+            .expect("o/r's check ran once the turn was back")
+            .unwrap();
+        assert!(ran(same));
+        assert_ne!(jobs.get("r").unwrap().step, waiting);
         let _ = std::fs::remove_dir_all(&root);
     }
 
