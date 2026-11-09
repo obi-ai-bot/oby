@@ -680,10 +680,19 @@ pub fn site_is_foreign(host: &str) -> bool {
 
 /// Whether `host` serves anyone's source code: a code host (GitHub, GitLab, Bitbucket, Codeberg),
 /// its pages, or jsDelivr, which serves any GitHub repository's files under `/gh/` the proxy can't
-/// see. Reaching it makes the job someone else's code (`Jobs::mark`, two reviews), not only a reach
-/// (MERGING-31, `egress::mark_reach`). A package registry ([`crate::egress::ROUTED_BY_HOST`]'s
-/// too) and an artifact registry (`ghcr.io`) stay a reach.
+/// see, or the Go module proxy, which serves any public repository's commit by its path. So is an
+/// address with no name (a tunnel to an IP could carry any `Host`, GitHub's included). Reaching it
+/// makes the job someone else's code (`Jobs::mark`, two reviews), not only a reach (MERGING-31,
+/// `egress::mark_reach`). A package registry ([`crate::egress::ROUTED_BY_HOST`]'s too) and an
+/// artifact registry (`ghcr.io`) stay a reach.
 pub fn site_is_code_host(host: &str) -> bool {
+    if host
+        .trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .is_ok()
+    {
+        return true;
+    }
     const CODE_HOSTS: &[&str] = &[
         "github.com",
         "githubusercontent.com",
@@ -694,6 +703,7 @@ pub fn site_is_code_host(host: &str) -> bool {
         "codeberg.org",
         "codeberg.page",
         "jsdelivr.net",
+        "proxy.golang.org",
     ];
     CODE_HOSTS
         .iter()
@@ -1951,6 +1961,9 @@ required = false
             "someone.codeberg.page",
             "cdn.jsdelivr.net",
             "fastly.jsdelivr.net",
+            "proxy.golang.org",
+            "185.199.108.133",
+            "[2606:50c0:8000::154]",
         ] {
             assert!(site_is_code_host(host), "{host}");
         }
@@ -1961,6 +1974,7 @@ required = false
             "mygitlab.com",
             "docs.example.com",
             "registry.npmjs.org",
+            "sum.golang.org",
         ] {
             assert!(!site_is_code_host(host), "{host}");
         }
