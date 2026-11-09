@@ -92,7 +92,10 @@ mod tests {
         let stale = followed.next().await.unwrap();
         assert_eq!(stale.name, "transcriptStale");
         assert_eq!(stale.data, json!({"missed": 2000 - 1024}));
-        assert_eq!(followed.next().await.unwrap().data, json!({"n": 2000 - 1024}));
+        assert_eq!(
+            followed.next().await.unwrap().data,
+            json!({"n": 2000 - 1024})
+        );
         events.send("job", json!({"id": "j"}));
         let mut job = None;
         while let Some(event) = followed.next().await {
