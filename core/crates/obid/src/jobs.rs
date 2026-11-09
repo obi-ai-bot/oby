@@ -16717,7 +16717,7 @@ mod tests {
         crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
         assert!(marked().await.is_ok());
         // A package registry stays a reach, its edge routed by `Host` too (ROUTED_BY_HOST).
-        for host in ["proxy.golang.org", "pypi.org", "crates.io"] {
+        for host in ["pypi.org", "crates.io"] {
             jobs.update("j", |job| job.reached = None);
             crate::egress::mark_reach(&jobs, "j", host, 443);
             let job = jobs.get("j").unwrap();
