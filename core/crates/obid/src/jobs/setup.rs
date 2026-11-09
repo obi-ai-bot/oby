@@ -128,12 +128,24 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra = spec.git_env();
         // The agent's way off the Mac, as `Jobs::launch` gives it: obid's proxy, never the
-        // network without it, through a door of its own: what it reaches is a reach only.
+        // network without it. Before the agent, on the job's unchanged start commit, through a
+        // door of its own: what the owner's line reaches is a reach only. On commits an agent
+        // made (a later run, a check) the agent's door: its package.json is the agent's.
         let egress = (sandbox.confines_egress())
             .then(|| self.egress.get().ok_or("obid's egress proxy isn't running"))
             .transpose()?;
+        let owners = egress.is_some()
+            && owners_line(
+                check,
+                crate::secretspec::head_of(&spec).await.ok().as_deref(),
+                self.get(id).and_then(|job| job.start_commit).as_deref(),
+            );
         if let Some(egress) = egress {
-            extra.extend(crate::egress::env(&egress.open_setup(id)));
+            let door = match owners {
+                true => egress.open_setup(id),
+                false => egress.open(id),
+            };
+            extra.extend(crate::egress::env(&door));
             // A check's checkout has no network: its setup gets the door all the same.
             (spec.network, spec.proxied) = (true, true);
         }
@@ -153,7 +165,7 @@ impl Jobs {
             Some(&group),
         )
         .await;
-        if let Some(egress) = egress {
+        if let Some(egress) = egress.filter(|_| owners) {
             egress.close_setup(id);
         }
         run.map_err(|e| format!("obid couldn't run it: {e}"))
@@ -207,8 +219,26 @@ fn runs_no_setup(job: Option<&Job>, message: &str) -> bool {
         })
 }
 
+/// Whether the setup runs the owner's line on what the owner gave (PUBLISHING-23): before the
+/// agent, on the job's unchanged start commit. A check's, or a later run's on the agent's commits,
+/// runs what the agent wrote.
+fn owners_line(check: bool, head: Option<&str>, start: Option<&str>) -> bool {
+    !check && head.is_some() && head == start
+}
+
 #[cfg(test)]
 mod tests {
+    use super::owners_line;
+
+    /// PUBLISHING-23: only the setup before the agent, on the job's start commit, is the owner's.
+    #[test]
+    fn publishing_23_a_setup_on_the_agents_commits_is_the_agents() {
+        assert!(owners_line(false, Some("a"), Some("a")));
+        assert!(!owners_line(false, Some("b"), Some("a")));
+        assert!(!owners_line(true, Some("a"), Some("a")));
+        assert!(!owners_line(false, None, None));
+    }
+
     use super::*;
 
     /// PUBLISHING-23: Oby's own review runs no setup; an ordinary job's run does.
