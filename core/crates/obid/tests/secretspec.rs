@@ -413,12 +413,14 @@ fn refused(log: &str, why: &str) {
     holds_none(log, &fake(), "check.log");
 }
 
-/// PUBLISHING-24: the setup before an owner's check gets none of the values its repository
-/// declares (only the check's own environment does), and one that fails leaves nothing checked.
+/// PUBLISHING-24: a check that gets the owner's declared secrets runs without the setup: what the
+/// change installs could keep the egress door for the check to send them out through. Its setup
+/// (one that fails here) never runs before it, and the report says so.
 #[cfg(target_os = "macos")]
 #[test]
-fn publishing_24_the_setup_before_the_check_gets_no_declared_secret() {
-    let (_folder, obid) = declared_with("secretspec-setup", &agent(), None, Some("env; exit 3"));
+fn publishing_24_a_check_with_declared_secrets_runs_without_the_setup() {
+    let setup = "exit 3";
+    let (_folder, obid) = declared_with("secretspec-setup", &agent(), None, Some(setup));
     let answer = call_typed(
         &obid,
         "POST",
@@ -428,15 +430,16 @@ fn publishing_24_the_setup_before_the_check_gets_no_declared_secret() {
     assert_eq!(answer.status, 201, "{}", answer.text);
     let id = answer.body["id"].as_str().unwrap();
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
-    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
-    // The setup's own environment, printed: the box's, with no declared name or value in it.
-    assert!(log.contains("HOME="), "{log}");
-    assert!(!log.contains("FAKE_CHECK_TOKEN"), "{log}");
-    holds_none(&log, &fake(), "the setup's output");
+    assert!(!job.to_string().contains("setup failed:"), "{job}");
+    let skipped = format!(
+        "Its check ran without its repository's setup, `{setup}`: it gets your declared secrets."
+    );
     assert!(
-        job["reason"]
-            .as_str()
-            .is_some_and(|r| r.starts_with("Not published: its setup failed: `env; exit 3`")),
+        job["changes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|c| c["what"] == skipped.as_str()),
         "{job}"
     );
 }

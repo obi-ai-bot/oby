@@ -30,7 +30,7 @@ impl Jobs {
             return true;
         }
         tracing::info!("job {id}: running its repository's setup");
-        let failed = failure(self.run_setup(id, &command, spec, signal).await);
+        let failed = failure(self.run_setup(id, &command, spec, false, signal).await);
         if *signal.borrow() != Signal::Run {
             return false;
         }
@@ -50,9 +50,12 @@ impl Jobs {
     /// [`Jobs::base_checkout`]'s checkout for job `id`'s check, at `at`, then its repository's
     /// setup, if it has one, run in it before the check (PUBLISHING-24), the base's scripts already
     /// there: with the job's egress door, never the declared secrets, which only the check's own
-    /// environment gets. One that fails judged nothing: why, for the owner's Publish by hand with
-    /// no fix round spent, its output in the check's log, and its checkout gone unless it's the
-    /// one kept across the job's checks.
+    /// environment gets. None before a check that gets declared secrets (what the change installs
+    /// could keep the door for the check to send them out through) or where obid can't confine
+    /// the setup's network to that door (Linux): that check runs without it, the job's report
+    /// says so. One that fails judged nothing: why, for the owner's Publish by hand with no fix
+    /// round spent, its output in the check's log. Its checkout is gone after one that failed or
+    /// was stopped, unless it's the one kept across the job's checks.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn checkout(
         &self,
@@ -64,6 +67,7 @@ impl Jobs {
         at: &Path,
         signal: &watch::Receiver<Signal>,
     ) -> Result<(Spec, Vec<String>, String), String> {
+        let gated = gate.is_some();
         let checkout = Box::pin(self.base_checkout(id, command, head, spec, gate, at)).await?;
         let Some(setup) = self
             .get(id)
@@ -72,19 +76,38 @@ impl Jobs {
         else {
             return Ok(checkout);
         };
-        tracing::info!("job {id}: running its repository's setup before its check");
-        let Some(output) = failure(self.run_setup(id, &setup, &checkout.0, signal).await) else {
+        if gated || !self.confines_egress() {
+            let why = match gated {
+                true => "it gets your declared secrets",
+                false => "obid can't keep its setup's network to the job's door here",
+            };
+            let line = format!("Its check ran without its repository's setup, `{setup}`: {why}.");
+            self.update(id, |job| {
+                if !job.changes.iter().any(|c| c.what == line) {
+                    job.changed(line);
+                }
+            });
             return Ok(checkout);
-        };
-        let _ = std::fs::write(
-            self.log_path(id, "check.log"),
-            crate::secrets::known().redact(&output),
-        );
+        }
+        tracing::info!("job {id}: running its repository's setup before its check");
+        let failed = failure(self.run_setup(id, &setup, &checkout.0, true, signal).await);
+        let stopped = *signal.borrow() != Signal::Run;
+        if failed.is_none() && !stopped {
+            return Ok(checkout);
+        }
         if at != self.check_home(id)
             && let Err(why) = Box::pin(crate::secretspec::remove_checkout(&checkout.0, at)).await
         {
             tracing::warn!("job {id}: {why}");
         }
+        // Stopped: its caller ends the job there, as for a stop during the check.
+        let Some(output) = failed.filter(|_| !stopped) else {
+            return Err("It stopped during its repository's setup, before its check.".into());
+        };
+        let _ = std::fs::write(
+            self.log_path(id, "check.log"),
+            crate::secrets::known().redact(&output),
+        );
         Err(super::unjudged::unchecked(format!(
             "its setup failed: `{setup}` (its output is in the check's log)"
         )))
@@ -95,6 +118,7 @@ impl Jobs {
         id: &str,
         command: &str,
         spec: &Spec,
+        check: bool,
         signal: &watch::Receiver<Signal>,
     ) -> Result<CheckRun, String> {
         let sandbox = self
@@ -115,7 +139,7 @@ impl Jobs {
             (spec.network, spec.proxied) = (true, true);
         }
         extra.extend(process::show_rust(&spec.temp));
-        extra.extend(self.build_env(id, false));
+        extra.extend(self.build_env(id, check));
         let argv = sandbox.wrap(&spec, &["/bin/sh".into(), "-c".into(), command.into()]);
         let env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         let group = self.recording(id, &spec);

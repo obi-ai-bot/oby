@@ -625,14 +625,17 @@ fn publishing_23_a_stop_during_setup_starts_no_agent() {
 }
 
 /// PUBLISHING-24: the setup runs in the check's own checkout before the check: the check needs a
-/// file only the setup makes (never committed, and the agent's worktree's copy isn't there).
+/// file only the setup makes there (it makes none before the agent, which has no hello.txt yet,
+/// so nothing the job commits can carry it). macOS only: elsewhere a check runs without it.
+#[cfg(target_os = "macos")]
 #[test]
 fn publishing_24_setup_installs_before_the_check_runs() {
     let folder = Folder::new("setup-before-check");
     let remote = fixture(&folder.0.join("fixture"));
     let bin = fake_gh(&folder.0);
     let mut config = config(&folder.0, &remote);
-    config["repos"][0]["setup"] = json!("echo installed > installed.txt");
+    config["repos"][0]["setup"] =
+        json!("test -f hello.txt && echo installed > installed.txt; true");
     let obid = start_with(&folder.0, &config, Some(&bin));
     let answer = post_job(
         &obid,
@@ -648,6 +651,7 @@ fn publishing_24_setup_installs_before_the_check_runs() {
 
 /// PUBLISHING-24: a setup that fails before the check judged nothing: no fix round spent, the job
 /// ends done for the owner's Publish by hand, and why says it was the setup.
+#[cfg(target_os = "macos")]
 #[test]
 fn publishing_24_a_setup_that_fails_before_the_check_spends_no_round() {
     let folder = Folder::new("setup-fails-before-check");
@@ -668,6 +672,49 @@ fn publishing_24_a_setup_that_fails_before_the_check_spends_no_round() {
     assert!(
         job["reason"].as_str().is_some_and(|r| r
             .starts_with("Not published: its setup failed: `test -f hello.txt && exit 3; true`")),
+        "{job}"
+    );
+}
+
+/// PUBLISHING-24: a Stop during the setup before the check ends the job stopped, never as a setup
+/// that failed: nothing in the check's log, no reason that names it.
+#[cfg(target_os = "macos")]
+#[test]
+fn publishing_24_a_stop_during_the_checks_setup_ends_stopped() {
+    let folder = Folder::new("setup-stopped-before-check");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    // Only in the check's checkout, where the agent's hello.txt is.
+    config["repos"][0]["setup"] =
+        json!("test -f hello.txt || exit 0; touch setup-started; sleep 30");
+    let obid = start(&folder.0, &config);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "true"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let started = obid
+        .home
+        .join(format!("checks/{id}/check-{id}"))
+        .join("setup-started");
+    let give_up_at = Instant::now() + Duration::from_secs(60);
+    while !started.exists() {
+        assert!(
+            Instant::now() < give_up_at,
+            "the check's setup never started"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "stopped", "{job}");
+    assert!(!job.to_string().contains("setup failed"), "{job}");
+    assert!(
+        !obid.home.join("logs").join(&id).join("check.log").exists(),
         "{job}"
     );
 }
