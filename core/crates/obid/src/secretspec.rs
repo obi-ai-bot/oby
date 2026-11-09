@@ -60,12 +60,12 @@
 //!   owner. Anything else (a vendor's own web search or fetch, any MCP tool or resource, a helper
 //!   agent, and any kind an agent adds later or obid doesn't parse: Claude Code's unparsed blocks,
 //!   Codex's helper threads and unknown items, Cursor's unknown kinds and its `search`, which its
-//!   web search reports as too) marks the job. So does network egress past the tool's own services
-//!   and the default registries (2). Being given an MCP server's tools (Tetrix's) doesn't, nor does
-//!   a reach to its own tool's vendor domains ([`crate::egress::tools_own`]: Claude Code's
-//!   `anthropic.com`, `claude.ai` and `claude.com`, Codex's `openai.com` and `chatgpt.com`,
-//!   Cursor's `cursor.sh` and `cursor.com`, with their subdomains), by the CLI or by anything in
-//!   its box: the owner's decision of 2026-11-06 (MERGING-30).
+//!   web search reports as too) marks the job. So does network egress past the tool's API hosts
+//!   and the default registries (2), its vendor's other hosts included: they serve pages people
+//!   write. Being given an MCP server's tools (Tetrix's) doesn't, nor does a reach to its own
+//!   tool's API hosts ([`crate::egress::tools_api`]) or Codex's `chatgpt.com`, by the CLI or by
+//!   anything in its box, though `chatgpt.com` takes that job's own values away
+//!   (`Job::withheld`): the owner's decisions of 2026-11-06 and 2026-11-08 (MERGING-30).
 //!
 //! What that takes:
 //!
@@ -83,12 +83,14 @@
 //!    before clones were narrow gets none either. An agent can't fetch anything itself: it has no
 //!    code host's login (an empty `GH_CONFIG_DIR`, an invalid push URL), and on macOS its only way
 //!    off the Mac is obid's egress proxy, which lets its tool's own services through and decides
-//!    every other site. Any site past its tool's own services ([`crate::egress::tools_own`])
-//!    but the default registries, which serve only published versions on an edge that
-//!    answers only the TLS hello's host (`crate::egress::REGISTRIES`; never
-//!    `crate::egress::ROUTED_BY_HOST`), marks the job ([`site_is_foreign`]): the proxy reads a
-//!    connection's TLS name, not the `Host:` inside it. So do the channels that bring content past
-//!    the proxy: a vendor's own web search or fetch and any MCP server's answer in the turn
+//!    every other site. Any site but its tool's API hosts ([`crate::egress::tools_api`]), Codex's
+//!    `chatgpt.com` (which takes that job's own values away instead, `Job::withheld`) and the
+//!    default registries, which serve only published versions on an edge that answers only the TLS
+//!    hello's host (`crate::egress::REGISTRIES`; never `crate::egress::ROUTED_BY_HOST`), marks the
+//!    job ([`site_is_foreign`]; its vendor's other hosts too, which serve pages people write,
+//!    `Jobs::reach_now`): the proxy reads a connection's TLS name, not the `Host:` inside it. So
+//!    do the channels that bring content past the proxy: a vendor's own web search or fetch and
+//!    any MCP server's answer in the turn
 //!    ([`tool_brings_content`]), a connected app's answer, and the context obid gives (Tetrix's,
 //!    teammates' pull requests). A
 //!    marked clone is made again for the next job once no job runs in it, the old one kept aside

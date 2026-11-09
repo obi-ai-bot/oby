@@ -1715,14 +1715,7 @@ fn tell(shared: &Shared, id: &str, data: &Value) {
     let Some((conversation, text)) = job_report(data) else {
         return;
     };
-    // Its summary is its agent's: on obid's allowlist only when everything the job read
-    // was (crate::secretspec).
-    let foreign = match shared.jobs.get(id) {
-        Some(job) => job
-            .check_refuses_secrets()
-            .map(|why| format!("the summary of job {id}, which {why}")),
-        None => Some(format!("the summary of job {id}, which obid doesn't have")),
-    };
+    let foreign = summary_foreign(shared.jobs.get(id).as_ref(), id);
     match shared
         .conversations
         .job_ended(&conversation, text, id.to_owned(), foreign)
@@ -1735,6 +1728,18 @@ fn tell(shared: &Shared, id: &str, data: &Value) {
         Ok(_) => {}
     }
     shared.jobs.mark_told(id);
+}
+
+/// What job `id`'s summary marks its conversation with. Its summary is its agent's: on obid's
+/// allowlist only when everything the job read was (crate::secretspec). What reaching chatgpt.com
+/// withheld from its own check (`Job::withheld`, MERGING-30) isn't that: it marks nothing.
+fn summary_foreign(job: Option<&crate::job::Job>, id: &str) -> Option<String> {
+    match job {
+        Some(job) => job
+            .check_refuses_secrets()
+            .map(|why| format!("the summary of job {id}, which {why}")),
+        None => Some(format!("the summary of job {id}, which obid doesn't have")),
+    }
 }
 
 /// The conversations as the list orders them, after `after` (or from the first): the pinned
@@ -2327,6 +2332,54 @@ mod tests {
         // Kept across a restart.
         let reopened = super::Conversations::open(&home, crate::events::Events::new());
         assert_eq!(reopened.from_obys().unwrap(), asks);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// MERGING-30: a job whose own check went without the declared secrets because it reached
+    /// chatgpt.com ends into its conversation (`tell`) without marking it; one that isn't the
+    /// owner's own still does.
+    #[test]
+    fn merging_30_a_withheld_jobs_end_leaves_its_conversation_unmarked() {
+        let home = std::env::temp_dir().join(format!("obid-withheld-{}", uuid::Uuid::new_v4()));
+        let conversations = super::Conversations::open(&home, crate::events::Events::new());
+        let start = || {
+            conversations
+                .begin(
+                    super::Target::New,
+                    "Fix it".into(),
+                    vec![],
+                    vec![],
+                    None,
+                    None,
+                    Ok(vec![]),
+                )
+                .unwrap()
+                .conversation
+        };
+        let mut job = crate::job::Job::new(
+            "j1".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "default".into(),
+        );
+        job.vetted = true;
+        job.reached_chatgpt();
+        job.check_withheld = true;
+        let id = start();
+        let foreign = super::summary_foreign(Some(&job), "j1");
+        conversations
+            .job_ended(&id, "Done.".into(), "j1".into(), foreign)
+            .unwrap();
+        assert_eq!(conversations.foreign(&id), None);
+        job.vetted = false;
+        let id = start();
+        let foreign = super::summary_foreign(Some(&job), "j1");
+        conversations
+            .job_ended(&id, "Done.".into(), "j1".into(), foreign)
+            .unwrap();
+        assert!(conversations.foreign(&id).is_some());
         let _ = std::fs::remove_dir_all(&home);
     }
 

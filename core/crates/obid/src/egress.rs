@@ -1032,10 +1032,12 @@ pub fn tools_own(tool: Tool, host: &str, port: u16) -> bool {
 }
 
 /// Whether `host` is one of `tool`'s API hosts: what its agent calls its model and its login
-/// through, as obid has seen them, and nothing that serves what people share (claude.ai's or
-/// chatgpt.com's shared conversations). Reaching another of [`tools_own`]'s hosts makes the job
-/// someone else's code (crate::secretspec). Codex with a ChatGPT login calls chatgpt.com itself,
-/// which serves shared conversations too, so such a job's check gets no values.
+/// through, as obid has seen them, and nothing that serves what people write (claude.ai's or
+/// chatgpt.com's shared conversations, a vendor's forum). Reaching one leaves the job as it was
+/// (MERGING-30, `Jobs::reach_now`). Codex with a ChatGPT login calls chatgpt.com itself, which
+/// serves shared conversations too: reaching it doesn't mark the job, but its check gets no
+/// declared secrets. Reaching any other of [`tools_own`]'s hosts makes the job someone else's
+/// code (crate::secretspec).
 pub fn tools_api(tool: Tool, host: &str) -> bool {
     let hosts: &[&str] = match tool {
         Tool::Claude => &[
