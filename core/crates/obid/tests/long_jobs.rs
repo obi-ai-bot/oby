@@ -770,6 +770,118 @@ fn recovery_1_a_retry_keeps_the_mode_and_the_mark() {
     assert_eq!(runs.matches("--permission-mode plan").count(), 2, "{runs}");
 }
 
+/// How many continuations obid made by itself for job `id`, as its file keeps them (RECOVERY-17).
+fn tries(obid: &Obid, id: &str) -> u64 {
+    let file = obid.home.join(format!("jobs/{id}.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    kept["recovery"]["tries"].as_u64().unwrap_or(0)
+}
+
+/// RECOVERY-17: obid carries a job on by itself 10 times in all, whatever cut it and however well
+/// it went between, then the job waits for the owner, interrupted, its branch kept, the reason
+/// naming the cap and the last error. An unclean restart takes one from every job at work, one
+/// started again as well as one continued; an error's try and a stall's take one; a job at its
+/// 10th when obid went down isn't picked up. The owner's Try again gives them back.
+#[test]
+fn recovery_17_ten_continuations_in_all_then_the_owner() {
+    let job = |id: &str, task: &str, tries: usize, status: obid::job::Status| {
+        let mut job = stored(id, task);
+        job.status = status;
+        job.recovery.tries = tries;
+        job
+    };
+    let (_folder, obid) = obid_with(
+        "recovery-17",
+        json!({}),
+        &[
+            // Queued when obid went down, so started again with its task: the restart takes one.
+            job(
+                "ffff0001",
+                "DIE ALWAYS KEEP PROMPTS",
+                8,
+                obid::job::Status::Queued,
+            ),
+            job("ffff0002", "KEEP PROMPTS", 10, obid::job::Status::Running),
+            job("ffff0003", "KEEP PROMPTS", 9, obid::job::Status::Running),
+            job(
+                "ffff0004",
+                "QUIET KEEP PROMPTS",
+                9,
+                obid::job::Status::Queued,
+            ),
+            job(
+                "ffff0005",
+                "QUIET ONCE KEEP PROMPTS",
+                8,
+                obid::job::Status::Queued,
+            ),
+        ],
+    );
+    let capped = |job: &Value, last: &str| {
+        assert_eq!(job["status"], "interrupted", "{job}");
+        assert_eq!(job["nextStep"], "Try again", "{job}");
+        let id = job["id"].as_str().unwrap();
+        assert_eq!(job["branch"], format!("oby/investigate-{id}"), "{job}");
+        let reason = job["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("by itself 10 times") && reason.contains(last),
+            "{reason}"
+        );
+    };
+    let died = wait(&obid, "ffff0001");
+    capped(&died, "stopped without finishing");
+    // Its first turn, and the one try the restart left it.
+    assert_eq!(prompts(&died).len(), 2, "{died}");
+    let left = wait(&obid, "ffff0002");
+    capped(&left, "obid or the Mac went down while it ran");
+    let restarted = wait(&obid, "ffff0003");
+    assert_eq!(restarted["status"], "done", "{restarted}");
+    assert!(
+        prompts(&restarted)[0].contains("Your run was cut"),
+        "{restarted}"
+    );
+    assert_eq!(tries(&obid, "ffff0003"), 10);
+    // Quiet with none left: its first turn, then its handoff note.
+    let quiet = wait(&obid, "ffff0004");
+    capped(&quiet, "no progress for 3 seconds");
+    assert_eq!(prompts(&quiet).len(), 2, "{quiet}");
+    // Quiet once with one left: continued, and that takes the 10th.
+    let continued = wait(&obid, "ffff0005");
+    assert_eq!(continued["status"], "done", "{continued}");
+    assert_eq!(prompts(&continued).len(), 2, "{continued}");
+    assert_eq!(tries(&obid, "ffff0005"), 10);
+    // The owner's Try again starts the count again.
+    let again = call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs/ffff0002/messages",
+        &json!({"text": TRY_AGAIN}),
+    );
+    assert_eq!(again.status, 200, "{}", again.text);
+    let done = wait(&obid, "ffff0002");
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(tries(&obid, "ffff0002"), 0);
+}
+
+/// RECOVERY-17: a fix round and a new session (RECOVERY-8) take none of a job's 10; a clean restart
+/// takes none either (`recovery_2_a_clean_restart_costs_no_try`), nor does a five-hour limit's
+/// resume (`account_limit_flow::limits_5_a_five_hour_limit_resumes_by_itself_in_its_session`).
+#[test]
+fn recovery_17_rounds_and_a_new_session_take_no_try() {
+    let (_folder, obid) = obid("recovery-17-free");
+    let rounds = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "rounds": 3,
+                        "check": "false", "task": "KEEP PROMPTS"});
+    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": rounds })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap().to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["round"], 3, "{job}");
+    assert_eq!(tries(&obid, &id), 0);
+    let id = post_job(&obid, "TOO LONG KEEP PROMPTS");
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    assert_eq!(tries(&obid, &id), 0);
+}
+
 /// RECOVERY-2: a run obid went down with goes on in its session when obid starts again, told what
 /// happened; at most 3 times, then it stays for the owner. A job the owner stopped never does.
 #[test]
@@ -848,6 +960,8 @@ fn recovery_2_a_clean_restart_costs_no_try() {
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["status"], "running", "{job}");
     assert!(job["reason"].is_null(), "{job}");
+    // Nor one of the 10 obid carries it on by itself in all (RECOVERY-17).
+    assert_eq!(tries(&obid, &id), 0);
 }
 
 /// RECOVERY-2: obid going down mid-turn loses nothing that turn was sent: the owner's words were

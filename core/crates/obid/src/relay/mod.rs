@@ -357,6 +357,7 @@ impl Relay {
     fn keep_only(&self, devices: &HashSet<String>) {
         lock(&self.sessions).retain(|device, _| devices.contains(device));
         lock(&self.lanes).retain(|d| devices.contains(d));
+        lock(&self.slots).retain(|device, _| devices.contains(device));
     }
 
     fn seal(&self, out: &Out) -> Option<Vec<u8>> {
@@ -455,13 +456,7 @@ impl Relay {
 
     /// One sealed envelope from `device`: opened, and what it carries taken in. When one before
     /// it went missing, the session is over: the sealed `reset` that tells the phone so, to send.
-    fn take(
-        &self,
-        shared: &Arc<Shared>,
-        gateway: &Router,
-        device: &str,
-        envelope: &[u8],
-    ) -> Option<Vec<u8>> {
+    fn take(self: &Arc<Self>, gateway: &Router, device: &str, envelope: &[u8]) -> Option<Vec<u8>> {
         let mut sessions = lock(&self.sessions);
         let live = sessions.get_mut(device)?;
         let plain = match live.opener.open(envelope) {
@@ -532,14 +527,29 @@ impl Relay {
             }
             Kind::End => {
                 if let Some(Stream::Asking { head, body, slot }) = live.streams.remove(&stream) {
+                    let asked = match request(&head, body, device) {
+                        Some(request) if request.method() == Method::GET => {
+                            Asked::Read(gateway.clone(), Box::new(request), slot)
+                        }
+                        // A write starts here, detached, so a session that ends before its answer
+                        // runs can't drop it: it holds the phone's slot until it's done.
+                        Some(request) => {
+                            let gateway = gateway.clone();
+                            Asked::Write(tokio::spawn(async move {
+                                match gateway.oneshot(request).await {
+                                    Ok(response) => (response, slot),
+                                    Err(never) => match never {},
+                                }
+                            }))
+                        }
+                        None => Asked::Unreadable(slot),
+                    };
                     let task = tokio::spawn(answer(
-                        shared.clone(),
-                        gateway.clone(),
+                        self.clone(),
                         device.to_owned(),
                         live.epoch,
                         stream,
-                        request(&head, body, device),
-                        slot,
+                        asked,
                     ));
                     live.streams
                         .insert(stream, Stream::Answering(task.abort_handle()));
@@ -582,40 +592,37 @@ fn request(head: &Value, body: Vec<u8>, device: &str) -> Option<Request> {
         .ok()
 }
 
+/// A whole request from a phone, with the slot it holds.
+enum Asked {
+    /// A GET, answered through the gateway while its session lasts.
+    Read(Router, Box<Request>, OwnedSemaphorePermit),
+    /// Anything else, already running detached.
+    Write(tokio::task::JoinHandle<(axum::response::Response, OwnedSemaphorePermit)>),
+    Unreadable(OwnedSemaphorePermit),
+}
+
 /// Answers one request through the gateway's router, and sends the answer back on its stream:
 /// its status and headers, its body a chunk at a time (an event stream as it comes), its end.
 /// Each frame waits for room in the phone's lane, so a phone that's slow to take them holds up
 /// this answer, and its session's end (a new hello, a reset, the phone gone quiet) aborts it.
 /// Anything but a GET runs detached, so that abort stops only the answer: a Merge, a Confirm or a
 /// Publish the phone sent still finishes, and the phone reads what came of it when it's back.
-async fn answer(
-    shared: Arc<Shared>,
-    gateway: Router,
-    device: String,
-    epoch: u64,
-    stream: u32,
-    request: Option<Request>,
-    slot: OwnedSemaphorePermit,
-) {
-    let relay = &shared.relay;
+async fn answer(relay: Arc<Relay>, device: String, epoch: u64, stream: u32, asked: Asked) {
     let send = |kind: Kind, payload: Vec<u8>| {
         relay.push(&device, epoch, Frame::new(stream, kind, payload))
     };
     // The phone's slot is held until this answer is out, and a write's until the write is done.
-    let (response, _slot) = match request {
-        Some(request) if request.method() == Method::GET => match gateway.oneshot(request).await {
+    let (response, _slot) = match asked {
+        Asked::Read(gateway, request, slot) => match gateway.oneshot(*request).await {
             Ok(response) => (response, Some(slot)),
             Err(never) => match never {},
         },
         // ponytail: a lost answer is lost; the phone refetches on its next session.
-        Some(request) => {
-            match tokio::spawn(async move { (gateway.oneshot(request).await, slot) }).await {
-                Ok((Ok(response), slot)) => (response, Some(slot)),
-                Ok((Err(never), _)) => match never {},
-                Err(_) => (StatusCode::INTERNAL_SERVER_ERROR.into_response(), None),
-            }
-        }
-        None => (
+        Asked::Write(write) => match write.await {
+            Ok((response, slot)) => (response, Some(slot)),
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR.into_response(), None),
+        },
+        Asked::Unreadable(slot) => (
             (
                 StatusCode::BAD_REQUEST,
                 axum::Json(json!({"error": "That request can't be read."})),
@@ -862,7 +869,7 @@ fn heard(shared: &Arc<Shared>, gateway: &Router, message: Message) -> Result<Hea
                     .contains(&device);
                 known.then(|| relay.start(&device, envelope)).flatten()
             } else {
-                relay.take(shared, gateway, &device, envelope)
+                relay.take(gateway, &device, envelope)
             };
             return Ok(reply.map_or(Heard::Nothing, |envelope| Heard::Send(device, envelope)));
         }
@@ -1189,5 +1196,56 @@ mod tests {
         // A forgotten phone's lane goes with it.
         lanes.retain(|d| d != "a");
         assert!(lanes.next(&mut Pace::default(), now).unwrap().is_none());
+    }
+
+    /// A phone the Sphere's check no longer lists takes its 32 slots with it, as a forgotten one.
+    #[test]
+    fn a_phone_the_sphere_drops_leaves_no_slots() {
+        let home = std::env::temp_dir().join(format!("obid-relay-slots-{}", std::process::id()));
+        let relay = Relay::open(&home);
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        for device in [&a, &b] {
+            lock(&relay.slots).insert(device.clone(), Arc::new(Semaphore::new(STREAMS)));
+        }
+        relay.keep_only(&HashSet::from([b.clone()]));
+        let slots: Vec<String> = lock(&relay.slots).keys().cloned().collect();
+        assert_eq!(slots, [b]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A write the phone sent whole runs though its session ends before its answer starts.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_whole_write_runs_though_its_session_ends_at_once() {
+        let home = std::env::temp_dir().join(format!("obid-relay-write-{}", std::process::id()));
+        let relay = Relay::open(&home);
+        let wrote = Arc::new(Notify::new());
+        let gateway = Router::new().route(
+            "/w",
+            axum::routing::post({
+                let wrote = wrote.clone();
+                move || async move { wrote.notify_one() }
+            }),
+        );
+        let device = "a".repeat(64);
+        let phone = envelope::Phone::hello(&relay.kept().unwrap().key.public()).unwrap();
+        let welcome = relay.start(&device, &phone.hello).unwrap();
+        let (mut sealer, _) = phone.welcomed(&welcome).unwrap();
+        let head = json!({"method": "POST", "path": "/w", "headers": {}});
+        for frame in [
+            Frame::json(1, Kind::Open, &head),
+            Frame::new(1, Kind::End, Vec::new()),
+        ] {
+            assert!(
+                relay
+                    .take(&gateway, &device, &sealer.seal(&frame.encode()))
+                    .is_none()
+            );
+        }
+        // The session ends before its answer's task first runs: a new hello, the phone forgotten.
+        relay.forget(&device);
+        tokio::time::timeout(Duration::from_secs(5), wrote.notified())
+            .await
+            .expect("the write ran");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

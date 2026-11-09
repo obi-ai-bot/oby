@@ -535,12 +535,12 @@ fn admission_3_a_seventh_job_waits_for_a_slot_and_says_so() {
     assert_eq!(all.body["stopped"], 6);
 }
 
-/// ADMISSION-4 (docs/contracts/admission.md): a job waiting to try again after a passing error, or
-/// in the queue for the one check at a time, gives its slot back: with `maxRunning` 2, one job
-/// waits on its retry's timer, one checks and one waits for that check, and a fourth still starts
-/// at once; `running` counts the two at work.
+/// ADMISSION-4 (docs/contracts/admission.md): a job waiting in the queue for the one check at a
+/// time gives its slot back, and a job waiting to try again after a passing error keeps its own:
+/// with `maxRunning` 2, one job checks and one waits for that check, so a third starts; once it
+/// waits on its retry's timer, a fourth stays queued, and `running` counts the two.
 #[test]
-fn admission_4_a_job_waiting_on_a_check_or_a_retry_takes_no_slot() {
+fn admission_4_a_job_waiting_on_a_check_takes_no_slot_and_a_retry_keeps_its_own() {
     let folder = Folder::new("idle-slot");
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &fake_claude());
@@ -555,22 +555,6 @@ fn admission_4_a_job_waiting_on_a_check_or_a_retry_takes_no_slot() {
     );
     assert_eq!(two.status, 200, "{}", two.text);
     let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
-    let at = |id: &str, what: &str, step: &'static str| {
-        within(60, what, || {
-            let body = job(&obid, id);
-            body["step"]
-                .as_str()
-                .is_some_and(|s| s.starts_with(step))
-                .then_some(body)
-        })
-    };
-    let retrying =
-        id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "DIE ALWAYS"}));
-    at(
-        &retrying,
-        "its wait to try again",
-        "Trying again in 1 minute",
-    );
     let checking = id(
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
                              "check": "sleep 60"}),
@@ -582,20 +566,97 @@ fn admission_4_a_job_waiting_on_a_check_or_a_retry_takes_no_slot() {
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: b.txt",
                            "check": "true"}),
     );
-    at(
-        &queued,
-        "its wait for the check",
-        "Waiting for another job's check to finish",
-    );
-    let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
-    let running = within(60, "the fourth starts", || {
-        let body = job(&obid, &fourth);
-        (body["status"] == "running").then_some(body)
+    within(60, "its wait for the check", || {
+        (job(&obid, &queued)["step"] == "Waiting for another job's check to finish").then_some(())
     });
-    assert!(running["waiting"].is_null(), "{running}");
+    let retrying =
+        id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "DIE ALWAYS"}));
+    within(60, "its wait to try again", || {
+        let body = job(&obid, &retrying);
+        body["step"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("Trying again in 1 minute"))
+            .then_some(())
+    });
+    let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
+    within(30, "the fourth waits for a slot", || {
+        (job(&obid, &fourth)["waiting"]["kind"] == "cap").then_some(())
+    });
+    assert_eq!(job(&obid, &fourth)["status"], "queued");
     assert_eq!(call(&obid, "GET", "/v1/status", None).body["running"], 2);
     let all = call(&obid, "POST", "/v1/stop-all", None);
     assert_eq!(all.body["stopped"], 4, "{}", all.text);
+}
+
+/// ADMISSION-5 (docs/contracts/admission.md): a job back from the check queue takes a slot again
+/// only once one is free, never one past `maxRunning`, and gives the check's turn up before it
+/// waits for one. With `maxRunning` 2, one job checks, two wait for that check, one runs and a fifth
+/// is queued: when the first ends, the fifth starts and the second checks with no slot; once its
+/// check ends it waits for a free slot while the third checks, and at no time do more than 2 run.
+#[test]
+fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
+    let folder = Folder::new("idle-back");
+    let (obid, _) = obid(&folder);
+    let two = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"maxRunning": 2})),
+    );
+    assert_eq!(two.status, 200, "{}", two.text);
+    let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
+    let checking = |id: &str| job(&obid, id)["checks"][0]["steps"][0]["running"] == true;
+    let for_the_check = |id: &str| {
+        within(60, "it waits for the check", || {
+            (job(&obid, id)["step"] == "Waiting for another job's check to finish").then_some(())
+        })
+    };
+    let committing = |file: &str, check: &str| {
+        id(
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("COMMIT: {file}"),
+                  "check": check}),
+        )
+    };
+    let first = committing("a.txt", "sleep 15");
+    within(60, "the first check runs", || {
+        checking(&first).then_some(())
+    });
+    let second = committing("b.txt", "sleep 3");
+    for_the_check(&second);
+    let third = committing("c.txt", "sleep 60");
+    for_the_check(&third);
+    let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
+    within(60, "the fourth runs", || {
+        (job(&obid, &fourth)["status"] == "running").then_some(())
+    });
+    let fifth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
+    within(30, "the fifth waits for a slot", || {
+        (job(&obid, &fifth)["waiting"]["kind"] == "cap").then_some(())
+    });
+    let mut most = 0;
+    let mut count = || {
+        let running = call(&obid, "GET", "/v1/status", None).body["running"]
+            .as_u64()
+            .unwrap();
+        most = most.max(running);
+    };
+    within(90, "the second waits for a free slot", || {
+        count();
+        let body = job(&obid, &second);
+        (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
+    });
+    assert_eq!(job(&obid, &fifth)["status"], "running");
+    // It gave the check's turn up first: the third checks meanwhile.
+    within(30, "the third checks", || {
+        count();
+        checking(&third).then_some(())
+    });
+    assert_eq!(
+        job(&obid, &second)["step"],
+        "Waiting for a free slot: 2 of 2 jobs running"
+    );
+    assert!(most <= 2, "{most} ran at once");
+    call(&obid, "POST", "/v1/stop-all", None);
 }
 
 /// ClaimTests.aClientMayClaimFilesAtDispatch, its dispatch half (the other, a plan's files from

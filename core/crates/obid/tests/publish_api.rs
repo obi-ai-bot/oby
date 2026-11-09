@@ -2087,6 +2087,64 @@ fn publishing_8_a_check_the_base_doesnt_have_counts_for_nothing() {
     assert!(remote_branch(&remote, &branch).is_some());
 }
 
+/// PUBLISHING-22: a failed check whose own output says `couldn't judge: <why>` at the start of a
+/// line judged nothing: no fix round, the job ends done with why, nothing pushed, no pull request
+/// and nothing merged by itself, and Publish by hand, a click, pushes it. The line the commit's
+/// own file prints counts too: at worst it gets the owner's Publish by hand, never a merge. A line
+/// that only holds those words (a diff's, a quote's) goes back to the agent.
+#[test]
+fn publishing_22_a_check_that_couldnt_judge_publishes_only_by_hand() {
+    let folder = Folder::new("publish-couldnt-judge");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let quoted = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: b.txt",
+               "check": "echo \"+couldn't judge: a diff's line\"; exit 1", "rounds": 2}),
+    );
+    let quoted = ended(&obid, &quoted);
+    assert_eq!(quoted["round"], 2, "{quoted}");
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": "test -f a.txt && echo \"  couldn't judge: no$(printf '\\t')box $(printf %0250d 0)\"; exit 1"}),
+    );
+    let job = ended(&obid, &id);
+    // Its words on a line of their own, cleaned and cut: the first line is obid's.
+    let why = format!(
+        "Not published: the check couldn't judge this change, so nothing counts as checked. Read its change, then Publish it by hand.\nnobox {}…",
+        "0".repeat(194)
+    );
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["round"], 1, "{job}");
+    assert_eq!(job["reason"], why, "{job}");
+    assert!(job.get("published").is_none_or(Value::is_null), "{job}");
+    let branch = format!("oby/build-{id}");
+    assert_eq!(remote_branch(&remote, &branch), None);
+    let calls = calls_now(&folder.0);
+    assert!(
+        !calls.contains("pr create") && !calls.contains("pr merge"),
+        "{calls}"
+    );
+    let (key, device_id) = registered(&obid, 22);
+    let sentence = call(&obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
+    assert_eq!(sentence.status, 200, "{}", sentence.text);
+    let published = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/publish"),
+        Some(&approval(
+            &key,
+            &device_id,
+            &id,
+            sentence.body["action"].as_str().unwrap(),
+            obi_protocol::time::now(),
+        )),
+    );
+    assert_eq!(published.status, 200, "{}\n{}", published.text, obid.log());
+    assert!(remote_branch(&remote, &branch).is_some());
+}
+
 /// PUBLISHING-9, 10 and 11: a job whose check failed publishes nothing by itself, and Publish by
 /// hand is refused as before; the owner's signed Publish anyway sends its head (the secret scan
 /// still runs). Over a branch someone else moved it's refused, unless the owner's signed force
