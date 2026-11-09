@@ -40,6 +40,8 @@ pub struct Egress {
 /// One job worker's way out: whose it is, its tunnels open now, and what it may reach.
 struct Door {
     job: String,
+    /// Its repository's setup's ([`Egress::open_setup`]): what it reaches is a reach only.
+    setup: bool,
     open: usize,
     /// By site, once decided, and held while it's being decided.
     sites: HashMap<String, Reached>,
@@ -138,10 +140,23 @@ impl Egress {
     /// asked for and learned as a secret, so whatever repeats it is masked everywhere; it lets
     /// nothing through once [`Egress::close`] ran, and what was decided for it goes with it.
     pub fn open(&self, id: &str) -> String {
+        self.door(id, false)
+    }
+
+    /// The proxy job `id`'s repository's setup is given (PUBLISHING-23): a token of its own, so
+    /// what the setup reaches, the owner's line, is a reach only, never someone else's code, and
+    /// none of it is the agent's. It lets nothing through once [`Egress::close_setup`] ran.
+    pub fn open_setup(&self, id: &str) -> String {
+        self.door(id, true)
+    }
+
+    fn door(&self, id: &str, setup: bool) -> String {
         let mut doors = self.doors();
         let token = doors
             .iter()
-            .find_map(|(token, door)| (door.job == id).then(|| token.clone()))
+            .find_map(|(token, door)| {
+                (door.job == id && door.setup == setup).then(|| token.clone())
+            })
             .unwrap_or_else(|| {
                 let token = format!(
                     "{}{}",
@@ -152,20 +167,28 @@ impl Egress {
                     token.clone(),
                     Door {
                         job: id.to_owned(),
+                        setup,
                         open: 0,
                         sites: HashMap::new(),
                     },
                 );
-                crate::secrets::known().learn(&format!("job {id} proxy token"), &token);
+                crate::secrets::known().learn(&secret_name(id, setup), &token);
                 token
             });
         format!("http://oby:{token}@127.0.0.1:{}", self.port)
     }
 
+    /// Job `id`'s setup ended: its token lets nothing through any more, whatever it left running.
+    pub fn close_setup(&self, id: &str) {
+        self.doors().retain(|_, door| door.job != id || !door.setup);
+        crate::secrets::known().forget(&secret_name(id, true));
+    }
+
     /// Job `id`'s worker ended: its token lets nothing through any more.
     pub fn close(&self, id: &str) {
         self.doors().retain(|_, door| door.job != id);
-        crate::secrets::known().forget(&format!("job {id} proxy token"));
+        crate::secrets::known().forget(&secret_name(id, false));
+        crate::secrets::known().forget(&secret_name(id, true));
     }
 
     /// The sites job `id`'s agent reaches without asking again, until its worker ends: the owner
@@ -247,8 +270,9 @@ impl Egress {
         jobs: &Jobs,
     ) -> Result<(), String> {
         let decided = self.decide_site(token, job, host, port, plain, jobs).await;
+        let setup = self.doors().get(token).is_some_and(|door| door.setup);
         if decided.is_ok() {
-            mark_reach(jobs, job, host, port);
+            mark_reach(jobs, job, host, port, setup);
         }
         decided
     }
@@ -1149,6 +1173,14 @@ fn hello_with(extensions: &[u8]) -> Vec<u8> {
     .concat()
 }
 
+/// The name a door's token is learned by as a secret.
+fn secret_name(id: &str, setup: bool) -> String {
+    match setup {
+        true => format!("job {id} setup proxy token"),
+        false => format!("job {id} proxy token"),
+    }
+}
+
 /// Whether `host`, on any port, is inside some tool's vendor domains ([`tools_own`]) but none of
 /// that tool's API hosts ([`tools_api`]): a page people write (shared chats, forums), whichever
 /// tool's job reaches it. Its own tool's on 443 are `Jobs::reach_now`'s, and never come here.
@@ -1164,18 +1196,24 @@ fn vendor_page(host: &str) -> bool {
 /// vendor pages ([`vendor_page`]) make it someone else's code (two reviews); any other site past
 /// the registries, a reach (one review, MERGING-31): another tool's API host, and a package
 /// registry whose edge serves whichever of its sites `Host` names ([`ROUTED_BY_HOST`]) too, though
-/// the proxy can't tell it from the edge's other sites.
-pub(crate) fn mark_reach(jobs: &Jobs, job: &str, host: &str, port: u16) {
+/// the proxy can't tell it from the edge's other sites. What its repository's `setup` reached on
+/// the job's start commit (the owner's line, PUBLISHING-23) is a reach only, even a code host:
+/// npm's postinstall fetching Electron from github.com.
+pub(crate) fn mark_reach(jobs: &Jobs, job: &str, host: &str, port: u16, setup: bool) {
     let site = site(host, port);
+    let who = match setup {
+        true => "its repository's setup",
+        false => "its agent",
+    };
     if crate::secretspec::site_is_code_host(host) {
-        let why = format!("its agent reached {site}, which can serve anyone's source code");
-        jobs.mark(job, why, false);
+        let why = format!("{who} reached {site}, which can serve anyone's source code");
+        jobs.mark(job, why, setup);
     } else if vendor_page(host) {
-        let why = format!("its agent reached {site}, a vendor's pages people write");
-        jobs.mark(job, why, false);
+        let why = format!("{who} reached {site}, a vendor's pages people write");
+        jobs.mark(job, why, setup);
     } else if crate::secretspec::site_is_foreign(host) {
         let why = format!(
-            "its agent reached {site}, beyond its tool's own services and the package registries"
+            "{who} reached {site}, beyond its tool's own services and the package registries"
         );
         jobs.mark(job, why, true);
     }
