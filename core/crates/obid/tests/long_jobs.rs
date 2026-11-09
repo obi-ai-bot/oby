@@ -5,7 +5,7 @@
 //! several windows stands for a job running past the 45 minutes rounds used to be cut at.
 mod support;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use support::*;
@@ -1452,4 +1452,136 @@ fn tasks_19_a_one_round_job_with_no_check_is_asked_for_its_goal_line() {
     );
     // Its reply to obid's word leaves the job's summary to the work's.
     assert_eq!(job["summary"], "Added a.txt.", "{job}");
+}
+
+/// A remote no network reaches: `.invalid` never resolves (RFC 2606).
+const UNREACHABLE: &str = "https://nonexistent.invalid/acme/hello.git";
+
+/// The fixture's config with its remote at [`UNREACHABLE`], waiting `stall` seconds at most.
+fn unreachable(folder: &Path, stall: u64) -> (PathBuf, Value) {
+    let remote = fixture(&folder.join("fixture"));
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let mut config = config(folder, &remote, &agent);
+    config["stallAfter"] = json!(stall);
+    config["repos"][0]["remote"] = json!(UNREACHABLE);
+    (remote, config)
+}
+
+/// RECOVERY-14: a first fetch the network failed (git couldn't resolve the remote's host) leaves
+/// the job queued, saying when it tries again, and once the network is back the job starts by
+/// itself and ends done.
+#[test]
+fn recovery_14_a_failed_first_fetch_waits_and_tries_again() {
+    let folder = Folder::new("recovery-14-fetch");
+    let (remote, config) = unreachable(&folder.0, 3);
+    let obid = start(&folder.0, &config, None);
+    let id = post_job(&obid, "hello");
+    let waiting = within(120, "the job to wait for its fetch", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["step"]
+            .as_str()?
+            .starts_with("Trying again in ")
+            .then_some(job)
+    });
+    assert_eq!(waiting["status"], "queued", "{waiting}");
+    assert_eq!(call(&obid, "GET", "/v1/status", None).body["running"], 0);
+    // The network is back: git now finds the remote at the address it tried.
+    let rewrite = format!(
+        "[url \"file://{}\"]\n\tinsteadOf = {UNREACHABLE}\n",
+        remote.display()
+    );
+    std::fs::write(folder.0.join("env-home/.gitconfig"), rewrite).unwrap();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+}
+
+/// RECOVERY-14: Stop while the first fetch hangs on a dead network stops the job for good: the
+/// fetch that then fails doesn't queue it again.
+#[test]
+fn recovery_14_stop_while_the_first_fetch_hangs_stays_stopped() {
+    let folder = Folder::new("recovery-14-stop");
+    let (_, config) = unreachable(&folder.0, 30);
+    // git's way out goes through a proxy that never answers, until the test resets it.
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = proxy.local_addr().unwrap().port();
+    std::fs::create_dir_all(folder.0.join("env-home")).unwrap();
+    let git = format!("[http]\n\tproxy = http://127.0.0.1:{port}\n");
+    std::fs::write(folder.0.join("env-home/.gitconfig"), git).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let id = post_job(&obid, "hello");
+    let (asked, _) = proxy.accept().unwrap();
+    asked.peek(&mut [0; 1]).unwrap();
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    let state = || call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body["status"].clone();
+    within(30, "the job to stop", || {
+        (state() == "stopped").then_some(())
+    });
+    // Closed with git's request unread, the proxy resets it: "Connection reset by peer".
+    drop(asked);
+    within(30, "the fetch to fail", || {
+        obid.log().contains("trying again in").then_some(())
+    });
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(state(), "stopped", "{}", obid.log());
+}
+
+/// RECOVERY-14: a CLI that dies offline before its session waits queued and starts again, in the
+/// same transcript turn, and the job ends done.
+#[test]
+fn recovery_14_a_first_launch_the_network_failed_starts_again() {
+    let (_folder, obid) = obid_with("recovery-14-launch", json!({}), &[]);
+    let id = post_job(&obid, "OFFLINE ONCE");
+    let waiting = within(120, "the job to wait for its launch", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["step"]
+            .as_str()?
+            .starts_with("Trying again in ")
+            .then_some(job)
+    });
+    assert_eq!(waiting["status"], "queued", "{waiting}");
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    let transcript = call(&obid, "GET", &format!("/v1/jobs/{id}/transcript"), None).body;
+    let starts = transcript["entries"].as_array().unwrap().iter();
+    assert_eq!(
+        starts.filter(|e| e["kind"] == "start").count(),
+        1,
+        "{transcript}"
+    );
+}
+
+/// RECOVERY-14: one that dies so on an account whose window is full is that limit's (#1563), not
+/// the network's: it isn't launched again.
+#[test]
+fn recovery_14_a_first_launch_on_a_full_account_isnt_tried_again() {
+    let (_folder, obid) = obid_with("recovery-14-launch-full", json!({}), &[]);
+    let id = post_job(&obid, "OFFLINE ONCE LIMITED");
+    let job = within(120, "the limit to stop it", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["changes"]
+            .to_string()
+            .contains("five-hour limit")
+            .then_some(job)
+    });
+    assert!(
+        !obid.log().contains("stopped before it started"),
+        "{job}\n{}",
+        obid.log()
+    );
+}
+
+/// RECOVERY-14: a run that fails where it can't go on, with a session to pick up, keeps its
+/// report and Try again rather than failing: here its CLI can't start after a restart.
+#[test]
+fn recovery_14_a_failed_run_with_a_session_keeps_try_again() {
+    let missing = std::env::temp_dir().join("recovery-14-no-claude");
+    let (_folder, obid) = obid_with(
+        "recovery-14-session",
+        json!({"/agents/claude/bin": missing}),
+        &[stored("eeee1401", "hello")],
+    );
+    let job = wait(&obid, "eeee1401");
+    assert_eq!(job["status"], "interrupted", "{job}\n{}", obid.log());
+    assert_eq!(job["nextStep"], "Try again", "{job}");
+    assert!(!job["reason"].as_str().unwrap_or("").is_empty(), "{job}");
 }

@@ -62,6 +62,7 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
 mod logins;
+mod retry;
 mod slots;
 mod unjudged;
 pub use logins::person_homes;
@@ -466,7 +467,7 @@ fn files_said(files: &[String]) -> String {
 /// needs its owner (`interrupted`), its work kept on its branch.
 #[derive(Debug)]
 enum End {
-    /// A dead end: nothing ran, or there's no session to pick up.
+    /// A dead end: nothing ran, or no session to pick up (an owner's with one: RECOVERY-14).
     Failed(String),
     /// It needs the owner: why, and the one next step (`job::ONE_MORE_ROUND`, `job::TRY_AGAIN`),
     /// or none when only their words or Dismiss take it on.
@@ -7246,7 +7247,7 @@ impl Jobs {
                             job.account_limit_choice = None;
                             (reason.clone(), Some(crate::job::TRY_AGAIN), None)
                         }
-                        End::Failed(why) => (why.clone(), None, None),
+                        End::Failed(why) => (why.clone(), Some(crate::job::TRY_AGAIN), None),
                         End::NeedsYou {
                             reason,
                             next,
@@ -7262,9 +7263,12 @@ impl Jobs {
                     };
                     // Needing the owner, with a session to pick up: the agent's own summary stays
                     // (`summaries` has every round's), and why it stopped is said apart. A dead end,
-                    // or one with no session, failed, its summary why.
+                    // or one with no session, failed, its summary why. A failure with a session
+                    // to pick up keeps its report and Try again (RECOVERY-14).
+                    let owners_failed = matches!(end, End::Failed(_)) && job.obi.is_none();
                     let needs_you = matches!(end, End::AccountLimit { .. })
-                        || (matches!(end, End::NeedsYou { .. }) && job.session.is_some());
+                        || ((matches!(end, End::NeedsYou { .. }) || owners_failed)
+                            && job.session.is_some());
                     if needs_you {
                         job.status = Status::Interrupted;
                         if job.summary.trim().is_empty() {
@@ -9942,7 +9946,7 @@ impl Jobs {
             Box::pin(self.authors_as_it_starts(&job, None, "as it started")).await;
         }
         let preparing = self.preparing(&repo.repo);
-        let prepared = preparing.lock().await;
+        let mut prepared = preparing.lock().await;
         if !worktree.join(".git").exists() {
             // A clone someone else's commits came into is made again before a new job uses it;
             // Oby's review only reads it, and finds the commit it reads below either way.
@@ -9967,10 +9971,11 @@ impl Jobs {
             if let Some(pr) = job.pr {
                 refspecs.push(format!("+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"));
             }
-            let clone =
-                git::ensure_clone(&self.clone_home(&job), &repo.repo, &repo.remote, &refspecs)
-                    .await
-                    .map_err(|e| format!("Couldn't get {} ready: {e}", repo.repo))?;
+            let ready = self.ready_clone(id, signal, &job, &repo, &refspecs, &preparing, prepared);
+            let Some((clone, held)) = Box::pin(ready).await? else {
+                return Ok(());
+            };
+            prepared = held;
             // A job that is someone else's code in the owner's own clone (a follow-up of one that
             // turned so) makes the clone someone else's code for every check from now on, as does
             // a branch or a pull request's head that isn't the owner's own (crate::secretspec).
@@ -10474,6 +10479,8 @@ impl Jobs {
         let mut rebase_round = false;
         // The round a failed check gave it, counted when its turn launches.
         let mut round_due = false;
+        // Its first launch's tries again, and whether this run is one (RECOVERY-14).
+        let (mut launch_tries, mut relaunch) = (0, false);
         // Its agent's last `GOAL MET` or `GOAL NOT MET: …` line, for a job asked for one
         // ([`asks_goal_line`]), and whether a turn that ended its last round without one was told
         // to say it (TASKS-19).
@@ -10745,18 +10752,21 @@ impl Jobs {
                 });
                 round_due = false;
                 stages.begin(&format!("agent round {round}"));
-                self.transcribed(
-                    id,
-                    self.transcripts.start(
+                // A launch the network cut goes again in the same transcript turn (RECOVERY-14).
+                if !std::mem::take(&mut relaunch) {
+                    self.transcribed(
                         id,
-                        &opening.take().unwrap_or_else(|| match round {
-                            1 => format!("Started on {}", tool.name()),
-                            n => format!("Round {n} on {}", tool.name()),
-                        }),
-                    ),
-                );
-                if round == 1 {
-                    self.transcribed(id, self.transcripts.asked(id, &job.request));
+                        self.transcripts.start(
+                            id,
+                            &opening.take().unwrap_or_else(|| match round {
+                                1 => format!("Started on {}", tool.name()),
+                                n => format!("Round {n} on {}", tool.name()),
+                            }),
+                        ),
+                    );
+                    if round == 1 {
+                        self.transcribed(id, self.transcripts.asked(id, &job.request));
+                    }
                 }
                 // `agent.log` keeps every run: only what this one prints says why it ended.
                 let log_from =
@@ -10788,6 +10798,16 @@ impl Jobs {
                 self.update(id, |job| job.ran_secs = Some(ran()));
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
+                }
+                if launch_tries < RETRY_WAITS.len()
+                    && let Some(cut) = self.offline(id, tool, &turn, log_from)
+                {
+                    launch_tries += 1;
+                    if !Box::pin(self.wait_queued(id, signal, &cut, launch_tries)).await? {
+                        return Ok(());
+                    }
+                    relaunch = true;
+                    continue;
                 }
                 // Tries count failures in a row: a run that moved the head, or a turn that ends well
                 // (below), gives them back. The ceiling, budget and loop detector still bound it.
@@ -10916,38 +10936,18 @@ impl Jobs {
                             None if no_result || first.is_empty() => ended.as_str(),
                             None => first.as_str(),
                         };
-                        let wait = CUT_WAITS[tries].min(self.config.stall_after);
                         let attempt = tries + 1;
                         self.update(id, |job| {
                             job.recovery.errors = attempt;
                             job.recovery.tries += 1;
                         });
-                        tracing::info!("job {id}: {error}: trying again in {wait:?}");
-                        let mut left = wait;
-                        let heard = || self.get(id).is_some_and(|j| !j.heard.is_empty());
-                        'wait: while !left.is_zero() && !heard() {
-                            let step = trying_again(error, left, attempt, of);
-                            self.update(id, |job| {
-                                job.step = step.clone();
-                                job.ran_secs = Some(ran());
-                            });
-                            let tick = left.min(Duration::from_secs(60));
-                            let sleep = tokio::time::sleep(tick);
-                            tokio::pin!(sleep);
-                            loop {
-                                let mut stop = signal.clone();
-                                tokio::select! {
-                                    () = &mut sleep => break,
-                                    _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(()),
-                                    // Words for it end the wait: they're its next try's.
-                                    () = self.changed.notified() => {
-                                        if heard() {
-                                            break 'wait;
-                                        }
-                                    }
-                                }
-                            }
-                            left -= tick;
+                        let ran_now = |job: &mut Job| job.ran_secs = Some(ran());
+                        let of = (attempt, of);
+                        if !self
+                            .wait_to_try(id, signal, error, CUT_WAITS[tries], of, ran_now)
+                            .await
+                        {
+                            return Ok(());
                         }
                         if session {
                             cut_note =
