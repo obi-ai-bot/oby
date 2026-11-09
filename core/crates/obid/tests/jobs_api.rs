@@ -1611,6 +1611,82 @@ fn recovery_9_the_same_failure_twice_stops() {
     assert_eq!(job["nextStep"], "One more round");
 }
 
+/// RECOVERY-9: output cut to its end loses its first line, which the cut fell in, so the same
+/// failure after a long, changing first line stops at round 2.
+#[test]
+fn recovery_9_a_cut_first_line_is_no_new_failure() {
+    let folder = Folder::new("cut-failure");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    // About 200 KB of random letters on one line, past the reader's 128 KB, then the same error.
+    let check =
+        "head -c 2000000 /dev/urandom | LC_ALL=C tr -dc a-z; echo; echo the same error; false";
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt", "check": check}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}");
+    assert_eq!(job["round"], 2, "{job}");
+    let log = std::fs::read_to_string(obid.home.join("logs").join(&id).join("check.log")).unwrap();
+    assert!(
+        log.trim_end().ends_with("the same error"),
+        "{}",
+        &log[log.len().saturating_sub(200)..]
+    );
+}
+
+/// RECOVERY-9: an output cut to its end with no newline left before its end is kept whole, not
+/// emptied, in the reader's cut (past 128 KB) and the last one (past 64 KB); with a secret
+/// declared, which the cut may have split, it goes whole.
+#[test]
+fn recovery_9_a_cut_output_with_no_newline_is_kept() {
+    use obid::process::Signal;
+    let folder = Folder::new("cut-one-line");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let run = |perl: &str, secrets: Option<&obid::secrets::Secrets>| {
+        let argv: Vec<std::ffi::OsString> = vec![
+            "/usr/bin/perl".into(),
+            "-e".into(),
+            format!("setpgrp(0, 0); {perl}").into(),
+        ];
+        let (_send, signal) = tokio::sync::watch::channel(Signal::Run);
+        let limit = Duration::from_secs(30);
+        let run = obid::jobs::run_check(&argv, &[], &folder.0, limit, signal, None, secrets, None);
+        runtime.block_on(run).unwrap().output
+    };
+    for perl in [
+        r#"print "a" x 200000"#,
+        r#"print "a" x 200000, "\n""#,
+        r#"print "a" x 100000, "\n""#,
+    ] {
+        let output = run(perl, None);
+        assert!(
+            output.starts_with(&"a".repeat(1000)),
+            "{perl}: {}",
+            output.len()
+        );
+    }
+    // 33 bytes, printed back to back: the reader's cut, at a multiple of its 8 KB reads, falls
+    // inside one copy, whose end no redaction can recognize.
+    // Built from pieces, so the secret scan doesn't take the test's own value for a leak.
+    let secret = ["s3cr3t", "0123456789", "abcdefghijklmno"].join("-");
+    let secrets = obid::secrets::Secrets::default();
+    secrets.learn("token", &secret);
+    let perl = format!(r#"print "{secret}" x 10000"#);
+    assert!(!run(&perl, None).is_empty());
+    let output = run(&perl, Some(&secrets));
+    // Nothing but whole copies taken out: no piece of one is left.
+    assert!(
+        output.replace("[redacted: token]", "").is_empty(),
+        "{output}"
+    );
+}
+
 /// RECOVERY-9: a failure that changes every round goes on to the ceiling of 8 rounds.
 #[test]
 fn recovery_9_a_changing_failure_goes_on_to_the_ceiling() {
