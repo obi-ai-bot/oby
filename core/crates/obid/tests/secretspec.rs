@@ -355,10 +355,23 @@ fn run_one(name: &str, job: Value) -> (Folder, Obid, String) {
 /// obid with the fixture, `main` declaring FAKE_CHECK_TOKEN, the fake value in the vault and the
 /// stand-in gh; `agent` as Claude Code, and `conversation` as the configuration's when given.
 fn declared(name: &str, agent: &Path, conversation: Option<Value>) -> (Folder, Obid) {
+    declared_with(name, agent, conversation, None)
+}
+
+/// [`declared`], with the repository's `setup` line when given (PUBLISHING-24).
+fn declared_with(
+    name: &str,
+    agent: &Path,
+    conversation: Option<Value>,
+    setup: Option<&str>,
+) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let remote = fixture(&folder.0.join("fixture"));
     declare_on_main(&folder.0, &remote);
     let mut config = config(&folder.0, &remote, agent);
+    if let Some(setup) = setup {
+        config["repos"][0]["setup"] = json!(setup);
+    }
     if let Some(conversation) = conversation {
         config["conversation"] = conversation;
         let account = folder.0.join("home/accounts/stub");
@@ -398,6 +411,34 @@ fn refused(log: &str, why: &str) {
         "{why}: {log}"
     );
     holds_none(log, &fake(), "check.log");
+}
+
+/// PUBLISHING-24: the setup before an owner's check gets none of the values its repository
+/// declares (only the check's own environment does), and one that fails leaves nothing checked.
+#[cfg(target_os = "macos")]
+#[test]
+fn publishing_24_the_setup_before_the_check_gets_no_declared_secret() {
+    let (_folder, obid) = declared_with("secretspec-setup", &agent(), None, Some("env; exit 3"));
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do here", "check": "sh check.sh"}}),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+    let log = std::fs::read_to_string(obid.home.join(format!("logs/{id}/check.log"))).unwrap();
+    // The setup's own environment, printed: the box's, with no declared name or value in it.
+    assert!(log.contains("HOME="), "{log}");
+    assert!(!log.contains("FAKE_CHECK_TOKEN"), "{log}");
+    holds_none(&log, &fake(), "the setup's output");
+    assert!(
+        job["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("Not published: its setup failed: `env; exit 3`")),
+        "{job}"
+    );
 }
 
 /// On Linux a job's agent still has a network of its own until oby#616: even the owner's own job,

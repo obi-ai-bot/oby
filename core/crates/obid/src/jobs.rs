@@ -8625,7 +8625,7 @@ impl Jobs {
         };
         let base_spec = spec.clone();
         let (spec, notes, scripts_from) =
-            match Box::pin(self.base_checkout(id, command, head, &spec, gate, &at)).await {
+            match Box::pin(self.checkout(id, command, head, &spec, gate, &at, signal)).await {
                 Ok(check) => check,
                 Err(why) => {
                     tracing::info!("job {id}: nothing counts as checked: {why}");
@@ -8843,7 +8843,7 @@ impl Jobs {
             .join(format!("{id}-base-{}", random_check_id().ok()?));
         let marker = format!("obid-step-{}", random_check_id().ok()?);
         let (check, _, from) =
-            match Box::pin(self.base_checkout(id, command, start, spec, None, &at)).await {
+            match Box::pin(self.checkout(id, command, start, spec, None, &at, signal)).await {
                 Ok(check) => check,
                 Err(why) => {
                     tracing::info!("job {id}: no check on the base {start}: {why}");

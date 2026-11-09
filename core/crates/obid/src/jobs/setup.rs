@@ -1,6 +1,7 @@
 //! A repository's setup (`repos[].setup`, the owner's line in config.json, never read from the
 //! repository): run in the job's box before its agent starts, so a job doesn't spend its first
-//! turns working out installs (PUBLISHING-23).
+//! turns working out installs (PUBLISHING-23), and in its check's checkout before the check
+//! (PUBLISHING-24).
 
 use super::*;
 
@@ -46,6 +47,49 @@ impl Jobs {
         true
     }
 
+    /// [`Jobs::base_checkout`]'s checkout for job `id`'s check, at `at`, then its repository's
+    /// setup, if it has one, run in it before the check (PUBLISHING-24), the base's scripts already
+    /// there: with the job's egress door, never the declared secrets, which only the check's own
+    /// environment gets. One that fails judged nothing: why, for the owner's Publish by hand with
+    /// no fix round spent, its output in the check's log, and its checkout gone unless it's the
+    /// one kept across the job's checks.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn checkout(
+        &self,
+        id: &str,
+        command: &str,
+        head: &str,
+        spec: &Spec,
+        gate: Option<(String, String)>,
+        at: &Path,
+        signal: &watch::Receiver<Signal>,
+    ) -> Result<(Spec, Vec<String>, String), String> {
+        let checkout = Box::pin(self.base_checkout(id, command, head, spec, gate, at)).await?;
+        let Some(setup) = self
+            .get(id)
+            .and_then(|job| self.repo(&job.repo))
+            .and_then(|r| r.setup)
+        else {
+            return Ok(checkout);
+        };
+        tracing::info!("job {id}: running its repository's setup before its check");
+        let Some(output) = failure(self.run_setup(id, &setup, &checkout.0, signal).await) else {
+            return Ok(checkout);
+        };
+        let _ = std::fs::write(
+            self.log_path(id, "check.log"),
+            crate::secrets::known().redact(&output),
+        );
+        if at != self.check_home(id)
+            && let Err(why) = Box::pin(crate::secretspec::remove_checkout(&checkout.0, at)).await
+        {
+            tracing::warn!("job {id}: {why}");
+        }
+        Err(super::unjudged::unchecked(format!(
+            "its setup failed: `{setup}` (its output is in the check's log)"
+        )))
+    }
+
     async fn run_setup(
         &self,
         id: &str,
@@ -67,7 +111,8 @@ impl Jobs {
                 .get()
                 .ok_or("obid's egress proxy isn't running")?;
             extra.extend(crate::egress::env(&egress.open(id)));
-            spec.proxied = true;
+            // A check's checkout has no network: its setup gets the agent's door all the same.
+            (spec.network, spec.proxied) = (true, true);
         }
         extra.extend(process::show_rust(&spec.temp));
         extra.extend(self.build_env(id, false));
