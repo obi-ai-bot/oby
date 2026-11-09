@@ -10043,15 +10043,20 @@ impl Jobs {
             git::run(&clone, &args, &[])
                 .await
                 .map_err(|e| format!("obid couldn't make the job's worktree: {e}"))?;
-            let missing = [
-                git::uses_lfs(&clone, &start_commit)
-                    .await
-                    .then_some("its Git LFS files are pointers"),
-                git::has_submodules(&clone, &start_commit)
-                    .await
-                    .then_some("its submodules are empty"),
-            ];
-            let missing: Vec<&str> = missing.into_iter().flatten().collect();
+            let mut missing: Vec<String> = Vec::new();
+            if git::uses_lfs(&clone, &start_commit).await {
+                missing.push("its Git LFS files are pointers".into());
+            }
+            // Filled by obid, never by the agent (SETUP-1).
+            if git::has_submodules(&clone, &start_commit).await {
+                self.update(id, |job| {
+                    job.step = format!("Getting {}'s submodules", job.repo_name())
+                });
+                let (remote, file) = (&repo.remote, self.config.allow_file_remotes);
+                let who = format!("job {id}");
+                let fill = git::fill_submodules(&clone, &worktree, remote, file, &who, signal);
+                missing.extend(Box::pin(fill).await);
+            }
             let worktree_text = worktree.to_string_lossy().into_owned();
             self.update(id, |job| {
                 job.worktree = Some(worktree_text);
@@ -10067,6 +10072,10 @@ impl Jobs {
             });
         }
         drop(prepared);
+        // A Stop while its submodules filled.
+        if *signal.borrow() != Signal::Run {
+            return Ok(());
+        }
         let job = self.get(id).ok_or("the job is gone")?;
         let mut start_commit = job.start_commit.clone().unwrap_or_default();
         // Where its branch was when this run started: a job whose own publish failed is tried

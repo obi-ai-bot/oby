@@ -611,6 +611,350 @@ pub async fn has_submodules(clone: &Path, commit: &str) -> bool {
         .is_ok()
 }
 
+/// The most submodules [`fill_submodules`] tries in one worktree, nested ones too: one that holds
+/// itself would go on forever.
+const MOST_SUBMODULES: usize = 100;
+
+/// How long [`fill_submodules`] has for all of a worktree's submodules: it holds the repository's
+/// preparing lock (`submodule init` and `sync` write the clone's shared config), so another job on
+/// it waits at most this long.
+const SUBMODULES_FOR: Duration = Duration::from_secs(20 * 60);
+
+/// Fills the submodules of `worktree`'s checkout, by obid itself before the agent starts (SETUP-1):
+/// `git submodule update --init` for each one the commit has, then each one's own, run as obid's
+/// fetches are, with [`SAFE`], [`LFS_POINTERS`], no recursion of git's own,
+/// `protocol.file.allow=never` (`always` with `allowFileRemotes`, the tests' fixture) and
+/// [`submodule_credentials`]. Each one's URL is read as git will fetch it and checked
+/// ([`fetchable`]) first. It tries at most [`MOST_SUBMODULES`] in [`SUBMODULES_FOR`], and ends
+/// at once on a Stop. One that fails is named (`` its submodule `<path>` wasn't filled (<why>) ``)
+/// and the others still fill; one from anywhere but the repository's owner marks `clone`
+/// ([`taint`], `<job>: a submodule from <url>`).
+pub async fn fill_submodules(
+    clone: &Path,
+    worktree: &Path,
+    remote: &str,
+    allow_file: bool,
+    job: &str,
+    stop: &tokio::sync::watch::Receiver<crate::process::Signal>,
+) -> Vec<String> {
+    let mut failed = Vec::new();
+    let file = if allow_file { "always" } else { "never" };
+    let mut settings = submodule_credentials(remote, crate::github::gh().as_deref());
+    settings.extend(
+        [
+            "-c",
+            format!("protocol.file.allow={file}").as_str(),
+            "-c",
+            "submodule.recurse=false",
+            "-c",
+            "fetch.recurseSubmodules=false",
+        ]
+        .map(str::to_owned),
+    );
+    settings.extend(LFS_POINTERS.map(str::to_owned));
+    let deadline = tokio::time::Instant::now() + SUBMODULES_FOR;
+    let mut stop = stop.clone();
+    let mut tried = 0;
+    let mut tainted = false;
+    // Each checkout to fill and where it is in the worktree; a submodule's own once it's filled.
+    let mut todo = vec![(worktree.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = todo.pop() {
+        let listed = match git(&dir, &["ls-files", "--stage", "-z"]).await {
+            Ok(listed) => listed,
+            Err(e) => {
+                let within = match prefix.trim_end_matches('/') {
+                    "" => String::new(),
+                    sub => format!(" in `{sub}`"),
+                };
+                failed.push(format!("its submodules' list{within} wasn't read ({e})"));
+                continue;
+            }
+        };
+        // A gitlink is mode 160000: `160000 <sha> 0\t<path>`.
+        for path in listed
+            .split('\0')
+            .filter_map(|entry| entry.strip_prefix("160000 ")?.split_once('\t'))
+            .map(|(_, path)| path)
+        {
+            let shown = format!("{prefix}{path}");
+            let one = fill_one(&dir, path, &settings, remote, allow_file);
+            let done = if tried >= MOST_SUBMODULES {
+                Err(format!("obid tries at most {MOST_SUBMODULES}"))
+            } else if tokio::time::Instant::now() >= deadline {
+                Err(format!(
+                    "obid gives submodules {} minutes in all",
+                    SUBMODULES_FOR.as_secs() / 60
+                ))
+            } else {
+                tried += 1;
+                tokio::select! {
+                    done = Box::pin(one) => done,
+                    () = tokio::time::sleep_until(deadline) => Err(format!(
+                        "obid gives submodules {} minutes in all", SUBMODULES_FOR.as_secs() / 60
+                    )),
+                    // Dropping the fill kills its git; the job ends stopped.
+                    _ = stop.wait_for(|s| *s != crate::process::Signal::Run) => return failed,
+                }
+            };
+            match done {
+                Ok(url) => {
+                    if !tainted && !same_owner(remote, &url) {
+                        taint(clone, &format!("{job}: a submodule from {url}")).await;
+                        tainted = true;
+                    }
+                    todo.push((dir.join(path), format!("{shown}/")));
+                }
+                Err(why) => {
+                    let why: String = why.chars().take(200).collect();
+                    failed.push(format!("its submodule `{shown}` wasn't filled ({why})"));
+                }
+            }
+        }
+    }
+    failed
+}
+
+/// Fills the submodule at `path` in the checkout `dir`, not its own: its URL, or why not.
+async fn fill_one(
+    dir: &Path,
+    path: &str,
+    settings: &[String],
+    remote: &str,
+    allow_file: bool,
+) -> Result<String, String> {
+    let names = git(
+        dir,
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "-z",
+            "--get-regexp",
+            r"^submodule\..*\.path$",
+        ],
+    )
+    .await
+    .unwrap_or_default();
+    let mut named = names
+        .split('\0')
+        .filter_map(|entry| entry.split_once('\n'))
+        .filter(|(_, named)| *named == path)
+        .filter_map(|(key, _)| key.strip_prefix("submodule.")?.strip_suffix(".path"));
+    let name = named.next().ok_or("`.gitmodules` doesn't name it")?;
+    // git would fetch one of them, and not surely the one checked.
+    if named.next().is_some() {
+        return Err("`.gitmodules` names it more than once".into());
+    }
+    // `init` keeps a URL the clone's config already has (another commit's); `sync` writes this
+    // commit's, resolved as `update` fetches it. Both run under the preparing lock, so the URL
+    // read is the one fetched.
+    // A gitlink's path is the repository's own words: taken literally, never as a pattern (`*`
+    // would init, sync and fetch every submodule, the ones refused included). git hands the
+    // setting on to the commands it runs.
+    for step in ["init", "sync"] {
+        let mut args: Vec<&str> = settings.iter().map(String::as_str).collect();
+        args.extend([
+            "--literal-pathspecs",
+            "submodule",
+            step,
+            "--quiet",
+            "--",
+            path,
+        ]);
+        git(dir, &args).await.map_err(|e| e.0)?;
+    }
+    let url = git(dir, &["config", "--get", &format!("submodule.{name}.url")])
+        .await
+        .map_err(|_| "it has no URL".to_owned())?;
+    fetchable(remote, &url, allow_file)?;
+    let mut command = tokio::process::Command::from(self::command(dir, &[]));
+    command
+        .args(settings)
+        .args([
+            "--literal-pathspecs",
+            "submodule",
+            "update",
+            "--init",
+            "--progress",
+            "--",
+            path,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let Limit::Stall { quiet, ceiling } = TRANSFER else {
+        unreachable!("a transfer's limit is a stall's")
+    };
+    let child = command.spawn().map_err(|e| format!("git can't run: {e}"))?;
+    let out = Box::pin(watch(child, "git submodule update", quiet, ceiling))
+        .await
+        .map_err(|e| e.0)?
+        .map_err(|e| format!("git can't run: {e}"))?;
+    if out.status.success() {
+        return Ok(url);
+    }
+    // git's first `fatal:` says why; its last says only that it gave up.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let fatal = lines.iter().find(|l| l.starts_with("fatal: "));
+    Err(fatal.or(lines.last()).copied().unwrap_or("").to_owned())
+}
+
+/// The `-c` settings a submodule's fetch signs in with: git's own credential helpers reset for
+/// every host, then the owner's gh login ([`crate::publish::fetch_credentials`]) only for
+/// `remote`'s own host, so a submodule anywhere else gets no credentials (SETUP-1).
+pub(crate) fn submodule_credentials(remote: &str, gh: Option<&Path>) -> Vec<String> {
+    let mut args = crate::publish::fetch_credentials(remote, gh);
+    let host = remote
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|auth| auth.rsplit('@').next())
+        .filter(|host| !host.is_empty());
+    match (host, args.get_mut(3)) {
+        (Some(host), Some(helper)) => {
+            *helper = helper.replacen(
+                "credential.helper=",
+                &format!("credential.https://{host}.helper="),
+                1,
+            );
+        }
+        _ => args = vec!["-c".into(), "credential.helper=".into()],
+    }
+    args
+}
+
+/// Where a network git URL points, read strictly (SETUP-1).
+struct Place {
+    ssh: bool,
+    host: String,
+    owner: String,
+}
+
+/// A network git URL's place (`https`, `http`, `git`, `ssh`, `git+ssh`, `ssh+git`, or git's
+/// `[user@]host:path`), lower-case. None for a local path, another scheme, or anything git could
+/// read another way than this does, so a caller fails closed: a `%` (git decodes it), `[`, `]`,
+/// `\`, whitespace or a control character anywhere; a user or host of anything but letters,
+/// digits, `.`, `-` (and `_` in a user); a port of anything but digits; a `.` or `..` in its path.
+fn place(url: &str) -> Option<Place> {
+    let odd = |c: char| matches!(c, '%' | '[' | ']' | '\\') || c.is_whitespace() || c.is_control();
+    if url.chars().any(odd) {
+        return None;
+    }
+    let url = url.to_ascii_lowercase();
+    let (ssh, auth, path, port) = match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let ssh = match scheme {
+                "https" | "http" | "git" => false,
+                "ssh" | "git+ssh" | "ssh+git" => true,
+                _ => return None,
+            };
+            let (auth, path) = rest.split_once('/')?;
+            (ssh, auth, path, true)
+        }
+        // git's scp form: a colon with no slash before it, and no port.
+        None => {
+            let (auth, path) = url.split_once(':')?;
+            (true, auth, path, false)
+        }
+    };
+    let (user, host) = match auth.rsplit_once('@') {
+        Some((user, host)) => (Some(user), host),
+        None => (None, auth),
+    };
+    let host = match host.split_once(':') {
+        Some((host, digits))
+            if port && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            host
+        }
+        Some(_) => return None,
+        None => host,
+    };
+    let word = |text: &str, also: &[u8]| {
+        !text.is_empty()
+            && !text.starts_with(['-', '.'])
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-') || also.contains(&b))
+    };
+    if !word(host, b"") || user.is_some_and(|user| !word(user, b"_")) {
+        return None;
+    }
+    let mut segments = path.trim_start_matches('/').split('/');
+    if path.split('/').any(|s| s == "." || s == "..") {
+        return None;
+    }
+    let owner = segments.next().filter(|owner| !owner.is_empty())?;
+    Some(Place {
+        ssh,
+        host: host.to_owned(),
+        owner: owner.to_owned(),
+    })
+}
+
+/// Whether `url` is on `remote`'s code host under its owner: a submodule from anywhere else, or
+/// one [`place`] can't read, is someone else's ([`taint`]).
+pub fn same_owner(remote: &str, url: &str) -> bool {
+    let at = |url: &str| place(url).map(|p| (p.host, p.owner));
+    at(url).is_some() && at(url) == at(remote)
+}
+
+/// Whether obid fetches a submodule from `url`, as git will read it, for a repository at `remote`
+/// (SETUP-1), fail-closed: an ssh one on another host than `remote`'s isn't, since the person's
+/// ssh agent and keys would sign in there; nor one on this Mac or its network (loopback, a private
+/// or link-local address, `localhost`) unless `remote` is there too; nor one [`place`] can't read
+/// (a local path is the tests' fixture's, with `allowFileRemotes`).
+fn fetchable(remote: &str, url: &str, allow_file: bool) -> Result<(), &'static str> {
+    let home = place(remote).map(|p| p.host);
+    let path = url.starts_with("file://")
+        || !url.contains("://")
+            && url
+                .split_once(':')
+                .is_none_or(|(before, _)| before.contains('/'));
+    match place(url) {
+        Some(p) if p.ssh && home.as_ref() != Some(&p.host) => {
+            Err("another host's ssh submodule gets no keys")
+        }
+        Some(p) if near(&p.host) && home.as_ref() != Some(&p.host) => {
+            Err("its URL is on this Mac or its network")
+        }
+        Some(_) => Ok(()),
+        None if allow_file && path => Ok(()),
+        None => Err("its URL isn't one obid can check"),
+    }
+}
+
+/// Whether `host` is this Mac or its network: `localhost`, a loopback, private, link-local,
+/// shared or unspecified IPv4 address, or a numeric name git's resolver reads as some address
+/// (`127.1`, `2130706433`, `0x7f.0.0.1`). ponytail: a name whose DNS answers with such an
+/// address isn't caught; resolve and pin it if a submodule's DNS is ever the attacker's.
+fn near(host: &str) -> bool {
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    let last = host.rsplit('.').next().unwrap_or(host);
+    if !last.bytes().all(|b| b.is_ascii_digit()) && !last.starts_with("0x") {
+        return false;
+    }
+    match host.parse::<std::net::Ipv4Addr>() {
+        Ok(ip) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || (a == 100 && (64..128).contains(&b))
+        }
+        // A numeric form only a resolver reads: fail closed.
+        Err(_) => true,
+    }
+}
+
 /// A full commit id, lower-case hex.
 pub fn is_sha(text: &str) -> bool {
     (text.len() == 40 || text.len() == 64)
@@ -632,6 +976,316 @@ mod tests {
         );
         let dns = GitError("git clone https://h/acme/x failed: fatal: unable to access 'https://h/acme/x/': Could not resolve host: h".into());
         assert!(crate::publish::passes_later(&dns.said()));
+    }
+
+    /// SETUP-1: a submodule's fetch gets the owner's gh login for the repository's own host only.
+    /// Another host's, one whose name only starts like it, gets nothing: neither gh nor the
+    /// person's own credential helper, which is reset.
+    #[test]
+    fn setup_1_another_hosts_submodule_gets_no_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("obid-submodule-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let gh = root.join("gh");
+        std::fs::write(
+            &gh,
+            "#!/bin/sh\ncat >> \"$0.log\"\necho username=x\necho password=from-gh\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            root.join(".gitconfig"),
+            "[credential]\n\thelper = \"!f() { echo username=u; echo password=the-persons; }; f\"\n",
+        )
+        .unwrap();
+        let settings = submodule_credentials("https://github.com/o/r.git", Some(&gh));
+        for (host, signs_in) in [
+            ("github.com", true),
+            ("gitlab.com", false),
+            ("github.com.example.net", false),
+        ] {
+            let mut fill = command(&root, &[]);
+            let mut child = fill
+                .args(&settings)
+                .args(["credential", "fill"])
+                .env("HOME", &root)
+                .env("XDG_CONFIG_HOME", &root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            use std::io::Write;
+            let asked = format!("protocol=https\nhost={host}\npath=o/lib.git\n\n");
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(asked.as_bytes())
+                .unwrap();
+            let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
+            assert_eq!(out.contains("password=from-gh"), signs_in, "{host}: {out}");
+            assert!(!out.contains("the-persons"), "{host}: {out}");
+        }
+        let log = std::fs::read_to_string(root.join("gh.log")).unwrap();
+        assert!(log.contains("host=github.com\n"), "{log}");
+        assert!(
+            !log.contains("gitlab.com") && !log.contains("example.net"),
+            "{log}"
+        );
+        // With no gh, every host's helpers are reset all the same.
+        assert_eq!(
+            submodule_credentials("https://github.com/o/r.git", None),
+            ["-c", "credential.helper="]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SETUP-1: an ssh submodule on another host than the repository's isn't fetched, so the
+    /// person's ssh agent and keys never sign in there; one on its own host, or over https (which
+    /// gets no credentials elsewhere), is. One git could read as another host than obid does
+    /// (git decodes `%` and strips `[ ]` in an ssh URL) isn't fetched at all.
+    #[test]
+    fn setup_1_another_hosts_ssh_submodule_gets_no_keys() {
+        let remote = "https://github.com/obi-ai-bot/oby.git";
+        for keyless in [
+            "git@gitlab.com:obi-ai-bot/lib.git",
+            "ssh://git@gitlab.com/obi-ai-bot/lib",
+            "git+ssh://git@bitbucket.org/o/lib",
+            "git@github.com.example.net:o/lib.git",
+            "ssh://git@gitlab.com:2222/o/lib",
+        ] {
+            let keys = Err("another host's ssh submodule gets no keys");
+            assert_eq!(fetchable(remote, keyless, false), keys, "{keyless}");
+        }
+        for unread in [
+            "ssh://evil.com%2F@github.com/obi-ai-bot/lib",
+            "ssh://git@[evil.com]/obi-ai-bot/lib",
+            "[evil.com]:obi-ai-bot/lib",
+            "ssh://git@github.com:22x/obi-ai-bot/lib",
+            "ssh://-oProxyCommand=x@github.com/o/lib",
+            "ssh://git@-oProxyCommand=x/o/lib",
+            "ssh://git@github.com /o/lib",
+            "ssh://a@b@github.com/o/lib",
+            "/tmp/lib",
+            "file:///tmp/lib",
+            "ext::sh -c x",
+        ] {
+            let unread_ = Err("its URL isn't one obid can check");
+            assert_eq!(fetchable(remote, unread, false), unread_, "{unread}");
+        }
+        for fetched in [
+            "git@github.com:someone/lib.git",
+            "ssh://git@GitHub.com/obi-ai-bot/lib",
+            "https://gitlab.com/obi-ai-bot/lib.git",
+        ] {
+            assert_eq!(fetchable(remote, fetched, false), Ok(()), "{fetched}");
+        }
+        // The tests' fixture's paths, with `allowFileRemotes` only.
+        for path in ["/tmp/lib", "./lib:with-colon", "file:///tmp/lib"] {
+            assert_eq!(fetchable(remote, path, true), Ok(()), "{path}");
+        }
+        // A remote that isn't on a host (the tests' `file://` fixture): every ssh one is elsewhere.
+        assert!(fetchable("file:///tmp/r", "git@github.com:o/lib.git", true).is_err());
+    }
+
+    /// SETUP-1: a submodule on this Mac or its network isn't fetched, unless the repository is
+    /// there too.
+    #[test]
+    fn setup_1_a_submodule_on_this_macs_network_isnt_fetched() {
+        let remote = "https://github.com/o/r.git";
+        for near in [
+            "http://127.0.0.1/o/lib",
+            "https://localhost/o/lib",
+            "https://git.localhost/o/lib",
+            "http://10.0.0.5/o/lib",
+            "https://172.16.3.4:8443/o/lib",
+            "http://192.168.1.2/o/lib",
+            "http://169.254.169.254/latest",
+            "git://100.64.0.1/o/lib",
+            "http://0.0.0.0/o/lib",
+            "http://2130706433/o/lib",
+            "http://127.1/o/lib",
+            "http://0x7f.0.0.1/o/lib",
+        ] {
+            let mac = Err("its URL is on this Mac or its network");
+            assert_eq!(fetchable(remote, near, false), mac, "{near}");
+        }
+        assert!(fetchable(remote, "https://[::1]/o/lib", false).is_err());
+        assert_eq!(
+            fetchable(remote, "https://140.82.112.3/o/lib", false),
+            Ok(())
+        );
+        // A repository on the network's own host fetches its submodules there.
+        let own = "https://10.0.0.5/o/lib";
+        assert_eq!(fetchable("https://10.0.0.5/o/r", own, false), Ok(()));
+    }
+
+    /// SETUP-1: a submodule is the owner's when it's on the repository's host under its owner;
+    /// a path that climbs out of the owner, or that git decodes, isn't.
+    #[test]
+    fn setup_1_a_submodule_elsewhere_is_someone_elses() {
+        let remote = "https://github.com/Obi-AI-Bot/oby.git";
+        for ours in [
+            "https://github.com/obi-ai-bot/lib.git",
+            "git@github.com:obi-ai-bot/lib.git",
+            "ssh://git@github.com/obi-ai-bot/lib",
+        ] {
+            assert!(same_owner(remote, ours), "{ours}");
+        }
+        for theirs in [
+            "https://github.com/someone/lib.git",
+            "https://gitlab.com/obi-ai-bot/lib.git",
+            "https://github.com/obi-ai-bot/../someone/lib.git",
+            "https://github.com/obi-ai-bot/./../someone/lib.git",
+            "https://github.com/obi-ai-bot%2F..%2Fsomeone/lib.git",
+            "https://github.com/obi-ai-bot/%2e%2e/someone/lib.git",
+            "ssh://evil.com%2F@github.com/obi-ai-bot/lib",
+            "file:///tmp/lib",
+            "/tmp/lib",
+        ] {
+            assert!(!same_owner(remote, theirs), "{theirs}");
+        }
+    }
+
+    /// A plain repository whose index has a gitlink at each of `links`, with `gitmodules`, for
+    /// [`fill_submodules`] to read; and the stop signal's sender, at Run.
+    fn gitlinked(
+        name: &str,
+        links: &[String],
+        gitmodules: &str,
+    ) -> (PathBuf, tokio::sync::watch::Sender<crate::process::Signal>) {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("obid-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).wait().unwrap().success());
+        std::fs::write(root.join(".gitmodules"), gitmodules).unwrap();
+        let mut index = git(&["update-index", "--index-info"]);
+        let sha = "1".repeat(40);
+        for link in links {
+            writeln!(index.stdin.as_mut().unwrap(), "160000 {sha}\t{link}").unwrap();
+        }
+        drop(index.stdin.take());
+        assert!(index.wait().unwrap().success());
+        (
+            root,
+            tokio::sync::watch::channel(crate::process::Signal::Run).0,
+        )
+    }
+
+    /// SETUP-1: the URL obid checks is the one git fetches: this commit's `.gitmodules`, not one
+    /// another commit left in the clone's config; and a path `.gitmodules` names twice isn't
+    /// filled, since git could fetch either.
+    #[tokio::test]
+    async fn setup_1_the_url_checked_is_the_one_fetched() {
+        let lib = std::env::temp_dir().join(format!("obid-sub-lib-{}", std::process::id()));
+        let lib = lib.to_str().unwrap();
+        let gitmodules = format!(
+            "[submodule \"sub\"]\n\tpath = sub\n\turl = git@evil.example:x/y.git\n\
+             [submodule \"a\"]\n\tpath = dup\n\turl = {lib}\n\
+             [submodule \"b\"]\n\tpath = dup\n\turl = {lib}\n"
+        );
+        let links = ["sub".to_owned(), "dup".to_owned()];
+        let (root, stop) = gitlinked("sub-url", &links, &gitmodules);
+        // Another commit's URL for `sub`, which a bare `init` keeps.
+        git(&root, &["config", "submodule.sub.url", lib])
+            .await
+            .unwrap();
+        let failed =
+            fill_submodules(&root, &root, "file:///r", true, "job j", &stop.subscribe()).await;
+        assert_eq!(
+            failed,
+            [
+                "its submodule `dup` wasn't filled (`.gitmodules` names it more than once)",
+                "its submodule `sub` wasn't filled (another host's ssh submodule gets no keys)",
+            ],
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// SETUP-1: a gitlink's path is taken literally: one named `*` fills only itself, never a
+    /// submodule obid refused (`z`, named twice in `.gitmodules`).
+    #[tokio::test]
+    async fn setup_1_a_path_is_never_a_pattern() {
+        let lib = std::env::temp_dir().join(format!("obid-sub-glob-lib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        std::fs::create_dir_all(&lib).unwrap();
+        git(&lib, &["init", "-q"]).await.unwrap();
+        git(
+            &lib,
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "c",
+            ],
+        )
+        .await
+        .unwrap();
+        let lib_path = lib.to_str().unwrap();
+        let gitmodules = format!(
+            "[submodule \"star\"]\n\tpath = *\n\turl = {lib_path}\n\
+             [submodule \"a\"]\n\tpath = z\n\turl = {lib_path}\n\
+             [submodule \"b\"]\n\tpath = z\n\turl = {lib_path}\n"
+        );
+        let links = ["*".to_owned(), "z".to_owned()];
+        let (root, stop) = gitlinked("sub-glob", &links, &gitmodules);
+        let failed =
+            fill_submodules(&root, &root, "file:///r", true, "job j", &stop.subscribe()).await;
+        assert!(
+            failed
+                .iter()
+                .any(|f| f.contains("`z` wasn't filled (`.gitmodules` names it more than once)")),
+            "{failed:?}"
+        );
+        assert!(!root.join(".git/modules/a").exists(), "z was fetched");
+        assert!(!root.join(".git/modules/b").exists(), "z was fetched");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    /// SETUP-1: every submodule obid tries counts toward its 100, the failed ones too; and a
+    /// Stop ends the fill at once, naming nothing.
+    #[tokio::test]
+    async fn setup_1_every_try_counts_and_a_stop_ends_it() {
+        let links: Vec<String> = (0..=MOST_SUBMODULES).map(|i| format!("p{i}")).collect();
+        let (root, stop) = gitlinked("sub-count", &links, "");
+        let failed =
+            fill_submodules(&root, &root, "file:///r", true, "job j", &stop.subscribe()).await;
+        assert_eq!(failed.len(), MOST_SUBMODULES + 1);
+        let not_named = failed
+            .iter()
+            .filter(|f| f.ends_with("(`.gitmodules` doesn't name it)"));
+        assert_eq!(not_named.count(), MOST_SUBMODULES);
+        assert!(
+            failed
+                .iter()
+                .any(|f| f.ends_with("(obid tries at most 100)")),
+            "{failed:?}"
+        );
+        stop.send_replace(crate::process::Signal::Stop);
+        let failed =
+            fill_submodules(&root, &root, "file:///r", true, "job j", &stop.subscribe()).await;
+        assert_eq!(failed, Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A clone and a fetch of an https remote with a gh reset git's own credential helpers before

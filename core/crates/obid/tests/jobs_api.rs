@@ -5266,6 +5266,58 @@ fn publishing_16_a_check_that_times_out_spends_no_round() {
     assert!(!stopped.output.contains(obid::jobs::CHECK_TOO_LONG));
 }
 
+/// The research job `task` makes, as it ended, and every `step` `/v1/events` showed for it.
+fn job_steps(obid: &Obid, task: &str) -> (Value, Vec<String>) {
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream
+        .write_all(format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    std::thread::sleep(Duration::from_millis(200));
+    let id = post_job(
+        obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut steps = Vec::new();
+    let give_up_at = Instant::now() + Duration::from_secs(30);
+    let mut event = String::new();
+    while Instant::now() < give_up_at {
+        line.clear();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        let text = line.trim();
+        if let Some(name) = text.strip_prefix("event: ") {
+            event = name.to_owned();
+        } else if let Some(data) = text.strip_prefix("data: ")
+            && event == "job"
+        {
+            let job: Value = serde_json::from_str(data).unwrap();
+            if job["id"] != id.as_str() {
+                continue;
+            }
+            steps.push(job["step"].as_str().unwrap_or_default().to_owned());
+            if job["status"]
+                .as_str()
+                .is_some_and(|s| s != "queued" && s != "running")
+            {
+                break;
+            }
+        }
+    }
+    (wait(obid, &id), steps)
+}
+
 /// PUBLISHING-20: a repository with Git LFS files and submodules gets its worktree even where the
 /// person's own git settings run git-lfs on checkout (`filter.lfs.required`, a smudge that fails):
 /// its LFS files are the pointers the check sees, and the job's first step says what won't work.
@@ -5343,61 +5395,93 @@ fn publishing_20_an_lfs_repository_checks_out_pointers_and_says_so() {
     )
     .unwrap();
     let obid = start(&folder.0, &config(&folder.0, &remote));
-    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    stream
-        .write_all(format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n").as_bytes())
-        .unwrap();
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).unwrap();
-    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
-    std::thread::sleep(Duration::from_millis(200));
-    let id = post_job(
-        &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "Look around"}),
-    )
-    .body["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let mut steps = Vec::new();
-    let give_up_at = Instant::now() + Duration::from_secs(30);
-    let mut event = String::new();
-    while Instant::now() < give_up_at {
-        line.clear();
-        if reader.read_line(&mut line).unwrap() == 0 {
-            break;
-        }
-        let text = line.trim();
-        if let Some(name) = text.strip_prefix("event: ") {
-            event = name.to_owned();
-        } else if let Some(data) = text.strip_prefix("data: ")
-            && event == "job"
-        {
-            let job: Value = serde_json::from_str(data).unwrap();
-            if job["id"] != id.as_str() {
-                continue;
-            }
-            steps.push(job["step"].as_str().unwrap_or_default().to_owned());
-            if job["status"]
-                .as_str()
-                .is_some_and(|s| s != "queued" && s != "running")
-            {
-                break;
-            }
-        }
-    }
-    let job = wait(&obid, &id);
+    let (job, steps) = job_steps(&obid, "Look around");
     let log = std::fs::read_to_string(&obid.stderr).unwrap_or_default();
     assert_eq!(job["status"], "done", "{job}\n{log}");
-    let said = "Getting fixture-app ready: its Git LFS files are pointers and its submodules are empty, so what needs them won't work";
+    // Its `.gitmodules` names no submodule the commit has: nothing to fill (SETUP-1).
+    let said =
+        "Getting fixture-app ready: its Git LFS files are pointers, so what needs them won't work";
     assert!(steps.iter().any(|s| s == said), "{steps:#?}");
     let worktree = job["worktree"].as_str().unwrap();
     assert_eq!(
         std::fs::read_to_string(Path::new(worktree).join("model.bin")).unwrap(),
         pointer
+    );
+}
+
+/// SETUP-1: obid fills a job's submodules before its agent starts, and one that can't be filled
+/// is named in the job's step with git's reason while the job goes on; an ssh one on another host
+/// isn't fetched at all.
+#[test]
+fn setup_1_a_jobs_submodules_are_filled_before_its_agent() {
+    let folder = Folder::new("submodules");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (sub, work) = (folder.0.join("lib-repo"), folder.0.join("work-sub"));
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "protocol.file.allow=always", "-c", "user.name=Test"])
+            .args([
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    std::fs::create_dir_all(&sub).unwrap();
+    git(&sub, &["init", "-q", "-b", "main"]);
+    std::fs::write(sub.join("lib.txt"), "the library\n").unwrap();
+    git(&sub, &["add", "lib.txt"]);
+    git(&sub, &["commit", "-q", "-m", "The library"]);
+    let (sub_url, work_dir) = (sub.to_str().unwrap(), work.to_str().unwrap());
+    git(
+        &folder.0,
+        &["clone", "-q", remote.to_str().unwrap(), work_dir],
+    );
+    git(&work, &["submodule", "add", "-q", sub_url, "lib/sub"]);
+    // A second submodule whose repository isn't there, and a third over ssh on another host,
+    // which obid doesn't fetch: the person's ssh keys would sign in there.
+    let head = git(&sub, &["rev-parse", "HEAD"]);
+    let missing = folder.0.join("no-such-repo");
+    let elsewhere = [
+        ("gone", "lib/gone", missing.to_str().unwrap()),
+        ("far", "lib/far", "git@ssh.example.invalid:someone/lib.git"),
+    ];
+    for (name, path, url) in elsewhere {
+        let link = format!("160000,{},{path}", head.trim());
+        git(&work, &["update-index", "--add", "--cacheinfo", &link]);
+        let (path_key, url_key) = (
+            format!("submodule.{name}.path"),
+            format!("submodule.{name}.url"),
+        );
+        git(&work, &["config", "-f", ".gitmodules", &path_key, path]);
+        git(&work, &["config", "-f", ".gitmodules", &url_key, url]);
+    }
+    git(&work, &["add", ".gitmodules"]);
+    git(&work, &["commit", "-q", "-m", "Three submodules"]);
+    git(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let (job, steps) = job_steps(&obid, "SEES: lib/sub/lib.txt");
+    let log = std::fs::read_to_string(&obid.stderr).unwrap_or_default();
+    assert_eq!(job["status"], "done", "{job}\n{log}");
+    assert_eq!(job["summary"], "sees lib/sub/lib.txt: true", "{job}");
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "Getting fixture-app's submodules"),
+        "{steps:#?}"
+    );
+    let far = "Getting fixture-app ready: its submodule `lib/far` wasn't filled (another host's ssh submodule gets no keys) and ";
+    let gone = "its submodule `lib/gone` wasn't filled (fatal: ";
+    assert!(
+        steps.iter().any(|s| s.starts_with(far)
+            && s.contains(gone)
+            && s.ends_with("), so what needs them won't work")),
+        "{steps:#?}"
     );
 }
