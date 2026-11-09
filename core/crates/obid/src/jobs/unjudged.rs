@@ -16,7 +16,12 @@ pub(super) fn why(command: &str, output: &str) -> Option<String> {
         .lines()
         .find_map(|line| line.trim().strip_prefix("couldn't judge: "));
     if let Some(why) = judge {
-        let why = crate::github_work::clean(why, 200);
+        // Bidirectional overrides and isolates go too: these are someone else's words on a card.
+        let why: String = why
+            .chars()
+            .filter(|c| !matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+            .collect();
+        let why = crate::github_work::clean(&why, 200);
         return Some(unchecked("the check couldn't judge this change") + "\n" + &why);
     }
     super::environment_signature(command, output).map(|label| {
