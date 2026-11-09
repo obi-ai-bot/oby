@@ -9097,7 +9097,7 @@ impl Jobs {
             ));
         };
         // What someone else wrote in the issue or pull request it works from may steer it.
-        if let Some(why) = self.others_wrote(&gh, job, None).await {
+        if let Some((why, _)) = self.others_wrote(&gh, job, None).await {
             return Some(why);
         }
         if let Err(why) = crate::secretspec::protected_base(&gh, &repo.repo, base).await {
@@ -9192,11 +9192,18 @@ impl Jobs {
     /// it there ([`Job::clone_root`], their follow-ups too), and the next `ensure_clone` makes a
     /// fresh one, so the repository's checks get values again (crate::secretspec). Called under the
     /// repository's preparing lock, for `job`, which has no worktree yet.
-    /// Why the issue or pull request `job` works from isn't only the owner's own words
-    /// (crate::secretspec::others_wrote), or none. `shown` is what obid quoted of its issue.
-    async fn others_wrote(&self, gh: &Path, job: &Job, shown: Option<&Value>) -> Option<String> {
+    /// Why the issue or pull request `job` works from isn't the owner's alone, and whether only by
+    /// members (crate::secretspec::others_wrote; a stranger's wins), or none. `shown`: its quote.
+    async fn others_wrote(
+        &self,
+        gh: &Path,
+        job: &Job,
+        shown: Option<&Value>,
+    ) -> Option<(String, bool)> {
+        let mut found = None;
         for (kind, number) in [("issue", job.issue), ("pr", job.pr)] {
             if let Some(number) = number
+                && found.as_ref().is_none_or(|(_, members)| *members)
                 && let Some(why) = crate::secretspec::others_wrote(
                     gh,
                     &job.repo,
@@ -9207,10 +9214,10 @@ impl Jobs {
                 )
                 .await
             {
-                return Some(why);
+                found = Some(why);
             }
         }
-        None
+        found
     }
 
     /// Whether obid wrote pull request `number` of `repo`'s description only for jobs that are the
@@ -9296,8 +9303,8 @@ impl Jobs {
             return;
         };
         // Never asked again: a comment deleted in between would clear a job it reached.
-        if let Some(why) = self.others_wrote(&gh, job, shown).await {
-            self.mark(&job.id, format!("{when}, {why}"), false);
+        if let Some((why, members)) = self.others_wrote(&gh, job, shown).await {
+            self.mark(&job.id, format!("{when}, {why}"), members);
         }
     }
 

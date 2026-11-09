@@ -967,7 +967,7 @@ impl Job {
     pub fn reached_for_follow_up(&self) -> Option<String> {
         let why = self.reached.as_ref()?;
         Some(format!(
-            "it follows up a job that reached past the package registries ({why})"
+            "it follows up a job whose check got none of the owner's declared secrets ({why})"
         ))
     }
 

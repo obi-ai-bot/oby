@@ -740,10 +740,11 @@ const SAFE_TOOLS: &[&str] = &[
 ];
 
 /// Why issue or pull request `number` of `repo` (`kind`, `issue` or `pr`) isn't only the owner's
-/// own words, or none: by the threat model, what anyone else wrote there (its body, its title, an
-/// edit, a comment, a review or a review's comment) is content that may steer the agent, whatever
-/// they may do elsewhere (an organisation member's words count as the owner's for other
-/// purposes, `crate::github_work::Owner::trusts`). Read as `crate::github_work` reads who wrote an
+/// own words, or none, and whether only members of the owner's organizations wrote in it besides
+/// (`crate::github_work::Owner::trusts`): by the threat model, what anyone else wrote there (its
+/// body, its title, an edit, a comment, a review or a review's comment) is content that may steer
+/// the agent, so members' words never unlock declared secrets; but they leave its job the owner's,
+/// with one review, as a reach does (ISSUETASK-5, MERGING-31). Read as `crate::github_work` reads who wrote an
 /// issue, every list whole; what GitHub can't say is a no. What obid posted under the owner's login
 /// is signed, an Oby's, never the owner's: but a pull request's own description when
 /// `signed_body`, obid's record that it wrote it only for jobs that are the owner's own throughout
@@ -756,14 +757,26 @@ pub async fn others_wrote(
     number: u64,
     signed_body: bool,
     shown: Option<&serde_json::Value>,
-) -> Option<String> {
+) -> Option<(String, bool)> {
+    use crate::github_work::Wrote;
     let name = if kind == "pr" {
         "pull request"
     } else {
         "issue"
     };
-    (!crate::github_work::owners_only(gh, repo, number, signed_body, shown).await)
-        .then(|| format!("it works from {name} #{number}, which someone else wrote in or GitHub didn't say who wrote"))
+    let (who, members) =
+        match crate::github_work::owners_only(gh, repo, number, signed_body, shown).await {
+            Wrote::Owner => return None,
+            Wrote::Members => ("members of the owner's organizations wrote in", true),
+            Wrote::Others => (
+                "someone else wrote in or GitHub didn't say who wrote",
+                false,
+            ),
+        };
+    Some((
+        format!("it works from {name} #{number}, which {who}"),
+        members,
+    ))
 }
 
 /// What obid's git reads of the person's own settings while it handles a job's commit outside any

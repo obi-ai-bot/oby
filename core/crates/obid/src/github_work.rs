@@ -309,36 +309,49 @@ pub async fn issue_trusted(gh: &std::path::Path, repo: &str, number: u64, shown:
 
 /// Who wrote, edited and renamed an issue or a pull request, its comments, and a pull request's
 /// reviews and their comments, every list with whether GitHub gave it whole, and as which login gh
-/// read it: what [`owners_only`] reads.
+/// read it: what [`owners_only`] reads, each author with GitHub's `authorAssociation`.
 const WHO_WROTE_ALL: &str = "query($owner: String!, $name: String!, $number: Int!) { viewer { login } \
 repository(owner: $owner, name: $name) { issueOrPullRequest(number: $number) { \
-... on Issue { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+... on Issue { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
 timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
-comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } \
-... on PullRequest { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } } \
+... on PullRequest { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
 timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
-comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } \
-reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
-comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } body userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } \
+reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
 
-/// Whether issue or pull request `number` on `repo` holds only words the owner (the login obid's
-/// gh is signed in as, and no one else, organisation members included) wrote: its body, its title
-/// and every edit and rename, every comment and its edits, and a pull request's every review and
-/// review comment, each list given whole. For the owner's secrets (crate::secretspec), stricter
-/// than [`issue_trusted`]. Anything obid can't read is a no. A text carrying [`OBY_SIGNS`] is an
-/// Oby's, whoever's login posted it: never the owner's, but the item's own body when
-/// `signed_body` (obid wrote it for jobs that are the owner's own throughout). With `shown`, what
-/// obid quoted of it just before ([`quote`]), that too is all the owner's ([`shown_by`]): a
-/// comment deleted in between is gone from this read, never from the quote.
+/// Whose words an issue or a pull request holds ([`owners_only`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wrote {
+    /// The owner's alone.
+    Owner,
+    /// The owner's and their organizations' members' ([`Owner::trusts`]): never enough for the
+    /// owner's secrets, but its job stays the owner's, with one review (ISSUETASK-5).
+    Members,
+    /// Someone else's too, or GitHub didn't say.
+    Others,
+}
+
+/// Whose words issue or pull request `number` on `repo` holds: its body, its title and every edit
+/// and rename, every comment and its edits, and a pull request's every review and review comment,
+/// each list given whole. [`Wrote::Owner`] when the login obid's gh is signed in as wrote them all;
+/// [`Wrote::Members`] when every author is one [`Owner::trusts`] and every edit and rename (which
+/// carry no association) is still the owner's. For the owner's secrets (crate::secretspec),
+/// stricter than [`issue_trusted`]. Anything obid can't read is [`Wrote::Others`]. A text carrying
+/// [`OBY_SIGNS`] is an Oby's, whoever's login posted it: never the owner's, but the item's own body
+/// when `signed_body` (obid wrote it for jobs that are the owner's own throughout). With `shown`,
+/// what obid quoted of it just before ([`quote`]), that is judged too ([`shown_by`]): a comment
+/// deleted in between is gone from this read, never from the quote.
 pub async fn owners_only(
     gh: &std::path::Path,
     repo: &str,
     number: u64,
     signed_body: bool,
     shown: Option<&Value>,
-) -> bool {
+) -> Wrote {
     let Some((holder, name)) = repo.split_once('/') else {
-        return false;
+        return Wrote::Others;
     };
     let args = [
         "api".to_owned(),
@@ -358,39 +371,65 @@ pub async fn owners_only(
         .ok()
         .and_then(|said| serde_json::from_str::<Value>(&said).ok())
     else {
-        return false;
+        return Wrote::Others;
     };
     let Some(login) = read["data"]["viewer"]["login"]
         .as_str()
         .filter(|l| is_login(l))
     else {
-        return false;
+        return Wrote::Others;
     };
-    all_by(
-        login,
-        &read["data"]["repository"]["issueOrPullRequest"],
-        signed_body,
-    ) && shown.is_none_or(|shown| shown_by(login, shown))
+    let item = &read["data"]["repository"]["issueOrPullRequest"];
+    let by = |members| {
+        all_by(login, members, item, signed_body)
+            && shown.is_none_or(|shown| shown_by(login, members, shown))
+    };
+    if by(None) {
+        return Wrote::Owner;
+    }
+    // ponytail: a stranger's words fail even with the repository's holder as an organization of
+    // the owner's, so obid asks GitHub for the owner's organizations only when members may count.
+    let maybe = Owner {
+        login: login.to_owned(),
+        orgs: Some(vec![holder.to_owned()]),
+    };
+    if !by(Some((&maybe, repo))) {
+        return Wrote::Others;
+    }
+    match owner(login).await {
+        Some(owner) if by(Some((&owner, repo))) => Wrote::Members,
+        _ => Wrote::Others,
+    }
 }
 
-/// Whether `shown`, what `gh issue view --json author,comments,…` printed, is all `login`'s: its
-/// author and every comment's. Anyone it doesn't name is someone else.
-fn shown_by(login: &str, shown: &Value) -> bool {
-    let by = |v: &Value| {
-        v["author"]["login"]
-            .as_str()
-            .is_some_and(|l| l.eq_ignore_ascii_case(login))
-    };
+/// Whether `node`'s author is `login`, or with `members`, one the owner trusts on its repository
+/// ([`Owner::trusts`], by its `authorAssociation`).
+fn wrote(login: &str, members: Option<(&Owner, &str)>, node: &Value) -> bool {
+    let author = node["author"]["login"].as_str();
+    author.is_some_and(|l| l.eq_ignore_ascii_case(login))
+        || members.is_some_and(|(owner, repo)| {
+            let association = node["authorAssociation"]
+                .as_str()
+                .filter(|a| is_association(a));
+            owner.trusts(repo, author.filter(|l| is_login(l)), association)
+        })
+}
+
+/// Whether `shown`, what `gh issue view --json author,comments,…` printed, is all `login`'s (with
+/// `members`, theirs too: [`wrote`]): its author and every comment's. Anyone it doesn't name is
+/// someone else.
+fn shown_by(login: &str, members: Option<(&Owner, &str)>, shown: &Value) -> bool {
+    let by = |v: &Value| wrote(login, members, v);
     by(shown)
         && shown["comments"]
             .as_array()
             .is_some_and(|comments| comments.iter().all(by))
 }
 
-/// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every login in it is `login`, every
-/// list in it was given whole, and no text in it carries [`OBY_SIGNS`] (but its own body when
-/// `signed_body`).
-fn all_by(login: &str, item: &Value, signed_body: bool) -> bool {
+/// [`owners_only`] on what [`WHO_WROTE_ALL`] read (`item`): every author in it is `login` (with
+/// `members`, theirs too: [`wrote`]) and every editor and renamer `login`, every list in it was
+/// given whole, and no text in it carries [`OBY_SIGNS`] (but its own body when `signed_body`).
+fn all_by(login: &str, members: Option<(&Owner, &str)>, item: &Value, signed_body: bool) -> bool {
     let by = |who: &Value| {
         who["login"]
             .as_str()
@@ -409,9 +448,9 @@ fn all_by(login: &str, item: &Value, signed_body: bool) -> bool {
             .as_str()
             .is_none_or(|t| !t.to_lowercase().contains(OBY_SIGNS))
     };
-    let written = |node: &Value| by(&node["author"]) && edits(node) && unsigned(node);
-    if !item.is_object() || !(by(&item["author"]) && edits(item) && (signed_body || unsigned(item)))
-    {
+    let author = |node: &Value| wrote(login, members, node);
+    let written = |node: &Value| author(node) && edits(node) && unsigned(node);
+    if !item.is_object() || !(author(item) && edits(item) && (signed_body || unsigned(item))) {
         return false;
     }
     let renames = whole(&item["timelineItems"], &|r| by(&r["actor"]));
@@ -1663,12 +1702,17 @@ mod tests {
             json!({"author": {"login": "Wellington"}, "comments": commenters.iter()
                 .map(|l| json!({"author": {"login": l}})).collect::<Vec<_>>()})
         };
-        assert!(shown_by("wellington", &quoted(&[])));
-        assert!(shown_by("wellington", &quoted(&["wellington"])));
-        assert!(!shown_by("wellington", &quoted(&["wellington", "mallory"])));
-        assert!(!shown_by("sangam", &quoted(&[])));
+        assert!(shown_by("wellington", None, &quoted(&[])));
+        assert!(shown_by("wellington", None, &quoted(&["wellington"])));
         assert!(!shown_by(
             "wellington",
+            None,
+            &quoted(&["wellington", "mallory"])
+        ));
+        assert!(!shown_by("sangam", None, &quoted(&[])));
+        assert!(!shown_by(
+            "wellington",
+            None,
             &json!({"author": {"login": "wellington"}})
         ));
     }
