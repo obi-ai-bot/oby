@@ -70,7 +70,7 @@ code "$main" "$((limit - 1000))"
 expect no 'lower obid_lines_limit' 'a small cut leaves the limit'
 
 # Nested in a job's sandbox, the tests that make a sandbox of their own aren't run, and a change
-# they'd test fails the check (HEALTH-13).
+# they'd test ends the check couldn't judge (PUBLISHING-22).
 # Here the check runs in a sandbox of this test's where its own sandbox-exec fails, as in a job's,
 # unless this test already runs in one.
 nested_run() {
@@ -202,13 +202,13 @@ grep -q 'found 0 of the [0-9]* test binaries cargo built' <<<"$ran" || {
 rm core/crates/obid/tests/slow.rs
 
 # OBY_CHECK_ALL=1 plans everything, whatever changed: every test binary, the lib and bin tests,
-# every crate, and this test.
+# every crate, this test, the iPhone build, swift test and the Electron app.
 commit() { git add -A >/dev/null && git -c user.name=check -c user.email=check@example.invalid -c commit.gpgsign=false commit --quiet --allow-empty -m "$1"; }
 code core/crates/obid/tests/one.rs 1
 code core/crates/obi-protocol/src/lib.rs 1
 commit all
 said=$(OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
-for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-test.sh'; do
+for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-test.sh' 'build-for-testing' 'swift test' 'apps/electron run --silent typecheck'; do
     grep -q -- "$planned" <<<"$said" || {
         echo "oby-check-test: OBY_CHECK_ALL didn't plan \"$planned\": $said" >&2
         exit 1
