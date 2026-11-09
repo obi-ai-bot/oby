@@ -514,6 +514,116 @@ fn a_check_runs_ps_in_the_box() {
     assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
 }
 
+/// PUBLISHING-23: a repository's setup, the owner's line in config.json, runs in the job's box,
+/// in its worktree, before its agent starts; one that fails is quoted to the agent, fenced, the job
+/// goes on, and its report says how the setup went.
+#[test]
+fn publishing_23_setup_runs_before_the_agent() {
+    let folder = Folder::new("setup-before-agent");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["setup"] =
+        json!("echo installed > setup-marker; echo the registry was away; exit 3");
+    let obid = start(&folder.0, &config);
+    let answer = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "KEEP PROMPTS SEES: setup-marker"}),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "sees setup-marker: true", "{job}");
+    let worktree = PathBuf::from(job["worktree"].as_str().unwrap());
+    let told = std::fs::read_to_string(worktree.join(".obi/prompts.log")).unwrap();
+    let quoted = told
+        .split_once("The repository's setup, `echo installed > setup-marker; echo the registry was away; exit 3`, failed before you started")
+        .unwrap_or_else(|| panic!("{told}"))
+        .1;
+    assert!(quoted.contains("<<<quoted-"), "{told}");
+    assert!(quoted.contains("the registry was away"), "{told}");
+    assert!(
+        job["changes"].as_array().unwrap().iter().any(|c| c["what"]
+            == "Its repository's setup, `echo installed > setup-marker; echo the registry was away; exit 3`, failed: it went on."),
+        "{job}"
+    );
+}
+
+/// PUBLISHING-23: the setup runs in the job's box, with the box's own home and, where the box
+/// confines its network, the agent's way out (obid's proxy).
+#[test]
+fn publishing_23_setup_runs_in_the_box_with_the_agents_reach() {
+    let folder = Folder::new("setup-in-the-box");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["setup"] =
+        json!("printf '%s\\n%s\\n' \"$HOME\" \"$HTTPS_PROXY\" > setup-env");
+    let obid = start(&folder.0, &config);
+    let answer = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SEES: setup-env"}),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["summary"], "sees setup-env: true", "{job}");
+    let worktree = PathBuf::from(job["worktree"].as_str().unwrap());
+    let seen = std::fs::read_to_string(worktree.join("setup-env")).unwrap();
+    let (home, proxy) = seen
+        .trim_end()
+        .split_once('\n')
+        .unwrap_or((seen.trim_end(), ""));
+    assert!(!home.is_empty(), "{seen}");
+    assert_ne!(Path::new(home), folder.0.join("env-home"), "{seen}");
+    // The box's HOME is the job's own temporary folder (its `spec.temp`), never the person's.
+    let tmp = obid.home.canonicalize().unwrap().join("tmp");
+    assert!(Path::new(home).starts_with(&tmp), "{seen}");
+    if cfg!(target_os = "macos") {
+        // obid's own proxy on loopback, its login in the URL (`http://oby:<token>@127.0.0.1:…`).
+        assert!(
+            proxy.starts_with("http://") && proxy.contains("@127.0.0.1:"),
+            "{seen}"
+        );
+    }
+}
+
+/// PUBLISHING-23: a Stop while the setup runs ends the job there: its agent never starts, and the
+/// setup isn't reported as failed.
+#[test]
+fn publishing_23_a_stop_during_setup_starts_no_agent() {
+    let folder = Folder::new("setup-stopped");
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["setup"] = json!("touch setup-started; sleep 30");
+    let obid = start(&folder.0, &config);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SLEEP"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let worktree = obid.home.join("worktrees").join(&id);
+    let give_up_at = Instant::now() + Duration::from_secs(30);
+    while !worktree.join("setup-started").exists() {
+        assert!(Instant::now() < give_up_at, "the setup never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "stopped", "{job}");
+    assert!(!worktree.join(".obi/beat").exists(), "{job}");
+    assert!(
+        !job["changes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|c| c["what"]
+                .as_str()
+                .is_some_and(|what| what.contains("setup"))),
+        "{job}"
+    );
+}
+
 /// A build job: its own branch from the base, the agent commits in the sandbox, the check passes,
 /// the job ends done with its commit counted, and publishes it: its branch pushed to the remote and
 /// its pull request opened with the owner's `gh` (a stand-in here), which gets no token from
