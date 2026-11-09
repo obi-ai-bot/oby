@@ -686,12 +686,8 @@ pub fn site_is_foreign(host: &str) -> bool {
 /// `egress::mark_reach`). A package registry ([`crate::egress::ROUTED_BY_HOST`]'s too) and an
 /// artifact registry (`ghcr.io`) stay a reach.
 pub fn site_is_code_host(host: &str) -> bool {
-    if host
-        .trim_matches(['[', ']'])
-        .parse::<std::net::IpAddr>()
-        .is_ok()
-    {
-        return true;
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        return !ip.is_loopback();
     }
     const CODE_HOSTS: &[&str] = &[
         "github.com",
@@ -1975,6 +1971,7 @@ required = false
             "docs.example.com",
             "registry.npmjs.org",
             "sum.golang.org",
+            "127.0.0.1",
         ] {
             assert!(!site_is_code_host(host), "{host}");
         }
