@@ -723,11 +723,17 @@ pub struct Job {
     /// a conversation reads of the job sees it. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<String>,
-    /// Its check ran without the secrets its base declares because of [`Job::withheld`]: set by
-    /// the check that found names to withhold (`Jobs::declared_secrets`). A repository that
-    /// declares none never sets it, so its merge isn't held (crate::merge::check_apart).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub check_withheld: bool,
+    /// Why its last check ran without the secrets its base declares, whatever refused them (a
+    /// reach to chatgpt.com, a marked clone, an unreviewed base): set by each check that found
+    /// names (`Jobs::declared_secrets`), cleared by one that got them. Such a check can't stand
+    /// for the Mac's (crate::merge::check_apart, MERGING-2); a repository that declares none never
+    /// sets it. Its own key: the earlier `checkWithheld` was a bool.
+    #[serde(
+        default,
+        rename = "checkWithheldWhy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub check_withheld: Option<String>,
     /// Why its check gets none of the owner's secrets though its code is still the owner's own:
     /// its agent reached a site past the package registries (crate::secretspec, `site_is_foreign`;
     /// `Jobs::mark`). Unlike [`Job::foreign`] it asks for no second review, but its check
@@ -1153,7 +1159,7 @@ impl Job {
             memory_from_others: false,
             foreign: None,
             withheld: None,
-            check_withheld: false,
+            check_withheld: None,
             reached: None,
             made: Vec::new(),
             apart: false,

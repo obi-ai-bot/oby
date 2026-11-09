@@ -9487,8 +9487,8 @@ impl Jobs {
                 .await
             }
         };
+        self.update(id, |j| j.check_withheld = refused.clone());
         if let Some(why) = refused {
-            self.update(id, |j| j.check_withheld = j.withheld.is_some());
             return (
                 Filled::refused(format!(
                     "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
@@ -18881,6 +18881,8 @@ mod tests {
 
     /// MERGING-30: reaching chatgpt.com holds the job's merge only where its check really ran
     /// without declared secrets: in a repository that declares none it merges by itself.
+    /// MERGING-2: a check that went without them for any other reason (here, a head obid couldn't
+    /// read) doesn't stand for the Mac's either, and says why.
     #[tokio::test]
     async fn merging_30_only_a_check_that_went_without_secrets_holds_the_merge() {
         let (jobs, clone, root) = jobs_with_a_clone("chatgpt-declared").await;
@@ -18937,6 +18939,52 @@ mod tests {
                 "Declared secrets withheld: this job reached chatgpt.com. Its check ran without them, so it's yours to merge."
             )
         );
+        jobs.update(&job.id, |j| j.withheld = None);
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        let why = jobs.get(&job.id).unwrap().check_withheld.unwrap();
+        assert!(!why.contains("chatgpt"), "{why}");
+        assert_eq!(
+            apart(&jobs),
+            Some(format!(
+                "Declared secrets withheld: {why}. Its check ran without them, so it's yours to merge."
+            ))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-14: another tool's vendor pages people write make the job someone else's code (two
+    /// reviews), on any port; another tool's API host is only a reach (one review, MERGING-31).
+    #[tokio::test]
+    async fn merging_14_another_tools_vendor_pages_are_someone_elses_code() {
+        let (jobs, _clone, root) = jobs_with_a_clone("vendor-pages").await;
+        jobs.update("j", |job| job.vetted = true);
+        let marks = |agent: &str, host: &str, port: u16| {
+            jobs.update("j", |job| {
+                job.agent = agent.into();
+                (job.foreign, job.reached) = (None, None);
+            });
+            crate::egress::mark_reach(&jobs, "j", host, port);
+            jobs.get("j").unwrap()
+        };
+        for (agent, host, port) in [
+            ("claude", "chatgpt.com", 443),
+            ("claude", "openai.com", 443),
+            ("claude", "forum.cursor.com", 443),
+            ("claude", "claude.ai", 80),
+            ("codex", "claude.ai", 443),
+            ("cursor", "community.openai.com", 443),
+        ] {
+            let job = marks(agent, host, port);
+            assert!(
+                job.foreign.as_deref().is_some_and(|why| why.contains(host)),
+                "{agent} on {host}:{port}: {:?}",
+                job.foreign
+            );
+            assert!(job.two_reviews_why().is_some(), "{agent} on {host}:{port}");
+        }
+        let job = marks("claude", "api.openai.com", 443);
+        assert_eq!(job.foreign, None);
+        assert!(job.reached.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 

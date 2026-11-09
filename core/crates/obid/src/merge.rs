@@ -785,9 +785,10 @@ fn plain_why(job: &Job, why: &str) -> String {
 /// request changes against its base, as obid's git read them (none when they couldn't be read, and
 /// then it can't). It can't when its check got none of the owner's declared secrets
 /// (`Job::check_refuses_secrets`: not only the owner's own words, or a reach past the registries,
-/// MERGING-31), when the secrets its base declares were withheld from it (`Job::check_withheld`,
-/// MERGING-30), when the change edits the check itself ([`check_files`]), or when it touches what
-/// only the Mac tests ([`mac_only`]). Fails closed: the owner's Merge is asked.
+/// MERGING-31), when the secrets its base declares were withheld from it for any other reason
+/// (`Job::check_withheld`: chatgpt.com, MERGING-30; a marked clone, an unreviewed base), when the
+/// change edits the check itself ([`check_files`]), or when it touches what only the Mac tests
+/// ([`mac_only`]). Fails closed: the owner's Merge is asked.
 pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Option<String> {
     if let Some(why) = job.check_refuses_secrets() {
         let why = plain_why(job, &why);
@@ -795,9 +796,7 @@ pub fn check_apart(job: &Job, command: &str, changed: Option<&[String]>) -> Opti
             "Its check passed, but {why}, so it's yours to merge."
         ));
     }
-    if job.check_withheld
-        && let Some(why) = &job.withheld
-    {
+    if let Some(why) = &job.check_withheld {
         return Some(format!(
             "Declared secrets withheld: {why}. Its check ran without them, so it's yours to merge."
         ));
@@ -3594,7 +3593,7 @@ mod tests {
             check_apart(&withheld, command, Some(&files(&["a.rs"]))),
             None
         );
-        withheld.check_withheld = true;
+        withheld.check_withheld = withheld.withheld.clone();
         assert_eq!(
             check_apart(&withheld, command, Some(&files(&["a.rs"]))).as_deref(),
             Some(

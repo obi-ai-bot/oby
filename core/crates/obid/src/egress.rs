@@ -1149,16 +1149,29 @@ fn hello_with(extensions: &[u8]) -> Vec<u8> {
     .concat()
 }
 
+/// Whether `host`, on any port, is inside some tool's vendor domains ([`tools_own`]) but none of
+/// that tool's API hosts ([`tools_api`]): a page people write (shared chats, forums), whichever
+/// tool's job reaches it. Its own tool's on 443 are `Jobs::reach_now`'s, and never come here.
+fn vendor_page(host: &str) -> bool {
+    Tool::ALL
+        .into_iter()
+        .any(|tool| tools_own(tool, host, 443) && !tools_api(tool, host))
+}
+
 /// What job `job`'s agent read at `host`, which obid's proxy let it reach, could be anyone's code:
 /// from now on its check gets none of the owner's secrets (crate::secretspec). A host that serves
-/// anyone's source code by its path (a code host, `secretspec::site_is_code_host`) makes it
-/// someone else's code (two reviews); any other site past the registries, a reach (one review,
-/// MERGING-31): a package registry whose edge serves whichever of its sites `Host` names
-/// ([`ROUTED_BY_HOST`]) too, though the proxy can't tell it from the edge's other sites.
+/// anyone's source code by its path (a code host, `secretspec::site_is_code_host`) and any tool's
+/// vendor pages ([`vendor_page`]) make it someone else's code (two reviews); any other site past
+/// the registries, a reach (one review, MERGING-31): another tool's API host, and a package
+/// registry whose edge serves whichever of its sites `Host` names ([`ROUTED_BY_HOST`]) too, though
+/// the proxy can't tell it from the edge's other sites.
 pub(crate) fn mark_reach(jobs: &Jobs, job: &str, host: &str, port: u16) {
     let site = site(host, port);
     if crate::secretspec::site_is_code_host(host) {
         let why = format!("its agent reached {site}, which can serve anyone's source code");
+        jobs.mark(job, why, false);
+    } else if vendor_page(host) {
+        let why = format!("its agent reached {site}, a vendor's pages people write");
         jobs.mark(job, why, false);
     } else if crate::secretspec::site_is_foreign(host) {
         let why = format!(
