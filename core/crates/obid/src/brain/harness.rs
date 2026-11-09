@@ -2014,7 +2014,7 @@ fn job_off_allowlist(shared: &Shared, id: &str) -> bool {
     shared
         .jobs
         .get(id)
-        .is_none_or(|job| job.check_refuses_secrets().is_some())
+        .is_none_or(|job| job.not_owners_words().is_some())
 }
 
 /// What a session is told of a turn that reports a job's end (TASKCONV-17): the first line, obid's
@@ -2023,7 +2023,7 @@ fn job_off_allowlist(shared: &Shared, id: &str) -> bool {
 fn job_end_line(shared: &Shared, turn: &Turn) -> String {
     let id = turn.jobs.first().map_or("", String::as_str);
     match shared.jobs.get(id) {
-        Some(job) if job.check_refuses_secrets().is_none() => {
+        Some(job) if job.not_owners_words().is_none() => {
             turn.text.lines().next().unwrap_or("").to_owned()
         }
         Some(job) => format!("Job {id} ended: {}.", job.status.as_str()),

@@ -2121,6 +2121,83 @@ fn taskconv_20_a_new_session_of_a_clean_conversation_stays_the_owners_word() {
     assert_ne!(next.body["jobs"][0]["untrusted"], true, "{}", next.text);
 }
 
+/// MERGING-32: a job of the owner's own whose agent reached past the package registries (a docs
+/// host) ends; its summary, its title in the list of jobs and its end in the next turn are still
+/// the owner's words: the next job the conversation starts isn't untrusted.
+#[cfg(target_os = "macos")]
+#[test]
+fn merging_32_reading_your_own_jobs_summary_marks_nothing() {
+    let (_folder, obid) = obid("harness-merging-32", true);
+    let bypass = json!({"mode": "bypass"});
+    let set = call(&obid, "PUT", "/v1/settings/permissions", Some(&bypass));
+    assert_eq!(set.status, 200, "{}", set.text);
+    let say = |said: String, conversation: Option<&str>| {
+        let mut body = json!({"said": said});
+        match conversation {
+            Some(id) => body["conversation"] = json!(id),
+            None => body["new"] = json!(true),
+        }
+        let answer = call_typed(&obid, "POST", "/v1/plans", &body);
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer
+    };
+    let reach = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "JOB-REACHES"});
+    let first = say(format!("OBY oby_dispatch {reach}"), None);
+    let id = first.body["conversation"].as_str().unwrap().to_owned();
+    let job = first.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    let done = ended(&obid, &job);
+    assert!(
+        done["reached"]
+            .as_str()
+            .is_some_and(|why| why.contains("docs.example.test")),
+        "{done}"
+    );
+    within(30, "the job's report", || {
+        let thread = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None);
+        thread.text.contains("\"ended\":true").then_some(())
+    });
+    let listed = say("OBY oby_jobs {}".into(), Some(&id));
+    assert!(listed.text.contains(&job), "{}", listed.text);
+    let start = json!({"repo": "obi-e2e/fixture-app", "task": "Look around"});
+    let next = say(format!("OBY oby_dispatch {start}"), Some(&id));
+    assert_ne!(next.body["jobs"][0]["untrusted"], true, "{}", next.text);
+    let kept = obid.home.join("conversations").join(format!("{id}.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(kept).unwrap()).unwrap();
+    assert!(kept["foreign"].is_null(), "{kept}");
+}
+
+/// MERGING-32: a job that isn't the owner's own words (here, ones no app of theirs signed) still
+/// marks the conversation that lists it: what it starts next is someone else's (its conversation's
+/// `foreign`), with none of the owner's declared secrets.
+#[test]
+fn merging_32_reading_someone_elses_job_still_marks() {
+    let (_folder, obid) = obid("harness-merging-32-theirs", true);
+    let theirs = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do"});
+    let made = call(&obid, "POST", "/v1/jobs", Some(&json!({"job": theirs})));
+    assert_eq!(made.status, 201, "{}", made.text);
+    let job = made.body["id"].as_str().unwrap().to_owned();
+    let listed = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": "OBY oby_jobs {}", "new": true}),
+    );
+    assert_eq!(listed.status, 200, "{}", listed.text);
+    assert!(listed.text.contains(&job), "{}", listed.text);
+    let id = listed.body["conversation"].as_str().unwrap().to_owned();
+    let start = json!({"repo": "obi-e2e/fixture-app", "task": "Look around"});
+    let next = call_typed(
+        &obid,
+        "POST",
+        "/v1/plans",
+        &json!({"said": format!("OBY oby_dispatch {start}"), "conversation": id}),
+    );
+    assert_eq!(next.status, 200, "{}", next.text);
+    let kept = obid.home.join("conversations").join(format!("{id}.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(kept).unwrap()).unwrap();
+    assert!(kept["foreign"].is_string(), "{kept}");
+}
+
 /// TASKCONV-17: the session going on hears, once, how its jobs ended since the owner last spoke,
 /// quoted. A job started on the owner's own word leaves the next turn theirs.
 #[test]

@@ -298,7 +298,7 @@ fn reads_foreign(shared: &Shared, name: &str, args: &Value) -> Option<String> {
             let id = args["id"].as_str().unwrap_or_default();
             match shared.jobs.get(id) {
                 Some(job) => job
-                    .check_refuses_secrets()
+                    .not_owners_words()
                     .map(|why| format!("the title of job {id}, which {why}")),
                 None => Some(format!("{name} on a job obid doesn't have")),
             }
@@ -1969,10 +1969,10 @@ fn jobs(shared: &Shared, session: &Session, args: Value) -> Result<String, Strin
         .filter(|j| j.archived.is_some() == archived)
         .take(limit.unwrap_or(20).clamp(1, 100))
         .collect();
-    // Their titles are their own words: the owner's alone only for jobs that are (crate::secretspec).
+    // Their titles are their own words: someone else's only for jobs that are (MERGING-32).
     if let Some((job, why)) = picked
         .iter()
-        .find_map(|j| j.check_refuses_secrets().map(|why| (j, why)))
+        .find_map(|j| j.not_owners_words().map(|why| (j, why)))
     {
         shared.conversations.mark(
             &session.conversation,

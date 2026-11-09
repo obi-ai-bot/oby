@@ -1730,13 +1730,14 @@ fn tell(shared: &Shared, id: &str, data: &Value) {
     shared.jobs.mark_told(id);
 }
 
-/// What job `id`'s summary marks its conversation with. Its summary is its agent's: on obid's
-/// allowlist only when everything the job read was (crate::secretspec). What reaching chatgpt.com
-/// withheld from its own check (`Job::withheld`, MERGING-30) isn't that: it marks nothing.
+/// What job `id`'s summary marks its conversation with: someone else's words in the job
+/// (`Job::not_owners_words`). What it reached past the registries (`Job::reached`) or what
+/// reaching chatgpt.com withheld from its own check (`Job::withheld`) marks nothing (MERGING-30,
+/// 32).
 fn summary_foreign(job: Option<&crate::job::Job>, id: &str) -> Option<String> {
     match job {
         Some(job) => job
-            .check_refuses_secrets()
+            .not_owners_words()
             .map(|why| format!("the summary of job {id}, which {why}")),
         None => Some(format!("the summary of job {id}, which obid doesn't have")),
     }
