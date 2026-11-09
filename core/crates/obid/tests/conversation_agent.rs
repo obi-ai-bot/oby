@@ -211,16 +211,32 @@ fn conversation_agent_21_turns_use_the_accounts_model_and_fall_back_to_status_de
         config_turns(&obid, &conversation(&answer)).last().unwrap()["model"],
         defaults["codex"]["model"]
     );
-    obid.stop();
-    obid::settings::update(&obid.home, |s| {
-        s.tuning.entry(CODEX.into()).or_default().model = Some("retired-model".into())
+}
+
+/// CONVERSATION-AGENT-21, AGENTS-6: right after a restart no Codex list has been read, so a model
+/// saved from one (off the fixed list) is still what its conversations talk on.
+#[test]
+fn conversation_agent_21_a_restart_keeps_a_saved_model_off_the_fixed_list() {
+    let folder = Folder::new("talk-models-restart");
+    let config = configured(&folder);
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    obid::settings::update(&home, |s| {
+        s.tuning.entry(CODEX.into()).or_default().model = Some("gpt-6-luna".into())
     })
     .unwrap();
-    obid = start(&folder.0, &config, None);
+    let obid = start(&folder.0, &config, None);
+    let set = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"talkAccount": CODEX})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
     let answer = said(&obid, json!({"said": "HELLO", "new": true}));
     assert_eq!(
         config_turns(&obid, &conversation(&answer)).last().unwrap()["model"],
-        defaults["codex"]["model"]
+        "gpt-6-luna"
     );
 }
 

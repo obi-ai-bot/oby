@@ -73,7 +73,7 @@ pub(super) fn launch(
     let offered = shared
         .jobs
         .model_lists
-        .for_account(crate::agent::Tool::Cursor, &account.id);
+        .to_check(crate::agent::Tool::Cursor, &account.id);
     options.model = Some(crate::settings::account_model(
         &shared.config.home,
         crate::agent::Tool::Cursor,

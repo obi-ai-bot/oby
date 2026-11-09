@@ -247,13 +247,8 @@ impl Egress {
         jobs: &Jobs,
     ) -> Result<(), String> {
         let decided = self.decide_site(token, job, host, port, plain, jobs).await;
-        // What the agent read there could be anyone's code: from now on the job's check gets none
-        // of the owner's secrets (crate::secretspec).
-        if decided.is_ok() && crate::secretspec::site_is_foreign(host) {
-            jobs.mark_foreign(
-                job,
-                format!("its agent reached {}, beyond its tool's own services and the package registries", site(host, port)),
-            );
+        if decided.is_ok() {
+            mark_reach(jobs, job, host, port);
         }
         decided
     }
@@ -1032,10 +1027,12 @@ pub fn tools_own(tool: Tool, host: &str, port: u16) -> bool {
 }
 
 /// Whether `host` is one of `tool`'s API hosts: what its agent calls its model and its login
-/// through, as obid has seen them, and nothing that serves what people share (claude.ai's or
-/// chatgpt.com's shared conversations). Reaching another of [`tools_own`]'s hosts makes the job
-/// someone else's code (crate::secretspec). Codex with a ChatGPT login calls chatgpt.com itself,
-/// which serves shared conversations too, so such a job's check gets no values.
+/// through, as obid has seen them, and nothing that serves what people write (claude.ai's or
+/// chatgpt.com's shared conversations, a vendor's forum). Reaching one leaves the job as it was
+/// (MERGING-30, `Jobs::reach_now`). Codex with a ChatGPT login calls chatgpt.com itself, which
+/// serves shared conversations too: reaching it doesn't mark the job, but its check gets no
+/// declared secrets. Reaching any other of [`tools_own`]'s hosts makes the job someone else's
+/// code (crate::secretspec).
 pub fn tools_api(tool: Tool, host: &str) -> bool {
     let hosts: &[&str] = match tool {
         Tool::Claude => &[
@@ -1150,6 +1147,24 @@ fn hello_with(extensions: &[u8]) -> Vec<u8> {
         &handshake,
     ]
     .concat()
+}
+
+/// What job `job`'s agent read at `host`, which obid's proxy let it reach, could be anyone's code:
+/// from now on its check gets none of the owner's secrets (crate::secretspec). A host that can
+/// serve anyone's source code (a code host, `secretspec::site_is_code_host`, and an edge that
+/// serves whichever of its sites `Host` names: [`ROUTED_BY_HOST`]) makes it someone else's code
+/// (two reviews); any other site past the registries, a reach (one review, MERGING-31).
+pub(crate) fn mark_reach(jobs: &Jobs, job: &str, host: &str, port: u16) {
+    let site = site(host, port);
+    if crate::secretspec::site_is_code_host(host) || ROUTED_BY_HOST.contains(&host) {
+        let why = format!("its agent reached {site}, which can serve anyone's source code");
+        jobs.mark(job, why, false);
+    } else if crate::secretspec::site_is_foreign(host) {
+        let why = format!(
+            "its agent reached {site}, beyond its tool's own services and the package registries"
+        );
+        jobs.mark(job, why, true);
+    }
 }
 
 #[cfg(test)]

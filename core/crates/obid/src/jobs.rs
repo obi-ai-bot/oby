@@ -62,8 +62,11 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
 mod logins;
+mod slots;
+mod unjudged;
 pub use logins::person_homes;
 pub(crate) use logins::*;
+use unjudged::unchecked;
 const SANDBOXED_GIT_STDERR_MAX: usize = 64 * 1024;
 /// How long reading a round's diff stat may take, and how much it may print (#736): a round goes
 /// on without its stat rather than wait on it.
@@ -108,7 +111,7 @@ const RETRY_WAITS: [Duration; 3] = [
     Duration::from_secs(5 * 60),
 ];
 /// The waits before each continuation of a turn a passing error cut (RECOVERY-1), as Claude's
-/// desktop app waits on a lost connection. A waiting job gives its slot back ([`Idle`], ADMISSION-4).
+/// desktop app waits on a lost connection. A waiting job keeps its slot (ADMISSION-4).
 const CUT_WAITS: [Duration; 3] = [
     Duration::from_secs(60),
     Duration::from_secs(5 * 60),
@@ -687,7 +690,7 @@ pub const STOPPED_BY_CONVERSATION: &str = "Stopped by a conversation";
 
 /// The stops the owner asked for: only these say a question waited, which a failure record keeps.
 /// ponytail: matched by their words, a flag on `Jobs::stop` if a third kind of owner's stop comes.
-const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
+pub(crate) const OWNERS_STOPS: [&str; 2] = [STOPPED_BY_API, STOPPED_BY_CONVERSATION];
 
 /// Who stopped a job when the pull request it reviewed or waited on was merged or closed.
 pub const PULL_REQUEST_ENDED: &str = "Stopped: its pull request was merged or closed";
@@ -862,40 +865,14 @@ struct State {
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
-    /// The jobs whose worker waits on the check queue or a retry's timer: they take no slot
+    /// The jobs whose worker waits on the check queue, then checks: they take no slot
     /// ([`Idle`], ADMISSION-4).
     idle: std::collections::HashSet<String>,
+    /// The idle jobs back from their wait while every slot is taken: the next free slot is theirs,
+    /// before any queued job's ([`Idle::back`]).
+    returning: std::collections::HashSet<String>,
     /// Keeps the Mac from idle sleep while `workers` isn't empty, idle ones too (RECOVERY-10).
     awake: crate::power::Awake,
-}
-
-impl State {
-    /// The slots taken: jobs a worker runs, less those idle ([`Idle`], ADMISSION-4).
-    fn taken(&self) -> usize {
-        self.workers.len().saturating_sub(self.idle.len())
-    }
-}
-
-/// A job waiting on the check queue or a retry's timer, until this is dropped: its slot is free
-/// for another job meanwhile (ADMISSION-4). Back from the wait it takes its slot again at once, as
-/// a round does, never waiting for one, so the count can briefly pass `maxRunning`.
-struct Idle<'a> {
-    jobs: &'a Arc<Jobs>,
-    id: &'a str,
-}
-
-impl<'a> Idle<'a> {
-    fn new(jobs: &'a Arc<Jobs>, id: &'a str) -> Self {
-        jobs.lock().idle.insert(id.to_string());
-        jobs.schedule();
-        Idle { jobs, id }
-    }
-}
-
-impl Drop for Idle<'_> {
-    fn drop(&mut self) {
-        self.jobs.lock().idle.remove(self.id);
-    }
 }
 
 /// An account being signed in or removed ([`Jobs::begin_change`]), until this is dropped.
@@ -1150,9 +1127,14 @@ impl Jobs {
             if at_work && !stopped_cleanly && !waited {
                 job.crash_resumes.retain(|at| now - at < CRASH_WINDOW);
                 if job.crash_resumes.len() >= CRASH_RESUMES {
-                    left_here = Some(crate::job::LOOPED);
+                    left_here = Some(crate::job::LOOPED.to_owned());
+                } else if job.recovery.spent() {
+                    // Every job at work an unclean restart picks up takes one of its 10, whether
+                    // it continues, checks again or starts again (RECOVERY-17).
+                    left_here = Some(crate::job::capped("obid or the Mac went down while it ran"));
                 } else {
                     job.crash_resumes.push(now);
+                    job.recovery.tries += 1;
                 }
             }
             // Its agent's run was cut, and its session can take it on with a marked message
@@ -1171,7 +1153,7 @@ impl Jobs {
                 if stopped_cleanly {
                     job.recovery.cut = Some(WAS_STOPPED.into());
                 } else if job.recovery.restarts >= RESTART_TRIES {
-                    left_here = Some(crate::job::RESTARTS_SPENT);
+                    left_here = Some(crate::job::RESTARTS_SPENT.to_owned());
                 } else {
                     job.recovery.restarts += 1;
                     job.recovery.cut = Some(WENT_DOWN.into());
@@ -1184,7 +1166,7 @@ impl Jobs {
                     "" => why.to_owned(),
                     said => format!("{why}\n\n{said}"),
                 };
-                job.reason = Some(why.into());
+                job.reason = Some(why);
                 job.next_step = Some(crate::job::TRY_AGAIN.into());
                 job.finished = Some(now);
                 job.step = String::new();
@@ -1249,6 +1231,7 @@ impl Jobs {
                 followed: HashMap::new(),
                 changing: std::collections::HashSet::new(),
                 idle: std::collections::HashSet::new(),
+                returning: std::collections::HashSet::new(),
                 awake,
             }),
             limit_decisions,
@@ -1368,11 +1351,6 @@ impl Jobs {
         if self.usage.clear_inferred(account) {
             self.usage_changed.notify_one();
         }
-    }
-
-    /// What OpenAI refused run `id`, once, when it ran on a ChatGPT login (crate::chatgpt_relay).
-    fn chatgpt_refusal(&self, id: &str) -> Option<crate::chatgpt_relay::Refusal> {
-        self.chatgpt.get().and_then(|chatgpt| chatgpt.runs.take(id))
     }
 
     /// Before a run on a ChatGPT login: the login still runs, and its model is one the account
@@ -1529,7 +1507,7 @@ impl Jobs {
     /// A broker call belongs in the job report even after the call is over.
     pub fn connection_used(&self, id: &str, use_record: crate::connections::ConnectionUse) {
         // What a connected app answers is anyone's words (crate::secretspec).
-        self.mark_foreign(id, "its agent read a connected app's answer".into());
+        self.mark(id, "its agent read a connected app's answer".into(), false);
         self.update(id, |job| {
             crate::connections::keep_use(&mut job.connection_uses, use_record)
         });
@@ -1553,7 +1531,8 @@ impl Jobs {
                     .map(|(source, _)| *source)
                     .collect();
                 if !files.is_empty() && !from.is_empty() {
-                    self.mark_foreign(id, format!("context from {} came into it", from.join(", ")));
+                    let why = format!("context from {} came into it", from.join(", "));
+                    self.mark(id, why, false);
                 }
                 crate::tetrix::context_note(&files)
             }
@@ -2152,7 +2131,7 @@ impl Jobs {
         Some(heard.map(|job| {
             match &new.foreign {
                 Some(why) => {
-                    self.mark_foreign(&job.id, why.clone());
+                    self.mark(&job.id, why.clone(), false);
                     self.get(&job.id).unwrap_or(job)
                 }
                 None if !new.vetted => self
@@ -2198,8 +2177,7 @@ impl Jobs {
         Ok(max)
     }
 
-    /// How many slots are taken: jobs a worker runs, but those waiting on the check queue or a
-    /// retry's timer ([`Idle`], ADMISSION-4).
+    /// How many slots are taken: jobs a worker runs, but those idle for the check ([`Idle`]).
     pub fn running(&self) -> usize {
         self.lock().taken()
     }
@@ -2901,14 +2879,6 @@ impl Jobs {
         self.schedule();
     }
 
-    /// `tool`'s first account that is [`signed_in`], if any.
-    pub fn signed_in_account(&self, tool: Tool) -> Option<crate::config::Account> {
-        let home = login_home();
-        self.accounts(tool)
-            .into_iter()
-            .find(|a| signed_in(tool, a, home.as_deref()))
-    }
-
     /// `tool`'s accounts that are [`signed_in`].
     pub fn signed_in_accounts(&self, tool: Tool) -> Vec<crate::config::Account> {
         let home = login_home();
@@ -3082,30 +3052,6 @@ impl Jobs {
             ),
             (None, _) => "obid has no account to run the job on.".into(),
         }))
-    }
-
-    /// The first signed-in account of `tool` but `except` with room ([`crate::usage::Usage::held`]
-    /// says nothing) whose login can run now, as a run's start readies it
-    /// ([`Jobs::claude_login_ready`]; Codex's and Cursor's are [`signed_in`]'s), in the tool's
-    /// order: where a job whose account filled goes on (#871).
-    #[cfg(test)]
-    async fn room_for(&self, tool: Tool, except: &str) -> Option<crate::config::Account> {
-        let home = login_home();
-        let now = obi_protocol::time::now();
-        for account in self.accounts(tool) {
-            if account.id == except
-                || self.being_changed(&account.id)
-                || !signed_in(tool, &account, home.as_deref())
-                || self.usage.get(&account.id).held(now).is_some()
-            {
-                continue;
-            }
-            if tool == Tool::Claude && self.claude_login_ready(Some(&account)).await.is_err() {
-                continue;
-            }
-            return Some(account);
-        }
-        None
     }
 
     /// Whether obid moves work past an account's usage limit to another account with room by
@@ -3567,11 +3513,12 @@ impl Jobs {
         // A follow-up runs the code of the job it follows: when that one's check got none of the
         // owner's secrets, neither does this one's (crate::secretspec).
         job.foreign = new.foreign.clone().or_else(|| {
-            of.as_ref().and_then(|of| {
-                of.someone_elses()
-                    .map(|why| format!("it follows up a job whose check got none of them ({why})"))
-            })
+            let why = of.as_ref()?.someone_elses()?;
+            Some(format!(
+                "it follows up a job whose check got none of them ({why})"
+            ))
         });
+        job.reached = of.as_ref().and_then(Job::reached_for_follow_up);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
         job.named = match &of {
@@ -3714,6 +3661,8 @@ impl Jobs {
         {
             return;
         }
+        // A slot may be free: jobs back from a wait look again ([`Idle::back`]).
+        self.changed.notify_waiters();
         self.room_for_waiting();
         let mut start = Vec::new();
         let mut waiting = Vec::new();
@@ -3748,7 +3697,8 @@ impl Jobs {
                 {
                     continue;
                 }
-                if state.taken() >= self.max_running() {
+                // A job back from its wait ([`Idle::back`]) has the next slot.
+                if state.taken() + state.returning.len() >= self.max_running() {
                     waiting.push(id);
                     continue;
                 }
@@ -3904,6 +3854,7 @@ impl Jobs {
                 j.obi.is_none()
                     && j.session.is_some()
                     && j.recovery.restarts < RESTART_TRIES
+                    && !j.recovery.spent()
                     && j.phase != Some(Phase::Publish)
                     && j.cut != Some(Phase::Publish)
                     && j.publish_step.is_none()
@@ -3913,6 +3864,7 @@ impl Jobs {
         {
             self.update(id, |job| {
                 job.recovery.restarts += 1;
+                job.recovery.tries += 1;
                 job.recovery.cut = Some("obid hit a bug and ended your run".into());
                 job.status = Status::Queued;
                 job.step = format!(
@@ -3930,6 +3882,8 @@ impl Jobs {
             Some(review::failed_result(&body))
         });
         // Another Obi's review can't be tried again here: the Obi that asked is told it failed.
+        // Past its 10 continuations it says so, Try again its next step (RECOVERY-17).
+        let capped = review.is_none() && self.get(id).is_some_and(|j| j.recovery.spent());
         let reason = if review.is_some() {
             format!(
                 "{}{said}. The Obi that asked for this review was told it failed.",
@@ -3937,8 +3891,9 @@ impl Jobs {
             )
         } else {
             format!(
-                "{}{said}. Its branch and worktree are kept. Try again runs it again.",
-                crate::job::CRASHED
+                "{}{said}.{} Its branch and worktree are kept. Try again runs it again.",
+                crate::job::CRASHED,
+                if capped { crate::job::CAPPED } else { "" }
             )
         };
         self.update(id, |job| {
@@ -3947,7 +3902,7 @@ impl Jobs {
             job.reason = Some(reason.clone());
             job.finished = Some(obi_protocol::time::now());
             job.step = String::new();
-            job.next_step = None;
+            job.next_step = capped.then(|| crate::job::TRY_AGAIN.into());
             job.publish_step = None;
             job.resumes_at = None;
             job.crash_resumes.clear();
@@ -4064,7 +4019,7 @@ impl Jobs {
         if let Some(why) = foreign
             && self.get(id).is_some_and(|job| job.obi.is_none())
         {
-            self.mark_foreign(id, why);
+            self.mark(id, why, false);
         }
         self.message_as(id, text, source, &[], false)
     }
@@ -4258,10 +4213,8 @@ impl Jobs {
         // Oby proposed) reach it from here on: obid's own Try again aside, it's someone else's code
         // for the owner's secrets from now on (crate::secretspec).
         if source != Source::Owner && text != crate::brain::actions::TRY_AGAIN {
-            self.mark_foreign(
-                id,
-                format!("words that weren't the owner's own reached it ({source:?})"),
-            );
+            let why = format!("words that weren't the owner's own reached it ({source:?})");
+            self.mark(id, why, false);
         }
         if let Some(Permission { id: permission, .. }) = waiting {
             let denied = self
@@ -5142,18 +5095,12 @@ impl Jobs {
     /// else, and anything more for another Obi's review (it only reads, and never asks), don't.
     /// None for a site the job decides ([`Jobs::ask_about`]).
     pub(crate) fn reach_now(&self, id: &str, host: &str, port: u16) -> Option<Result<(), String>> {
+        let site = crate::egress::site(host, port);
         // A conversation's Cursor: its tool's own services, and nothing else ever.
         if id.starts_with(crate::brain::harness_cursor::DOOR) {
-            return Some(
-                crate::egress::tools_own(Tool::Cursor, host, port)
-                    .then_some(())
-                    .ok_or_else(|| {
-                        format!(
-                            "A conversation on Cursor reaches only Cursor's own services, not {}.",
-                            crate::egress::site(host, port)
-                        )
-                    }),
-            );
+            let own = crate::egress::tools_own(Tool::Cursor, host, port);
+            let why = "A conversation on Cursor reaches only Cursor's own services, not";
+            return Some(own.then_some(()).ok_or_else(|| format!("{why} {site}.")));
         }
         let Some(job) = self.get(id) else {
             return Some(Err("The job is gone.".into()));
@@ -5161,18 +5108,19 @@ impl Jobs {
         if let Some(tool) = Tool::from_id(&job.agent)
             && crate::egress::tools_own(tool, host, port)
         {
-            // Every host of its tool's vendor domains, reached by the CLI or anything in its box,
-            // leaves the job the owner's (MERGING-30, the owner's decision of 2026-11-06).
+            if host == "chatgpt.com" && job.withheld.is_none() {
+                self.update(id, Job::reached_chatgpt);
+            } else if host != "chatgpt.com" && !crate::egress::tools_api(tool, host) {
+                let why = format!("its agent reached {site}, past its tool's API");
+                self.mark(id, why, false);
+            }
             return Some(Ok(()));
         }
         // Telemetry a CLI sends elsewhere (Datadog, Sentry) is a site like any other: the job's
         // rules, its mode or the owner's card decide it (PERMISSIONS-2).
-        job.obi.is_some().then(|| {
-            Err(format!(
-                "This job doesn't reach {}.",
-                crate::egress::site(host, port)
-            ))
-        })
+        job.obi
+            .is_some()
+            .then(|| Err(format!("This job doesn't reach {site}.")))
     }
 
     /// How job `id` decides a site its agent wants to reach (`host` on `port`), once for its
@@ -6217,7 +6165,7 @@ impl Jobs {
         let text = match words.map(str::trim).filter(|w| !w.is_empty()) {
             Some(words) => {
                 if let Some(why) = foreign {
-                    self.mark_foreign(id, why);
+                    self.mark(id, why, false);
                 }
                 format!("{}\n\n{words}", crate::brain::actions::TRY_AGAIN)
             }
@@ -7071,17 +7019,9 @@ impl Jobs {
                 None,
             ));
         }
-        // What it failed on, kept on its run; with no number named, the same as the round
-        // before's stops it (RECOVERY-9).
-        let mut repeated = false;
-        self.update(id, |job| {
-            let Some(last) = job.checks.last_mut() else {
-                return;
-            };
-            last.signature = Some(crate::facts::signature(last, output));
-            repeated = job.rounds.is_none() && crate::facts::repeats(&job.checks);
-        });
-        if repeated || round >= job.max_rounds() {
+        let checks = self.get(id).map(|j| j.checks).unwrap_or_default();
+        // With no number named, the same failure as the round before's stops it (RECOVERY-9).
+        if round >= job.max_rounds() || job.rounds.is_none() && crate::facts::repeats(&checks) {
             let limit = format!("`{command}` still fails after {round} round(s)");
             self.update(id, |job| job.limit = Some(limit.clone()));
             return Err(End::needs_you(
@@ -7095,10 +7035,7 @@ impl Jobs {
             check_failed(
                 command,
                 output,
-                self.get(id)
-                    .and_then(|j| j.checks.last().map(|c| c.failing.clone()))
-                    .unwrap_or_default()
-                    .as_slice()
+                checks.last().map_or(&[], |c| &c.failing[..])
             )
         ))
     }
@@ -7641,7 +7578,7 @@ impl Jobs {
         self.thinking_accounts(tool)
             .into_iter()
             .next()
-            .or_else(|| self.signed_in_account(tool))
+            .or_else(|| self.signed_in_accounts(tool).into_iter().next())
             .or_else(|| self.accounts(tool).into_iter().next())
     }
 
@@ -8162,12 +8099,10 @@ impl Jobs {
             if let AgentEvent::Tool { name, .. } = &event
                 && !crate::secretspec::tool_is_known_safe(name)
             {
-                jobs.mark_foreign(
-                    id,
-                    format!(
-                        "its agent used {name}, which brings it content obid's proxy doesn't see"
-                    ),
+                let why = format!(
+                    "its agent used {name}, which brings it content obid's proxy doesn't see"
                 );
+                jobs.mark(id, why, false);
             }
             match event {
                 AgentEvent::Tokens(tokens) => {
@@ -8358,13 +8293,14 @@ impl Jobs {
     fn stall_try(&self, id: &str, text: &str, tries: usize) -> Option<String> {
         let job = self.get(id)?;
         job.session.as_ref()?;
-        if job.recovery.stalls >= tries {
+        if job.recovery.stalls >= tries || job.recovery.spent() {
             return None;
         }
         let attempt = job.recovery.stalls + 1;
         tracing::info!("job {id}: {text}: continuing it ({attempt} of {tries})");
         self.update(id, |job| {
             job.recovery.stalls = attempt;
+            job.recovery.tries += 1;
             job.step = format!("Trying again now ({attempt} of {tries})");
         });
         Some(continue_message(text, None))
@@ -8538,7 +8474,13 @@ impl Jobs {
         // It needs the owner (#725): Try again carries it on in its session (past a safety stall,
         // only once they confirm), and the handoff note is in `stalled`, beside the agent's own
         // summary.
-        let needs_you = || End::needs_you(format!("Stalled: {text}."), Some(crate::job::TRY_AGAIN));
+        // Out of continuations in all, it says so (RECOVERY-17).
+        let spent = before.as_ref().is_some_and(|j| j.recovery.spent());
+        let said = match spent && matches!(why, Stall::Quiet | Stall::Turns) {
+            true => crate::job::capped(&text),
+            false => format!("Stalled: {text}."),
+        };
+        let needs_you = || End::needs_you(said.clone(), Some(crate::job::TRY_AGAIN));
         let Some(job) = self.get(id).or(before) else {
             return needs_you();
         };
@@ -8632,10 +8574,10 @@ impl Jobs {
     }
 
     /// Runs the repository's check on commit `head` in the job sandbox (in a checkout of its own,
-    /// [`Jobs::base_checkout`]), with no network but, for an owner's job run here, loopback; one at
-    /// a time, its limit counted from when it starts.
-    async fn check(
-        self: &Arc<Self>,
+    /// [`Jobs::base_checkout`]), with no network but, for an owner's job run here, loopback, its
+    /// limit counted from when it starts.
+    async fn checking_with_turn(
+        &self,
         id: &str,
         command: &str,
         head: &str,
@@ -8655,34 +8597,6 @@ impl Jobs {
         // anyway; another Obi's branch, or commits from a teammate's Mac, get no network at all.
         spec.loopback = self.get(id).is_some_and(|job| job.check_keeps_loopback());
         spec.accounts.clear();
-        // One check at a time: two of this repository's, each building obid with every core,
-        // swapped a 16 GB Mac until both ran out of their 20 minutes (2026-10-24). The wait isn't
-        // part of the limit, and a stop ends it. ponytail: one for every machine; a setting when
-        // a bigger one wants more.
-        let waiting = self.checking.available_permits() == 0;
-        let step = self.get(id).map(|job| job.step).unwrap_or_default();
-        if waiting {
-            self.update(id, |job| {
-                job.step = "Waiting for another job's check to finish".into()
-            });
-        }
-        let mut stop = signal.clone();
-        // Memory never holds a check back: it runs as soon as it has its turn, its build sized to
-        // what's there ([`Jobs::build_env`]). A stop ends the wait for the turn, and the wait
-        // takes no slot (ADMISSION-4).
-        let idle = waiting.then(|| Idle::new(self, id));
-        let _turn = tokio::select! {
-            turn = self.checking.acquire() => {
-                turn.map_err(|e| format!("obid couldn't run the check: {e}"))?
-            }
-            _ = async { while *stop.borrow_and_update() == Signal::Run && stop.changed().await.is_ok() {} } => {
-                return Ok(CheckRun { passed: false, output: String::new(), unchecked: None });
-            }
-        };
-        drop(idle);
-        if waiting {
-            self.update(id, |job| job.step = step);
-        }
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
         let round = self.get(id).map_or(1, |job| job.current_round());
         let marker = format!("obid-step-{}", random_check_id()?);
@@ -8788,16 +8702,10 @@ impl Jobs {
         // notes join it, and never when its runner named a test that failed.
         let tests_failed = self
             .get(id)
-            .and_then(|job| job.checks.last().map(|c| !c.failing.is_empty()))
-            .unwrap_or(false);
-        if !run.passed
-            && run.unchecked.is_none()
-            && !tests_failed
-            && let Some(label) = environment_signature(command, &run.output)
-        {
-            run.unchecked = Some(format!(
-                "Not published: {label}, which is this Mac's doing, not the change's, so nothing counts as checked. Read its change, then Publish it by hand."
-            ));
+            .is_some_and(|job| job.checks.last().is_some_and(|c| !c.failing.is_empty()));
+        // Nor one whose line says it couldn't judge it, `couldn't judge: <why>` (PUBLISHING-22).
+        if !run.passed && run.unchecked.is_none() && !tests_failed {
+            run.unchecked = unjudged::why(command, &run.output);
         }
         // A first failure the base already has isn't the change's: no fix round for it, the
         // owner's Publish by hand (PUBLISHING-18). Still holding the check's turn.
@@ -8825,7 +8733,12 @@ impl Jobs {
             true => self.checked(id, command).await,
             false => None,
         };
-        self.update(id, |job| job.checked = checked);
+        self.update(id, |job| {
+            job.checked = checked;
+            if let Some(last) = job.checks.last_mut().filter(|_| !run.passed) {
+                last.signature = Some(crate::facts::signature(last, &run.output));
+            }
+        });
         run.output = declared.noted(&format!("{}\n{}", notes.join("\n"), run.output));
         let _ = std::fs::write(self.log_path(id, "check.log"), &run.output);
         Ok(run)
@@ -8900,9 +8813,9 @@ impl Jobs {
             [] => "the same way".to_owned(),
             tests => format!("on {}", tests.join(", ")),
         };
-        Some(format!(
-            "Not published: `{command}` already fails on the base {start:.7} as it fails on this change's {head:.7}, {what}, so nothing counts as checked. Read its change, then Publish it by hand."
-        ))
+        Some(unchecked(format!(
+            "`{command}` already fails on the base {start:.7} as it fails on this change's {head:.7}, {what}"
+        )))
     }
 
     /// Job `id`'s check `command` run on `start` (PUBLISHING-18), at a path of its own under
@@ -8993,15 +8906,10 @@ impl Jobs {
         gate: Option<(String, String)>,
         at: &Path,
     ) -> Result<(Spec, Vec<String>, String), String> {
-        let unchecked = |why: String| {
-            format!(
-                "Not published: {why}, so nothing counts as checked. Read its change, then Publish it by hand."
-            )
-        };
         let job = self.get(id).ok_or("the job is gone")?;
         if !git::is_sha(head) {
             return Err(unchecked(
-                "obid couldn't read the commit its worktree is at".into(),
+                "obid couldn't read the commit its worktree is at",
             ));
         }
         if gate.as_ref().is_some_and(|(_, gated)| gated != head) {
@@ -9009,7 +8917,7 @@ impl Jobs {
         }
         let repo = self
             .repo(&job.repo)
-            .ok_or_else(|| unchecked("obid doesn't know its repository's default branch".into()))?;
+            .ok_or_else(|| unchecked("obid doesn't know its repository's default branch"))?;
         let merges_into = crate::memory::workflow(&self.config.home, &job.repo)
             .and_then(|m| m.workflow)
             .map(|w| w.base);
@@ -9202,22 +9110,22 @@ impl Jobs {
             .err()
     }
 
-    /// Notes job `id` as someone else's code from now on ([`Job::foreign`]): its check, and its
-    /// follow-ups', get none of the owner's secrets. The first reason is kept. A job in the owner's
-    /// own clone marks that clone too ([`git::taint`]): what it has already committed, fetched or
-    /// kept there is visible to every other job's worktree, so no check in the repository gets
-    /// values from then on.
-    pub(crate) fn mark_foreign(&self, id: &str, why: String) {
+    /// Notes job `id` as someone else's code ([`Job::foreign`]), or with `reach` as having reached
+    /// past the registries ([`Job::reached`], MERGING-31): its check, and its follow-ups', get none
+    /// of the owner's secrets. The first reason is kept. A job in the owner's clone marks it too,
+    /// an inherited mark included ([`git::taint`]).
+    pub(crate) fn mark(&self, id: &str, why: String, reach: bool) {
         let Some(job) = self.get(id) else { return };
-        if job.foreign.is_some() {
-            return;
-        }
-        tracing::info!("job {id}: its check gets none of the owner's secrets from now on: {why}");
         if !job.apart && job.obi.is_none() {
             git::taint_now(&self.clone_for(&job), &format!("job {id}: {why}"));
         }
+        if (if reach { &job.reached } else { &job.foreign }).is_some() {
+            return;
+        }
+        tracing::info!("job {id}: its check gets none of the owner's secrets from now on: {why}");
         self.update(id, |job| {
-            job.foreign.get_or_insert(why);
+            let (foreign, reached) = (&mut job.foreign, &mut job.reached);
+            (if reach { reached } else { foreign }).get_or_insert(why);
         });
     }
 
@@ -9227,7 +9135,7 @@ impl Jobs {
         state
             .jobs
             .values()
-            .filter(|job| job.someone_elses().is_none())
+            .filter(|job| job.someone_elses().is_none() && job.reached.is_none())
             .flat_map(|job| job.made.iter().cloned())
             .collect()
     }
@@ -9378,15 +9286,13 @@ impl Jobs {
     /// what obid quoted of its issue for this run.
     async fn authors_as_it_starts(&self, job: &Job, shown: Option<&Value>, when: &str) {
         let Some(gh) = crate::github::gh() else {
-            self.mark_foreign(
-                &job.id,
-                format!("obid had no gh to ask who wrote what it works from {when}"),
-            );
+            let why = format!("obid had no gh to ask who wrote what it works from {when}");
+            self.mark(&job.id, why, false);
             return;
         };
         // Never asked again: a comment deleted in between would clear a job it reached.
         if let Some(why) = self.others_wrote(&gh, job, shown).await {
-            self.mark_foreign(&job.id, format!("{when}, {why}"));
+            self.mark(&job.id, format!("{when}, {why}"), false);
         }
     }
 
@@ -9459,7 +9365,7 @@ impl Jobs {
     }
 
     /// obid's record of the commits `job` made, with those of the jobs it follows up while each
-    /// of them is one whose check would get values too ([`Job::made`]).
+    /// of them is one whose check would get values too ([`Job::made`], [`Job::reached`]).
     fn record_of(&self, job: &Job) -> HashSet<String> {
         let mut record: HashSet<String> = job.made.iter().cloned().collect();
         let mut of = job.follow_up_of.clone();
@@ -9468,7 +9374,7 @@ impl Jobs {
             let Some(earlier) = of.as_deref().and_then(|id| self.get(id)) else {
                 break;
             };
-            if earlier.someone_elses().is_some() {
+            if earlier.someone_elses().is_some() || earlier.reached.is_some() {
                 break;
             }
             record.extend(earlier.made.iter().cloned());
@@ -9523,7 +9429,7 @@ impl Jobs {
             Ok(new) => {
                 self.update(id, |job| job.made.extend(new));
             }
-            Err(why) => self.mark_foreign(id, why),
+            Err(why) => self.mark(id, why, false),
         }
     }
 
@@ -9595,7 +9501,7 @@ impl Jobs {
         // The commit the check runs, taken once, after the job's turn ended: its sandbox's watcher
         // has killed what the turn started (crate::sandbox, `WATCHER`).
         let head = crate::secretspec::head_of(spec).await;
-        let refused = match (job.check_refuses_secrets(), &head) {
+        let refused = match (job.own_check_refuses_secrets(), &head) {
             (Some(why), _) => Some(why),
             (None, Err(why)) => Some(why.clone()),
             (None, Ok(head)) => {
@@ -9612,6 +9518,7 @@ impl Jobs {
             }
         };
         if let Some(why) = refused {
+            self.update(id, |j| j.check_withheld = j.withheld.is_some());
             return (
                 Filled::refused(format!(
                     "{FILE} on {base} declares {}; obid gave this check none of its owner's secrets: {why}.",
@@ -10014,7 +9921,7 @@ impl Jobs {
         // Only a job that could get the owner's secrets asks GitHub (crate::secretspec).
         // A job on an issue asks once its issue is quoted, below.
         if !worktree.join(".git").exists()
-            && job.check_refuses_secrets().is_none()
+            && job.not_owners_words().is_none()
             && job.issue.is_none()
             && job.pr.is_some()
         {
@@ -10050,12 +9957,11 @@ impl Jobs {
                 git::ensure_clone(&self.clone_home(&job), &repo.repo, &repo.remote, &refspecs)
                     .await
                     .map_err(|e| format!("Couldn't get {} ready: {e}", repo.repo))?;
-            // A job that is someone else's code in the owner's own clone (a follow-up of one that
-            // turned so) makes the clone someone else's code for every check from now on, as does
-            // a branch or a pull request's head that isn't the owner's own (crate::secretspec).
+            // Someone else's code, or a reach past the registries (a follow-up of either), marks
+            // the owner's clone for every check from now on (crate::secretspec).
             if !job.apart
                 && job.obi.is_none()
-                && let Some(why) = job.someone_elses()
+                && let Some(why) = job.someone_elses().or(job.reached.clone())
             {
                 git::taint(&clone, &format!("job {id}: {why}")).await;
             }
@@ -10361,7 +10267,8 @@ impl Jobs {
                 };
                 quoted.push((
                     review::ASKED_FILE,
-                    review::asked(&task, &request, &later, untrusted.as_deref()),
+                    review::asked(&task, &request, &later, untrusted.as_deref())
+                        + &review::reached_note(author.as_ref().and_then(|a| a.reached.as_deref())),
                 ));
                 // The security paths its head changes against its base, from the commit it reads
                 // (MERGING-15): none read counts as touching one.
@@ -10904,7 +10811,7 @@ impl Jobs {
                 if !turn.succeeded() {
                     // What OpenAI said, when the run went through the relay: Codex's own words
                     // drop its code (crate::chatgpt_relay).
-                    let refusal = self.chatgpt_refusal(id);
+                    let refusal = self.chatgpt.get().and_then(|chatgpt| chatgpt.runs.take(id));
                     let subtype = turn.result.as_ref().and_then(|r| r.get("subtype"));
                     if subtype.and_then(Value::as_str) == Some("error_max_turns") {
                         // RECOVERY-4: the same session goes on, counted with RECOVERY-3's.
@@ -10985,8 +10892,9 @@ impl Jobs {
                             retries(turn.cause(), words, session, no_result)
                         }
                     };
-                    let tries = self.get(id).map_or(0, |j| j.recovery.errors);
-                    if tries < of {
+                    let recovery = self.get(id).map(|j| j.recovery).unwrap_or_default();
+                    let tries = recovery.errors;
+                    if tries < of && !recovery.spent() {
                         // RECOVERY-1: running, in its same session and worker, so Stop works, no
                         // card shows and the tries count with what came before them.
                         let error = match &refusal {
@@ -10996,12 +10904,13 @@ impl Jobs {
                         };
                         let wait = CUT_WAITS[tries].min(self.config.stall_after);
                         let attempt = tries + 1;
-                        self.update(id, |job| job.recovery.errors = attempt);
+                        self.update(id, |job| {
+                            job.recovery.errors = attempt;
+                            job.recovery.tries += 1;
+                        });
                         tracing::info!("job {id}: {error}: trying again in {wait:?}");
                         let mut left = wait;
                         let heard = || self.get(id).is_some_and(|j| !j.heard.is_empty());
-                        // The wait takes no slot (ADMISSION-4).
-                        let _idle = Idle::new(self, id);
                         'wait: while !left.is_zero() && !heard() {
                             let step = trying_again(error, left, attempt, of);
                             self.update(id, |job| {
@@ -11085,6 +10994,9 @@ impl Jobs {
                             reason,
                             reset: reset.filter(|at| *at > now),
                         });
+                    }
+                    if tries < of && recovery.spent() {
+                        reason = crate::job::capped(&reason);
                     }
                     let resumes = None;
                     return Err(End::NeedsYou {
@@ -12032,7 +11944,7 @@ impl Jobs {
     /// have; `Err` when its review isn't waiting for the owner.
     pub fn review_again(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
         let job = self.get(id)?;
-        if !job.review_needs_you() || job.current_review().is_some() {
+        if !job.review_needs_you() || job.current_review().is_some_and(|r| !r.approved()) {
             return Some(Err(Refused(
                 "Oby's review of it isn't waiting for you.".into(),
             )));
@@ -12117,14 +12029,11 @@ impl Jobs {
                 })
                 .collect();
             // A second review that never started (a restart between the first's verdict and its
-            // start, say) starts now too.
+            // start, say) starts now too: none that gave no verdict, or that the owner ended.
             let waiting = state
                 .jobs
                 .values()
-                .filter(|job| {
-                    job.no_reviewer.is_some()
-                        || (job.review_due().is_some() && job.second_review_due())
-                })
+                .filter(|job| job.no_reviewer.is_some() || job.second_review_waits())
                 .map(|job| job.id.clone())
                 .collect();
             (hanging, waiting)
@@ -12216,14 +12125,12 @@ impl Jobs {
                     .unwrap_or_else(|| status.as_str().to_owned()),
             ),
         };
-        // It ended before a verdict (a login refused, the tool crashing): on the next reviewer
-        // that may take it, once; then the owner's, in one item. Never one the owner let go.
+        // No verdict: the owner's (RECOVERY-15), in one item while its pull request is open, after
+        // the next reviewer that may take it once, for a login refused or a crash; none they ended.
         let recorded = author
             .review_failed_here()
             .is_some_and(|f| f.reviews.iter().any(|(job, _)| job == id));
-        if matches!(review.status, Status::Failed | Status::Interrupted)
-            && (review.dismissed.is_none() || recorded)
-        {
+        if why.is_some() && (!review.ended_by_owner() || recorded) {
             let mut failed =
                 author
                     .review_failed_here()
@@ -12240,8 +12147,10 @@ impl Jobs {
             }
             let mut tried = author.clone();
             tried.review_failed = Some(failed.clone());
-            let retry =
-                !failed.needs_you && failed.reviews.len() < 2 && self.reviewer(&tried).is_ok();
+            let retry = matches!(review.status, Status::Failed | Status::Interrupted)
+                && !failed.needs_you
+                && failed.reviews.len() < 2
+                && self.reviewer(&tried).is_ok();
             failed.needs_you = !retry;
             let why = why.unwrap_or_default();
             let number = author
@@ -12264,7 +12173,7 @@ impl Jobs {
                     "job {of}: its review {id} ended before a verdict ({why}): another reviewer takes it"
                 );
                 self.start_review(&of);
-            } else if let (Some(author), Some(error)) = (author, error) {
+            } else if let (Some(author), Some(error)) = (author.filter(pull_request_open), error) {
                 self.review_items(
                     &of,
                     Some(crate::sphere::inbox::review_item(&author, id, &error)),
@@ -12820,8 +12729,10 @@ impl Jobs {
                 self.schedule();
             }
             let woken = self.follow.notified();
+            // Every 30 seconds, or as often as reads may come when they come sooner.
+            let tick = Duration::from_secs(follow_interval().clamp(1, 30).unsigned_abs());
             tokio::select! {
-                _ = tokio::time::sleep(follow_tick()) => {}
+                _ = tokio::time::sleep(tick) => {}
                 _ = woken => {}
             }
         }
@@ -13848,12 +13759,6 @@ fn publish_action_of(
 /// too much to tell: 4 MiB, and then the check stands for nothing at merge.
 const CHANGED_MAX: usize = 4 * 1024 * 1024;
 
-/// How often the pull request follower looks for one that's due: every 30 seconds, or as often as
-/// reads may come when they come sooner.
-fn follow_tick() -> Duration {
-    Duration::from_secs(follow_interval().clamp(1, 30).unsigned_abs())
-}
-
 /// How long a read of a pull request (or a try) stands before it's read again: three minutes, or
 /// `OBID_FOLLOW_SECONDS` (obid's tests set less).
 fn follow_interval() -> i64 {
@@ -14576,7 +14481,6 @@ struct Load {
     check: u64,
     agent_now: u64,
     check_now: u64,
-    here: bool,
 }
 
 impl Load {
@@ -14587,9 +14491,6 @@ impl Load {
             check: check_budget(jobs.values(), job),
             agent_now,
             check_now,
-            // ponytail: every job runs here since compute sharing went; drop `here` when Load is
-            // next reworked.
-            here: true,
         }
     }
 }
@@ -14598,7 +14499,6 @@ impl Load {
 fn agents_held(running: &[Load]) -> u64 {
     running
         .iter()
-        .filter(|l| l.here)
         .map(|l| l.agent.saturating_sub(l.agent_now))
         .sum()
 }
@@ -15133,73 +15033,6 @@ fn check_failed(command: &str, output: &str, failing: &[crate::facts::Failing]) 
     )
 }
 
-/// Why a failed check of `command` shows, in its `output`, that the machine failed, not the code
-/// (PUBLISHING-17): a host that didn't resolve, a registry it couldn't fetch from, a compiler that
-/// doesn't match what built its dependencies, or a step whose own first word isn't installed.
-/// Each sign starts a line of what the check printed (trimmed), so a source line a compiler or
-/// linter quotes (`NN |`) or a diff's `+`/`-` line never matches.
-/// ponytail: a short list of the common toolchains' words; a tool that words it otherwise still
-/// goes back to the agent. Add a line here when one shows up in a real check.
-fn environment_signature(command: &str, output: &str) -> Option<&'static str> {
-    const HOST: &str = "the check couldn't resolve a host";
-    const FETCH: &str = "the check couldn't fetch a dependency";
-    // A line that starts with the first and holds the second.
-    const SIGNS: &[(&str, &str, &str)] = &[
-        ("fatal: unable to access", "Could not resolve host", HOST),
-        ("curl: (6) Could not resolve host", "", HOST),
-        ("Error: getaddrinfo ENOTFOUND", "", HOST),
-        ("Error: getaddrinfo EAI_AGAIN", "", HOST),
-        ("npm ERR! code ENOTFOUND", "", HOST),
-        ("npm error code ENOTFOUND", "", HOST),
-        ("npm ERR! code EAI_AGAIN", "", HOST),
-        ("npm error code EAI_AGAIN", "", HOST),
-        ("npm ERR! code ENOTCACHED", "", FETCH),
-        ("npm error code ENOTCACHED", "", FETCH),
-        ("ERR_PNPM_NO_OFFLINE", "", FETCH),
-        (
-            "error[E0514]",
-            "",
-            "its compiler doesn't match the one that built its dependencies",
-        ),
-    ];
-    // What cargo says caused a `failed to get` when it was the network: a bad `path` isn't.
-    const CARGO_OFFLINE: &[&str] = &[
-        "attempting to make an HTTP request, but --offline was specified",
-        "[6] Couldn't resolve host name",
-        "[7] Couldn't connect to server",
-        "spurious network error",
-    ];
-    let lines: Vec<&str> = output.lines().map(str::trim).collect();
-    let starts = |sign: &str| lines.iter().any(|line| line.starts_with(sign));
-    if let Some(&(_, _, label)) = SIGNS.iter().find(|(sign, holds, _)| {
-        lines
-            .iter()
-            .any(|line| line.starts_with(sign) && line.contains(holds))
-    }) {
-        return Some(label);
-    }
-    if starts("error: failed to get `") && CARGO_OFFLINE.iter().any(|cause| starts(cause)) {
-        return Some(FETCH);
-    }
-    // `/bin/sh: cargo: command not found` (bash) or `/bin/sh: 1: cargo: not found` (dash), for
-    // the first word of one of its steps: not a pipe's second command, a `$(…)` or a recipe's.
-    let firsts: Vec<String> = crate::facts::steps(command)
-        .iter()
-        .filter_map(|step| step.split_whitespace().find(|word| !word.contains('=')))
-        .map(str::to_owned)
-        .collect();
-    lines
-        .iter()
-        .filter_map(|line| line.strip_prefix("/bin/sh: "))
-        .filter_map(|rest| {
-            rest.strip_suffix(": command not found")
-                .or_else(|| rest.strip_suffix(": not found"))
-        })
-        .filter_map(|said| said.rsplit(": ").next())
-        .any(|name| firsts.iter().any(|first| first == name))
-        .then_some("a command its check runs isn't installed")
-}
-
 /// The worktree as a check starts ([`Jobs::before_check`]).
 struct CheckStart {
     head: String,
@@ -15214,24 +15047,18 @@ struct BaseFailure {
     step: String,
     /// Its failing tests' names.
     failing: Vec<String>,
-    /// Whether those names are the whole of its failure: its step's runner counted as many failed,
-    /// and the list wasn't cut at the most a run lists.
+    /// Whether those names are the whole of its failure ([`crate::facts::named`]).
     named: bool,
 }
 
 impl BaseFailure {
     fn of(record: &crate::facts::CheckRecord, output: &str) -> BaseFailure {
         let failed = record.steps.iter().find(|s| s.passed == Some(false));
-        let failing: Vec<String> = record.failing.iter().map(|f| f.test.clone()).collect();
         BaseFailure {
             signature: crate::facts::signature(record, output),
             step: failed.map(|s| s.command.clone()).unwrap_or_default(),
-            named: !failing.is_empty()
-                && failing.len() < crate::facts::FAILING_MAX
-                && failed
-                    .and_then(|s| s.tests)
-                    .is_some_and(|t| t.failed == failing.len() as u64),
-            failing,
+            named: crate::facts::named(record, output),
+            failing: record.failing.iter().map(|f| f.test.clone()).collect(),
         }
     }
 
@@ -15245,8 +15072,8 @@ impl BaseFailure {
     }
 }
 
-/// How a run of the check went.
-#[derive(Debug, Clone)]
+/// How a run of the check went: by default, not at all (the job was stopped).
+#[derive(Debug, Clone, Default)]
 pub struct CheckRun {
     pub passed: bool,
     /// Its output, stdout and stderr together, from the end.
@@ -15260,8 +15087,8 @@ pub struct CheckRun {
 /// everything it started when it runs too long or the job stops.
 ///
 /// `secrets` (the values its repository declares, crate::secretspec) are taken out of its output
-/// before it is cut to size or kept: when only its end was kept, the first line, which a value may
-/// have been cut in, goes too.
+/// before it is cut to size or kept. When only its end was kept, its first line, which a value or
+/// a word may have been cut in, goes too (RECOVERY-9).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_check(
     argv: &[OsString],
@@ -15364,14 +15191,15 @@ pub async fn run_check(
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
+    if cut {
+        // With no newline before its end, all of it stays, unless a declared secret may be in it.
+        let declared = secrets.is_some_and(|secrets| !secrets.is_empty());
+        let none = if declared { kept.len() } else { 0 };
+        let body = kept.strip_suffix(b"\n").unwrap_or(&kept);
+        let start = body.iter().position(|&b| b == b'\n');
+        kept.drain(..start.map_or(none, |at| at + 1));
+    }
     if let Some(secrets) = secrets.filter(|secrets| !secrets.is_empty()) {
-        if cut {
-            let start = kept
-                .iter()
-                .position(|&b| b == b'\n')
-                .map_or(kept.len(), |at| at + 1);
-            kept.drain(..start);
-        }
         kept = secrets.redact(&String::from_utf8_lossy(&kept)).into_bytes();
     }
     let mut output = String::from_utf8_lossy(&kept).into_owned();
@@ -15385,7 +15213,9 @@ pub async fn run_check(
             .collect();
     }
     if output.len() > CHECK_OUTPUT_MAX {
-        output = tail(&output, CHECK_OUTPUT_MAX).to_owned();
+        let end = tail(&output, CHECK_OUTPUT_MAX);
+        let start = end.strip_suffix('\n').unwrap_or(end).find('\n');
+        output = end[start.map_or(0, |at| at + 1)..].to_owned();
     }
     if timed_out {
         if !output.ends_with('\n') && !output.is_empty() {
@@ -15401,9 +15231,7 @@ pub async fn run_check(
             secs if secs >= 60 => format!("{}-minute", secs / 60),
             secs => format!("{secs}-second"),
         };
-        format!(
-            "Not published: the check ran past its {limit} limit, so nothing counts as checked. Read its change, then Publish it by hand."
-        )
+        unchecked(format!("the check ran past its {limit} limit"))
     });
     Ok(CheckRun {
         passed,
@@ -16111,6 +15939,28 @@ mod tests {
                 fetch,
             ),
             ("npm ci --offline", "npm ERR! code ENOTCACHED", fetch),
+            // Yarn Classic's `--offline` with what it needs not in its cache.
+            (
+                "yarn install --offline --frozen-lockfile && yarn test",
+                "yarn install v1.22.22\n[1/4] Resolving packages...\n[2/4] Fetching packages...\nerror Can't make a request in offline mode (\"https://registry.yarnpkg.com/left-pad/-/left-pad-1.3.0.tgz\")\ninfo Visit https://yarnpkg.com/en/docs/cli/install for documentation about this command.",
+                fetch,
+            ),
+            (
+                "yarn install --offline --frozen-lockfile && yarn test",
+                "error Couldn't find any versions for \"left-pad\" that matches \"^1.3.0\" in our cache (possible versions are \"\"). This is usually caused by a missing entry in the lockfile, running Yarn without the --offline flag may help fix this issue.",
+                fetch,
+            ),
+            // uv's `--offline`, as 0.12 and earlier and as 0.13 word its cause.
+            (
+                "uv run --frozen --offline pytest",
+                "error: Failed to install cpython-3.12.8-macos-aarch64-none\n  Caused by: Failed to download `https://github.com/astral-sh/python-build-standalone/releases/download/20250115/cpython-3.12.8.tar.gz`\n  Caused by: Network connectivity is disabled, but the requested data wasn't found in the cache for: `https://github.com/astral-sh/python-build-standalone/releases/download/20250115/cpython-3.12.8.tar.gz`",
+                fetch,
+            ),
+            (
+                "uv run --frozen --offline pytest",
+                "error: Failed to download `iniconfig==2.0.0`\n  cause: Network connectivity is disabled, but the requested data wasn't found in the cache: https://files.pythonhosted.org/packages/iniconfig-2.0.0-py3-none-any.whl",
+                fetch,
+            ),
             (
                 "cargo build",
                 "error[E0514]: found crate `serde` compiled by an incompatible version of rustc",
@@ -16157,8 +16007,20 @@ mod tests {
                 None,
             ),
             ("npm test", "sh: jest: command not found", None),
+            // Yarn's range no version meets, online, and uv refusing a remote file: the change's.
+            (
+                "yarn test",
+                "error Couldn't find any versions for \"left-pad\" that matches \"^9.0.0\"",
+                None,
+            ),
+            (
+                "uv run --offline --with-requirements http://example.com/r.txt pytest",
+                "error: Network connectivity is disabled, but a remote requirements file was requested: http://example.com/r.txt",
+                None,
+            ),
         ] {
-            assert_eq!(environment_signature(command, output), label, "{output}");
+            let said = unjudged::environment_signature(command, output);
+            assert_eq!(said, label, "{output}");
         }
     }
 
@@ -16836,8 +16698,66 @@ mod tests {
         assert!(!jobs.described_clean("o/r", 7));
         jobs.note_described("o/r", "https://github.com/o/r/pull/9", "j");
         assert!(jobs.described_clean("o/r", 9));
+        // One whose check got none of the owner's secrets (a reach past the registries) isn't
+        // clean either: its description could carry what it reached (MERGING-31).
+        jobs.update("j", |job| {
+            job.reached = Some("its agent reached docs.example.com:443".into())
+        });
+        assert!(!jobs.described_clean("o/r", 9));
+        jobs.update("j", |job| job.reached = None);
         jobs.update("j", |job| job.vetted = false);
         assert!(!jobs.described_clean("o/r", 7));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-14 and MERGING-31: what obid's proxy lets an agent reach marks its job. A host that
+    /// can serve anyone's source code makes it someone else's code (two reviews);
+    /// any other site past the registries is a reach (one review). Both mark the owner's clone, a
+    /// reach inherited from the job it follows up too.
+    #[tokio::test]
+    async fn merging_31_github_is_someone_elses_code_and_any_other_site_a_reach() {
+        let (jobs, clone, root) = jobs_with_a_clone("reach-marks").await;
+        jobs.update("j", |job| job.vetted = true);
+        let marked = || {
+            let clone = clone.clone();
+            async move { crate::git::git(&clone, &["config", "--get", "obid.foreign"]).await }
+        };
+        crate::egress::mark_reach(&jobs, "j", "registry.npmjs.org", 443);
+        assert_eq!(jobs.get("j").unwrap().check_refuses_secrets(), None);
+        assert!(marked().await.is_err());
+        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
+        let job = jobs.get("j").unwrap();
+        assert!(
+            job.reached
+                .as_deref()
+                .is_some_and(|why| why.contains("docs.example.com"))
+        );
+        assert_eq!((job.foreign.clone(), job.two_reviews_why()), (None, None));
+        assert!(marked().await.is_ok());
+        // Inherited, it still marks the clone this job's agent reached from.
+        crate::git::git(&clone, &["config", "--unset", "obid.foreign"])
+            .await
+            .unwrap();
+        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
+        assert!(marked().await.is_ok());
+        // A host that serves anyone's source code, and an edge that serves whichever of its sites
+        // `Host` names (the Go module proxy serves any public commit): someone else's code.
+        for host in [
+            "raw.githubusercontent.com",
+            "gitlab.com",
+            "proxy.golang.org",
+            "pypi.org",
+        ] {
+            jobs.update("j", |job| job.foreign = None);
+            crate::egress::mark_reach(&jobs, "j", host, 443);
+            let job = jobs.get("j").unwrap();
+            assert!(
+                job.foreign.as_deref().is_some_and(|why| why.contains(host)),
+                "{host}: {:?}",
+                job.foreign
+            );
+            assert!(job.two_reviews_why().is_some(), "{host}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -18660,6 +18580,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    impl Jobs {
+        /// The first signed-in account of `tool` but `except` with room ([`crate::usage::Usage::held`]
+        /// says nothing) whose login can run now, as a run's start readies it
+        /// ([`Jobs::claude_login_ready`]; Codex's and Cursor's are [`signed_in`]'s), in the tool's
+        /// order: where a job whose account filled goes on (#871).
+        async fn room_for(&self, tool: Tool, except: &str) -> Option<crate::config::Account> {
+            let home = login_home();
+            let now = obi_protocol::time::now();
+            for account in self.accounts(tool) {
+                if account.id == except
+                    || self.being_changed(&account.id)
+                    || !signed_in(tool, &account, home.as_deref())
+                    || self.usage.get(&account.id).held(now).is_some()
+                {
+                    continue;
+                }
+                if tool == Tool::Claude && self.claude_login_ready(Some(&account)).await.is_err() {
+                    continue;
+                }
+                return Some(account);
+            }
+            None
+        }
+    }
+
     /// The accounts Oby thinks with, best first (#874): those with room, then those held only by
     /// their weekly reserve, then the rest, the least of their 5-hour window first; never one
     /// marked full or signed out. A job whose account filled goes on on the first with room whose
@@ -18841,23 +18786,190 @@ mod tests {
         .unwrap()
     }
 
-    /// MERGING-30: a CLI reaching its own vendor's hosts past the model's API (Codex's
-    /// chatgpt.com on a ChatGPT login) goes through and leaves the job the owner's.
-    #[tokio::test]
-    async fn merging_30_codex_reaching_chatgpt_leaves_the_job_the_owners() {
+    /// MERGING-30: job `agent` of the owner's own words reaches `host` on 443 and goes through:
+    /// whether it was marked someone else's code, and whether its own check still gets secrets.
+    async fn vendor_reach(agent: &str, host: &str) -> (bool, bool) {
+        let job = reached(agent, host).await;
+        (
+            job.foreign.is_some(),
+            job.own_check_refuses_secrets().is_none(),
+        )
+    }
+
+    /// The job of [`vendor_reach`], after its reach.
+    async fn reached(agent: &str, host: &str) -> Job {
         let root = std::env::temp_dir().join(format!("obid-vendor-host-{}", uuid::Uuid::new_v4()));
-        let job = Job::new(
+        let mut job = Job::new(
             "j".into(),
             "o/r".into(),
             "fix".into(),
             "Fix it".into(),
-            "codex".into(),
+            agent.into(),
             "x1".into(),
         );
+        job.vetted = true;
         let jobs = jobs_with_kept(&root.join("home"), &[&job]);
-        assert_eq!(jobs.reach_now("j", "chatgpt.com", 443), Some(Ok(())));
-        assert_eq!(jobs.get("j").unwrap().foreign, None);
+        assert_eq!(jobs.reach_now("j", host, 443), Some(Ok(())));
+        let job = jobs.get("j").unwrap();
         let _ = std::fs::remove_dir_all(&root);
+        job
+    }
+
+    /// MERGING-30: a CLI's own API host leaves the job as it was: not marked, secrets kept (no
+    /// over-withholding: every job reaches its own API).
+    #[tokio::test]
+    async fn merging_30_a_cli_api_host_leaves_the_job_as_it_was() {
+        assert_eq!(
+            vendor_reach("claude", "api.anthropic.com").await,
+            (false, true)
+        );
+        assert_eq!(vendor_reach("codex", "api.openai.com").await, (false, true));
+        assert_eq!(
+            vendor_reach("cursor", "api2.cursor.sh").await,
+            (false, true)
+        );
+        // The other hosts the CLIs call for their logins, settings and flags (the owner's answer of
+        // 2026-11-08).
+        for (agent, host) in [
+            ("claude", "statsig.anthropic.com"),
+            ("claude", "console.anthropic.com"),
+            ("codex", "auth.openai.com"),
+            ("cursor", "api3.cursor.sh"),
+            ("cursor", "api4.cursor.sh"),
+        ] {
+            assert_eq!(vendor_reach(agent, host).await, (false, true), "{host}");
+        }
+    }
+
+    /// MERGING-30: Codex's chatgpt.com, a ChatGPT login's API that serves shared chats too,
+    /// doesn't mark the job, but its own check gets no declared secrets. Nothing a conversation
+    /// reads of the job sees that: its summary when it ends (crate::conversation, `tell`), its
+    /// title and its line in a list (crate::brain::tools), routes and the harness all ask
+    /// `check_refuses_secrets`, which stays clear, so the conversation isn't marked.
+    #[tokio::test]
+    async fn merging_30_chatgpt_withholds_secrets_without_marking() {
+        assert_eq!(vendor_reach("codex", "chatgpt.com").await, (false, false));
+        let job = reached("codex", "chatgpt.com").await;
+        assert_eq!(
+            job.own_check_refuses_secrets().as_deref(),
+            Some("this job reached chatgpt.com")
+        );
+        assert!(job.vetted);
+        assert_eq!(job.check_refuses_secrets(), None);
+        assert_eq!(job.untrusted_why(), None);
+    }
+
+    /// MERGING-30: what reaching chatgpt.com withheld is that job's only: a follow-up of it gets
+    /// its declared secrets.
+    #[tokio::test]
+    async fn merging_30_a_follow_up_of_a_chatgpt_job_gets_its_secrets() {
+        let (jobs, _clone, root) = jobs_with_a_clone("chatgpt-follow-up").await;
+        let first = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                vetted: true,
+                ..NewJob::default()
+            })
+            .unwrap();
+        // Its Codex: this home configures only Claude, which its follow-up runs on.
+        jobs.update(&first.id, |j| j.agent = "codex".into());
+        assert_eq!(jobs.reach_now(&first.id, "chatgpt.com", 443), Some(Ok(())));
+        let first = jobs.get(&first.id).unwrap();
+        assert!(first.own_check_refuses_secrets().is_some());
+        let next = jobs
+            .create(NewJob {
+                vetted: true,
+                agent: Some("claude".into()),
+                ..follow_up(&first, "and the docs")
+            })
+            .unwrap();
+        assert_eq!(next.follow_up_of.as_deref(), Some(first.id.as_str()));
+        assert_eq!(next.own_check_refuses_secrets(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-30: reaching chatgpt.com holds the job's merge only where its check really ran
+    /// without declared secrets: in a repository that declares none it merges by itself.
+    #[tokio::test]
+    async fn merging_30_only_a_check_that_went_without_secrets_holds_the_merge() {
+        let (jobs, clone, root) = jobs_with_a_clone("chatgpt-declared").await;
+        let job = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                vetted: true,
+                ..NewJob::default()
+            })
+            .unwrap();
+        jobs.update(&job.id, Job::reached_chatgpt);
+        let spec = Spec {
+            worktree: root.join("none"),
+            ..Spec::default()
+        };
+        let apart = |jobs: &Jobs| {
+            let job = jobs.get(&job.id).unwrap();
+            crate::merge::check_apart(&job, "./check.sh", Some(&["a.rs".to_owned()]))
+        };
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        assert_eq!(apart(&jobs), None);
+        let remote = root.join("remote");
+        std::fs::write(
+            remote.join("secretspec.toml"),
+            "[profiles.default]\nTOKEN = { description = \"t\" }\n",
+        )
+        .unwrap();
+        for args in [
+            &["add", "secretspec.toml"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-qm",
+                "d",
+            ],
+        ] {
+            crate::git::git(&remote, args).await.unwrap();
+        }
+        crate::git::git(
+            &clone,
+            &["fetch", "-q", "origin", "+main:refs/remotes/origin/main"],
+        )
+        .await
+        .unwrap();
+        let _ = jobs.declared_secrets(&job.id, &spec, false).await;
+        assert_eq!(
+            apart(&jobs).as_deref(),
+            Some(
+                "Declared secrets withheld: this job reached chatgpt.com. Its check ran without them, so it's yours to merge."
+            )
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-30: a vendor's pages people write (shared chats, forums) mark the job someone
+    /// else's code, so its check gets no declared secrets.
+    #[tokio::test]
+    async fn merging_30_a_page_people_write_marks_the_job() {
+        assert_eq!(vendor_reach("claude", "claude.ai").await, (true, false));
+        assert_eq!(
+            vendor_reach("claude", "www.anthropic.com").await,
+            (true, false)
+        );
+        assert_eq!(
+            vendor_reach("codex", "community.openai.com").await,
+            (true, false)
+        );
+        assert_eq!(
+            vendor_reach("cursor", "forum.cursor.com").await,
+            (true, false)
+        );
+        // chatgpt.com alone is a ChatGPT login's API: its subdomains are pages like any other.
+        assert_eq!(vendor_reach("codex", "x.chatgpt.com").await, (true, false));
     }
 
     /// TASKS-18: only a stop the owner asked for says a question waited; obid's own stop of a job
@@ -19697,6 +19809,62 @@ mod tests {
             assert_eq!(ended.status, Status::Failed, "{ended:?}");
             assert!(ended.reason.unwrap().starts_with(crate::job::CRASHED));
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// RECOVERY-17: a crash's continuation takes one of a job's 10; past them, the crash ends as a
+    /// crash past its tries does, its reason naming the cap and Try again its next step.
+    #[tokio::test]
+    async fn recovery_17_a_crash_takes_a_try_and_says_the_cap() {
+        let root = std::env::temp_dir().join(format!("obid-cap-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("jobs")).unwrap();
+        for (id, tries) in [("cccc0001", 9), ("cccc0002", 10)] {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = Status::Stopped;
+            job.session = Some("s1".into());
+            job.recovery.tries = tries;
+            std::fs::write(
+                home.join(format!("jobs/{id}.json")),
+                serde_json::to_vec(&job).unwrap(),
+            )
+            .unwrap();
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        for id in ["cccc0001", "cccc0002"] {
+            jobs.update(id, |job| {
+                job.status = Status::Running;
+                job.phase = Some(Phase::Work);
+            });
+            jobs.crashed(id, "boom");
+        }
+        let went_on = jobs.get("cccc0001").unwrap();
+        assert_eq!(went_on.status, Status::Queued, "{went_on:?}");
+        assert_eq!(went_on.recovery.tries, 10);
+        let ended = jobs.get("cccc0002").unwrap();
+        assert_eq!(ended.status, Status::Failed, "{ended:?}");
+        let reason = ended.reason.unwrap();
+        assert!(reason.starts_with(crate::job::CRASHED), "{reason}");
+        assert!(reason.contains("by itself 10 times"), "{reason}");
+        assert_eq!(ended.next_step.as_deref(), Some(crate::job::TRY_AGAIN));
         let _ = std::fs::remove_dir_all(root);
     }
 

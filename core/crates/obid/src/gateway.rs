@@ -49,6 +49,9 @@ const LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// use stays paired, one unused for 30 days still expires. Half the lifetime, so the file is written
 /// at most about twice a month per device, never on every request.
 const SLIDE: Duration = Duration::from_secs(15 * 24 * 60 * 60);
+/// The longest a device not paired through the Obysphere stays paired, counted from pairing,
+/// however it slides (PAIRING-7): then it pairs again.
+const PAIRED: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 /// How long after redeeming an invitation the owner made a phone may add its publishing key: it
 /// registers on the connection right after pairing.
 const KEYABLE: Duration = Duration::from_secs(600);
@@ -200,6 +203,23 @@ struct Device {
     /// redeemed an invitation the owner made on their own device. A pairing from before has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keyable_until: Option<i64>,
+}
+
+impl Device {
+    /// `at`, but never past 90 days from pairing for a device not paired through the Obysphere
+    /// (PAIRING-7). Every record has its pairing time, `created`, since the first.
+    fn capped(&self, at: i64) -> i64 {
+        match self.relay {
+            Some(_) => at,
+            None => at.min(self.created + PAIRED.as_secs() as i64),
+        }
+    }
+
+    /// When its token stops working: its sliding expiry, capped. A record that slid past the cap
+    /// before PAIRING-7 is capped here too.
+    fn until(&self) -> i64 {
+        self.capped(self.expires_at)
+    }
 }
 
 /// What `POST /v1/pairing/invite` answers: the QR code's parts and the six digits.
@@ -402,7 +422,7 @@ impl Gateway {
         let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
         devices.values().any(|d| {
             d.id == id
-                && d.expires_at > seconds(now)
+                && d.until() > seconds(now)
                 && d.keyable_until.is_some_and(|until| until > seconds(now))
         })
     }
@@ -443,18 +463,18 @@ impl Gateway {
         right: impl Fn(&Device) -> bool,
     ) -> Option<Result<String, ()>> {
         let key = digest(token);
-        let device = devices
-            .get_mut(&key)
-            .filter(|d| d.expires_at > seconds(now))?;
+        let device = devices.get_mut(&key).filter(|d| d.until() > seconds(now))?;
         if !right(device) {
             return Some(Err(()));
         }
         let id = device.id.clone();
-        if device.expires_at >= seconds(now + SLIDE) {
+        // Never past the 90 days (PAIRING-7): at the cap there's nothing to write.
+        let fresh = device.capped(seconds(now + LIFETIME));
+        if device.until() >= seconds(now + SLIDE) || fresh <= device.expires_at {
             return Some(Ok(id));
         }
         let before = device.expires_at;
-        device.expires_at = seconds(now + LIFETIME);
+        device.expires_at = fresh;
         if let Err(e) = self.save(devices) {
             tracing::warn!("couldn't extend paired device {id}: {e}");
             if let Some(d) = devices.get_mut(&key) {
@@ -471,7 +491,7 @@ impl Gateway {
             let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
             devices
                 .values()
-                .filter(|d| d.expires_at > seconds(now))
+                .filter(|d| d.until() > seconds(now))
                 .filter_map(|d| d.relay.clone())
                 .collect()
         };
@@ -496,7 +516,7 @@ impl Gateway {
         let devices = self.devices.lock().unwrap_or_else(|e| e.into_inner());
         devices
             .values()
-            .filter(|d| d.expires_at > seconds(now))
+            .filter(|d| d.until() > seconds(now))
             .map(|d| d.id.clone())
             .collect()
     }
@@ -511,7 +531,7 @@ impl Gateway {
             .map(|d| {
                 json!({"id": d.id, "name": d.name,
                        "created": obi_protocol::time::format(d.created),
-                       "expiresAt": obi_protocol::time::format(d.expires_at)})
+                       "expiresAt": obi_protocol::time::format(d.until())})
             })
             .collect()
     }
@@ -1274,6 +1294,106 @@ mod tests {
         // Revoke stays instant.
         assert!(gateway.revoke(&used.device_id).unwrap());
         assert!(!gateway.accepts(&used.token, now + 17 * day));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// PAIRING-7: a phone paired on the listener (local network, Remote access, the tailnet)
+    /// stops at 90 days from pairing though it was used the day before, and Paired devices says
+    /// so; one paired through the Obysphere keeps sliding.
+    #[test]
+    fn pairing_7_a_listener_paired_phone_pairs_again_after_90_days() {
+        let home = folder("ninety");
+        let gateway = Gateway::open(&home);
+        let now = SystemTime::now();
+        let day = Duration::from_secs(24 * 60 * 60);
+        let invitation = gateway.invite(
+            "https://mac.example",
+            "Mac",
+            "mac.example",
+            now,
+            None,
+            false,
+        );
+        let lan = gateway
+            .redeem(&invitation.secret, "LAN", now, None)
+            .unwrap();
+        let invitation = gateway.invite(
+            "https://sphere.example",
+            "Mac",
+            "mac.example",
+            now,
+            Some(RelayInvite {
+                sphere: "https://sphere.example".into(),
+                relay: "relay-id".into(),
+                token: "relay token".into(),
+                key: "key".into(),
+            }),
+            false,
+        );
+        let via = digest("relay token");
+        let sphere = gateway
+            .redeem(&invitation.secret, "Sphere", now, Some(&via))
+            .unwrap();
+        // Both used every 16 days, the last time on day 89.
+        for used in [16, 32, 48, 64, 80, 89] {
+            assert!(gateway.accepts(&lan.token, now + used * day), "day {used}");
+            assert_eq!(
+                gateway.device_via(&sphere.token, now + used * day, Some(&via)),
+                Some(Ok(sphere.device_id.clone()))
+            );
+        }
+        // Paired devices shows the true end: day 90 for the LAN phone, not day 80 + 30.
+        let cap = obi_protocol::time::format(seconds(now) + PAIRED.as_secs() as i64);
+        let listed = gateway.list();
+        let shown = |id: &str| {
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["id"] == id)
+                .unwrap()["expiresAt"]
+                .clone()
+        };
+        assert_eq!(shown(&lan.device_id), cap);
+        assert_ne!(shown(&sphere.device_id), cap);
+        // Day 90 and a second: the LAN phone is refused, everywhere; the Obysphere's isn't.
+        let past = now + PAIRED + Duration::from_secs(1);
+        assert!(!gateway.accepts(&lan.token, past));
+        assert_eq!(gateway.device_via(&lan.token, past, None), None);
+        assert!(!gateway.paired(past).contains(&lan.device_id));
+        assert_eq!(
+            gateway.device_via(&sphere.token, past, Some(&via)),
+            Some(Ok(sphere.device_id.clone()))
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// PAIRING-7 for a record that slid past the 90 days before the limit: capped when read.
+    #[test]
+    fn pairing_7_a_record_that_slid_past_90_days_is_capped() {
+        let home = folder("ninety-old");
+        let now = SystemTime::now();
+        let day = Duration::from_secs(24 * 60 * 60);
+        let created = seconds(now) - 100 * day.as_secs() as i64;
+        let device = Device {
+            id: "old".into(),
+            name: "Old".into(),
+            created,
+            expires_at: seconds(now + 20 * day),
+            relay: None,
+            keyable_until: None,
+        };
+        std::fs::write(
+            home.join("gateway-devices.json"),
+            serde_json::to_vec(&HashMap::from([(digest("old token"), device)])).unwrap(),
+        )
+        .unwrap();
+        let gateway = Gateway::open(&home);
+        assert!(!gateway.accepts("old token", now));
+        assert_eq!(
+            gateway.list()[0]["expiresAt"],
+            obi_protocol::time::format(created + PAIRED.as_secs() as i64)
+        );
         let _ = std::fs::remove_dir_all(home);
     }
 

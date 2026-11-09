@@ -110,10 +110,7 @@ pub(super) async fn launch(
     )?;
     features_off(&launch).await?;
     launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
-    let offered = shared
-        .jobs
-        .model_lists
-        .for_account(Tool::Codex, &account.id);
+    let offered = shared.jobs.model_lists.to_check(Tool::Codex, &account.id);
     let mut model = Some(crate::settings::account_model(
         &shared.config.home,
         Tool::Codex,

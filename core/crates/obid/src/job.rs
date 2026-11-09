@@ -66,9 +66,10 @@ pub fn obids_doing(reason: &str) -> bool {
 
 /// What obid did by itself to carry a job's cut run on (docs/contracts/recovery.md). `errors` and
 /// `stalls` count failures in a row: a turn that ends well, or a run that moved the worktree's
-/// head, starts them again, as the owner's own words start every count; the ceiling, token budget
-/// and loop detector bound a job that alternates. No restart, follow-on or automatic retry starts
-/// the others, so one kind of retry never multiplies another. Kept in its file, never in the API.
+/// head, starts them again. `tries` counts every continuation obid made by itself, and stops the
+/// job at [`Recovery::ALL_TRIES`] (RECOVERY-17), progress or not. Only the owner's own words start
+/// the counts again, so one kind of retry never multiplies another. Kept in its file, never in the
+/// API.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recovery {
@@ -76,6 +77,8 @@ pub struct Recovery {
     pub errors: usize,
     /// Runs gone quiet or at the turn limit (RECOVERY-3, RECOVERY-4).
     pub stalls: usize,
+    /// Every continuation obid made by itself, in a row or not ([`Recovery::spent`]).
+    pub tries: usize,
     /// Runs cut by obid or the Mac going down, or obid's own bug (RECOVERY-2).
     pub restarts: usize,
     /// Times a five-hour limit's wait was armed for it (docs/contracts/account-limits.md, LIMITS-9).
@@ -89,6 +92,31 @@ pub struct Recovery {
     /// again, since the words it holds are no longer anywhere else.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sent: Option<String>,
+}
+
+impl Recovery {
+    /// The continuations obid makes by itself in all (RECOVERY-17, the owner's word of
+    /// 2026-11-08): an error's, a stall's, an unclean restart's and a crash's. A clean restart, a
+    /// five-hour limit's resume, a new session (RECOVERY-8) and a fix round take none.
+    pub const ALL_TRIES: usize = 10;
+
+    /// Whether it got every continuation it gets in all.
+    pub fn spent(&self) -> bool {
+        self.tries >= Self::ALL_TRIES
+    }
+}
+
+/// What a crash past [`Recovery::ALL_TRIES`] adds to its reason (RECOVERY-17).
+pub const CAPPED: &str = " Oby carried this on by itself 10 times, so it left it here.";
+const _: () = assert!(Recovery::ALL_TRIES == 10, "CAPPED says 10");
+
+/// Why a job stops at [`Recovery::ALL_TRIES`] (RECOVERY-17): the cap, and what cut it last.
+pub fn capped(last: &str) -> String {
+    let last = last.trim().trim_end_matches('.');
+    format!(
+        "{} The last time: {last}. Try again carries it on.",
+        CAPPED.trim()
+    )
 }
 
 impl Recovery {
@@ -689,6 +717,23 @@ pub struct Job {
     /// follow-up never runs that code with the owner's values. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign: Option<String>,
+    /// Why its own check gets none of the declared secrets though the job stays the owner's own:
+    /// it reached chatgpt.com (MERGING-30). This job's only: no follow-up inherits it, and nothing
+    /// a conversation reads of the job sees it. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withheld: Option<String>,
+    /// Its check ran without the secrets its base declares because of [`Job::withheld`]: set by
+    /// the check that found names to withhold (`Jobs::declared_secrets`). A repository that
+    /// declares none never sets it, so its merge isn't held (crate::merge::check_apart).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub check_withheld: bool,
+    /// Why its check gets none of the owner's secrets though its code is still the owner's own:
+    /// its agent reached a site past the package registries (crate::secretspec, `site_is_foreign`;
+    /// `Jobs::mark`). Unlike [`Job::foreign`] it asks for no second review, but its check
+    /// can't stand for the Mac's either (MERGING-31).
+    /// In the API's job as `reached`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reached: Option<String>,
     /// The commits obid saw this job make (crate::secretspec, "made"): its agent's turns' new
     /// commits that passed its look (made then, by whoever made them, not a copy of one elsewhere),
     /// its rebases of them and its "work left uncommitted" commit, recorded only while the job was
@@ -916,16 +961,43 @@ impl Job {
             .or_else(|| self.untrusted_why())
     }
 
-    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
-    /// or none when it gets them, as far as the job itself says: someone else's code
+    /// What a follow-up of this job carries as its own [`Job::reached`]: it runs what this one
+    /// fetched past the registries too (MERGING-31).
+    pub fn reached_for_follow_up(&self) -> Option<String> {
+        let why = self.reached.as_ref()?;
+        Some(format!(
+            "it follows up a job that reached past the package registries ({why})"
+        ))
+    }
+
+    /// Why what it runs isn't only its owner's own words, or none: someone else's code
     /// ([`Job::someone_elses`]), and fail closed, any job that didn't start from the owner's own
-    /// words in Oby's apps ([`Job::vetted`]). What its check runs decides too (crate::jobs,
-    /// `declared_secrets`).
-    pub fn check_refuses_secrets(&self) -> Option<String> {
+    /// words in Oby's apps ([`Job::vetted`]).
+    pub fn not_owners_words(&self) -> Option<String> {
         self.someone_elses().or_else(|| {
             (!self.vetted)
                 .then(|| "it didn't start from the owner's own words in Oby's apps".into())
         })
+    }
+
+    /// Why its check gets none of the owner's secrets its repository declares (crate::secretspec),
+    /// or none when it gets them, as far as the job itself says: [`Job::not_owners_words`], or a
+    /// reach past the package registries ([`Job::reached`]). What its check runs decides too
+    /// (crate::jobs, `declared_secrets`).
+    pub fn check_refuses_secrets(&self) -> Option<String> {
+        self.not_owners_words().or_else(|| self.reached.clone())
+    }
+
+    /// Why its own check gets none of the declared secrets: [`Job::check_refuses_secrets`], or
+    /// what withheld them from this job alone ([`Job::withheld`]).
+    pub fn own_check_refuses_secrets(&self) -> Option<String> {
+        self.check_refuses_secrets()
+            .or_else(|| self.withheld.clone())
+    }
+
+    /// It reached chatgpt.com: its own check gets no declared secrets from then on (MERGING-30).
+    pub fn reached_chatgpt(&mut self) {
+        self.withheld = Some("this job reached chatgpt.com".into());
     }
 
     /// Its conversation was told of this end of it.
@@ -1077,6 +1149,9 @@ impl Job {
             unsigned: false,
             memory_from_others: false,
             foreign: None,
+            withheld: None,
+            check_withheld: false,
+            reached: None,
             made: Vec::new(),
             apart: false,
             clone_root: None,
@@ -1151,15 +1226,16 @@ impl Job {
         self.unattended || self.routine.is_some() || self.review_of.is_some() || self.obi.is_some()
     }
 
-    /// The rounds it may run: the number named, else [`SAME_FAILURE_CEILING`] for a committing
-    /// job with a check, whose rounds stop sooner on the same failure twice (RECOVERY-9), else 1.
+    /// The rounds it may run: the number named, else [`SAME_FAILURE_CEILING`] (or the owner's
+    /// `rounds` limit when it's lower) for a committing job with a check, whose rounds stop sooner
+    /// on the same failure twice (RECOVERY-9), else 1.
     pub fn max_rounds(&self) -> u32 {
         match self.rounds {
             Some(rounds) => rounds.max(1),
             None if crate::jobs::COMMITTING.contains(&self.kind.as_str())
                 && self.check.is_some() =>
             {
-                SAME_FAILURE_CEILING
+                SAME_FAILURE_CEILING.min(crate::settings::limits().rounds())
             }
             None => 1,
         }
@@ -1393,6 +1469,14 @@ impl Job {
             && self.approving_tools().len() < 2
     }
 
+    /// A second review is due and none on this head ended without a verdict (RECOVERY-15).
+    pub fn second_review_waits(&self) -> bool {
+        self.review_due().is_some()
+            && self.second_review_due()
+            && self.review_failed_here().is_none()
+            && self.review_error.is_none()
+    }
+
     /// Oby's verdict on the head its pull request has now, if it has one: an approval here is
     /// what posting it and merging go on from.
     pub fn current_review(&self) -> Option<&Review> {
@@ -1411,6 +1495,13 @@ impl Job {
             && self.pull_request_open()
             && (self.current_review().is_some_and(|r| !r.approved())
                 || self.review_failed_here().is_some_and(|f| f.needs_you))
+    }
+
+    /// The owner ended it: let it go, or stopped it themself (`Jobs::stop`, the owner's stops).
+    pub fn ended_by_owner(&self) -> bool {
+        self.dismissed.is_some()
+            || (self.stopped_by.as_deref())
+                .is_some_and(|by| crate::jobs::OWNERS_STOPS.iter().any(|o| by.starts_with(o)))
     }
 
     /// The reviews of the pull request's head, as obid pushed it, that couldn't give a verdict.
@@ -1552,6 +1643,9 @@ impl Job {
         }
         if self.untrusted {
             value["untrusted"] = json!(true);
+        }
+        if let Some(why) = &self.reached {
+            value["reached"] = json!(why);
         }
         if self.nothing_done() {
             value["nothingDone"] = json!(true);
@@ -2126,6 +2220,21 @@ mod tests {
             Some("it follows up a job that got none: x")
         );
         assert!(follow_up.to_json().get("foreign").is_none());
+        // A reach past the registries withholds secrets, but the code is still the owner's own:
+        // no second review, though its check can't stand for the Mac's (MERGING-31).
+        let mut reached = self::job();
+        reached.vetted = true;
+        reached.reached = Some("its agent reached docs.example.com:443".into());
+        assert_eq!(
+            reached.check_refuses_secrets().as_deref(),
+            Some("its agent reached docs.example.com:443")
+        );
+        assert_eq!(reached.not_owners_words(), None);
+        assert_eq!(reached.untrusted_why(), None);
+        assert_eq!(
+            reached.to_json()["reached"],
+            "its agent reached docs.example.com:443"
+        );
     }
 
     /// Ported from RunnerTests/RunnerTests.swift, `jobsHaveISODatesAndEveryKey`: every key the
