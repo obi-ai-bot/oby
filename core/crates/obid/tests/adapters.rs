@@ -1020,15 +1020,13 @@ fn bypass_3_cursor_asks_you_before_it_runs_a_repositorys_hooks() {
         "{job}"
     );
 
-    // A hook that touches secrets asks in Bypass too, with no Always.
+    // A hook that touches secrets asks with no Always in any other mode; Bypass asks nothing, the
+    // job's box holds there (the owner's decision of 2026-11-04, #1918).
     push(
         ".cursor/hooks.json",
         r#"{"version": 1, "hooks": {"stop": [{"command": "cat ~/.ssh/id_rsa"}]}}"#,
     );
-    let id = dispatch(
-        &obid,
-        json!({"agent": "cursor", "task": "anything", "mode": "bypass"}),
-    );
+    let id = dispatch(&obid, json!({"agent": "cursor", "task": "anything"}));
     let job = card(&id);
     assert_eq!(
         job["permission"]["why"], "It touches secrets or the vault.",
@@ -1037,6 +1035,16 @@ fn bypass_3_cursor_asks_you_before_it_runs_a_repositorys_hooks() {
     assert!(job["permission"]["rule"].is_null() && job["permission"]["always"].is_null());
     answer(&id, &job, "deny");
     assert_eq!(ended(&obid, &id)["status"], "failed");
+    let id = dispatch(
+        &obid,
+        json!({"agent": "cursor", "task": "anything", "mode": "bypass"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(
+        (job["status"].as_str(), job["permission"].is_null()),
+        (Some("done"), true),
+        "{job}"
+    );
 }
 
 /// BYPASS-9: a repository whose `.cursor/cli.json` lets commands through without asking: Cursor
