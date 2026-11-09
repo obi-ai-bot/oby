@@ -355,10 +355,23 @@ fn run_one(name: &str, job: Value) -> (Folder, Obid, String) {
 /// obid with the fixture, `main` declaring FAKE_CHECK_TOKEN, the fake value in the vault and the
 /// stand-in gh; `agent` as Claude Code, and `conversation` as the configuration's when given.
 fn declared(name: &str, agent: &Path, conversation: Option<Value>) -> (Folder, Obid) {
+    declared_with(name, agent, conversation, None)
+}
+
+/// [`declared`], with the repository's `setup` line when given (PUBLISHING-24).
+fn declared_with(
+    name: &str,
+    agent: &Path,
+    conversation: Option<Value>,
+    setup: Option<&str>,
+) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let remote = fixture(&folder.0.join("fixture"));
     declare_on_main(&folder.0, &remote);
     let mut config = config(&folder.0, &remote, agent);
+    if let Some(setup) = setup {
+        config["repos"][0]["setup"] = json!(setup);
+    }
     if let Some(conversation) = conversation {
         config["conversation"] = conversation;
         let account = folder.0.join("home/accounts/stub");
@@ -398,6 +411,37 @@ fn refused(log: &str, why: &str) {
         "{why}: {log}"
     );
     holds_none(log, &fake(), "check.log");
+}
+
+/// PUBLISHING-24: a check that gets the owner's declared secrets runs without the setup: what the
+/// change installs could keep the egress door for the check to send them out through. Its setup
+/// (one that fails here) never runs before it, and the report says so.
+#[cfg(target_os = "macos")]
+#[test]
+fn publishing_24_a_check_with_declared_secrets_runs_without_the_setup() {
+    let setup = "exit 3";
+    let (_folder, obid) = declared_with("secretspec-setup", &agent(), None, Some(setup));
+    let answer = call_typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do here", "check": "sh check.sh"}}),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+    assert!(!job.to_string().contains("setup failed:"), "{job}");
+    let skipped = format!(
+        "Its check ran without its repository's setup, `{setup}`: it gets your declared secrets."
+    );
+    assert!(
+        job["changes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|c| c["what"] == skipped.as_str()),
+        "{job}"
+    );
 }
 
 /// On Linux a job's agent still has a network of its own until oby#616: even the owner's own job,
