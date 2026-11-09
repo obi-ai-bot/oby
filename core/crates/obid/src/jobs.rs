@@ -14912,7 +14912,7 @@ fn review_may_run(
             // `own_check_refuses_secrets`), unsigned, from others' memory or a security path
             // (`two_reviews`).
             author.own_check_refuses_secrets().is_none()
-                && !author.check_withheld
+                && author.check_withheld.is_none()
                 && crate::merge::two_reviews(author, review.security_paths.as_deref()).is_none()
         })
         && call.tool == "Bash"
@@ -22162,7 +22162,7 @@ mod tests {
         withheld.reached_chatgpt();
         assert!(!runs(&review, Some(&withheld), true, true, "cargo test"));
         let mut check_withheld = author.clone();
-        check_withheld.check_withheld = true;
+        check_withheld.check_withheld = Some("its check ran without its secrets".into());
         assert!(!runs(
             &review,
             Some(&check_withheld),
