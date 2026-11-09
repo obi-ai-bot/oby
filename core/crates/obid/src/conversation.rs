@@ -2367,7 +2367,7 @@ mod tests {
         );
         job.vetted = true;
         job.reached_chatgpt();
-        job.check_withheld = true;
+        job.check_withheld = job.withheld.clone();
         let id = start();
         let foreign = super::summary_foreign(Some(&job), "j1");
         conversations

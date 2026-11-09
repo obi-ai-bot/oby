@@ -723,11 +723,21 @@ pub struct Job {
     /// a conversation reads of the job sees it. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<String>,
-    /// Its check ran without the secrets its base declares because of [`Job::withheld`]: set by
-    /// the check that found names to withhold (`Jobs::declared_secrets`). A repository that
-    /// declares none never sets it, so its merge isn't held (crate::merge::check_apart).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub check_withheld: bool,
+    /// Why its last check ran without the secrets its base declares, whatever refused them (a
+    /// reach to chatgpt.com, a marked clone, an unreviewed base): set by each check that found
+    /// names (`Jobs::declared_secrets`), cleared by one that got them. Such a check can't stand
+    /// for the Mac's (crate::merge::check_apart, MERGING-2); a repository that declares none never
+    /// sets it. Its own key: the earlier `checkWithheld` was a bool.
+    #[serde(
+        default,
+        rename = "checkWithheldWhy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub check_withheld: Option<String>,
+    /// The earlier `checkWithheld`, a bool, read from a job saved before its reason was kept:
+    /// [`Job::upgrade`] turns a true one into a reason, so its hold survives the upgrade.
+    #[serde(default, rename = "checkWithheld", skip_serializing)]
+    pub check_withheld_was: bool,
     /// Why its check gets none of the owner's secrets though its code is still the owner's own:
     /// its agent reached a site past the package registries (crate::secretspec, `site_is_foreign`;
     /// `Jobs::mark`). Unlike [`Job::foreign`] it asks for no second review, but its check
@@ -976,6 +986,16 @@ impl Job {
     /// words in Oby's apps ([`Job::vetted`]). What a conversation that reads its title or summary
     /// is marked with: what it reached ([`Job::reached`]) or had withheld ([`Job::withheld`])
     /// isn't someone else's words (MERGING-32).
+    /// What a job saved by an older obid needs to mean what it meant: a check that went without
+    /// its declared secrets (the earlier bool) keeps holding its merge, with a reason.
+    pub fn upgrade(&mut self) {
+        if std::mem::take(&mut self.check_withheld_was) && self.check_withheld.is_none() {
+            self.check_withheld = Some(self.withheld.clone().unwrap_or_else(|| {
+                "its check ran without the secrets its base declares".to_owned()
+            }));
+        }
+    }
+
     pub fn not_owners_words(&self) -> Option<String> {
         self.someone_elses().or_else(|| {
             (!self.vetted)
@@ -1153,7 +1173,8 @@ impl Job {
             memory_from_others: false,
             foreign: None,
             withheld: None,
-            check_withheld: false,
+            check_withheld: None,
+            check_withheld_was: false,
             reached: None,
             made: Vec::new(),
             apart: false,
@@ -2127,6 +2148,26 @@ fn mac_check_json(check: Option<Value>, kind: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MERGING-2: a job saved while `checkWithheld` was a bool keeps holding its merge once read
+    /// by this obid, with a reason; one that wasn't held stays so.
+    #[test]
+    fn merging_2_a_held_check_stays_held_across_the_upgrade() {
+        let mut json = serde_json::to_value(job()).unwrap();
+        json["checkWithheld"] = serde_json::json!(true);
+        let mut held: Job = serde_json::from_value(json).unwrap();
+        held.upgrade();
+        assert!(held.check_withheld.is_some());
+        assert!(
+            serde_json::to_value(&held)
+                .unwrap()
+                .get("checkWithheld")
+                .is_none()
+        );
+        let mut plain = job();
+        plain.upgrade();
+        assert_eq!(plain.check_withheld, None);
+    }
 
     fn job() -> Job {
         let mut job = Job::new(
