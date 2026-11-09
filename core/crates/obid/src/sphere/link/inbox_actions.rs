@@ -1492,11 +1492,19 @@ impl Link {
                     }
                     // Oby's reviews ran out: their last changes go to the agent once more.
                     Some(crate::job::ONE_MORE_ROUND) => self.jobs.review_round_again(&item.job),
-                    Some(crate::job::TRY_AGAIN) => self.jobs.message(
-                        &item.job,
-                        crate::brain::actions::TRY_AGAIN,
-                        crate::jobs::Source::Event,
-                    ),
+                    // The owner's click gives the 10 back once it went through (RECOVERY-17).
+                    Some(crate::job::TRY_AGAIN) => self
+                        .jobs
+                        .message(
+                            &item.job,
+                            crate::brain::actions::TRY_AGAIN,
+                            crate::jobs::Source::Event,
+                        )
+                        .inspect(|carried| {
+                            if carried.is_ok() {
+                                self.jobs.owner_asked(&item.job);
+                            }
+                        }),
                     Some(_) => self.jobs.dismiss(&item.job),
                     None => return Ok(item.to_json()),
                 };

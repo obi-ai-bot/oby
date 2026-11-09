@@ -3892,7 +3892,7 @@ impl Jobs {
             Some(review::failed_result(&body))
         });
         // Another Obi's review can't be tried again here: the Obi that asked is told it failed.
-        // Past its 10 continuations it says so, Try again its next step (RECOVERY-17).
+        // Past its 10 it's interrupted, says so, Try again next, its item kept (RECOVERY-17).
         let capped = review.is_none() && self.get(id).is_some_and(|j| j.recovery.spent());
         let reason = if review.is_some() {
             format!(
@@ -3907,7 +3907,11 @@ impl Jobs {
             )
         };
         self.update(id, |job| {
-            job.status = Status::Failed;
+            job.status = if capped {
+                Status::Interrupted
+            } else {
+                Status::Failed
+            };
             job.summary = reason.clone();
             job.reason = Some(reason.clone());
             job.finished = Some(obi_protocol::time::now());
@@ -20133,7 +20137,7 @@ mod tests {
         assert_eq!(went_on.status, Status::Queued, "{went_on:?}");
         assert_eq!(went_on.recovery.tries, 10);
         let ended = jobs.get("cccc0002").unwrap();
-        assert_eq!(ended.status, Status::Failed, "{ended:?}");
+        assert_eq!(ended.status, Status::Interrupted, "{ended:?}");
         let reason = ended.reason.unwrap();
         assert!(reason.starts_with(crate::job::CRASHED), "{reason}");
         assert!(reason.contains("by itself 10 times"), "{reason}");

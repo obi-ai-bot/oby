@@ -3,6 +3,12 @@
 use super::*;
 
 impl Jobs {
+    /// The owner asked in a conversation (RECOVERY-17): obid may carry `id` on by itself again,
+    /// though their words reach it as an event's, so a #1563 hold still needs their signed choice.
+    pub fn owner_asked(&self, id: &str) {
+        self.update(id, owner_spoke);
+    }
+
     /// Waits `wait` (capped by the stall window) before try `attempt` of `of` after `error`
     /// (RECOVERY-1, RECOVERY-14), its step saying when and `each` run on the job every minute.
     /// Words for it end the wait: they're its next try's. False when it was stopped meanwhile.
