@@ -25,10 +25,10 @@
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
 # sandbox of its own, which can't nest there, and xcodebuild has no switch for it, and a cold
-# SwiftPM build in the job's HOME doesn't fit the check's 20 minutes. Nothing runs them by itself
+# SwiftPM build in the job's HOME doesn't fit the check's 45 minutes. Nothing runs them by itself
 # since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
 # for the owner, who runs them on the Mac.
-# obid's tests that make a sandbox of their own (tests/sandbox.rs, the plug-in tests) can't run
+# obid's tests that make a sandbox of their own (tests/sandbox.rs, plug-ins' if they return) can't run
 # there either: a change they'd test, with nothing else failing, ends the check there with
 # `couldn't judge: …`, so it never merges untested (the owner's review of #1944) and obid leaves it
 # to the owner's Publish by hand (docs/contracts/publishing.md, PUBLISHING-22); it passes only
@@ -75,8 +75,10 @@ step() {
 # obid's test binaries (`--test name` each), built once, then run `jobs` at a time, the longest
 # first, every one to its end. `cargo test` runs them one after another and stops at the first that
 # fails, and most of their time is spent waiting on an agent's stand-in, not working. Each binary
-# runs with OBY_TEST_THREADS test threads (2 by default) and `--quiet`, and its output comes whole:
-# the ones that passed first, the ones that failed last, so a failure stays in the check's tail.
+# runs with OBY_TEST_THREADS test threads (2 by default) and `--quiet`, half as many binaries at once
+# as `jobs` (at least one), so threads in all stay within obid's memory budget; its output comes
+# whole: the ones that passed first, the ones that failed last, so a failure stays in the check's
+# tail. Stopped (the check's 45 minutes), it names the binaries still running.
 # ponytail: the longest first by its source's lines; keep each binary's last time if that's off.
 test_binaries() {
     local dir list status=0 exe name want got
@@ -97,9 +99,19 @@ test_binaries() {
         rm -rf "$dir"
         return 1
     fi
+    # Stopped: say which binaries hadn't ended, so a hang is named, and leave nothing behind.
+    stopped_binaries() {
+        while IFS= read -r exe; do
+            [[ -f "$dir/${exe##*/}.status" ]] || echo "oby-check: tests/$(basename "${exe%-*}").rs was still running" >&2
+        done <"$list"
+        rm -rf "$dir"
+        exit 143
+    }
+    trap stopped_binaries TERM
     # Where cargo runs them: the crate's folder.
     (cd core/crates/obid && tr '\n' '\0' <"$list" | RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" \
-        xargs -0 -n 1 -P "$jobs" sh -c '"$2" --quiet >"$1/${2##*/}.out" 2>&1; echo $? >"$1/${2##*/}.status"' _ "$dir")
+        xargs -0 -n 1 -P "$(((jobs + 1) / 2))" sh -c '"$2" --quiet >"$1/${2##*/}.out" 2>&1; echo $? >"$1/${2##*/}.status"' _ "$dir")
+    trap - TERM
     for pass in ok failed; do
         while IFS= read -r exe; do
             name=${exe##*/}
@@ -167,9 +179,11 @@ while IFS= read -r file; do
     esac
 done <<< "$changed"
 
-# OBY_CHECK_ALL=1: everything, as if every part had changed (a full check of a branch).
+# OBY_CHECK_ALL=1: everything, as if every part had changed (a full check of a branch): obid, the
+# Electron app, swift test and the Apple apps' build (no suites named: build-for-testing). The secret
+# scan still covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 lib_all=1 check_script=1
+    rust=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi

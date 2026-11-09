@@ -70,7 +70,7 @@ code "$main" "$((limit - 1000))"
 expect no 'lower obid_lines_limit' 'a small cut leaves the limit'
 
 # Nested in a job's sandbox, the tests that make a sandbox of their own aren't run, and a change
-# they'd test fails the check (HEALTH-13).
+# they'd test ends the check couldn't judge (PUBLISHING-22).
 # Here the check runs in a sandbox of this test's where its own sandbox-exec fails, as in a job's,
 # unless this test already runs in one.
 nested_run() {
