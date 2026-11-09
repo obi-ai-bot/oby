@@ -256,7 +256,9 @@ fn a_job_obid_keeps_going_down_with_stays_interrupted() {
     let folder = Folder::new("crash-loop");
     let remote = fixture(&folder.0.join("fixture"));
     let settings = config(&folder.0, &remote, &fake_claude());
-    let looping = running("cccc0001", &[600, 60]);
+    let mut looping = running("cccc0001", &[600, 60]);
+    // At the cap of 10 too: the owner's Try again on its item gives them back (RECOVERY-17).
+    looping["recovery"]["tries"] = json!(10);
     // An old pick-up, past the 30 minutes, doesn't count.
     let once = running("cccc0002", &[3000, 60]);
     // Queued with nothing it waits for: a worker was getting it ready.
@@ -312,6 +314,19 @@ fn a_job_obid_keeps_going_down_with_stays_interrupted() {
         call(&obid, "GET", "/v1/jobs/cccc0001", None).body["status"],
         "interrupted"
     );
+    let item = items(&obid)
+        .into_iter()
+        .find(|i| i["job"] == "cccc0001")
+        .unwrap();
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", item["id"].as_str().unwrap()),
+        Some(&json!({"answer": "Try again"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let tries = kept(&folder.0, "cccc0001")["recovery"]["tries"].as_u64();
+    assert!(tries.unwrap_or(0) < 10, "{tries:?}");
     obid.stop();
 
     // After a clean stop a job picked up twice already carries on.
