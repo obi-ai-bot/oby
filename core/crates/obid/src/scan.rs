@@ -13,7 +13,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -886,18 +886,27 @@ pub fn gitleaks_bin() -> Option<PathBuf> {
 
 /// Whether obid has a gitleaks that runs (`gitleaks version` answers within 5 seconds):
 /// `status.scanner.gitleaks`. Without one nothing with text is published, so a Mac set up without
-/// it is told at start, not at its first publish. Once one ran it's taken as there; until then
-/// every call looks again, so one installed since obid started shows up without a restart.
+/// it is told at start, not at its first publish. Every call looks for it again, as publishing
+/// does, so one installed, removed or replaced since shows up without a restart; only a run that
+/// worked is remembered, and only while the same file (path, size, modified time) is there.
 /// Blocking: off the runtime's threads.
 pub fn gitleaks_runs() -> bool {
-    static RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if RAN.load(std::sync::atomic::Ordering::Relaxed) {
+    type Ran = Option<(PathBuf, u64, std::time::SystemTime)>;
+    static RAN: Mutex<Ran> = Mutex::new(None);
+    let Some(bin) = gitleaks_bin() else {
+        return false;
+    };
+    let Some(file) = std::fs::metadata(&bin)
+        .ok()
+        .and_then(|meta| Some((bin.clone(), meta.len(), meta.modified().ok()?)))
+    else {
+        return false;
+    };
+    if RAN.lock().unwrap_or_else(|e| e.into_inner()).as_ref() == Some(&file) {
         return true;
     }
-    let runs = gitleaks_bin().is_some_and(|bin| answers_version(&bin));
-    if runs {
-        RAN.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    let runs = answers_version(&bin);
+    *RAN.lock().unwrap_or_else(|e| e.into_inner()) = runs.then_some(file);
     runs
 }
 
