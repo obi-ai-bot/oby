@@ -748,9 +748,19 @@ async fn fill_one(
     // `init` keeps a URL the clone's config already has (another commit's); `sync` writes this
     // commit's, resolved as `update` fetches it. Both run under the preparing lock, so the URL
     // read is the one fetched.
+    // A gitlink's path is the repository's own words: taken literally, never as a pattern (`*`
+    // would init, sync and fetch every submodule, the ones refused included). git hands the
+    // setting on to the commands it runs.
     for step in ["init", "sync"] {
         let mut args: Vec<&str> = settings.iter().map(String::as_str).collect();
-        args.extend(["submodule", step, "--quiet", "--", path]);
+        args.extend([
+            "--literal-pathspecs",
+            "submodule",
+            step,
+            "--quiet",
+            "--",
+            path,
+        ]);
         git(dir, &args).await.map_err(|e| e.0)?;
     }
     let url = git(dir, &["config", "--get", &format!("submodule.{name}.url")])
@@ -760,7 +770,15 @@ async fn fill_one(
     let mut command = tokio::process::Command::from(self::command(dir, &[]));
     command
         .args(settings)
-        .args(["submodule", "update", "--init", "--progress", "--", path])
+        .args([
+            "--literal-pathspecs",
+            "submodule",
+            "update",
+            "--init",
+            "--progress",
+            "--",
+            path,
+        ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -1198,6 +1216,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// SETUP-1: a gitlink's path is taken literally: one named `*` fills only itself, never a
+    /// submodule obid refused (`z`, named twice in `.gitmodules`).
+    #[tokio::test]
+    async fn setup_1_a_path_is_never_a_pattern() {
+        let lib = std::env::temp_dir().join(format!("obid-sub-glob-lib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        std::fs::create_dir_all(&lib).unwrap();
+        git(&lib, &["init", "-q"]).await.unwrap();
+        git(
+            &lib,
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "c",
+            ],
+        )
+        .await
+        .unwrap();
+        let lib_path = lib.to_str().unwrap();
+        let gitmodules = format!(
+            "[submodule \"star\"]\n\tpath = *\n\turl = {lib_path}\n\
+             [submodule \"a\"]\n\tpath = z\n\turl = {lib_path}\n\
+             [submodule \"b\"]\n\tpath = z\n\turl = {lib_path}\n"
+        );
+        let links = ["*".to_owned(), "z".to_owned()];
+        let (root, stop) = gitlinked("sub-glob", &links, &gitmodules);
+        let failed =
+            fill_submodules(&root, &root, "file:///r", true, "job j", &stop.subscribe()).await;
+        assert!(
+            failed
+                .iter()
+                .any(|f| f.contains("`z` wasn't filled (`.gitmodules` names it more than once)")),
+            "{failed:?}"
+        );
+        assert!(!root.join(".git/modules/a").exists(), "z was fetched");
+        assert!(!root.join(".git/modules/b").exists(), "z was fetched");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&lib);
+    }
+
     /// SETUP-1: every submodule obid tries counts toward its 100, the failed ones too; and a
     /// Stop ends the fill at once, naming nothing.
     #[tokio::test]
@@ -1217,7 +1281,7 @@ mod tests {
                 .any(|f| f.ends_with("(obid tries at most 100)")),
             "{failed:?}"
         );
-        stop.send(crate::process::Signal::Stop).unwrap();
+        stop.send_replace(crate::process::Signal::Stop);
         let failed =
             fill_submodules(&root, &root, "file:///r", true, "job j", &stop.subscribe()).await;
         assert_eq!(failed, Vec::<String>::new());
