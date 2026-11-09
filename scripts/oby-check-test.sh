@@ -41,7 +41,9 @@ if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
     exit 1
 fi
 grep -q "failed: the Rust core's line limit" <<<"$ran" || {
-    echo "oby-check-test: a run past the limit failed without naming it: $ran" >&2
+    echo "oby-check-test: a run past the limit failed without naming it:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
     exit 1
 }
 
@@ -92,17 +94,23 @@ if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/nu
 fi
 said=$(nested)
 grep -q -- '--test foo' <<<"$said" || {
-    echo "oby-check-test: nested, it didn't plan an ordinary test binary: $said" >&2
+    echo "oby-check-test: nested, it didn't plan an ordinary test binary:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
 ! grep -qE -- '--test (sandbox|plugins_api)' <<<"$said" || {
-    echo "oby-check-test: nested, it planned a sandbox test binary: $said" >&2
+    echo "oby-check-test: nested, it planned a sandbox test binary:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
 # The line obid reads (PUBLISHING-22), a line of its own.
 judge="couldn't judge: tests/sandbox.rs makes a sandbox of its own and can't run in a job's; run the check on the Mac outside a job"
 grep -qxF "$judge" <<<"$said" || {
-    echo "oby-check-test: nested, it didn't say it couldn't judge tests/sandbox.rs: $said" >&2
+    echo "oby-check-test: nested, it didn't say it couldn't judge tests/sandbox.rs:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
 # Skipped, they end the check unjudged, never passed: a change to the box never merges untested.
@@ -111,19 +119,25 @@ if ran=$(OBY_CHECK_PLAN= nested_run 2>&1); then
     exit 1
 fi
 grep -q "failed: tests/sandbox.rs, which can't run in a job's sandbox" <<<"$ran" || {
-    echo "oby-check-test: nested, a change to the box failed without naming tests/sandbox.rs: $ran" >&2
+    echo "oby-check-test: nested, a change to the box failed without naming tests/sandbox.rs:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
     exit 1
 }
 # Here its cargo steps fail too (the fixture's files aren't Rust): that's the change's to fix, so it
 # doesn't say it couldn't judge, or a change that doesn't build could be published by hand.
 grep -q "failed: .*cargo" <<<"$ran" && ! grep -q "^couldn't judge:" <<<"$ran" || {
-    echo "oby-check-test: nested, it said it couldn't judge a change that also failed elsewhere: $ran" >&2
+    echo "oby-check-test: nested, it said it couldn't judge a change that also failed elsewhere:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
     exit 1
 }
 rm core/crates/obid/src/foo.rs core/crates/obid/tests/foo.rs
 said=$(nested)
 ! grep -q 'cargo --quiet test .*-p obid$' <<<"$said" || {
-    echo "oby-check-test: nested, it planned a test step with no binary left: $said" >&2
+    echo "oby-check-test: nested, it planned a test step with no binary left:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
     exit 1
 }
 rm -r core/crates/obid
