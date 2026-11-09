@@ -2161,15 +2161,19 @@ fn merging_32_reading_your_own_jobs_summary_marks_nothing() {
     let start = json!({"repo": "obi-e2e/fixture-app", "task": "Look around"});
     let next = say(format!("OBY oby_dispatch {start}"), Some(&id));
     assert_ne!(next.body["jobs"][0]["untrusted"], true, "{}", next.text);
+    let kept = obid.home.join("conversations").join(format!("{id}.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(kept).unwrap()).unwrap();
+    assert!(kept["foreign"].is_null(), "{kept}");
 }
 
 /// MERGING-32: a job that isn't the owner's own words (here, ones no app of theirs signed) still
-/// marks the conversation that lists it: the next job it starts is untrusted.
+/// marks the conversation that lists it: what it starts next is someone else's (its conversation's
+/// `foreign`), with none of the owner's declared secrets.
 #[test]
 fn merging_32_reading_someone_elses_job_still_marks() {
     let (_folder, obid) = obid("harness-merging-32-theirs", true);
-    let theirs = json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do"}});
-    let made = call(&obid, "POST", "/v1/jobs", Some(&theirs));
+    let theirs = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do"});
+    let made = call(&obid, "POST", "/v1/jobs", Some(&json!({"job": theirs})));
     assert_eq!(made.status, 201, "{}", made.text);
     let job = made.body["id"].as_str().unwrap().to_owned();
     let listed = call_typed(
@@ -2189,7 +2193,9 @@ fn merging_32_reading_someone_elses_job_still_marks() {
         &json!({"said": format!("OBY oby_dispatch {start}"), "conversation": id}),
     );
     assert_eq!(next.status, 200, "{}", next.text);
-    assert_eq!(next.body["jobs"][0]["untrusted"], true, "{}", next.text);
+    let kept = obid.home.join("conversations").join(format!("{id}.json"));
+    let kept: Value = serde_json::from_slice(&std::fs::read(kept).unwrap()).unwrap();
+    assert!(kept["foreign"].is_string(), "{kept}");
 }
 
 /// TASKCONV-17: the session going on hears, once, how its jobs ended since the owner last spoke,
