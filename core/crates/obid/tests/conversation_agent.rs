@@ -119,6 +119,20 @@ fn conversation_agent_22_account_lists_come_from_the_cli_and_reach_status() {
         "{codex}"
     );
     let cursor = account(CURSOR);
+    // AGENTS-6: each says its own list is known, so a client may judge a saved model against it.
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    for id in [CODEX, CURSOR] {
+        let row = status["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id);
+        assert_eq!(
+            row.map(|a| a["modelsRead"].clone()),
+            Some(json!(true)),
+            "{id}"
+        );
+    }
     assert!(
         cursor
             .as_array()

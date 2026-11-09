@@ -34,7 +34,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const close = () => { setAt(null); setSub(null); setError(''); pill.current?.focus(); };
   const closeSub = () => { sub?.button.focus(); setSub(null); };
   const modelsOf = (a: Account) => accountModels(a, options[a.agent]?.models);
-  const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent]?.model ?? 'auto', modelsOf(a));
+  const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent]?.model ?? 'auto', modelsOf(a), !!(a.modelsRead || a.models?.length));
   const pick = async (account: string, model?: string) => {
     if (saving) return;
     setSaving(true);

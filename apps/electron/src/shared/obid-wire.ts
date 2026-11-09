@@ -204,6 +204,8 @@ export type Account = {
   // obid only: this account's own model list when it differs from GET /v1/settings/models/options
   // for its tool (CONVERSATION-AGENT-22). Older runners omit it.
   models?: { id: string; name: string }[];
+  // obid only: true once its own list is known (AGENTS-6); only then is a saved model judged unavailable
+  modelsRead?: boolean;
 };
 export type Status = {
   runner: { version: string; host: string; engine?: string };

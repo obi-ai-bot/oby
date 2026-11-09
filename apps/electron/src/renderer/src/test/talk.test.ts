@@ -15,6 +15,14 @@ const wire = (id: string, agent: string, name: string, more: Record<string, unkn
   ({ id, agent, name, signedIn: true, fiveHour: null, sevenDay: null, sevenDayResets: null, running: 0, ...more }) as never;
 
 describe('talking on any agent', () => {
+  it('AGENTS-6: a saved model is called unavailable only once obid has read the account’s own list', async () => {
+    const { modelChoice } = await load();
+    const offered = [{ id: 'gpt-6-astra', name: 'GPT-6-Astra' }];
+    expect(modelChoice('gpt-7', 'gpt-6-astra', offered, false)).toMatchObject({ id: 'gpt-7', unavailable: false });
+    expect(modelChoice('gpt-7', 'gpt-6-astra', offered, true)).toMatchObject({ id: 'gpt-6-astra', name: 'GPT-6-Astra', unavailable: true });
+    expect(modelChoice('gpt-6-astra', 'auto', offered, true)).toMatchObject({ id: 'gpt-6-astra', unavailable: false });
+  });
+
   it('CONVERSATION-AGENT-15: the list shows the 5-hour session and the week, and an Ultra plan only its week', async () => {
     const { accountRow, usageLines } = await load();
     const words = (a: Parameters<typeof usageLines>[0]) => usageLines(a).map((l) => l.words);

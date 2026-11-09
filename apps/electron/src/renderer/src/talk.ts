@@ -20,8 +20,10 @@ export const usageWords = (a: Account) => {
 // What a person calls the tool, in the message box's picker
 export const TOOL_NAME: Record<Agent, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor' };
 export const PILL_TOOL_NAME: Record<Agent, string> = { ...TOOL_NAME, claude: 'Claude Code' };
-export function modelChoice(saved: string, fallback: string, options: readonly { id: string; name: string }[]) {
-  const offered = options.find((m) => m.id === saved);
+// Until obid has read the account's own list (`read`, AGENTS-6) a saved model isn't judged: it runs,
+// as obid runs it, so the row doesn't call it unavailable.
+export function modelChoice(saved: string, fallback: string, options: readonly { id: string; name: string }[], read = true) {
+  const offered = options.find((m) => m.id === saved) ?? (read ? undefined : { id: saved, name: saved });
   return { id: offered ? saved : fallback, name: offered?.name ?? options.find((m) => m.id === fallback)?.name ?? fallback, unavailable: !offered };
 }
 // The message-box model menu: this account's own list when status sent one (it differs from the

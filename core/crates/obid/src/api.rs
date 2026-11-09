@@ -721,6 +721,10 @@ pub struct AccountJson {
     /// its tool (CONVERSATION-AGENT-22). Add-only; older apps ignore it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<crate::model_lists::Offered>>,
+    /// True once this account's own list is known (AGENTS-6), so a client judges a saved model
+    /// against it only then. Add-only; left out until then.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub models_read: bool,
 }
 
 #[derive(Serialize)]
@@ -879,6 +883,7 @@ pub fn account_json(
             &account.id,
             &crate::model_lists::fallback(tool),
         ),
+        models_read: shared.jobs.model_lists.read(tool, &account.id),
     }
 }
 

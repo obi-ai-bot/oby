@@ -277,7 +277,7 @@ function MockRemote() {
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
 // chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
-export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[] };
+export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[]; modelsRead?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -313,6 +313,7 @@ export function accountRow(a: Status['accounts'][number], now: number): Account 
     weekly: a.sevenDay != null && a.agent !== 'cursor',
     full: !!a.fullUntil && Date.parse(a.fullUntil) > now,
     models: a.models,
+    modelsRead: a.modelsRead,
   };
 }
 const ACCOUNTS: Account[] = [
