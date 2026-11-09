@@ -312,6 +312,8 @@ pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
 /// Everything the relay could say, each with what it needs of the owner, before the gate.
 fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
     let mut wanted = Vec::new();
+    // Jobs whose review alerts as the job: their review item is the same news (RECOVERY-15).
+    let mut reviewed: HashSet<&str> = HashSet::new();
     for job in jobs
         .iter()
         .filter(|j| j.obi.is_none() && j.dismissed.is_none())
@@ -362,6 +364,7 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             };
             let head = job.pushed_head().unwrap_or_default();
             wanted.push((format!("review:{head}"), alert(said, true), Need::Owner));
+            reviewed.insert(&job.id);
             continue;
         }
         // How it ended: Publish, or what failed, waits on the owner; done with nothing to decide
@@ -394,6 +397,13 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             continue;
         }
         let job = item["job"].as_str().filter(|j| !j.is_empty());
+        let review_item = item["kind"] == "failed"
+            && item["id"]
+                .as_str()
+                .is_some_and(|id| id.contains("-review-"));
+        if review_item && job.is_some_and(|j| reviewed.contains(j)) {
+            continue;
+        }
         let category = match item["kind"].as_str() {
             Some("permission") if job.is_some() => continue,
             Some("permission")
@@ -1461,7 +1471,11 @@ mod tests {
             ],
             needs_you: true,
         });
-        let said = wanted(std::slice::from_ref(&job), &[]);
+        // Its review item, open beside it, is the same news: one alert, not two (RECOVERY-15).
+        let item = json!({"id": "j1-review-r2", "kind": "failed", "state": "open", "job": "j1",
+            "triage": "needs_you", "title": "Couldn't review", "text": "Try again"});
+        let said = wanted(std::slice::from_ref(&job), std::slice::from_ref(&item));
+        assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].0, "review:abc");
         assert_eq!(said[0].1.title, "Couldn't review: Android push");
         assert_eq!(
