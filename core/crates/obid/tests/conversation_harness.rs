@@ -20,22 +20,39 @@ fn obid(name: &str, signed_in: bool) -> (Folder, Obid) {
     obid_with(name, signed_in, json!({"agent": "claude"}))
 }
 
-/// [`obid`], with `conversation` as the configuration's.
-fn obid_with(name: &str, signed_in: bool, conversation: Value) -> (Folder, Obid) {
-    obid_env(name, signed_in, conversation, &[])
+/// [`obid`] for tests whose jobs fail on purpose (`JOB-FAILS`): a short `stallAfter` caps
+/// RECOVERY-1's one try after an unknown error (#1988), which otherwise waits a minute, past the
+/// tests' waits for the job to end.
+fn obid_failing_jobs(name: &str) -> (Folder, Obid) {
+    obid_env(
+        name,
+        true,
+        json!({"agent": "claude"}),
+        &[],
+        json!({"stallAfter": 3}),
+    )
 }
 
-/// [`obid_with`], with `env` over a test obid's.
+/// [`obid`], with `conversation` as the configuration's.
+fn obid_with(name: &str, signed_in: bool, conversation: Value) -> (Folder, Obid) {
+    obid_env(name, signed_in, conversation, &[], json!({}))
+}
+
+/// [`obid_with`], with `env` over a test obid's and `more`'s keys over its configuration's.
 fn obid_env(
     name: &str,
     signed_in: bool,
     conversation: Value,
     env: &[(&str, &str)],
+    more: Value,
 ) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &harness());
     config["conversation"] = conversation;
+    for (key, value) in more.as_object().into_iter().flatten() {
+        config[key] = value.clone();
+    }
     let account = folder.0.join("home/accounts/stub");
     std::fs::create_dir_all(&account).unwrap();
     if signed_in {
@@ -341,6 +358,7 @@ fn a_new_conversation_finds_its_claude_code_started() {
         true,
         json!({"agent": "claude"}),
         &[("OBID_PRESTART", "on")],
+        json!({}),
     );
     let first = said(&obid, json!({"said": "SAY hi", "new": true}));
     let one = first.body["conversation"].as_str().unwrap().to_owned();
@@ -3184,7 +3202,7 @@ fn confirmed(obid: &Obid, item: &Value) -> Answer {
 /// something untrusted, waits for the owner's Confirm, which then continues it.
 #[test]
 fn oby_continue_job_continues_a_job_in_its_session() {
-    let (_folder, obid) = obid("harness-continue", true);
+    let (_folder, obid) = obid_failing_jobs("harness-continue");
     let (id, conversation) = ended_job(&obid, None);
     let first = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(first["status"], "interrupted", "{first}");
@@ -3348,7 +3366,7 @@ fn oby_continue_job_continues_a_job_in_its_session() {
 /// and its open items, and the REST routes do the same for the apps.
 #[test]
 fn archive_is_at_once_and_delete_waits_for_confirm() {
-    let (_folder, obid) = obid("harness-archive", true);
+    let (_folder, obid) = obid_failing_jobs("harness-archive");
     let (id, conversation) = ended_job(&obid, None);
     let archive = format!(r#"OBY oby_archive_job {{"id": "{id}"}}"#);
     let needs = said(
@@ -3478,7 +3496,7 @@ fn archive_is_at_once_and_delete_waits_for_confirm() {
 /// owner's Confirm, titled as oby_delete_job's, and only that Confirm deletes it.
 #[test]
 fn tasks_11_delete_asks_first_when_commits_arent_published() {
-    let (_folder, obid) = obid("harness-delete-asks", true);
+    let (_folder, obid) = obid_failing_jobs("harness-delete-asks");
     let delete = |id: &str| call(&obid, "POST", &format!("/v1/jobs/{id}/delete"), None);
 
     // nothing unpublished: gone at once, no Confirm
@@ -3537,7 +3555,7 @@ fn tasks_11_delete_asks_first_when_commits_arent_published() {
 /// the web wait for the owner's Confirm. Moving needs a job that ended and a tool obid has.
 #[test]
 fn oby_change_job_widens_only_on_confirm() {
-    let (_folder, obid) = obid("harness-change", true);
+    let (_folder, obid) = obid_failing_jobs("harness-change");
     let (id, conversation) = ended_job(&obid, None);
     let change = |args: &str| {
         let words = format!(r#"OBY oby_change_job {{"id": "{id}", {args}}}"#);
@@ -3746,6 +3764,8 @@ fn a_moved_job_continues_in_a_new_session() {
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &harness());
     config["conversation"] = json!({"agent": "claude"});
+    // Its job fails on purpose: see [`obid_failing_jobs`].
+    config["stallAfter"] = json!(3);
     let second = folder.0.join("home/accounts/second");
     config["agents"]["claude"]["accounts"]
         .as_array_mut()
