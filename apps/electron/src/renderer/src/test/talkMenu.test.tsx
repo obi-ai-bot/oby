@@ -13,7 +13,7 @@ vi.mock('../SettingsView', async () => {
   return {
     fullness: () => '',
     useAccounts: () => [[
-      { id: 'p', agent: 'claude', name: 'Personal', used: 34, weekly: true, session: null },
+      { id: 'p', agent: 'claude', name: 'Personal', used: 34, weekly: true, session: null, modelsRead: true },
       { id: 'w', agent: 'claude', name: 'Work', used: null, session: 12 },
       { id: 'x', agent: 'cursor', name: 'Cursor', used: null, models: LONG_CURSOR },
     ]],
