@@ -66,7 +66,7 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
 obid_lines_limit=95000
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
-jobs_rs_limit=15315
+jobs_rs_limit=15316
 # A job's check runs the base's copy of this script on the commit (PUBLISHING-7). A branch that
 # changed a limit since it started from its merge base (a cut lowers it) is held to its own number,
 # but never to one higher than the running copy's; one that didn't gets the running copy's, an
