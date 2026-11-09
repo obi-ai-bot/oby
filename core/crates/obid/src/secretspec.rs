@@ -64,8 +64,8 @@
 //!   default registries (2) takes its values away too, but only as a reach (`Job::reached`): the
 //!   code is still the owner's own, so its pull request needs one review, not two, though its check
 //!   doesn't stand for the Mac's (MERGING-31; the owner's decision of 2026-11-06, "Split it").
-//!   Hosts that serve anyone's source code ([`site_is_code_host`]),
-//!   `crate::egress::ROUTED_BY_HOST`'s and its vendor's other hosts, which serve pages people
+//!   Hosts that serve anyone's source code ([`site_is_code_host`]) and its vendor's other hosts,
+//!   which serve pages people
 //!   write, make it someone else's code: two reviews. Being given an MCP server's tools (Tetrix's)
 //!   doesn't, nor does a reach to its own tool's API hosts ([`crate::egress::tools_api`]) or
 //!   Codex's `chatgpt.com`, by the CLI or by anything in its box, though `chatgpt.com` takes that
@@ -680,10 +680,15 @@ pub fn site_is_foreign(host: &str) -> bool {
 
 /// Whether `host` serves anyone's source code: a code host (GitHub, GitLab, Bitbucket, Codeberg),
 /// its pages, or jsDelivr, which serves any GitHub repository's files under `/gh/` the proxy can't
-/// see. Reaching it makes the job someone else's code (`Jobs::mark`, two reviews), not only a reach
-/// (MERGING-31), as [`crate::egress::ROUTED_BY_HOST`]'s do (`egress::mark_reach`). An artifact
-/// registry (`ghcr.io`) stays a reach.
+/// see, or the Go module proxy, which serves any public repository's commit by its path. So is an
+/// address with no name (a tunnel to an IP could carry any `Host`, GitHub's included). Reaching it
+/// makes the job someone else's code (`Jobs::mark`, two reviews), not only a reach (MERGING-31,
+/// `egress::mark_reach`). A package registry ([`crate::egress::ROUTED_BY_HOST`]'s too) and an
+/// artifact registry (`ghcr.io`) stay a reach.
 pub fn site_is_code_host(host: &str) -> bool {
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        return !ip.is_loopback();
+    }
     const CODE_HOSTS: &[&str] = &[
         "github.com",
         "githubusercontent.com",
@@ -694,6 +699,7 @@ pub fn site_is_code_host(host: &str) -> bool {
         "codeberg.org",
         "codeberg.page",
         "jsdelivr.net",
+        "proxy.golang.org",
     ];
     CODE_HOSTS
         .iter()
@@ -1951,6 +1957,9 @@ required = false
             "someone.codeberg.page",
             "cdn.jsdelivr.net",
             "fastly.jsdelivr.net",
+            "proxy.golang.org",
+            "185.199.108.133",
+            "[2606:50c0:8000::154]",
         ] {
             assert!(site_is_code_host(host), "{host}");
         }
@@ -1961,6 +1970,8 @@ required = false
             "mygitlab.com",
             "docs.example.com",
             "registry.npmjs.org",
+            "sum.golang.org",
+            "127.0.0.1",
         ] {
             assert!(!site_is_code_host(host), "{host}");
         }
