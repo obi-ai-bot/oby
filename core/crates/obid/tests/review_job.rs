@@ -803,6 +803,7 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
         "stub".into(),
     );
     author.status = Status::Done;
+    author.vetted = true;
     author.branch = "oby/fix".into();
     author.outgoing = vec![obid::publish::Outgoing::new(
         "push",
@@ -888,7 +889,8 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
 
 /// PERMISSIONS-14: the code Oby's own review runs could change what it reads, so its verdict counts
 /// only on the commit and tracked files it was given: a reviewer that changes a tracked file
-/// (tests/agents/moving-reviewer) and approves ends with no verdict that counts.
+/// (tests/agents/moving-reviewer) and approves ends with no verdict that counts. The diff it judges
+/// is obid's, frozen in its worktree: it can't rewrite it.
 #[tokio::test(flavor = "multi_thread")]
 async fn permissions_14_a_review_that_moves_what_it_read_doesnt_count() {
     let folder = Folder::new("moves");
@@ -923,6 +925,12 @@ async fn permissions_14_a_review_that_moves_what_it_read_doesnt_count() {
     let shown = serde_json::to_string(&ended).unwrap();
     assert_eq!(ended.status, Status::Done, "{shown}");
     assert!(ended.summary.contains("VERDICT: APPROVE"), "{shown}");
+    // The diff it judges is obid's, written before it ran and frozen: its code can't rewrite it.
+    assert!(ended.summary.contains("diff: frozen"), "{shown}");
+    assert!(
+        ended.summary.contains("diff holds the change: yes"),
+        "{shown}"
+    );
     assert!(
         ended
             .reason

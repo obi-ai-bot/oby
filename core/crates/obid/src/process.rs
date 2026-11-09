@@ -139,7 +139,8 @@ fn own_ps_folder(temp: &Path) -> Option<PathBuf> {
 }
 
 /// The environment of a process in the job sandbox: `PATH`, `HOME` and `TMPDIR` (the job's
-/// temporary folder), an empty GitHub CLI configuration, git that never prompts, xcrun's cache in
+/// temporary folder), an empty GitHub CLI configuration, git that never prompts and reads no
+/// settings but the repository's, xcrun's cache in
 /// the temporary folder, the kept variables above, then `extra` (an account's `CLAUDE_CONFIG_DIR`).
 pub fn sandbox_env(
     path: &OsStr,
@@ -155,6 +156,11 @@ pub fn sandbox_env(
         temp.join(".config/gh-none").into_os_string(),
     ));
     env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
+    // No git settings but the repository's: never a `.gitconfig` the box's own commands wrote in
+    // its `HOME` (a pager, a `diff.external`, a textconv that runs or hides what git prints), nor
+    // the system's (PERMISSIONS-14).
+    env.push(("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()));
+    env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
     // macOS's /usr/bin/git is xcrun's shim: its cache goes here, not in /var/folders, which the
     // sandbox doesn't let a job write.
     env.push(("xcrun_db".into(), temp.join("xcrun_db").into_os_string()));
@@ -686,6 +692,24 @@ mod claude_tmpdir_tests {
         assert!(!String::from_utf8_lossy(&out.stdout).trim().is_empty());
         // what it's for: without it, the system's own is refused
         assert!(!ran(Some(&"/usr/bin:/bin".into())).status.success());
+    }
+
+    /// PERMISSIONS-14: nothing in the box reads a git setting but the repository's: not a
+    /// `.gitconfig` its own commands wrote in its `HOME`, nor the system's.
+    #[test]
+    fn permissions_14_a_box_reads_no_git_settings_but_the_repositorys() {
+        let env = sandbox_env(OsStr::new("/usr/bin"), Path::new("/tmp/job-temp"), &[]);
+        let get = |name: &str| {
+            let values: Vec<_> = env
+                .iter()
+                .filter(|(k, _)| k == name)
+                .map(|(_, v)| v)
+                .collect();
+            assert_eq!(values.len(), 1, "{name}: {values:?}");
+            values[0].to_string_lossy().into_owned()
+        };
+        assert_eq!(get("GIT_CONFIG_GLOBAL"), "/dev/null");
+        assert_eq!(get("GIT_CONFIG_NOSYSTEM"), "1");
     }
 
     /// Claude Code's Bash folder is the run's own temporary folder when its launch says so; no

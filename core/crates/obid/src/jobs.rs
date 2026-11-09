@@ -10239,6 +10239,8 @@ impl Jobs {
         // worktree's own rules files themselves.
         let reviews = job.review_of.is_some();
         let mut rules_quoted = false;
+        // The change Oby's own review judges (PERMISSIONS-14), frozen in its worktree.
+        let mut own_diff: Option<Vec<u8>> = None;
         if reviews || job.agent == Tool::Claude.id() {
             let mut files = Vec::new();
             for name in ["AGENTS.md", "CLAUDE.md"] {
@@ -10303,6 +10305,22 @@ impl Jobs {
                 let check = author.as_ref().and_then(|a| a.check.as_deref());
                 let touched = changed.map(|changed| crate::merge::security_paths(&changed, check));
                 self.update(id, |job| job.security_paths = touched);
+                // What it changes, read by obid outside the box with no git settings but the
+                // clone's, before anything runs there: what the review's commands run can't move
+                // it. None read, no review.
+                let head = job.start_commit.as_deref().unwrap_or_default();
+                let mut change = git::change(&clone, &format!("refs/remotes/origin/{base}"), head)
+                    .await
+                    .map_err(|e| {
+                        format!("obid couldn't compare the head with {base}, so it didn't review it: {e}")
+                    })?;
+                if change.len() > review::DIFF_MAX {
+                    change.truncate(review::DIFF_MAX);
+                    change.extend_from_slice(
+                        b"\n[obid cut the diff here: it is longer than 8 MiB]\n",
+                    );
+                }
+                own_diff = Some(change);
             }
             if reviews || rules_quoted {
                 quoted.push((review::RULES_FILE, review::base_rules(&base, &files)));
@@ -10314,6 +10332,18 @@ impl Jobs {
                     let text = crate::secrets::known().redact(&crate::vault::for_agent(&text)?);
                     crate::obi_dir::write_new(&inputs, file, text.as_bytes())
                         .map_err(|e| format!("obid couldn't quote {file} for the agent: {e}"))?;
+                }
+                if let Some(change) = &own_diff {
+                    let file = Path::new(review::DIFF_FILE)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .expect("the diff file has a name");
+                    crate::obi_dir::write_new(
+                        &inputs,
+                        file,
+                        &crate::vault::for_agent_bytes(change)?,
+                    )
+                    .map_err(|e| format!("obid can't write the diff: {e}"))?;
                 }
             }
         }
@@ -10338,7 +10368,13 @@ impl Jobs {
             });
         }
         let job = self.get(id).ok_or("the job is gone")?;
-        let spec = self.spec(&worktree, &admin, &common, &temp, true, tool);
+        let mut spec = self.spec(&worktree, &admin, &common, &temp, true, tool);
+        // The diff Oby's own review judges stays as obid wrote it, nor can its folders move.
+        if own_diff.is_some() {
+            spec.frozen.push(worktree.join(review::DIFF_FILE));
+            spec.fixed
+                .extend([worktree.join(".obi"), worktree.join(".obi/inputs")]);
+        }
         // HEAD detached at the branch (a worktree from before may be on it), and the folder the
         // job's new objects go to (Spec::git_env).
         let folders = git_folders(&admin, &common, &worktree);
@@ -14840,8 +14876,9 @@ fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String,
 /// command that reaches nothing past the box ([`permissions::reach`]) and writes nothing as obid
 /// reads it ([`permissions::writes`]); only where the box holds its egress to obid's proxy
 /// (`confined`) and obid boxes the run itself (`boxed`: not Claude Code's own sandbox); and only in
-/// a review of the owner's own work (`author` known, no second review needed, no site past the
-/// registries reached), so a stranger's code never runs beside a reviewer's login. Every other
+/// a review of the owner's own work (`author`, read afresh for each call: from the owner's own
+/// words, no one else's, no second review needed, nothing reached past the registries or
+/// withheld), so a stranger's code never runs beside a reviewer's login. Every other
 /// command is refused as [`unwatched_review`] says.
 fn review_may_run(
     review: &Job,
@@ -14856,7 +14893,11 @@ fn review_may_run(
         && boxed
         && review.someone_elses().is_none()
         && author.is_some_and(|author| {
-            author.reached.is_none()
+            // Someone else's, not from the owner's words, past the registries, withheld (all
+            // `own_check_refuses_secrets`), unsigned, from others' memory or a security path
+            // (`two_reviews`).
+            author.own_check_refuses_secrets().is_none()
+                && !author.check_withheld
                 && crate::merge::two_reviews(author, review.security_paths.as_deref()).is_none()
         })
         && call.tool == "Bash"
@@ -22077,6 +22118,9 @@ mod tests {
             "claude".into(),
             "a".into(),
         );
+        // The owner's own words, through Oby's apps.
+        let mut author = author;
+        author.vetted = true;
         assert!(runs(&review, Some(&author), true, true, "cargo test"));
         // 1: egress not held to obid's proxy (bubblewrap), or Claude Code's own sandbox.
         assert!(!runs(&review, Some(&author), false, true, "cargo test"));
@@ -22093,6 +22137,27 @@ mod tests {
         let mut reached = author.clone();
         reached.reached = Some("x.test".into());
         assert!(!runs(&review, Some(&reached), true, true, "cargo test"));
+        let mut unvetted = author.clone();
+        unvetted.vetted = false;
+        assert!(!runs(&review, Some(&unvetted), true, true, "cargo test"));
+        let mut foreign = author.clone();
+        foreign.foreign = Some("it follows up someone else's pull request".into());
+        assert!(!runs(&review, Some(&foreign), true, true, "cargo test"));
+        let mut withheld = author.clone();
+        withheld.reached_chatgpt();
+        assert!(!runs(&review, Some(&withheld), true, true, "cargo test"));
+        let mut check_withheld = author.clone();
+        check_withheld.check_withheld = true;
+        assert!(!runs(
+            &review,
+            Some(&check_withheld),
+            true,
+            true,
+            "cargo test"
+        ));
+        let mut remembered = author.clone();
+        remembered.memory_from_others = true;
+        assert!(!runs(&review, Some(&remembered), true, true, "cargo test"));
         let mut security = review.clone();
         security.security_paths = Some(vec!["AGENTS.md".into()]);
         assert!(!runs(&security, Some(&author), true, true, "cargo test"));
