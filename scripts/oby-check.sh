@@ -6,7 +6,8 @@
 # the check keeps: run this yourself first.
 #
 #   scripts/oby-check.sh [base]    what changed since the merge base with base (default origin/dev),
-#                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run
+#                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
+#                                  with OBY_CHECK_ALL=1, runs everything, whatever changed
 #
 #   core/                 the line limit below; cargo fmt --check; clippy -D warnings on the touched
 #                         crates; obid's lib tests of each touched module (src/a/b.rs: `a::b::`; all of them for
@@ -69,13 +70,13 @@ step() {
 }
 
 # obid's test binaries (`--test name` each), built once, then run `jobs` at a time, the longest
-# first, every one to its end, each one's output whole and in turn. `cargo test` runs them one
-# after another and stops at the first that fails, and most of their time is spent waiting on an
-# agent's stand-in, not working. Each binary gets 2 test threads (`OBY_TEST_THREADS`), so twice the
-# tests run at once as `cargo test` ran.
+# first, every one to its end. `cargo test` runs them one after another and stops at the first that
+# fails, and most of their time is spent waiting on an agent's stand-in, not working. Each binary
+# runs with OBY_TEST_THREADS test threads (2 by default) and `--quiet`, and its output comes whole:
+# the ones that passed first, the ones that failed last, so a failure stays in the check's tail.
 # ponytail: the longest first by its source's lines; keep each binary's last time if that's off.
 test_binaries() {
-    local dir list status=0 exe name
+    local dir list status=0 exe name want got
     dir=$(mktemp -d)
     if ! "${cargo[@]}" test "${manifest[@]}" -p obid "$@" --no-run --message-format=json-render-diagnostics >"$dir/built"; then
         rm -rf "$dir"
@@ -86,18 +87,30 @@ test_binaries() {
         sed -n 's/.*"src_path":"\([^"]*\)".*"executable":"\([^"]*\)".*/\1	\2/p' |
         while IFS=$'\t' read -r src exe; do printf '%s\t%s\n' "$(wc -l <"$src")" "$exe"; done |
         sort -rn | cut -f2 >"$list"
+    want=$(($# / 2))
+    got=$(($(wc -l <"$list")))
+    if ((got != want)); then
+        echo "oby-check: found $got of the $want test binaries cargo built" >&2
+        rm -rf "$dir"
+        return 1
+    fi
     # Where cargo runs them: the crate's folder.
-    (cd core/crates/obid && RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" xargs -P "$jobs" -I{} \
-        sh -c '"$1" >"$2/${1##*/}.out" 2>&1; echo $? >"$2/${1##*/}.status"' _ {} "$dir" <"$list")
-    while IFS= read -r exe; do
-        name=${exe##*/}
-        echo "     Running ${name%-*}"
-        cat "$dir/$name.out"
-        [[ "$(cat "$dir/$name.status" 2>/dev/null)" == 0 ]] || {
-            echo "oby-check: tests/${name%-*}.rs failed" >&2
-            status=1
-        }
-    done <"$list"
+    (cd core/crates/obid && tr '\n' '\0' <"$list" | RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" \
+        xargs -0 -n 1 -P "$jobs" sh -c '"$2" --quiet >"$1/${2##*/}.out" 2>&1; echo $? >"$1/${2##*/}.status"' _ "$dir")
+    for pass in ok failed; do
+        while IFS= read -r exe; do
+            name=${exe##*/}
+            if [[ "$(cat "$dir/$name.status" 2>/dev/null)" == 0 ]]; then
+                [[ $pass == ok ]] || continue
+            else
+                [[ $pass == failed ]] || continue
+                status=1
+            fi
+            echo "     Running ${name%-*}"
+            cat "$dir/$name.out"
+            [[ $pass == ok ]] || echo "oby-check: tests/${name%-*}.rs failed" >&2
+        done <"$list"
+    done
     rm -rf "$dir"
     return "$status"
 }
@@ -151,6 +164,13 @@ while IFS= read -r file; do
     esac
 done <<< "$changed"
 
+# OBY_CHECK_ALL=1: everything, as if every part had changed (a full check of a branch).
+if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
+    rust=1 lib_all=1 check_script=1
+    tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
+    crates=$(ls core/crates 2>/dev/null || true)
+fi
+
 # The distinct lines of a list, each after `$2` when given.
 each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 
@@ -177,7 +197,7 @@ if [[ -n "$rust" ]]; then
         step "${cargo[@]}" clippy "${manifest[@]}" "${packages[@]}" --all-targets -- -D warnings
     fi
     if [[ -n "$lib_all" ]]; then
-        step "${cargo[@]}" test "${manifest[@]}" -p obid --lib
+        step "${cargo[@]}" test "${manifest[@]}" -p obid --lib --bins
     elif [[ -n "$lib" ]]; then
         filters=()
         while IFS= read -r filter; do filters+=("$filter"); done < <(each "$lib")
