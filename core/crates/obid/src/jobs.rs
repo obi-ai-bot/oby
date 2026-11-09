@@ -16852,10 +16852,10 @@ mod tests {
             let clone = clone.clone();
             async move { crate::git::git(&clone, &["config", "--get", "obid.foreign"]).await }
         };
-        crate::egress::mark_reach(&jobs, "j", "registry.npmjs.org", 443);
+        crate::egress::mark_reach(&jobs, "j", "registry.npmjs.org", 443, false);
         assert_eq!(jobs.get("j").unwrap().check_refuses_secrets(), None);
         assert!(marked().await.is_err());
-        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
+        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443, false);
         let job = jobs.get("j").unwrap();
         assert!(
             job.reached
@@ -16868,12 +16868,12 @@ mod tests {
         crate::git::git(&clone, &["config", "--unset", "obid.foreign"])
             .await
             .unwrap();
-        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443);
+        crate::egress::mark_reach(&jobs, "j", "docs.example.com", 443, false);
         assert!(marked().await.is_ok());
         // A package registry stays a reach, its edge routed by `Host` too (ROUTED_BY_HOST).
         for host in ["pypi.org", "crates.io"] {
             jobs.update("j", |job| job.reached = None);
-            crate::egress::mark_reach(&jobs, "j", host, 443);
+            crate::egress::mark_reach(&jobs, "j", host, 443, false);
             let job = jobs.get("j").unwrap();
             assert!(
                 job.reached.as_deref().is_some_and(|why| why.contains(host)),
@@ -16892,7 +16892,7 @@ mod tests {
             "cdn.jsdelivr.net",
         ] {
             jobs.update("j", |job| job.foreign = None);
-            crate::egress::mark_reach(&jobs, "j", host, 443);
+            crate::egress::mark_reach(&jobs, "j", host, 443, false);
             let job = jobs.get("j").unwrap();
             assert!(
                 job.foreign.as_deref().is_some_and(|why| why.contains(host)),
@@ -16901,6 +16901,35 @@ mod tests {
             );
             assert!(job.two_reviews_why().is_some(), "{host}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// PUBLISHING-23: what the repository's setup reaches, the owner's own line, is a reach only
+    /// (its check gets none of the secrets, one review), even a code host (npm's postinstall
+    /// fetching Electron from github.com), never someone else's code; through a door of its own
+    /// that closes when the setup ends, so nothing the agent reaches counts as the setup's.
+    #[tokio::test]
+    async fn publishing_23_a_reach_during_the_setup_is_a_reach_never_someone_elses_code() {
+        let (jobs, _clone, root) = jobs_with_a_clone("setup-reach").await;
+        jobs.update("j", |job| job.vetted = true);
+        crate::egress::mark_reach(&jobs, "j", "github.com", 443, true);
+        let job = jobs.get("j").unwrap();
+        assert!(
+            job.reached
+                .as_deref()
+                .is_some_and(|why| why.starts_with("its repository's setup reached github.com")),
+            "{:?}",
+            job.reached
+        );
+        assert_eq!((job.foreign.clone(), job.two_reviews_why()), (None, None));
+        assert!(job.check_refuses_secrets().is_some());
+        let egress = crate::egress::Egress::start(&jobs).unwrap();
+        let (agent, setup) = (egress.open("j"), egress.open_setup("j"));
+        assert_ne!(agent, setup);
+        assert_eq!(egress.open_setup("j"), setup);
+        egress.close_setup("j");
+        assert_ne!(egress.open_setup("j"), setup);
+        assert_eq!(egress.open("j"), agent);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -19170,7 +19199,7 @@ mod tests {
                 job.agent = agent.into();
                 (job.foreign, job.reached) = (None, None);
             });
-            crate::egress::mark_reach(&jobs, "j", host, port);
+            crate::egress::mark_reach(&jobs, "j", host, port, false);
             jobs.get("j").unwrap()
         };
         for (agent, host, port) in [

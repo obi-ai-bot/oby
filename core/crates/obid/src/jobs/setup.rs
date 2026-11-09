@@ -128,14 +128,13 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra = spec.git_env();
         // The agent's way off the Mac, as `Jobs::launch` gives it: obid's proxy, never the
-        // network without it.
-        if sandbox.confines_egress() {
-            let egress = self
-                .egress
-                .get()
-                .ok_or("obid's egress proxy isn't running")?;
-            extra.extend(crate::egress::env(&egress.open(id)));
-            // A check's checkout has no network: its setup gets the agent's door all the same.
+        // network without it, through a door of its own: what it reaches is a reach only.
+        let egress = (sandbox.confines_egress())
+            .then(|| self.egress.get().ok_or("obid's egress proxy isn't running"))
+            .transpose()?;
+        if let Some(egress) = egress {
+            extra.extend(crate::egress::env(&egress.open_setup(id)));
+            // A check's checkout has no network: its setup gets the door all the same.
             (spec.network, spec.proxied) = (true, true);
         }
         extra.extend(process::show_rust(&spec.temp));
@@ -143,7 +142,7 @@ impl Jobs {
         let argv = sandbox.wrap(&spec, &["/bin/sh".into(), "-c".into(), command.into()]);
         let env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
         let group = self.recording(id, &spec);
-        run_check(
+        let run = run_check(
             &argv,
             &env,
             &spec.worktree,
@@ -153,8 +152,11 @@ impl Jobs {
             None,
             Some(&group),
         )
-        .await
-        .map_err(|e| format!("obid couldn't run it: {e}"))
+        .await;
+        if let Some(egress) = egress {
+            egress.close_setup(id);
+        }
+        run.map_err(|e| format!("obid couldn't run it: {e}"))
     }
 }
 
