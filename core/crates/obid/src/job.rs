@@ -973,7 +973,9 @@ impl Job {
 
     /// Why what it runs isn't only its owner's own words, or none: someone else's code
     /// ([`Job::someone_elses`]), and fail closed, any job that didn't start from the owner's own
-    /// words in Oby's apps ([`Job::vetted`]).
+    /// words in Oby's apps ([`Job::vetted`]). What a conversation that reads its title or summary
+    /// is marked with: what it reached ([`Job::reached`]) or had withheld ([`Job::withheld`])
+    /// isn't someone else's words (MERGING-32).
     pub fn not_owners_words(&self) -> Option<String> {
         self.someone_elses().or_else(|| {
             (!self.vetted)

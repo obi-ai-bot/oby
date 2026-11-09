@@ -50,7 +50,8 @@
 // "answer: <behavior> <its updatedInput's answers>";
 // asked for its handoff note, it answers NOTE, which carries words that try to steer whoever reads
 // it; SPEND-TOKENS: <n> ends its turn saying it used n input tokens; JOB-COMMITS: <file> writes the
-// file in its worktree and commits it.
+// file in its worktree and commits it; JOB-REACHES asks for docs.example.test through obid's proxy
+// (a reach past the registries) and says "Reached.".
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -191,6 +192,10 @@ rl.on("line", (line) => {
     spawnSync("git", ["add", commits[1]]);
     spawnSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${commits[1]}`]);
     return say(`Added ${commits[1]}.`);
+  }
+  if (!conversation && prompt.includes("JOB-REACHES")) {
+    spawnSync("git", ["ls-remote", "https://docs.example.test/fixture-app.git"]);
+    return say("Reached.");
   }
   if (!conversation && prompt.includes("JOB-ASKS-QUESTION")) {
     const questions = [{ question: "Which store?", options: [{ label: "SQLite" }, { label: "Postgres" }] }];

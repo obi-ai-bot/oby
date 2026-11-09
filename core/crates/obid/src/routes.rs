@@ -1142,9 +1142,9 @@ pub async fn message(
             )
             .and_then(|_| {
                 let line = crate::brain::actions::told_line(&shared, &first, &job);
-                // It names the job: on obid's allowlist only as the job's own words are.
+                // It names the job: someone else's words only as the job's are (MERGING-32).
                 let foreign = first
-                    .check_refuses_secrets()
+                    .not_owners_words()
                     .map(|why| format!("the title of job {}, which {why}", first.id));
                 shared.conversations.append(
                     &conversation,
