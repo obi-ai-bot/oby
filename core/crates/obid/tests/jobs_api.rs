@@ -5410,7 +5410,8 @@ fn publishing_20_an_lfs_repository_checks_out_pointers_and_says_so() {
 }
 
 /// SETUP-1: obid fills a job's submodules before its agent starts, and one that can't be filled
-/// is named in the job's step with git's reason while the job goes on.
+/// is named in the job's step with git's reason while the job goes on; an ssh one on another host
+/// isn't fetched at all.
 #[test]
 fn setup_1_a_jobs_submodules_are_filled_before_its_agent() {
     let folder = Folder::new("submodules");
@@ -5443,28 +5444,26 @@ fn setup_1_a_jobs_submodules_are_filled_before_its_agent() {
         &["clone", "-q", remote.to_str().unwrap(), work_dir],
     );
     git(&work, &["submodule", "add", "-q", sub_url, "lib/sub"]);
-    // A second submodule whose repository isn't there.
+    // A second submodule whose repository isn't there, and a third over ssh on another host,
+    // which obid doesn't fetch: the person's ssh keys would sign in there.
     let head = git(&sub, &["rev-parse", "HEAD"]);
-    let gone = format!("160000,{},lib/gone", head.trim());
-    git(&work, &["update-index", "--add", "--cacheinfo", &gone]);
     let missing = folder.0.join("no-such-repo");
-    let missing = missing.to_str().unwrap();
-    git(
-        &work,
-        &[
-            "config",
-            "-f",
-            ".gitmodules",
-            "submodule.gone.path",
-            "lib/gone",
-        ],
-    );
-    git(
-        &work,
-        &["config", "-f", ".gitmodules", "submodule.gone.url", missing],
-    );
+    let elsewhere = [
+        ("gone", "lib/gone", missing.to_str().unwrap()),
+        ("far", "lib/far", "git@ssh.example.invalid:someone/lib.git"),
+    ];
+    for (name, path, url) in elsewhere {
+        let link = format!("160000,{},{path}", head.trim());
+        git(&work, &["update-index", "--add", "--cacheinfo", &link]);
+        let (path_key, url_key) = (
+            format!("submodule.{name}.path"),
+            format!("submodule.{name}.url"),
+        );
+        git(&work, &["config", "-f", ".gitmodules", &path_key, path]);
+        git(&work, &["config", "-f", ".gitmodules", &url_key, url]);
+    }
     git(&work, &["add", ".gitmodules"]);
-    git(&work, &["commit", "-q", "-m", "Two submodules"]);
+    git(&work, &["commit", "-q", "-m", "Three submodules"]);
     git(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
     let obid = start(&folder.0, &config(&folder.0, &remote));
     let (job, steps) = job_steps(&obid, "SEES: lib/sub/lib.txt");
@@ -5477,11 +5476,12 @@ fn setup_1_a_jobs_submodules_are_filled_before_its_agent() {
             .any(|s| s == "Getting fixture-app's submodules"),
         "{steps:#?}"
     );
-    let said = "Getting fixture-app ready: its submodule `lib/gone` wasn't filled (fatal: ";
+    let far = "Getting fixture-app ready: its submodule `lib/far` wasn't filled (another host's ssh submodule gets no keys) and ";
+    let gone = "its submodule `lib/gone` wasn't filled (fatal: ";
     assert!(
-        steps
-            .iter()
-            .any(|s| s.starts_with(said) && s.ends_with("), so what needs them won't work")),
+        steps.iter().any(|s| s.starts_with(far)
+            && s.contains(gone)
+            && s.ends_with("), so what needs them won't work")),
         "{steps:#?}"
     );
 }
