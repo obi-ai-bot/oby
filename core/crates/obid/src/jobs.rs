@@ -10087,17 +10087,10 @@ impl Jobs {
                 self.update(id, |job| {
                     job.step = format!("Getting {}'s submodules", job.repo_name())
                 });
-                let allow_file = self.config.allow_file_remotes;
-                let filled =
-                    Box::pin(git::fill_submodules(&worktree, &repo.remote, allow_file)).await;
-                if let Some(url) = filled
-                    .urls
-                    .iter()
-                    .find(|u| !git::same_owner(&repo.remote, u.as_str()))
-                {
-                    git::taint(&clone, &format!("job {id}: a submodule from {url}")).await;
-                }
-                missing.extend(filled.failed.iter().map(|f| format!("its submodule {f}")));
+                let (remote, file) = (&repo.remote, self.config.allow_file_remotes);
+                let who = format!("job {id}");
+                let fill = git::fill_submodules(&clone, &worktree, remote, file, &who, signal);
+                missing.extend(Box::pin(fill).await);
             }
             let worktree_text = worktree.to_string_lossy().into_owned();
             self.update(id, |job| {
@@ -10114,6 +10107,10 @@ impl Jobs {
             });
         }
         drop(prepared);
+        // A Stop while its submodules filled.
+        if *signal.borrow() != Signal::Run {
+            return Ok(());
+        }
         let job = self.get(id).ok_or("the job is gone")?;
         let mut start_commit = job.start_commit.clone().unwrap_or_default();
         // Where its branch was when this run started: a job whose own publish failed is tried
