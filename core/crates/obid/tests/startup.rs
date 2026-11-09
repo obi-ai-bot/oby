@@ -39,6 +39,39 @@ fn config(folder: &Path) -> Config {
     Config::parse(&text).unwrap()
 }
 
+/// KEYCHAIN-10: on macOS, `prepare_home` makes `vault/` and `keys/` and excludes each from Time
+/// Machine (`tmutil isexcluded` says `[Excluded]`). Sticky, no admin; a failure never stops obid.
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_10_vault_and_keys_are_excluded_from_backups() {
+    let folder = Folder::new("keychain-10");
+    let config = config(&folder.0);
+    obid::prepare_home(&config).unwrap();
+    let vault = config.mac_home.join("vault");
+    let keys = config.mac_home.join("keys");
+    assert!(vault.is_dir(), "prepare_home makes vault/");
+    assert!(keys.is_dir(), "prepare_home makes keys/");
+    for path in [&vault, &keys] {
+        let out = std::process::Command::new("/usr/bin/tmutil")
+            .arg("isexcluded")
+            .arg(path)
+            .output()
+            .expect("tmutil isexcluded");
+        assert!(
+            out.status.success(),
+            "tmutil isexcluded {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("[Excluded]"),
+            "{} should be excluded from Time Machine, got: {text}",
+            path.display()
+        );
+    }
+}
+
 /// Worktrees enough that measuring them isn't instant.
 fn fill_worktrees(home: &Path, folders: usize, files: usize) {
     for d in 0..folders {

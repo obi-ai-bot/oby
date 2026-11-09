@@ -6,7 +6,7 @@ The business behavior contract for what obid asks of the macOS Keychain, from [t
 
 - **Outcome:** Starting or upgrading Oby never makes macOS ask the owner's Mac password, and obid answers while it starts. The owner's words of 2026-10-31: "WE NEED TO REMOVE THIS FOREVER, having to put the password 4 times is stupid."
 - **Status:** **Implemented.** Until #1679, an obid starting in the Mac app's runner home with no `vault/secrets.json` copied the Swift runner's vault items (service `com.deskree.oby.runner.vault`) out of the Keychain. The Swift app made those items, so macOS asked the owner's password for each one, and obid answered no request until all were answered (4 prompts on the owner's Mac).
-- **Scope:** obid on macOS: its vault, Tetrix's login, the agent logins it copies (`claudeKeychain`, `cursorKeychain`), Cursor's access token read for its usage, and Claude Code's runs staying on that login when `claude -p` changes (#1867). **Out of scope:** the Electron app's own device key (docs/contracts/signed-words.md) and the Swift apps.
+- **Scope:** obid on macOS: its vault, Tetrix's login, the agent logins it copies (`claudeKeychain`, `cursorKeychain`), Cursor's access token read for its usage, Claude Code's runs staying on that login when `claude -p` changes (#1867), and excluding `home/vault/` and `home/keys/` from Time Machine (KEYCHAIN-10). **Out of scope:** the Electron app's own device key (docs/contracts/signed-words.md), the Swift apps, and encrypting the vault or the relay key.
 
 ## Behavior
 
@@ -38,6 +38,12 @@ Cursor's CLI reports no usage, so obid asks what Cursor's own app and CLI ask (d
 - **KEYCHAIN-8:** What it reads: a Cursor account's login, as a run's copy reads it: its login file whole (a regular file: an account's own folder, or Cursor's own `~/.cursor/auth.json`), else, for Cursor's own login with `cursorKeychain` on, its `cursor-access-token` and `cursor-api-key` Keychain items, by the same read as a run's copy (KEYCHAIN-3), so it brings no new prompt and no value is asked for twice while its item is unchanged. An account with a folder of its own and no file in it never takes that login. It's all off the request path and off obid's async runtime, so a prompt nobody answers holds up nothing else. What it uses and sends is only the `accessToken`: never the API key, and never the refresh token (from the Keychain, `cursor-refresh-token` isn't asked for). An access token that has ended, or a login with none, sends nothing.
 - **KEYCHAIN-9:** Where it sends it: only to `https://api2.cursor.sh`, that exact host, which no configuration can change, as `Authorization: Bearer` on `POST /aiserver.v1.DashboardService/GetCurrentPeriodUsage` and `POST /aiserver.v1.DashboardService/GetPlanInfo` (`Content-Type: application/json`, `Connect-Protocol-Version: 1`, body `{}`), with redirects off, no proxy and 10 seconds for each. The token is learned as a secret obid knows, so logs scrub it; it's never logged, stored or put in any answer. Only obid does this: never in a box, never for an agent. Of an answer only a number and a time are taken, and none of its text reaches an agent or the owner; a failure says only its status.
 
+### Time Machine (macOS)
+
+The vault and the relay's key stay plaintext files (0600) under Application Support, by the owner's decision #1679 (no Keychain prompts). A Time Machine backup of that folder would copy them.
+
+- **KEYCHAIN-10:** On macOS, when obid prepares its home it makes `home/vault/` and `home/keys/` if they're missing (`store::make_private_dir`), then runs `/usr/bin/tmutil addexclusion` on each once. The exclusion is sticky and needs no admin rights. A failure is logged and never stops obid. On Linux, nothing. No master key or encryption is added.
+
 ### What the owner can still see
 
 - No prompt in the usual case: Claude Code and cursor-agent write their items with `/usr/bin/security`, and obid reads them with it.
@@ -48,6 +54,7 @@ Cursor's CLI reports no usage, so obid asks what Cursor's own app and CLI ask (d
 
 - No vault secret is ever read from or written to the Keychain.
 - No Keychain value is asked for twice while its item is unchanged.
+- On macOS, `home/vault/` and `home/keys/` are excluded from Time Machine once home is prepared; a failed exclusion never stops obid.
 - obid's API is add-only: no key or route is removed; `tetrix.error` gains one text.
 
 ## Tests
@@ -60,6 +67,7 @@ Cursor's CLI reports no usage, so obid asks what Cursor's own app and CLI ask (d
 | KEYCHAIN-3 | `jobs::logins::tests::keychain_3_a_login_is_asked_for_once_per_change`, `jobs::logins::tests::keychain_3_two_reads_at_once_ask_once`, `accounts_api::keychain_3_a_cursor_login_macos_refused_says_why`, `accounts_api::keychain_3_a_claude_login_macos_refused_fails_the_run_saying_why` |
 | KEYCHAIN-8 | `jobs::logins::tests::keychain_8_a_usage_read_takes_only_a_live_access_token`, `accounts_api::keychain_8_a_usage_read_asks_the_keychain_nothing_new`, `jobs::tests::keychain_8_a_slow_keychain_read_leaves_the_runtime_free` |
 | KEYCHAIN-9 | `cursor_usage::tests::keychain_9_the_token_goes_to_cursors_host_as_cursors_own_app_sends_it`, `cursor_usage::tests::keychain_9_a_redirect_is_refused_and_the_token_stays`, `cursor_usage::tests::keychain_9_a_proxy_in_obids_environment_is_asked_nothing`, `cursor_usage::tests::keychain_9_a_host_that_doesnt_answer_times_out_saying_nothing_of_it`, `cursor_usage::tests::keychain_9_none_of_an_answers_text_comes_through`, `jobs::tests::usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept` (the token in no log line or file) |
+| KEYCHAIN-10 | `startup::keychain_10_vault_and_keys_are_excluded_from_backups` (macOS only; `tmutil isexcluded`) |
 | KEYCHAIN-4 | `claude_bare::issue_1867_a_job_never_runs_bare`, `claude_bare::issue_1867_a_review_never_runs_bare`, `claude_bare::issue_1867_a_conversation_turn_never_runs_bare`, `claude_bare::issue_1867_a_conversation_started_ahead_never_runs_bare`, `claude_bare::issue_1867_a_side_call_of_the_brain_never_runs_bare`, `claude_bare::issue_1867_the_usage_read_never_runs_bare`, `claude_bare::issue_1867_the_refresh_never_runs_bare`, `claude_bare::issue_1867_a_sign_in_and_the_login_check_never_run_bare`, `claude_bare::issue_1867_an_answer_to_another_oby_never_runs_bare` |
 | KEYCHAIN-5 | `claude_bare::issue_1867_a_bare_default_stops_a_job_in_claude_codes_words` |
 | KEYCHAIN-6 | `claude_bare::issue_1867_a_bare_default_fails_a_turn_without_saying_why` |
