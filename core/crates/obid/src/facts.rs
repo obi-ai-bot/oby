@@ -60,6 +60,9 @@ pub fn numstat(text: &str) -> Diff {
 /// The most failing tests a check run lists.
 pub(crate) const FAILING_MAX: usize = 20;
 
+/// What a hung `go test` lists among its failing tests: no test's name.
+const GO_TIMEOUT: &str = "go test timed out";
+
 /// Whether `text` (a job's task) names any of `tests`, as a word of its own, in full or as its `::`
 /// path's end either way round (`red` names `tests::red`, `jobs_api::red` names `red`): the failure
 /// it was asked to fix, which its rounds are for (PUBLISHING-18).
@@ -129,7 +132,7 @@ pub struct CheckRecord {
 }
 
 /// What changes between two runs of the same failure: temporary paths, UUIDs, runs of hex
-/// (addresses, ids, the check's own folder), timings and other numbers.
+/// (addresses, ids, the check's own folder), timings (clock times too) and other numbers.
 static TEMP_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(?i)\S*(?:/tmp|/var/folders/|\.tmp)\S*").expect("a valid pattern")
 });
@@ -140,20 +143,29 @@ static UUID: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
 static HEX: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)[0-9a-f]{6,}").expect("a valid pattern"));
 static TIMING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"\d+(?:\.\d+)?\s*(?:ns|µs|us|ms|s|secs?|seconds?|m|mins?|minutes?)\b")
-        .expect("a valid pattern")
+    regex::Regex::new(
+        r"\d+:\d{2}(?::\d{2})?(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:ns|µs|us|ms|s|secs?|seconds?|m|mins?|minutes?)\b",
+    )
+    .expect("a valid pattern")
 });
 static DIGITS: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"\d+").expect("a valid pattern"));
 /// A line that counts what's left (`due to 5 previous errors`, `3 failed`, `2 problems`): its
-/// number is progress, so it stays.
+/// number is progress, so it stays, unless the line counts tests too ([`TEST_COUNT`]).
 static COUNT_LINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?i)\b\d+\s+(?:previous\s+)?(?:errors?|warnings?|failed|failures?|problems?|passed|tests?)\b")
-        .expect("a valid pattern")
+    regex::Regex::new(
+        r"(?i)\b\d+\s+(?:previous\s+)?(?:errors?|warnings?|failed|failures?|problems?)\b",
+    )
+    .expect("a valid pattern")
+});
+/// A line that counts tests (`running 12 tests`, `10 passed; 1 failed`): how many ran or passed
+/// changes with the work, not the failure, so its numbers go.
+static TEST_COUNT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b\d+\s+(?:passed|tests?)\b").expect("a valid pattern")
 });
 
 /// `text` with what changes between two runs of the same failure taken out, line by line; a
-/// line that counts what's left keeps its numbers.
+/// line that counts what's left, and no tests, keeps its numbers.
 fn normalized(text: &str) -> String {
     text.lines()
         .map(str::trim)
@@ -162,7 +174,7 @@ fn normalized(text: &str) -> String {
             let line = TEMP_PATH.replace_all(line, "<tmp>");
             let line = UUID.replace_all(&line, "<id>");
             let line = TIMING.replace_all(&line, "<time>");
-            if COUNT_LINE.is_match(&line) {
+            if COUNT_LINE.is_match(&line) && !TEST_COUNT.is_match(&line) {
                 return line.into_owned();
             }
             let line = HEX.replace_all(&line, "<hex>");
@@ -172,34 +184,63 @@ fn normalized(text: &str) -> String {
         .join("\n")
 }
 
-/// What a failed check run (`record`, its `output`) failed on, to tell the same failure from a
-/// new one (RECOVERY-9): the failing step's command, its failing tests' names, sorted, and a hash
-/// of their messages; when it names none, a hash of its whole output. Both read [`normalized`].
+/// A line saying something other than a test failed: a compiler's or linter's error (clippy's
+/// too), a format check's diff, a secret scan's finding, a pytest error. ponytail: best-effort,
+/// for the tools that share a step with a test runner; a line it misses lets names alone sign,
+/// which can stop a job one round early.
+static OTHER_FAILURE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"^(?:error(?:\[\w+\])?: |Diff in |ERROR |\S+\.go:\d+:\d+: )|:\d+:\d+: (?:fatal )?error\b|\berror TS\d+|\bleaks found: \d|\b\d+ problems? \(",
+    )
+    .expect("a valid pattern")
+});
+/// What cargo says after its tests failed, which is no other failure.
+static TESTS_FAILED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^error: (?:test failed, to rerun|\d+ targets? failed)")
+        .expect("a valid pattern")
+});
+
+/// Whether `record`'s failing tests' names are the whole of its failure (RECOVERY-9): its failing
+/// step is a test runner alone, with no other failure in `output` ([`OTHER_FAILURE`]), that
+/// counted as many failed; fewer than [`FAILING_MAX`] are listed, and none is a hung `go test`'s
+/// [`GO_TIMEOUT`].
+pub fn named(record: &CheckRecord, output: &str) -> bool {
+    let failed = record.steps.iter().find(|s| s.passed == Some(false));
+    let count = record.failing.len();
+    let other = |line: &str| OTHER_FAILURE.is_match(line) && !TESTS_FAILED.is_match(line);
+    count > 0
+        && count < FAILING_MAX
+        && !record.failing.iter().any(|f| f.test == GO_TIMEOUT)
+        && failed
+            .and_then(|s| s.tests)
+            .is_some_and(|t| t.failed == count as u64)
+        && !output.lines().any(|line| other(line.trim()))
+}
+
+/// What a failed check run (`record`, its own `output`, before obid's notes join it) failed on,
+/// to tell the same failure from a new one (RECOVERY-9): the failing step's command and its
+/// failing tests' names, sorted; unless they are the whole failure ([`named`]), a hash of its
+/// whole output, [`normalized`], too.
 pub fn signature(record: &CheckRecord, output: &str) -> String {
     let step = record
         .steps
         .iter()
         .find(|s| s.passed == Some(false))
         .map_or("", |s| s.command.as_str());
-    let mut tests: Vec<(&str, String)> = record
-        .failing
-        .iter()
-        .map(|f| (f.test.as_str(), normalized(&f.message)))
-        .collect();
+    let mut tests: Vec<&str> = record.failing.iter().map(|f| f.test.as_str()).collect();
     tests.sort_unstable();
     tests.dedup();
-    let names: Vec<&str> = tests.iter().map(|(name, _)| *name).collect();
+    let names = tests.join(", ");
+    if named(record, output) {
+        return format!("{step}: {names}");
+    }
     // ponytail: std's SipHash with its fixed keys, steady within one obid build; a new build
     // may hash differently, which costs at most one more round.
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    if tests.is_empty() {
-        normalized(output).hash(&mut hasher);
-        format!("{step}: #{:016x}", hasher.finish())
-    } else {
-        tests.hash(&mut hasher);
-        format!("{step}: {} #{:016x}", names.join(", "), hasher.finish())
-    }
+    normalized(output).hash(&mut hasher);
+    let names = if names.is_empty() { names } else { names + " " };
+    format!("{step}: {names}#{:016x}", hasher.finish())
 }
 
 /// Whether the last of `checks` failed as the round before's last did (RECOVERY-9): the same
@@ -447,7 +488,7 @@ impl CheckWatch {
             let name = rest.split(" (").next().unwrap_or(rest).to_owned();
             self.fail(&name, "");
         } else if line.starts_with("panic: test timed out") {
-            self.fail("go test timed out", line);
+            self.fail(GO_TIMEOUT, line);
         } else if line == "FAIL"
             || line == "PASS"
             || line.starts_with("FAIL\t")
@@ -959,7 +1000,11 @@ mod tests {
                     started: None,
                     seconds: None,
                     running: false,
-                    tests: None,
+                    // Its runner counted as many failed as are named.
+                    tests: (!failing.is_empty()).then(|| Tests {
+                        failed: failing.len() as u64,
+                        ..Tests::default()
+                    }),
                 },
             ],
             failing: failing
@@ -977,35 +1022,92 @@ mod tests {
         record
     }
 
-    /// RECOVERY-9: a signature names the failing step and its tests, sorted, and reads their
-    /// messages: the same test failing at another assertion is progress.
+    /// RECOVERY-9: when the names are the whole failure, a signature names the failing step and
+    /// its tests, sorted, and only them: the same tests failing with other messages are the same
+    /// failure, other tests a new one.
     #[test]
-    fn recovery_9_signature_reads_failing_tests_and_their_messages() {
-        let one = signed(
-            1,
-            false,
-            &[("b::two", "left: 1"), ("a::one", "boom at 0x7ffe12ab")],
-            "",
+    fn recovery_9_signature_names_failing_tests_only() {
+        let sig = |failing: &[(&str, &str)]| signed(1, false, failing, "").signature.unwrap();
+        let one = sig(&[("b::two", "left: 1"), ("a::one", "boom at 0x7ffe12ab")]);
+        assert_eq!(one, "cargo test: a::one, b::two");
+        assert_eq!(
+            sig(&[("a::one", "right is empty"), ("b::two", "left: 2")]),
+            one
         );
-        let sig = one.signature.unwrap();
-        assert!(sig.starts_with("cargo test: a::one, b::two #"), "{sig}");
-        let again = signed(
-            2,
-            false,
-            &[("a::one", "boom at 0x7ffd99cd"), ("b::two", "left: 2")],
-            "",
+        assert_ne!(sig(&[("a::one", "boom")]), one);
+        assert_ne!(sig(&[("a::one", "boom"), ("c::three", "boom")]), one);
+    }
+
+    /// RECOVERY-9: names short of the whole failure (its runner counted another number failed or
+    /// none, 20 or more are listed, or one is a hung `go test`) sign with the output's hash too,
+    /// so a change in the rest of it is a new failure.
+    #[test]
+    fn recovery_9_names_short_of_the_whole_failure_sign_with_the_output() {
+        let differ = |record: CheckRecord| {
+            let one = signature(&record, "error[E0425]: cannot find value `x`");
+            assert!(!named(&record, ""), "{record:?}");
+            assert!(one.starts_with("cargo test: "), "{one}");
+            assert!(one.contains(" #"), "{one}");
+            assert_ne!(
+                one,
+                signature(&record, "error[E0425]: cannot find value `y`")
+            );
+        };
+        let mut counted = signed(1, false, &[("a::one", ""), ("b::two", "")], "");
+        assert!(named(&counted, ""));
+        counted.steps[1].tests = Some(Tests {
+            failed: 3,
+            ..Tests::default()
+        });
+        differ(counted.clone());
+        counted.steps[1].tests = None;
+        differ(counted);
+        let many: Vec<String> = (0..FAILING_MAX).map(|n| format!("t::{n}")).collect();
+        let many: Vec<(&str, &str)> = many.iter().map(|t| (t.as_str(), "")).collect();
+        differ(signed(1, false, &many, ""));
+        let hung = signed(1, false, &[("TestHung", ""), (GO_TIMEOUT, "")], "");
+        assert!(signature(&hung, "").starts_with("cargo test: TestHung, go test timed out #"));
+        differ(hung);
+    }
+
+    /// RECOVERY-9: names alone sign only a test runner's step with no other failure: one step
+    /// that runs clippy and the tests, whose next round fixes clippy's error while test `x`
+    /// still fails, made progress, so it signs anew. Cargo's own lines after failed tests are
+    /// no other failure.
+    #[test]
+    fn recovery_9_a_clippy_fix_beside_a_failing_test_is_progress() {
+        let tests = "test x ... FAILED\ntest result: FAILED. 0 passed; 1 failed\nerror: test failed, to rerun pass `--lib`\n";
+        let clippy = format!(
+            "error: unused variable: `y`\n --> src/a.rs:3:9\nerror: could not compile `a` (lib) due to 1 previous error\n{tests}oby-check: failed: cargo clippy\n"
         );
-        assert_eq!(again.signature.unwrap(), sig);
-        let moved = signed(
-            2,
-            false,
-            &[
-                ("a::one", "boom at 0x7ffe12ab"),
-                ("b::two", "right is empty"),
-            ],
-            "",
+        let first = signed(1, false, &[("x", "")], &clippy);
+        let second = signed(2, false, &[("x", "")], tests);
+        assert!(!named(&first, &clippy));
+        assert!(named(&second, tests));
+        assert_eq!(second.signature.as_deref(), Some("cargo test: x"));
+        assert_ne!(first.signature, second.signature);
+        assert!(first.signature.unwrap().starts_with("cargo test: x #"));
+        assert!(!named(&second, "src/a.rs:3:9: error: cannot find `y`"));
+        assert!(!named(&second, "Diff in /work/src/a.rs at line 3:"));
+        // gitleaks' clean line, which oby-check.sh prints after every run, is no failure.
+        let clean = format!("{tests}9:04PM INF no leaks found\n");
+        assert!(named(&second, &clean));
+        assert!(!named(&second, "9:04PM WRN leaks found: 1"));
+    }
+
+    /// RECOVERY-9: two runs of the same failure that differ only in their timings (clock times
+    /// too) or in how many tests ran or passed sign the same.
+    #[test]
+    fn recovery_9_timings_and_test_counts_are_no_new_failure() {
+        let sig = |output: &str| signed(1, false, &[], output).signature.unwrap();
+        assert_eq!(
+            sig(
+                "error: 2 previous errors (elapsed 0:00:07)\nrunning 12 tests\ntest result: FAILED. 10 passed; 1 failed"
+            ),
+            sig(
+                "error: 2 previous errors (elapsed 0:01:09.5)\nrunning 13 tests\ntest result: FAILED. 11 passed; 1 failed"
+            )
         );
-        assert_ne!(moved.signature.unwrap(), sig);
     }
 
     /// RECOVERY-9: with no test named, the whole output counts, with temporary paths, UUIDs,
