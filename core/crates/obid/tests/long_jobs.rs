@@ -861,6 +861,24 @@ fn recovery_17_ten_continuations_in_all_then_the_owner() {
     let done = wait(&obid, "ffff0002");
     assert_eq!(done["status"], "done", "{done}");
     assert_eq!(tries(&obid, "ffff0002"), 0);
+    // So does the Try again on the crash's own inbox item: its click goes through, then resets.
+    assert_eq!(tries(&obid, "ffff0001"), 10);
+    let items = call(&obid, "GET", "/v1/inbox", None).body;
+    let item = items
+        .as_array()
+        .and_then(|items| items.iter().find(|i| i["job"] == "ffff0001"))
+        .unwrap_or_else(|| panic!("{items}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let answered = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{item}/answer"),
+        Some(&json!({"answer": "Try again"})),
+    );
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    assert!(tries(&obid, "ffff0001") < 10);
 }
 
 /// RECOVERY-17: a fix round and a new session (RECOVERY-8) take none of a job's 10; a clean restart

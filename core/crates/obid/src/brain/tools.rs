@@ -877,19 +877,21 @@ fn continue_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<
             },
         );
     }
-    // The owner's Try again gives the 10 back (RECOVERY-17), as `oby_tell_job`'s words do; the
-    // words still go as an event's, so a #1563 hold still needs their signed choice.
-    if source(session) == crate::jobs::Source::Owner {
-        shared.jobs.owner_asked(&id);
-    }
     let foreign = super::written_after(shared, &session.conversation);
-    match shared.jobs.continue_job(
+    let carried = shared.jobs.continue_job(
         &id,
         Some(&added),
         BY_OBY,
         crate::jobs::Source::Event,
         foreign,
-    ) {
+    );
+    // The owner's Try again gives the 10 back (RECOVERY-17), as `oby_tell_job`'s words do, once
+    // it went through; the words still go as an event's, so a #1563 hold still needs their signed
+    // choice and resets nothing.
+    if source(session) == crate::jobs::Source::Owner && matches!(carried, Some(Ok(_))) {
+        shared.jobs.owner_asked(&id);
+    }
+    match carried {
         Some(Ok(job)) => Ok(format!("Continuing {name}: round {}.", job.current_round())),
         Some(Err(refused)) => Err(format!("Couldn't continue {name}: {}", refused.0)),
         None => Err("That task isn't here any more.".into()),

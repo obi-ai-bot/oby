@@ -3899,7 +3899,11 @@ impl Jobs {
             )
         };
         self.update(id, |job| {
-            job.status = [Status::Failed, Status::Interrupted][usize::from(capped)];
+            job.status = if capped {
+                Status::Interrupted
+            } else {
+                Status::Failed
+            };
             job.summary = reason.clone();
             job.reason = Some(reason.clone());
             job.finished = Some(obi_protocol::time::now());

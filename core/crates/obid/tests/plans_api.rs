@@ -1919,7 +1919,10 @@ fn recovery_17_the_owners_try_again_in_a_conversation_gives_the_tries_back() {
     );
     let answer = said(&obid, r#"WEB OBY oby_continue_job {"id":"ca9ed002"}"#);
     assert!(
-        answer["text"].as_str().unwrap().contains("Confirm"),
+        answer["text"]
+            .as_str()
+            .unwrap()
+            .contains("waits for your OK"),
         "{answer}"
     );
     assert_eq!(tries("ca9ed002"), obid::job::Recovery::ALL_TRIES);

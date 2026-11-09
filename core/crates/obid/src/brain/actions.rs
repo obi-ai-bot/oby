@@ -636,12 +636,14 @@ fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool, owners: bool) -> (String
             true,
         );
     }
-    // The owner's Try again gives the 10 back (RECOVERY-17); the words still go as an event's.
-    if owners {
+    // Try again's own words pick its session up again: they never start a follow-up.
+    let carried = shared.jobs.message(&job.id, TRY_AGAIN, Source::Event);
+    // The owner's Try again gives the 10 back (RECOVERY-17), once it went through; the words still
+    // go as an event's, so a refused one (a #1563 hold) resets nothing.
+    if owners && matches!(carried, Some(Ok(_))) {
         shared.jobs.owner_asked(&job.id);
     }
-    // Try again's own words pick its session up again: they never start a follow-up.
-    match shared.jobs.message(&job.id, TRY_AGAIN, Source::Event) {
+    match carried {
         Some(Ok(job)) => (
             format!("Started {name} again on {}.", place(shared, &job)),
             true,
