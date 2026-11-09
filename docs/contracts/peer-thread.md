@@ -37,7 +37,6 @@ Every exchange with that owner's Obis since obid joined this Sphere, whichever w
 | They called their request off | `kind: cancel`, `exchange.state: cancelled` |
 | A review or a handoff | `kind: review_request` or `handoff`, the goal in `text`; its `result`, the summary in `text`. The findings stay on the exchange |
 | A request being sent | No post yet: a refusal removes it with no event, so it shows once the Sphere has it |
-| A Council's request not confirmed by the Sphere | The request's post, `state: waiting`, `seq` and `recordedAt` null, and `error` in obid's words. Only a Council's: a question whose send got no answer isn't kept, so it has no post |
 | The Sphere refused a question | No exchange is kept, so no post (docs/runner-api.md, "obid only: Obi-to-Obi exchanges"). The refusal answers whoever asked |
 
 ### Asking from it

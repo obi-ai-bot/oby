@@ -24,7 +24,7 @@
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   mcp/, Package.swift   swift test
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
-#   scripts/oby-check*    scripts/oby-check-test.sh
+#   scripts/oby-check*    scripts/oby-check-test.sh and the line limit below
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
@@ -62,13 +62,55 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # Dispatcher, not harness (AGENTS.md): how many production lines the Rust core may have outside the
 # Sphere. A cut lowers it. Raising it is the owner's word: this is the check, so a job's own change
 # to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
-obid_lines_limit=90500
-# A file counts up to its `#[cfg(test)]`; the Sphere's and its protocol's don't count. A new crate does.
+obid_lines_limit=95000
+# jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
+jobs_rs_limit=15316
+# A job's check runs the base's copy of this script on the commit (PUBLISHING-7). A branch that
+# changed a limit since it started from its merge base (a cut lowers it) is held to its own number,
+# but never to one higher than the running copy's; one that didn't gets the running copy's, an
+# owner's raise on dev included. When dev's limit moved since the branch started, its messages say
+# to rebase.
+limit_in() { # a limit in the copy of this script at a commit
+    git show "$1:scripts/oby-check.sh" 2>/dev/null | sed -n "s/^$2=\([0-9]\{1,9\}\)\$/\1/p" | head -n 1 || true
+}
+limit_moved=()
+pick_limit() { # name: sets it from the commit's copy where the branch changed it
+    local running=${!1} started committed
+    started=$(limit_in "$base" "$1")
+    committed=$(limit_in HEAD "$1")
+    if [[ -n "$committed" && "$committed" != "$started" ]] && ((committed < running)); then
+        printf -v "$1" %s "$committed"
+    fi
+    if [[ -n "$started" && "$started" != "$running" && "$committed" != "$running" ]]; then
+        limit_moved+=("$1")
+    fi
+}
+pick_limit obid_lines_limit
+pick_limit jobs_rs_limit
+# Said after a limit's failure: dev's limit changed since this branch started.
+moved() { [[ " ${limit_moved[*]} " != *" $1 "* ]] || echo " (dev's limit changed since this branch started: rebase onto dev)"; }
+# A file counts all but its test modules: from a `#[cfg(test)]` on a `mod name {` to the next `}` in
+# column 0 (rustfmt's). A `#[cfg(test)]` on a helper or an out-of-line `mod name;` counts.
+production_lines='
+    FNR == 1 { n += held; held = 0; skip = 0 }
+    skip { if (/^}/) skip = 0; next }
+    held && /^[[:space:]]*$/ { held++; next }
+    held && /^(pub(\([^)]*\))? )?mod [A-Za-z0-9_]+ *\{/ { held = 0; skip = !/\}[[:space:]]*$/; next }
+    held { n += held; held = 0 }
+    /^#\[cfg\(test\)\]/ { held = 1; next }
+    { n++ }
+    END { print n + held }'
+# The Sphere's and its protocol's don't count, but the Sphere's inbox does (the owner's decision of
+# 2026-11-06). A new crate counts.
 obid_lines() {
-    find core/crates -path '*/src/*' -name '*.rs' -not -path 'core/crates/obid/src/sphere/*' \
-        -not -path 'core/crates/obi-protocol/*' \
-        -exec awk '/^#\[cfg\(test\)\]/ { nextfile } { n++ } END { print n + 0 }' {} + |
+    find core/crates -path '*/src/*' -name '*.rs' -not -path 'core/crates/obi-protocol/*' \
+        \( -not -path 'core/crates/obid/src/sphere/*' -o -path core/crates/obid/src/sphere/inbox.rs \
+        -o -path core/crates/obid/src/sphere/link/inbox_actions.rs \) \
+        -exec awk "$production_lines" {} + |
         awk '{ total += $1 } END { print total + 0 }'
+}
+jobs_rs_lines() {
+    if [[ -f core/crates/obid/src/jobs.rs ]]; then awk "$production_lines" core/crates/obid/src/jobs.rs; else echo 0; fi
 }
 
 failed=() unjudged=()
@@ -203,14 +245,31 @@ each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 
 if [[ -n "$check_script" ]]; then step bash scripts/oby-check-test.sh; fi
 
-if [[ -n "$rust" ]]; then
+if [[ -n "$rust$check_script" ]]; then
+    if ! git cat-file -e HEAD:scripts/oby-check.sh 2>/dev/null; then
+        echo "oby-check: this commit has no scripts/oby-check.sh, this repository's check and its line limits: put it back" >&2
+        failed+=("scripts/oby-check.sh is gone")
+    fi
     lines=$(obid_lines)
     if ((lines > obid_lines_limit)); then
-        echo "oby-check: the Rust core has $lines production lines outside the Sphere, past its limit of $obid_lines_limit (AGENTS.md, \"Dispatcher, not harness\"): cut as much elsewhere, or ask the owner to raise obid_lines_limit in this script" >&2
+        echo "oby-check: the Rust core has $lines production lines outside the Sphere, past its limit of $obid_lines_limit (AGENTS.md, \"Dispatcher, not harness\"): cut as much elsewhere, or ask the owner to raise obid_lines_limit in this script$(moved obid_lines_limit)" >&2
         failed+=("the Rust core's line limit")
     elif ((lines + 1000 < obid_lines_limit)); then
-        echo "oby-check: the Rust core has $lines production lines outside the Sphere: lower obid_lines_limit in this script from $obid_lines_limit, so the cut stays cut"
+        echo "oby-check: the Rust core has $lines production lines outside the Sphere, more than 1,000 under its limit: lower obid_lines_limit in this script from $obid_lines_limit to $(((lines + 499) / 500 * 500)), so the cut stays cut$(moved obid_lines_limit)" >&2
+        failed+=("the Rust core's line limit")
+    else
+        echo "oby-check: the Rust core has $lines production lines outside the Sphere, within its limit of $obid_lines_limit"
     fi
+    jobs_lines=$(jobs_rs_lines)
+    if ((jobs_lines > jobs_rs_limit)); then
+        echo "oby-check: jobs.rs has $jobs_lines production lines, past its limit of $jobs_rs_limit: it may only shrink: put new code in a module of its own, and lower jobs_rs_limit in this script when jobs.rs shrinks$(moved jobs_rs_limit)" >&2
+        failed+=("jobs.rs's line limit")
+    else
+        echo "oby-check: jobs.rs has $jobs_lines production lines, within its limit of $jobs_rs_limit"
+    fi
+fi
+
+if [[ -n "$rust" ]]; then
     # A job's check has no network (above): use the crates the agent already fetched into HOME.
     # Without this, cargo still tries to refresh index.crates.io and fails DNS before the cache.
     export CARGO_NET_OFFLINE=true
