@@ -63,7 +63,7 @@ pub fn touches(path: &str, file: &str) -> bool {
 }
 
 /// The pull requests in what `gh pr list --json number,title,author,headRefName,url,files`
-/// printed that change `files`, but those on `skip` branches (obid's own jobs'): at most [`KEPT`].
+/// printed that change `files`, except `skip` URLs (obid's own published jobs'): at most [`KEPT`].
 /// GitHub lists a renamed file by its new path only, so a pull request that moves one of `files`
 /// away is found by the path it moved to.
 pub fn parse_list(text: &str, files: &[String], skip: &[String]) -> Vec<Pr> {
@@ -73,7 +73,10 @@ pub fn parse_list(text: &str, files: &[String], skip: &[String]) -> Vec<Pr> {
         .filter_map(|pr| {
             let number = pr["number"].as_u64()?;
             let branch = pr["headRefName"].as_str().unwrap_or_default();
-            if skip.iter().any(|s| s == branch) {
+            if pr["url"]
+                .as_str()
+                .is_some_and(|url| skip.iter().any(|s| s == url))
+            {
                 return None;
             }
             let changed: Vec<&str> = pr["files"]
@@ -217,7 +220,7 @@ pub fn clashes(ours: &str, theirs: &str) -> Vec<String> {
     out
 }
 
-/// Reads `repo`'s open pull requests that change `files` (none on a `skip` branch), each with
+/// Reads `repo`'s open pull requests that change `files` (none with a `skip` URL), each with
 /// its diff of those files, secrets obid holds taken out. `None` when gh can't say (not installed,
 /// signed out, GitHub's rate limit, which the GitHub work feed then waits out too).
 pub async fn read(repo: &str, files: &[String], skip: &[String]) -> Option<Vec<(Pr, String)>> {
@@ -412,7 +415,7 @@ mod tests {
         let prs = parse_list(
             text,
             &files(&["src/jobs.rs", "core/"]),
-            &files(&["oby/ab12"]),
+            &files(&["https://github.com/acme/shop/pull/8"]),
         );
         assert_eq!(prs.iter().map(|p| p.number).collect::<Vec<_>>(), [10, 7]);
         assert_eq!(prs[1].files, ["src/jobs.rs"]);
@@ -483,6 +486,40 @@ mod tests {
         assert!(only(theirs, &files(&["src/old.rs"])).contains("src/new.rs"));
         let ours = "diff --git a/src/old.rs b/src/old.rs\n@@ -11 +11 @@ fn go()\n-x\n+y\n";
         assert_eq!(clashes(ours, theirs), ["`fn go()` in src/old.rs"]);
+    }
+
+    #[test]
+    fn a_pull_request_on_our_branch_name_from_another_oby_is_listed() {
+        let text = r#"[
+          {"number": 7, "headRefName": "oby/fix-42",
+           "url": "https://github.com/acme/shop/pull/7", "files": [{"path": "src/jobs.rs"}]},
+          {"number": 8, "headRefName": "oby/fix-42",
+           "url": "https://github.com/acme/shop/pull/8", "files": [{"path": "src/jobs.rs"}]}
+        ]"#;
+        let prs = parse_list(
+            text,
+            &files(&["src/jobs.rs"]),
+            &files(&["https://github.com/acme/shop/pull/8"]),
+        );
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 7);
+        assert_eq!(prs[0].branch, "oby/fix-42");
+    }
+
+    #[test]
+    fn our_own_published_pull_request_is_skipped() {
+        let text = r#"[
+          {"number": 8, "headRefName": "renamed-branch",
+           "url": "https://github.com/acme/shop/pull/8", "files": [{"path": "src/jobs.rs"}]}
+        ]"#;
+        assert!(
+            parse_list(
+                text,
+                &files(&["src/jobs.rs"]),
+                &files(&["https://github.com/acme/shop/pull/8"]),
+            )
+            .is_empty()
+        );
     }
 
     /// A fake `gh` in a folder of its own: `script` is its shell body.
