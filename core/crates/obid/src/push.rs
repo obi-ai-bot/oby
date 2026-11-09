@@ -1189,7 +1189,11 @@ impl Push {
             .filter(|t| t.device.as_ref().is_none_or(|d| paired.contains(d)))
             .map(|t| t.token.clone())
             .collect();
-        let account = (!tokens.is_empty()).then(|| self.account()).flatten();
+        let account = if tokens.is_empty() {
+            None
+        } else {
+            self.account()
+        };
         let (changed, account) = {
             let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
             let before = said.clone().unwrap_or_default();
