@@ -93,6 +93,13 @@ pub(super) fn environment_signature(command: &str, output: &str) -> Option<&'sta
     if starts("error: failed to get `") && CARGO_OFFLINE.iter().any(|cause| starts(cause)) {
         return Some(FETCH);
     }
+    // Offline, a crate the job's cache never got isn't in the index cargo has (M1's run: a Cursor
+    // job whose agent never built): its resolution fails before anything compiles.
+    if starts("error: no matching package named `")
+        && starts("note: offline mode (via `--offline`)")
+    {
+        return Some(FETCH);
+    }
     // `/bin/sh: cargo: command not found` (bash) or `/bin/sh: 1: cargo: not found` (dash), for
     // the first word of one of its steps: not a pipe's second command, a `$(…)` or a recipe's.
     let firsts: Vec<String> = crate::facts::steps(command)
