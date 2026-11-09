@@ -20,7 +20,8 @@
 #                         test binaries, tests/<module>.rs or tests/<module>_api.rs of a touched
 #                         module, and the binaries that name a touched folder under tests/
 #                         (support, agents, plugins); tests/jobs_setup.rs for src/jobs/setup.rs,
-#                         sandbox.rs or egress.rs; every test of another touched crate
+#                         sandbox.rs, egress.rs, process.rs or secretspec.rs, and, outside a job's
+#                         box, wherever tests/jobs_api.rs runs; every test of another touched crate
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   mcp/, Package.swift   swift test
@@ -224,7 +225,8 @@ while IFS= read -r file; do
     case "$file" in
         # A repository's setup in the box (PUBLISHING-23, 24): only its own and the box's code plan
         # it, so a change to jobs.rs alone isn't left unjudged in a job's sandbox (below).
-        core/crates/obid/src/jobs/setup.rs | core/crates/obid/src/sandbox.rs | core/crates/obid/src/egress.rs)
+        core/crates/obid/src/jobs/setup.rs | core/crates/obid/src/sandbox.rs | core/crates/obid/src/egress.rs | \
+            core/crates/obid/src/process.rs | core/crates/obid/src/secretspec.rs)
             tests=$(add "$tests" core/crates/obid/tests/jobs_setup.rs) ;;
     esac
     case "$file" in
@@ -240,8 +242,8 @@ while IFS= read -r file; do
     esac
 done <<< "$changed"
 # Not nested (the Mac's own check of a pull request), what plans tests/jobs_api.rs plans the setup's
-# tests too: jobs.rs, process.rs and secretspec.rs are on the setup's path, so a change to them is
-# judged before it merges (#1944). In a job's box they stay unplanned, and the job isn't sunk.
+# tests too: jobs.rs calls the setup, so a change to it is judged before it merges (#1944). In a
+# job's box they stay unplanned, and the job isn't sunk.
 if [[ -z "$nested" && "$tests" == *core/crates/obid/tests/jobs_api.rs* ]]; then
     tests=$(add "$tests" core/crates/obid/tests/jobs_setup.rs)
 fi
