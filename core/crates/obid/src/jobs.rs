@@ -10497,7 +10497,7 @@ impl Jobs {
         // What Oby's own review must leave as it was given, past the repository's setup line: the
         // code it runs could move what it reads (PERMISSIONS-14, [`REVIEW_MOVED`]).
         let reviewed_tracked = match job.review_of {
-            Some(_) => self.sandboxed_git(id, &TRACKED, None).await.ok(),
+            Some(_) => Box::pin(self.sandboxed_git(id, &TRACKED, None)).await.ok(),
             None => None,
         };
         // What the secret scan found the last time it blocked publishing: the same again stops.
@@ -11333,7 +11333,8 @@ impl Jobs {
             if job.review_of.is_some()
                 && (job.start_commit.as_deref() != Some(head.as_str())
                     || reviewed_tracked.is_none()
-                    || self.sandboxed_git(id, &TRACKED, None).await.ok() != reviewed_tracked)
+                    || Box::pin(self.sandboxed_git(id, &TRACKED, None)).await.ok()
+                        != reviewed_tracked)
             {
                 self.end_done(id, 0, job.pushed, |job| {
                     job.reason = Some(REVIEW_MOVED.into());
