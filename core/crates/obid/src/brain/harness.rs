@@ -1658,7 +1658,7 @@ async fn attempts(
                 &shared.config.home,
                 tool,
                 &account.id,
-                &shared.jobs.model_lists.for_account(tool, &account.id),
+                &shared.jobs.model_lists.to_check(tool, &account.id),
             )),
             turn.result.as_ref(),
             began,
