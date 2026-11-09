@@ -548,7 +548,7 @@ fn merging_31_a_package_fetch_withholds_secrets_but_needs_one_review() {
     let log = check_log(&obid, &follow);
     refused(
         &log,
-        "it follows up a job that reached past the package registries",
+        "it follows up a job whose check got none of the owner's declared secrets",
     );
     let follow: obid::job::Job = serde_json::from_value(kept(&obid, &follow)).unwrap();
     assert_eq!(follow.follow_up_of.as_deref(), Some(id.as_str()));
@@ -563,7 +563,7 @@ fn merging_31_a_package_fetch_withholds_secrets_but_needs_one_review() {
     assert_eq!(follow.two_reviews_why(), None);
     let marked = git(&clone, &["config", "--get", "obid.foreign"]);
     assert!(
-        marked.contains("follows up a job that reached past the package registries"),
+        marked.contains("follows up a job whose check got none of the owner's declared secrets"),
         "{marked}"
     );
 }

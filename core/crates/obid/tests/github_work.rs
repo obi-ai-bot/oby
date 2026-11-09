@@ -1127,3 +1127,49 @@ fn issuetask_4_whose_words_are_read_each_time_the_issue_is() {
         "{why}"
     );
 }
+
+/// ISSUETASK-5: a comment by a member of the owner's organization (`MEMBER` of a repository of
+/// one of its organizations, as GitHub and `gh api user/orgs` say) keeps the job the owner's: it's
+/// marked as a reach (`reached`), its declared secrets withheld and one review, never someone
+/// else's (`foreign`, two reviews). An edit or a rename stays the owner's alone.
+#[test]
+fn issuetask_5_an_organization_members_comment_keeps_the_job_the_owners() {
+    let folder = Folder::new("issuetask-5");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let obid = start(&folder.0, &config, Some(&agents()));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("user"), "wellington\n").unwrap();
+    std::fs::write(gh.join("orgs"), "obi-e2e\n").unwrap();
+    std::fs::write(
+        gh.join("view.json"),
+        json!({"title": "Add a line", "body": "Add a line", "author": {"login": "wellington"}, "labels": [],
+               "comments": [{"author": {"login": "sangam"}, "authorAssociation": "MEMBER",
+                             "createdAt": "2026-11-08T08:00:00Z", "body": "And a test"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let none = json!({"pageInfo": {"hasNextPage": false}, "nodes": []});
+    let issue = json!({"author": {"login": "wellington"}, "authorAssociation": "OWNER", "body": "Add a line",
+                       "userContentEdits": none, "timelineItems": none,
+                       "comments": {"pageInfo": {"hasNextPage": false}, "nodes": [
+                           {"author": {"login": "sangam"}, "authorAssociation": "MEMBER", "body": "And a test",
+                            "userContentEdits": none}]}});
+    let answer = json!({"data": {"viewer": {"login": "wellington"}, "repository": {"issueOrPullRequest": issue}}});
+    std::fs::write(gh.join("who.json"), answer.to_string()).unwrap();
+
+    let job = issue_job_ended(&obid, 142, "Do #142");
+    let file = std::fs::read(
+        obid.home
+            .join(format!("jobs/{}.json", job["id"].as_str().unwrap())),
+    );
+    let file: Value = serde_json::from_slice(&file.unwrap()).unwrap();
+    assert!(file["foreign"].is_null(), "{file}");
+    assert!(
+        file["reached"]
+            .as_str()
+            .is_some_and(|why| why.contains("issue #142") && why.contains("members")),
+        "{file}"
+    );
+}
