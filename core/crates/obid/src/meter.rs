@@ -91,6 +91,8 @@ pub struct Process {
     pub pgid: u32,
     pub rss: u64,
     pub cpu: u64,
+    /// Whether `cpu` was read: a 0 that wasn't is unknown, one that was is idle (PUBLISHING-29).
+    pub cpu_known: bool,
 }
 
 /// The resident memory of `roots`' trees together: each root, every process descended from
@@ -103,6 +105,26 @@ pub fn tree_rss(table: &[Process], roots: &[u32]) -> u64 {
 /// [`tree_rss`] counts it. A process that ended takes its time with it.
 pub fn tree_cpu(table: &[Process], roots: &[u32]) -> u64 {
     tree_sum(table, roots, |p| p.cpu)
+}
+
+/// The CPU time `pgid`'s tree has used now ([`tree_cpu`]), or `None` when it can't be read.
+pub async fn group_cpu(pgid: u32) -> Option<u64> {
+    tokio::task::spawn_blocking(move || known_tree_cpu(&processes(), &[pgid]))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// [`tree_cpu`], or `None` when it can't be told: an empty table, or a process in the tree whose
+/// CPU time couldn't be read (a read that failed isn't an idle 0, which Linux's ticks can give):
+/// a check whose CPU is unknown isn't stopped as idle (PUBLISHING-29).
+pub fn known_tree_cpu(table: &[Process], roots: &[u32]) -> Option<u64> {
+    let unread = std::cell::Cell::new(table.is_empty());
+    let total = tree_sum(table, roots, |p| {
+        unread.set(unread.get() || !p.cpu_known);
+        p.cpu
+    });
+    (!unread.get()).then_some(total)
 }
 
 fn tree_sum(table: &[Process], roots: &[u32], value: impl Fn(&Process) -> u64) -> u64 {
@@ -199,6 +221,7 @@ pub fn processes() -> Vec<Process> {
                     .into_iter()
                     .fold(0u64, u64::saturating_add);
                     process.cpu = (u128::from(ticks) * ns.0 / ns.1) as u64;
+                    process.cpu_known = true;
                 }
             }
             table
@@ -218,10 +241,11 @@ pub fn processes() -> Vec<Process> {
                     pid,
                     &std::fs::read_to_string(entry.path().join("status")).ok()?,
                 )?;
-                process.cpu = std::fs::read_to_string(entry.path().join("stat"))
+                let cpu = std::fs::read_to_string(entry.path().join("stat"))
                     .ok()
-                    .and_then(|stat| stat_cpu(&stat, CLOCK_TICKS))
-                    .unwrap_or(0);
+                    .and_then(|stat| stat_cpu(&stat, CLOCK_TICKS));
+                process.cpu = cpu.unwrap_or(0);
+                process.cpu_known = cpu.is_some();
                 Some(process)
             })
             .collect()
@@ -403,6 +427,7 @@ fn parse_ps(out: &str) -> Vec<Process> {
                 pgid: u32::try_from(next()?).ok()?,
                 rss: next()? * 1024,
                 cpu: 0,
+                cpu_known: false,
             })
         })
         .collect()
@@ -426,6 +451,7 @@ fn parse_status(pid: u32, status: &str) -> Option<Process> {
             .unwrap_or(0),
         rss: field("VmRSS").unwrap_or(0) * 1024,
         cpu: 0,
+        cpu_known: false,
     })
 }
 
@@ -535,6 +561,7 @@ Pages occupied by compressor:                 347536.
                 pgid: 40,
                 rss: 2048 * 1024,
                 cpu: 0,
+                cpu_known: false,
             })
         );
         let thread = "Name:\tkthreadd\nPPid:\t0\n";
@@ -574,5 +601,49 @@ Pages occupied by compressor:                 347536.
         let _ = child.kill();
         let _ = child.wait();
         assert!(rss > 0, "the child's resident memory wasn't measured");
+    }
+}
+
+#[cfg(test)]
+mod known_cpu_tests {
+    use super::*;
+
+    /// `cpu` None: a read that failed.
+    fn p(pid: u32, ppid: u32, cpu: Option<u64>) -> Process {
+        Process {
+            pid,
+            ppid,
+            pgid: 1,
+            rss: 0,
+            cpu: cpu.unwrap_or(0),
+            cpu_known: cpu.is_some(),
+        }
+    }
+
+    #[test]
+    fn publishing_29_a_cpu_time_that_cant_be_read_is_unknown_not_idle() {
+        let read = [p(1, 0, Some(5)), p(2, 1, Some(7)), p(3, 2, Some(11))];
+        assert_eq!(known_tree_cpu(&read, &[1]), Some(23));
+        let unread = [p(1, 0, Some(5)), p(2, 1, None), p(3, 2, Some(11))];
+        assert_eq!(known_tree_cpu(&unread, &[1]), None);
+        // A 0 that was read is idle, as a sleeping process reads on Linux, not unknown.
+        let idle = [p(1, 0, Some(0)), p(2, 1, Some(0))];
+        assert_eq!(known_tree_cpu(&idle, &[1]), Some(0));
+        // Outside the tree, an unreadable process changes nothing.
+        let other = [p(1, 0, Some(5)), p(9, 0, None)];
+        assert_eq!(
+            known_tree_cpu(
+                &[
+                    other[0],
+                    Process {
+                        pgid: 9,
+                        ..other[1]
+                    }
+                ],
+                &[1]
+            ),
+            Some(5)
+        );
+        assert_eq!(known_tree_cpu(&[], &[1]), None);
     }
 }

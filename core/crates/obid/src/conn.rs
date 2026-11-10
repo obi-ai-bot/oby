@@ -276,24 +276,12 @@ impl Conn {
         }
     }
 
-    /// The CPU time the agent's processes have used, in nanoseconds, or `None` when it can't be read.
-    async fn read_cpu(&self) -> Option<u64> {
-        let pgid = self.pgid;
-        tokio::task::spawn_blocking(move || {
-            let table = crate::meter::processes();
-            (!table.is_empty()).then(|| crate::meter::tree_cpu(&table, &[pgid]))
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
     /// Whether the agent's processes used CPU over the quiet window just ended: at least a
     /// thousandth of one core over it (an idle event loop's timers use less), or a busy process
     /// ended. `None` when it couldn't be read, or the window's start wasn't. The next window starts
     /// from now.
     async fn cpu_used(&mut self) -> Option<bool> {
-        let now = self.read_cpu().await;
+        let now = crate::meter::group_cpu(self.pgid).await;
         let since = if self.cpu_due { None } else { self.cpu };
         self.cpu = now;
         self.cpu_due = false;
@@ -340,7 +328,7 @@ impl Conn {
                 }
                 () = &mut self.cpu_at, if self.cpu_due && self.quiet.is_some() => {
                     self.cpu_due = false;
-                    self.cpu = self.read_cpu().await;
+                    self.cpu = crate::meter::group_cpu(self.pgid).await;
                 }
                 () = &mut self.quiet_at, if self.quiet.is_some() => {
                     let since = self.heard_at;

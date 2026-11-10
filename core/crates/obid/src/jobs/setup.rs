@@ -158,6 +158,8 @@ impl Jobs {
             &argv,
             &env,
             &spec.worktree,
+            // Its one limit: past `quiet`, its own 10 minutes have ended it first.
+            SETUP_LIMIT,
             SETUP_LIMIT,
             signal.clone(),
             None,
@@ -176,13 +178,13 @@ impl Jobs {
 fn failure(run: Result<CheckRun, String>) -> Option<String> {
     match run {
         Ok(run) if run.passed => None,
-        // Past its limit: run_check's words are a check's (its 45 minutes, Publish by hand).
+        // Past its limit: run_check's words are a check's (a test run's most, Publish by hand).
         Ok(run) if run.unchecked.is_some() => Some(format!(
-            "{}obid stopped it after {} minutes.",
+            "{}obid stopped it after {}.",
             run.output
-                .strip_suffix(CHECK_TOO_LONG)
+                .strip_suffix(&super::unjudged::too_long(SETUP_LIMIT).0)
                 .unwrap_or(&run.output),
-            SETUP_LIMIT.as_secs() / 60
+            spell(SETUP_LIMIT)
         )),
         Ok(run) => Some(run.output),
         Err(why) => Some(why),
@@ -265,20 +267,21 @@ mod tests {
         assert!(runs_no_setup(Some(&new()), ""));
     }
 
-    /// A setup past its 10 minutes tells the agent so, never a check's 45 minutes or Publish by
-    /// hand (run_check's words for a check).
+    /// A setup past its 10 minutes tells the agent so, never a test run's most or Publish by hand
+    /// (run_check's words for a check).
     #[test]
     fn publishing_23_a_setup_past_its_limit_says_obid_stopped_it_after_10_minutes() {
+        let (said, why) = super::super::unjudged::too_long(SETUP_LIMIT);
         let run = CheckRun {
             passed: false,
-            output: format!("fetching packages\n{CHECK_TOO_LONG}"),
-            unchecked: Some("Not published: the check ran past its 10-minute limit.".into()),
+            output: format!("fetching packages\n{said}"),
+            unchecked: Some(unchecked(why)),
         };
         let told = failure(Ok(run)).unwrap();
         assert_eq!(told, "fetching packages\nobid stopped it after 10 minutes.");
         let told = setup_failed("npm ci", &told);
         assert!(
-            !told.contains("45 minutes") && !told.contains("Publish"),
+            !told.contains("test run") && !told.contains("Publish"),
             "{told}"
         );
     }
