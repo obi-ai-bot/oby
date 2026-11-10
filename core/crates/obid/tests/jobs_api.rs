@@ -4,8 +4,6 @@
 //! `waitAnswersWithTheJobOnceItEnded`; StopTests; DismissTests), with a stand-in agent
 //! (tests/agents/fake-claude) run by obid's Claude Code adapter in the job sandbox.
 
-mod support;
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
