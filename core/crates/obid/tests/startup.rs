@@ -39,6 +39,72 @@ fn config(folder: &Path) -> Config {
     Config::parse(&text).unwrap()
 }
 
+/// KEYCHAIN-11: on macOS, `prepare_home` makes `mac_home/vault/` and `mac_home/keys/` and excludes
+/// each from Time Machine (`tmutil isexcluded` says `[Excluded]`). Sticky, no admin; a failure
+/// never stops obid. The scratch is under `Library/Caches`, not `temp_dir()`: macOS already
+/// excludes that temporary ancestor, so `[Excluded]` would not prove `addexclusion` ran.
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_11_vault_and_keys_are_excluded_from_backups() {
+    let folder = included_folder("keychain-11");
+    let config = config(&folder.0);
+    // Make the folders first so isexcluded names them, and prove they aren't excluded yet: then
+    // prepare_home's addexclusion is what the later [Excluded] measures.
+    let vault = config.mac_home.join("vault");
+    let keys = config.mac_home.join("keys");
+    for path in [&vault, &keys] {
+        std::fs::create_dir_all(path).unwrap();
+        let text = tmutil_isexcluded(path);
+        assert!(
+            !text.contains("[Excluded]"),
+            "{} must start included so the test fails without addexclusion, got: {text}",
+            path.display()
+        );
+    }
+    obid::prepare_home(&config).unwrap();
+    assert!(vault.is_dir(), "prepare_home makes vault/");
+    assert!(keys.is_dir(), "prepare_home makes keys/");
+    for path in [&vault, &keys] {
+        let text = tmutil_isexcluded(path);
+        assert!(
+            text.contains("[Excluded]"),
+            "{} should be excluded from Time Machine after prepare_home, got: {text}",
+            path.display()
+        );
+    }
+}
+
+/// A scratch folder under `~/Library/Caches`, not `temp_dir()`: Time Machine usually backs Caches
+/// up (or reports them unknown), while temporary ancestors are already `[Excluded]`.
+#[cfg(target_os = "macos")]
+fn included_folder(name: &str) -> Folder {
+    let home = std::env::var_os("HOME").expect("HOME");
+    let path = PathBuf::from(home).join(format!(
+        "Library/Caches/obid-startup-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).unwrap();
+    Folder(path)
+}
+
+/// `tmutil isexcluded` stdout for `path`, or panics with stderr when the tool fails.
+#[cfg(target_os = "macos")]
+fn tmutil_isexcluded(path: &Path) -> String {
+    let out = std::process::Command::new("/usr/bin/tmutil")
+        .arg("isexcluded")
+        .arg(path)
+        .output()
+        .expect("tmutil isexcluded");
+    assert!(
+        out.status.success(),
+        "tmutil isexcluded {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 /// Worktrees enough that measuring them isn't instant.
 fn fill_worktrees(home: &Path, folders: usize, files: usize) {
     for d in 0..folders {
