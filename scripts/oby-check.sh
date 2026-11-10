@@ -8,6 +8,7 @@
 #   scripts/oby-check.sh [base]    what changed since the merge base with base (default origin/dev),
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
 #                                  with OBY_CHECK_ALL=1, runs everything, whatever changed;
+#                                  with OBY_CHECK_ONLY=rust|electron|swift|scan, runs only that group;
 #                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
 #                                  obid sets it when it runs this on a job's base, which changed
 #                                  nothing, to see whether the base fails as the job does
@@ -116,10 +117,17 @@ jobs_rs_lines() {
 }
 
 failed=() unjudged=()
+case "${OBY_CHECK_ONLY:-}" in
+    ''|rust|electron|swift|scan) ;;
+    *) echo 'oby-check: invalid OBY_CHECK_ONLY' >&2; exit 2 ;;
+esac
+group=rust
+selected() { [[ -z "${OBY_CHECK_ONLY:-}" || "$OBY_CHECK_ONLY" == "$group" ]]; }
 # Inside a job's sandbox, where Seatbelt can't make another.
 nested=''
 /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null || nested=1
 step() {
+    selected || return 0
     echo "==> $*"
     [[ -n "${OBY_CHECK_PLAN:-}" ]] || "$@" || failed+=("$*")
 }
@@ -260,9 +268,10 @@ fi
 # The distinct lines of a list, each after `$2` when given.
 each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 
+group=rust
 if [[ -n "$check_script" ]]; then step bash scripts/oby-check-test.sh; fi
 
-if [[ -n "$rust$check_script" ]]; then
+if selected && [[ -n "$rust$check_script" ]]; then
     if ! git cat-file -e HEAD:scripts/oby-check.sh 2>/dev/null; then
         echo "oby-check: this commit has no scripts/oby-check.sh, this repository's check and its line limits: put it back" >&2
         failed+=("scripts/oby-check.sh is gone")
@@ -286,7 +295,7 @@ if [[ -n "$rust$check_script" ]]; then
     fi
 fi
 
-if [[ -n "$rust" ]]; then
+if selected && [[ -n "$rust" ]]; then
     # A job's check has no network (above): use the crates the agent already fetched into HOME.
     # Without this, cargo still tries to refresh index.crates.io and fails DNS before the cache.
     export CARGO_NET_OFFLINE=true
@@ -329,6 +338,7 @@ if [[ -n "$rust" ]]; then
 fi
 
 # Ad hoc signing with no team or profile.
+group=swift
 xcode=(xcodebuild -quiet -jobs "$jobs" -project apps/Oby.xcodeproj -derivedDataPath "$cache/DerivedData"
     -clonedSourcePackagesDirPath "$cache/SourcePackages"
     CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=
@@ -343,14 +353,17 @@ apple() {
         step "${xcode[@]}" -scheme "$1" -destination "$2" build-for-testing
     fi
 }
-if [[ -z "$nested" ]]; then
+if ! selected; then
+    :
+elif [[ -z "$nested" ]]; then
     if [[ -n "$ios" ]]; then apple ObyPhone "platform=iOS Simulator,name=iPhone 17,OS=latest" "$ios_suites"; fi
     if [[ -n "$swift" ]]; then step swift test -j "$jobs" --scratch-path "$cache/swiftpm"; fi
 elif [[ -n "$ios$swift" ]]; then
     echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): run them on the Mac before merging"
 fi
 
-if [[ -n "$electron" ]]; then
+group=electron
+if selected && [[ -n "$electron" ]]; then
     [[ -d apps/electron/node_modules ]] || echo "oby-check: apps/electron has no node_modules: run npm install there first" >&2
     step npm --prefix apps/electron run --silent typecheck
     step npm --prefix apps/electron run --silent test
@@ -358,6 +371,7 @@ if [[ -n "$electron" ]]; then
 fi
 
 # What changed, committed or not, scanned for secrets with this repository's rules.
+group=scan
 leaks=(--config .gitleaks.toml --no-banner --redact)
 uncommitted_leaks() {
     git diff HEAD | gitleaks stdin "${leaks[@]}"
@@ -365,7 +379,9 @@ uncommitted_leaks() {
         [[ -z "$file" ]] || gitleaks dir "$file" "${leaks[@]}"
     done < <(git ls-files --others --exclude-standard)
 }
-if command -v gitleaks >/dev/null; then
+if ! selected; then
+    :
+elif command -v gitleaks >/dev/null; then
     step gitleaks git . "--log-opts=$base..HEAD" "${leaks[@]}"
     step uncommitted_leaks
 else

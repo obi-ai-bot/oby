@@ -3,8 +3,11 @@
 # repository of its own. scripts/oby-check.sh runs this when it changes.
 set -eo pipefail
 # Each case plans what it changed: a full check's own OBY_CHECK_ALL or OBY_CHECK_PATHS isn't theirs.
-unset OBY_CHECK_ALL OBY_CHECK_PATHS
+unset OBY_CHECK_ALL OBY_CHECK_PATHS OBY_CHECK_ONLY
 script="$(cd "$(dirname "$0")" && pwd)/oby-check.sh"
+# obid installs the base's authoritative check script before running this test. Keep testing
+# its existing rules below, but test the new group interface against the commit that adds it.
+committed_script=$(git show HEAD:scripts/oby-check.sh)
 limit=$(sed -n 's/^obid_lines_limit=//p' "$script")
 repo=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-test.XXXXXX")
 trap 'rm -rf "$repo"' EXIT
@@ -384,7 +387,11 @@ code core/crates/obid/tests/one.rs 1
 code core/crates/obi-protocol/src/lib.rs 1
 commit all
 said=$(OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
-for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-test.sh' 'build-for-testing' 'swift test' 'apps/electron run --silent typecheck'; do
+apple_plan='build-for-testing'
+if ! /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+    apple_plan="Apple apps and swift test don't run"
+fi
+for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-test.sh' "$apple_plan" 'swift test' 'apps/electron run --silent typecheck'; do
     grep -q -- "$planned" <<<"$said" || {
         echo "oby-check-test: OBY_CHECK_ALL didn't plan \"$planned\": $said" >&2
         exit 1
@@ -392,5 +399,22 @@ for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-
 done
 rm -r core/crates/obi-protocol
 rm -r core/crates/obid
+
+# Each filtered plan contains only its group, including side effects outside step.
+# Use the candidate's implementation: the base's script may predate OBY_CHECK_ONLY.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+for group in rust electron swift scan; do
+    said=$(OBY_CHECK_ONLY="$group" OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    case "$group" in
+        rust) wanted='cargo'; unwanted='apps/electron run\|==> gitleaks\|==> swift\|==> xcodebuild' ;;
+        electron) wanted='apps/electron run'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|==> swift\|==> xcodebuild' ;;
+        swift) wanted='build-for-testing\|swift test\|Apple apps and swift test'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|apps/electron run' ;;
+        scan) wanted='gitleaks'; unwanted='==> cargo\|Rust core has\|apps/electron run\|==> swift\|==> xcodebuild' ;;
+    esac
+    grep -q "$wanted" <<<"$said" && ! grep -q "$unwanted" <<<"$said" || {
+        echo "oby-check-test: incorrect $group filter: $said" >&2
+        exit 1
+    }
+done
 
 echo 'oby-check-test: passed'

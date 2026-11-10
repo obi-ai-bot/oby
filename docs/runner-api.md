@@ -8,6 +8,23 @@ This document is the contract between the runner and its clients. Change it in t
 
 The Rust daemon `obid` (`core/`) serves this same API, so the apps run against it unchanged, plus the endpoints in [obid only](#obid-only) at the end; the Swift runner is frozen and never implements those. **`obid` merges by its own rules** ([obid only](#obid-only), "merging", #853, #854): a pull request its job opened, approved and checked, the way the repository's workflow says, or on the owner's tap where it hasn't learned one. Everything below where the Swift runner merges a pull request (the Mac check's "Passed" merge, its conflict rounds and its recovery's retries, its `merge` inbox item) is the Swift runner's only. [obid only](#obid-only), "What obid leaves out", says what obid answers in those places instead.
 
+## Check workflow (shadow)
+
+`tools/oby-check-blok` is a standalone Apache-2.0 Cargo workspace outside obid.
+Build both binaries with `cargo build --manifest-path tools/oby-check-blok/Cargo.toml --bins`,
+then run `tools/oby-check-blok/target/debug/oby-check-blok <checkout> [base]` (default `origin/dev`)
+beside the normal check. It decides nothing about publishing or merging.
+The pinned BLOK Rust SDK serves three typed nodes on loopback at a free `GRPC_PORT`:
+`rust-affected-tests`, `ts-checks`, and `secret-scan`. They run sequentially to limit memory.
+Planning stays in `scripts/oby-check.sh`: `OBY_CHECK_PLAN=1` with
+`OBY_CHECK_ONLY=rust|electron|swift|scan` selects its groups; unset, the script behaves as before.
+The nodes execute the selected script groups and report verdict, failing names, reason and seconds.
+Swift work is reported unjudged in this three-node pilot. Any failed node wins over unjudged,
+then passed; process or transport failures are unjudged. Exit codes are 0, 1 and 2 respectively.
+Each completed invocation prints and appends a JSON record to `~/.oby-flow/pipelines/runs.jsonl`
+with commit, base, workflow `oby-check`, nodes, folded verdict and start time.
+Raw check output is not stored there. See PUBLISHING-26 in [publishing](contracts/publishing.md).
+
 ## Reaching it
 
 ## LAN gateway (#284)

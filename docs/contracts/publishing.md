@@ -56,7 +56,24 @@ These words show an internal job id (`job 3125ab36`) and a branch name, as obid'
 
 `GET` and `POST /v1/jobs/{id}/publish`, `POST /v1/jobs`, and `publishError` on the job, as docs/runner-api.md has them. Nothing new in the API: `checkedHead` stays in the job's file.
 
+### Check workflow pilot (shadow)
+
+Implemented by `tools/oby-check-blok`, outside obid: the owner can compare the script's verdict
+with a BLOK workflow without changing what publishes or merges. The shell owns the plan and
+group selection (`OBY_CHECK_ONLY`); three typed nodes wrap its Rust, Electron and scan groups,
+one at a time. Swift work is unjudged in this pilot. The fold gives failed precedence over
+unjudged, then passed. A runtime failure is unjudged, recorded with the run; the script stays
+the authoritative check. The local JSONL journal stores commit, base, workflow, start time,
+node verdicts, timings and failing names, without raw scanner output. A later invocation
+can retry a failed or unjudged run. No endpoint or obid state is added.
+
 ## Acceptance scenarios
+
+- **PUBLISHING-26:** In a scratch repository whose real `scripts/oby-check.sh` passes, the
+  shadow workflow runs the planned nodes, reports the same verdict and exit status, and
+  appends exactly the JSON record it prints to its local journal. Fold tests cover failed
+  and unjudged precedence; parser tests cover Cargo, Vitest and gitleaks names.
+  (`tools/oby-check-blok/tests/workflow.rs::publishing_26_the_workflows_verdict_matches_the_scripts`.)
 
 - **PUBLISHING-1:** A job ends done with its check passed and its publish fails. Published by hand, the commit its check passed on goes out. (`publishing_1_2_only_the_commit_its_check_passed_on_goes_out`)
 - **PUBLISHING-2:** Its branch in obid's clone moved since (a commit its check never ran on): Publish by hand is `409` with `Not published: <branch> moved since this job's check passed on it…`, and nothing reaches the remote (by default; PUBLISHING-9). (`publishing_1_2_only_the_commit_its_check_passed_on_goes_out`) A job's own move of its branch never marks it so: its next check records the commit it passes on, and a checked commit an earlier pass left (a restart cut its check, RECOVERY-2) doesn't end it unpublished (`jobs::tests::publishing_2_a_jobs_own_branch_move_is_never_branch_moved`).
