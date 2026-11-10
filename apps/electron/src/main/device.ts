@@ -5,7 +5,7 @@ import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, write
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { HOME, obid, type Answer, type Trusted } from './obid';
-import { mayConfirm, takeInput, takeWordsInput, wordsHeader } from './words';
+import { mayConfirm, takeInput, wordsHeader } from './words';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
@@ -116,7 +116,7 @@ export async function notificationWords(method: string, path: string, body: unkn
 export async function ownersWords(method: string, path: string, body: unknown): Promise<Answer> {
   let words: string | null = null;
   try {
-    if (takeWordsInput(method, path, body)) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    if (takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
   } catch (err) {
     console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }

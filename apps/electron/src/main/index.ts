@@ -4,7 +4,7 @@ import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
 import { confirming, ownersWords } from './device';
-import { input, keyInput, picked } from './words';
+import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
 import { menu } from '../shared/menu';
@@ -168,7 +168,11 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign
   // one request of the owner's words right after it (words.ts, device.ts)
-  win.webContents.on('before-input-event', (_, i) => keyInput(i));
+  win.webContents.on('before-input-event', (_, i) => {
+    if (i.type !== 'keyDown' || i.isAutoRepeat) return;
+    if (i.key === 'Enter') input();
+    if (i.code === 'Space') space();
+  });
   win.webContents.on('before-mouse-event', (_, m) => { if (m.type === 'mouseDown') input(); });
   // full screen hides the traffic lights: the page moves its title bar over.
   // Besides entering and leaving, re-check whenever the window comes back
