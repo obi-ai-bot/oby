@@ -103,11 +103,13 @@ pub struct Asked {
 /// theirs after, oldest first (#1659): what they said to it ([`Job::said`]) and to the earlier
 /// jobs whose branch it carries on, with each follow-up's own words (TASKCONV-3) unless no app of
 /// theirs signed them. Words already listed aren't listed again, so the first ask, repeated by a
-/// restart or kept for a follow-up, never comes last. Then, unless a job of it is another Oby's
-/// or read text Oby didn't write (MERGING-13), the words no app of the owner's signed and the
+/// restart or kept for a follow-up, never comes last. Then, unless a job of it is someone else's
+/// ([`Job::someone_elses`]: another Oby's, foreign, or read text Oby didn't write, MERGING-13),
+/// the words no app of the owner's signed and the
 /// author's replies to Oby's earlier reviews (MERGING-33).
 ///
 /// [`Job::said`]: crate::job::Job::said
+/// [`Job::someone_elses`]: crate::job::Job::someone_elses
 pub fn asked_of(author: &crate::job::Job, get: impl Fn(&str) -> Option<crate::job::Job>) -> Asked {
     let mut chain = vec![author.clone()];
     // A chain is short; this only stops a loop.
@@ -123,7 +125,7 @@ pub fn asked_of(author: &crate::job::Job, get: impl Fn(&str) -> Option<crate::jo
         };
         chain.push(earlier);
     }
-    let quoted = chain.iter().all(|job| job.obi.is_none() && !job.untrusted);
+    let quoted = chain.iter().all(|job| job.someone_elses().is_none());
     let first = chain.pop().expect("the chain starts with the author");
     let mut later: Vec<String> = Vec::new();
     let mut unsigned: Vec<String> = Vec::new();
@@ -1152,6 +1154,38 @@ mod tests {
                 "{text}"
             );
             assert!(text.contains("that text isn't quoted here"), "{text}");
+        }
+    }
+
+    /// MERGING-33 keeps MERGING-13 for a foreign author too: when a job of the chain is someone
+    /// else's code ([`crate::job::Job::foreign`]), though neither untrusted nor another Oby's,
+    /// neither the words sent through obid's API nor the author's replies are quoted.
+    #[test]
+    fn merging_33_a_foreign_authors_api_words_and_replies_are_not_quoted() {
+        for foreign_is in ["j1", "j2"] {
+            let mut first = author("j1", "Add the line", None);
+            let mut next = author("j2", "Go on", Some("j1"));
+            next.api_said = vec!["outside words".into()];
+            next.replies = vec![(1, "outside summary".into())];
+            let job = if foreign_is == "j1" {
+                &mut first
+            } else {
+                &mut next
+            };
+            job.foreign = Some("read a stranger's issue".into());
+            assert!(next.obi.is_none() && !next.untrusted);
+            let jobs = [first, next.clone()];
+            let get = |id: &str| jobs.iter().find(|j| j.id == id).cloned();
+            let read = asked_of(&next, get);
+            assert!(
+                read.unsigned.is_empty() && read.replies.is_empty(),
+                "{foreign_is}: {read:?}"
+            );
+            let text = asked(&read, next.untrusted_why().as_deref());
+            assert!(
+                !text.contains("outside words") && !text.contains("outside summary"),
+                "{foreign_is}: {text}"
+            );
         }
     }
 
