@@ -160,7 +160,8 @@ fn raise_open_files() {
 /// Makes `mac_home` if it isn't there yet, and keeps it its owner's alone (0700): it holds the API
 /// token, the Obi key, clones and the database. A home that is there already with group or
 /// world access is tightened to 0700, the way `home/api-token` is to 0600. On macOS it also makes
-/// `vault/` and `keys/` and excludes each from Time Machine (KEYCHAIN-10).
+/// `home/vault/` (where the vault opens) and `mac_home/keys/` and excludes each from Time Machine
+/// (KEYCHAIN-11).
 pub fn prepare_home(config: &Config) -> Result<(), StartError> {
     let home = &config.mac_home;
     let err = |source| StartError::Home {
@@ -173,18 +174,18 @@ pub fn prepare_home(config: &Config) -> Result<(), StartError> {
         store::make_private_dir(home).map_err(err)?;
     }
     keep_private(home).map_err(err)?;
-    exclude_secrets_from_backups(home);
+    exclude_secrets_from_backups(config);
     Ok(())
 }
 
-/// On macOS, makes `home/vault` and `home/keys` if missing and excludes each from Time Machine
-/// (`/usr/bin/tmutil addexclusion`): sticky, no admin, so an Application Support backup never
-/// carries the vault's plaintext secrets or the relay's key. A failure is logged and never
-/// stops obid. On Linux, nothing.
-fn exclude_secrets_from_backups(home: &std::path::Path) {
+/// On macOS, makes `config.home/vault` (where [`vault::install`] opens it) and `config.mac_home/keys`
+/// if missing and excludes each from Time Machine (`/usr/bin/tmutil addexclusion`): sticky, no
+/// admin, so an Application Support backup never carries the vault's plaintext secrets or the
+/// relay's key. A failure is logged and never stops obid. On Linux, nothing.
+fn exclude_secrets_from_backups(config: &Config) {
     #[cfg(target_os = "macos")]
     {
-        for folder in [vault::folder(home), home.join("keys")] {
+        for folder in [vault::folder(&config.home), config.mac_home.join("keys")] {
             if let Err(e) = store::make_private_dir(&folder) {
                 tracing::warn!(
                     "couldn't make {} for Time Machine exclusion: {e}",
@@ -214,7 +215,7 @@ fn exclude_secrets_from_backups(home: &std::path::Path) {
         }
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = home;
+    let _ = config;
 }
 
 /// A folder its group or others can reach is made its owner's alone again.
