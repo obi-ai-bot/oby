@@ -521,7 +521,9 @@ fn publishing_30_an_agent_runs_below_the_checks_priority() {
     let remote = fixture(&folder.0.join("fixture"));
     let bin = fake_gh(&folder.0);
     let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
-    // Relative to where this test started: run by a job's own agent, it's already at 10.
+    // obid sets nice 10 outright, and nobody unprivileged lowers it back: from where this test
+    // started, the agent ends at the higher of the two. Started below 10 (a terminal, the Mac's
+    // check) this proves the lowering; run by a job's own agent, already at 10, it can't.
     let base: i32 = String::from_utf8(
         std::process::Command::new("ps")
             .args(["-o", "nice=", "-p", &std::process::id().to_string()])
@@ -533,7 +535,7 @@ fn publishing_30_an_agent_runs_below_the_checks_priority() {
     .trim()
     .parse()
     .unwrap();
-    let lowered = (base + 10).min(19);
+    let lowered = base.max(10);
     let answer = post_job(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "NICE",
