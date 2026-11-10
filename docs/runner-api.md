@@ -466,6 +466,7 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
+ "scanner": {"gitleaks": true},
  "cleanup": {"path": "/srv/nvme/oby/jobs", "bytes": 8912896, "lastRun": "2026-10-13T08:00:00Z", "kept": []},
  "memory": {"total": 17179869184, "available": 4026531840, "pressure": "normal",
             "jobs": [{"id": "ab12cd34", "rss": 912261120, "peakRss": 1610612736, "agentPeakRss": 536870912, "checkPeakRss": 1073741824}],
@@ -483,6 +484,8 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
 `vaultProblem` (obid only): why the vault can't be read, as "obid only: the vault" says; meanwhile every other `/v1` answer is `503`, but for the event stream once obid has read the vault. Left out while it reads. On obid the status looks again for a tool installed or signed in since it started at most every 2 seconds.
 
 `availableLogins` (obid only): the tools' own logins obid found on this Mac that aren't accounts (looked for at start and again at every status, so a tool installed and signed in since, as during first launch, shows up without a restart), `[{"agent": "codex", "id": "codex", "name": "Codex"}]`; `POST /v1/accounts` `{"agent", "default": true}` lists one on the owner's word (obid only: accounts, "Logins already on the Mac"). Empty when there's none.
+
+`scanner` (obid only): the secret scanner publishing needs, `{"gitleaks": true}`. `gitleaks` is `false` when obid has no gitleaks that runs: none in Oby.app or on its `PATH` (with the login shell's and the usual folders), or one that doesn't answer `gitleaks version` within 5 seconds. Then nothing with text is published (the scan couldn't run, Publishing), as before; this only says so from the start instead of at the first publish, and obid's log warns once when it starts. Each status looks for it again, as publishing does, so a gitleaks installed, removed or replaced since shows up without a restart; a run that worked is reused for at most 60 seconds, and only while the same file (path, size, modified time) is there, so one that stops running in place shows up within a minute. Older runners don't send the key.
 
 `folders` (obid only, #1572): `true` when obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}` (obid only: working folders, below). Older runners don't send the key, and refuse `folders` with a `400`: an app sends none until it reads `true`.
 

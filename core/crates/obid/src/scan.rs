@@ -13,7 +13,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -882,6 +882,74 @@ pub const NO_GITLEAKS: &str =
 /// built, apps/mac/app/Tools/bundle-gitleaks.sh), else the login shell's.
 pub fn gitleaks_bin() -> Option<PathBuf> {
     crate::app::bundled("gitleaks").or_else(|| crate::process::resolve_bin("gitleaks"))
+}
+
+/// Whether obid has a gitleaks that runs (`gitleaks version` answers within 5 seconds):
+/// `status.scanner.gitleaks`. Without one nothing with text is published, so a Mac set up without
+/// it is told at start, not at its first publish. Every call looks for it again, as publishing
+/// does, so one installed, removed or replaced since shows up without a restart; only a run that
+/// worked is remembered, for at most [`scanner_seconds`] and only while the same file (path,
+/// size, modified time) is there, so one that breaks without changing (a library it needs gone)
+/// shows up too. Blocking: off the runtime's threads.
+pub fn gitleaks_runs() -> bool {
+    type File = (PathBuf, u64, std::time::SystemTime);
+    static RAN: Mutex<Option<(File, std::time::Instant)>> = Mutex::new(None);
+    let Some(bin) = gitleaks_bin() else {
+        return false;
+    };
+    let Some(file) = std::fs::metadata(&bin)
+        .ok()
+        .and_then(|meta| Some((bin.clone(), meta.len(), meta.modified().ok()?)))
+    else {
+        return false;
+    };
+    let fresh = std::time::Duration::from_secs(scanner_seconds());
+    if let Some((ran, at)) = RAN.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        && *ran == file
+        && at.elapsed() < fresh
+    {
+        return true;
+    }
+    let runs = answers_version(&bin);
+    *RAN.lock().unwrap_or_else(|e| e.into_inner()) =
+        runs.then(|| (file, std::time::Instant::now()));
+    runs
+}
+
+/// How long a `gitleaks version` that worked stands before [`gitleaks_runs`] runs it again: 60
+/// seconds, or `OBID_SCANNER_SECONDS` (obid's tests set less).
+fn scanner_seconds() -> u64 {
+    std::env::var("OBID_SCANNER_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60)
+}
+
+fn answers_version(bin: &Path) -> bool {
+    let child = std::process::Command::new(bin)
+        .arg("version")
+        .env("PATH", crate::process::tools_path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return false;
+    };
+    let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < give_up_at => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 async fn gitleaks_from(
