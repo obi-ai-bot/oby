@@ -4679,7 +4679,8 @@ fn stop_and_stop_all_end_the_agents() {
     assert_eq!(status["running"], 1);
     assert_eq!(status["accounts"][0]["id"], "stub");
     assert_eq!(status["accounts"][0]["running"], 1);
-    // The meter reads its agent's processes as it runs (crate::meter).
+    // The meter reads its agent's processes as it runs (crate::meter). Its first reading can come
+    // before the agent holds memory it can read, so it waits for one that does.
     let give_up_at = Instant::now() + Duration::from_secs(10);
     let rss = loop {
         let status = request(&obid, "GET", "/v1/status", None).body;
@@ -4687,8 +4688,9 @@ fn stop_and_stop_all_end_the_agents() {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        if let Some(job) = jobs.iter().find(|j| j["id"] == id.as_str()) {
-            break job["rss"].as_u64().unwrap();
+        let read = jobs.iter().find(|j| j["id"] == id.as_str());
+        if let Some(rss) = read.and_then(|j| j["rss"].as_u64()).filter(|&rss| rss > 0) {
+            break rss;
         }
         assert!(
             Instant::now() < give_up_at,
