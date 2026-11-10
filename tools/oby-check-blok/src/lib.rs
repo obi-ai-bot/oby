@@ -115,6 +115,7 @@ pub fn check_command(input: &CheckInput, group: &str) -> Command {
         .arg("scripts/oby-check.sh")
         .arg(&input.base)
         .env_remove("OBY_CHECK_PLAN")
+        .env_remove("OBY_CHECK_TOKEN")
         .env("OBY_CHECK_ONLY", group)
         .env("NO_COLOR", "1")
         .env("FORCE_COLOR", "0")

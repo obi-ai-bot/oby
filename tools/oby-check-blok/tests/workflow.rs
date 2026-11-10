@@ -72,6 +72,83 @@ fn git(repo: &Path, args: &[&str]) -> Output {
     output
 }
 
+#[tokio::test]
+async fn grpc_port_zero_and_spawn_configuration_reject_unauthorized_calls() {
+    use blok::grpc_server::proto::{
+        node_runtime_client::NodeRuntimeClient, ExecuteRequest, NodeRef,
+    };
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let scratch = tempfile::tempdir().unwrap();
+    let repo = scratch.path().join("repo");
+    let foreign = scratch.path().join("foreign");
+    for path in [&repo, &foreign] {
+        std::fs::create_dir_all(path.join("scripts")).unwrap();
+        std::fs::write(path.join("scripts/oby-check.sh"), "touch ran\n").unwrap();
+    }
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nodes"))
+        .env("GRPC_PORT", "0")
+        .env("OBY_CHECK_DIR", &repo)
+        .env("OBY_CHECK_BASE", "HEAD")
+        .env("OBY_CHECK_TOKEN", "private-token")
+        .env_remove("BLOK_BLOB_DIR")
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = tokio::time::timeout(std::time::Duration::from_secs(10), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let address = line
+        .split_once("listening on ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .next()
+        .unwrap();
+    assert_ne!(address, "127.0.0.1:0");
+    let mut client = NodeRuntimeClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    for inputs in [
+        serde_json::json!({}),
+        serde_json::json!({"token": "wrong"}),
+        serde_json::json!({"token": "private-token", "checkout": foreign}),
+        serde_json::json!({"token": "private-token", "base": "other"}),
+        serde_json::json!({"token": "private-token"}),
+    ] {
+        let allowed = inputs == serde_json::json!({"token": "private-token"});
+        let response = client
+            .execute(ExecuteRequest {
+                node: Some(NodeRef {
+                    name: "rust-affected-tests".into(),
+                    r#type: "runtime.rust".into(),
+                    version: String::new(),
+                }),
+                inputs: serde_json::to_vec(&inputs).unwrap(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let result: oby_check_blok::CheckResult = serde_json::from_slice(&response.data).unwrap();
+        assert_eq!(
+            result.verdict,
+            if allowed {
+                oby_check_blok::Verdict::Passed
+            } else {
+                oby_check_blok::Verdict::Unjudged
+            }
+        );
+        assert_eq!(repo.join("ran").exists(), allowed);
+        assert!(!foreign.join("ran").exists());
+    }
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
+}
+
 #[test]
 fn publishing_26_the_workflows_verdict_matches_the_scripts() {
     let scratch = tempfile::tempdir().unwrap();

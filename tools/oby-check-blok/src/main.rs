@@ -8,11 +8,11 @@ use std::io::Read;
 use std::{
     collections::BTreeMap,
     io::Write,
-    net::TcpListener,
     path::PathBuf,
     process::Stdio,
     time::{Duration, Instant},
 };
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 #[derive(Serialize)]
@@ -37,9 +37,7 @@ async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>)
             bail!("script planning failed for {group}");
         }
         let text = text_output(&output);
-        let has_steps = text
-            .lines()
-            .any(|l| l == format!("oby-check: group {group}"));
+        let has_steps = planned_group(&text, group);
         if has_steps {
             if group == "swift" {
                 nodes.insert(
@@ -61,48 +59,55 @@ async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>)
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     let binary = std::env::current_exe()?.with_file_name("nodes");
-    let mut ready = None;
-    // blok-rs does not expose the bound address for port 0. Retry the short
-    // reservation/spawn race, never connecting to a process that exited at bind.
-    for _ in 0..3 {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
-        let mut child = Command::new(&binary)
-            .env("GRPC_PORT", port.to_string())
-            .env("OBY_CHECK_DIR", &input.checkout)
-            .env("OBY_CHECK_BASE", &input.base)
-            .env("OBY_CHECK_TOKEN", &token)
-            .env_remove("BLOK_BLOB_DIR")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .context("start sibling nodes binary (build both binaries first)")?;
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let start = Instant::now();
-        loop {
-            if child.try_wait()?.is_some() {
-                break;
+    let mut child = Command::new(&binary)
+        .env("GRPC_PORT", "0")
+        .env("OBY_CHECK_DIR", &input.checkout)
+        .env("OBY_CHECK_BASE", &input.base)
+        .env("OBY_CHECK_TOKEN", &token)
+        .env_remove("BLOK_BLOB_DIR")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("start sibling nodes binary (build both binaries first)")?;
+    // blok-rs logs the actual local address after binding, including with port 0.
+    let mut stdout = BufReader::new(child.stdout.take().context("nodes stdout missing")?).lines();
+    let port = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(line) = stdout.next_line().await? {
+            if let Some(rest) = line
+                .split_once("listening on 127.0.0.1:")
+                .map(|(_, rest)| rest)
+            {
+                let port: u16 = rest
+                    .split_whitespace()
+                    .next()
+                    .context("missing bound port")?
+                    .parse()?;
+                anyhow::ensure!(port != 0, "nodes reported port zero");
+                return Ok::<_, anyhow::Error>(port);
             }
-            if let Ok(mut client) = NodeRuntimeClient::connect(endpoint.clone()).await {
-                if client.health(HealthRequest::default()).await.is_ok()
-                    && child.try_wait()?.is_none()
-                {
-                    ready = Some((child, client));
-                    break;
-                }
-            }
-            if start.elapsed() > Duration::from_secs(10) {
-                bail!("nodes did not become ready");
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if ready.is_some() {
-            break;
+        bail!("nodes exited before reporting its bound port")
+    })
+    .await
+    .context("nodes did not report its bound port")??;
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let start = Instant::now();
+    let mut client = loop {
+        if let Some(status) = child.try_wait()? {
+            bail!("nodes exited before ready: {status}");
         }
-    }
-    let (mut child, mut client) = ready.context("nodes failed to bind after 3 attempts")?;
+        if let Ok(mut client) = NodeRuntimeClient::connect(endpoint.clone()).await {
+            if client.health(HealthRequest::default()).await.is_ok() && child.try_wait()?.is_none()
+            {
+                break client;
+            }
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            bail!("nodes did not become ready");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     let result = async {
         for name in needed {
             let start = Instant::now();
@@ -135,7 +140,24 @@ async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>)
     }
     .await;
     child.kill().await?;
+    child.wait().await?;
     result
+}
+
+fn planned_group(text: &str, group: &str) -> bool {
+    text.lines()
+        .any(|line| line == format!("oby-check: group {group}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_exact_group_lines_select_nodes() {
+        let text = "==> cargo test\noby-check: the Rust core has lines\ncouldn't judge: test\noby-check: jobs.rs\ngitleaks isn't installed\nApple apps and swift test don't run\n oby-check: group rust\noby-check: group rust extra\noby-check: group scan\n";
+        assert!(!super::planned_group(text, "rust"));
+        assert!(!super::planned_group(text, "swift"));
+        assert!(super::planned_group(text, "scan"));
+    }
 }
 
 async fn run() -> Result<Verdict> {

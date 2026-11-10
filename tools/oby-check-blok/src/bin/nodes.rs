@@ -4,6 +4,12 @@ use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .with_writer(std::io::stdout)
+        .init();
     let port: u16 = std::env::var("GRPC_PORT")?.parse()?;
     let input = CheckInput {
         checkout: std::env::var("OBY_CHECK_DIR")?,
