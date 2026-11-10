@@ -7425,11 +7425,11 @@ impl Jobs {
             chatgpt.runs.begin(&job.id);
         }
         let own = self.own_sandbox(tool, account);
+        self.update(&job.id, |job| job.own_lane = own);
         match (&account.config_dir, tool) {
             // In Claude Code's own sandbox, with the account's own folder and login: no copy.
             _ if own => extra.extend(own_sandbox_env(account, &spec, &self.login_path(&job.id))?),
-            // Never the account's own folder (#655): the job gets a folder of its own with a copy
-            // of the login and nothing a box could leave there for an unboxed process to read.
+            // Never the account's own folder (#655): the job's own, a login copy and nothing else.
             (Some(dir), _) => {
                 let login = self.login_path(&job.id);
                 copy_account_folder(tool, dir, &login).map_err(|e| {

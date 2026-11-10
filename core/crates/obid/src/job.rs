@@ -701,6 +701,10 @@ pub struct Job {
     /// decision of 2026-10-24, replacing 2026-10-23's by hand).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
+    /// Its agent last ran in the own lane (crate::jobs, `Launch::own_sandbox`), so the owner's
+    /// terminal may open its session: [`Job::resume_command`] (LANES-9).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_lane: bool,
     /// Words no app of the owner's signed reached it (`POST /v1/jobs`, a message to it): since
     /// #1638 the owner's apps sign theirs, so these aren't the owner's own, and its pull request
     /// merges only after two reviews (crate::merge::two_reviews). Carried to its follow-ups.
@@ -1169,6 +1173,7 @@ impl Job {
             routine: None,
             unattended: false,
             untrusted: false,
+            own_lane: false,
             unsigned: false,
             memory_from_others: false,
             foreign: None,
@@ -1555,6 +1560,23 @@ impl Job {
                 || self.merge_needs_you)
     }
 
+    /// What the owner pastes into a terminal to open an own-lane job's session there (LANES-9):
+    /// none for a foreign job, for Cursor, or before its agent has a session.
+    pub fn resume_command(&self) -> Option<String> {
+        let session = self.session.as_deref().filter(|_| self.own_lane)?;
+        match self.agent.as_str() {
+            "claude" => {
+                let worktree = self.worktree.as_deref()?;
+                Some(format!(
+                    "cd '{}' && claude --resume {session}",
+                    worktree.replace('\'', r"'\''")
+                ))
+            }
+            "codex" => Some(format!("codex resume {session}")),
+            _ => None,
+        }
+    }
+
     /// The job as the runner API shows it.
     pub fn to_json(&self) -> Value {
         let date = |t: Option<i64>| t.map(obi_protocol::time::format);
@@ -1662,6 +1684,7 @@ impl Job {
             "supervised": supervised,
             "revision": self.revision,
         });
+        value["resumeCommand"] = json!(self.resume_command());
         if let Some(activity) = &self.activity {
             value["activity"] = activity.clone();
         }
@@ -2281,6 +2304,50 @@ mod tests {
         );
     }
 
+    /// LANES-9: an own Claude Code job's line opens its session in its worktree, quoted for the
+    /// shell; before it has a session it has none.
+    #[test]
+    fn lanes_9_an_own_claude_job_resumes_in_its_quoted_worktree() {
+        let mut own = job();
+        own.own_lane = true;
+        own.worktree = Some("/Users/alice/Oby's work/9f08fd10".into());
+        assert_eq!(own.to_json()["resumeCommand"], Value::Null);
+        own.session = Some("e6a24229-1bd5-48c4-85c5-43b33d433775".into());
+        assert_eq!(
+            own.to_json()["resumeCommand"],
+            r"cd '/Users/alice/Oby'\''s work/9f08fd10' && claude --resume e6a24229-1bd5-48c4-85c5-43b33d433775"
+        );
+    }
+
+    /// LANES-9: an own Codex job's line is `codex resume`; a Cursor one has none.
+    #[test]
+    fn lanes_9_an_own_codex_job_shows_codex_resume() {
+        let mut own = job();
+        own.own_lane = true;
+        own.agent = "codex".into();
+        own.worktree = Some("/tmp/9f08fd10".into());
+        own.session = Some("019a2b3c-0000-7000-8000-000000000001".into());
+        assert_eq!(
+            own.to_json()["resumeCommand"],
+            "codex resume 019a2b3c-0000-7000-8000-000000000001"
+        );
+        own.agent = "cursor".into();
+        assert_eq!(own.to_json()["resumeCommand"], Value::Null);
+    }
+
+    /// LANES-9: a job its launch didn't put in the own lane (another Oby's, untrusted) has none,
+    /// session or not; the key is there all the same.
+    #[test]
+    fn lanes_9_a_foreign_job_has_no_resume_command() {
+        let mut foreign = job();
+        foreign.worktree = Some("/tmp/9f08fd10".into());
+        foreign.session = Some("e6a24229-1bd5-48c4-85c5-43b33d433775".into());
+        foreign.untrusted = true;
+        let value = foreign.to_json();
+        assert!(value.as_object().unwrap().contains_key("resumeCommand"));
+        assert_eq!(value["resumeCommand"], Value::Null);
+    }
+
     /// Ported from RunnerTests/RunnerTests.swift, `jobsHaveISODatesAndEveryKey`: every key the
     /// Swift runner sends, plus obid's `obi` and `worktree`.
     #[test]
@@ -2294,6 +2361,7 @@ mod tests {
         for key in [
             "base",
             "session",
+            "resumeCommand",
             "finished",
             "commits",
             "published",
@@ -2347,8 +2415,8 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-four, `supervised` and `revision`.
-        assert_eq!(object.len(), 91);
+        // The Swift runner's 65 keys, obid's twenty-five, `supervised` and `revision`.
+        assert_eq!(object.len(), 92);
         assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);
