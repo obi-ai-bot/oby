@@ -1,7 +1,7 @@
 {
   "name": "oby-app",
   "private": true,
-  "version": "0.2.22",
+  "version": "0.2.23",
   "description": "Oby desktop app",
   "main": "out/main/index.js",
   "type": "module",
