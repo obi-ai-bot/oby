@@ -369,6 +369,48 @@ fn status_reports_a_scanner_broken_since_it_ran() {
     assert_eq!(answer.body["scanner"], json!({"gitleaks": false}));
 }
 
+/// A gitleaks that ran once and stopped running since while its file stayed the same (a library
+/// it needs gone): once the run that worked is older than `OBID_SCANNER_SECONDS`, status runs it
+/// again and says so.
+#[test]
+fn status_reports_a_scanner_broken_in_place_since_it_ran() {
+    let folder = Folder::new("scanner-broken-in-place");
+    let config = config(&folder.0, 0);
+    let bin = folder.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let gone = folder.0.join("library");
+    std::fs::write(&gone, "").unwrap();
+    let gitleaks = bin.join("gitleaks");
+    std::fs::write(
+        &gitleaks,
+        format!(
+            "#!/bin/sh\n[ -e '{}' ] || exit 1\necho 8.30.0\n",
+            gone.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &gitleaks,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let obid = start_with(&folder.0, &config, Some(TOKEN), |command| {
+        command.env("PATH", &path).env("OBID_SCANNER_SECONDS", "1");
+    });
+    let answer = get_status(&obid, "127.0.0.1", TOKEN);
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    assert_eq!(answer.body["scanner"], json!({"gitleaks": true}));
+
+    std::fs::remove_file(&gone).unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    let answer = get_status(&obid, "127.0.0.1", TOKEN);
+    assert_eq!(answer.body["scanner"], json!({"gitleaks": false}));
+}
+
 #[test]
 fn status_answers_with_engine_obid() {
     let folder = Folder::new("status");

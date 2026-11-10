@@ -888,11 +888,12 @@ pub fn gitleaks_bin() -> Option<PathBuf> {
 /// `status.scanner.gitleaks`. Without one nothing with text is published, so a Mac set up without
 /// it is told at start, not at its first publish. Every call looks for it again, as publishing
 /// does, so one installed, removed or replaced since shows up without a restart; only a run that
-/// worked is remembered, and only while the same file (path, size, modified time) is there.
-/// Blocking: off the runtime's threads.
+/// worked is remembered, for at most [`scanner_seconds`] and only while the same file (path,
+/// size, modified time) is there, so one that breaks without changing (a library it needs gone)
+/// shows up too. Blocking: off the runtime's threads.
 pub fn gitleaks_runs() -> bool {
-    type Ran = Option<(PathBuf, u64, std::time::SystemTime)>;
-    static RAN: Mutex<Ran> = Mutex::new(None);
+    type File = (PathBuf, u64, std::time::SystemTime);
+    static RAN: Mutex<Option<(File, std::time::Instant)>> = Mutex::new(None);
     let Some(bin) = gitleaks_bin() else {
         return false;
     };
@@ -902,12 +903,26 @@ pub fn gitleaks_runs() -> bool {
     else {
         return false;
     };
-    if RAN.lock().unwrap_or_else(|e| e.into_inner()).as_ref() == Some(&file) {
+    let fresh = std::time::Duration::from_secs(scanner_seconds());
+    if let Some((ran, at)) = RAN.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        && *ran == file
+        && at.elapsed() < fresh
+    {
         return true;
     }
     let runs = answers_version(&bin);
-    *RAN.lock().unwrap_or_else(|e| e.into_inner()) = runs.then_some(file);
+    *RAN.lock().unwrap_or_else(|e| e.into_inner()) =
+        runs.then(|| (file, std::time::Instant::now()));
     runs
+}
+
+/// How long a `gitleaks version` that worked stands before [`gitleaks_runs`] runs it again: 60
+/// seconds, or `OBID_SCANNER_SECONDS` (obid's tests set less).
+fn scanner_seconds() -> u64 {
+    std::env::var("OBID_SCANNER_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60)
 }
 
 fn answers_version(bin: &Path) -> bool {
