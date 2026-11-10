@@ -4,7 +4,7 @@ import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { bridge, startObid, stopFollowing, type Trusted } from './obid';
 import { confirming, ownersWords } from './device';
-import { input, picked, space } from './words';
+import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
 import { menu } from '../shared/menu';

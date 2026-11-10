@@ -2,7 +2,7 @@ import { app, ipcMain, Notification, powerMonitor, shell, type BrowserWindow } f
 import { constants, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { obid, send, type Answer, type Trusted } from './obid';
-import { answerLimit, writeOwn } from './device';
+import { answerLimit, notificationWords, writeOwn } from './device';
 import { mergeAlert, parseEvent, plainId, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
@@ -123,7 +123,10 @@ export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string,
       const shown = plain(p.detail && !p.title.includes(p.detail) ? `${p.title}\n${p.detail}` : p.title);
       // Allow and Deny for a command or an edit shown whole; the agent's question and Plan mode's
       // plan are answered on its page
-      const decide = (decision: 'allow' | 'deny') => call(`/v1/jobs/${id(j.id)}/permission`, { id: p.id, decision });
+      const decide = (decision: 'allow' | 'deny') => {
+        const path = `/v1/jobs/${id(j.id)}/permission`, body = { id: p.id, decision };
+        return () => notificationWords('POST', path, body);
+      };
       const buttons = !p.question && p.tool !== 'ExitPlanMode' && fits(shown) ? [{ text: 'Allow', does: decide('allow') }, { text: 'Deny', does: decide('deny') }] : [];
       say(`permission:${p.id}`, true, p.question ? 'Question' : 'Needs your OK', shown, buttons);
       continue;
@@ -177,7 +180,10 @@ export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string,
     const conversation = i.conversation ?? undefined;
     const many = offer ? open.filter((x) => x.offer?.id === offer).length : 1;
     const text = plain(i.text);
-    const answer = (words: string) => ({ text: words, does: call(`/v1/inbox/${id(i.id)}/answer`, { answer: words }) });
+    const answer = (words: string) => {
+      const path = `/v1/inbox/${id(i.id)}/answer`, body = { answer: words };
+      return { text: words, does: words === 'Allow' || words === 'Deny' ? () => notificationWords('POST', path, body) : call(path, body) };
+    };
     let title = many > 1 ? `Oby offers ${many} jobs` : i.title, body = text, buttons: Button[] = [];
     if (i.kind === 'permission' && fits(text)) buttons = ['Allow', 'Deny'].filter((o) => i.options.includes(o)).map(answer);
     // Start for one job the banner shows whole, from words that read nothing untrusted
