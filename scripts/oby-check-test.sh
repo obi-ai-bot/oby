@@ -387,16 +387,26 @@ code core/crates/obid/tests/one.rs 1
 code core/crates/obi-protocol/src/lib.rs 1
 commit all
 said=$(OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
-apple_plan='build-for-testing'
-if ! /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
-    apple_plan="Apple apps and swift test don't run"
-fi
-for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-test.sh' "$apple_plan" 'swift test' 'apps/electron run --silent typecheck'; do
+for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-test.sh' 'apps/electron run --silent typecheck'; do
     grep -q -- "$planned" <<<"$said" || {
         echo "oby-check-test: OBY_CHECK_ALL didn't plan \"$planned\": $said" >&2
         exit 1
     }
 done
+if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+    for planned in 'build-for-testing' 'swift test'; do
+        grep -q -- "$planned" <<<"$said" || {
+            echo "oby-check-test: OBY_CHECK_ALL didn't plan \"$planned\": $said" >&2
+            exit 1
+        }
+    done
+else
+    grep -q "don't run in a job's sandbox" <<<"$said" &&
+        ! grep -qE '==> (xcodebuild|swift test)' <<<"$said" || {
+        echo "oby-check-test: OBY_CHECK_ALL didn't skip the Apple checks in a job's sandbox: $said" >&2
+        exit 1
+    }
+fi
 rm -r core/crates/obi-protocol
 rm -r core/crates/obid
 
