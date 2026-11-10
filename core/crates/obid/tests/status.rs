@@ -471,7 +471,7 @@ fn status_answers_with_engine_obid() {
     let worktrees = folder.0.join("home").join("worktrees");
     assert_eq!(
         measured_status(&obid, &host).body["cleanup"],
-        json!({"path": worktrees.to_string_lossy(), "bytes": 0, "lastRun": null, "kept": []})
+        json!({"path": worktrees.to_string_lossy(), "bytes": 0, "lastRun": null, "kept": [], "freed": null})
     );
 
     // The token put in home/api-token is taken as it is, never rewritten, nor said anywhere.
