@@ -7268,8 +7268,7 @@ impl Jobs {
         commits: bool,
         tool: Tool,
     ) -> Spec {
-        let mut hidden = vec![self.config.home.clone()];
-        hidden.extend(person_homes());
+        let mut hidden = sandbox::job_hidden(&self.config.home, person_homes());
         hidden.extend(self.config.agents.hidden_folders(&self.config.home));
         let mut read_only = sandbox::tool_roots(
             &process::tools_path(),
@@ -7573,7 +7572,7 @@ impl Jobs {
             return file_login_ready(&account);
         }
         match self.agent_bin(Tool::Claude) {
-            Some(bin) => keychain_ready(bin, &account).await,
+            Some(bin) => keychain_ready(bin, &account, &self.config.home).await,
             None => Ok(()),
         }
     }

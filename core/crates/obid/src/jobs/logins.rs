@@ -1035,6 +1035,8 @@ pub(super) struct Kept {
     config_dir: Option<PathBuf>,
     /// The Mac's own Claude Code, which refreshes it.
     bin: PathBuf,
+    /// obid's hidden home, where unboxed refresh scratch is created.
+    home: PathBuf,
     /// When a boxed run last started on it.
     used: std::time::Instant,
     /// The jobs' private login copies of it (`.credentials.json`) while their runs go.
@@ -1066,12 +1068,12 @@ pub(super) fn rewrite(copies: &mut Vec<PathBuf>, bytes: &[u8]) {
 
 /// The Keychain login for `config_dir` refreshed when it's due ([`refresh_if_due`]); once renewed,
 /// written again into every running job's private copy. Blocks.
-pub(super) fn keep_one(service: &str, config_dir: Option<&Path>, bin: &Path) -> Fresh {
+pub(super) fn keep_one(service: &str, config_dir: Option<&Path>, bin: &Path, home: &Path) -> Fresh {
     let fresh = refresh_if_due(
         service,
         now_ms(),
         || keychain(config_dir, true),
-        || refresh_claude_login(bin, config_dir),
+        || refresh_claude_login(bin, config_dir, home),
     );
     if fresh == Fresh::Renewed
         && let Some(bytes) = keychain_login(config_dir)
@@ -1093,6 +1095,7 @@ pub(super) fn keep_one(service: &str, config_dir: Option<&Path>, bin: &Path) -> 
 pub(crate) async fn keychain_ready(
     bin: PathBuf,
     account: &crate::config::Account,
+    home: &Path,
 ) -> Result<(), String> {
     if !keychain_on() {
         return Ok(());
@@ -1122,11 +1125,13 @@ pub(crate) async fn keychain_ready(
             Some(k) => {
                 k.used = std::time::Instant::now();
                 k.bin = bin.clone();
+                k.home = home.to_path_buf();
             }
             None => all.push(Kept {
                 service: service.clone(),
                 config_dir: dir.clone(),
                 bin: bin.clone(),
+                home: home.to_path_buf(),
                 used: std::time::Instant::now(),
                 copies: Vec::new(),
             }),
@@ -1134,7 +1139,8 @@ pub(crate) async fn keychain_ready(
     }
     let fresh = {
         let service = service.clone();
-        tokio::task::spawn_blocking(move || keep_one(&service, dir.as_deref(), &bin))
+        let home = home.to_path_buf();
+        tokio::task::spawn_blocking(move || keep_one(&service, dir.as_deref(), &bin, &home))
             .await
             .unwrap_or(Fresh::SignIn)
     };
@@ -1367,6 +1373,7 @@ pub(crate) fn keeping(service: &str, config_dir: Option<&Path>, copy: PathBuf) {
         service: service.to_owned(),
         config_dir: config_dir.map(Path::to_path_buf),
         bin: PathBuf::from("/usr/bin/false"),
+        home: copy.parent().unwrap().to_path_buf(),
         used: std::time::Instant::now(),
         copies: Vec::new(),
     });
@@ -1395,7 +1402,7 @@ pub fn keep_keychain_logins() {
         .spawn(|| {
             loop {
                 std::thread::sleep(Duration::from_secs(60));
-                let due: Vec<(String, Option<PathBuf>, PathBuf)> = {
+                let due: Vec<_> = {
                     let mut all = kept();
                     for account in all.iter_mut() {
                         account
@@ -1406,11 +1413,18 @@ pub fn keep_keychain_logins() {
                         !k.copies.is_empty() || k.used.elapsed() < Duration::from_secs(60 * 60)
                     });
                     all.iter()
-                        .map(|k| (k.service.clone(), k.config_dir.clone(), k.bin.clone()))
+                        .map(|k| {
+                            (
+                                k.service.clone(),
+                                k.config_dir.clone(),
+                                k.bin.clone(),
+                                k.home.clone(),
+                            )
+                        })
                         .collect()
                 };
-                for (service, config_dir, bin) in due {
-                    keep_one(&service, config_dir.as_deref(), &bin);
+                for (service, config_dir, bin, home) in due {
+                    keep_one(&service, config_dir.as_deref(), &bin, &home);
                 }
             }
         });
@@ -1476,7 +1490,11 @@ pub(super) fn refresh_command(
 /// folder (#655). Claude Code keeps the item's refresh lock, write lock and plaintext fallback in
 /// the folder, so nothing runs unless those are the person's own and no link
 /// ([`crate::accounts::login_paths_safe`]).
-pub(super) fn refresh_claude_login(bin: &Path, config_dir: Option<&Path>) -> bool {
+pub(super) fn refresh_claude_login(
+    bin: &Path,
+    config_dir: Option<&Path>,
+    refresh_home: &Path,
+) -> bool {
     if !bin.is_absolute()
         || config_dir.is_some_and(|dir| {
             !dir.is_dir() || crate::accounts::login_paths_safe(Tool::Claude, dir).is_err()
@@ -1489,7 +1507,7 @@ pub(super) fn refresh_claude_login(bin: &Path, config_dir: Option<&Path>) -> boo
     };
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let scratch = std::env::temp_dir().join(format!("obid-refresh-{}-{n}", std::process::id()));
+    let scratch = refresh_home.join(format!("obid-refresh-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     // A new folder: made here, by obid, or nothing runs.
     let mut builder = std::fs::DirBuilder::new();
@@ -2854,22 +2872,32 @@ attributes:
         std::fs::write(
             &bin,
             format!(
-                "#!/bin/sh\nprintf '%s' \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" > '{}'\n",
+                "#!/bin/sh\nprintf '%s\\n%s' \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" \"$TMPDIR\" > '{}'\n",
                 ran.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
-        assert!(refresh_claude_login(&bin, Some(&folder)));
-        assert_eq!(
-            std::fs::read_to_string(&ran).unwrap(),
-            folder.display().to_string()
+        assert!(refresh_claude_login(&bin, Some(&folder), &root));
+        let output = std::fs::read_to_string(&ran).unwrap();
+        let (storage, scratch) = output.split_once('\n').unwrap();
+        assert_eq!(storage, folder.display().to_string());
+        let scratch = Path::new(scratch);
+        assert_eq!(scratch.parent(), Some(root.as_path()));
+        assert!(
+            scratch
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("obid-refresh-")
         );
+        assert!(!scratch.exists(), "refresh scratch is removed after use");
         std::fs::remove_file(&ran).unwrap();
         std::os::unix::fs::symlink(root.join("elsewhere"), folder.join(".credentials.json"))
             .unwrap();
-        assert!(!refresh_claude_login(&bin, Some(&folder)));
+        assert!(!refresh_claude_login(&bin, Some(&folder), &root));
         assert!(!ran.exists());
         let _ = std::fs::remove_dir_all(&root);
     }

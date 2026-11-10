@@ -100,6 +100,15 @@ The rules every component keeps:
 
 Removed on 2026-10-27 (the strip to a dispatcher): obid has no plug-in host, no `obi-plugin-api` or `obi-plugin-host` crate and no `plugins/` folder. Tetrix, which was the first plug-in, is obid's own (`core/crates/obid/src/tetrix.rs`): its allowed tools are `tetrix::TOOLS`, and what it knows about a job is quoted in `.obi/context/tetrix.md` as before. `bundledPlugins` in a configuration is ignored with a warning.
 
+### 5.3. Job box
+
+On macOS a job box hides obid's home, the person's homes, account folders,
+`/private/tmp`, `/Users/Shared` and the user's Darwin temporary folder (`TMPDIR`).
+The job's own worktree, git directories, temporary folder, private login copy and
+explicit tool reads remain accessible. Unboxed Claude login refresh uses a private
+`obid-refresh-*` scratch folder under obid's home, removed after refresh.
+The own lane's vendor sandbox is separate from these box rules.
+
 ## 6. Phase 1: workstreams and who edits what
 
 _History: this is how phase 1 was split. The plug-in boundary's workstream below (its crates, `plugins/`, `GET` and `PUT /v1/obid/plugins`) was removed with plug-ins on 2026-10-27 (section 5)._

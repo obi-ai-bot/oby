@@ -203,6 +203,48 @@ fn spec(world: &World, network: bool, commits: bool, account: bool) -> Spec {
     }
 }
 
+/// A job cannot inspect shared scratch space, including other CLI sessions' folders.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_jobs_box_hides_tmp_and_user_temp() {
+    outside_a_job();
+    let world = world("hidden-tmp");
+    let mut job = spec(&world, false, false, false);
+    job.hidden = obid::sandbox::job_hidden(&world.home, vec![world.person.clone()]);
+    let mut planted = Vec::new();
+    for parent in [
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/Users/Shared"),
+        std::env::temp_dir(),
+    ] {
+        let dir = parent.join(format!("obid-hidden-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("secret"), "another session").unwrap();
+        planted.push(Folder(dir));
+    }
+    let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
+    let script = "for dir do if /bin/ls \"${dir%/*}\" || /bin/ls \"$dir\" || /bin/cat \"$dir/secret\"; then exit 1; fi; done; printf own > \"$TMPDIR/own\"";
+    let mut command = vec!["/bin/sh".into(), "-c".into(), script.into(), "probe".into()];
+    command.extend(planted.iter().map(|dir| dir.0.clone().into_os_string()));
+    let argv = sandbox.wrap(&job, &command);
+    let ran = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env_clear()
+        .envs(obid::process::sandbox_env(
+            &obid::process::tools_path(),
+            &world.temp,
+            &job.git_env(),
+        ))
+        .current_dir(&world.worktree)
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{ran:?}");
+    assert_eq!(
+        std::fs::read_to_string(world.temp.join("own")).unwrap(),
+        "own"
+    );
+}
+
 /// The probe: each try prints `<what> <label> ok|no`.
 fn probe_script(world: &World, port: u16, net_host: &str) -> String {
     let h = world.home.display();

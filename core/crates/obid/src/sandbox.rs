@@ -12,6 +12,8 @@
 //! - **Reads, from obid's home and the person's home**: the worktree, the clone's git common
 //!   directory (read-only), the job's own folders, and the tools it runs. Nothing else: not the
 //!   database, `keys/`, `api-token`, other clones or other worktrees.
+//!   On macOS the box also hides `/private/tmp`, `/Users/Shared` and the user's Darwin
+//!   temporary folder, restoring only the job's own paths inside them.
 //! - **Network**: none for the check, but, for the owner's own jobs, loopback ([`Spec::loopback`]):
 //!   the servers its tests start on 127.0.0.1. An agent has its own network namespace, with
 //!   slirp4netns so it still reaches its model's API, and the host's abstract Unix sockets are not
@@ -551,6 +553,19 @@ fn bubblewrap_args(spec: &Spec) -> Vec<OsString> {
 pub const SYSTEM_READS_LINUX: [&str; 10] = [
     "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/nix",
 ];
+
+/// Private roots hidden from a job, with its own paths restored by the profile.
+pub fn job_hidden(home: &Path, homes: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut hidden = vec![home.to_path_buf()];
+    hidden.extend(homes);
+    #[cfg(target_os = "macos")]
+    hidden.extend([
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/Users/Shared"),
+        std::env::temp_dir(),
+    ]);
+    hidden
+}
 
 /// What a confined process reads of the system on macOS: the system's own folders, the
 /// dynamic linker's caches, the system's settings, the time zones, the shell `/bin/sh` picks,
