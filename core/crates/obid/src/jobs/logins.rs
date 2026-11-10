@@ -1690,17 +1690,26 @@ pub(crate) fn codex_copy_ready(copy: &Path, account: &str) -> Result<(), String>
         None => login.is_object(),
         Some(token) => jwt_ends(token).is_some_and(|ends| ends > now_ms() / 1000 + 5 * 60),
     };
-    ready.then_some(()).ok_or_else(|| {
-        format!("The Mac's Codex login for {account} needs refreshing: run codex once.")
-    })
+    ready
+        .then_some(())
+        .ok_or_else(|| codex_needs_refreshing(account))
 }
 
 /// What a Codex login OpenAI refused needs: a new sign-in, which only the owner can do.
 pub(super) const CODEX_SIGN_IN: &str = "run codex login";
 
+/// What a boxed Codex copy whose access token has ended (or ends within 5 minutes) needs: only
+/// Codex itself refreshes it ([`codex_copy_ready`], [`codex_refused_copy`]).
+pub(super) const CODEX_REFRESH: &str = "run codex once";
+
 /// Why a run on a Codex login OpenAI refused doesn't start ([`end_codex_login`]).
 pub(super) fn codex_ended(account: &str) -> String {
     format!("The Mac's Codex login for {account} has ended: {CODEX_SIGN_IN}.")
+}
+
+/// Why a run on a boxed Codex copy whose access token has ended (or ends soon) doesn't start.
+pub(super) fn codex_needs_refreshing(account: &str) -> String {
+    format!("The Mac's Codex login for {account} needs refreshing: {CODEX_REFRESH}.")
 }
 
 /// The Codex logins OpenAI refused, by their credential ([`codex_credential`]): never signed in
@@ -1740,7 +1749,9 @@ pub(super) fn codex_error(reason: &str) -> Option<&str> {
 /// Whether a Codex run's error says OpenAI refused its login: codex-cli 0.162.1's
 /// `workspace routing discovery unauthorized (401)` (`account/read`, `thread/start`), a `401
 /// Unauthorized` from the API, or the session ended (`token_revoked`, `refresh_token_invalidated`).
-/// A run on a copy can't refresh, so trying again changes nothing until the owner signs in.
+/// A run on a copy can't refresh, so trying again changes nothing until the owner signs in — or,
+/// when the copy's access token has already passed its JWT `exp` and the error is only a 401, until
+/// they run Codex once ([`codex_refused_copy`]).
 pub(super) fn codex_login_refused(error: &str) -> bool {
     let error = error.to_lowercase();
     [
@@ -1753,6 +1764,43 @@ pub(super) fn codex_login_refused(error: &str) -> bool {
     ]
     .iter()
     .any(|w| error.contains(w))
+}
+
+/// Whether a Codex login-refusal error is a revocation (session ended), not a bare 401.
+pub(super) fn codex_login_revoked(error: &str) -> bool {
+    let error = error.to_lowercase();
+    [
+        "token_revoked",
+        "refresh_token_invalidated",
+        "invalidated oauth token",
+        "your session has ended",
+    ]
+    .iter()
+    .any(|w| error.contains(w))
+}
+
+/// Whether the run's Codex `copy` (`auth.json`) holds an access token whose JWT `exp` has passed.
+/// A boxed copy has no refresh token, so a bare 401 after that is expiry, not a refused login.
+pub(super) fn codex_copy_expired(copy: &Path) -> bool {
+    std::fs::read(copy)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|login| login["tokens"]["access_token"].as_str().and_then(jwt_ends))
+        .is_some_and(|ends| ends <= now_ms() / 1000)
+}
+
+/// What a Codex run that ended on a login refusal means for its `copy`: when the copy's access
+/// token's JWT `exp` has passed and the error is only a 401 (not a revocation), say
+/// [`codex_needs_refreshing`] and leave the account signed in; else mark it ended
+/// ([`end_codex_login`]) and say [`codex_ended`]. Revocations (`token_revoked`,
+/// `refresh_token_invalidated`, …) and a 401 before `exp` take the ended path.
+pub(super) fn codex_refused_copy(copy: &Path, account: &str, error: &str) -> String {
+    if codex_copy_expired(copy) && !codex_login_revoked(error) {
+        format!("{} (Codex said: {error})", codex_needs_refreshing(account))
+    } else {
+        end_codex_login(copy, account);
+        format!("{} (Codex said: {error})", codex_ended(account))
+    }
 }
 
 /// Remembers that OpenAI refused the Codex login a run used (`copy`, the run's `auth.json`), the
@@ -3229,8 +3277,7 @@ attributes:
             "{said}"
         );
 
-        let refused =
-            Err("The Mac's Codex login for Codex needs refreshing: run codex once.".into());
+        let refreshing = Err(codex_needs_refreshing("Codex"));
         let copy = root.join("conversation/auth.json");
         for token in [codex_access(60), codex_access(-60), "not-a-jwt".into()] {
             std::fs::write(
@@ -3238,7 +3285,7 @@ attributes:
                 json!({"tokens": {"access_token": token}}).to_string(),
             )
             .unwrap();
-            assert_eq!(codex_copy_ready(&copy, "Codex"), refused, "{token}");
+            assert_eq!(codex_copy_ready(&copy, "Codex"), refreshing, "{token}");
         }
         // An API-key login has no access token to end; no copy at all is the tool's to report.
         std::fs::write(&copy, json!({"OPENAI_API_KEY": "sk-x"}).to_string()).unwrap();
@@ -3310,6 +3357,83 @@ attributes:
         .unwrap();
         end_codex_login(&copy, "Codex");
         assert!(signed_in(Tool::Codex, &account, None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ACCOUNTS-18: a boxed Codex copy whose access token's JWT `exp` has passed gets a 401 that
+    /// says to run codex once, and the account stays signed in: OpenAI didn't refuse the login, the
+    /// copy simply expired (no refresh token). A revocation on that expired copy, or a 401 /
+    /// revocation while `exp` is still ahead, still ends the login as today.
+    #[test]
+    fn accounts_18_an_expired_copys_401_is_not_a_refused_login() {
+        let dir = std::env::temp_dir().join(format!("obid-codex-expired-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = crate::config::Account {
+            id: "codex".into(),
+            name: "Codex".into(),
+            config_dir: Some(dir.clone()),
+            payer: None,
+        };
+        let write = |path: &std::path::Path, token: &str| {
+            let login =
+                json!({"tokens": {"access_token": token, "refresh_token": "", "account_id": "a"}});
+            std::fs::write(path, login.to_string()).unwrap();
+        };
+        let auth = dir.join("auth.json");
+        let copy = dir.join("copy.json");
+        let error = "workspace routing discovery unauthorized (401)";
+        let revoked_error =
+            r#"Failed to refresh token: {"error_code": "refresh_token_invalidated"}"#;
+        // Offsets unique to this test: ended_codex is process-wide, and another test may refuse a
+        // token that ends at the same second.
+        let expired = codex_access(-90);
+        let live = codex_access(3 * 86400 + 18);
+        // Expired copy: a bare 401 says refresh, never marks the login ended. The Mac's own login
+        // stays ahead of its end so signed_in reflects the refused mark only.
+        write(&auth, &live);
+        write(&copy, &expired);
+        assert!(codex_copy_expired(&copy));
+        let words = codex_refused_copy(&copy, "Codex", error);
+        assert_eq!(
+            words,
+            format!("{} (Codex said: {error})", codex_needs_refreshing("Codex"))
+        );
+        assert!(!words.contains(CODEX_SIGN_IN), "{words}");
+        assert!(signed_in(Tool::Codex, &account, None));
+        assert_eq!(codex_copy_ready(&auth, "Codex"), Ok(()));
+        // Expired copy with a revocation still ends the login.
+        let after_revoked = format!("{live}z");
+        write(&auth, &after_revoked);
+        write(&copy, &expired);
+        assert!(codex_copy_expired(&copy));
+        let expired_revoked = codex_refused_copy(&copy, "Codex", revoked_error);
+        assert_eq!(
+            expired_revoked,
+            format!("{} (Codex said: {revoked_error})", codex_ended("Codex"))
+        );
+        // The copy's credential was ended; the Mac's login (a different token) stays signed in.
+        assert!(signed_in(Tool::Codex, &account, None));
+        write(&auth, &expired);
+        assert!(!signed_in(Tool::Codex, &account, None));
+        // Still in date: a 401 ends the login as refused.
+        write(&auth, &live);
+        write(&copy, &live);
+        assert!(!codex_copy_expired(&copy));
+        let refused = codex_refused_copy(&copy, "Codex", error);
+        assert_eq!(
+            refused,
+            format!("{} (Codex said: {error})", codex_ended("Codex"))
+        );
+        assert!(!signed_in(Tool::Codex, &account, None));
+        // Revocation wording while still in date also ends it.
+        let other = format!("{live}x");
+        write(&auth, &other);
+        write(&copy, &other);
+        assert!(signed_in(Tool::Codex, &account, None));
+        let revoked = codex_refused_copy(&copy, "Codex", revoked_error);
+        assert!(revoked.contains(CODEX_SIGN_IN), "{revoked}");
+        assert!(!signed_in(Tool::Codex, &account, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

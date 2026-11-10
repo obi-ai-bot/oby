@@ -1,6 +1,6 @@
 # Adding accounts
 
-The business behavior contract for connecting any number of accounts of any tool easily, from [the template](../business-contract-template.md). Scenarios are numbered `ACCOUNTS-n`; the tests that prove them are named after them (`accounts_1_…` in `core/crates/obid/tests/accounts_api.rs` and `core/crates/obid/src/accounts.rs`, `ACCOUNTS-10:` to `ACCOUNTS-16:` in `apps/electron/src/renderer/src/test/addAccount.test.ts`).
+The business behavior contract for connecting any number of accounts of any tool easily, from [the template](../business-contract-template.md). Scenarios are numbered `ACCOUNTS-n`; the tests that prove them are named after them (`accounts_1_…` in `core/crates/obid/tests/accounts_api.rs` and `core/crates/obid/src/accounts.rs`, `accounts_18_…` in `core/crates/obid/src/jobs/logins.rs`, `ACCOUNTS-10:` to `ACCOUNTS-16:` in `apps/electron/src/renderer/src/test/addAccount.test.ts`).
 
 ## Feature and status
 
@@ -61,6 +61,7 @@ It stays when: the tool said no email (Cursor out of reach; nothing to compare);
 - A status that doesn't answer in 15 seconds, or isn't JSON: nothing is learned, the account stays as it is, and the same login twice isn't noticed for that sign-in.
 - `accounts.json` that can't be written: what was learned is logged and lost until the next start. The account stays signed in.
 - A just-made account that can't be taken off stays, as an account of its own, with a line in obid's log.
+- A boxed Codex run that ends on a bare 401 while its copy's access token JWT `exp` has already passed says `The Mac's Codex login for <account> needs refreshing: run codex once.` and leaves the account signed in: the copy has no refresh token and simply expired. A revocation (`token_revoked`, `refresh_token_invalidated`, …) on that expired copy, or any login refusal while `exp` is still ahead, ends the login (`run codex login`) as before. Recovery still does not retry a login error.
 
 ## Interfaces and dependencies
 
@@ -85,6 +86,7 @@ It stays when: the tool said no email (Cursor out of reach; nothing to compare);
 - **ACCOUNTS-15:** a card shows who it is and a bar for its session, else its week, else none.
 - **ACCOUNTS-16:** first run still connects an agent under the name it gives.
 - **ACCOUNTS-17:** one email on another plan or org is another account, and both stay.
+- **ACCOUNTS-18:** a boxed Codex copy whose access token's JWT `exp` has passed, ending on a bare 401, says `run codex once` and stays signed in; a revocation on that expired copy, or a 401 or revocation while `exp` is still ahead, still ends the login (`run codex login`).
 
 **Test it when it's done (real Mac):**
 
