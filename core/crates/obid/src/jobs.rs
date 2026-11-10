@@ -21892,16 +21892,15 @@ mod tests {
         };
 
         // The rule's site: tunnelled, its hello naming it.
-        use crate::egress::tests::client_hello;
-        let hello = client_hello(Some("localhost"), false);
+        let hello = crate::egress::client_hello(Some("localhost"), false);
         let (status_line, stream) = connect(format!("localhost:{up}"), Some(auth.clone())).await;
         assert_eq!(status_line, "200");
         assert_eq!(echoed(stream, hello.clone()).await, Some(hello));
         // Another name in its hello (a CDN would serve that site), an encrypted hello, or no TLS
         // at all: the tunnel closes, and nothing reached the echo.
         for bytes in [
-            client_hello(Some("attacker.workers.dev"), false),
-            client_hello(Some("localhost"), true),
+            crate::egress::client_hello(Some("attacker.workers.dev"), false),
+            crate::egress::client_hello(Some("localhost"), true),
             b"GET / HTTP/1.1\r\nHost: attacker.workers.dev\r\n\r\n".to_vec(),
         ] {
             let (status_line, stream) =

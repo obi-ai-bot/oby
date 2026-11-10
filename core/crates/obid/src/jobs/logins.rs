@@ -1360,31 +1360,27 @@ pub(super) fn forget_keychain_copy(path: &Path) {
     }
 }
 
-/// The keeper as other modules' tests set it up and read it.
+/// For tests: the keeper keeps the login `service` (of `config_dir`), and `copy` of it.
 #[cfg(test)]
-pub(crate) mod keeper_for_tests {
-    use super::*;
+pub(crate) fn keeping(service: &str, config_dir: Option<&Path>, copy: PathBuf) {
+    kept().push(Kept {
+        service: service.to_owned(),
+        config_dir: config_dir.map(Path::to_path_buf),
+        bin: PathBuf::from("/usr/bin/false"),
+        used: std::time::Instant::now(),
+        copies: Vec::new(),
+    });
+    keep_keychain_copy(service, copy);
+}
 
-    /// The keeper keeps the login `service` (of `config_dir`), and `copy` of it.
-    pub(crate) fn keeping(service: &str, config_dir: Option<&Path>, copy: PathBuf) {
-        kept().push(Kept {
-            service: service.to_owned(),
-            config_dir: config_dir.map(Path::to_path_buf),
-            bin: PathBuf::from("/usr/bin/false"),
-            used: std::time::Instant::now(),
-            copies: Vec::new(),
-        });
-        keep_keychain_copy(service, copy);
-    }
-
-    /// The copies the keeper writes again of the login `service`.
-    pub(crate) fn kept_copies(service: &str) -> Vec<PathBuf> {
-        kept()
-            .iter()
-            .filter(|k| k.service == service)
-            .flat_map(|k| k.copies.clone())
-            .collect()
-    }
+/// For tests: the copies the keeper writes again of the login `service`.
+#[cfg(test)]
+pub(crate) fn kept_copies(service: &str) -> Vec<PathBuf> {
+    kept()
+        .iter()
+        .filter(|k| k.service == service)
+        .flat_map(|k| k.copies.clone())
+        .collect()
 }
 
 /// With `claudeKeychain` on, obid's keeper: every 60 seconds, on a thread of its own, each login it

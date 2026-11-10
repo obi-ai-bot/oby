@@ -3088,12 +3088,14 @@ mod tests {
         let copy = place.config.join(".credentials.json");
         std::fs::write(&copy, "{}").unwrap();
         let service = format!("test-{}", uuid::Uuid::new_v4());
-        use crate::jobs::keeper_for_tests::{keeping, kept_copies};
-        keeping(&service, Some(&root.join("account")), copy.clone());
-        assert_eq!(kept_copies(&service), std::slice::from_ref(&copy));
+        crate::jobs::keeping(&service, Some(&root.join("account")), copy.clone());
+        assert_eq!(
+            crate::jobs::kept_copies(&service),
+            std::slice::from_ref(&copy)
+        );
         place.forget_login();
         assert!(!copy.exists());
-        assert!(kept_copies(&service).is_empty());
+        assert!(crate::jobs::kept_copies(&service).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
