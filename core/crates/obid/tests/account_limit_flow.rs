@@ -373,7 +373,6 @@ fn ended(obid: &Obid, id: &str) -> Value {
     })
 }
 
-
 fn pending_decisions(obid: &Obid) -> Vec<Value> {
     call(obid, "GET", "/v1/limit-decisions", None)
         .body
@@ -1169,12 +1168,20 @@ fn limits_16_a_running_job_moves_by_hand() {
     assert_eq!(moved.body["agent"], "codex", "{}", moved.text);
     assert_eq!(moved.body["round"], running["round"], "{}", moved.text);
     let moves = moved.body["moves"].as_array().unwrap();
-    assert_eq!(moves[0]["from"], "Claude Code · stub", "{}", moved.text);
+    assert_eq!(moves[0]["from"], "Claude Code · Stub", "{}", moved.text);
     assert_eq!(moves[0]["to"], "Codex · Codex account", "{}", moved.text);
     assert_eq!(moves[0]["why"], "Claude keeps looping", "{}", moved.text);
-    let done = ended(&obid, &id);
-    assert_eq!(done["branch"], running["branch"], "{done}");
-    assert!(codex_heard(&folder, &id).contains("Claude keeps looping"));
+    assert_eq!(moved.body["branch"], running["branch"], "{}", moved.text);
+    // Codex's new session hears where the job was and why (the stand-in keeps sleeping there).
+    let threads = folder.0.join("home/logins").join(&id).join("threads");
+    let heard = within(60, "Codex takes the round over", || {
+        threads.is_dir().then(|| codex_heard(&folder, &id))
+    });
+    assert!(
+        heard.contains("Claude keeps looping") && heard.contains("same worktree and branch"),
+        "{heard}"
+    );
+    call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
 }
 
 /// LIMITS-16: what can't move answers `422` with why and leaves the job as it was; an unknown
@@ -1222,7 +1229,11 @@ fn limits_16_a_finished_job_runs_its_next_round_there() {
     let id = post(&obid, "Look around");
     let first = ended(&obid, &id);
     let body = json!({"agent": "codex", "model": "gpt-6-astra"});
-    let moved = call_typed(&obid, "POST", &format!("/v1/jobs/{id}/move"), &body);
+    // Once it's done publishing what it did: until then it can't move (`422`).
+    let moved = within(60, "it moves once it's published", || {
+        let moved = call_typed(&obid, "POST", &format!("/v1/jobs/{id}/move"), &body);
+        (moved.status != 422 || !moved.text.contains("publishing")).then_some(moved)
+    });
     assert_eq!(moved.status, 200, "{}", moved.text);
     assert_eq!(moved.body["status"], first["status"], "{}", moved.text);
     assert_eq!(moved.body["model"], "gpt-6-astra", "{}", moved.text);

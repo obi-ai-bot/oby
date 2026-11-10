@@ -161,7 +161,7 @@ impl Jobs {
             .is_some_and(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"));
         let tuning = crate::settings::load(&self.config.home).tuning;
         let offered = self.model_lists.to_check(tool, &chosen.id);
-        let had_run = job.session.is_some();
+        let had_run = job.session.is_some() || job.stopped_by.as_deref() == Some(MOVING);
         let mut refused = false;
         let changed = self.update(id, |job| {
             if job.account_limit_blocked && !source.approves_limit() {
