@@ -59,6 +59,53 @@ pub fn is_forbidden(name: &str) -> bool {
         || name.starts_with("OBY_GITHUB_APP")
 }
 
+/// Names an agent never gets, in either lane: [`is_forbidden`]'s, and every one that pushes or
+/// signs in to a code host (an SSH agent, an askpass, an ssh git runs, gh's and GitHub's). Not
+/// `is_forbidden` itself: obid's own gh and Publish drop only its names, and Publish over SSH
+/// needs `SSH_AUTH_SOCK` (docs/contracts/lanes.md, LANES-2).
+pub fn agent_withheld(name: &str) -> bool {
+    is_forbidden(name)
+        || [
+            "SSH_AUTH_SOCK",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+        ]
+        .contains(&name)
+        || name.starts_with("GH_")
+        || name.starts_with("GITHUB_")
+}
+
+/// What every agent's environment sets, in either lane, so nothing it runs publishes (LANES-2):
+/// an empty GitHub CLI configuration in `temp`, git that never prompts, reads no settings but the
+/// repository's and has [`no_publish_git`] on top of whatever those say.
+pub fn no_publish_env(temp: &Path) -> Vec<(&'static str, OsString)> {
+    vec![
+        (
+            "GH_CONFIG_DIR",
+            temp.join(".config/gh-none").into_os_string(),
+        ),
+        ("GIT_TERMINAL_PROMPT", "0".into()),
+        ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
+        ("GIT_CONFIG_PARAMETERS", no_publish_git()),
+    ]
+}
+
+/// The `GIT_CONFIG_PARAMETERS` of [`no_publish_env`] and of the egress proxy's environment, one
+/// value since a launch's last one wins: an empty credential helper, and `origin`'s push URLs
+/// emptied (an empty value resets git's list) and set to obid's invalid one
+/// (`crate::git::NO_PUSH_URL`), whatever the clone's own settings say. Never `GIT_CONFIG_KEY_0`:
+/// a Codex that drops `*KEY*` variables would leave git its count alone, and git refuses to run then.
+pub fn no_publish_git() -> OsString {
+    format!(
+        "'credential.helper=' 'remote.origin.pushurl=' 'remote.origin.pushurl={}'",
+        crate::git::NO_PUSH_URL
+    )
+    .into()
+}
+
 /// The [`KEPT`] variables `get` has (obid's own environment): what every process obid starts
 /// keeps of it, a job's and the brain's alike.
 pub fn kept(get: impl Fn(&str) -> Option<OsString>) -> Vec<(OsString, OsString)> {
@@ -139,8 +186,7 @@ fn own_ps_folder(temp: &Path) -> Option<PathBuf> {
 }
 
 /// The environment of a process in the job sandbox: `PATH`, `HOME` and `TMPDIR` (the job's
-/// temporary folder), an empty GitHub CLI configuration, git that never prompts and reads no
-/// settings but the repository's, xcrun's cache in
+/// temporary folder), [`no_publish_env`] but its credential helper, xcrun's cache in
 /// the temporary folder, the kept variables above, then `extra` (an account's `CLAUDE_CONFIG_DIR`).
 pub fn sandbox_env(
     path: &OsStr,
@@ -151,29 +197,25 @@ pub fn sandbox_env(
     env.push(("PATH".into(), with_own_ps(path)));
     env.push(("HOME".into(), temp.as_os_str().to_os_string()));
     env.push(("TMPDIR".into(), temp.as_os_str().to_os_string()));
-    env.push((
-        "GH_CONFIG_DIR".into(),
-        temp.join(".config/gh-none").into_os_string(),
-    ));
-    env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
     // No git settings but the repository's: never a `.gitconfig` the box's own commands wrote in
     // its `HOME` (a pager, a `diff.external`, a textconv that runs or hides what git prints), nor
-    // the system's (PERMISSIONS-14).
-    env.push(("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()));
-    env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+    // the system's (PERMISSIONS-14). An agent's launch adds the empty credential helper too.
+    env.extend(
+        no_publish_env(temp)
+            .into_iter()
+            .filter(|(name, _)| *name != "GIT_CONFIG_PARAMETERS")
+            .map(|(name, value)| (name.into(), value)),
+    );
     // macOS's /usr/bin/git is xcrun's shim: its cache goes here, not in /var/folders, which the
     // sandbox doesn't let a job write.
     env.push(("xcrun_db".into(), temp.join("xcrun_db").into_os_string()));
     // Foundation's home is the password database's, whatever `HOME` says, so SwiftPM's caches and
     // Xcode's DerivedData would go in the person's hidden `~/Library`: this makes it the job's.
     env.push(("CFFIXED_USER_HOME".into(), temp.as_os_str().to_os_string()));
-    // What `extra` sets wins over what obid's own environment had (a job's own proxy).
-    env.retain(|(name, _)| {
-        !extra
-            .iter()
-            .any(|(set, _)| name.as_os_str() == OsStr::new(set))
-    });
+    // What `extra` sets wins over what obid's own environment had (a job's own proxy), and its
+    // last word for a name over its first (the proxy's credential helper and LANES-2's).
     for (name, value) in extra {
+        env.retain(|(set, _)| set.as_os_str() != OsStr::new(name));
         env.push(((*name).into(), value.clone()));
     }
     // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS and NO_CLAUDE_MDS are
@@ -825,5 +867,170 @@ mod claude_tmpdir_tests {
                 .any(|(k, v)| k == "xcrun_db" && Path::new(v) == temp.join("xcrun_db")),
             "{env:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// LANES-2: a boxed agent's environment and an own one's alike give git no settings but the
+    /// repository's and an empty credential helper, and nothing that pushes or signs in reaches an
+    /// agent, while obid's own gh and Publish keep `SSH_AUTH_SOCK`.
+    #[test]
+    fn lanes_2_neither_lane_can_publish() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (worktree, temp, login) = (root.join("worktree"), root.join("tmp"), root.join("login"));
+        for dir in [&worktree, &temp, &root.join("account")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let spec = crate::sandbox::Spec {
+            worktree: worktree.clone(),
+            git_admin: Some(root.join("clone/.git/worktrees/job")),
+            git_common: Some(root.join("clone/.git")),
+            commits: true,
+            temp: temp.clone(),
+            accounts: Vec::new(),
+            read_only: Vec::new(),
+            hidden: Vec::new(),
+            network: false,
+            loopback: false,
+            proxied: false,
+            frozen: Vec::new(),
+            fixed: Vec::new(),
+        };
+        let account = crate::config::Account {
+            id: "work".into(),
+            name: "Work".into(),
+            config_dir: Some(root.join("account")),
+            payer: None,
+        };
+        let own: Vec<(OsString, OsString)> = crate::jobs::own_sandbox_env(&account, &spec, &login)
+            .unwrap()
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect();
+        let boxed = sandbox_env(OsStr::new("/usr/bin"), &temp, &no_publish_env(&temp));
+        for env in [&boxed, &own] {
+            let get = |name: &str| {
+                let values: Vec<_> = env.iter().filter(|(k, _)| k == name).collect();
+                assert_eq!(values.len(), 1, "{name}: {values:?}");
+                values[0].1.to_string_lossy().into_owned()
+            };
+            assert_eq!(get("GIT_CONFIG_GLOBAL"), "/dev/null");
+            assert_eq!(get("GIT_CONFIG_NOSYSTEM"), "1");
+            assert_eq!(
+                get("GIT_CONFIG_PARAMETERS"),
+                no_publish_git().to_string_lossy()
+            );
+            assert_eq!(get("GIT_TERMINAL_PROMPT"), "0");
+            assert_eq!(
+                get("GH_CONFIG_DIR"),
+                temp.join(".config/gh-none").to_string_lossy()
+            );
+        }
+
+        // And git itself: a clone whose settings push somewhere real, with a credential helper
+        // that would answer, pushes only to obid's invalid URL and asks nobody.
+        let repo = root.join("repo");
+        let asked = root.join("asked");
+        let git = |args: &[&str], env: &[(OsString, OsString)]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin")
+                // (not the job's git folders, which this test never made, nor its PATH)
+                .envs(
+                    env.iter()
+                        .filter(|(k, _)| {
+                            !["PATH", "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"]
+                                .contains(&&*k.to_string_lossy())
+                        })
+                        .map(|(k, v)| (k, v)),
+                )
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap()
+        };
+        let plain = [
+            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+            ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+        ];
+        std::fs::create_dir_all(&repo).unwrap();
+        let helper = format!("!touch '{}'; echo password=t", asked.display());
+        for args in [
+            &["init", "-q"][..],
+            &[
+                "config",
+                "remote.origin.url",
+                "https://example.com/repo.git",
+            ],
+            &[
+                "config",
+                "remote.origin.pushurl",
+                "https://example.com/repo.git",
+            ],
+            &["config", "credential.helper", &helper],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        ] {
+            assert!(git(args, &plain).status.success(), "{args:?}");
+        }
+        let said =
+            |out: std::process::Output| String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        assert_eq!(
+            said(git(&["config", "remote.origin.pushurl"], &plain)),
+            "https://example.com/repo.git"
+        );
+        for env in [&boxed, &own] {
+            assert_eq!(
+                said(git(&["config", "remote.origin.pushurl"], env)),
+                crate::git::NO_PUSH_URL
+            );
+            assert_eq!(
+                said(git(
+                    &["remote", "get-url", "--push", "--all", "origin"],
+                    env
+                )),
+                crate::git::NO_PUSH_URL
+            );
+            let pushed = git(&["push", "origin", "HEAD:refs/heads/main"], env);
+            let stderr = String::from_utf8_lossy(&pushed.stderr);
+            assert!(!pushed.status.success(), "{stderr}");
+            assert!(stderr.contains("obid-agents-cannot-push"), "{stderr}");
+            assert!(!stderr.contains("example.com"), "{stderr}");
+            assert!(!asked.exists(), "{stderr}");
+        }
+        for name in [
+            "SSH_AUTH_SOCK",
+            "GH_TOKEN",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+            "GH_HOST",
+            "GITHUB_TOKEN",
+            "GITHUB_APP_KEY",
+            "ANTHROPIC_API_KEY",
+        ] {
+            assert!(agent_withheld(name), "{name}");
+        }
+        for name in ["PATH", "LANG", "GIT_AUTHOR_NAME"] {
+            assert!(!agent_withheld(name), "{name}");
+        }
+        assert!(!is_forbidden("SSH_AUTH_SOCK"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

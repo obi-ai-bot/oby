@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-/// The push URL every clone gets: git refuses it, so no push leaves from a clone (AGENTS.md,
-/// "Agents can't publish").
+/// The push URL every clone gets: git refuses it, so no push leaves from a clone, in either lane
+/// (LANES-2; the environment's half is `crate::process::no_publish_env`).
 pub const NO_PUSH_URL: &str = "obid-agents-cannot-push:///";
 
 /// How long one git command may take before obid gives up on it.

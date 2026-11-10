@@ -7380,7 +7380,8 @@ impl Jobs {
             format!("obid can't find {}'s binary ({named}).", tool.name())
         })?;
         let mut spec = spec.clone();
-        let mut extra: Vec<(&str, OsString)> = spec.git_env();
+        let mut extra = spec.git_env();
+        extra.extend(process::no_publish_env(&spec.temp));
         // Its only way off the Mac: obid's proxy, which lets its tool's own services through and
         // decides every other site (crate::egress, #616). Never the network without it.
         if sandbox.confines_egress() {
@@ -7773,15 +7774,11 @@ impl Jobs {
         .collect();
         // git reads no settings but the room's own (and runs no program they name: git isn't one
         // of the commands that run without asking).
-        let git = [
-            ("GIT_CONFIG_NOSYSTEM", OsString::from("1")),
-            ("GIT_CONFIG_GLOBAL", OsString::from("/dev/null")),
-        ];
         Ok(Launch {
             own_sandbox: false,
             group: None,
             argv: sandbox.wrap_command(&spec, &argv),
-            env: process::sandbox_env(&process::tools_path(), temp, &git),
+            env: process::sandbox_env(&process::tools_path(), temp, &process::no_publish_env(temp)),
             cwd: room.to_path_buf(),
             stderr: temp.join("stderr.log"),
         })
@@ -7842,7 +7839,7 @@ impl Jobs {
             frozen,
             fixed: Vec::new(),
         };
-        let mut extra: Vec<(&str, OsString)> = Vec::new();
+        let mut extra = process::no_publish_env(&temp);
         match &account.config_dir {
             // Its own folder with a copy of the login, never the account's, and the proxy.
             _ if confined && tool == Tool::Cursor => {
@@ -15384,11 +15381,8 @@ mod tests {
         assert_eq!(get("GIT_WORK_TREE").as_deref(), worktree.to_str());
         assert_eq!(get("GIT_CONFIG_GLOBAL").as_deref(), Some("/dev/null"));
         assert_eq!(get("GIT_CONFIG_NOSYSTEM").as_deref(), Some("1"));
-        assert_eq!(
-            get("GIT_CONFIG_KEY_0").as_deref(),
-            Some("credential.helper")
-        );
-        assert_eq!(get("GIT_CONFIG_VALUE_0").as_deref(), Some(""));
+        let helper = get("GIT_CONFIG_PARAMETERS").map(OsString::from);
+        assert_eq!(helper, Some(process::no_publish_git()));
         assert_eq!(
             get("CLAUDE_CONFIG_DIR").as_deref(),
             root.join("account").to_str()

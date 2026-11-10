@@ -198,10 +198,10 @@ pub(super) fn cursor_login_live(login: &[u8]) -> bool {
 /// they build and cache stays the job's. git reads only the clone's settings, through the job's
 /// own git folders whatever the worktree's `.git` or `commondir` says: Claude Code runs git itself,
 /// outside its sandbox, and a setting its commands could write would run what they put there.
-/// With no global settings and an empty `credential.helper` there's no credential helper either.
+/// It gets [`process::no_publish_env`], as every agent does.
 /// Refused when the account's `.claude.json` sets, in its `env` (which Claude Code applies whatever
 /// `--setting-sources` says), a variable no agent gets or one this sets.
-pub(super) fn own_sandbox_env(
+pub(crate) fn own_sandbox_env(
     account: &crate::config::Account,
     spec: &Spec,
     login: &Path,
@@ -215,7 +215,7 @@ pub(super) fn own_sandbox_env(
         .clone()
         .unwrap_or_else(|| home.join(".claude"));
     let storage = account.config_dir.clone().unwrap_or_default();
-    let env: Vec<(&'static str, OsString)> = vec![
+    let mut env: Vec<(&'static str, OsString)> = vec![
         ("HOME", login.as_os_str().to_owned()),
         // Where CoreFoundation and `security` look too: never the job's temporary folder, which
         // its commands write (`env.sh` gives them that one).
@@ -223,21 +223,16 @@ pub(super) fn own_sandbox_env(
         ("CLAUDE_ENV_FILE", login.join("env.sh").into_os_string()),
         ("CLAUDE_CONFIG_DIR", folder.clone().into_os_string()),
         ("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage.into_os_string()),
-        ("GIT_CONFIG_NOSYSTEM", "1".into()),
-        ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
-        // And an empty credential helper on top of whatever the clone's settings say: in the
-        // environment, which nothing the agent writes changes for Claude Code's own git.
-        ("GIT_CONFIG_COUNT", "1".into()),
-        ("GIT_CONFIG_KEY_0", "credential.helper".into()),
-        ("GIT_CONFIG_VALUE_0", "".into()),
         ("GIT_DIR", admin.clone().into_os_string()),
         ("GIT_COMMON_DIR", common.clone().into_os_string()),
         ("GIT_WORK_TREE", spec.worktree.clone().into_os_string()),
     ];
+    // In the environment, which nothing the agent writes changes for Claude Code's own git.
+    env.extend(process::no_publish_env(&spec.temp));
     let state = std::fs::read(folder.join(".claude.json")).unwrap_or_default();
     let set = serde_json::from_slice::<Value>(&state).unwrap_or_default();
     for (name, _) in set["env"].as_object().into_iter().flatten() {
-        if process::is_forbidden(name)
+        if process::agent_withheld(name)
             || name.starts_with("GIT_")
             || ["HOME", "CFFIXED_USER_HOME", "PATH"].contains(&name.as_str())
             || env.iter().any(|(set, _)| set == name)
