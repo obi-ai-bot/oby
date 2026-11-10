@@ -153,6 +153,7 @@ mod tests {
             to: "Codex · B".into(),
             why: None,
             date: 0,
+            handoff: false,
         });
         for other in [boxed, codex, moved] {
             jobs.lock().jobs.insert(other.id.clone(), other);
