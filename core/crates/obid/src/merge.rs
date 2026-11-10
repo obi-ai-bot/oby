@@ -243,23 +243,19 @@ pub fn on_owners_word(owner: bool, ready: Result<(), Blocked>) -> Result<(), Blo
     }
 }
 
-/// Why it waits while GitHub's mergeability is still unknown. The owner's Merge then is kept and
-/// tried again by itself ([`KEEP_EVERY`], MERGING-35).
+/// Why it waits while GitHub's mergeability is unknown: the owner's Merge is kept ([`keep`]).
 pub const WORKING_OUT: &str = "Not merged yet: GitHub is still working out whether it can merge.";
-
-/// How often, and for how long, the owner's Merge kept while GitHub works out whether it can merge
-/// is tried again (MERGING-35): every 5 seconds, for 5 minutes.
+/// How often, and for how long, the owner's kept Merge is tried again (MERGING-35).
 pub const KEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 pub const KEEP_FOR: std::time::Duration = std::time::Duration::from_secs(300);
-
 /// What the owner hears when their Merge is kept (MERGING-35).
 pub const KEPT: &str = "GitHub is still working out whether it can merge: Oby merges it as soon as GitHub says it can.";
 
 /// Whether a refusal of the owner's kept Merge is only GitHub still working something out, to try
-/// again shortly: anything that waits ([`Blocked::needs_you`] false) but a pull request merged or
-/// closed meanwhile.
+/// again shortly: anything that waits ([`Blocked::needs_you`] false) but a pull request merged,
+/// closed or pushed to meanwhile.
 pub fn try_again(blocked: &Blocked) -> bool {
-    !blocked.needs_you && !matches!(blocked.why.as_str(), MERGED_ALREADY | CLOSED)
+    !blocked.needs_you && !matches!(blocked.why.as_str(), MERGED_ALREADY | CLOSED | HEAD_MOVED)
 }
 
 /// What the owner hears when GitHub still hadn't worked it out by [`KEEP_FOR`]'s end, `last` the
@@ -271,8 +267,63 @@ pub fn kept_too_long(last: &str) -> String {
     )
 }
 
+/// The owner's kept Merge (MERGING-35): `attempt` every [`KEEP_EVERY`] for [`KEEP_FOR`] while it
+/// only waits ([`try_again`]). What comes back to the owner, in its own words: a real refusal, or
+/// GitHub still working it out at the end; none once it merged, or merged, closed or moved anyway.
+pub async fn keep<F: std::future::Future<Output = Result<(), Blocked>>>(
+    mut attempt: impl FnMut() -> F,
+) -> Option<String> {
+    let (until, mut last) = (
+        tokio::time::Instant::now() + KEEP_FOR,
+        WORKING_OUT.to_owned(),
+    );
+    while tokio::time::Instant::now() < until {
+        tokio::time::sleep(KEEP_EVERY).await;
+        match attempt().await {
+            Ok(()) => return None,
+            Err(b) if try_again(&b) => last = b.why,
+            Err(b) => return b.needs_you.then_some(b.why),
+        }
+    }
+    Some(kept_too_long(&last))
+}
+
+/// Why the owner's Merge didn't go when what it goes on couldn't be read: it may go later.
+pub fn unread(why: String) -> Blocked {
+    wait(why)
+}
+
+/// Why the owner's Merge of a pull request whose head moved since their card didn't go.
+pub const HEAD_MOVED: &str = "Its head moved since: a new card comes when it's ready again.";
 const MERGED_ALREADY: &str = "It's merged already.";
 const CLOSED: &str = "Not merged: it's closed.";
+
+/// What a job whose head needs a second review says while it waits for one (`noReviewer`,
+/// MERGING-34): the other tools signed in with no room (`full`, each with when it has, if known);
+/// else the OK it waits for (`consent`); else that no tool but `by`, the first reviewer's, is
+/// signed in. No card: the review starts once one has room, and it merges once that approves.
+pub fn second_review_waits(
+    by: &str,
+    full: &[(&str, Option<i64>)],
+    consent: Option<String>,
+) -> String {
+    let why = match (full, consent) {
+        ([], Some(consent)) => consent,
+        ([], None) => format!("no tool other than {by} is signed in"),
+        _ => full
+            .iter()
+            .map(|(tool, at)| match at {
+                Some(at) => format!(
+                    "{tool} has no room until {}",
+                    obi_protocol::time::format(*at)
+                ),
+                None => format!("{tool} has no room"),
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+    };
+    format!("Waiting for a second review: {why}.")
+}
 
 /// How long GitHub's checks may run, or not show at all, after obid pushed the head before the
 /// owner hears of it: an hour.
@@ -2648,7 +2699,7 @@ mod tests {
         alone.no_reviewer =
             Some("Waiting for a second review: no tool other than Codex is signed in.".into());
         let blocked = ready_now(&alone).unwrap_err();
-        assert_eq!(blocked, waits);
+        assert_eq!(Err(blocked.clone()), waits);
         assert_eq!(on_owners_word(true, Err(blocked.clone())), Ok(()));
         let red = view(|v| v["mergeStateStatus"] = json!("DIRTY"));
         let (red_pr, red_merging) = read(&red, &pages(vec![]));
@@ -2766,8 +2817,10 @@ mod tests {
         let mut job = reviewed("approved", &head());
         job.review.as_mut().unwrap().two_reviews = Some("it changes AGENTS.md".into());
         job.approvals = vec![job.review.clone().unwrap()];
-        job.no_reviewer =
-            Some("Waiting for a second review: Claude Code has no room until 2026-11-10T01:47:00Z.".into());
+        job.no_reviewer = Some(
+            "Waiting for a second review: Claude Code has no room until 2026-11-10T01:47:00Z."
+                .into(),
+        );
         for workflow in [Some(oby.clone()), proposed(&job, &pr, &merging, &nobody)] {
             let blocked = ready(&job, workflow.as_ref(), &pr, &merging, Some(&nobody)).unwrap_err();
             assert_eq!(blocked.why, SECOND_REVIEW_WAITS);
@@ -2780,7 +2833,10 @@ mod tests {
             agent: "claude".into(),
             ..job.review.clone().unwrap()
         });
-        assert_eq!(ready(&two, Some(&oby), &pr, &merging, Some(&nobody)), Ok(()));
+        assert_eq!(
+            ready(&two, Some(&oby), &pr, &merging, Some(&nobody)),
+            Ok(())
+        );
     }
 
     /// MERGING-35: while GitHub is still working out whether it can merge, the owner's Merge is
@@ -2804,7 +2860,14 @@ mod tests {
         let job = reviewed("approved", &head());
         let blocked = on_owners_word(
             true,
-            ready_as(Some(&Lift::Word), &job, Some(&oby), &pr, &merging, Some(&owner)),
+            ready_as(
+                Some(&Lift::Word),
+                &job,
+                Some(&oby),
+                &pr,
+                &merging,
+                Some(&owner),
+            ),
         )
         .unwrap_err();
         assert_eq!(blocked.why, WORKING_OUT);

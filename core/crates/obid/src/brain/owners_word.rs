@@ -168,7 +168,9 @@ pub async fn merge(
 fn merged_line(name: &str, title: &str, open: Option<&str>) -> String {
     match open {
         // Kept while GitHub works it out (MERGING-35).
-        Some(kept) if kept == crate::merge::KEPT => format!("{name}, {title}'s pull request: {kept}"),
+        Some(kept) if kept == crate::merge::KEPT => {
+            format!("{name}, {title}'s pull request: {kept}")
+        }
         Some(open) => format!("Merged {name}, {title}'s pull request. {open}"),
         None => format!("Merged {name}, {title}'s pull request."),
     }

@@ -3517,8 +3517,8 @@ fn merging_15_a_change_to_agents_md_gets_a_second_review_by_another_tool() {
 }
 
 /// MERGING-14: with no other tool signed in with room, the second review waits, saying why
-/// (`noReviewer`, under the Review stage), and only the one approval is on the job: its merge is
-/// the owner's "Ready to merge?" (crate::merge's `merging_14_…`).
+/// (`noReviewer`, the Review stage's line), and only the one approval is on the job: it waits
+/// with no card (MERGING-34, crate::merge's `merging_34_…`).
 #[test]
 fn merging_14_with_no_other_tool_the_second_review_waits_saying_why() {
     let folder = Folder::new("publish-review-alone");
@@ -3533,14 +3533,11 @@ fn merging_14_with_no_other_tool_the_second_review_waits_saying_why() {
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
         job["noReviewer"].is_string().then_some(job)
     });
-    let why = "Oby's second review waits for a tool other than Claude Code signed in with room.";
+    let why = "Waiting for a second review: no tool other than Claude Code is signed in.";
     assert_eq!(job["noReviewer"], why, "{job}\n{}", obid.log());
     assert_eq!(job["review"]["verdict"], "approved");
     assert_eq!(approvals(&job), ["claude"]);
-    assert_eq!(
-        stage(&job, "review")["detail"],
-        format!("Waiting for review · {why}")
-    );
+    assert_eq!(stage(&job, "review")["detail"], why);
     assert_eq!(reviews_of(&obid, &id).len(), 1);
     // Cut off between the first verdict and the second review's start (no `noReviewer` kept),
     // and started again with Codex signed in: the second review starts by itself.
