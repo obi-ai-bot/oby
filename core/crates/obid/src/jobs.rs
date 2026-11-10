@@ -7611,13 +7611,7 @@ impl Jobs {
             return file_login_ready(&account);
         }
         match self.agent_bin(Tool::Claude) {
-            Some(bin) => {
-                let made = account
-                    .config_dir
-                    .as_deref()
-                    .is_some_and(|dir| self.config.agents.made(dir));
-                keychain_ready(bin, &account, made).await
-            }
+            Some(bin) => keychain_ready(bin, &account).await,
             None => Ok(()),
         }
     }
