@@ -903,6 +903,8 @@ pub(super) async fn answer_inbox(
             Ok(open) => {
                 shared.link.merge_items(&item.job, None);
                 Outcome::Done(match open {
+                    // Kept while GitHub works it out (MERGING-35).
+                    Some(kept) if kept == crate::merge::KEPT => format!("{}: {kept}", item.title),
                     Some(open) => format!("Merged {}. {open}", item.title),
                     None => format!("Merged {}.", item.title),
                 })

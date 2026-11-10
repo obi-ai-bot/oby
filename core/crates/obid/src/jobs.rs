@@ -11723,6 +11723,8 @@ impl Jobs {
             .filter(|t| *t != Tool::Cursor && !approved.contains(&t.id()));
         let mut theirs = None;
         let mut held = Vec::new();
+        // The tools with no room now, each with when its first account has, if known (MERGING-34).
+        let mut full: Vec<(&str, Option<i64>)> = Vec::new();
         let mut not_yet = None;
         for tool in tools {
             for account in self.accounts(tool) {
@@ -11736,8 +11738,14 @@ impl Jobs {
                     not_yet.get_or_insert(account.name);
                     continue;
                 }
-                if let Some(why) = self.usage.get(&account.id).held(now) {
+                let usage = self.usage.get(&account.id);
+                if let Some(why) = usage.held(now) {
                     held.push(format!("{} {why}", account.name));
+                    let at = usage.free_at(now);
+                    match full.iter_mut().find(|(t, _)| *t == tool.name()) {
+                        Some((_, free)) => *free = [*free, at].into_iter().flatten().min(),
+                        None => full.push((tool.name(), at)),
+                    }
                 } else if Some(tool) == own && account.id == author.account {
                     theirs = Some((tool, account));
                 } else {
@@ -11747,10 +11755,8 @@ impl Jobs {
         }
         theirs.ok_or_else(|| {
             if let Some(by) = approved.first().and_then(|a| Tool::from_id(a)) {
-                format!(
-                    "Oby's second review waits for a tool other than {} signed in with room.",
-                    by.name()
-                )
+                let consent = not_yet.as_deref().map(consent_words);
+                crate::merge::second_review_waits(by.name(), &full, consent)
             } else if let Some(name) = not_yet.filter(|_| held.is_empty()) {
                 format!("My review waits for {}.", consent_words(&name))
             } else if held.is_empty() {
@@ -13281,14 +13287,61 @@ impl Jobs {
     /// then it merges, `mergedBy` the owner. `remember` then keeps that workflow, the owner's yes
     /// to the card's "Can I remember that?". Why not, otherwise: nothing was sent. `lift`: what
     /// their answer lifts (crate::merge::Lift): an answer their app signed lifts what its card
-    /// named and remembers as theirs; any other, only the holds of before (MERGING-20).
+    /// named and remembers as theirs; any other, only the holds of before (MERGING-20). While
+    /// GitHub is still working out whether it can merge, their Merge is kept and tried again by
+    /// itself ([`Jobs::keep_merge`], MERGING-35): `Ok` with [`crate::merge::KEPT`].
     pub async fn merge_by_owner(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         head: &str,
         remember: bool,
         lift: crate::merge::Lift<'_>,
     ) -> Result<Option<String>, String> {
+        match self.merge_by_owner_now(id, head, remember, &lift).await {
+            Err(blocked) if blocked.why == crate::merge::WORKING_OUT => {
+                self.keep_merge(id, head, remember, crate::merge::KeptLift::of(&lift));
+                Ok(Some(crate::merge::KEPT.into()))
+            }
+            merged => merged.map_err(|b| b.why),
+        }
+    }
+
+    /// The owner's Merge kept while GitHub works out whether it can merge ([`crate::merge::keep`],
+    /// MERGING-35): what comes back to them is a card. Kept in memory only: a restart drops it.
+    fn keep_merge(
+        self: &Arc<Self>,
+        id: &str,
+        head: &str,
+        remember: bool,
+        lift: crate::merge::KeptLift,
+    ) {
+        let (jobs, id, head) = (Arc::clone(self), id.to_owned(), head.to_owned());
+        tokio::spawn(async move {
+            let (on, id_, head_, lift_) = (&jobs, id.as_str(), head.as_str(), &lift);
+            let why = crate::merge::keep(move || async move {
+                let lift = lift_.lift();
+                on.merge_by_owner_now(id_, head_, remember, &lift)
+                    .await
+                    .map(drop)
+            })
+            .await;
+            tracing::info!("job {id}: the owner's kept Merge ended: {why:?}");
+            if let (Some(why), Some(job)) = (why, jobs.get(&id)) {
+                let link = jobs.link.get().and_then(std::sync::Weak::upgrade);
+                let card = crate::merge::stopped_card(&job, &head, &why);
+                jobs.offer_merge_card(&id, link.as_deref(), Some(card));
+            }
+        });
+    }
+
+    /// [`Jobs::merge_by_owner`], once, now.
+    async fn merge_by_owner_now(
+        &self,
+        id: &str,
+        head: &str,
+        remember: bool,
+        lift: &crate::merge::Lift<'_>,
+    ) -> Result<Option<String>, crate::merge::Blocked> {
         let signed = !matches!(lift, crate::merge::Lift::Before);
         let OwnersMerge {
             job,
@@ -13300,7 +13353,10 @@ impl Jobs {
             learned,
             workflow,
             number,
-        } = self.owners_merge(id, head).await?;
+        } = self
+            .owners_merge(id, head)
+            .await
+            .map_err(crate::merge::unread)?;
         let id = job.id.as_str();
         // What their word goes over is said, never a reason to refuse (MERGING-27).
         let open = matches!(lift, crate::merge::Lift::Word)
@@ -13309,15 +13365,14 @@ impl Jobs {
         crate::merge::on_owners_word(
             true,
             crate::merge::ready_as(
-                Some(&lift),
+                Some(lift),
                 &job,
                 Some(&workflow),
                 &pr,
                 &merging,
                 Some(&reviewers),
             ),
-        )
-        .map_err(|b| b.why)?;
+        )?;
         let by = crate::job::MergedBy {
             by: "owner".into(),
             memory: None,
@@ -13325,9 +13380,9 @@ impl Jobs {
         };
         let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
         let outcome =
-            crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, Some(&lift), &go).await;
+            crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, Some(lift), &go).await;
         self.update(id, |job| crate::merge::note(job, &outcome, by));
-        let merged = outcome.map_err(|b| b.why)?;
+        let merged = outcome?;
         for sent in &merged.outgoing {
             tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
         }
@@ -13385,7 +13440,7 @@ impl Jobs {
             crate::github::view_merging(&gh, &job.repo, number, obi_protocol::time::now()).await?;
         let merging = merging?;
         if pr.head.as_deref() != Some(head) {
-            return Err("Its head moved since: a new card comes when it's ready again.".into());
+            return Err(crate::merge::HEAD_MOVED.into());
         }
         let owner = crate::github_login::read_status(&gh)
             .await

@@ -167,6 +167,10 @@ pub async fn merge(
 /// What Oby says of a task's pull request it merged on the owner's word (MERGING-27).
 fn merged_line(name: &str, title: &str, open: Option<&str>) -> String {
     match open {
+        // Kept while GitHub works it out (MERGING-35).
+        Some(kept) if kept == crate::merge::KEPT => {
+            format!("{name}, {title}'s pull request: {kept}")
+        }
         Some(open) => format!("Merged {name}, {title}'s pull request. {open}"),
         None => format!("Merged {name}, {title}'s pull request."),
     }

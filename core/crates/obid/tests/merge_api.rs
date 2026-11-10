@@ -2234,3 +2234,114 @@ fn merging_23_a_review_items_unsigned_merge_never_lifts_an_unfollowed_push() {
     assert!(refused.text.contains(UNFOLLOWED), "{}", refused.text);
     assert!(!calls(&folder.0).contains("-X PUT"));
 }
+
+/// [`published`], its head changing AGENTS.md, so it merges only after two approving reviews by
+/// different tools (MERGING-15): Codex's is in, and `second`'s too when given.
+fn needs_two(second: Option<&str>) -> obid::job::Job {
+    let mut job = published();
+    let review = job.review.as_mut().unwrap();
+    review.two_reviews = Some("it changes AGENTS.md".into());
+    let first = review.clone();
+    job.approvals = vec![first.clone()];
+    if let Some(tool) = second {
+        job.approvals.push(obid::job::Review {
+            agent: tool.into(),
+            ..first
+        });
+    }
+    job
+}
+
+/// MERGING-34: a head that needs a second review, with no other tool signed in to give it, waits
+/// by itself: no merge card, its Review stage saying what it waits for. Once another tool's
+/// review approved the same head (as its review's end leaves it), it merges by itself by the
+/// workflow Oby learned, and no card ever showed.
+#[test]
+fn merging_34_a_second_review_waits_with_no_card_then_merges() {
+    let folder = Folder::new("merge-second-review-waits");
+    let obid = started_with(&folder, false, Some(OBY), needs_two(None), &[]);
+    let why = "Waiting for a second review: no tool other than Codex is signed in.";
+    let waiting = within(30, "the second review to wait", || {
+        let job = job(&obid);
+        (job["noReviewer"] == why).then_some(job)
+    });
+    let review = waiting["pipeline"]["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "review")
+        .cloned()
+        .unwrap();
+    assert_eq!(review["detail"], why, "{waiting}");
+    // Several of the follower's passes later, still no card and nothing sent.
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let still = job(&obid);
+    assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
+    assert_eq!(still["mergeNeedsYou"], false, "{still}");
+    assert_eq!(still["mergeError"], Value::Null);
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    drop(obid);
+
+    let folder = Folder::new("merge-second-review-merges");
+    let obid = started_with(&folder, false, Some(OBY), needs_two(Some("claude")), &[]);
+    let merged = within(30, "the job to be merged", || {
+        let job = job(&obid);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    assert_eq!(merged["noReviewer"], Value::Null);
+    assert!(merge_cards(&obid).is_empty(), "{:?}", merge_cards(&obid));
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// MERGING-35: the owner's Merge while GitHub is still working out whether it can merge is kept:
+/// the card is answered and gone, nothing is sent yet, and once GitHub says MERGEABLE it merges by
+/// itself, `mergedBy` the owner, with no second card for that head.
+#[test]
+fn merging_35_a_merge_while_github_works_it_out_merges_once_it_can() {
+    let folder = Folder::new("merge-kept");
+    let obid = started(&folder, true, None);
+    let card = within(30, "the merge card", || {
+        merge_cards(&obid).into_iter().next()
+    });
+    assert_eq!(card["id"], format!("merge-ready-{ID}-{}", head()));
+    std::fs::write(folder.0.join("gh/unknown"), "").unwrap();
+    let answered = answer(&obid, &card, "Merge");
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    assert_eq!(
+        answered.body["note"],
+        "GitHub is still working out whether it can merge: Oby merges it as soon as GitHub says it can."
+    );
+    assert_eq!(answered.body["answer"], "Merge");
+    assert!(!folder.0.join("gh/merged").exists());
+    // GitHub still works it out over a few tries: nothing is sent, and the card stays answered.
+    std::thread::sleep(std::time::Duration::from_secs(7));
+    assert!(!folder.0.join("gh/merged").exists());
+    assert!(
+        open_merge_cards(&obid).is_empty(),
+        "{:?}",
+        merge_cards(&obid)
+    );
+    std::fs::remove_file(folder.0.join("gh/unknown")).unwrap();
+    let merged = within(30, "the kept Merge to merge", || {
+        let job = job(&obid);
+        (job["mergedBy"]["by"] == "owner").then_some(job)
+    });
+    assert_eq!(merged["pullRequest"]["state"], "MERGED");
+    assert!(folder.0.join("gh/merged").exists());
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(
+        open_merge_cards(&obid).is_empty(),
+        "{:?}",
+        merge_cards(&obid)
+    );
+    let done = call(&obid, "GET", "/v1/inbox?state=done", None).body;
+    let cards: Vec<&Value> = done
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["kind"] == "merge")
+        .collect();
+    assert_eq!(cards.len(), 1, "{done}");
+    assert_eq!(cards[0]["answer"], "Merge");
+}
