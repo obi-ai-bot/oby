@@ -14,10 +14,17 @@ The Rust daemon `obid` (`core/`) serves this same API, so the apps run against i
 Build both binaries with `cargo build --manifest-path tools/oby-check-blok/Cargo.toml --bins`,
 then run `tools/oby-check-blok/target/debug/oby-check-blok <checkout> [base]` (default `origin/dev`)
 beside the normal check. It decides nothing about publishing or merging.
-The pinned BLOK Rust SDK serves three typed nodes on loopback at a free `GRPC_PORT`:
+The pinned BLOK Rust SDK serves three typed nodes on loopback with `GRPC_PORT=0`;
+the host reads the OS-selected port from its startup log:
 `rust-affected-tests`, `ts-checks`, and `secret-scan`. They run sequentially to limit memory.
 Planning stays in `scripts/oby-check.sh`: `OBY_CHECK_PLAN=1` with
 `OBY_CHECK_ONLY=rust|electron|swift|scan` selects its groups; unset, the script behaves as before.
+Plans emit `oby-check: group <group>` once per group with work, which is the host's only
+selection signal. The host fixes `OBY_CHECK_DIR`, `OBY_CHECK_BASE` and a random
+`OBY_CHECK_TOKEN` at spawn. Every node request's inputs must carry that token;
+conflicting request checkout/base values are refused without running a script.
+Changes under `tools/oby-check-blok/` select its fmt, clippy and tests in the Rust group,
+using its own manifest and a target directory under the check cache.
 The nodes execute the selected script groups and report verdict, failing names, reason and seconds.
 Swift work is reported unjudged in this three-node pilot. Any failed node wins over unjudged,
 then passed; process or transport failures are unjudged. Exit codes are 0, 1 and 2 respectively.

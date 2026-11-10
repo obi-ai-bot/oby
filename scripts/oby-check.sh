@@ -128,8 +128,17 @@ nested=''
 /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null || nested=1
 step() {
     selected || return 0
+    plan_group
     echo "==> $*"
     [[ -n "${OBY_CHECK_PLAN:-}" ]] || "$@" || failed+=("$*")
+}
+
+planned_groups=' '
+plan_group() {
+    if [[ -n "${OBY_CHECK_PLAN:-}" && "$planned_groups" != *" $group "* ]]; then
+        echo "oby-check: group $group"
+        planned_groups+="$group "
+    fi
 }
 
 # obid's test binaries (`--test name` each), built once, then run `jobs` at a time, the longest
@@ -200,11 +209,12 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script=''
+rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
         core/*) rust=1 ;;
+        tools/oby-check-blok/*) blok=1 ;;
     esac
     case "$file" in
         core/crates/obid/tests/support/*)
@@ -260,7 +270,7 @@ fi
 # Electron app, swift test and the Apple apps' build (no suites named: build-for-testing). The secret
 # scan still covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1
+    rust=1 blok=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -272,6 +282,7 @@ group=rust
 if [[ -n "$check_script" ]]; then step bash scripts/oby-check-test.sh; fi
 
 if selected && [[ -n "$rust$check_script" ]]; then
+    plan_group
     if ! git cat-file -e HEAD:scripts/oby-check.sh 2>/dev/null; then
         echo "oby-check: this commit has no scripts/oby-check.sh, this repository's check and its line limits: put it back" >&2
         failed+=("scripts/oby-check.sh is gone")
@@ -293,6 +304,12 @@ if selected && [[ -n "$rust$check_script" ]]; then
     else
         echo "oby-check: jobs.rs has $jobs_lines production lines, within its limit of $jobs_rs_limit"
     fi
+fi
+
+if selected && [[ -n "$blok" ]]; then
+    step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo fmt --manifest-path tools/oby-check-blok/Cargo.toml --all -- --check
+    step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo clippy --manifest-path tools/oby-check-blok/Cargo.toml --all-targets -- -D warnings
+    step env CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$cache/oby-check-blok" cargo test --manifest-path tools/oby-check-blok/Cargo.toml
 fi
 
 if selected && [[ -n "$rust" ]]; then
@@ -359,6 +376,7 @@ elif [[ -z "$nested" ]]; then
     if [[ -n "$ios" ]]; then apple ObyPhone "platform=iOS Simulator,name=iPhone 17,OS=latest" "$ios_suites"; fi
     if [[ -n "$swift" ]]; then step swift test -j "$jobs" --scratch-path "$cache/swiftpm"; fi
 elif [[ -n "$ios$swift" ]]; then
+    plan_group
     echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): run them on the Mac before merging"
 fi
 
@@ -386,6 +404,7 @@ elif command -v gitleaks >/dev/null; then
     step uncommitted_leaks
 else
     echo "oby-check: gitleaks isn't installed (brew install gitleaks): nothing passes unscanned" >&2
+    plan_group
     failed+=(gitleaks)
 fi
 

@@ -67,6 +67,13 @@ the authoritative check. The local JSONL journal stores commit, base, workflow, 
 node verdicts, timings and failing names, without raw scanner output. A later invocation
 can retry a failed or unjudged run. No endpoint or obid state is added.
 
+The host reads only `oby-check: group <group>` plan lines. Nodes use the checkout and base
+fixed in their spawn environment and require the host's random per-spawn token in every
+request; missing or incorrect tokens and conflicting checkout/base fields run nothing.
+Nodes bind port zero and report the OS-selected port through blok-rs's startup log;
+the host reads that address without reserving or releasing a port. Changes under the pilot select its
+own formatting, clippy and tests in the Rust group.
+
 ## Acceptance scenarios
 
 - **PUBLISHING-26:** In a scratch repository whose real `scripts/oby-check.sh` passes, the
@@ -74,6 +81,9 @@ can retry a failed or unjudged run. No endpoint or obid state is added.
   appends exactly the JSON record it prints to its local journal. Fold tests cover failed
   and unjudged precedence; parser tests cover Cargo, Vitest and gitleaks names.
   (`tools/oby-check-blok/tests/workflow.rs::publishing_26_the_workflows_verdict_matches_the_scripts`.)
+  `grpc_port_zero_and_spawn_configuration_reject_unauthorized_calls` verifies the spawned
+  server reports a nonzero port and runs neither checkout for missing/wrong tokens or
+  conflicting folders/bases; an authenticated call runs only the spawn checkout.
 
 - **PUBLISHING-1:** A job ends done with its check passed and its publish fails. Published by hand, the commit its check passed on goes out. (`publishing_1_2_only_the_commit_its_check_passed_on_goes_out`)
 - **PUBLISHING-2:** Its branch in obid's clone moved since (a commit its check never ran on): Publish by hand is `409` with `Not published: <branch> moved since this job's check passed on it…`, and nothing reaches the remote (by default; PUBLISHING-9). (`publishing_1_2_only_the_commit_its_check_passed_on_goes_out`) A job's own move of its branch never marks it so: its next check records the commit it passes on, and a checked commit an earlier pass left (a restart cut its check, RECOVERY-2) doesn't end it unpublished (`jobs::tests::publishing_2_a_jobs_own_branch_move_is_never_branch_moved`).

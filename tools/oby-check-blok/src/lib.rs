@@ -28,17 +28,27 @@ impl Verdict {
 }
 
 pub fn fold(verdicts: impl IntoIterator<Item = Verdict>) -> Verdict {
-    verdicts.into_iter().fold(Verdict::Passed, |a, b| match (a, b) {
-        (Verdict::Failed, _) | (_, Verdict::Failed) => Verdict::Failed,
-        (Verdict::Unjudged, _) | (_, Verdict::Unjudged) => Verdict::Unjudged,
-        _ => Verdict::Passed,
-    })
+    verdicts
+        .into_iter()
+        .fold(Verdict::Passed, |a, b| match (a, b) {
+            (Verdict::Failed, _) | (_, Verdict::Failed) => Verdict::Failed,
+            (Verdict::Unjudged, _) | (_, Verdict::Unjudged) => Verdict::Unjudged,
+            _ => Verdict::Passed,
+        })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CheckInput {
     pub checkout: String,
     pub base: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NodeInput {
+    #[serde(default)]
+    pub token: String,
+    pub checkout: Option<String>,
+    pub base: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -51,7 +61,12 @@ pub struct CheckResult {
 
 impl CheckResult {
     pub fn unjudged(reason: impl Into<String>, seconds: f64) -> Self {
-        Self { verdict: Verdict::Unjudged, failing: vec![], reason: reason.into(), seconds }
+        Self {
+            verdict: Verdict::Unjudged,
+            failing: vec![],
+            reason: reason.into(),
+            seconds,
+        }
     }
 }
 
@@ -60,15 +75,25 @@ pub fn failing_tests(output: &str) -> Vec<String> {
     let mut names = BTreeSet::new();
     for line in output.lines() {
         let line = line.trim();
-        if let Some(name) = line.strip_prefix("test ").and_then(|s| s.strip_suffix(" ... FAILED")) {
+        if let Some(name) = line
+            .strip_prefix("test ")
+            .and_then(|s| s.strip_suffix(" ... FAILED"))
+        {
             names.insert(name.to_owned());
         } else if let Some(name) = line.strip_suffix(" --- FAILED") {
             names.insert(name.to_owned());
-        } else if let Some(name) = line.strip_prefix("FAIL ").or_else(|| line.strip_prefix("❯ ")).or_else(|| line.strip_prefix("× ")) {
+        } else if let Some(name) = line
+            .strip_prefix("FAIL ")
+            .or_else(|| line.strip_prefix("❯ "))
+            .or_else(|| line.strip_prefix("× "))
+        {
             names.insert(name.trim().to_owned());
         } else if let Some(name) = line.strip_prefix("RuleID:") {
             names.insert(format!("gitleaks:{}", name.trim()));
-        } else if let Some(name) = line.strip_prefix("oby-check: tests/").and_then(|s| s.strip_suffix(" failed")) {
+        } else if let Some(name) = line
+            .strip_prefix("oby-check: tests/")
+            .and_then(|s| s.strip_suffix(" failed"))
+        {
             names.insert(format!("tests/{name}"));
         }
     }
@@ -76,15 +101,24 @@ pub fn failing_tests(output: &str) -> Vec<String> {
 }
 
 pub fn text_output(output: &Output) -> String {
-    format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
+    format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 pub fn check_command(input: &CheckInput, group: &str) -> Command {
     let mut command = Command::new("bash");
-    command.current_dir(&input.checkout)
-        .arg("scripts/oby-check.sh").arg(&input.base)
-        .env_remove("OBY_CHECK_PLAN").env("OBY_CHECK_ONLY", group)
-        .env("NO_COLOR", "1").env("FORCE_COLOR", "0")
+    command
+        .current_dir(&input.checkout)
+        .arg("scripts/oby-check.sh")
+        .arg(&input.base)
+        .env_remove("OBY_CHECK_PLAN")
+        .env_remove("OBY_CHECK_TOKEN")
+        .env("OBY_CHECK_ONLY", group)
+        .env("NO_COLOR", "1")
+        .env("FORCE_COLOR", "0")
         .kill_on_drop(true);
     command
 }
@@ -93,7 +127,12 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
     let start = Instant::now();
     let output = match check_command(input, group).output().await {
         Ok(output) => output,
-        Err(error) => return CheckResult::unjudged(format!("could not start check: {error}"), start.elapsed().as_secs_f64()),
+        Err(error) => {
+            return CheckResult::unjudged(
+                format!("could not start check: {error}"),
+                start.elapsed().as_secs_f64(),
+            )
+        }
     };
     let text = text_output(&output);
     let verdict = if text.lines().any(|l| l.starts_with("couldn't judge:")) {
@@ -112,21 +151,52 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
             Verdict::Passed => "script passed",
             Verdict::Failed => "script failed",
             Verdict::Unjudged => "script could not judge; run the script for details",
-        }.into(),
+        }
+        .into(),
         seconds: start.elapsed().as_secs_f64(),
     }
 }
 
-pub struct CheckNode(pub &'static str, pub &'static str);
+pub struct CheckNode(
+    pub &'static str,
+    pub &'static str,
+    pub CheckInput,
+    pub String,
+);
 
 #[async_trait::async_trait]
 impl blok::TypedNode for CheckNode {
-    type Input = CheckInput;
+    type Input = NodeInput;
     type Output = CheckResult;
-    fn name(&self) -> &str { self.0 }
-    fn description(&self) -> &str { "Shadow check: delegates planning and execution to oby-check.sh" }
-    async fn run(&self, _: &mut blok::Context, input: CheckInput) -> Result<CheckResult, blok::BlokError> {
-        Ok(run_group(&input, self.1).await)
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn description(&self) -> &str {
+        "Shadow check: delegates planning and execution to oby-check.sh"
+    }
+    async fn run(
+        &self,
+        _: &mut blok::Context,
+        input: NodeInput,
+    ) -> Result<CheckResult, blok::BlokError> {
+        Ok(self.execute(input).await)
+    }
+}
+
+impl CheckNode {
+    pub async fn execute(&self, input: NodeInput) -> CheckResult {
+        if self.3.is_empty() || input.token != self.3 {
+            return CheckResult::unjudged("unauthorized node request", 0.0);
+        }
+        if input
+            .checkout
+            .as_ref()
+            .is_some_and(|v| v != &self.2.checkout)
+            || input.base.as_ref().is_some_and(|v| v != &self.2.base)
+        {
+            return CheckResult::unjudged("request does not match spawned check", 0.0);
+        }
+        run_group(&self.2, self.1).await
     }
 }
 
@@ -139,7 +209,13 @@ mod tests {
         assert_eq!(fold([]), Passed);
         for a in [Passed, Failed, Unjudged] {
             for b in [Passed, Failed, Unjudged] {
-                let expected = if [a, b].contains(&Failed) { Failed } else if [a, b].contains(&Unjudged) { Unjudged } else { Passed };
+                let expected = if [a, b].contains(&Failed) {
+                    Failed
+                } else if [a, b].contains(&Unjudged) {
+                    Unjudged
+                } else {
+                    Passed
+                };
                 assert_eq!(fold([a, b]), expected);
             }
         }
@@ -147,6 +223,16 @@ mod tests {
     #[test]
     fn parses_cargo_vitest_and_gitleaks_names() {
         let output = "test domain::fails ... FAILED\ndomain::quiet --- FAILED\n FAIL  src/app.test.ts > sends\n ❯ src/app.test.ts (2 tests | 1 failed)\n × sends a request\nRuleID: generic-api-key\nSecret: do-not-record\ntest domain::passes ... ok\ntest domain::fails ... FAILED";
-        assert_eq!(failing_tests(output), vec!["domain::fails", "domain::quiet", "gitleaks:generic-api-key", "sends a request", "src/app.test.ts (2 tests | 1 failed)", "src/app.test.ts > sends"]);
+        assert_eq!(
+            failing_tests(output),
+            vec![
+                "domain::fails",
+                "domain::quiet",
+                "gitleaks:generic-api-key",
+                "sends a request",
+                "src/app.test.ts (2 tests | 1 failed)",
+                "src/app.test.ts > sends"
+            ]
+        );
     }
 }

@@ -888,6 +888,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tonic",
+ "tracing-subscriber",
 ]
 
 [[package]]
