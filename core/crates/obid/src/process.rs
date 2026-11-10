@@ -77,12 +77,9 @@ pub fn agent_withheld(name: &str) -> bool {
         || name.starts_with("GITHUB_")
 }
 
-/// What every agent's environment sets, in either lane, so nothing it runs publishes (LANES-2;
-/// the clone's invalid push URL is the rest, `crate::git::NO_PUSH_URL`): an empty GitHub CLI
-/// configuration in `temp`, git that never prompts, reads no settings but the repository's and
-/// has an empty credential helper on top of whatever those say. The helper goes in
-/// `GIT_CONFIG_PARAMETERS`, never `GIT_CONFIG_KEY_0`: a Codex that drops `*KEY*` variables would
-/// leave git its count alone, and git refuses to run then.
+/// What every agent's environment sets, in either lane, so nothing it runs publishes (LANES-2):
+/// an empty GitHub CLI configuration in `temp`, git that never prompts, reads no settings but the
+/// repository's and has [`no_publish_git`] on top of whatever those say.
 pub fn no_publish_env(temp: &Path) -> Vec<(&'static str, OsString)> {
     vec![
         (
@@ -92,8 +89,21 @@ pub fn no_publish_env(temp: &Path) -> Vec<(&'static str, OsString)> {
         ("GIT_TERMINAL_PROMPT", "0".into()),
         ("GIT_CONFIG_NOSYSTEM", "1".into()),
         ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
-        ("GIT_CONFIG_PARAMETERS", "'credential.helper='".into()),
+        ("GIT_CONFIG_PARAMETERS", no_publish_git()),
     ]
+}
+
+/// The `GIT_CONFIG_PARAMETERS` of [`no_publish_env`] and of the egress proxy's environment, one
+/// value since a launch's last one wins: an empty credential helper, and `origin`'s push URLs
+/// emptied (an empty value resets git's list) and set to obid's invalid one
+/// (`crate::git::NO_PUSH_URL`), whatever the clone's own settings say. Never `GIT_CONFIG_KEY_0`:
+/// a Codex that drops `*KEY*` variables would leave git its count alone, and git refuses to run then.
+pub fn no_publish_git() -> OsString {
+    format!(
+        "'credential.helper=' 'remote.origin.pushurl=' 'remote.origin.pushurl={}'",
+        crate::git::NO_PUSH_URL
+    )
+    .into()
 }
 
 /// The [`KEPT`] variables `get` has (obid's own environment): what every process obid starts
@@ -910,12 +920,98 @@ mod tests {
             };
             assert_eq!(get("GIT_CONFIG_GLOBAL"), "/dev/null");
             assert_eq!(get("GIT_CONFIG_NOSYSTEM"), "1");
-            assert_eq!(get("GIT_CONFIG_PARAMETERS"), "'credential.helper='");
+            assert_eq!(
+                get("GIT_CONFIG_PARAMETERS"),
+                no_publish_git().to_string_lossy()
+            );
             assert_eq!(get("GIT_TERMINAL_PROMPT"), "0");
             assert_eq!(
                 get("GH_CONFIG_DIR"),
                 temp.join(".config/gh-none").to_string_lossy()
             );
+        }
+
+        // And git itself: a clone whose settings push somewhere real, with a credential helper
+        // that would answer, pushes only to obid's invalid URL and asks nobody.
+        let repo = root.join("repo");
+        let asked = root.join("asked");
+        let git = |args: &[&str], env: &[(OsString, OsString)]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin")
+                // (not the job's git folders, which this test never made, nor its PATH)
+                .envs(
+                    env.iter()
+                        .filter(|(k, _)| {
+                            !["PATH", "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"]
+                                .contains(&&*k.to_string_lossy())
+                        })
+                        .map(|(k, v)| (k, v)),
+                )
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap()
+        };
+        let plain = [
+            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+            ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+        ];
+        std::fs::create_dir_all(&repo).unwrap();
+        let helper = format!("!touch '{}'; echo password=t", asked.display());
+        for args in [
+            &["init", "-q"][..],
+            &[
+                "config",
+                "remote.origin.url",
+                "https://example.com/repo.git",
+            ],
+            &[
+                "config",
+                "remote.origin.pushurl",
+                "https://example.com/repo.git",
+            ],
+            &["config", "credential.helper", &helper],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+        ] {
+            assert!(git(args, &plain).status.success(), "{args:?}");
+        }
+        let said =
+            |out: std::process::Output| String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        assert_eq!(
+            said(git(&["config", "remote.origin.pushurl"], &plain)),
+            "https://example.com/repo.git"
+        );
+        for env in [&boxed, &own] {
+            assert_eq!(
+                said(git(&["config", "remote.origin.pushurl"], env)),
+                crate::git::NO_PUSH_URL
+            );
+            assert_eq!(
+                said(git(
+                    &["remote", "get-url", "--push", "--all", "origin"],
+                    env
+                )),
+                crate::git::NO_PUSH_URL
+            );
+            let pushed = git(&["push", "origin", "HEAD:refs/heads/main"], env);
+            let stderr = String::from_utf8_lossy(&pushed.stderr);
+            assert!(!pushed.status.success(), "{stderr}");
+            assert!(stderr.contains("obid-agents-cannot-push"), "{stderr}");
+            assert!(!stderr.contains("example.com"), "{stderr}");
+            assert!(!asked.exists(), "{stderr}");
         }
         for name in [
             "SSH_AUTH_SOCK",

@@ -1013,9 +1013,8 @@ pub fn env(proxy: &str) -> Vec<(&'static str, OsString)> {
         env.push((name, "localhost,127.0.0.1,::1".into()));
     }
     env.push(("NODE_USE_ENV_PROXY", "1".into()));
-    // Not GIT_CONFIG_KEY_0: a Codex that drops `*KEY*` variables would leave git its count alone,
-    // and git refuses to run then.
-    env.push(("GIT_CONFIG_PARAMETERS", "'credential.helper='".into()));
+    // LANES-2's, since it comes after an agent's own no_publish_env and the last one wins.
+    env.push(("GIT_CONFIG_PARAMETERS", crate::process::no_publish_git()));
     env
 }
 

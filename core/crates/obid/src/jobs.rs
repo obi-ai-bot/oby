@@ -15381,8 +15381,8 @@ mod tests {
         assert_eq!(get("GIT_WORK_TREE").as_deref(), worktree.to_str());
         assert_eq!(get("GIT_CONFIG_GLOBAL").as_deref(), Some("/dev/null"));
         assert_eq!(get("GIT_CONFIG_NOSYSTEM").as_deref(), Some("1"));
-        let helper = get("GIT_CONFIG_PARAMETERS");
-        assert_eq!(helper.as_deref(), Some("'credential.helper='"));
+        let helper = get("GIT_CONFIG_PARAMETERS").map(OsString::from);
+        assert_eq!(helper, Some(process::no_publish_git()));
         assert_eq!(
             get("CLAUDE_CONFIG_DIR").as_deref(),
             root.join("account").to_str()
