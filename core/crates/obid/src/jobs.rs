@@ -7160,11 +7160,13 @@ impl Jobs {
                             None,
                         ),
                     };
-                    // Needing the owner, with a session to pick up or at the cap: the agent's summary
-                    // stays (`summaries` has every round's), and why it stopped is said apart. Else
-                    // failed, its summary why; with a session, a failure keeps Try again (RECOVERY-14).
+                    // Needing the owner, with a session to pick up, at the cap or with its handoff
+                    // to write (LIMITS-17): the agent's summary stays (`summaries` has every round's),
+                    // and why it stopped is said apart. Else failed, its summary why; with a
+                    // session, a failure keeps Try again (RECOVERY-14).
                     let owners_failed = matches!(end, End::Failed(_)) && job.obi.is_none();
                     let needs_you = matches!(end, End::AccountLimit { .. })
+                        || moves::hands_over(job)
                         || (matches!(end, End::NeedsYou { .. })
                             && (job.session.is_some() || job.recovery.spent()))
                         || (owners_failed && job.session.is_some());
@@ -7190,9 +7192,6 @@ impl Jobs {
                         job.review_result = review;
                     }
                 });
-                if failover.is_some() && self.get(id).is_some_and(|j| j.status == Status::Queued) {
-                    self.forget_moved_login(id);
-                }
                 // The `stalled` event (docs/runner-api.md): the job stays on its own card.
                 if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
                     self.events.send("stalled", job.to_json());
@@ -10146,7 +10145,7 @@ impl Jobs {
             }
         }
 
-        let words = self.heard_handing_over(id, &worktree).await;
+        let words = self.heard_handing_over(id, &worktree).await?;
         // A restart cut it short while it ran its check or published ("After any restart"): it
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
         // teammates for one). Words the owner sent meanwhile are its next turn instead.

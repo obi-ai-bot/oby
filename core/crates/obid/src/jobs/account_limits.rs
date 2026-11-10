@@ -95,6 +95,7 @@ impl Failover {
         next_round(job);
         (job.round, job.rounds, job.publish_step) = (round, rounds, None);
         job.step = line.clone();
+        jobs.forget_moved_login(&job.id);
     }
 }
 
@@ -123,14 +124,16 @@ impl Jobs {
         ))
     }
 
-    /// A pending card from before LIMITS-15 resolves itself: each job moves where there's room, or
-    /// else waits as a job a limit stops now does.
-    async fn settle_pending(self: &Arc<Self>, decision: &crate::account_limits::Decision) {
-        if decision.choice != crate::account_limits::Choice::Pending {
-            return;
-        }
+    /// A card from before LIMITS-15, pending or a Resume its account can't carry out, resolves
+    /// itself: each job moves where there's room, or else waits as a job a limit stops now does,
+    /// with no question asked.
+    async fn settle(self: &Arc<Self>, decision: &crate::account_limits::Decision) {
         let _execution = self.limit_execution.lock().await;
-        for id in &decision.jobs {
+        for id in decision
+            .jobs
+            .iter()
+            .filter(|id| !decision.applied.contains(id))
+        {
             let settled = match self.failover_for(id).await {
                 Some(failover) => self.apply_limit_job(decision, id, None, Some(&failover)),
                 None => {
@@ -175,7 +178,6 @@ impl Jobs {
                     failover.apply(job, self);
                 }
             });
-            self.forget_moved_login(&id);
             self.schedule();
         }
     }
@@ -290,7 +292,9 @@ impl Jobs {
         self.fail_over_waits().await;
         for decision in self.limit_decisions.list() {
             self.sync_limit_answer(&decision);
-            self.settle_pending(&decision).await;
+            if decision.choice == crate::account_limits::Choice::Pending {
+                self.settle(&decision).await;
+            }
             if decision.choice == crate::account_limits::Choice::Move {
                 self.apply_limit_move(&decision).await;
                 continue;
@@ -298,16 +302,10 @@ impl Jobs {
             if decision.choice != crate::account_limits::Choice::Resume {
                 continue;
             }
-            // A disconnected source cannot produce a fresh usage report. Reconcile it before
-            // waiting for usage, otherwise an accepted choice would disappear indefinitely.
+            // A disconnected source cannot produce a fresh usage report: its jobs move or wait
+            // as LIMITS-15 says, asking no one, rather than waiting for one indefinitely.
             if !self.limit_source_is_connected(&decision.agent, &decision.account) {
-                for id in &decision.jobs {
-                    self.reask_limit_job(
-                        &decision,
-                        id,
-                        "The original account is no longer connected.",
-                    );
-                }
+                self.settle(&decision).await;
                 continue;
             }
             if decision
@@ -324,7 +322,7 @@ impl Jobs {
             }
             self.want_usage();
             let since = decision.reset_at.unwrap_or(decision.created_at);
-            if !self.verified_limit_room(&decision.account, now, since) {
+            if !self.verified_limit_room(&decision.agent, &decision.account, now, since) {
                 // #1645: an account with no fresh reading (Cursor and API keys never report, a
                 // read can fail) resumes on time instead of waiting forever, unless what obid last
                 // read of it still holds it (a week at its reserve). A wait says why.
@@ -454,22 +452,22 @@ impl Jobs {
             && self.usage.get(&account.id).full_until_at(now).is_none()
     }
 
-    /// Only current, provider-reported windows constitute evidence that an account has room.
-    fn verified_limit_room(&self, account: &str, now: i64, since: i64) -> bool {
+    /// Only current, provider-reported windows constitute evidence that an account has room: each
+    /// window `agent`'s tool reports, and Cursor reports its week alone (`usage::cursor`).
+    fn verified_limit_room(&self, agent: &str, account: &str, now: i64, since: i64) -> bool {
         let usage = self.usage.get(account);
-        usage
+        let fresh = |at: Option<i64>| {
+            at.is_some_and(|at| at >= since && at <= now && now.saturating_sub(at) <= 600)
+        };
+        let five_hour = usage
             .five_hour
-            .is_some_and(|used| used < crate::usage::NEARLY_FULL)
+            .is_some_and(|u| u < crate::usage::NEARLY_FULL);
+        (agent == Tool::Cursor.id() || (five_hour && fresh(usage.five_hour_observed_at)))
             && usage.seven_day.is_some_and(|used| {
                 used < crate::usage::NEARLY_FULL
                     && (used < crate::usage::RESERVE || usage.lifted_until(now).is_some())
             })
-            && usage
-                .five_hour_observed_at
-                .is_some_and(|at| at >= since && at <= now && now.saturating_sub(at) <= 600)
-            && usage
-                .seven_day_observed_at
-                .is_some_and(|at| at >= since && at <= now && now.saturating_sub(at) <= 600)
+            && fresh(usage.seven_day_observed_at)
             && usage.full_until_at(now).is_none()
     }
 
@@ -523,8 +521,12 @@ impl Jobs {
                     || self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())
                     || (background && !self.takes_background(&account))
-                    || !(self.verified_limit_room(&account.id, now, now.saturating_sub(600))
-                        || self.chatgpt_has_room(&account, now))
+                    || !(self.verified_limit_room(
+                        tool.id(),
+                        &account.id,
+                        now,
+                        now.saturating_sub(600),
+                    ) || self.chatgpt_has_room(&account, now))
                 {
                     continue;
                 }
@@ -534,10 +536,12 @@ impl Jobs {
                 result.push((tool, account));
             }
         }
-        // The fuller of its two windows; one that reports none (a ChatGPT login) last.
+        // The fullest window it reports; one that reports none (a ChatGPT login) last.
         let used = |id: &str| {
             let usage = self.usage.get(id);
-            (usage.five_hour.zip(usage.seven_day)).map_or(1.0, |(five, week)| five.max(week))
+            (usage.five_hour.into_iter().chain(usage.seven_day))
+                .reduce(f64::max)
+                .unwrap_or(1.0)
         };
         result.sort_by(|(_, a), (_, b)| used(&a.id).total_cmp(&used(&b.id)));
         result
@@ -751,7 +755,6 @@ impl Jobs {
             next.revision += 1;
             if let Some(failover) = failover {
                 failover.apply(&mut next, self);
-                self.forget_moved_login(id);
             } else if let Some((tool, account)) = target {
                 if next.obi.is_some() || next.read_only() {
                     return Err("This review cannot change accounts.".into());
