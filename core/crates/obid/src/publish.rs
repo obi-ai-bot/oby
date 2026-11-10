@@ -743,6 +743,8 @@ pub trait Hooks: Send + Sync {
 
 /// Where a job publishes from and to.
 pub struct Target {
+    /// Last push and pull request of the jobs carrying this branch.
+    pub chain: BranchChain,
     /// obid's clone of the repository: where every git command runs.
     pub clone: PathBuf,
     /// The repository's `remote`, where the push goes.
@@ -759,6 +761,105 @@ pub struct Target {
     /// How the repository merges, as the owner taught Oby (crate::memory::workflow): what the
     /// description says of merging.
     pub workflow: Option<crate::memory::Workflow>,
+}
+
+/// Publishing history belongs to the jobs carrying this same branch (PUBLISHING-27).
+#[derive(Default)]
+pub struct BranchChain {
+    pushed: Option<String>,
+    pull_request: Option<String>,
+}
+
+impl BranchChain {
+    pub(crate) fn of(job: &Job, jobs: &std::collections::HashMap<String, Job>) -> Self {
+        let mut chain = Self::default();
+        let mut current = job;
+        let mut seen = std::collections::HashSet::new();
+        while seen.insert(current.id.as_str()) {
+            chain.pushed = chain
+                .pushed
+                .or_else(|| current.pushed_head().map(str::to_owned));
+            chain.pull_request = chain.pull_request.or_else(|| current.published.clone());
+            let Some(parent) = current.follow_up_of.as_ref().and_then(|id| jobs.get(id)) else {
+                break;
+            };
+            if current.start_from.as_deref() != Some(parent.branch.as_str())
+                || current.branch != parent.branch
+                || current.repo != parent.repo
+            {
+                break;
+            }
+            current = parent;
+        }
+        chain
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    #[test]
+    fn publishing_27_only_the_newest_push_on_the_same_branch_chain_is_leased() {
+        let mut parent = Job::new(
+            "parent".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        parent
+            .outgoing
+            .push(Outgoing::new("push", "o/r", "old", Some(&parent.branch)));
+        let mut middle = parent.clone();
+        middle.id = "middle".into();
+        middle.outgoing.clear();
+        middle.follow_up_of = Some(parent.id.clone());
+        middle.start_from = Some(parent.branch.clone());
+        let mut follow = middle.clone();
+        follow.id = "follow".into();
+        follow.follow_up_of = Some(middle.id.clone());
+        let mut jobs = std::collections::HashMap::from([
+            (parent.id.clone(), parent),
+            (middle.id.clone(), middle),
+        ]);
+        assert_eq!(
+            BranchChain::of(&follow, &jobs).pushed.as_deref(),
+            Some("old")
+        );
+        jobs.get_mut("middle").unwrap().outgoing.push(Outgoing::new(
+            "push",
+            "o/r",
+            "new",
+            Some(&follow.branch),
+        ));
+        assert_eq!(
+            BranchChain::of(&follow, &jobs).pushed.as_deref(),
+            Some("new")
+        );
+        follow
+            .outgoing
+            .push(Outgoing::new("push", "o/r", "own", Some(&follow.branch)));
+        assert_eq!(
+            BranchChain::of(&follow, &jobs).pushed.as_deref(),
+            Some("own")
+        );
+        follow.outgoing.clear();
+        assert!(
+            BranchChain::of(&follow, &Default::default())
+                .pushed
+                .is_none()
+        );
+        follow.start_from = None;
+        assert!(BranchChain::of(&follow, &jobs).pushed.is_none());
+        follow.start_from = Some(follow.branch.clone());
+        jobs.get_mut("middle").unwrap().repo = "other/repo".into();
+        assert!(BranchChain::of(&follow, &jobs).pushed.is_none());
+        jobs.get_mut("middle").unwrap().repo = follow.repo.clone();
+        follow.branch = "oby/different".into();
+        assert!(BranchChain::of(&follow, &jobs).pushed.is_none());
+    }
 }
 
 /// git's empty tree: what a root commit's files are read against.
@@ -1170,7 +1271,36 @@ pub async fn publish(
             "couldn't open the pull request: obid couldn't write its description ({e})."
         ))
     })?;
-    let opened = {
+    let opened = if by_hand.branch(job) == job.branch
+        && let Some(url) = target.chain.pull_request.as_deref()
+        && github::pull_request_number(url, &job.repo).is_some()
+        && job.follow_up_of.is_some()
+        && job.start_from.as_deref() == Some(job.branch.as_str())
+    {
+        // Carrying a branch carries its PR too, even while GitHub's head lookup lags.
+        let edited = github::run(
+            gh,
+            &[
+                "pr",
+                "edit",
+                url,
+                "-R",
+                &job.repo,
+                "--body-file",
+                &file.to_string_lossy(),
+            ],
+        )
+        .await
+        .is_ok();
+        Ok((
+            url.to_owned(),
+            if edited {
+                github::Sent::Edited
+            } else {
+                github::Sent::Nothing
+            },
+        ))
+    } else {
         // GitHub may still show the commit obid pushed before as the pull request's head, or the
         // one that was on the branch before this push: a follow-up adds to its task's (#1663).
         let mut heads = vec![head.as_str()];
@@ -1756,7 +1886,7 @@ async fn lease(
     {
         return Ok((Some(there), None));
     }
-    if job.pushed_head() != Some(there.as_str()) {
+    if job.pushed_head().or(target.chain.pushed.as_deref()) != Some(there.as_str()) {
         return Err(Failure::Failed(format!(
             "Not published: {} on GitHub is at {}, not the commit Oby pushed, so the rebase would overwrite someone else's work.",
             job.branch,
@@ -2026,6 +2156,7 @@ mod tests {
         );
         let head = run(&clone, &["rev-parse", "HEAD"]);
         let target = Target {
+            chain: BranchChain::default(),
             clone: clone.clone(),
             remote: url,
             default_branch: "main".into(),

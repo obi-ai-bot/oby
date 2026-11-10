@@ -578,6 +578,111 @@ fn publishing_12_a_follow_up_adds_to_its_tasks_open_pull_request() {
 const TRY_AGAIN: &str =
     "Try again, picking up where you left off. Finish with a short summary as asked.";
 
+#[test]
+fn publishing_27_a_rebased_follow_up_keeps_the_pr_with_an_exact_lease() {
+    rebased_follow_up(false);
+}
+
+#[test]
+fn publishing_27_a_rebased_follow_up_refuses_a_strangers_push() {
+    rebased_follow_up(true);
+}
+
+fn rebased_follow_up(stranger: bool) {
+    let folder = Folder::new("publishing-27");
+    let bin = fake_gh(&folder.0);
+    std::fs::write(folder.0.join("gh/view.json"),
+        r#"{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergedAt":null,"baseRefName":"main","headRefOid":""}"#).unwrap();
+    let (obid, remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo":"obi-e2e/fixture-app", "kind":"build",
+        "task":"COMMIT: hello.txt", "check":"test -f hello.txt"}),
+    );
+    let first = ended(&obid, &id);
+    assert_eq!(first["published"], PULL, "{first}");
+    let branch = first["branch"].as_str().unwrap();
+    let pushed = remote_branch(&remote, branch).unwrap();
+    let work = folder.0.join("outside");
+    git(
+        &folder.0,
+        &[
+            "clone",
+            "-q",
+            "--branch",
+            "main",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    let commit = |message: &str| {
+        git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+        );
+        git(&work, &["rev-parse", "HEAD"])
+    };
+    let base = commit("Moved base");
+    git(&work, &["push", "-q", "origin", "HEAD:main"]);
+    let expected = if stranger {
+        git(&work, &["checkout", "-q", "--detach", &pushed]);
+        let theirs = commit("Someone else's work");
+        git(&work, &["push", "-q", "origin", &format!("HEAD:{branch}")]);
+        theirs
+    } else {
+        pushed.clone()
+    };
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    git(&clone, &["fetch", "-q", remote.to_str().unwrap(), "main"]);
+    // GitHub can still report the parent's head after the rebased push.
+    std::fs::write(folder.0.join("gh/open"), format!(
+        r#"[{{"url":"{PULL}","isCrossRepository":false,"headRefOid":"{pushed}","baseRefName":"main"}}]"#)).unwrap();
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text":format!("REBASE: {base}\nCOMMIT: second.txt")})),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    let follow = ended(&obid, told.body["id"].as_str().unwrap());
+    assert_eq!(follow["status"], "done", "{follow}");
+    assert_eq!(follow["branch"], branch);
+    if stranger {
+        assert!(
+            follow["publishError"]
+                .as_str()
+                .unwrap()
+                .contains("overwrite someone else's work"),
+            "{follow}"
+        );
+        assert_eq!(remote_branch(&remote, branch).unwrap(), expected);
+        assert!(
+            follow["outgoing"].as_array().unwrap().is_empty(),
+            "{follow}"
+        );
+    } else {
+        assert_eq!(follow["published"], PULL, "{follow}");
+        assert!(follow["publishError"].is_null(), "{follow}");
+        let head = remote_branch(&remote, branch).unwrap();
+        assert_ne!(head, pushed);
+        assert_eq!(git(&clone, &["rev-parse", &format!("{head}~2")]), base);
+        assert_eq!(follow["outgoing"][1]["action"], "pullRequestEdit");
+    }
+    assert_eq!(calls_now(&folder.0).matches("pr create").count(), 1);
+}
+
 /// The stand-in agent commits `file` in job `id`'s next Try again.
 fn again_commits(obid: &Obid, id: &str, file: &str) {
     let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
