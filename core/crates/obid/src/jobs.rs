@@ -6212,7 +6212,8 @@ impl Jobs {
 
     /// [`Jobs::owner_said`] for words `text` from `source`: the owner's part of them when they
     /// are the owner's own (signed, Confirmed, or a conversation's turn, whose added text is
-    /// fenced after it), never obid's Try again.
+    /// fenced after it), never obid's Try again; those through obid's API token in
+    /// [`Job::api_said`].
     fn heard_from_owner(&self, id: &str, text: &str, source: Source) {
         if !matches!(source, Source::Event) {
             self.update(id, |job| job.owner_spoke = true);
@@ -6223,6 +6224,15 @@ impl Jobs {
         ) && !text.starts_with(crate::brain::actions::TRY_AGAIN)
         {
             self.owner_said(id, crate::sphere::inbox::owners_part(text).to_owned());
+        }
+        // Words through obid's API token, kept apart for Oby's review (MERGING-33).
+        if source == Source::Api && !text.starts_with(crate::brain::actions::TRY_AGAIN) {
+            let words = crate::sphere::inbox::owners_part(text).to_owned();
+            self.update(id, |job| {
+                if !words.is_empty() && job.api_said.last() != Some(&words) {
+                    job.api_said.push(words);
+                }
+            });
         }
     }
 
@@ -10083,14 +10093,19 @@ impl Jobs {
                 // Whether the author is untrusted, and why: never what it read (MERGING-13).
                 let author = job.review_of.as_deref().and_then(|of| self.get(of));
                 let untrusted = author.as_ref().and_then(Job::untrusted_why);
-                // What the owner asked, and every word they sent it after (#1659, TASKCONV-3).
-                let (task, request, later) = match &author {
-                    Some(author) => asked_of(author, |id| self.get(id)),
-                    None => (job.task.clone(), job.request.clone(), Vec::new()),
+                // What the owner asked, and every word they sent it after (#1659, TASKCONV-3,
+                // MERGING-33).
+                let asked = match &author {
+                    Some(author) => review::asked_of(author, |id| self.get(id)),
+                    None => review::Asked {
+                        task: job.task.clone(),
+                        request: job.request.clone(),
+                        ..review::Asked::default()
+                    },
                 };
                 quoted.push((
                     review::ASKED_FILE,
-                    review::asked(&task, &request, &later, untrusted.as_deref())
+                    review::asked(&asked, untrusted.as_deref())
                         + &review::reached_note(author.as_ref().and_then(|a| a.reached.as_deref())),
                 ));
                 // The security paths its head changes against its base, from the commit it reads
@@ -11820,6 +11835,10 @@ impl Jobs {
         // The review first: cut off between the two, it still runs, and its verdict still lands.
         self.insert(review);
         self.update(id, |job| {
+            // Its summary of the round it worked on the last review is its reply (MERGING-33).
+            if let Some((_, reply)) = job.replies.last_mut().filter(|(_, r)| r.is_empty()) {
+                *reply = crate::secrets::known().redact(&job.summary);
+            }
             job.reviewing = Some(review_id.clone());
             job.review_error = None;
             job.no_reviewer = None;
@@ -11880,6 +11899,7 @@ impl Jobs {
         }
         self.update(id, |job| {
             job.heard.push(review::round_prompt(review.round));
+            job.replies.push((review.round, String::new()));
             next_round(job);
             job.step = "Working on Oby's review".into();
         });
@@ -12148,6 +12168,7 @@ impl Jobs {
             job.review = Some(verdict);
             if matches!(quoted, Some(Ok(()))) && job.status == Status::Done {
                 job.heard.push(review::round_prompt(round));
+                job.replies.push((round, String::new()));
                 next_round(job);
                 job.step = "Working on Oby's review".into();
             }
@@ -14651,44 +14672,6 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
     }
 }
 
-/// What its owner asked `author` (the first job's `task` and `request`) and every word of
-/// theirs after, oldest first (#1659): what they said to it ([`Job::said`]) and to the earlier
-/// jobs whose branch it carries on, with each follow-up's own words (TASKCONV-3) unless no app of
-/// theirs signed them. Words already listed aren't listed again, so the first ask, repeated by a
-/// restart or kept for a follow-up, never comes last.
-fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String, Vec<String>) {
-    let mut chain = vec![author.clone()];
-    // A chain is short; this only stops a loop.
-    for _ in 0..64 {
-        let last = chain.last().expect("the chain starts with the author");
-        let Some(earlier) = last
-            .start_from
-            .as_ref()
-            .and(last.follow_up_of.as_deref())
-            .and_then(&get)
-        else {
-            break;
-        };
-        chain.push(earlier);
-    }
-    let first = chain.pop().expect("the chain starts with the author");
-    let mut later: Vec<String> = Vec::new();
-    // ponytail: an owner repeating earlier words keeps them where they first came.
-    let mut add = |words: &str| {
-        if !words.is_empty() && words != first.request && !later.iter().any(|w| w == words) {
-            later.push(words.to_owned());
-        }
-    };
-    first.said.iter().for_each(|w| add(w));
-    for job in chain.iter().rev() {
-        if !job.unsigned {
-            add(crate::sphere::inbox::owners_part(&job.request));
-        }
-        job.said.iter().for_each(|w| add(w));
-    }
-    (first.task, first.request, later)
-}
-
 /// Whether Oby's own `review` may run `call` with nobody watching (PERMISSIONS-14, the owner's
 /// answer of 2026-11-08: local commands inside its box, with no network), fail-closed: only a Bash
 /// command that reaches nothing past the box ([`permissions::reach`]) and writes nothing as obid
@@ -17132,7 +17115,8 @@ mod tests {
 
     /// MERGING-18 (#1659): Oby's review hears what the owner first asked, then their own words to
     /// the task and to the follow-ups that carry its branch on (TASKCONV-3), oldest first: never
-    /// an event turn's, Oby's fenced addition or unsigned words, and never an old ask last. An
+    /// an event turn's, Oby's fenced addition or unsigned words (those apart, MERGING-33), and
+    /// never an old ask last. An
     /// earlier job whose work the follow-up didn't start from isn't part of it.
     #[test]
     fn merging_18_a_review_is_told_every_word_sent_to_its_task() {
@@ -17172,20 +17156,23 @@ mod tests {
         let jobs = [before, first, next, restart, unsigned.clone()];
         let get = |id: &str| jobs.iter().find(|j| j.id == id).cloned();
         assert_eq!(
-            asked_of(&unsigned, get),
-            (
-                "Append the line to docs".into(),
-                "Add the line".into(),
-                vec![
+            review::asked_of(&unsigned, get),
+            review::Asked {
+                task: "Append the line to docs".into(),
+                request: "Add the line".into(),
+                later: vec![
                     "end it with a period".to_owned(),
                     "keep it short".into(),
                     "and bold".into(),
                     "Its agent asked: Which file?\nThe user answered: docs/oby-drive.md".into(),
-                ]
-            )
+                ],
+                // MERGING-33: apart, after the signed ones.
+                unsigned: vec!["UNSIGNED words".into()],
+                replies: Vec::new(),
+            }
         );
         assert_eq!(
-            asked_of(&jobs[1], get).2,
+            review::asked_of(&jobs[1], get).later,
             ["end it with a period", "keep it short"]
         );
         // Nor is it told the author's Tetrix rules: no session to save, no commit to stamp.
@@ -17223,6 +17210,8 @@ mod tests {
             job.said,
             ["also test it", "after a web read", "as confirmed"]
         );
+        // MERGING-33: the words through obid's API token are kept apart for the review.
+        assert_eq!(job.api_said, ["unsigned words"]);
         assert_eq!(job.notes.unwrap_or_default().len(), 6);
         let _ = std::fs::remove_dir_all(&root);
     }

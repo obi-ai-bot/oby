@@ -536,6 +536,16 @@ pub struct Job {
     /// answer. What Oby's review is told they want (#1659). Never in the API's job.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub said: Vec<String>,
+    /// Words sent to it through obid's API token after it was made, no app of the owner's
+    /// signed them, oldest first: quoted to Oby's review after the owner's own (MERGING-33).
+    /// Never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_said: Vec<String>,
+    /// Its own summary of each round it worked on Oby's review `round`, oldest first: its reply,
+    /// with why it didn't take a point, quoted to the next review (MERGING-33). Empty until the
+    /// round's work is reviewed again. Never in the API's job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<(u32, String)>,
     /// When obid said what publishing it by hand would do (`GET /v1/jobs/{id}/publish`), and
     /// which run it described (that run's `finished`): the last two minutes' worth. Never in the
     /// API's job.
@@ -1129,6 +1139,8 @@ impl Job {
             heard: Vec::new(),
             owners: Vec::new(),
             said: Vec::new(),
+            api_said: Vec::new(),
+            replies: Vec::new(),
             offers: Vec::new(),
             asked: false,
             brief: None,
