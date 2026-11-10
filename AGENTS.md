@@ -24,7 +24,7 @@ Oby dispatches the user's agents and joins them to the Obysphere. It doesn't com
 - **The dispatcher's.** Which agent, account and worktree; start, stop and resume; what state the work is in; asking the owner; showing what was done. Rules decide what happens to a job, not a model call of obid's.
 - **Between owners.** Another Oby's request, or text from outside. Typed, quoted and boxed: this is what Oby's box and the rules below it are for.
 
-So work runs in two lanes. In the **own lane**, the work the owner asked for runs on their own login under the CLI's own sandbox, with no copy of the login. In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. The own lane is the direction, not yet what runs: `claudeOwnSandbox` is still opt-in, and until the code moves, "Rules Oby never breaks" says what happens. Each step changes those rules in the same pull request.
+So work runs in two lanes. In the **own lane**, the work the owner asked for runs on their own login under the CLI's own sandbox, with no copy of the login. In the **foreign lane**, work another Oby asked for or marked untrusted stays in Oby's box. The own lane is the direction, not yet what runs: `claudeOwnSandbox` is still opt-in, and until the code moves, "Rules Oby never breaks" says what happens. Each step changes those rules in the same pull request. What each lane does, step by step, is [docs/contracts/lanes.md](docs/contracts/lanes.md) (proposed, LANES-1 to 13).
 
 The Rust core's production lines outside the Sphere stay under `obid_lines_limit` in `scripts/oby-check.sh`, and past it the check fails. A cut lowers the limit, and the owner's word raises it.
 
