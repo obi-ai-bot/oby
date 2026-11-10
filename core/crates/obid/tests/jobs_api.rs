@@ -2055,38 +2055,26 @@ fn recovery_9_a_changing_failure_goes_on_to_the_ceiling() {
     assert_eq!(job["nextStep"], "One more round");
 }
 
-/// A provider limit stops work and groups jobs on that account for one owner decision (#1563).
+/// A provider limit with no other account that has room: each job waits for room by itself, and
+/// nobody is asked (LIMITS-15, the owner's decisions of 2026-11-10).
 #[test]
-fn usage_limit_jobs_wait_for_one_owner_decision() {
+fn usage_limit_jobs_wait_for_room_and_ask_no_one() {
     let folder = Folder::new("limit-owner-decision");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));
     let post = || {
         post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
+    let waits = |id: &str| until(&obid, id, |j| j["status"] == "queued" && !j["resumesAt"].is_null());
     let first = post();
-    let job = wait(&obid, &first);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert!(job["resumesAt"].is_null(), "{job}");
+    let job = waits(&first);
+    assert!(job["accountLimit"].is_null(), "{job}");
     assert!(job["moves"].as_array().unwrap().is_empty(), "{job}");
     let second = post();
-    let job = wait(&obid, &second);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    let decisions = until(&obid, &first, |_| {
-        let response = request(&obid, "GET", "/v1/limit-decisions", None);
-        response.body.as_array().is_some_and(|ds| {
-            ds.iter()
-                .any(|d| d["jobs"].as_array().is_some_and(|jobs| jobs.len() == 2))
-        })
-    });
-    assert_eq!(decisions["status"], "interrupted");
+    let job = waits(&second);
+    assert!(job["accountLimit"].is_null(), "{job}");
     let response = request(&obid, "GET", "/v1/limit-decisions", None);
-    assert_eq!(
-        response.body.as_array().unwrap().len(),
-        1,
-        "{}",
-        response.text
-    );
+    assert_eq!(response.body, json!([]), "{}", response.text);
 }
 
 /// The remote's main moved: a commit of `file` with `text` pushed onto it, or, with `force`, onto
