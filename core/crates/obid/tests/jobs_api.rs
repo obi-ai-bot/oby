@@ -4197,6 +4197,41 @@ fn permissions_15_an_unsigned_allow_is_refused_and_a_deny_goes_through() {
     assert!(denied.body["permission"].is_null(), "{}", denied.text);
 }
 
+/// PERMISSIONS-15: the owner's signed Allow or Always with words for the agent is theirs, one
+/// signature for both: the job they typed stays theirs (`vetted`), its check keeps their secrets.
+#[test]
+fn permissions_15_a_signed_allow_with_words_keeps_the_job_vetted() {
+    let folder = Folder::new("signed-allow-words");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let kept = |id: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap()
+    };
+    for decision in ["allow", "always"] {
+        let created = typed(
+            &obid,
+            "POST",
+            "/v1/jobs",
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "mode": "ask",
+                   "task": "ASK: {\"tool\": \"Bash\", \"input\": {\"command\": \"npm install left-pad\"}}"}}),
+        );
+        assert_eq!(created.status, 201, "{}", created.text);
+        let id = created.body["id"].as_str().unwrap().to_owned();
+        let waiting = until(&obid, &id, |j| j["permission"].is_object());
+        assert_eq!(kept(&id)["vetted"], true, "{decision}: {}", kept(&id));
+        let answered = typed(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/permission"),
+            &json!({"id": waiting["permission"]["id"], "decision": decision, "message": "Proceed"}),
+        );
+        assert_eq!(answered.status, 200, "{decision}: {}", answered.text);
+        wait(&obid, &id);
+        assert_eq!(kept(&id)["vetted"], true, "{decision}: {}", kept(&id));
+    }
+}
+
 /// PERMISSIONS-16: a job's mode or the default one widened without the owner's signed words is
 /// refused and nothing changes; signed, it changes.
 #[test]

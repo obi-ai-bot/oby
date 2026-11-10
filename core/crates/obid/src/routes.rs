@@ -1282,8 +1282,11 @@ pub async fn permission(
     if shared.jobs.get(&id).is_none() {
         return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
     }
-    // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec).
-    let unsigned = || !typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec). Checked
+    // once: a signature counts once, so a second look would find the owner's own words used.
+    let signed = std::cell::OnceCell::new();
+    let unsigned =
+        || !*signed.get_or_init(|| typed_by_owner(&shared, "POST", &uri, &headers, &body));
     let value: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
     let shape = "The body is {\"id\", \"decision\": \"allow\" | \"always\" | \"deny\", \"message\"}, or {\"id\", \"answer\"} for a question.";
