@@ -101,6 +101,18 @@ type Item = { id: string; kind: string; title: string; state: string; confirm?: 
 // them. A limit-stopped job's continuation needs the signature (docs/runner-api.md, `accountLimit`).
 // The device registers once a run (a Confirm still registers each time).
 let device: string | null = null;
+// Only main's native notification callbacks call this; never exposed over IPC. The callback
+// holds the exact path and body its button names, independent of the window's input budget.
+export async function notificationWords(method: string, path: string, body: unknown): Promise<Answer> {
+  let words: string | null = null;
+  try {
+    words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+  } catch (err) {
+    console.error(`Oby couldn’t sign the notification answer: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return obid(method, path, body, words ?? undefined);
+}
+
 export async function ownersWords(method: string, path: string, body: unknown): Promise<Answer> {
   let words: string | null = null;
   try {

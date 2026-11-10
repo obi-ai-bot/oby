@@ -28,6 +28,13 @@ const labelOf = (el: Element | null) => {
 function hold(e: Event) {
   if (!e.isTrusted || (e instanceof KeyboardEvent && ((e.key !== 'Enter' && e.key !== ' ') || e.isComposing))) return;
   const target = e.target instanceof Element ? e.target : null, at = Date.now();
+  if (e.type === 'change') {
+    if (target instanceof HTMLSelectElement && seen(target)) {
+      const text = target.selectedOptions[0]?.text;
+      if (text?.trim()) keep(held, { text, at });
+    }
+    return;
+  }
   // the keys that press a focused button hold its label; Enter holds the box it was pressed in
   const texts = e.type === 'keydown' ? [...(e instanceof KeyboardEvent && e.key === ' ' ? [] : [textOf(target)]), labelOf(target)]
     : [labelOf(target), ...[...(target?.closest('form')?.querySelectorAll('textarea, input, [contenteditable="true"]') ?? [])].map(textOf)];
@@ -35,6 +42,7 @@ function hold(e: Event) {
 }
 addEventListener('keydown', hold, true);
 addEventListener('pointerdown', hold, true);
+addEventListener('change', hold, true);
 function signs(method: string, path: string, body: unknown) {
   const now = Date.now();
   const recent = held.filter((h) => now - h.at < WITHIN_MS);

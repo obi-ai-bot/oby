@@ -11,6 +11,9 @@ const the = vi.hoisted(() => {
     checkVisibility() { return this.shown; }
   }
   class HTMLElement extends Element {}
+  class HTMLSelectElement extends HTMLElement {
+    selectedOptions = [{ text: 'Bypass' }];
+  }
   class KeyboardEvent {
     isComposing = false;
     type = 'keydown';
@@ -18,10 +21,10 @@ const the = vi.hoisted(() => {
   }
   const listeners = new Map<string, (e: unknown) => void>();
   Object.assign(g, {
-    Element, HTMLElement, KeyboardEvent, HTMLTextAreaElement: class extends HTMLElement {}, HTMLInputElement: class extends HTMLElement {},
+    Element, HTMLElement, HTMLSelectElement, KeyboardEvent, HTMLTextAreaElement: class extends HTMLElement {}, HTMLInputElement: class extends HTMLElement {},
     addEventListener: (name: string, f: (e: unknown) => void) => listeners.set(name, f),
   });
-  return { HTMLElement, KeyboardEvent, listeners, invoked: [] as unknown[][], exposed: {} as Record<string, { obid: { confirm: (id: string) => unknown } }> };
+  return { HTMLElement, HTMLSelectElement, KeyboardEvent, listeners, invoked: [] as unknown[][], exposed: {} as Record<string, { obid: { confirm: (id: string) => unknown; call: (method: string, path: string, body: unknown) => unknown } }> };
 });
 vi.mock('electron', () => ({
   contextBridge: { exposeInMainWorld: (name: string, api: never) => { the.exposed[name] = api; } },
@@ -34,6 +37,29 @@ const press = (label: string, how: Partial<{ isTrusted: boolean; shown: boolean 
 const sent = async () => { await the.exposed.app.obid.confirm('c1'); return the.invoked.at(-1)!; };
 
 describe('the preload on a press of Confirm', () => {
+  it('words_14_a_select_change_holds_its_option_once_within_two_seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const select = new the.HTMLSelectElement();
+      const change = (isTrusted = true) => the.listeners.get('change')!({ type: 'change', isTrusted, target: select });
+      const send = async () => {
+        await the.exposed.app.obid.call('PUT', '/v1/settings/permissions', { mode: 'bypass' });
+        return the.invoked.at(-1)![4];
+      };
+      change(false);
+      expect(await send()).toBe(false);
+      select.shown = false;
+      change();
+      expect(await send()).toBe(false);
+      select.shown = true;
+      change();
+      expect(await send()).toBe(true);
+      expect(await send()).toBe(false);
+      change();
+      vi.advanceTimersByTime(2000);
+      expect(await send()).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
   beforeEach(async () => { while ((await sent())[2]) { /* a press from another test */ } });
 
   it('words_11: a real press of Confirm says so, once', async () => {

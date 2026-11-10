@@ -4,6 +4,8 @@
 // (owners); main signs only these requests, in exactly the shapes the app sends them (wordsOf),
 // and only right after a real keystroke or click it saw itself (main/words.ts).
 
+import { MODES, SANDBOX, modeLabel } from '../renderer/src/modes';
+
 type Body = Record<string, unknown>;
 const isBody = (v: unknown): v is Body => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown): v is string => typeof v === 'string';
@@ -33,6 +35,9 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   if (!isBody(body)) return null;
   const p = path.split('?')[0];
   const id = text, flag = (v: unknown) => v === true;
+  if ((method === 'POST' && /^\/v1\/jobs\/[^/]+\/mode$/.test(p)) || (method === 'PUT' && p === '/v1/settings/permissions')) {
+    return text(body.mode) && [...MODES, SANDBOX].some((m) => m.id === body.mode) && shaped(body, { mode: text }) ? [modeLabel(body.mode)] : null;
+  }
   if (method === 'POST' && p === '/v1/plans') {
     const answer = body.answer;
     const ok = text(body.said) && shaped(body, {
