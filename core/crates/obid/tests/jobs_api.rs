@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+mod support;
+
 const OBID: &str = env!("CARGO_BIN_EXE_obid");
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -83,6 +85,15 @@ impl Drop for Obid {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl support::Listens for Obid {
+    fn port(&self) -> u16 {
+        self.port
+    }
+    fn home(&self) -> &Path {
+        &self.home
     }
 }
 
@@ -227,6 +238,33 @@ struct Answer {
 }
 
 fn request(obid: &Obid, method: &str, target: &str, body: Option<&str>) -> Answer {
+    request_with(obid, method, target, body, None)
+}
+
+/// `body` to `target` as the owner's own app sends it: signed by the test owner's device
+/// (`X-Oby-Words`, support::words_header), as an Allow or a wider mode must be (PERMISSIONS-15, 16).
+fn typed(obid: &Obid, method: &str, target: &str, body: &Value) -> Answer {
+    let words = support::words_header(obid, method, target, Some(body));
+    request_with(obid, method, target, Some(&body.to_string()), Some(&words))
+}
+
+/// `POST /v1/jobs/{id}/permission`: an Allow or an Always signed, as only the owner's app can send
+/// them (PERMISSIONS-15); a no and an answer as they were.
+fn answer_permission(obid: &Obid, id: &str, body: &Value) -> Answer {
+    let target = format!("/v1/jobs/{id}/permission");
+    match body["decision"].as_str() {
+        Some("allow" | "always") => typed(obid, "POST", &target, body),
+        _ => request(obid, "POST", &target, Some(&body.to_string())),
+    }
+}
+
+fn request_with(
+    obid: &Obid,
+    method: &str,
+    target: &str,
+    body: Option<&str>,
+    words: Option<&str>,
+) -> Answer {
     let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(150)))
@@ -234,6 +272,9 @@ fn request(obid: &Obid, method: &str, target: &str, body: Option<&str>) -> Answe
     let mut text = format!(
         "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n"
     );
+    if let Some(words) = words {
+        text.push_str(&format!("X-Oby-Words: {words}\r\n"));
+    }
     if let Some(body) = body {
         text.push_str(&format!(
             "Content-Type: application/json\r\nContent-Length: {}\r\n",
@@ -3496,14 +3537,7 @@ fn the_owner_answers_the_agents_question() {
         let waiting = until(&obid, &id, |j| j["permission"].is_object());
         (id, waiting["permission"].clone())
     };
-    let answer = |id: &str, body: Value| {
-        request(
-            &obid,
-            "POST",
-            &format!("/v1/jobs/{id}/permission"),
-            Some(&body.to_string()),
-        )
-    };
+    let answer = |id: &str, body: Value| answer_permission(&obid, id, &body);
 
     // An option, by its label.
     let (id, permission) = job();
@@ -3628,11 +3662,10 @@ fn a_restart_keeps_the_agents_question() {
     assert_eq!(open["kind"], "agentQuestion", "{open}");
     assert!(open["done"].is_null(), "{open}");
     // An allow still doesn't answer it, and the brain's words wouldn't either.
-    let refused = request(
+    let refused = answer_permission(
         &obid,
-        "POST",
-        &format!("/v1/jobs/{id}/permission"),
-        Some(&json!({"id": second["id"], "decision": "allow"}).to_string()),
+        &id,
+        &json!({"id": second["id"], "decision": "allow"}),
     );
     assert_eq!(refused.status, 422, "{}", refused.text);
 
@@ -3725,12 +3758,7 @@ fn a_parked_permission_frees_its_slot_and_an_allow_resumes_it() {
         "{items}"
     );
 
-    let answered = request(
-        &obid,
-        "POST",
-        &format!("/v1/jobs/{id}/permission"),
-        Some(&json!({"id": card["id"], "decision": "allow"}).to_string()),
-    );
+    let answered = answer_permission(&obid, &id, &json!({"id": card["id"], "decision": "allow"}));
     assert_eq!(answered.status, 200, "{}", answered.text);
     let done = wait(&obid, &id);
     assert_eq!(done["status"], "done", "{done}");
@@ -3874,12 +3902,7 @@ fn parked_questions_and_plans_resume_and_a_stop_drops_them() {
         let card = until(&obid, id, was_parked)["permission"].clone();
         let mut body = body;
         body["id"] = card["id"].clone();
-        let said = request(
-            &obid,
-            "POST",
-            &format!("/v1/jobs/{id}/permission"),
-            Some(&body.to_string()),
-        );
+        let said = answer_permission(&obid, id, &body);
         assert_eq!(said.status, 200, "{}", said.text);
         said.body
     };
@@ -3949,11 +3972,10 @@ fn only_the_owner_saves_a_rule_and_never_for_secrets() {
             .to_owned()
     };
     let answer = |id: &str, permission: &Value, decision: &str| {
-        request(
+        answer_permission(
             &obid,
-            "POST",
-            &format!("/v1/jobs/{id}/permission"),
-            Some(&json!({"id": permission["id"], "decision": decision}).to_string()),
+            id,
+            &json!({"id": permission["id"], "decision": decision}),
         )
     };
     assert_eq!(
@@ -4091,11 +4113,12 @@ fn bypass_4_a_mode_change_never_settles_a_secret() {
         "It touches secrets or the vault."
     );
     for mode in ["ask", "plan", "acceptEdits", "bypass", "sandbox"] {
-        let changed = request(
+        // Some of them widen: the owner's signed words (PERMISSIONS-16).
+        let changed = typed(
             &obid,
             "POST",
             &format!("/v1/jobs/{id}/mode"),
-            Some(&json!({"mode": mode}).to_string()),
+            &json!({"mode": mode}),
         );
         assert_eq!(changed.status, 200, "{}", changed.text);
         std::thread::sleep(Duration::from_millis(300));
@@ -4108,14 +4131,140 @@ fn bypass_4_a_mode_change_never_settles_a_secret() {
         assert_eq!(job["status"], "running", "{mode}");
         assert_eq!(job["summary"], "", "{mode}: the agent heard an answer");
     }
-    let allowed = request(
+    let allowed = answer_permission(
         &obid,
-        "POST",
-        &format!("/v1/jobs/{id}/permission"),
-        Some(&json!({"id": waiting["permission"]["id"], "decision": "allow"}).to_string()),
+        &id,
+        &json!({"id": waiting["permission"]["id"], "decision": "allow"}),
     );
     assert_eq!(allowed.status, 200, "{}", allowed.text);
     assert_eq!(wait(&obid, &id)["summary"], "answer: allow");
+}
+
+/// A job of `obid`'s in Ask, waiting on its permission to run `node --test`: its id and the
+/// permission's.
+fn waiting_on_node_test(obid: &Obid) -> (String, Value) {
+    let id = post_job(
+        obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "mode": "ask",
+               "task": "ASK: {\"tool\": \"Bash\", \"input\": {\"command\": \"node --test\"}}"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let waiting = until(obid, &id, |j| j["permission"].is_object());
+    (id, waiting["permission"]["id"].clone())
+}
+
+/// PERMISSIONS-15: Allow and Always without the owner's signed words are refused, saying the click
+/// has to come from their app, and the card stays; signed, Allow goes through; Deny needs none.
+#[test]
+fn permissions_15_an_unsigned_allow_is_refused_and_a_deny_goes_through() {
+    let folder = Folder::new("unsigned-allow");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let (id, permission) = waiting_on_node_test(&obid);
+    let target = format!("/v1/jobs/{id}/permission");
+    for decision in ["allow", "always"] {
+        let body = json!({"id": permission, "decision": decision});
+        let refused = request(&obid, "POST", &target, Some(&body.to_string()));
+        assert_eq!(refused.status, 403, "{decision}: {}", refused.text);
+        assert!(
+            refused.text.contains("a click in your own Oby app"),
+            "{}",
+            refused.text
+        );
+        let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_eq!(job["permission"]["id"], permission, "{decision}: {job}");
+    }
+    let allowed = typed(
+        &obid,
+        "POST",
+        &target,
+        &json!({"id": permission, "decision": "allow"}),
+    );
+    assert_eq!(allowed.status, 200, "{}", allowed.text);
+    assert_eq!(wait(&obid, &id)["summary"], "answer: allow");
+
+    let (id, permission) = waiting_on_node_test(&obid);
+    let denied = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": permission, "decision": "deny"}).to_string()),
+    );
+    assert_eq!(denied.status, 200, "{}", denied.text);
+    assert!(denied.body["permission"].is_null(), "{}", denied.text);
+}
+
+/// PERMISSIONS-16: a job's mode or the default one widened without the owner's signed words is
+/// refused and nothing changes; signed, it changes.
+#[test]
+fn permissions_16_a_widening_mode_needs_the_owners_signature() {
+    let folder = Folder::new("unsigned-widening");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let (id, _) = waiting_on_node_test(&obid);
+    let target = format!("/v1/jobs/{id}/mode");
+    let bypass = json!({"mode": "bypass"});
+    let refused = request(&obid, "POST", &target, Some(&bypass.to_string()));
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    assert!(
+        refused.text.contains("a click in your own Oby app"),
+        "{}",
+        refused.text
+    );
+    let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["mode"], "ask", "{job}");
+    assert!(job["permission"].is_object(), "{job}");
+    let widened = typed(&obid, "POST", &target, &bypass);
+    assert_eq!(widened.status, 200, "{}", widened.text);
+    assert_eq!(widened.body["mode"], "bypass");
+
+    let settings = "/v1/settings/permissions";
+    let refused = request(&obid, "PUT", settings, Some(&bypass.to_string()));
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    assert_eq!(
+        request(&obid, "GET", settings, None).body,
+        json!({"mode": "sandbox"})
+    );
+    let widened = typed(&obid, "PUT", settings, &bypass);
+    assert_eq!(widened.status, 200, "{}", widened.text);
+    assert_eq!(
+        request(&obid, "GET", settings, None).body,
+        json!({"mode": "bypass"})
+    );
+}
+
+/// PERMISSIONS-16: narrowing a job's mode or the default one, or naming the same one, needs no
+/// signature.
+#[test]
+fn permissions_16_narrowing_needs_none() {
+    let folder = Folder::new("unsigned-narrowing");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let (id, permission) = waiting_on_node_test(&obid);
+    for mode in ["ask", "plan"] {
+        let changed = request(
+            &obid,
+            "POST",
+            &format!("/v1/jobs/{id}/mode"),
+            Some(&json!({"mode": mode}).to_string()),
+        );
+        assert_eq!(changed.status, 200, "{mode}: {}", changed.text);
+        assert_eq!(changed.body["mode"], mode);
+        assert_eq!(changed.body["permission"]["id"], permission, "{mode}");
+    }
+    for mode in ["sandbox", "acceptEdits", "plan"] {
+        let set = request(
+            &obid,
+            "PUT",
+            "/v1/settings/permissions",
+            Some(&json!({"mode": mode}).to_string()),
+        );
+        assert_eq!(set.status, 200, "{mode}: {}", set.text);
+        assert_eq!(set.body, json!({"mode": mode}));
+    }
 }
 
 /// Settings › Permissions: the default is Sandbox, and the owner can go back to asking for
@@ -4125,12 +4274,13 @@ fn the_owner_can_go_back_to_asking_for_commands() {
     let folder = Folder::new("sandbox-back");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote));
+    // Back to Sandbox widens: the owner's signed words (PERMISSIONS-16).
     let put = |mode: &str| {
-        request(
+        typed(
             &obid,
             "PUT",
             "/v1/settings/permissions",
-            Some(&json!({"mode": mode}).to_string()),
+            &json!({"mode": mode}),
         )
     };
     assert_eq!(put("acceptEdits").body, json!({"mode": "acceptEdits"}));
@@ -4148,11 +4298,10 @@ fn the_owner_can_go_back_to_asking_for_commands() {
     assert_eq!(waiting["mode"], "acceptEdits");
     assert_eq!(waiting["permission"]["title"], "Run node --test");
     assert!(waiting["permission"].get("why").is_none(), "{waiting}");
-    let allowed = request(
+    let allowed = answer_permission(
         &obid,
-        "POST",
-        &format!("/v1/jobs/{id}/permission"),
-        Some(&json!({"id": waiting["permission"]["id"], "decision": "allow"}).to_string()),
+        &id,
+        &json!({"id": waiting["permission"]["id"], "decision": "allow"}),
     );
     assert_eq!(allowed.status, 200, "{}", allowed.text);
     assert_eq!(wait(&obid, &id)["summary"], "answer: allow");

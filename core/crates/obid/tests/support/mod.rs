@@ -479,24 +479,26 @@ pub fn invite_approval_at(obid: &Obid, at: i64) -> Value {
 
 /// `message`, signed at `signed_at` by the test owner's device: a fixed key, registered once per
 /// obid as the Mac app adds its own (it names it in `home/pairing`, crate::devices).
-pub fn owner_signs(obid: &Obid, message: &str, signed_at: &str) -> Value {
+pub fn owner_signs(obid: &dyn Listens, message: &str, signed_at: &str) -> Value {
     use base64::Engine as _;
     use p256::ecdsa::signature::Signer as _;
     use p256::elliptic_curve::sec1::ToEncodedPoint as _;
     let secret = p256::SecretKey::from_slice(&[42; 32]).unwrap();
-    let marker = obid.home.join("test-owner-device");
+    let marker = obid.home().join("test-owner-device");
     let device = match std::fs::read_to_string(&marker) {
         Ok(id) => id,
         Err(_) => {
             let public = base64::engine::general_purpose::STANDARD
                 .encode(secret.public_key().to_encoded_point(false).as_bytes());
             // The owner's Mac app names its key in pairing (crate::devices).
-            std::fs::write(obid.home.join("pairing"), &public).unwrap();
-            let registered = call(
+            std::fs::write(obid.home().join("pairing"), &public).unwrap();
+            let registered = request_to(
                 obid,
+                TOKEN,
                 "POST",
                 "/v1/devices",
                 Some(&json!({"name": "Test owner's Mac", "publicKey": public})),
+                &[],
             );
             assert_eq!(registered.status, 200, "{}", registered.text);
             let id = registered.body["id"].as_str().unwrap().to_owned();
@@ -508,6 +510,22 @@ pub fn owner_signs(obid: &Obid, message: &str, signed_at: &str) -> Value {
     let signature: p256::ecdsa::Signature = key.sign(message.as_bytes());
     json!({"device": device, "action": "", "signedAt": signed_at,
            "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_der())})
+}
+
+/// What these helpers need of a running obid: its API's port and its home. A test binary with an
+/// `Obid` of its own (jobs_api) signs through them too.
+pub trait Listens {
+    fn port(&self) -> u16;
+    fn home(&self) -> &Path;
+}
+
+impl Listens for Obid {
+    fn port(&self) -> u16 {
+        self.port
+    }
+    fn home(&self) -> &Path {
+        &self.home
+    }
 }
 
 /// One request to obid, with its token.
@@ -535,7 +553,12 @@ pub fn call_signed(obid: &Obid, method: &str, target: &str, body: Option<&Value>
 }
 
 /// `X-Oby-Words` for that request, signed to the millisecond, as the apps sign.
-pub fn words_header(obid: &Obid, method: &str, target: &str, body: Option<&Value>) -> String {
+pub fn words_header(
+    obid: &dyn Listens,
+    method: &str,
+    target: &str,
+    body: Option<&Value>,
+) -> String {
     let text = body.map(Value::to_string).unwrap_or_default();
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -576,8 +599,20 @@ pub fn call_with_headers(
     body: Option<&Value>,
     headers: &[(&str, &str)],
 ) -> Answer {
+    request_to(obid, token, method, target, body, headers)
+}
+
+/// [`call_with_headers`] to any obid that [`Listens`].
+fn request_to(
+    obid: &dyn Listens,
+    token: &str,
+    method: &str,
+    target: &str,
+    body: Option<&Value>,
+    headers: &[(&str, &str)],
+) -> Answer {
     let body = body.map(Value::to_string);
-    let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", obid.port())).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(150)))
         .unwrap();

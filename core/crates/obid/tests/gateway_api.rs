@@ -977,6 +977,61 @@ fn peer_36_a_paired_phone_answers_a_question_unsigned() {
     assert!(phone.text.contains("settled already"), "{}", phone.text);
 }
 
+/// PERMISSIONS-15: a phone paired without a key of its own (it signs nothing) can't Allow a job's
+/// permission from the inbox, and hears how to pair again; nor can the API token alone. The card
+/// stays, and the phone's Deny answers it.
+#[test]
+fn permissions_15_a_phone_without_a_key_cant_allow() {
+    let folder = Folder::new("gateway-unsigned-allow");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let job = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research", "mode": "ask",
+            "task": "ASK: {\"tool\": \"Bash\", \"input\": {\"command\": \"node --test\"}}"}}),
+        ),
+    );
+    assert_eq!(job.status, 201, "{}", job.text);
+    let id = job.body["id"].as_str().unwrap().to_owned();
+    let card = || {
+        call(&obid, "GET", "/v1/inbox", None)
+            .body
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|i| i["kind"] == "permission" && i["job"] == id.as_str())
+    };
+    let item = within(60, "the permission's card", card);
+    let target = format!("/v1/inbox/{}/answer", item["id"].as_str().unwrap());
+    for answer in ["Allow", "Always allow", "yes"] {
+        let body = json!({"answer": answer});
+        let phone = through(&obid, Some(&token), "POST", &target, Some(&body));
+        assert_eq!(phone.status, 403, "{answer}: {}", phone.text);
+        assert!(
+            phone.text.contains("pair it again from Oby on your Mac"),
+            "{}",
+            phone.text
+        );
+        let loopback = call(&obid, "POST", &target, Some(&body));
+        assert_eq!(loopback.status, 403, "{answer}: {}", loopback.text);
+    }
+    assert_eq!(card().map(|i| i["id"].clone()), Some(item["id"].clone()));
+    let denied = through(
+        &obid,
+        Some(&token),
+        "POST",
+        &target,
+        Some(&json!({"answer": "Deny"})),
+    );
+    assert_eq!(denied.status, 200, "{}", denied.text);
+    let ended = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+    assert!(ended["permission"].is_null(), "{ended}");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Through the owner's Obysphere (docs/runner-api.md, "obid only: the phone relay"): the fake
 // Sphere relays what the test's phone sends, and keeps every byte it relayed.
