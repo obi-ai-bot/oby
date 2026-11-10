@@ -818,11 +818,12 @@ fn a_cursor_plan_waits_for_the_owners_approval() {
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
         assert_eq!(job["step"], "Waiting for your OK on the plan", "{job}");
         assert_eq!(job["permission"]["title"], "Approve the plan?");
-        let answered = call(
+        // The owner's answer in their app: signed, as an Approve needs (PERMISSIONS-15).
+        let answered = call_typed(
             &obid,
             "POST",
             &format!("/v1/inbox/{}/answer", item["id"].as_str().unwrap()),
-            Some(&json!({ "answer": words })),
+            &json!({ "answer": words }),
         );
         assert_eq!(answered.status, 200, "{}", answered.text);
     };

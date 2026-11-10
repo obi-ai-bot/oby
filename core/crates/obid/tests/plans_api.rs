@@ -676,11 +676,12 @@ fn owner_answers(obid: &Obid, item: &str, answer: &str) -> Answer {
     if answer == "Confirm" && is_confirm {
         return confirm(obid, item);
     }
-    call(
+    // The owner's answer in their app: signed, as an Approve needs (PERMISSIONS-15).
+    call_typed(
         obid,
         "POST",
         &format!("/v1/inbox/{item}/answer"),
-        Some(&json!({"answer": answer})),
+        &json!({"answer": answer}),
     )
 }
 
