@@ -676,11 +676,12 @@ fn owner_answers(obid: &Obid, item: &str, answer: &str) -> Answer {
     if answer == "Confirm" && is_confirm {
         return confirm(obid, item);
     }
-    call(
+    // The owner's answer in their app: signed, as an Approve needs (PERMISSIONS-15).
+    call_typed(
         obid,
         "POST",
         &format!("/v1/inbox/{item}/answer"),
-        Some(&json!({"answer": answer})),
+        &json!({"answer": answer}),
     )
 }
 
@@ -1638,7 +1639,7 @@ fn a_plan_starts_its_jobs_and_links_them_to_the_turn() {
 fn the_chats_reviews_and_investigations_run_in_plan() {
     let folder = Folder::new("brain-read-only");
     let obid = started_harness_jobs(&folder);
-    let put = call(
+    let put = call_signed(
         &obid,
         "PUT",
         "/v1/settings/permissions",
@@ -2141,7 +2142,13 @@ fn only_the_owner_may_allow_a_job_permission() {
             json!([])
         );
     }
-    let allowed = owner_answers(&obid, item_id, "Allow");
+    // The owner's Allow is a signed click in their app (PERMISSIONS-15).
+    let allowed = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{item_id}/answer"),
+        &json!({"answer": "Allow"}),
+    );
     assert_eq!(allowed.status, 200, "{}", allowed.text);
 }
 

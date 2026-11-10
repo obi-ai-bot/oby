@@ -196,6 +196,7 @@ fn jobs_have_iso_dates_and_every_key() {
                 "nextStep",
                 "obi",
                 "reason",
+                "resumeCommand",
                 "resumesAt",
                 "revision",
                 "routine",
@@ -210,7 +211,7 @@ fn jobs_have_iso_dates_and_every_key() {
             "{body}"
         );
         let known = keys.keys().filter(|k| page.contains(&k.as_str())).count();
-        assert_eq!(keys.len(), 91 + known);
+        assert_eq!(keys.len(), 92 + known);
         // POST /v1/jobs: its own conversation, the owner's words its first turn (TASKCONV-1).
         assert!(body["conversation"].is_string(), "{body}");
         assert!(body["turn"].is_string(), "{body}");
@@ -1786,13 +1787,13 @@ fn the_api_answers_permissions_and_modes() {
         json!(["Allow", "Always allow", "Deny"])
     );
 
+    // A yes is the owner's signed click (PERMISSIONS-15); a no is as it was.
     let answer = |job: &str, body: Value| {
-        call(
-            &obid,
-            "POST",
-            &format!("/v1/jobs/{job}/permission"),
-            Some(&body),
-        )
+        let target = format!("/v1/jobs/{job}/permission");
+        match body["decision"].as_str() {
+            Some("allow" | "always") => call_signed(&obid, "POST", &target, Some(&body)),
+            _ => call(&obid, "POST", &target, Some(&body)),
+        }
     };
     assert_eq!(
         answer(&id, json!({"id": permission, "decision": "maybe"})).status,
@@ -1861,7 +1862,9 @@ fn the_api_answers_permissions_and_modes() {
     assert_eq!(ended["notes"], json!(["No, run only the tests"]));
     assert!(ended["permission"].is_null());
 
-    let mode = |body: Value| call(&obid, "POST", &format!("/v1/jobs/{id}/mode"), Some(&body));
+    // From Ask, a wider mode: the owner's signed words (PERMISSIONS-16).
+    let mode =
+        |body: Value| call_signed(&obid, "POST", &format!("/v1/jobs/{id}/mode"), Some(&body));
     assert_eq!(mode(json!({"mode": "sometimes"})).status, 422);
     let changed = mode(json!({"mode": "acceptEdits"}));
     assert_eq!(changed.status, 200, "{}", changed.text);
@@ -1944,7 +1947,7 @@ fn bypass_6_modes_answer_what_they_allow_and_stopping_drops_the_permission() {
 
     let moved = asking(&obid, "ask", json!([bash("swift test")]));
     waiting_for(&obid, &moved, "Run swift test");
-    let bypass = call(
+    let bypass = call_signed(
         &obid,
         "POST",
         &format!("/v1/jobs/{moved}/mode"),

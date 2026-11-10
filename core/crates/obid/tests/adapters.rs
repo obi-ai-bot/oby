@@ -378,7 +378,7 @@ fn codex_reviews_and_investigates_in_plan_mode() {
             &obid,
             json!({"agent": "codex", "kind": kind, "task": "COMMIT: plan.txt", "mode": "bypass"}),
         );
-        let changed = call(
+        let changed = call_signed(
             &obid,
             "POST",
             &format!("/v1/jobs/{id}/mode"),
@@ -818,11 +818,12 @@ fn a_cursor_plan_waits_for_the_owners_approval() {
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
         assert_eq!(job["step"], "Waiting for your OK on the plan", "{job}");
         assert_eq!(job["permission"]["title"], "Approve the plan?");
-        let answered = call(
+        // The owner's answer in their app: signed, as an Approve needs (PERMISSIONS-15).
+        let answered = call_typed(
             &obid,
             "POST",
             &format!("/v1/inbox/{}/answer", item["id"].as_str().unwrap()),
-            Some(&json!({ "answer": words })),
+            &json!({ "answer": words }),
         );
         assert_eq!(answered.status, 200, "{}", answered.text);
     };
@@ -939,7 +940,7 @@ fn bypass_3_cursor_asks_you_before_it_runs_a_repositorys_hooks() {
         })
     };
     let answer = |id: &str, job: &Value, decision: &str| {
-        let answered = call(
+        let answered = call_signed(
             &obid,
             "POST",
             &format!("/v1/jobs/{id}/permission"),
@@ -1095,7 +1096,7 @@ fn bypass_9_a_repository_allowlist_asks_you_before_cursor_starts() {
         })
     };
     let answer = |id: &str, job: &Value, decision: &str| {
-        let answered = call(
+        let answered = call_signed(
             &obid,
             "POST",
             &format!("/v1/jobs/{id}/permission"),
@@ -1213,7 +1214,7 @@ fn codex_and_cursor_ask_the_owner_in_ask_mode() {
             let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
             (job["permission"]["title"] == "Run node --test").then_some(job)
         });
-        let answered = call(
+        let answered = call_signed(
             &obid,
             "POST",
             &format!("/v1/jobs/{id}/permission"),
@@ -1237,7 +1238,7 @@ fn codex_and_cursor_ask_the_owner_in_ask_mode() {
 fn codex_asks_the_owner_only_what_its_mode_keeps() {
     let folder = Folder::new("codex-modes");
     let obid = obid(&folder, false);
-    let set = call(
+    let set = call_signed(
         &obid,
         "PUT",
         "/v1/settings/permissions",
@@ -1376,12 +1377,13 @@ fn codex_and_cursor_park_and_resume_with_the_answer() {
         }
         let mut answer = answer.clone();
         answer["id"] = job["permission"]["id"].clone();
-        let answered = call(
-            &obid,
-            "POST",
-            &format!("/v1/jobs/{id}/permission"),
-            Some(&answer),
-        );
+        // A yes is the owner's signed click (PERMISSIONS-15); a no and an answer are as before.
+        let target = format!("/v1/jobs/{id}/permission");
+        let answered = if answer["decision"] == "allow" {
+            call_signed(&obid, "POST", &target, Some(&answer))
+        } else {
+            call(&obid, "POST", &target, Some(&answer))
+        };
         assert_eq!(answered.status, 200, "{}", answered.text);
     }
     let said: Vec<(Value, String)> = jobs
@@ -1466,7 +1468,7 @@ fn codex_cards_show_the_command_out_of_its_shell() {
         })
     };
     let answer = |id: &str, card: &Value| {
-        let answered = call(
+        let answered = call_signed(
             &obid,
             "POST",
             &format!("/v1/jobs/{id}/permission"),

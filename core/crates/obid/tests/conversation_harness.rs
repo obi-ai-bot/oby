@@ -2129,7 +2129,7 @@ fn taskconv_20_a_new_session_of_a_clean_conversation_stays_the_owners_word() {
 fn merging_32_reading_your_own_jobs_summary_marks_nothing() {
     let (_folder, obid) = obid("harness-merging-32", true);
     let bypass = json!({"mode": "bypass"});
-    let set = call(&obid, "PUT", "/v1/settings/permissions", Some(&bypass));
+    let set = call_signed(&obid, "PUT", "/v1/settings/permissions", Some(&bypass));
     assert_eq!(set.status, 200, "{}", set.text);
     let say = |said: String, conversation: Option<&str>| {
         let mut body = json!({"said": said});
@@ -3411,7 +3411,7 @@ fn oby_continue_job_continues_a_job_in_its_session() {
     // A job in Bypass mode, even the conversation's own in a clean turn, waits, and its title says
     // Bypass.
     let (bypassed, clean) = ended_job(&obid, None);
-    let mode = call(
+    let mode = call_signed(
         &obid,
         "POST",
         &format!("/v1/jobs/{bypassed}/mode"),
@@ -3995,7 +3995,7 @@ fn oby_github_lists_the_owners_pull_requests_and_dispatch_takes_one() {
     assert_eq!(job.body["pr"], 5, "{}", job.text);
     assert_eq!(job.body["kind"], "review", "{}", job.text);
     assert_eq!(job.body["untrusted"], true, "{}", job.text);
-    let set = call(
+    let set = call_signed(
         &obid,
         "PUT",
         "/v1/settings/permissions",

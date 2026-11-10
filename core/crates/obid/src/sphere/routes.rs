@@ -241,6 +241,23 @@ pub async fn answer(
             super::link::NEEDS_YOUR_HAND,
         ));
     }
+    // A job's permission, or its plan, is allowed only by the owner's signed words (PERMISSIONS-15):
+    // neither the token alone nor a phone paired without a key. An approved plan leaves Plan for
+    // the owner's default mode, a widening (SIGN-2). A no and a question are as before.
+    if !typed
+        && shared.link.item(&id).is_some_and(|i| {
+            i.done.is_none()
+                && !i.job.is_empty()
+                && matches!(i.kind.as_str(), "permission" | "plan")
+        })
+        && serde_json::from_slice::<Value>(&body).is_ok_and(|b| {
+            b["answer"].as_str().is_some_and(|answer| {
+                crate::permissions::inbox_decision(answer).0 != crate::permissions::Decision::Deny
+            })
+        })
+    {
+        return Err(crate::routes::needs_the_owners_app());
+    }
     // Who answered stays on the item, and in the log: a merge can be traced afterwards (#1825).
     let by = signer.or_else(|| device.as_ref().map(|d| d.0.0.clone()));
     tracing::info!(

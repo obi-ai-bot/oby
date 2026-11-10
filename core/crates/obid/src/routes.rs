@@ -605,6 +605,15 @@ pub fn signed_by(
         .and_then(|()| header.split(' ').next().map(str::to_owned))
 }
 
+/// Why an Allow, an Always or a wider mode no app of the owner's signed is refused (PERMISSIONS-15,
+/// PERMISSIONS-16): the API token alone, or a phone paired before it had a key, can't widen reach.
+pub const NEEDS_THE_OWNERS_APP: &str = "This has to be a click in your own Oby app, signed by its key, so nothing changed. On an iPhone, pair it again from Oby on your Mac, then try again.";
+
+/// [`NEEDS_THE_OWNERS_APP`], as a refusal.
+pub fn needs_the_owners_app() -> ApiError {
+    ApiError::new(StatusCode::FORBIDDEN, NEEDS_THE_OWNERS_APP)
+}
+
 /// `POST /v1/jobs`: a job described whole (`{"job": {"repo", "kind", "task", …}}`).
 pub async fn dispatch(
     State(shared): State<Arc<Shared>>,
@@ -1273,8 +1282,11 @@ pub async fn permission(
     if shared.jobs.get(&id).is_none() {
         return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
     }
-    // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec).
-    let unsigned = || !typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec). Checked
+    // once: a signature counts once, so a second look would find the owner's own words used.
+    let signed = std::cell::OnceCell::new();
+    let unsigned =
+        || !*signed.get_or_init(|| typed_by_owner(&shared, "POST", &uri, &headers, &body));
     let value: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "That isn't JSON."))?;
     let shape = "The body is {\"id\", \"decision\": \"allow\" | \"always\" | \"deny\", \"message\"}, or {\"id\", \"answer\"} for a question.";
@@ -1322,6 +1334,10 @@ pub async fn permission(
         Some(Value::String(text)) => Some(text.as_str()),
         Some(_) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape)),
     };
+    // A yes is the owner's alone (PERMISSIONS-15); a no needs no signature.
+    if decision != crate::permissions::Decision::Deny && unsigned() {
+        return Err(needs_the_owners_app());
+    }
     if message.is_some_and(|m| !m.trim().is_empty()) && unsigned() {
         shared
             .jobs
@@ -1356,16 +1372,24 @@ fn mode_of(body: &Bytes) -> Result<crate::permissions::Mode, ApiError> {
         })
 }
 
-/// `POST /v1/jobs/{id}/mode`: how much the job asks, from now on.
+/// `POST /v1/jobs/{id}/mode`: how much the job asks, from now on. A wider mode than the job's
+/// needs the owner's signed words (PERMISSIONS-16); a narrower one doesn't.
 pub async fn mode(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
+    let Some(job) = shared.jobs.get(&id) else {
         return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
-    }
+    };
     let mode = mode_of(&body)?;
+    if mode.reach() > crate::jobs::Jobs::mode_of(&job).reach()
+        && signed_by(&shared, "POST", &uri, &headers, &body).is_none()
+    {
+        return Err(needs_the_owners_app());
+    }
     let job = shared
         .jobs
         .set_mode(&id, mode)
@@ -1382,12 +1406,19 @@ pub async fn permission_settings(State(shared): State<Arc<Shared>>) -> Response 
 }
 
 /// `PUT /v1/settings/permissions`: `{"mode"}`, the mode new jobs get, kept across restarts. Jobs
-/// already made keep theirs.
+/// already made keep theirs. A wider one needs the owner's signed words (PERMISSIONS-16).
 pub async fn set_permission_settings(
     State(shared): State<Arc<Shared>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let mode = mode_of(&body)?;
+    if mode.reach() > shared.jobs.default_mode().reach()
+        && signed_by(&shared, "PUT", &uri, &headers, &body).is_none()
+    {
+        return Err(needs_the_owners_app());
+    }
     shared.jobs.set_default_mode(mode).map_err(|e| {
         tracing::error!("can't keep the permission mode: {e}");
         ApiError::new(

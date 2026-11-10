@@ -1895,7 +1895,7 @@ fn chatgpt_real_codex_runs_through_the_relay() {
         let job = call(&world.obid, "GET", &format!("/v1/jobs/{running}"), None).body;
         job["permission"]["id"].is_string().then_some(job)
     });
-    let allowed = call(
+    let allowed = call_signed(
         &world.obid,
         "POST",
         &format!("/v1/jobs/{running}/permission"),
