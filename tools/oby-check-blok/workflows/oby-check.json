@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "2",
+  "name": "oby-check",
+  "version": "1.0.0",
+  "description": "Oby's check (scripts/oby-check.sh) as BLOK nodes, in shadow mode. The script plans which groups a change reaches; each step runs one group's suites in a node of this tool's Rust runtime, and the verdicts fold into one: failed, else couldn't judge, else passed. Only the script decides publishing and merging.",
+  "trigger": { "manual": {} },
+  "steps": [
+    {
+      "id": "rust-affected-tests",
+      "use": "runtime.rust:rust-affected-tests",
+      "description": "obid's affected Rust suites: fmt, clippy, the touched lib modules and test binaries.",
+      "maxDuration": "45m"
+    },
+    {
+      "id": "ts-checks",
+      "use": "runtime.rust:ts-checks",
+      "description": "The Electron app's typecheck, build and vitest.",
+      "maxDuration": "20m"
+    },
+    {
+      "id": "secret-scan",
+      "use": "runtime.rust:secret-scan",
+      "description": "gitleaks on what changed. Nothing goes out unless it's clean.",
+      "maxDuration": "10m"
+    }
+  ]
+}
