@@ -580,16 +580,23 @@ const TRY_AGAIN: &str =
 
 #[test]
 fn publishing_27_a_rebased_follow_up_keeps_the_pr_with_an_exact_lease() {
-    rebased_follow_up(false);
+    rebased_follow_up("publishing-27-lease", false, false);
 }
 
 #[test]
 fn publishing_27_a_rebased_follow_up_refuses_a_strangers_push() {
-    rebased_follow_up(true);
+    rebased_follow_up("publishing-27-stranger", true, false);
 }
 
-fn rebased_follow_up(stranger: bool) {
-    let folder = Folder::new("publishing-27");
+/// The parent's PR closed while its follow-up worked: the follow-up opens a new one rather than
+/// reporting the closed one as updated.
+#[test]
+fn publishing_27_a_follow_up_whose_pr_closed_opens_a_new_one() {
+    rebased_follow_up("publishing-27-closed", false, true);
+}
+
+fn rebased_follow_up(name: &str, stranger: bool, closed: bool) {
+    let folder = Folder::new(name);
     let bin = fake_gh(&folder.0);
     std::fs::write(folder.0.join("gh/view.json"),
         r#"{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergedAt":null,"baseRefName":"main","headRefOid":""}"#).unwrap();
@@ -646,9 +653,16 @@ fn rebased_follow_up(stranger: bool) {
     };
     let clone = obid.home.join("clones/obi-e2e/fixture-app");
     git(&clone, &["fetch", "-q", remote.to_str().unwrap(), "main"]);
-    // GitHub can still report the parent's head after the rebased push.
-    std::fs::write(folder.0.join("gh/open"), format!(
-        r#"[{{"url":"{PULL}","isCrossRepository":false,"headRefOid":"{pushed}","baseRefName":"main"}}]"#)).unwrap();
+    if closed {
+        std::fs::write(folder.0.join("gh/view.json"),
+            r#"{"state":"CLOSED","reviewDecision":"REVIEW_REQUIRED","mergedAt":null,"baseRefName":"main","headRefOid":""}"#).unwrap();
+        std::fs::remove_file(folder.0.join("gh/open")).unwrap();
+        std::fs::remove_file(folder.0.join("gh/opened")).unwrap();
+    } else {
+        // GitHub can still report the parent's head after the rebased push.
+        std::fs::write(folder.0.join("gh/open"), format!(
+            r#"[{{"url":"{PULL}","isCrossRepository":false,"headRefOid":"{pushed}","baseRefName":"main"}}]"#)).unwrap();
+    }
     let told = call(
         &obid,
         "POST",
@@ -678,9 +692,15 @@ fn rebased_follow_up(stranger: bool) {
         let head = remote_branch(&remote, branch).unwrap();
         assert_ne!(head, pushed);
         assert_eq!(git(&clone, &["rev-parse", &format!("{head}~2")]), base);
-        assert_eq!(follow["outgoing"][1]["action"], "pullRequestEdit");
+        let sent = if closed {
+            "pullRequest"
+        } else {
+            "pullRequestEdit"
+        };
+        assert_eq!(follow["outgoing"][1]["action"], sent, "{follow}");
     }
-    assert_eq!(calls_now(&folder.0).matches("pr create").count(), 1);
+    let opened = if closed { 2 } else { 1 };
+    assert_eq!(calls_now(&folder.0).matches("pr create").count(), opened);
 }
 
 /// The stand-in agent commits `file` in job `id`'s next Try again.

@@ -1273,9 +1273,13 @@ pub async fn publish(
     })?;
     let opened = if by_hand.branch(job) == job.branch
         && let Some(url) = target.chain.pull_request.as_deref()
-        && github::pull_request_number(url, &job.repo).is_some()
+        && let Some(number) = github::pull_request_number(url, &job.repo)
         && job.follow_up_of.is_some()
         && job.start_from.as_deref() == Some(job.branch.as_str())
+        // Only a PR that's still open carries the branch: one closed meanwhile goes the usual way.
+        && github::view(gh, &job.repo, number, obi_protocol::time::now())
+            .await
+            .is_ok_and(|pr| pr.state == "OPEN")
     {
         // Carrying a branch carries its PR too, even while GitHub's head lookup lags.
         let edited = github::run(
