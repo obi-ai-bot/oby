@@ -12337,7 +12337,6 @@ impl Jobs {
         }
     }
 
-    /// Where the job `id` publishes from and to.
     fn publish_target(&self, job: &Job) -> Result<crate::publish::Target, String> {
         let repo = self
             .repo(&job.repo)
@@ -12350,7 +12349,9 @@ impl Jobs {
         let _ = std::fs::remove_dir_all(&scratch);
         crate::store::make_private_dir(&scratch)
             .map_err(|e| format!("Not published: obid couldn't make its scan's folder ({e})."))?;
+        let chain = crate::publish::BranchChain::of(job, &self.lock().jobs);
         Ok(crate::publish::Target {
+            chain,
             clone: self.clone_for(job),
             remote: repo.remote.clone(),
             default_branch: repo.default_branch.clone(),
@@ -12365,8 +12366,7 @@ impl Jobs {
         })
     }
 
-    /// Publishes the job `id` now (crate::publish): `signal`, when the job's worker runs it, stops
-    /// it before the push and before the pull request. One publish at a time per job.
+    /// Publishes once per job; `signal` stops it before the push and pull request.
     async fn publish_job(
         self: &Arc<Self>,
         id: &str,
@@ -12389,8 +12389,7 @@ impl Jobs {
             }
             job
         };
-        // Its claim goes however this ends: a panic, or a future dropped part way (a Publish by
-        // hand whose request went), never leaves the job claimed until a restart (#914), nor
+        // Dropping a publish never leaves its claim until restart (#914), nor
         // showing a publish step nothing runs any more (MERGING-29).
         struct Claim<'a>(&'a Jobs, &'a str, bool);
         impl Drop for Claim<'_> {

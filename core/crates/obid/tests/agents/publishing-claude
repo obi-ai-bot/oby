@@ -72,6 +72,8 @@ rl.on("line", (line) => {
   let prompt = typeof message.message.content === "string" ? message.message.content : "";
   // Try again: the retried round does what the test left in .obi/again.
   if (prompt.startsWith("Try again") && existsSync(".obi/again")) prompt = readFileSync(".obi/again", "utf8");
+  const rebase = prompt.match(/REBASE: ([0-9a-f]{40})/);
+  if (rebase) git("rebase", "--quiet", rebase[1]);
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   const usage = prompt.match(/USAGE: (\{.*\})/);
   if (usage) emit({ type: "rate_limit_event", session_id: session, rate_limit_info: JSON.parse(usage[1]) });
