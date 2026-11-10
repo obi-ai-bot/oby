@@ -25,14 +25,28 @@ const ownFolders = (body: unknown) => {
 // The owner's real keystrokes (Enter) and clicks, as main itself saw them reach the window
 // (index.ts: before-input-event, input-event), never as the page says: each allows one signature
 // within WITHIN_MS of it. The page's own process can't make one.
-let inputs: number[] = [];
-export function input(at = Date.now()) {
-  inputs = [...inputs.filter((t) => at - t < WITHIN_MS), at];
+let inputs: { at: number; select: boolean }[] = [];
+export function input(at = Date.now(), select = false) {
+  inputs = [...inputs.filter((t) => at - t.at < WITHIN_MS), { at, select }];
 }
-export function takeInput(at = Date.now()): boolean {
-  inputs = inputs.filter((t) => at - t < WITHIN_MS);
-  return inputs.shift() !== undefined;
+export function takeInput(at = Date.now(), select = false): boolean {
+  inputs = inputs.filter((t) => at - t.at < WITHIN_MS);
+  const index = inputs.findIndex((t) => !t.select || select);
+  return index >= 0 && inputs.splice(index, 1).length === 1;
 }
+
+// Native selects can change with navigation keys without Enter or a click. Main observes these
+// itself; they authorize only Default mode, never ordinary words or a Confirm. Enter keeps its
+// existing single token, so a key never grants both kinds of signature.
+export function keyInput(i: { type: string; key: string; code: string; isAutoRepeat: boolean }) {
+  if (i.type !== 'keyDown' || i.isAutoRepeat) return;
+  if (i.key === 'Enter') input();
+  else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(i.key)) input(Date.now(), true);
+  if (i.code === 'Space') space();
+}
+
+export const takeWordsInput = (method: string, path: string, body: unknown) =>
+  takeInput(Date.now(), method === 'PUT' && path.split('?')[0] === '/v1/settings/permissions' && wordsOf(method, path, body) !== null);
 
 // Space on a focused button, which clicks it, is the owner's too, but only for the Confirm below:
 // a Space while typing signs no words.
