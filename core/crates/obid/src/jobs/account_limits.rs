@@ -434,7 +434,6 @@ impl Jobs {
                     || (background && !self.takes_background(&account))
                     || !(self.verified_limit_room(&account.id, now, now.saturating_sub(600))
                         || self.chatgpt_has_room(&account, now))
-                    || self.own_sandbox(tool, &account)
                 {
                     continue;
                 }

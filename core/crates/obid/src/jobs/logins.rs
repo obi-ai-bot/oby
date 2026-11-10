@@ -1,5 +1,5 @@
 //! Agent login discovery, macOS Keychain probing & token refresh, per-run private login copy
-//! preparation, and `claudeOwnSandbox` settings generation.
+//! preparation, and the own lane's settings generation.
 
 use super::*;
 
@@ -189,7 +189,7 @@ pub(super) fn cursor_login_live(login: &[u8]) -> bool {
             .is_some_and(|token| jwt_ends(token).is_none_or(|ends| ends > now_ms() / 1000))
 }
 
-/// What a Claude Code run in its own sandbox (`claudeOwnSandbox`) gets over a boxed run's
+/// What a Claude Code run in its own sandbox (the own lane, `Jobs::own_lane`) gets over a boxed run's
 /// environment: the account's own folder and Keychain item (the default ones for an account with
 /// no `configDir`), and, as its own `HOME`, the job's `login` folder (`home/logins/<job id>`,
 /// which its commands can neither read nor write), holding only `Library/Keychains`, a link to the
@@ -238,8 +238,8 @@ pub(crate) fn own_sandbox_env(
             || env.iter().any(|(set, _)| set == name)
         {
             return Err(format!(
-                "{}'s .claude.json sets {name} in its env, which a job's agent must never get or which obid sets itself: take it out, or take {} out of claudeOwnSandbox.",
-                account.name, account.id
+                "{}'s .claude.json sets {name} in its env, which a job's agent must never get or which obid sets itself: take it out.",
+                account.name
             ));
         }
     }
