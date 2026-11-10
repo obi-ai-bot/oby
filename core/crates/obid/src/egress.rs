@@ -1135,43 +1135,6 @@ pub fn sites_named(words: &[String]) -> Vec<String> {
     out
 }
 
-/// A TLS ClientHello record naming `sni` (none: no `server_name`), with
-/// `encrypted_client_hello` when `ech`, as a test's client sends it.
-#[cfg(test)]
-pub(crate) fn client_hello(sni: Option<&str>, ech: bool) -> Vec<u8> {
-    let mut extensions = Vec::new();
-    if let Some(sni) = sni {
-        let name = sni.as_bytes();
-        let list = [&[0u8][..], &(name.len() as u16).to_be_bytes(), name].concat();
-        let data = [&(list.len() as u16).to_be_bytes()[..], &list].concat();
-        extensions.extend([0u8, 0]);
-        extensions.extend((data.len() as u16).to_be_bytes());
-        extensions.extend(data);
-    }
-    if ech {
-        extensions.extend([0xfe, 0x0d, 0, 1, 0]);
-    }
-    hello_with(&extensions)
-}
-
-/// A TLS ClientHello record with these extensions, as they're written.
-#[cfg(test)]
-fn hello_with(extensions: &[u8]) -> Vec<u8> {
-    let mut body = vec![3, 3];
-    body.extend([7u8; 32]);
-    body.extend([0, 0, 2, 0x13, 0x01, 1, 0]);
-    body.extend((extensions.len() as u16).to_be_bytes());
-    body.extend(extensions);
-    let length = body.len() as u32;
-    let handshake = [&[1u8][..], &length.to_be_bytes()[1..], &body].concat();
-    [
-        &[22u8, 3, 1][..],
-        &(handshake.len() as u16).to_be_bytes(),
-        &handshake,
-    ]
-    .concat()
-}
-
 /// The name a door's token is learned by as a secret.
 fn secret_name(id: &str, setup: bool) -> String {
     match setup {
@@ -1219,8 +1182,43 @@ pub(crate) fn mark_reach(jobs: &Jobs, job: &str, host: &str, port: u16, setup: b
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A TLS ClientHello record naming `sni` (none: no `server_name`), with
+    /// `encrypted_client_hello` when `ech`, as a test's client sends it.
+    pub(crate) fn client_hello(sni: Option<&str>, ech: bool) -> Vec<u8> {
+        let mut extensions = Vec::new();
+        if let Some(sni) = sni {
+            let name = sni.as_bytes();
+            let list = [&[0u8][..], &(name.len() as u16).to_be_bytes(), name].concat();
+            let data = [&(list.len() as u16).to_be_bytes()[..], &list].concat();
+            extensions.extend([0u8, 0]);
+            extensions.extend((data.len() as u16).to_be_bytes());
+            extensions.extend(data);
+        }
+        if ech {
+            extensions.extend([0xfe, 0x0d, 0, 1, 0]);
+        }
+        hello_with(&extensions)
+    }
+
+    /// A TLS ClientHello record with these extensions, as they're written.
+    fn hello_with(extensions: &[u8]) -> Vec<u8> {
+        let mut body = vec![3, 3];
+        body.extend([7u8; 32]);
+        body.extend([0, 0, 2, 0x13, 0x01, 1, 0]);
+        body.extend((extensions.len() as u16).to_be_bytes());
+        body.extend(extensions);
+        let length = body.len() as u32;
+        let handshake = [&[1u8][..], &length.to_be_bytes()[1..], &body].concat();
+        [
+            &[22u8, 3, 1][..],
+            &(handshake.len() as u16).to_be_bytes(),
+            &handshake,
+        ]
+        .concat()
+    }
 
     /// #1814: what git does once a request through the proxy worked, approving its login, reaches
     /// no helper in git's settings with [`env`]; a helper named after it runs, so the approval did

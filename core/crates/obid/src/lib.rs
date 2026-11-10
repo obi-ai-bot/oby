@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(event.name, "cleanup");
         assert_eq!(
             event.data,
-            serde_json::json!({"path": "/nonexistent/obid/worktrees", "bytes": 0, "lastRun": null, "kept": []})
+            serde_json::json!({"path": "/nonexistent/obid/worktrees", "bytes": 0, "lastRun": null, "kept": [], "freed": null})
         );
 
         let silent = Arc::new(api::Cleanup::unmeasured(Path::new("/nonexistent/obid")));

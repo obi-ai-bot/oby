@@ -375,17 +375,6 @@ impl Devices {
         crate::store::write_private(&self.file, &bytes)
     }
 
-    /// Checks the phone's signed approval sentence for a sensitive connection change. A
-    /// signature is tied to the exact action and timestamp, expires after two minutes, and is
-    /// accepted once and kept in `devices.json`, across restarts.
-    pub fn approves_connection(&self, value: &serde_json::Value, action: &str) -> bool {
-        if value.get("action").and_then(serde_json::Value::as_str) != Some(action) {
-            return false;
-        }
-        self.signed(value, |at| format!("oby-connection\n{action}\n{at}"))
-            .is_some()
-    }
-
     /// The registered device whose key signed `message(signedAt)` in `value` (`device`,
     /// `signedAt`, `signature`: ECDSA P-256 with SHA-256, DER, base64), within two minutes of
     /// now, never before: it's used up, and kept used in `devices.json`, across restarts.
@@ -445,6 +434,20 @@ pub fn is_p256_public_key(text: &str) -> bool {
 mod tests {
     use super::*;
     use p256::elliptic_curve::sec1::ToEncodedPoint;
+
+    impl Devices {
+        /// A signed approval sentence for a sensitive connection change, as [`Devices::signed`]
+        /// checks one: tied to the exact action and timestamp, expired after two minutes, and
+        /// accepted once and kept in `devices.json`, across restarts. Nothing calls it outside
+        /// tests yet.
+        fn approves_connection(&self, value: &serde_json::Value, action: &str) -> bool {
+            if value.get("action").and_then(serde_json::Value::as_str) != Some(action) {
+                return false;
+            }
+            self.signed(value, |at| format!("oby-connection\n{action}\n{at}"))
+                .is_some()
+        }
+    }
 
     /// A device's key, from a fixed private scalar: no randomness, no key in the source.
     pub(crate) fn key(scalar: u8) -> String {
