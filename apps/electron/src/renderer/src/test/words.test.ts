@@ -152,7 +152,7 @@ describe('signed words', () => {
     const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex');
     const sentence = `oby-words\nPOST\n/v1/jobs/j1/messages\n${digest}\n${signedAt}`;
     expect(verify('sha256', Buffer.from(sentence), createPublicKey(privateKey), Buffer.from(signature, 'base64'))).toBe(true);
-    expect(wordsHeader(privateKey, 'd1', 'PUT', '/v1/settings/permissions', { mode: 'bypass' })).toBeNull();
+    expect(wordsHeader(privateKey, 'd1', 'PUT', '/v1/settings/permissions', { mode: 'bypass', extra: true })).toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/jobs', { job: { repo: 'o/r', kind: 'build', task: 'x' } })).toBeNull();
     expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/jobs/j1/messages', { text: 'x', mode: 'bypass' })).toBeNull();
   });
