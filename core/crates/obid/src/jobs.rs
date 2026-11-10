@@ -11516,7 +11516,7 @@ impl Jobs {
 
     /// Teammates' open pull requests that change `files` of `job`, with their diffs of them: not
     /// for another Oby's job or a review, nor where obid opens no pull request (a remote that
-    /// isn't GitHub, as publishing decides), and none on a branch of obid's own jobs
+    /// isn't GitHub, as publishing decides), and none whose URL a local job published
     /// (crate::teammates).
     async fn teammates_on(
         &self,
@@ -11535,8 +11535,7 @@ impl Jobs {
             .jobs
             .values()
             .filter(|j| j.repo == job.repo)
-            .map(|j| j.branch.clone())
-            .chain(job.start_from.clone())
+            .filter_map(|j| j.published.clone())
             .collect();
         crate::teammates::read(&job.repo, files, &skip).await
     }
