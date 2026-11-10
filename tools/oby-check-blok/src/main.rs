@@ -149,15 +149,7 @@ fn planned_group(text: &str, group: &str) -> bool {
         .any(|line| line == format!("oby-check: group {group}"))
 }
 
-async fn run() -> Result<Verdict> {
-    let mut args = std::env::args().skip(1);
-    let checkout = args
-        .next()
-        .context("usage: oby-check-blok <checkout> [base]")?;
-    let base = args.next().unwrap_or_else(|| "origin/dev".into());
-    if args.next().is_some() {
-        bail!("usage: oby-check-blok <checkout> [base]");
-    }
+async fn report(checkout: String, base: String) -> Result<Run> {
     let checkout = std::fs::canonicalize(checkout)?
         .to_string_lossy()
         .into_owned();
@@ -186,10 +178,112 @@ async fn run() -> Result<Verdict> {
         eprintln!("shadow check: {error:#}");
         report.nodes.insert(
             "workflow".into(),
-            CheckResult::unjudged("workflow could not complete; see stderr", 0.0),
+            CheckResult::unjudged(format!("workflow could not complete: {error:#}"), 0.0),
         );
     }
     report.verdict = fold(report.nodes.values().map(|n| n.verdict));
+    Ok(report)
+}
+
+async fn affected(base: String) -> serde_json::Value {
+    match report(".".into(), base).await {
+        Ok(report) => {
+            let failing: std::collections::BTreeSet<_> = report
+                .nodes
+                .values()
+                .flat_map(|node| node.failing.iter().cloned())
+                .collect();
+            let reason = report
+                .nodes
+                .values()
+                .filter(|node| node.verdict != Verdict::Passed)
+                .map(|node| node.reason.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            serde_json::json!({"verdict": report.verdict, "failing": failing, "reason": reason, "nodes": report.nodes})
+        }
+        Err(error) => {
+            serde_json::json!({"verdict": "unjudged", "failing": [], "reason": format!("{error:#}"), "nodes": {}})
+        }
+    }
+}
+
+async fn mcp() -> Result<()> {
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    while let Some(line) = lines.next_line().await? {
+        let request: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => {
+                println!(
+                    "{}",
+                    serde_json::json!({"jsonrpc":"2.0", "id":null, "error":{"code":-32700,"message":"Parse error"}})
+                );
+                continue;
+            }
+        };
+        let Some(id) = request.get("id") else {
+            continue;
+        };
+        let result = match request["method"].as_str() {
+            Some("initialize") => Ok(
+                serde_json::json!({"protocolVersion":"2024-11-05", "capabilities":{"tools":{}}, "serverInfo":{"name":"oby-check-blok", "version":env!("CARGO_PKG_VERSION")}}),
+            ),
+            Some("ping") => Ok(serde_json::json!({})),
+            Some("tools/list") => Ok(
+                serde_json::json!({"tools":[{"name":"oby_check_affected", "description":"Run affected checks offline; obid runs the full check after the turn", "inputSchema":{"type":"object","properties":{"base":{"type":"string"}},"additionalProperties":false}}]}),
+            ),
+            Some("tools/call") => {
+                let params = &request["params"];
+                let args = &params["arguments"];
+                if params["name"] != "oby_check_affected"
+                    || !(args.is_null()
+                        || args.as_object().is_some_and(|args| {
+                            args.iter()
+                                .all(|(key, value)| key == "base" && value.is_string())
+                        }))
+                {
+                    Err((-32602, "Invalid tool or arguments"))
+                } else {
+                    let verdict =
+                        affected(args["base"].as_str().unwrap_or("origin/dev").into()).await;
+                    Ok(
+                        serde_json::json!({"content":[{"type":"text", "text":serde_json::to_string(&verdict)?}]}),
+                    )
+                }
+            }
+            _ => Err((-32601, "Method not found")),
+        };
+        let response = match result {
+            Ok(result) => serde_json::json!({"jsonrpc":"2.0", "id":id, "result":result}),
+            Err((code, message)) => {
+                serde_json::json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}})
+            }
+        };
+        println!("{response}");
+        std::io::stdout().flush()?;
+    }
+    Ok(())
+}
+
+async fn run() -> Result<Verdict> {
+    let mut args = std::env::args().skip(1);
+    let mode = args
+        .next()
+        .context("usage: oby-check-blok --affected [base] | mcp | <checkout> [base]")?;
+    if mode == "mcp" {
+        anyhow::ensure!(args.next().is_none(), "mcp takes no arguments");
+        mcp().await?;
+        return Ok(Verdict::Passed);
+    }
+    let base = args.next().unwrap_or_else(|| "origin/dev".into());
+    anyhow::ensure!(args.next().is_none(), "too many arguments");
+    if mode == "--affected" {
+        let result = affected(base).await;
+        println!("{result}");
+        eprintln!("Affected check: {}", result["verdict"].as_str().unwrap());
+        return Ok(serde_json::from_value(result["verdict"].clone())?);
+    }
+    let report = report(mode, base).await?;
     let line = serde_json::to_string(&report)?;
     let folder = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?)
         .join(".oby-flow/pipelines");

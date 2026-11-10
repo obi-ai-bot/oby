@@ -139,7 +139,7 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 [[package]]
 name = "blok-rs"
 version = "1.0.0"
-source = "git+https://github.com/well-prado/blok?rev=53991cb1#53991cb18f8a41c3faf1ec3302f080a5d4f30939"
+source = "git+https://github.com/well-prado/blok?rev=3ab281d3#3ab281d33bbb226501f8c89708950ad1bc05df9d"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

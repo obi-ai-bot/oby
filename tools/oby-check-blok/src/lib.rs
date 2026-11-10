@@ -116,6 +116,10 @@ pub fn check_command(input: &CheckInput, group: &str) -> Command {
         .arg(&input.base)
         .env_remove("OBY_CHECK_PLAN")
         .env_remove("OBY_CHECK_TOKEN")
+        .env_remove("OBY_CHECK_ALL")
+        .env_remove("OBY_CHECK_PATHS")
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("npm_config_offline", "true")
         .env("OBY_CHECK_ONLY", group)
         .env("NO_COLOR", "1")
         .env("FORCE_COLOR", "0")
@@ -135,7 +139,16 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
         }
     };
     let text = text_output(&output);
-    let verdict = if text.lines().any(|l| l.starts_with("couldn't judge:")) {
+    let failing = failing_tests(&text);
+    let cache_missing = failing.is_empty()
+        && [
+            "no matching package named",
+            "attempting to make an HTTP request",
+            "ENOTCACHED",
+        ]
+        .iter()
+        .any(|message| text.contains(message));
+    let verdict = if cache_missing || text.lines().any(|l| l.starts_with("couldn't judge:")) {
         Verdict::Unjudged
     } else {
         match output.status.code() {
@@ -146,11 +159,14 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
     };
     CheckResult {
         verdict,
-        failing: failing_tests(&text),
+        failing,
         reason: match verdict {
             Verdict::Passed => "script passed",
             Verdict::Failed => "script failed",
-            Verdict::Unjudged => "script could not judge; run the script for details",
+            Verdict::Unjudged if cache_missing => "offline dependency cache is incomplete",
+            Verdict::Unjudged => {
+                "script could not judge in this environment; obid must run the full check"
+            }
         }
         .into(),
         seconds: start.elapsed().as_secs_f64(),
