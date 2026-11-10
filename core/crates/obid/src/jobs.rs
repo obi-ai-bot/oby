@@ -15073,13 +15073,8 @@ pub async fn run_check(
     let mut stopped = None;
     let status = tokio::select! {
         status = child.wait() => status.ok(),
-        () = tokio::time::sleep(limit) => {
-            stopped = Some(unjudged::too_long(limit));
-            process::end_group(pgid, process::STOPPING).await;
-            child.wait().await.ok()
-        }
-        idle = unjudged::idle(pgid, &heard, quiet) => {
-            stopped = Some(idle);
+        idle = tokio::time::timeout(limit, unjudged::idle(pgid, &heard, quiet)) => {
+            stopped = Some(idle.unwrap_or_else(|_| unjudged::too_long(limit)));
             process::end_group(pgid, process::STOPPING).await;
             child.wait().await.ok()
         }
