@@ -3560,9 +3560,28 @@ fn merging_14_with_no_other_tool_the_second_review_waits_saying_why() {
 /// after two tools approve its head, nothing on a security path needed.
 #[test]
 fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
+    use std::os::unix::fs::PermissionsExt;
+
     let folder = Folder::new("publish-review-untrusted");
     let bin = fake_gh(&folder.0);
-    let obid = obid_with_codex(&folder, &bin);
+    let mut config = codex_config(&folder);
+    // Review worktrees can be cleaned as soon as their verdict lands. Record the input at
+    // agent startup in its persistent stderr log, before either review can finish.
+    for tool in ["claude", "codex"] {
+        let delegate = config["agents"][tool]["bin"].as_str().unwrap();
+        let recorder = bin.join(format!("{tool}-recording"));
+        std::fs::write(
+            &recorder,
+            format!(
+                "#!/bin/sh\nif [ -f .obi/inputs/asked.md ]; then cat .obi/inputs/asked.md >&2; fi\nexec '{}' \"$@\"\n",
+                delegate.replace('\'', "'\\''")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        config["agents"][tool]["bin"] = json!(recorder);
+    }
+    let obid = start(&folder.0, &config, Some(&bin));
     let id = dispatch_unsigned(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
@@ -3579,8 +3598,9 @@ fn merging_14_an_untrusted_task_gets_two_reviews_its_reviewers_told_why() {
     assert_eq!(job["review"]["twoReviews"], why);
     assert_eq!(approvals(&job), ["codex", "claude"], "{job}");
     for review in reviews_of(&obid, &id) {
-        let worktree = Path::new(review["worktree"].as_str().unwrap());
-        let asked = std::fs::read_to_string(worktree.join(".obi/inputs/asked.md")).unwrap();
+        let review_id = review["id"].as_str().unwrap();
+        let asked =
+            std::fs::read_to_string(obid.home.join(format!("logs/{review_id}/agent.log"))).unwrap();
         assert!(
             asked.contains(&format!(
                 "is untrusted: its task read text Oby didn't write ({why})."
