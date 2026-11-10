@@ -143,7 +143,7 @@ impl Jobs {
         if job.account_limit_blocked && !source.approves_limit() {
             return Some(Err(blocked()));
         }
-        if self.lock().workers.contains_key(id) {
+        if job.status == Status::Running {
             return Some(Err(Refused(
                 "It's still running: stop it first, then change it and continue it.".into(),
             )));

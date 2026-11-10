@@ -152,7 +152,7 @@ All add-only.
 - **CHATGPT-10:** While a job runs, no process of the owner's user finds an OpenAI token in any pid's environment, or in `CODEX_HOME`. (Measured from outside the boxes: S0 showed a box reads what an unboxed reader does.)
 - **CHATGPT-11:** Every token generation is scrubbed from a `/v1` answer, `for_agent` and the scan, each checked again after a restart.
 - **CHATGPT-12:** A job outlives its token and finishes on the same thread, none of its tries spent.
-- **CHATGPT-13:** A usage limit shows the #1563 card with no reset time, Manage usage first, and an inferred hold is never `resetAt`. A turn that failed for any other reason holds nothing, whatever the model said in it.
+- **CHATGPT-13:** A job a usage limit stops moves to another account with room, else waits with no card (docs/contracts/account-limits.md, LIMITS-15, the owner's decisions of 2026-11-10); an inferred hold is never `resetAt`. A turn that failed for any other reason holds nothing, whatever the model said in it.
 - **CHATGPT-14:** A 503 keeps credentials and backs off; a 403 not-eligible doesn't retry; a repeated 401 ends the job; a cut stream gets the job's bounded tries, and its reason is never the model's words.
 - **CHATGPT-15:** Removal revokes; a failed revoke completes with `revoked:false`; an exchange or refresh in flight writes nothing afterwards and revokes.
 - **CHATGPT-16:** Switching kinds removes the old login only after success.

@@ -1256,3 +1256,222 @@ fn limits_14_a_wait_on_an_ended_pull_request_doesnt_run() {
 fn limits_13_an_older_wait_stays_the_owners() {
     after_restart("limits-13", true, None, false);
 }
+
+/// A job on Claude Code's `stub` that Routing picked, so Oby may move it.
+fn post_unnamed(obid: &Obid, task: &str) -> String {
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": task, "agent": "claude"});
+    let answer = call(obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    answer.body["id"].as_str().unwrap().to_owned()
+}
+
+/// What the Codex stand-in was sent for job `id`.
+fn codex_heard(folder: &Folder, id: &str) -> String {
+    let threads = folder.0.join("home/logins").join(id).join("threads");
+    std::fs::read_dir(&threads)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// LIMITS-15: a job at its account's limit moves by itself, with no card, to a signed-in account
+/// of another tool with room, in the same branch, and its new agent hears what it takes over.
+#[test]
+fn limits_15_a_limit_moves_the_job_to_an_account_with_room() {
+    let folder = Folder::new("limits-15-move");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let id = post_unnamed(&obid, "LIMITED WEEK: 86400");
+    let moved = within(90, "Codex takes the job over", || {
+        let job = job_now(&obid, &id);
+        (job["agent"] == "codex" && job["status"] == "done").then_some(job)
+    });
+    assert_eq!(moved["account"], "codex", "{moved}");
+    assert!(
+        moved["branch"].as_str().unwrap().starts_with("oby/"),
+        "{moved}"
+    );
+    let moves = moved["moves"].as_array().unwrap();
+    assert_eq!(moves.len(), 1, "{moved}");
+    assert_eq!(
+        moves[0]["why"], "Claude Code reached its limit, so Codex took over",
+        "{moved}"
+    );
+    assert!(pending_decisions(&obid).is_empty());
+    let heard = codex_heard(&folder, &id);
+    assert!(
+        heard.contains("LIMITED WEEK") && heard.contains("same worktree and branch"),
+        "{heard}"
+    );
+}
+
+/// LIMITS-15: with no account that has room, the job waits by itself, with no card, its line
+/// saying what it waits for; Stop ends the wait for good.
+#[test]
+fn limits_15_with_no_room_anywhere_it_waits_and_asks_no_one() {
+    for (name, task) in [
+        ("limits-15-week", "LIMITED WEEK: 86400"),
+        ("limits-15-none", "LIMITED NO RESET"),
+        ("limits-15-five", "LIMITED: 300"),
+    ] {
+        let (_folder, _config, obid) = on_stub(name);
+        let id = post(&obid, task);
+        let waits = waiting_for_reset(&obid, &id);
+        let step = waits["step"].as_str().unwrap();
+        assert!(
+            step.starts_with(
+                "Every account is at its limit: resuming when one has room, at the latest "
+            ),
+            "{task}: {waits}"
+        );
+        assert!(waits["accountLimit"].is_null(), "{task}: {waits}");
+        assert!(pending_decisions(&obid).is_empty(), "{task}");
+        let stopped = call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+        assert_eq!(
+            stopped.body["status"], "stopped",
+            "{task}: {}",
+            stopped.text
+        );
+        assert!(stopped.body["resumesAt"].is_null(), "{task}");
+    }
+}
+
+/// LIMITS-15: a pending card from before resolves itself: its job moves where there's room, or
+/// else waits.
+#[test]
+fn limits_15_a_pending_card_resolves_itself() {
+    for codex in [true, false] {
+        let folder = Folder::new(&format!("limits-15-card-{codex}"));
+        let config = limit_config(&folder.0, "fake-claude", codex);
+        let now = obi_protocol::time::now();
+        blocked_job(
+            &folder.0.join("home/jobs"),
+            "ffff0001",
+            "research",
+            Some(now + 3600),
+        );
+        let obid = start(&folder.0, &config, None);
+        let job = within(40, "the card resolves itself", || {
+            let job = job_now(&obid, "ffff0001");
+            let settled = if codex {
+                job["agent"] == "codex"
+            } else {
+                job["status"] == "queued" && !job["resumesAt"].is_null()
+            };
+            settled.then_some(job)
+        });
+        assert!(job["accountLimit"].is_null(), "{job}");
+        assert!(pending_decisions(&obid).is_empty(), "{job}");
+    }
+}
+
+/// LIMITS-15: `accountFailover` off keeps the job on its account, waiting.
+#[test]
+fn limits_15_failover_off_waits_on_its_own_account() {
+    let folder = Folder::new("limits-15-off");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let off = call(
+        &obid,
+        "PUT",
+        "/v1/settings/jobs",
+        Some(&json!({"accountFailover": false})),
+    );
+    assert_eq!(off.status, 200, "{}", off.text);
+    let id = post_unnamed(&obid, "LIMITED WEEK: 86400");
+    let waits = waiting_for_reset(&obid, &id);
+    assert_eq!(waits["agent"], "claude", "{waits}");
+    assert!(waits["moves"].as_array().unwrap().is_empty(), "{waits}");
+}
+
+/// LIMITS-16: `POST /v1/jobs/{id}/move` moves a running job: its run is stopped, and its round
+/// starts over on the new account in a new session, in the same branch, hearing why.
+#[test]
+fn limits_16_a_running_job_moves_by_hand() {
+    let folder = Folder::new("limits-16-running");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let id = post(&obid, "SLEEP");
+    let running = within(60, "the job runs", || {
+        let job = job_now(&obid, &id);
+        (job["status"] == "running").then_some(job)
+    });
+    let body = json!({"account": "codex", "why": "Claude keeps looping"});
+    let moved = call_typed(&obid, "POST", &format!("/v1/jobs/{id}/move"), &body);
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    assert_eq!(moved.body["agent"], "codex", "{}", moved.text);
+    assert_eq!(moved.body["round"], running["round"], "{}", moved.text);
+    let moves = moved.body["moves"].as_array().unwrap();
+    assert_eq!(moves[0]["from"], "Claude Code · stub", "{}", moved.text);
+    assert_eq!(moves[0]["to"], "Codex · Codex account", "{}", moved.text);
+    assert_eq!(moves[0]["why"], "Claude keeps looping", "{}", moved.text);
+    let done = ended(&obid, &id);
+    assert_eq!(done["branch"], running["branch"], "{done}");
+    assert!(codex_heard(&folder, &id).contains("Claude keeps looping"));
+}
+
+/// LIMITS-16: what can't move answers `422` with why and leaves the job as it was; an unknown
+/// job is `404`.
+#[test]
+fn limits_16_what_cant_move_says_why() {
+    let (_folder, _config, obid) = on_stub("limits-16-refused");
+    let id = post(&obid, "Look around");
+    ended(&obid, &id);
+    let path = format!("/v1/jobs/{id}/move");
+    for (body, why) in [
+        (json!({}), "Say which tool, account or model."),
+        (
+            json!({"agent": "gemini"}),
+            "agent is claude, codex or cursor",
+        ),
+        (json!({"account": "stub"}), "already"),
+        (json!({"account": "nobody"}), "There's no account nobody."),
+        (
+            json!({"model": "gpt-6-astra", "agent": "claude"}),
+            "model of another tool",
+        ),
+        (json!({"why": 7}), "The body is"),
+    ] {
+        let refused = call(&obid, "POST", &path, Some(&body));
+        assert_eq!(refused.status, 422, "{body}: {}", refused.text);
+        assert!(refused.text.contains(why), "{body}: {}", refused.text);
+    }
+    assert!(job_now(&obid, &id)["moves"].as_array().unwrap().is_empty());
+    let unknown = call(
+        &obid,
+        "POST",
+        "/v1/jobs/nope/move",
+        Some(&json!({"agent": "codex"})),
+    );
+    assert_eq!(unknown.status, 404, "{}", unknown.text);
+}
+
+/// LIMITS-16: a finished job's next round runs on the new account and model.
+#[test]
+fn limits_16_a_finished_job_runs_its_next_round_there() {
+    let folder = Folder::new("limits-16-finished");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let id = post(&obid, "Look around");
+    let first = ended(&obid, &id);
+    let body = json!({"agent": "codex", "model": "gpt-6-astra"});
+    let moved = call_typed(&obid, "POST", &format!("/v1/jobs/{id}/move"), &body);
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    assert_eq!(moved.body["status"], first["status"], "{}", moved.text);
+    assert_eq!(moved.body["model"], "gpt-6-astra", "{}", moved.text);
+    let again = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."}),
+    );
+    assert!(again.status < 300, "{}", again.text);
+    let done = within(60, "its next round runs on Codex", || {
+        let job = job_now(&obid, &id);
+        (job["status"] == "done" && job["round"] != first["round"]).then_some(job)
+    });
+    assert_eq!(done["agent"], "codex", "{done}");
+    assert!(!codex_heard(&folder, &id).is_empty());
+}
