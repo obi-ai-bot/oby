@@ -458,3 +458,102 @@ fn failed_nodes_win_over_unjudged_and_the_scan_still_runs() {
     assert_eq!(report["nodes"]["swift"]["verdict"], "unjudged");
     assert_eq!(report["verdict"], "failed");
 }
+
+#[test]
+fn the_workflow_file_decides_order_skips_stops_and_refusals() {
+    let scratch = tempfile::tempdir().unwrap();
+    let repo = scratch.path();
+    std::fs::create_dir(repo.join("scripts")).unwrap();
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/check.sh"),
+        repo.join("scripts/oby-check.sh"),
+    )
+    .unwrap();
+    git(repo, &["init", "--quiet"]);
+    git(repo, &["add", "."]);
+    git(
+        repo,
+        &[
+            "-c",
+            "user.name=check",
+            "-c",
+            "user.email=check@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    );
+    let run = |workflow: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"));
+        command
+            .current_dir(repo)
+            .args([".", "HEAD"])
+            .env("HOME", repo);
+        if let Some(text) = workflow {
+            let file = repo.join("edited.json");
+            std::fs::write(&file, text).unwrap();
+            command.env("OBY_CHECK_WORKFLOW", &file);
+        }
+        let output = command.output().unwrap();
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+
+    // The built-in workflow: every planned group's node runs (the fixture's rust can't judge, electron fails).
+    let report = run(None);
+    assert_eq!(report["workflow_file"], "built-in");
+    assert_eq!(report["nodes"]["ts-checks"]["verdict"], "failed");
+    assert_eq!(report["nodes"]["secret-scan"]["verdict"], "passed");
+    assert_eq!(report["verdict"], "failed");
+
+    // An edited workflow: the scan first, stopping there; ts-checks skipped. Nothing after the stop runs.
+    let report = run(Some(
+        r#"{"schemaVersion":"2","name":"oby-check","steps":[
+        {"id":"secret-scan","use":"runtime.rust:secret-scan","stop":true},
+        {"id":"ts-checks","use":"runtime.rust:ts-checks","active":false},
+        {"id":"rust-affected-tests","use":"runtime.rust:rust-affected-tests"}]}"#,
+    ));
+    assert!(report["workflow_file"]
+        .as_str()
+        .unwrap()
+        .ends_with("edited.json"));
+    assert_eq!(report["nodes"]["secret-scan"]["verdict"], "passed");
+    assert_eq!(
+        report["nodes"]["ts-checks"]["reason"],
+        "the workflow stopped after secret-scan"
+    );
+    assert_eq!(
+        report["nodes"]["rust-affected-tests"]["reason"],
+        "the workflow stopped after secret-scan"
+    );
+    assert_eq!(
+        report["verdict"], "unjudged",
+        "a planned group the workflow didn't run is never a pass"
+    );
+
+    // Skipped without a stop: the skip is the reason.
+    let report = run(Some(
+        r#"{"schemaVersion":"2","name":"oby-check","steps":[
+        {"id":"ts-checks","use":"ts-checks","active":false},{"id":"secret-scan","use":"secret-scan"}]}"#,
+    ));
+    assert_eq!(
+        report["nodes"]["ts-checks"]["reason"],
+        "skipped in the workflow (active: false)"
+    );
+    assert_eq!(
+        report["nodes"]["rust-affected-tests"]["reason"],
+        "the workflow has no step for this group"
+    );
+
+    // A step this host can't run makes the whole run unjudged, with the reason.
+    let report = run(Some(
+        r#"{"schemaVersion":"2","name":"oby-check","steps":[{"id":"x","use":"secret-scan","switch":{}}]}"#,
+    ));
+    assert_eq!(report["verdict"], "unjudged");
+    assert!(report["nodes"]["workflow"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("switch steps aren't supported"));
+}

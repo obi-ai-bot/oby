@@ -2,7 +2,10 @@ use anyhow::{bail, Context, Result};
 use blok::grpc_server::proto::{
     node_runtime_client::NodeRuntimeClient, ExecuteRequest, HealthRequest, NodeRef,
 };
-use oby_check_blok::{check_command, fold, text_output, CheckInput, CheckResult, Verdict, GROUPS};
+use oby_check_blok::{
+    check_command, fold, parse_workflow, text_output, CheckInput, CheckResult, Step, Verdict,
+    DEFAULT_WORKFLOW, GROUPS,
+};
 use serde::Serialize;
 use std::io::Read;
 use std::{
@@ -20,13 +23,37 @@ struct Run {
     commit: String,
     base: String,
     workflow: &'static str,
+    /// Where the workflow came from: OBY_CHECK_WORKFLOW's path, the owner's saved copy, or built-in.
+    workflow_file: String,
     nodes: BTreeMap<String, CheckResult>,
     verdict: Verdict,
     reason: String,
     started: String,
 }
 
-async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>) -> Result<bool> {
+// The workflow file: OBY_CHECK_WORKFLOW, else the copy the pipelines editor saves, else this tool's own.
+fn load_workflow() -> Result<(Vec<Step>, String)> {
+    let saved = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".oby-flow/workflows/oby-check.json"));
+    let path = std::env::var_os("OBY_CHECK_WORKFLOW")
+        .map(PathBuf::from)
+        .or(saved.filter(|p| p.exists()));
+    match path {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("can't read {}", path.display()))?;
+            let steps = parse_workflow(&text).with_context(|| format!("{}", path.display()))?;
+            Ok((steps, path.display().to_string()))
+        }
+        None => Ok((parse_workflow(DEFAULT_WORKFLOW)?, "built-in".into())),
+    }
+}
+
+async fn workflow(
+    input: &CheckInput,
+    steps: &[Step],
+    nodes: &mut BTreeMap<String, CheckResult>,
+) -> Result<bool> {
     let mut needed = vec![];
     let mut has_steps = false;
     let mut has_groups = false;
@@ -122,39 +149,91 @@ async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>)
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let result = async {
-        for name in needed {
-            let start = Instant::now();
-            let request = ExecuteRequest {
-                node: Some(NodeRef {
-                    name: name.into(),
-                    r#type: "runtime.rust".into(),
-                    version: String::new(),
-                }),
-                inputs: serde_json::to_vec(&serde_json::json!({"token": token}))?,
-                ..Default::default()
-            };
-            let result = match client.execute(request).await {
-                Ok(response) if response.get_ref().success => {
-                    serde_json::from_slice(&response.into_inner().data).unwrap_or_else(|_| {
-                        CheckResult::unjudged(
-                            "invalid node response",
-                            start.elapsed().as_secs_f64(),
-                        )
-                    })
-                }
-                _ => CheckResult::unjudged(
-                    "node execution or transport failed",
-                    start.elapsed().as_secs_f64(),
-                ),
-            };
-            nodes.insert(name.into(), result);
+        // A group the script planned but no step runs can't be called judged.
+        for name in &needed {
+            if !steps.iter().any(|s| s.node == *name) {
+                nodes.insert(
+                    (*name).into(),
+                    CheckResult::unjudged("the workflow has no step for this group", 0.0),
+                );
+            }
         }
-        Ok(())
+        let mut stopped: Option<&str> = None;
+        for step in steps.iter().filter(|s| needed.contains(&s.node)) {
+            if let Some(at) = stopped {
+                nodes.insert(
+                    step.id.clone(),
+                    CheckResult::unjudged(format!("the workflow stopped after {at}"), 0.0),
+                );
+                continue;
+            }
+            if !step.active {
+                nodes.insert(
+                    step.id.clone(),
+                    CheckResult::unjudged("skipped in the workflow (active: false)", 0.0),
+                );
+                continue;
+            }
+            let mut result = CheckResult::unjudged("never ran", 0.0);
+            // Retries are for a node that couldn't judge (a transport error, a timeout), never a failure.
+            for _ in 0..step.attempts {
+                result = execute(&mut client, step, &token).await?;
+                if result.verdict != Verdict::Unjudged {
+                    break;
+                }
+            }
+            nodes.insert(step.id.clone(), result);
+            if step.stop {
+                stopped = Some(&step.id);
+            }
+        }
+        Ok::<(), anyhow::Error>(())
     }
     .await;
     child.kill().await?;
     child.wait().await?;
     result.map(|()| false)
+}
+
+async fn execute(
+    client: &mut NodeRuntimeClient<tonic::transport::Channel>,
+    step: &Step,
+    token: &str,
+) -> Result<CheckResult> {
+    let start = Instant::now();
+    let request = ExecuteRequest {
+        node: Some(NodeRef {
+            name: step.node.into(),
+            r#type: "runtime.rust".into(),
+            version: String::new(),
+        }),
+        inputs: serde_json::to_vec(&serde_json::json!({"token": token}))?,
+        ..Default::default()
+    };
+    let call = client.execute(request);
+    let answer = match step.max {
+        Some(max) => match tokio::time::timeout(max, call).await {
+            Ok(answer) => answer,
+            Err(_) => {
+                return Ok(CheckResult::unjudged(
+                    format!("ran past its maxDuration of {}s", max.as_secs()),
+                    start.elapsed().as_secs_f64(),
+                ))
+            }
+        },
+        None => call.await,
+    };
+    Ok(match answer {
+        Ok(response) if response.get_ref().success => {
+            serde_json::from_slice(&response.into_inner().data).unwrap_or_else(|_| {
+                CheckResult::unjudged("invalid node response", start.elapsed().as_secs_f64())
+            })
+        }
+        _ => CheckResult::unjudged(
+            "node execution or transport failed",
+            start.elapsed().as_secs_f64(),
+        ),
+    })
 }
 
 fn planned_group(text: &str, group: &str) -> bool {
@@ -183,12 +262,19 @@ async fn report(checkout: String, base: String) -> Result<Run> {
         commit: String::from_utf8(commit.stdout)?.trim().into(),
         base,
         workflow: "oby-check",
+        workflow_file: String::new(),
         nodes: BTreeMap::new(),
         verdict: Verdict::Unjudged,
         reason: String::new(),
         started: chrono::Utc::now().to_rfc3339(),
     };
-    let outcome = workflow(&input, &mut report.nodes).await;
+    let outcome = match load_workflow() {
+        Ok((steps, file)) => {
+            report.workflow_file = file;
+            workflow(&input, &steps, &mut report.nodes).await
+        }
+        Err(error) => Err(error),
+    };
     let nothing_to_check = matches!(outcome, Ok(true));
     if let Err(error) = outcome {
         eprintln!("shadow check: {error:#}");
