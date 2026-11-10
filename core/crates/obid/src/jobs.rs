@@ -20566,6 +20566,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// PUBLISHING-25 (docs/contracts/publishing.md): checks of two repositories start side by side,
+    /// so each one's build holds the other's check back, and the first's grant counts in the second
+    /// before either has used any memory: never both sized on the same spare memory.
+    #[tokio::test]
+    async fn publishing_25_concurrent_checks_count_one_another_in_the_machines_memory() {
+        use crate::meter::{Machine, Pressure};
+        let (root, _clone, _base, jobs) = cleanup_home("check-width", false);
+        for (id, repo) in [("a", "o/r"), ("b", "o/s")] {
+            let mut job = Job::new(
+                id.into(),
+                repo.into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.check = Some("make test".into());
+            jobs.insert(job);
+            jobs.lock()
+                .workers
+                .insert(id.into(), watch::channel(Signal::Run).0);
+        }
+        let width = |env: Vec<(&str, OsString)>| {
+            env.iter()
+                .find(|(name, _)| *name == "CARGO_BUILD_JOBS")
+                .map(|(_, jobs)| jobs.to_string_lossy().parse::<usize>().unwrap())
+                .unwrap()
+        };
+        let machine = Machine {
+            total: 20 * 1024 * 1024 * 1024,
+            available: 14 * 1024 * 1024 * 1024,
+            pressure: Pressure::Normal,
+        };
+        jobs.measured().machine = Some((std::time::Instant::now(), machine));
+        // a's check holds back b's agent and b's check, which may start beside it.
+        let a = width(jobs.build_env("a", true));
+        assert_eq!(a, process::build_jobs(spare(&machine) - 2 * DEFAULT_BUDGET));
+        let granted = a as u64 * process::BUILD_JOB_MEMORY;
+        assert_eq!(jobs.measured().granted.get("a"), Some(&(0, granted)));
+        // b's check, a moment later, holds back a's agent and what a's check was told.
+        let b = width(jobs.build_env("b", true));
+        let room = spare(&machine) - DEFAULT_BUDGET - granted.max(DEFAULT_BUDGET);
+        assert_eq!(b, process::build_jobs(room));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// What a build leaves in a worktree: Cargo's `target/` (its `CACHEDIR.TAG`), `node_modules`
     /// with its `.cache`, Xcode's `DerivedData`, and, ignored too, logs no build made and a cache in
     /// `.obi/`, all in `.gitignore`.
