@@ -4197,6 +4197,52 @@ fn permissions_15_an_unsigned_allow_is_refused_and_a_deny_goes_through() {
     assert!(denied.body["permission"].is_null(), "{}", denied.text);
 }
 
+/// PERMISSIONS-15: a plan's card is approved only by the owner's signed words through the inbox
+/// too (an approved plan leaves Plan for the default mode, SIGN-2); Keep planning needs none.
+#[test]
+fn permissions_15_an_unsigned_approve_on_a_plan_card_is_refused() {
+    let folder = Folder::new("unsigned-plan");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let planning = || {
+        let id = post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "mode": "plan",
+                   "task": format!("ASK: {}", json!({"tool": "ExitPlanMode", "input": {"plan": "1. Fix it"}}))}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let card = until(&obid, &id, |j| !j["permission"].is_null())["permission"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (
+            id.clone(),
+            format!("/v1/inbox/{id}-permission-{card}/answer"),
+        )
+    };
+    let (id, target) = planning();
+    let body = json!({"answer": "Approve"});
+    let refused = request(&obid, "POST", &target, Some(&body.to_string()));
+    assert_eq!(refused.status, 403, "{}", refused.text);
+    let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert!(!job["permission"].is_null(), "{job}");
+    assert_eq!(job["mode"], "plan", "{job}");
+    let approved = typed(&obid, "POST", &target, &body);
+    assert_eq!(approved.status, 200, "{}", approved.text);
+
+    let (_, target) = planning();
+    let kept = request(
+        &obid,
+        "POST",
+        &target,
+        Some(&json!({"answer": "Keep planning"}).to_string()),
+    );
+    assert_eq!(kept.status, 200, "{}", kept.text);
+}
+
 /// PERMISSIONS-15: the owner's signed Allow or Always with words for the agent is theirs, one
 /// signature for both: the job they typed stays theirs (`vetted`), its check keeps their secrets.
 #[test]
