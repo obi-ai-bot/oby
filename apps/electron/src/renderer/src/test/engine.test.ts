@@ -6,7 +6,7 @@ const OWN = 'com.deskree.oby.electron.obid', SWIFT = 'com.deskree.oby.obid', SCR
 const TAKEN = 'Something other than your Oby engine answers';
 const mac = vi.hoisted(() => ({
   jobs: {} as Record<string, string>, pids: [] as string[], answers: false, loginItem: 'not-registered',
-  calls: [] as string[][], registered: [] as boolean[], refuse: false, lingers: 0, hangs: false, inApplications: true,
+  calls: [] as string[][], registered: [] as boolean[], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true,
 }));
 
 vi.mock('electron', () => ({
@@ -42,6 +42,8 @@ vi.mock('node:child_process', () => ({
     }
     if (file.endsWith('launchctl')) {
       const label = args[1].split('/').pop()!;
+      // a print that never comes back: only execFile's timeout ends it
+      if (args[0] === 'print' && mac.printHangs) return rest.length > 1 && (rest[0] as { timeout?: number }).timeout ? done(new Error('timed out')) : undefined;
       if (args[0] === 'print') return mac.jobs[label] ? done(null, { stdout: mac.jobs[label] }) : done(new Error('no such job'));
       // a launchctl that never comes back: only execFile's timeout ends it
       if (mac.hangs && label === SWIFT) return rest.length > 1 && (rest[0] as { timeout?: number }).timeout ? done(new Error('timed out')) : undefined;
@@ -77,7 +79,7 @@ const stopped = 'state = not running\nlast exit code = 0';
 
 beforeEach(() => {
   rmSync(HOME, { recursive: true, force: true });
-  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, inApplications: true });
+  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true });
   Object.defineProperty(process, 'platform', { value: 'darwin' });
   vi.stubGlobal('fetch', async () => {
     // as undici says it
@@ -218,6 +220,19 @@ describe('the engine while the window is open', () => {
     // no wait again for a while: every call fails at once
     await vi.advanceTimersByTimeAsync(20_000);
     expect((await call()).why).toBeUndefined();
+  });
+
+  it('engine_12_a_launchctl_that_hangs_still_ends_the_wait', async () => {
+    const call = await adopted();
+    vi.useFakeTimers();
+    Object.assign(mac, { pids: [], answers: false });
+    expect((await call()).why).toBe('waiting');
+    // saying why at the end of the wait asks launchctl, which hangs now
+    mac.printHangs = true;
+    await vi.advanceTimersByTimeAsync(21_000);
+    const after = await call();
+    expect(after.why).toBeUndefined();
+    expect(after.text).toContain('Nothing answers on 127.0.0.1:7777');
   });
 
   it('engine_12_without_this_apps_agent_registered_the_hard_error_is_at_once', async () => {

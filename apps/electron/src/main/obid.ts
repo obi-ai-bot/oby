@@ -183,7 +183,8 @@ const helper = () => join(process.resourcesPath, '../Helpers/obid');
 
 // launchctl's `print` of this app's obid (or its session job), or null when launchd hasn't got it
 async function launchd(label = LABEL): Promise<string | null> {
-  try { return (await run('/bin/launchctl', ['print', `${domain()}/${label}`])).stdout; } catch { return null; }
+  // at most 5 s: a launchctl that hangs must never hold a wait for good (ENGINE-12)
+  try { return (await run('/bin/launchctl', ['print', `${domain()}/${label}`], { timeout: 5000 })).stdout; } catch { return null; }
 }
 // one `key = value` line of it
 const field = (printed: string | null, key: string) =>

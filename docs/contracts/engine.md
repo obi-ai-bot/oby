@@ -23,7 +23,7 @@ The business behavior contract for what the Electron app does about obid at laun
 - `launchctl disable` lasts, and the person isn't told their engine changed.
 - If macOS then asks for Login Items approval, the Swift Oby's agent has already gone: there's no engine until the person approves, as the window says.
 - A still-held port shows the existing "port is taken" words, which name another user's Oby or another program, not the Swift Oby.
-- `launchctl print` has no timeout: a hung one at that step still shows "starting".
+- `launchctl print` is given 5 seconds: a hung one counts as "launchd doesn't have it", so neither a start nor a restart wait (ENGINE-12) can stay "starting" for good (`engine_12_a_launchctl_that_hangs_still_ends_the_wait`).
 - `bootout` and `disable` haven't run against a real SMAppService agent.
 
 ## Interfaces and dependencies
