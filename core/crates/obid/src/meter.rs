@@ -107,13 +107,22 @@ pub fn tree_cpu(table: &[Process], roots: &[u32]) -> u64 {
 
 /// The CPU time `pgid`'s tree has used now ([`tree_cpu`]), or `None` when it can't be read.
 pub async fn group_cpu(pgid: u32) -> Option<u64> {
-    tokio::task::spawn_blocking(move || {
-        let table = processes();
-        (!table.is_empty()).then(|| tree_cpu(&table, &[pgid]))
-    })
-    .await
-    .ok()
-    .flatten()
+    tokio::task::spawn_blocking(move || known_tree_cpu(&processes(), &[pgid]))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// [`tree_cpu`], or `None` when it can't be told: an empty table, or a process in the tree whose
+/// CPU time reads 0, which is a read that failed (any process that has run has used some), not an
+/// idle one: a check whose CPU is unknown isn't stopped as idle (PUBLISHING-29).
+pub fn known_tree_cpu(table: &[Process], roots: &[u32]) -> Option<u64> {
+    let unread = std::cell::Cell::new(table.is_empty());
+    let total = tree_sum(table, roots, |p| {
+        unread.set(unread.get() || p.cpu == 0);
+        p.cpu
+    });
+    (!unread.get()).then_some(total)
 }
 
 fn tree_sum(table: &[Process], roots: &[u32], value: impl Fn(&Process) -> u64) -> u64 {
@@ -585,5 +594,26 @@ Pages occupied by compressor:                 347536.
         let _ = child.kill();
         let _ = child.wait();
         assert!(rss > 0, "the child's resident memory wasn't measured");
+    }
+}
+
+#[cfg(test)]
+mod known_cpu_tests {
+    use super::*;
+
+    fn p(pid: u32, ppid: u32, cpu: u64) -> Process {
+        Process { pid, ppid, pgid: 1, rss: 0, cpu }
+    }
+
+    #[test]
+    fn publishing_29_a_cpu_time_that_cant_be_read_is_unknown_not_idle() {
+        let read = [p(1, 0, 5), p(2, 1, 7), p(3, 2, 11)];
+        assert_eq!(known_tree_cpu(&read, &[1]), Some(23));
+        let unread = [p(1, 0, 5), p(2, 1, 0), p(3, 2, 11)];
+        assert_eq!(known_tree_cpu(&unread, &[1]), None);
+        // Outside the tree, an unreadable process changes nothing.
+        let other = [p(1, 0, 5), p(9, 0, 0)];
+        assert_eq!(known_tree_cpu(&[other[0], Process { pgid: 9, ..other[1] }], &[1]), Some(5));
+        assert_eq!(known_tree_cpu(&[], &[1]), None);
     }
 }
