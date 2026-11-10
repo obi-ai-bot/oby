@@ -602,7 +602,13 @@ mod known_cpu_tests {
     use super::*;
 
     fn p(pid: u32, ppid: u32, cpu: u64) -> Process {
-        Process { pid, ppid, pgid: 1, rss: 0, cpu }
+        Process {
+            pid,
+            ppid,
+            pgid: 1,
+            rss: 0,
+            cpu,
+        }
     }
 
     #[test]
@@ -613,7 +619,19 @@ mod known_cpu_tests {
         assert_eq!(known_tree_cpu(&unread, &[1]), None);
         // Outside the tree, an unreadable process changes nothing.
         let other = [p(1, 0, 5), p(9, 0, 0)];
-        assert_eq!(known_tree_cpu(&[other[0], Process { pgid: 9, ..other[1] }], &[1]), Some(5));
+        assert_eq!(
+            known_tree_cpu(
+                &[
+                    other[0],
+                    Process {
+                        pgid: 9,
+                        ..other[1]
+                    }
+                ],
+                &[1]
+            ),
+            Some(5)
+        );
         assert_eq!(known_tree_cpu(&[], &[1]), None);
     }
 }
