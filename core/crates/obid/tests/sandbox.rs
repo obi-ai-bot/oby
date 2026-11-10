@@ -203,7 +203,8 @@ fn spec(world: &World, network: bool, commits: bool, account: bool) -> Spec {
     }
 }
 
-/// A job cannot inspect shared scratch space, including other CLI sessions' folders.
+/// A job cannot inspect shared scratch space, including other CLI sessions' folders, and still runs
+/// its own `ps` (#1789), kept in the user's temporary folder.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_jobs_box_hides_tmp_and_user_temp() {
@@ -223,7 +224,7 @@ fn a_jobs_box_hides_tmp_and_user_temp() {
         planted.push(Folder(dir));
     }
     let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid"))).unwrap();
-    let script = "for dir do if /bin/ls \"${dir%/*}\" || /bin/ls \"$dir\" || /bin/cat \"$dir/secret\"; then exit 1; fi; done; printf own > \"$TMPDIR/own\"";
+    let script = "for dir do if /bin/ls \"${dir%/*}\" || /bin/ls \"$dir\" || /bin/cat \"$dir/secret\"; then exit 1; fi; done; ps -o pid= -p $$ || exit 2; printf own > \"$TMPDIR/own\"";
     let mut command = vec!["/bin/sh".into(), "-c".into(), script.into(), "probe".into()];
     command.extend(planted.iter().map(|dir| dir.0.clone().into_os_string()));
     let argv = sandbox.wrap(&job, &command);
@@ -238,7 +239,17 @@ fn a_jobs_box_hides_tmp_and_user_temp() {
         .current_dir(&world.worktree)
         .output()
         .unwrap();
-    assert!(ran.status.success(), "{ran:?}");
+    // The watcher ends by killing its own sandbox: the program's exit code is the one it recorded.
+    let ended_ok = ran.status.success()
+        || std::os::unix::process::ExitStatusExt::signal(&ran.status) == Some(9);
+    assert!(ended_ok, "{ran:?}");
+    assert_eq!(
+        std::fs::read_to_string(world.temp.join(".obid-status"))
+            .unwrap()
+            .trim(),
+        "0",
+        "{ran:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(world.temp.join("own")).unwrap(),
         "own"
