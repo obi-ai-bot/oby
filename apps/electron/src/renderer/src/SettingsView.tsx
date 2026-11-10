@@ -1168,19 +1168,21 @@ export function Row({ label, about, children }: { label: React.ReactNode; about?
 
 // A model and, after it in grey, its effort: one button, and one menu with the models, then
 // Effort (its pick on the right), which opens the efforts beside it, as macOS's submenus do: on
-// hover, or a click. none: models only, as Cursor's (Settings › Agents)
-function ModelPicker({ label, models, model, onModel, efforts, effort, onEffort }: {
+// hover, or a click. none: models only, as Cursor's (Settings › Agents). A long list (Cursor's)
+// scrolls under the Model label, Effort staying below it, all inside the window (Menu)
+export function ModelPicker({ label, models, model, onModel, efforts, effort, onEffort }: {
   label: string;
   models: readonly (readonly [string, string])[]; model: string; onModel: (v: string) => void;
   efforts: readonly (readonly [string, string])[]; effort?: string; onEffort: (v: string) => void;
 }) {
   const [at, setAt] = useState<DOMRect | null>(null);
   // the efforts open beside Effort: to the right, else the left where the window ends there; as
-  // high as fits (offset: from Effort's top)
-  const [sub, setSub] = useState<{ left: boolean; top: number } | null>(null);
+  // high as fits (offset: from Effort's top), scrolling where even that's too short, as TalkPill's
+  const [sub, setSub] = useState<{ left: boolean; top: number; maxHeight: number } | null>(null);
   const openSub = (e: React.SyntheticEvent<HTMLButtonElement>) => {
-    const r = e.currentTarget.getBoundingClientRect(), tall = efforts.length * 30 + 14, wide = 160;
-    setSub({ left: r.right + 12 + wide > innerWidth - 8, top: Math.min(-8, innerHeight - 12 - tall - r.top) });
+    const r = e.currentTarget.getBoundingClientRect(), wide = 160;
+    const tall = Math.min(efforts.length * 30 + 14, Math.max(120, innerHeight - r.top - 12));
+    setSub({ left: r.right + 12 + wide > innerWidth - 8, top: Math.min(-8, innerHeight - 12 - tall - r.top), maxHeight: tall });
   };
   const shown = efforts.find(([id]) => id === effort)?.[1];
   const close = () => { setAt(null); setSub(null); };
@@ -1195,13 +1197,15 @@ function ModelPicker({ label, models, model, onModel, efforts, effort, onEffort 
       <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" /></svg>
     </button>
     {at && (
-      <Menu at={at} onClose={close} width={200} height={30 * models.length + (efforts.length ? 73 : 47)}>
+      <Menu at={at} onClose={close} width={200} height={30 * models.length + (efforts.length ? 73 : 47)} scrollPart>
         <span className="menu-label">Model</span>
-        {models.map(([id, name]) => (
-          <button key={id} role="menuitemradio" aria-checked={id === model} onPointerEnter={() => setSub(null)} onClick={() => pick(onModel, id)}>
-            {name}{id === model && <Check size={14} strokeWidth={1.8} className="menu-check" />}
-          </button>
-        ))}
+        <div className="menu-scroll" role="group" aria-label="Models">
+          {models.map(([id, name]) => (
+            <button key={id} role="menuitemradio" aria-checked={id === model} onPointerEnter={() => setSub(null)} onClick={() => pick(onModel, id)}>
+              {name}{id === model && <Check size={14} strokeWidth={1.8} className="menu-check" />}
+            </button>
+          ))}
+        </div>
         {efforts.length > 0 && <>
           <hr />
           <span className="menu-sub-anchor">
@@ -1211,7 +1215,7 @@ function ModelPicker({ label, models, model, onModel, efforts, effort, onEffort 
             </button>
             {/* in the menu's own box, so a click on it isn't a click outside the menu */}
             {sub && (
-              <span className={`row-menu row-submenu${sub.left ? ' is-left' : ''}`} style={{ top: sub.top }} role="menu" aria-label="Effort">
+              <span className={`row-menu row-submenu is-scroll${sub.left ? ' is-left' : ''}`} style={{ top: sub.top, maxHeight: sub.maxHeight }} role="menu" aria-label="Effort">
                 {efforts.map(([id, name]) => (
                   <button key={id} role="menuitemradio" aria-checked={id === effort} onClick={() => pick(onEffort, id)}>
                     {name}{id === effort && <Check size={14} strokeWidth={1.8} className="menu-check" />}

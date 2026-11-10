@@ -1607,8 +1607,11 @@ button.connector { width: 100%; text-align: left; }
 .row-menu .menu-sub-anchor > button > svg { margin-left: 8px; color: var(--muted); }
 .row-menu.row-submenu { position: absolute; left: calc(100% + 12px); top: -8px; min-width: 148px; transform-origin: top left; }
 .row-menu.row-submenu.is-left { left: auto; right: calc(100% + 12px); transform-origin: top right; }
-/* A long account model list (CONVERSATION-AGENT-22): scroll inside the window. */
-.row-menu.row-submenu.is-scroll { overflow-y: auto; overscroll-behavior: contain; }
+/* A long account model list (CONVERSATION-AGENT-22): scroll inside the window. A menu taller than
+   the window's room (Menu) scrolls whole, or only its .menu-scroll part, so the submenu beside
+   the rest (Settings › Agents' Effort) isn't clipped. */
+.row-menu.is-scroll, .row-menu.row-submenu.is-scroll { overflow-y: auto; overscroll-behavior: contain; }
+.row-menu .menu-scroll { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .sidebar-empty { margin: 8px 10px; color: var(--muted); font-size: var(--text-sm); }
 /* an empty list's words (Home's, Conversations'): in the middle, both ways */
 .sidebar-empty.is-middle { position: absolute; left: 16px; right: 16px; top: 50%; transform: translateY(-50%); margin: 0; color: rgba(255, 255, 255, 0.3); font-size: var(--text-base); white-space: pre-line; text-align: center; line-height: 1.5; pointer-events: none; }  /* same type as Home's attention line; in the middle of the window's height, not of the room under the title */
