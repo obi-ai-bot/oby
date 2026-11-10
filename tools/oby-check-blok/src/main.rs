@@ -149,17 +149,6 @@ fn planned_group(text: &str, group: &str) -> bool {
         .any(|line| line == format!("oby-check: group {group}"))
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn only_exact_group_lines_select_nodes() {
-        let text = "==> cargo test\noby-check: the Rust core has lines\ncouldn't judge: test\noby-check: jobs.rs\ngitleaks isn't installed\nApple apps and swift test don't run\n oby-check: group rust\noby-check: group rust extra\noby-check: group scan\n";
-        assert!(!super::planned_group(text, "rust"));
-        assert!(!super::planned_group(text, "swift"));
-        assert!(super::planned_group(text, "scan"));
-    }
-}
-
 async fn run() -> Result<Verdict> {
     let mut args = std::env::args().skip(1);
     let checkout = args
@@ -224,4 +213,15 @@ async fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_exact_group_lines_select_nodes() {
+        let text = "==> cargo test\noby-check: the Rust core has lines\ncouldn't judge: test\noby-check: jobs.rs\ngitleaks isn't installed\nApple apps and swift test don't run\n oby-check: group rust\noby-check: group rust extra\noby-check: group scan\n";
+        assert!(!super::planned_group(text, "rust"));
+        assert!(!super::planned_group(text, "swift"));
+        assert!(super::planned_group(text, "scan"));
+    }
 }
