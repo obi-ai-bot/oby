@@ -68,8 +68,12 @@ async function gone(error?: unknown): Promise<Answer> {
   returning ??= (async () => {
     if (!(await Promise.all([LABEL, SESSION].map((label) => launchd(label)))).some(Boolean)) { returning = null; return false; }
     void answers(20_000).then(async (back) => {
-      if (!back) gaveUp = { until: Date.now() + 30_000, answer: { status: 0, text: `${NOTHING}\n${await why()}` } };
-      returning = null;
+      // the wait always ends, whatever saying why throws: never 'starting' for good
+      try {
+        if (!back) gaveUp = { until: Date.now() + 30_000, answer: { status: 0, text: `${NOTHING}\n${await why().catch(() => '')}`.trim() } };
+      } finally {
+        returning = null;
+      }
     });
     return true;
   })();
