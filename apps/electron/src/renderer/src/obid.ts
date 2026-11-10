@@ -45,7 +45,10 @@ export type Models = {
   codex: { model: string; effort: string; complexEffort: string };
   cursor?: { model: string };
 };
-export type ModelOptions = Record<Agent, { models: { id: string; name: string; efforts?: string[] }[]; efforts?: string[]; complexEfforts: string[] }>;
+// Cursor's listed ids grouped by model (AGENTS-11): each variant one id, its effort (none: the
+// model's own default) and Fast
+export type CursorGroup = { base: string; name: string; default: string; variants: { id: string; effort?: string; fast: boolean }[] };
+export type ModelOptions = Record<Agent, { models: { id: string; name: string; efforts?: string[] }[]; efforts?: string[]; complexEfforts: string[]; groups?: CursorGroup[] }>;
 
 // {"error": "One line a person can read."} with its status; status 0: obid didn't answer, and
 // the message is why (its own reason when it has one, main/obid.ts)

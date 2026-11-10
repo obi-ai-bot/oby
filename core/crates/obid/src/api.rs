@@ -919,15 +919,18 @@ async fn model_options(State(shared): State<Arc<Shared>>) -> axum::Json<serde_js
                 )
             })
             .collect();
-        let models: Vec<_> =
-            crate::model_lists::tool_options(&shared.jobs.model_lists, tool, &peers)
-                .into_iter()
-                .map(|m| serde_json::json!({"id": m.id, "name": m.name, "efforts": efforts}))
-                .collect();
-        (
-            tool.id().to_owned(),
-            serde_json::json!({"models": models, "efforts": efforts, "complexEfforts": efforts}),
-        )
+        let listed = crate::model_lists::tool_options(&shared.jobs.model_lists, tool, &peers);
+        let models: Vec<_> = listed
+            .iter()
+            .map(|m| serde_json::json!({"id": m.id, "name": m.name, "efforts": efforts}))
+            .collect();
+        let mut options =
+            serde_json::json!({"models": models, "efforts": efforts, "complexEfforts": efforts});
+        // Cursor's ids are one per model, effort and Fast: its models as Settings shows them (AGENTS-11)
+        if tool == crate::agent::Tool::Cursor {
+            options["groups"] = serde_json::json!(crate::model_lists::group_cursor(&listed));
+        }
+        (tool.id().to_owned(), options)
     });
     axum::Json(serde_json::Value::Object(options.into_iter().collect()))
 }

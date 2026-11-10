@@ -8,7 +8,7 @@ import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
 import { everything, onObid } from './lean';
 import qrcode from 'qrcode-generator';
-import { ApiError, api, qrText, type Invitation, type PairedDevice, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
+import { ApiError, api, qrText, type CursorGroup, type Invitation, type PairedDevice, type ModelOptions, type Models, type SavedRule, type SignIn, type Status } from './obid';
 import Connectors, { ConfirmWindow, Window, readConnectors } from './Connectors';
 import { again, sameAs, startAdding, stopAdding, toolRows, whoseAgain, type Found } from './addAccount';
 import { UNFINISHED, signInWhy } from './signInWhy';
@@ -669,7 +669,7 @@ function Models() {
 // week) with the model and efforts its jobs run on, and its Remove; then Add an agent. obid keeps
 // the default agent and the models (#1573, #1574; docs/contracts/agents.md) once its status says
 // defaultAccount; an older obid, and the mock, keep them here (agent.default, models.mine)
-const EFFORT_NAMES: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
+const EFFORT_NAMES: Record<string, string> = { none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max', ultra: 'Ultra' };
 const MOCK_MODELS: Models = {
   claude: { model: 'claude-opus-5-5', effort: 'xhigh', complexEffort: 'xhigh' },
   codex: { model: 'gpt-6.1-sol', effort: 'high', complexEffort: 'high' },
@@ -679,8 +679,24 @@ const ALL_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MOCK_OPTIONS: ModelOptions = {
   claude: { models: [{ id: 'claude-fable-5-1', name: 'Fable 5.1' }, { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' }, { id: 'claude-haiku-5-5', name: 'Haiku 5.5' }], efforts: ALL_EFFORTS, complexEfforts: ALL_EFFORTS },
   codex: { models: [{ id: 'gpt-6.1-sol', name: 'gpt-6.1-sol', efforts: ALL_EFFORTS.slice(0, 4) }, { id: 'gpt-6-astra', name: 'GPT-6-Astra', efforts: ALL_EFFORTS.slice(0, 4) }], complexEfforts: ALL_EFFORTS.slice(0, 4) },
-  cursor: { models: [{ id: 'auto', name: 'Auto' }, { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'gpt-6.1-sol', name: 'gpt-6.1-sol' }], complexEfforts: [] },
+  cursor: { models: [{ id: 'auto', name: 'Auto' }, { id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-opus-5-5-high', name: 'Opus 5.5 High' }, { id: 'claude-opus-5-5-high-fast', name: 'Opus 5.5 High Fast' }, { id: 'gpt-6.1-sol', name: 'gpt-6.1-sol' }], complexEfforts: [],
+    groups: [{ base: 'auto', name: 'Auto', default: 'auto', variants: [{ id: 'auto', fast: false }] },
+      { base: 'claude-opus-5-5', name: 'Opus 5.5', default: 'claude-opus-5-5', variants: [{ id: 'claude-opus-5-5', fast: false }, { id: 'claude-opus-5-5-high', effort: 'high', fast: false }, { id: 'claude-opus-5-5-high-fast', effort: 'high', fast: true }] },
+      { base: 'gpt-6.1-sol', name: 'gpt-6.1-sol', default: 'gpt-6.1-sol', variants: [{ id: 'gpt-6.1-sol', fast: false }] }] },
 };
+// Cursor (AGENTS-11): the model a listed id is, and the listed id for a model, effort ('': its
+// default) and Fast, the closest one that exists: the effort kept where the model has it, else its
+// default's; Fast kept where that effort has it
+export const cursorPick = (groups: CursorGroup[], id: string) => {
+  for (const g of groups) { const v = g.variants.find((x) => x.id === id); if (v) return { g, v }; }
+  return null;
+};
+export function cursorCompose(g: CursorGroup, effort: string | undefined, fast: boolean): string {
+  const d = g.variants.find((x) => x.id === g.default) ?? g.variants[0];
+  const e = g.variants.some((x) => (x.effort ?? '') === (effort ?? '')) ? effort ?? '' : d.effort ?? '';
+  const at = g.variants.filter((x) => (x.effort ?? '') === e);
+  return (at.find((x) => x.fast === fast) ?? at[0]).id;
+}
 type Tuning = { model: string; effort?: string; complexEffort?: string };
 // obid keeps Agents' choices (its status says defaultAccount, even null)
 const keepsAgents = (s: Status | null | undefined): s is Status => onObid && !!s && 'defaultAccount' in s;
@@ -850,10 +866,12 @@ export function Agents() {
             </span>}
           </div>
           {/* the model and, after it in grey, how hard it thinks (one menu for both); complex tasks get an effort of their own */}
-          <Row label="Model">
-            <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => void tune(x.id, { model: v }).catch(say)}
-              efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => void tune(x.id, { effort: v }).catch(say)} />
-          </Row>
+          {a === 'cursor' && o?.groups
+            ? <CursorModel name={x.name} groups={o.groups} model={t.model} onModel={(v) => void tune(x.id, { model: v }).catch(say)} />
+            : <Row label="Model">
+                <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => void tune(x.id, { model: v }).catch(say)}
+                  efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => void tune(x.id, { effort: v }).catch(say)} />
+              </Row>}
           {a !== 'cursor' && <Row label="Effort on complex tasks">
             <Select wide value={t.complexEffort ?? ''} onChange={(v) => void tune(x.id, { complexEffort: v }).catch(say)} label={`${x.name} complex task effort`} options={effortChoices(o?.complexEfforts, t.complexEffort)} />
           </Row>}
@@ -1227,6 +1245,27 @@ export function ModelPicker({ label, models, model, onModel, efforts, effort, on
         </>}
       </Menu>
     )}
+  </>;
+}
+
+// Cursor's Model row (AGENTS-11): its models once each, the chosen one's efforts in the same menu as
+// Claude Code's and Codex's, and Fast where that effort has it; each choice is one listed id. A
+// saved id Cursor no longer lists shows as itself, with no effort
+export function CursorModel({ name, groups, model, onModel }: { name: string; groups: CursorGroup[]; model: string; onModel: (id: string) => void }) {
+  const at = cursorPick(groups, model);
+  const efforts = at ? [...new Set(at.g.variants.map((v) => v.effort ?? ''))] : [];
+  const fast = !!at && new Set(at.g.variants.filter((v) => (v.effort ?? '') === (at.v.effort ?? '')).map((v) => v.fast)).size > 1;
+  return <>
+    <Row label="Model">
+      <ModelPicker label={`${name} model and effort`} model={at?.g.base ?? model}
+        models={choices(groups.map((g) => ({ id: g.base, name: g.name })), at?.g.base ?? model)}
+        onModel={(base) => { const g = groups.find((y) => y.base === base); if (g && g !== at?.g) onModel(cursorCompose(g, at?.v.effort, !!at?.v.fast)); }}
+        efforts={efforts.length > 1 ? efforts.map((e) => [e, EFFORT_NAMES[e] ?? (e || 'Default')] as const) : []} effort={at?.v.effort ?? ''}
+        onEffort={(e) => at && onModel(cursorCompose(at.g, e, at.v.fast))} />
+    </Row>
+    {fast && at && <Row label="Fast">
+      <Switch on={at.v.fast} label={`${name}: Fast`} onChange={(on) => onModel(cursorCompose(at.g, at.v.effort, on))} />
+    </Row>}
   </>;
 }
 
