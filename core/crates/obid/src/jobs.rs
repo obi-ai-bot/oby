@@ -66,6 +66,7 @@ mod lanes;
 mod logins;
 mod research;
 mod retry;
+mod review_reads;
 mod secrets;
 mod setup;
 mod slots;
@@ -5026,23 +5027,6 @@ impl Jobs {
         }
     }
 
-    /// Whether Oby's own review `job` may run `call` ([`review_may_run`]), as this machine boxes it.
-    fn review_runs(&self, job: &Job, call: &Call, bounds: &permissions::Bounds) -> bool {
-        job.review_of.is_some()
-            && review_may_run(
-                job,
-                job.review_of
-                    .as_deref()
-                    .and_then(|of| self.get(of))
-                    .as_ref(),
-                self.confines_egress(),
-                self.job_account(job)
-                    .is_ok_and(|(tool, _)| !Self::own_lane(job, tool)),
-                call,
-                bounds,
-            )
-    }
-
     /// Puts `call` on job `id`'s card for the owner, saying which sites their yes opens; its
     /// answer comes later, and `owner` hears when it's the owner's own. None, and nothing asked,
     /// when `most_sites` of the job's fetches wait for the owner already (counted as it's put).
@@ -9836,6 +9820,8 @@ impl Jobs {
             }
             let start = match (pushed, &job.start_from, job.pr) {
                 (Some(sha), _, _) => sha.clone(),
+                // The owner's review reads its pull request's head as just fetched (MERGING-37).
+                (None, _, Some(pr)) if job.read_only() => format!("refs/remotes/origin/pr/{pr}"),
                 (None, Some(branch), _) => format!("refs/heads/{branch}"),
                 (None, None, Some(pr)) => format!("refs/remotes/origin/pr/{pr}"),
                 (None, None, None) => format!("refs/remotes/origin/{base}"),
@@ -9879,8 +9865,12 @@ impl Jobs {
                 }
             }
             // Detached at the branch: the sandbox never writes the clone's refs, so obid moves the
-            // branch to the job's commits itself (git::keep_commits).
-            let branch_ref = format!("refs/heads/{}", job.branch);
+            // branch to the job's commits itself (git::keep_commits). A review of a pull request at
+            // the head it reads, never a branch of that name the clone kept from before (MERGING-37).
+            let branch_ref = match job.pr {
+                Some(_) if job.read_only() => start_commit.clone(),
+                _ => format!("refs/heads/{}", job.branch),
+            };
             let mut args: Vec<&std::ffi::OsStr> =
                 git::LFS_POINTERS.iter().map(|a| a.as_ref()).collect();
             args.extend::<[&std::ffi::OsStr; 6]>([
@@ -11091,7 +11081,10 @@ impl Jobs {
             let head = self.keep_commits(id).await?;
             // What its check passed on (PUBLISHING-1, PUBLISHING-5): all that publishing will push,
             // by itself or by hand, while its branch is still there. One with no check: its head.
-            let verified = match (self.get(id).and_then(|j| j.check), checked.take()) {
+            let verified = match (
+                self.get(id).and_then(|j| j.repository_check().cloned()),
+                checked.take(),
+            ) {
                 (None, _) => Ok(head.clone()),
                 (Some(_), Some(Ok(commit))) if commit == head => Ok(commit),
                 (Some(_), Some(Err(why))) => Err(why),
@@ -11184,9 +11177,7 @@ impl Jobs {
             }
             let pushed = self.still_pushed(&job, &head, commits).await;
             // Its check didn't pass on its commits alone: done, nothing published, and why.
-            if let Err(why) = &verified
-                && job.kind != "research"
-            {
+            if let Err(why) = &verified {
                 self.end_done(id, commits, pushed, |job| job.reason = Some(why.clone()));
                 return Ok(());
             }
@@ -14672,43 +14663,6 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
     }
 }
 
-/// Whether Oby's own `review` may run `call` with nobody watching (PERMISSIONS-14, the owner's
-/// answer of 2026-11-08: local commands inside its box, with no network), fail-closed: only a Bash
-/// command that reaches nothing past the box ([`permissions::reach`]) and writes nothing as obid
-/// reads it ([`permissions::writes`]); only where the box holds its egress to obid's proxy
-/// (`confined`) and obid boxes the run itself (`boxed`: not Claude Code's own sandbox); and only in
-/// a review of the owner's own work (`author`, read afresh for each call: from the owner's own
-/// words, no one else's, no second review needed, nothing reached past the registries or
-/// withheld), so a stranger's code never runs beside a reviewer's login. Every other
-/// command is refused as [`unwatched_review`] says.
-fn review_may_run(
-    review: &Job,
-    author: Option<&Job>,
-    confined: bool,
-    boxed: bool,
-    call: &Call,
-    bounds: &permissions::Bounds,
-) -> bool {
-    review.review_of.is_some()
-        && confined
-        && boxed
-        && review.someone_elses().is_none()
-        && author.is_some_and(|author| {
-            // Someone else's, not from the owner's words, past the registries, withheld (all
-            // `own_check_refuses_secrets`), unsigned, from others' memory or a security path
-            // (`two_reviews`).
-            author.own_check_refuses_secrets().is_none()
-                && author.check_withheld.is_none()
-                && crate::merge::two_reviews(author, review.security_paths.as_deref()).is_none()
-        })
-        && call.tool == "Bash"
-        && permissions::reach(call, bounds).is_none()
-        && call
-            .command
-            .as_deref()
-            .is_some_and(|command| !permissions::writes(command))
-}
-
 /// Oby's own review runs with nobody watching (PERMISSIONS-14): what it would ask the owner is
 /// refused at once, saying so, instead of a card that waits until the review is parked. A review
 /// the owner dispatched by hand (no `review_of`) keeps its cards. Oby's default for its own
@@ -14768,15 +14722,14 @@ fn owner_prompt(job: &Job) -> String {
             job.branch,
             job.start_from.as_deref().unwrap_or_default()
         ),
-        Some(pr) => format!(
-            "{} pull request #{pr} in {}. Its code is checked out here at the head of the branch {} (HEAD detached: commit as it is, obid moves the branch to your commits); compare it with origin/{base} (git diff origin/{base}...HEAD).",
-            if job.kind == "review" {
-                "Review"
-            } else {
-                "Work on"
-            },
+        Some(pr) if job.read_only() => format!(
+            "Review pull request #{pr} in {}. Its head as it is now, {}, is checked out here (HEAD detached); compare it with origin/{base} (git diff origin/{base}...HEAD).",
             job.repo,
-            job.branch
+            job.start_commit.as_deref().unwrap_or_default()
+        ),
+        Some(pr) => format!(
+            "Work on pull request #{pr} in {}. Its code is checked out here at the head of the branch {} (HEAD detached: commit as it is, obid moves the branch to your commits); compare it with origin/{base} (git diff origin/{base}...HEAD).",
+            job.repo, job.branch
         ),
         None => format!(
             "You're working in {}, in a git worktree of its own at the head of the branch {}, started from origin/{base}. Its HEAD is detached: commit as it is and don't switch branches; obid moves the branch to your commits after each turn.",
@@ -14830,6 +14783,9 @@ fn owner_prompt(job: &Job) -> String {
     if let Some(check) = job.repository_check() {
         // TASKS-15: no round count; PUBLISHING-6: where the check really runs.
         lines.push(format!("The work counts as done only when `{check}` succeeds. obid runs it after you finish, in its own clean checkout of your last commit, with no network: nothing uncommitted, untracked or ignored is there (node_modules, .venv, .env, build folders); usually only the caches in your HOME (cargo's, npm's) carry over, and when the repository declares secrets for its check, not even those. So what it needs must be committed, or installed by the command itself from those caches. Run it yourself first, from a clean state."));
+    } else if let Some(check) = job.check.as_ref().filter(|_| job.read_only()) {
+        // MERGING-36: the check is obid's, on the work under review.
+        lines.push(format!("Don't run `{check}` or the repository's tests: obid runs its check on the work itself, not this review. Judge the change by reading it."));
     }
     lines.join("\n\n")
 }
@@ -22103,7 +22059,7 @@ mod tests {
             boxed: bool,
             command: &str,
         ) -> bool {
-            review_may_run(
+            review_reads::review_may_run(
                 review,
                 author,
                 confined,
