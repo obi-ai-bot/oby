@@ -20,7 +20,10 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const { account: setting, next } = useTalkSetting();
   const [, setDefault] = useTalkDefault();
   const [at, setAt] = useState<DOMRect | null>(null);
-  const [sub, setSub] = useState<{ account: Account; button: HTMLButtonElement; top: number; maxHeight: number } | null>(null);
+  // the account's models beside the menu: top from its row's (row, in the menu), less how far the
+  // accounts have scrolled since (scrolled)
+  const [sub, setSub] = useState<{ account: Account; button: HTMLButtonElement; row: number; top: number; maxHeight: number } | null>(null);
+  const [scrolled, setScrolled] = useState(0);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
@@ -31,7 +34,8 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   // as the usage panel: the menu shows use read in the last 10 minutes
   useEffect(() => { if (at) lookAtUsage(); }, [at]);
   const rows = list(accounts);
-  const close = () => { setAt(null); setSub(null); setError(''); pill.current?.focus(); };
+  const subAccount = sub && rows.find((a) => a.id === sub.account.id);
+  const close = () => { setAt(null); setSub(null); setScrolled(0); setError(''); pill.current?.focus(); };
   const closeSub = () => { sub?.button.focus(); setSub(null); };
   const modelsOf = (a: Account) => accountModels(a, options[a.agent]?.models);
   const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent]?.model ?? 'auto', modelsOf(a), !!(a.modelsRead || a.models?.length));
@@ -50,7 +54,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
     // Keep the submenu inside the window at its smallest size: scroll when the list is long.
     const room = Math.max(120, innerHeight - button.getBoundingClientRect().top - 12);
     const tall = Math.min(modelsOf(a).length * 30 + 14, room);
-    setSub({ account: a, button, top: Math.min(-8, innerHeight - 12 - tall - button.getBoundingClientRect().top), maxHeight: tall });
+    setSub({ account: a, button, row: button.parentElement?.offsetTop ?? 0, top: Math.min(-8, innerHeight - 12 - tall - button.getBoundingClientRect().top), maxHeight: tall });
   };
   useEffect(() => {
     if (at) (menu.current?.querySelector<HTMLButtonElement>(':scope > button[aria-checked="true"], :scope > .menu-sub-anchor > button[aria-checked="true"]') ?? menu.current?.querySelector('button'))?.focus();
@@ -92,8 +96,9 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
         <ChevronDown size={13} strokeWidth={1.8} />
       </button>
       {at && (
-        <Menu at={at} onClose={close} onEscape={sub ? closeSub : close} width={menuWidth} style={placement} height={100 + rows.length * 68}>
-          <div ref={menu} className="talk-menu" onKeyDown={(e) => move(e, e.currentTarget)} aria-busy={saving}>
+        <Menu at={at} onClose={close} onEscape={sub ? closeSub : close} width={menuWidth} style={placement} height={100 + rows.length * 68} scrollPart>
+          {/* the accounts scroll, the models beside them don't: a scrolling box clips what's outside it */}
+          <div ref={menu} className="talk-menu menu-scroll" onKeyDown={(e) => move(e, e.currentTarget)} onScroll={(e) => setScrolled(e.currentTarget.scrollTop)} aria-busy={saving}>
             <button role="menuitemradio" aria-checked={!chosen} className="talk-choice" onFocus={() => setSub(null)} onClick={() => void pick(AUTO)}>
               <span className="talk-choice-mark" />
               <span className="talk-choice-text">
@@ -117,11 +122,6 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
                 {chosen === a.id && <Check size={15} strokeWidth={1.8} className="talk-choice-check" />}
                 <ChevronRight size={13} strokeWidth={1.8} />
               </button>
-              {sub?.account.id === a.id && <span ref={models} role="menu" aria-label={`${rowTitle(a, accounts)} models`} className="row-menu row-submenu is-left is-scroll" style={{ top: sub.top, minWidth: 200, maxHeight: sub.maxHeight }} onKeyDown={(e) => move(e, e.currentTarget, true)}>
-                {modelsOf(a).map((m) => <button key={m.id} role="menuitemradio" aria-checked={modelOf(a).id === m.id} disabled={saving} onClick={() => void pick(a.id, m.id)}>
-                  {m.name}{modelOf(a).id === m.id && <Check size={14} strokeWidth={1.8} className="menu-check" />}
-                </button>)}
-              </span>}
               </span>
             ))}
             <hr />
@@ -131,6 +131,12 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
               <span className="talk-choice-text"><span className="talk-choice-name">Add account</span></span>
             </button>
           </div>
+          {/* beside the menu as it was beside its row: the menu's padding nearer (right) */}
+          {sub && subAccount && <span ref={models} role="menu" aria-label={`${rowTitle(subAccount, accounts)} models`} className="row-menu row-submenu is-left is-scroll" style={{ top: sub.row - scrolled + sub.top, right: 'calc(100% + 4px)', minWidth: 200, maxHeight: sub.maxHeight }} onKeyDown={(e) => move(e, e.currentTarget, true)}>
+            {modelsOf(subAccount).map((m) => <button key={m.id} role="menuitemradio" aria-checked={modelOf(subAccount).id === m.id} disabled={saving} onClick={() => void pick(subAccount.id, m.id)}>
+              {m.name}{modelOf(subAccount).id === m.id && <Check size={14} strokeWidth={1.8} className="menu-check" />}
+            </button>)}
+          </span>}
         </Menu>
       )}
     </>
