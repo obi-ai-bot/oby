@@ -67,6 +67,13 @@ the authoritative check. The local JSONL journal stores commit, base, workflow, 
 node verdicts, timings and failing names, without raw scanner output. A later invocation
 can retry a failed or unjudged run. No endpoint or obid state is added.
 
+The host reads only `oby-check: group <group>` plan lines. Nodes use the checkout and base
+fixed in their spawn environment and require the host's random per-spawn token in every
+request; missing or incorrect tokens and conflicting checkout/base fields run nothing.
+The host retries a node process that exits before readiness on a fresh port, at most three
+attempts (blok-rs does not report an OS-selected port). Changes under the pilot select its
+own formatting, clippy and tests in the Rust group.
+
 ## Acceptance scenarios
 
 - **PUBLISHING-26:** In a scratch repository whose real `scripts/oby-check.sh` passes, the

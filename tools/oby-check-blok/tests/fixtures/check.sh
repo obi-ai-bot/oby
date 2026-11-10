@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eu
 if [[ -n "${OBY_CHECK_PLAN:-}" ]]; then
-    echo "==> fixture $OBY_CHECK_ONLY"
+    echo "oby-check: group $OBY_CHECK_ONLY"
     exit 0
 fi
 case "$OBY_CHECK_ONLY" in

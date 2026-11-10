@@ -417,4 +417,23 @@ for group in rust electron swift scan; do
     }
 done
 
+# The machine-readable plan names each selected group once, independently of messages.
+said=$(OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+for group in rust electron swift scan; do
+    [[ $(grep -cxF "oby-check: group $group" <<<"$said") == 1 ]] || {
+        echo "oby-check-test: missing or repeated $group plan marker: $said" >&2
+        exit 1
+    }
+done
+said=$(OBY_CHECK_PATHS=tools/oby-check-blok/src/lib.rs OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+for command in 'cargo fmt --manifest-path tools/oby-check-blok/Cargo.toml --all -- --check' \
+    'cargo clippy --manifest-path tools/oby-check-blok/Cargo.toml --all-targets -- -D warnings' \
+    'cargo test --manifest-path tools/oby-check-blok/Cargo.toml' 'oby-check: group rust'; do
+    grep -qF "$command" <<<"$said" || { echo "oby-check-test: missing pilot step $command: $said" >&2; exit 1; }
+done
+said=$(OBY_CHECK_PATHS=README.md OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+! grep -qE '^oby-check: group (rust|electron|swift)$' <<<"$said" || {
+    echo "oby-check-test: unchanged groups were planned: $said" >&2; exit 1;
+}
+
 echo 'oby-check-test: passed'
