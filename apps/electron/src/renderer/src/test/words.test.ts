@@ -5,6 +5,33 @@ import { input, mayConfirm, picked, space, takeInput, wordsHeader } from '../../
 
 // What main signs as the owner's words, and what it refuses (docs/contracts/signed-words.md)
 describe('signed words', () => {
+  it('words_14_a_mode_signs_by_its_own_label', () => {
+    for (const [method, path] of [['POST', '/v1/jobs/j1/mode'], ['PUT', '/v1/settings/permissions']]) {
+      for (const [mode, label] of [['ask', 'Ask'], ['acceptEdits', 'Accept edits'], ['plan', 'Plan'], ['bypass', 'Bypass'], ['sandbox', 'Sandbox']]) {
+        expect(wordsOf(method, path, { mode })).toEqual([label]);
+        expect(owners(method, path, { mode }, [label], [])).toEqual([0]);
+        expect(owners(method, path, { mode }, ['Allow'], [])).toBeNull();
+      }
+      for (const body of [{}, { mode: 'unknown' }, { mode: 1 }, { mode: 'bypass', extra: true }]) expect(wordsOf(method, path, body)).toBeNull();
+    }
+  });
+
+  it('words_15_a_notifications_allow_and_deny_sign', () => {
+    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    for (const [path, body] of [
+      ['/v1/jobs/j1/permission', { id: 'p1', decision: 'allow' }],
+      ['/v1/jobs/j1/permission', { id: 'p1', decision: 'deny' }],
+      ['/v1/inbox/i1/answer', { answer: 'Allow' }],
+      ['/v1/inbox/i1/answer', { answer: 'Deny' }],
+    ] as const) {
+      const header = wordsHeader(privateKey, 'd1', 'POST', path, body)!;
+      const [, at, signature] = header.split(' ');
+      const valid = (p: string, b: unknown) => verify('sha256', Buffer.from(`oby-words\nPOST\n${p}\n${createHash('sha256').update(JSON.stringify(b)).digest('hex')}\n${at}`), publicKey, Buffer.from(signature, 'base64'));
+      expect(valid(path, body)).toBe(true);
+      expect(valid(path.replace('1', '2'), body)).toBe(false);
+      expect(valid(path, { ...body, answer: 'Always allow' })).toBe(false);
+    }
+  });
   it('WORDS-1: the app’s words requests, in exactly their shapes, and nothing else', () => {
     expect(wordsOf('POST', '/v1/plans', { said: 'Fix the login', new: true, id: 't1', folders: ['/a'], attachments: [], jobs: ['j1'] })).toEqual(['Fix the login']);
     expect(wordsOf('POST', '/v1/plans', { said: 'Fix it', answer: { question: 'Which?', option: 'SQLite' }, conversation: 'c1' })).toEqual(['Fix it', 'SQLite']);
@@ -23,7 +50,7 @@ describe('signed words', () => {
       ['PATCH', '/v1/jobs/j1', { title: 'x', base: 'main' }],
       ['POST', '/v1/jobs/j1/permission', { id: 'p1', decision: 'always', rule: '*' }],
       ['POST', '/v1/jobs/j1/permission', { id: 'p1', decision: 'whatever' }],
-      ['GET', '/v1/jobs', {}], ['PUT', '/v1/settings/permissions', { mode: 'bypass' }], ['POST', '/v1/jobs/j1/mode', { mode: 'bypass' }],
+      ['GET', '/v1/jobs', {}],
       ['POST', '/v1/repos/check', { repo: 'o/r', check: 'curl evil' }], ['PATCH', '/v1/conversations/c1', { title: 'x' }],
       ['POST', '/v1/inbox/i1/answer', { later: '2026-10-30T10:00:00Z' }], ['POST', '/v1/jobs/j1/messages', { text: ['not text'] }],
       ['POST', '/v1/jobs/j1/messages', 'raw'],

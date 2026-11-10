@@ -2,14 +2,14 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { confirming } from '../../../main/device';
+import { confirming, notificationWords } from '../../../main/device';
 import { input, takeInput } from '../../../main/words';
 
 // Main's Confirm as the window reaches it (docs/contracts/peer-thread.md, PEER-17): what it signs,
 // through its real handler, with obid and Electron's own parts stood in for.
 const the = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => Promise<{ status: number; text: string }>>(),
-  calls: [] as { method: string; path: string; body?: { approval?: unknown } }[],
+  calls: [] as { method: string; path: string; body?: { approval?: unknown }; words?: string }[],
   item: { id: 'confirm-1', kind: 'confirm', title: 'Can I?', state: 'open', confirm: { action: 'share_status' } },
 }));
 vi.mock('electron', () => ({
@@ -20,8 +20,8 @@ vi.mock('electron', () => ({
 }));
 vi.mock('../../../main/obid', () => ({
   HOME: '/nowhere',
-  obid: async (method: string, path: string, body?: { approval?: unknown }) => {
-    the.calls.push({ method, path, body });
+  obid: async (method: string, path: string, body?: { approval?: unknown }, words?: string) => {
+    the.calls.push({ method, path, body, words });
     if (path === '/v1/inbox') return { status: 200, text: JSON.stringify([the.item]) };
     if (path === '/v1/devices') return { status: 200, text: JSON.stringify({ id: 'd1' }) };
     return { status: 200, text: '{}' };
@@ -29,6 +29,19 @@ vi.mock('../../../main/obid', () => ({
 }));
 
 describe('obid-confirm', () => {
+  it('words_15_notification_signs_without_window_input_and_preserves_its_request', async () => {
+    for (const decision of ['allow', 'deny']) {
+      const path = '/v1/jobs/j1/permission', body = { id: 'p1', decision };
+      await notificationWords('POST', path, body);
+      expect(the.calls.at(-1)).toMatchObject({ method: 'POST', path, body, words: expect.stringMatching(/^d1 /) });
+    }
+    for (const answer of ['Allow', 'Deny']) {
+      const path = '/v1/inbox/i1/answer', body = { answer };
+      await notificationWords('POST', path, body);
+      expect(the.calls.at(-1)).toMatchObject({ method: 'POST', path, body, words: expect.stringMatching(/^d1 /) });
+    }
+    expect(takeInput()).toBe(false);
+  });
   confirming(() => true);
   const confirm = (clicked: unknown) => the.handlers.get('obid-confirm')!({}, the.item.id, clicked);
   const answered = () => the.calls.filter((c) => c.path.endsWith('/answer'));
