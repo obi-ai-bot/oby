@@ -2876,7 +2876,7 @@ fn taskconv_14_words_wait_for_a_job_that_isnt_at_work() {
         "{asked:?}"
     );
 
-    let checked = new(json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+    let checked = new(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate",
                              "task": "KEEP PROMPTS", "check": "sleep 3"}));
     until(&obid, &checked, |j| j["step"] == "Running sleep 3");
     let told = tell(&checked, "One more thing: list the tests too.");
