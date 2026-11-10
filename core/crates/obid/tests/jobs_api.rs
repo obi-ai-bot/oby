@@ -198,6 +198,12 @@ fn start_fresh(folder: &Path, config: &Value, path_first: Option<&Path>, base_ch
         .env("CLAUDECODE", "1")
         .env("ANTHROPIC_API_KEY", "sk-ant-not-a-key")
         .env("GH_TOKEN", "not-a-token")
+        // A stand-in for the owner's login shell, when a test wrote one (LANES-4).
+        .envs(
+            Some(folder.join("login-shell"))
+                .filter(|shell| shell.exists())
+                .map(|shell| ("OBID_LOGIN_SHELL", shell)),
+        )
         .stdout(Stdio::piped())
         .stderr(
             std::fs::OpenOptions::new()
@@ -5520,6 +5526,55 @@ fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
     assert!(!said.contains("wrote"), "{said}");
     assert_eq!(heads(), with(&other));
     assert_eq!(kept("refs/stash"), stash);
+}
+
+/// LANES-4 (docs/contracts/lanes.md): the owner's login shell exports a Bedrock gateway and its
+/// model: an own Claude Code job gets all three as written and obid names no model, while what
+/// pushes stays out (LANES-2); once the job is foreign, its next run gets none and obid's model.
+#[test]
+fn lanes_4_an_own_job_gets_the_owners_login_environment() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("lanes-4");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (config, _) = recording_config(&folder.0, &remote);
+    let model = "us.anthropic.claude-sonnet-5-5-v1:0";
+    let shell = folder.0.join("login-shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nexport ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 \
+             ANTHROPIC_MODEL={model} SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=not-a-token \
+             GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=store LANES_4=kept\n\
+             [ \"$1 $2\" = '-l -c' ] && exec /bin/sh -c \"$3\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let obid = start(&folder.0, &config);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "SHOW_ENV"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    let said = job["summary"].as_str().unwrap();
+    let own = format!(
+        "ANTHROPIC_BASE_URL=https://gateway.example/bedrock CLAUDE_CODE_USE_BEDROCK=1 \
+         ANTHROPIC_MODEL={model} SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none \
+         LANES_4=kept model=none"
+    );
+    assert!(said.contains(&own), "{job}");
+
+    let (_obid, job) = marked_untrusted(&folder.0, &config, obid, &id, "SHOW_ENV");
+    assert_eq!(job["status"], "done", "{job}");
+    let said = job["summary"].as_str().unwrap();
+    let foreign = "ANTHROPIC_BASE_URL=none CLAUDE_CODE_USE_BEDROCK=none ANTHROPIC_MODEL=none \
+                   SSH_AUTH_SOCK=none GH_TOKEN=none GIT_CONFIG_COUNT=none LANES_4=none model=claude-";
+    assert!(said.contains(foreign), "{job}");
 }
 
 /// LANES-10 (docs/contracts/lanes.md): a foreign job runs as every job did before the lanes: in
