@@ -62,7 +62,8 @@
 //                    "Listed the files." (tests/plans_api.rs: what a call printed never reaches the brain)
 //   REACH: [<dir>, …]   tries to list each folder and to write .obid-reached in it, and ends the turn
 //                    with "<dir> read=ok|no write=ok|no; …"
-//   NICE             commits nice.txt and ends the turn with "nice=<its own> child=<a child's>"
+//   NICE             commits nice.txt and ends the turn with "nice=<its own> child=<a child's>
+//                    env=<OBY_SESSION_NICE as the agent sees it, or none>"
 //                    (PUBLISHING-30)
 //   SEES: <file>     ends the turn with "sees <file>: true" or "…: false": whether the file was in
 //                    the worktree when it started (PUBLISHING-23: a repository's setup ran first)
@@ -589,7 +590,7 @@ rl.on("line", (line) => {
     writeFileSync("nice.txt", "nice\n");
     execFileSync("git", ["add", "nice.txt"]);
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "Add nice.txt"]);
-    result(`nice=${getPriority()} child=${child}`);
+    result(`nice=${getPriority()} child=${child} env=${process.env.OBY_SESSION_NICE ?? "none"}`);
   } else if (reach) {
     const tries = (f) => {
       try {

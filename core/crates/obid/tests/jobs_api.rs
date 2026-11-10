@@ -521,14 +521,31 @@ fn publishing_30_an_agent_runs_below_the_checks_priority() {
     let remote = fixture(&folder.0.join("fixture"));
     let bin = fake_gh(&folder.0);
     let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    // Relative to where this test started: run by a job's own agent, it's already at 10.
+    let base: i32 = String::from_utf8(
+        std::process::Command::new("ps")
+            .args(["-o", "nice=", "-p", &std::process::id().to_string()])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .parse()
+    .unwrap();
+    let lowered = (base + 10).min(19);
     let answer = post_job(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "NICE",
-               "check": "test \"$(ps -o nice= -p $$)\" -eq 0"}),
+               "check": format!("test \"$(ps -o nice= -p $$)\" -eq {base}")}),
     );
     assert_eq!(answer.status, 201, "{}", answer.text);
     let job = wait(&obid, answer.body["id"].as_str().unwrap());
-    assert_eq!(job["summary"], "nice=10 child=10", "{job}");
+    assert_eq!(
+        job["summary"],
+        format!("nice={lowered} child={lowered} env=none"),
+        "{job}"
+    );
     assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
 }
 
