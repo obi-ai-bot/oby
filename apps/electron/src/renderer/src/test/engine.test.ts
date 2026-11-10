@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // startObid itself, on a fake launchd, lsof and port: nothing here reaches the Mac's.
 const OWN = 'com.deskree.oby.electron.obid', SWIFT = 'com.deskree.oby.obid', SCRIPT = 'com.deskree.obid', SESSION = 'com.deskree.oby.electron.obid.session';
@@ -26,7 +27,9 @@ vi.mock('electron', () => ({
   // Not Now
   dialog: { showMessageBox: async () => ({ response: 1 }) }, ipcMain: {}, shell: { openExternal: async () => {} },
 }));
-vi.mock('node:os', async (real) => ({ ...await real<typeof import('node:os')>(), homedir: () => '/nonexistent' }));
+// a home of the test's own: empty, but for obid's token where a test writes one
+const HOME = `${process.env.TMPDIR ?? '/tmp'}/oby-engine-test-${process.pid}`;
+vi.mock('node:os', async (real) => ({ ...await real<typeof import('node:os')>(), homedir: () => HOME }));
 vi.mock('node:child_process', () => ({
   execFile: (file: string, args: string[], ...rest: unknown[]) => {
     const done = rest[rest.length - 1] as (e: unknown, r?: unknown) => void;
@@ -58,15 +61,27 @@ async function launch() {
   await startObid();
   return (await obid('GET', '/v1/status')).text;
 }
+// this app's own, up and adopted; then a call as the page makes one
+async function adopted() {
+  Object.assign(mac, { jobs: { [OWN]: 'state = running\npid = 200' }, pids: ['200'], answers: true, loginItem: 'enabled' });
+  const runner = `${HOME}/Library/Application Support/Oby/Runner`;
+  mkdirSync(runner, { recursive: true });
+  writeFileSync(`${runner}/api-token`, 'token', { mode: 0o600 });
+  await launch();
+  const { obid } = await import('../../../main/obid');
+  return (method = 'GET') => obid(method, '/v1/status');
+}
 
 const running = 'state = running\npid = 100';
 const stopped = 'state = not running\nlast exit code = 0';
 
 beforeEach(() => {
+  rmSync(HOME, { recursive: true, force: true });
   Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, inApplications: true });
   Object.defineProperty(process, 'platform', { value: 'darwin' });
   vi.stubGlobal('fetch', async () => {
-    if (!mac.answers) throw new Error('refused');
+    // as undici says it
+    if (!mac.answers) throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
     return new Response('{}');
   });
 });
@@ -168,5 +183,46 @@ describe('the engine at launch', () => {
     expect(did('bootout')).toEqual([SWIFT]);
     expect(did('disable')).toEqual([SWIFT]);
     expect(mac.registered).toEqual([]);
+  });
+});
+
+describe('the engine while the window is open', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('engine_12_a_restart_within_the_window_answers_waiting_and_then_carries_on', async () => {
+    const call = await adopted();
+    vi.useFakeTimers();
+    // launchctl kickstart -k: the agent stays registered, its obid gone for a moment
+    Object.assign(mac, { pids: [], answers: false, calls: [] });
+    const during = await Promise.all([call(), call(), call()]);
+    expect(during.map((a) => a.why)).toEqual(['waiting', 'waiting', 'waiting']);
+    const asked = mac.calls.length;
+    expect((await call()).why).toBe('waiting');
+    // one shared wait: a call during it runs no lsof or launchctl of its own
+    expect(mac.calls.length).toBe(asked);
+    Object.assign(mac, { pids: ['200'], answers: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await call()).toEqual({ status: 200, text: '{}' });
+  });
+
+  it('engine_12_a_stop_past_the_window_gives_the_hard_error_and_then_fails_fast', async () => {
+    const call = await adopted();
+    vi.useFakeTimers();
+    Object.assign(mac, { pids: [], answers: false, jobs: { [OWN]: 'state = not running\nlast exit code = 1' } });
+    expect((await call()).why).toBe('waiting');
+    await vi.advanceTimersByTimeAsync(21_000);
+    const after = await call();
+    expect(after.why).toBeUndefined();
+    expect(after.text).toContain('Nothing answers on 127.0.0.1:7777');
+    expect(after.text).toContain('its last exit code was 1');
+    // no wait again for a while: every call fails at once
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect((await call()).why).toBeUndefined();
+  });
+
+  it('engine_12_without_this_apps_agent_registered_the_hard_error_is_at_once', async () => {
+    const call = await adopted();
+    Object.assign(mac, { pids: [], answers: false, jobs: {} });
+    expect(await call()).toEqual({ status: 0, text: 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' });
   });
 });
