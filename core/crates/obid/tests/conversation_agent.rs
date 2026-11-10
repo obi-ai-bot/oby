@@ -300,6 +300,7 @@ fn recorded(path: &Path) -> Vec<Value> {
 }
 
 /// What the Cursor stand-in recorded of each prompt, in its short folder under `logins/`.
+#[cfg(target_os = "macos")]
 fn cursor_turns(obid: &Obid) -> Vec<Value> {
     std::fs::read_dir(obid.home.join("logins"))
         .into_iter()

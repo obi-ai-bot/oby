@@ -476,6 +476,7 @@ pub(super) static ANSWERS: Mutex<BTreeMap<String, Answer>> = Mutex::new(BTreeMap
 /// is never kept as an answer: the next read asks again.
 pub(super) static LOCKED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
+#[cfg(target_os = "macos")]
 fn locked(service: &str, now: bool) {
     let mut all = LOCKED.lock().unwrap_or_else(|e| e.into_inner());
     if now {
@@ -666,6 +667,7 @@ pub fn swift_vault_names() -> Vec<String> {
 
 /// The `acct` of every item under the Swift runner's vault service in `security dump-keychain`'s
 /// answer, one item per `keychain:` block.
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn vault_names_in(dump: &str) -> Vec<String> {
     let quoted = |line: &str, key: &str| {
         line.trim()
