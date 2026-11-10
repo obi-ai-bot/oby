@@ -5,6 +5,9 @@ set -eo pipefail
 # Each case plans what it changed: a full check's own OBY_CHECK_ALL or OBY_CHECK_PATHS isn't theirs.
 unset OBY_CHECK_ALL OBY_CHECK_PATHS OBY_CHECK_ONLY
 script="$(cd "$(dirname "$0")" && pwd)/oby-check.sh"
+# obid installs the base's authoritative check script before running this test. Keep testing
+# its existing rules below, but test the new group interface against the commit that adds it.
+committed_script=$(git show HEAD:scripts/oby-check.sh)
 limit=$(sed -n 's/^obid_lines_limit=//p' "$script")
 repo=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-test.XXXXXX")
 trap 'rm -rf "$repo"' EXIT
@@ -398,6 +401,8 @@ rm -r core/crates/obi-protocol
 rm -r core/crates/obid
 
 # Each filtered plan contains only its group, including side effects outside step.
+# Use the candidate's implementation: the base's script may predate OBY_CHECK_ONLY.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
 for group in rust electron swift scan; do
     said=$(OBY_CHECK_ONLY="$group" OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
     case "$group" in
