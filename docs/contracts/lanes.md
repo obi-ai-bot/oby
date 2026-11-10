@@ -5,7 +5,7 @@ The business behavior contract for where a job's agent runs, from [the template]
 ## Feature and status
 
 - **Outcome:** The work the owner asked for runs as it would in their terminal: their own Claude Code or Codex, on their own login, which refreshes itself, with their environment, gateways, settings, skills and MCP servers, under the CLI's own sandbox. Work another Oby asked for, or work marked untrusted, stays in Oby's box as it does today. AGENTS.md, "Dispatcher, not harness" (the owner's decision of 2026-11-05), names the two lanes; this contract says what each one does.
-- **Status:** **Proposed**, not built. The owner's decisions of 2026-11-09 lead, and are followed exactly:
+- **Status:** **Proposed**, not built, but LANES-9, **Implemented**: the job's `resumeCommand` (runner-api.md). The owner's decisions of 2026-11-09 lead, and are followed exactly:
   - only another Oby's job or an `untrusted` one is boxed, not every foreign mark;
   - Oby's own review stays boxed;
   - own runs skip obid's egress proxy;
@@ -106,7 +106,7 @@ The business behavior contract for where a job's agent runs, from [the template]
 - **LANES-6** An own Claude Code job's environment has no `HTTPS_PROXY` of obid's; its `curl https://example.com` follows the job's mode, and once it ran the job is `reached`; its `curl https://github.com` fails. Its check runs in Oby's box with no network, and gets declared secrets only as today.
 - **LANES-7** An own Codex job runs with `CODEX_HOME` at `~/.codex` in `workspace-write`: it commits in its worktree, writes `/private/tmp`, can't write outside them, and its `curl https://example.com` fails; a change holding `auth.json`'s refresh token isn't published.
 - **LANES-8** An own job runs `git stash`, `git stash pop`, and `git switch -c try`: all three work, the clone's `refs/stash` is unchanged, and `try` is in the clone's branches. Its writes to `.git/hooks/pre-commit`, the clone's `config`, `config.worktree` and `commondir` fail.
-- **LANES-9** An own Claude Code job with a session shows `cd '<worktree>' && claude --resume <session>`; run in a terminal, it opens that session. An own Codex job shows `codex resume <session>`. A foreign job's `resumeCommand` is `null`, and the phone never gets one.
+- **LANES-9** (**Implemented**, `job::tests::lanes_9_*` and `gateway::tests::lanes_9_the_phone_never_gets_a_resume_command`: the job's `resumeCommand`, from the lane its launch picked, runner-api.md) An own Claude Code job with a session shows `cd '<worktree>' && claude --resume <session>`; run in a terminal, it opens that session. An own Codex job shows `codex resume <session>`. A foreign job's `resumeCommand` is `null`, and the phone never gets one.
 - **LANES-10** A foreign job runs exactly as before this contract: today's lane tests pass unchanged (the box, the login copy, the proxy, `--setting-sources ""`, `--strict-mcp-config`).
 - **LANES-11** An own Cursor job runs in Oby's box with its login copy, as a foreign one does.
 - **LANES-12** An own Claude Code conversation's turn runs `git status` in its room with Claude Code's own Bash, not `oby_shell`; after the conversation reads something untrusted, its next turn uses `oby_shell`.

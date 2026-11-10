@@ -952,7 +952,7 @@ impl Scrubber {
         self.without_homes(&lines.join("\n"))
     }
 
-    /// `text` as JSON with `session` null and the homes out of every string, or as it came when
+    /// `text` as JSON with `session` and `resumeCommand` null and the homes out of every string, or as it came when
     /// it isn't JSON or nothing in it changes.
     fn json(&self, text: &str) -> String {
         let Ok(mut value) = serde_json::from_str::<Value>(text) else {
@@ -970,7 +970,8 @@ impl Scrubber {
             Value::Object(fields) => {
                 let mut changed = false;
                 for (key, field) in fields.iter_mut() {
-                    if key == "session" && !field.is_null() {
+                    // An own job's `resumeCommand` names its session too (LANES-9).
+                    if (key == "session" || key == "resumeCommand") && !field.is_null() {
                         *field = Value::Null;
                         changed = true;
                     } else {
@@ -1520,5 +1521,31 @@ mod tests {
         // A clean answer goes as it came, byte for byte.
         let clean = r#"{"b": 1,  "a": "x"}"#;
         assert_eq!(scrubber.document(clean), clean);
+    }
+
+    /// LANES-9: an own job's resume command, which names its session, never reaches the phone.
+    #[test]
+    fn lanes_9_the_phone_never_gets_a_resume_command() {
+        let mut job = crate::job::Job::new(
+            "j1".into(),
+            "obi-ai-bot/oby".into(),
+            "build".into(),
+            "Add the line".into(),
+            "claude".into(),
+            "default".into(),
+        );
+        let session = "e6a24229-1bd5-48c4-85c5-43b33d433775";
+        job.session = Some(session.into());
+        job.worktree = Some("/Users/alice/worktrees/j1".into());
+        job.own_lane = true;
+        let job = job.to_json();
+        assert!(job["resumeCommand"].is_string(), "{job}");
+        let scrubber = Scrubber { homes: Vec::new() };
+        let body = scrubber.document(&job.to_string());
+        assert!(!body.contains(session), "{body}");
+        let phone: Value = serde_json::from_str(&body).unwrap();
+        assert!(phone["resumeCommand"].is_null(), "{body}");
+        let frames = scrubber.frame(&format!("event: job\ndata: {job}\n\n"));
+        assert!(!frames.contains("claude --resume"), "{frames}");
     }
 }
