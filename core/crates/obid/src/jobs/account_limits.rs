@@ -22,26 +22,32 @@ const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 
 /// does (LIMITS-5). The tool's clock and the Mac's may differ.
 const RESUME_AFTER_RESET: i64 = 90;
 
-/// How many times a job's five-hour limit is waited out by itself; the next asks (LIMITS-9).
-const RESUME_TRIES: usize = 3;
+/// How long a job waits for a limit whose end nobody knows before its account is tried again.
+const UNKNOWN_RESET: i64 = 60 * 60;
 
 /// What cut its run, as the session that resumes hears it (`continue_message`).
-const RESET_CAME: &str = "your account hit its five-hour usage limit, and that limit has reset";
+const RESET_CAME: &str = "your account hit its usage limit, and that limit has reset";
 
-/// What asks the owner about a job that stopped at its account's limit.
+/// What a card from before LIMITS-15 asked, while it's still shown.
 const LIMIT_QUESTION: &str =
     "This account reached its usage limit. Choose what Oby should do with the affected jobs.";
 
-/// A job's line while it waits for its reset. Proposed words: Sangam's to change.
+/// A job's line while it waits for room (LIMITS-15), saying when its own account's limit ends.
+/// Proposed words: Sangam's to change.
 fn resuming_at(at: i64, zone: &jiff::tz::TimeZone) -> String {
     let time = jiff::Timestamp::from_second(at)
-        .map(|t| t.to_zoned(zone.clone()).strftime("%-I:%M %p").to_string())
+        .map(|t| {
+            t.to_zoned(zone.clone())
+                .strftime("%a %-I:%M %p")
+                .to_string()
+        })
         .unwrap_or_else(|_| "the reset".into());
-    format!("Resuming at {time}")
+    format!("Every account is at its limit: resuming when one has room, at the latest {time}")
 }
 
-/// `job` waits, `queued`, until `at` (LIMITS-5): `cap`, as the apps know it (their job decodes no
-/// other kind), with no slot, no card, and Stop as for any queued job.
+/// `job` waits, `queued`, until `at` or an account with room (LIMITS-5, LIMITS-15): `cap`, as the
+/// apps know it (their job decodes no other kind), with no slot, no card, and Stop as for any
+/// queued job.
 pub(super) fn wait_for_reset(job: &mut Job, at: i64) {
     let line = resuming_at(at, &jiff::tz::TimeZone::system());
     job.status = Status::Queued;
@@ -55,8 +61,8 @@ pub(super) fn wait_for_reset(job: &mut Job, at: i64) {
     job.step = line;
 }
 
-/// A run a five-hour limit stopped starts its wait, a try counted (LIMITS-9), unless Stop came as
-/// the run ended: nothing undoes it (LIMITS-6). Whether the owner asked for its round stays.
+/// A run a limit stopped starts its wait, counted (LIMITS-9), unless Stop came as the run ended:
+/// nothing undoes it (LIMITS-6). Whether the owner asked for its round stays.
 pub(super) fn start_wait(job: &mut Job, at: i64) {
     if !job.status.is_active() {
         return;
@@ -64,26 +70,129 @@ pub(super) fn start_wait(job: &mut Job, at: i64) {
     job.recovery.limit_resumes += 1;
     job.publish_step = None;
     wait_for_reset(job, at);
-    job.changed(format!("A five-hour limit stopped it. {}", job.step));
+    job.changed(format!("A usage limit stopped it. {}", job.step));
+}
+
+/// Where a job a limit stopped goes by itself (LIMITS-15): the tool and account, where it was, and
+/// what its line says.
+pub(super) struct Failover(Tool, crate::config::Account, String, String);
+
+impl Failover {
+    /// `job` goes on there in a new session, the same round, as a resume does (LIMITS-12).
+    pub(super) fn apply(&self, job: &mut Job, jobs: &Jobs) {
+        let Failover(tool, account, from, line) = self;
+        let by = "by itself (Account failover)".into();
+        let said = Carried {
+            because: "hit its account's usage limit",
+            why: line.clone(),
+            by,
+        };
+        let tuning = crate::settings::load(&jobs.config.home).tuning;
+        let offered = jobs.model_lists.to_check(*tool, &account.id);
+        carry_over(job, *tool, account, &tuning, &offered, from, said);
+        let (round, rounds) = (job.round, job.rounds);
+        hear(job, crate::brain::actions::TRY_AGAIN);
+        next_round(job);
+        (job.round, job.rounds, job.publish_step) = (round, rounds, None);
+        job.step = line.clone();
+    }
 }
 
 impl Jobs {
-    /// When job `id`, stopped by a limit its tool said resets at `reset`, resumes by itself: only a
-    /// five-hour limit (the owner's decision of 2026-11-02), and only [`RESUME_TRIES`] times.
-    pub(super) fn limit_resume_at(&self, id: &str, reset: Option<i64>) -> Option<i64> {
-        let (job, reset) = (self.get(id)?, reset?);
-        (job.recovery.limit_resumes < RESUME_TRIES
-            && self
-                .usage
-                .get(&job.account)
-                .five_hour_limit(reset, obi_protocol::time::now()))
-        .then(|| reset + RESUME_AFTER_RESET)
+    /// Where job `id`, stopped by its account's limit, moves by itself, if anywhere (LIMITS-15):
+    /// with `accountFailover` on, to the account with the most room of any tool, unless the owner
+    /// named its account. A ChatGPT login shows no room, so only the owner's click puts work there.
+    pub(super) async fn failover_for(&self, id: &str) -> Option<Failover> {
+        let job = (self.get(id)).filter(|j| !j.named && self.account_failover())?;
+        let (was, from) = crate::accounts::find(&self.config.agents.get(), &job.account)?;
+        let (tool, account) = (self
+            .destinations(&job.agent, &job.account, std::slice::from_ref(&job))
+            .await)
+            .into_iter()
+            .find(|(_, a)| crate::chatgpt::marker_of(a).is_none())?;
+        let (limited, took) = match tool == was {
+            true => (from.name.as_str(), account.name.as_str()),
+            false => (was.name(), tool.name()),
+        };
+        let line = format!("{limited} reached its limit, so {took} took over");
+        Some(Failover(
+            tool,
+            account,
+            format!("{} · {}", was.name(), from.name),
+            line,
+        ))
+    }
+
+    /// A pending card from before LIMITS-15 resolves itself: each job moves where there's room, or
+    /// else waits as a job a limit stops now does.
+    async fn settle_pending(self: &Arc<Self>, decision: &crate::account_limits::Decision) {
+        if decision.choice != crate::account_limits::Choice::Pending {
+            return;
+        }
+        let _execution = self.limit_execution.lock().await;
+        for id in &decision.jobs {
+            let settled = match self.failover_for(id).await {
+                Some(failover) => self.apply_limit_job(decision, id, None, Some(&failover)),
+                None => {
+                    let Some(job) = self.get(id) else { continue };
+                    let at = self.limit_wait_until(&job.account, job.account_limit_reset);
+                    let mut waits = false;
+                    self.update(id, |job| {
+                        waits = job.account_limit_blocked
+                            && job.status == Status::Interrupted
+                            && job.dismissed.is_none()
+                            && job.account_limit_episode.as_deref() == Some(&decision.id);
+                        if waits {
+                            let (round, rounds) = (job.round, job.rounds);
+                            next_round(job);
+                            (job.round, job.rounds) = (round, rounds);
+                            wait_for_reset(job, at);
+                        }
+                    });
+                    waits.then_some(()).ok_or(String::new())
+                }
+            };
+            if settled.is_ok()
+                && let Err(error) = self.limit_decisions.applied(&decision.id, id)
+            {
+                tracing::error!("can't keep account-limit receipt for {id}: {error}");
+            }
+        }
+    }
+
+    /// Jobs waiting for room take an account that has it now, by itself (LIMITS-15).
+    async fn fail_over_waits(self: &Arc<Self>) {
+        let waiting: Vec<String> = (self.lock().jobs.values())
+            .filter(|j| j.status == Status::Queued && j.resumes_at.is_some())
+            .map(|j| j.id.clone())
+            .collect();
+        for id in waiting {
+            let Some(failover) = self.failover_for(&id).await else {
+                continue;
+            };
+            self.update(&id, |job| {
+                if job.status == Status::Queued && job.resumes_at.is_some() {
+                    failover.apply(job, self);
+                }
+            });
+            self.forget_moved_login(&id);
+            self.schedule();
+        }
+    }
+
+    /// When a job `account`'s limit stopped resumes there at the latest: 90 seconds after the reset
+    /// its tool said (LIMITS-5), else the one obid knows, else in an hour.
+    pub(super) fn limit_wait_until(&self, account: &str, reset: Option<i64>) -> i64 {
+        let now = obi_protocol::time::now();
+        let at = (reset.filter(|at| *at > now))
+            .or_else(|| self.usage.get(account).free_at(now))
+            .unwrap_or(now + UNKNOWN_RESET);
+        at.max(now) + RESUME_AFTER_RESET
     }
 
     /// Resumes the jobs whose reset came, in their own sessions: one each [`RESET_TICK`], so a Mac
     /// that slept through several resets doesn't start them all at once (LIMITS-8). An account
-    /// that's still held waits for its new reset if that's still a five-hour limit's; anything
-    /// else goes to the owner, as any limit does (LIMITS-11).
+    /// that's still held, or gone, waits again, with no card (LIMITS-11, LIMITS-15).
     pub(super) fn resume_limit_waits(self: &Arc<Self>) {
         let now = obi_protocol::time::now();
         let mut due: Vec<(i64, String)> = self
@@ -108,27 +217,17 @@ impl Jobs {
                 self.stop(&id, "Stopped: its job pushed a newer head to review");
                 continue;
             }
-            if !self.limit_source_is_connected(&job.agent, &job.account) {
-                self.ask_about_limit(
-                    &id,
-                    None,
-                    "The original account is no longer connected. Choose what Oby should do with this job.",
-                );
-                continue;
-            }
-            let usage = self.usage.get(&job.account);
-            if usage.held(now).is_some() {
-                let free = usage.free_at(now);
-                match free.filter(|at| usage.five_hour_limit(*at, now)) {
-                    Some(at) => {
-                        self.update(&id, |job| {
-                            if waits(job) {
-                                wait_for_reset(job, at + RESUME_AFTER_RESET);
-                            }
-                        });
+            let gone = !self.limit_source_is_connected(&job.agent, &job.account);
+            if gone || self.usage.get(&job.account).held(now).is_some() {
+                let at = match gone {
+                    true => now + UNKNOWN_RESET,
+                    false => self.limit_wait_until(&job.account, None),
+                };
+                self.update(&id, |job| {
+                    if waits(job) {
+                        wait_for_reset(job, at);
                     }
-                    None => self.ask_about_limit(&id, free, LIMIT_QUESTION),
-                }
+                });
                 continue;
             }
             self.update(&id, |job| {
@@ -149,31 +248,6 @@ impl Jobs {
             self.schedule();
             return;
         }
-    }
-
-    /// A job waiting for its reset becomes today's decision (#1563), its worktree and branch kept.
-    fn ask_about_limit(&self, id: &str, reset: Option<i64>, why: &str) {
-        self.update(id, |job| {
-            if job.status != Status::Queued || job.resumes_at.is_none() {
-                return;
-            }
-            job.status = Status::Interrupted;
-            job.resumes_at = None;
-            job.waiting = None;
-            job.step = String::new();
-            job.account_limit_blocked = true;
-            job.account_limit_episode = None;
-            job.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
-            job.account_limit_reset = reset;
-            job.account_limit_choice = None;
-            job.reason = Some(why.to_owned());
-            job.next_step = Some(crate::job::TRY_AGAIN.into());
-            job.finished = Some(obi_protocol::time::now());
-            if job.summary.trim().is_empty() {
-                job.summary = why.to_owned();
-            }
-        });
-        self.record_account_limit(id);
     }
 
     /// A persisted answer remains visible after its question closes, including after a restart
@@ -213,8 +287,10 @@ impl Jobs {
 
     pub(super) async fn run_approved_limit_decisions(self: &Arc<Self>) {
         let now = obi_protocol::time::now();
+        self.fail_over_waits().await;
         for decision in self.limit_decisions.list() {
             self.sync_limit_answer(&decision);
+            self.settle_pending(&decision).await;
             if decision.choice == crate::account_limits::Choice::Move {
                 self.apply_limit_move(&decision).await;
                 continue;
@@ -281,7 +357,7 @@ impl Jobs {
                 {
                     continue;
                 }
-                match self.apply_limit_job(&decision, id, None) {
+                match self.apply_limit_job(&decision, id, None, None) {
                     Ok(()) => {
                         if let Err(error) = self.limit_decisions.applied(&decision.id, id) {
                             tracing::error!("can't keep account-limit receipt for {id}: {error}");
@@ -397,7 +473,10 @@ impl Jobs {
             && usage.full_until_at(now).is_none()
     }
 
-    async fn limit_destinations(&self, decision: &crate::account_limits::Decision) -> Vec<Value> {
+    async fn limit_destinations(
+        &self,
+        decision: &crate::account_limits::Decision,
+    ) -> Vec<(Tool, crate::config::Account)> {
         let jobs: Vec<Job> = decision
             .jobs
             .iter()
@@ -406,16 +485,28 @@ impl Jobs {
                 j.account_limit_blocked && j.dismissed.is_none() && j.status == Status::Interrupted
             })
             .collect();
+        self.destinations(&decision.agent, &decision.account, &jobs)
+            .await
+    }
+
+    /// Where `jobs`, stopped on `agent`'s account `from`, may move: a signed-in account of any
+    /// tool with room, the most room first (LIMITS-15), never one in its own sandbox, so work in
+    /// Oby's box stays in it.
+    async fn destinations(
+        &self,
+        agent: &str,
+        from: &str,
+        jobs: &[Job],
+    ) -> Vec<(Tool, crate::config::Account)> {
         // A review can't change accounts, but it doesn't take Move away from the tasks beside it
         // (#1645): a Move asks again about the review alone (`apply_limit_move`).
         if jobs.iter().all(|j| j.obi.is_some() || j.read_only()) {
             return Vec::new();
         }
-        let Some(source_tool) = Tool::from_id(&decision.agent) else {
+        let Some(source_tool) = Tool::from_id(agent) else {
             return Vec::new();
         };
-        if source_tool == Tool::Claude && self.config.claude_own_sandbox.contains(&decision.account)
-        {
+        if source_tool == Tool::Claude && self.config.claude_own_sandbox.iter().any(|a| a == from) {
             return Vec::new();
         }
         // Work nobody's watching doesn't move onto a ChatGPT login without the owner's yes
@@ -428,7 +519,7 @@ impl Jobs {
         let mut result = Vec::new();
         for tool in Tool::ALL {
             for account in self.accounts(tool) {
-                if account.id == decision.account
+                if account.id == from
                     || self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())
                     || (background && !self.takes_background(&account))
@@ -440,9 +531,15 @@ impl Jobs {
                 if tool == Tool::Claude && self.claude_login_ready(Some(&account)).await.is_err() {
                     continue;
                 }
-                result.push(json!({"kind":"move", "account":account.id, "agent":tool.id(), "name": account.name}));
+                result.push((tool, account));
             }
         }
+        // The fuller of its two windows; one that reports none (a ChatGPT login) last.
+        let used = |id: &str| {
+            let usage = self.usage.get(id);
+            (usage.five_hour.zip(usage.seven_day)).map_or(1.0, |(five, week)| five.max(week))
+        };
+        result.sort_by(|(_, a), (_, b)| used(&a.id).total_cmp(&used(&b.id)));
         result
     }
 
@@ -485,7 +582,10 @@ impl Jobs {
             if jobs.is_empty() {
                 continue;
             }
-            let mut options = self.limit_destinations(&decision).await;
+            let mut options: Vec<Value> = (self.limit_destinations(&decision).await)
+                .into_iter()
+                .map(|(tool, a)| json!({"kind":"move", "account":a.id, "agent":tool.id(), "name": a.name}))
+                .collect();
             let source_connected =
                 self.limit_source_is_connected(&decision.agent, &decision.account);
             if options.is_empty() && source_connected {
@@ -593,6 +693,7 @@ impl Jobs {
         decision: &crate::account_limits::Decision,
         id: &str,
         target: Option<(Tool, crate::config::Account)>,
+        failover: Option<&Failover>,
     ) -> Result<(), String> {
         let from_tool = Tool::from_id(&decision.agent).ok_or("The old tool is unavailable.")?;
         let from_name = self
@@ -608,18 +709,12 @@ impl Jobs {
                 "This job uses its account's own sandbox and cannot be moved safely.".into(),
             );
         }
-        if target.is_none() {
-            let home = login_home();
-            let available = self
-                .accounts(from_tool)
-                .into_iter()
-                .find(|a| a.id == decision.account)
-                .is_some_and(|a| {
-                    !self.being_changed(&a.id) && signed_in(from_tool, &a, home.as_deref())
-                });
-            if !available {
-                return Err("The original account is no longer connected.".into());
-            }
+        if target.is_none()
+            && failover.is_none()
+            && (self.being_changed(&decision.account)
+                || !self.limit_source_is_connected(&decision.agent, &decision.account))
+        {
+            return Err("The original account is no longer connected.".into());
         }
         let tuning = crate::settings::load(&self.config.home).tuning;
         let offered = target
@@ -654,7 +749,10 @@ impl Jobs {
             }
             let mut next = job.clone();
             next.revision += 1;
-            if let Some((tool, account)) = target {
+            if let Some(failover) = failover {
+                failover.apply(&mut next, self);
+                self.forget_moved_login(id);
+            } else if let Some((tool, account)) = target {
                 if next.obi.is_some() || next.read_only() {
                     return Err("This review cannot change accounts.".into());
                 }
@@ -675,9 +773,11 @@ impl Jobs {
                 next.named = true;
                 self.forget_moved_login(id);
             }
-            hear(&mut next, crate::brain::actions::TRY_AGAIN);
-            next_round(&mut next);
-            next.asked = true;
+            if failover.is_none() {
+                hear(&mut next, crate::brain::actions::TRY_AGAIN);
+                next_round(&mut next);
+                next.asked = true;
+            }
             self.store
                 .save(&next)
                 .map_err(|e| format!("Couldn't save the job: {e}"))?;
@@ -755,18 +855,9 @@ impl Jobs {
                 continue;
             }
             let destinations = self.limit_destinations(decision).await;
-            let target_account = destinations
-                .iter()
-                .find(|v| v["account"] == target)
-                .and_then(|v| Tool::from_id(v["agent"].as_str()?))
-                .and_then(|tool| {
-                    self.accounts(tool)
-                        .into_iter()
-                        .find(|a| a.id == target)
-                        .map(|a| (tool, a))
-                });
+            let target_account = destinations.into_iter().find(|(_, a)| a.id == target);
             let result = match target_account {
-                Some(to) => self.apply_limit_job(decision, id, Some(to)),
+                Some(to) => self.apply_limit_job(decision, id, Some(to), None),
                 None => Err("The chosen account is no longer available.".into()),
             };
             match result {
@@ -792,9 +883,10 @@ mod tests {
     fn limits_5_the_line_says_the_time_in_the_macs_zone() {
         let at = 1_793_691_381; // 2026-11-03T07:36:21Z
         let utc = jiff::tz::TimeZone::UTC;
-        assert_eq!(resuming_at(at, &utc), "Resuming at 7:36 AM");
+        let line = "Every account is at its limit: resuming when one has room, at the latest";
+        assert_eq!(resuming_at(at, &utc), format!("{line} Tue 7:36 AM"));
         let sao_paulo = jiff::tz::TimeZone::get("America/Sao_Paulo").unwrap();
-        assert_eq!(resuming_at(at, &sao_paulo), "Resuming at 4:36 AM");
+        assert_eq!(resuming_at(at, &sao_paulo), format!("{line} Tue 4:36 AM"));
     }
 
     /// LIMITS-6: a Stop that lands as the run ends, once obid read that it wasn't stopped, stays.

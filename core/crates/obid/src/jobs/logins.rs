@@ -2164,21 +2164,30 @@ pub(crate) fn forget_login_secrets(login: &Path) {
 /// (#871): where the work is, and what the earlier rounds reported, quoted, with every secret obid
 /// knows taken out.
 pub(super) fn handoff(job: &Job, was: &str, because: &str) -> String {
-    let note = format!(
+    let mut note = format!(
         "{was} was working on this job and {because}. You're taking it over in the same worktree and branch: its commits are on the branch, and it may have left changes uncommitted. Check `git status` and `git log` before you go on."
     );
-    match job.summaries.as_ref().filter(|s| !s.is_empty()) {
-        Some(summaries) => {
+    let summaries = job.summaries.clone().unwrap_or_default();
+    // What its earlier rounds reported, then what the owner told it (LIMITS-15), each quoted.
+    for (what, who, said) in [
+        (
+            "What its earlier rounds reported",
+            "the agent before you",
+            summaries,
+        ),
+        ("What the owner told it", "the owner", job.said.clone()),
+    ] {
+        if !said.is_empty() {
             let nonce = crate::brain::briefing::nonce();
-            let said = crate::secrets::known().redact(&summaries.join("\n\n"));
-            format!(
-                "{note}\n\nWhat its earlier rounds reported, quoted:\n\n{}\n{}",
-                crate::brain::briefing::fence_rule(&nonce, "the agent before you"),
+            let said = crate::secrets::known().redact(&said.join("\n\n"));
+            note = format!(
+                "{note}\n\n{what}, quoted:\n\n{}\n{}",
+                crate::brain::briefing::fence_rule(&nonce, who),
                 crate::brain::briefing::fence(&nonce, &said)
-            )
+            );
         }
-        None => note,
     }
+    note
 }
 
 /// What a [`carry_over`] says: to the agent taking over, on the job's list of moves, and in its changes.
