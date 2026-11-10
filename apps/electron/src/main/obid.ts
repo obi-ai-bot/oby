@@ -48,7 +48,36 @@ function reason(error?: unknown): Answer {
   const own = readOwn('last-start-error', false);
   if (own) return { status: 0, text: own };
   const cause = (error as { cause?: { code?: string; message?: string } })?.cause;
-  return { status: 0, text: !error || cause?.code === 'ECONNREFUSED' ? 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' : cause?.message ?? (error instanceof Error ? error.message : String(error)) };
+  return { status: 0, text: !error || cause?.code === 'ECONNREFUSED' ? NOTHING : cause?.message ?? (error instanceof Error ? error.message : String(error)) };
+}
+
+const NOTHING = 'Nothing answers on 127.0.0.1:7777: obid isn’t running.';
+const WAITING: Answer = { status: 0, text: 'Oby’s engine is starting.', why: 'waiting' };
+
+// obid gone while launchd still has this app's agent (a kickstart during an install, a config
+// reload, KeepAlive after a crash): launchd brings it back within about 10 s, so for up to 20 s
+// calls answer 'waiting', through one wait they all share, with no lsof or launchctl of their own.
+// Past it, the hard error with why(), and for 30 s after that calls fail fast instead of waiting
+// again (ENGINE-12).
+let returning: Promise<boolean> | null = null;
+let gaveUp: { until: number; answer: Answer } | null = null;
+async function gone(error?: unknown): Promise<Answer> {
+  const hard = reason(error);
+  if (hard.text !== NOTHING || process.platform !== 'darwin' || !app.isPackaged) return hard;
+  if (gaveUp && Date.now() < gaveUp.until) return gaveUp.answer;
+  returning ??= (async () => {
+    if (!(await Promise.all([LABEL, SESSION].map((label) => launchd(label)))).some(Boolean)) { returning = null; return false; }
+    void answers(20_000).then(async (back) => {
+      // the wait always ends, whatever saying why throws: never 'starting' for good
+      try {
+        if (!back) gaveUp = { until: Date.now() + 30_000, answer: { status: 0, text: `${NOTHING}\n${await why().catch(() => '')}`.trim() } };
+      } finally {
+        returning = null;
+      }
+    });
+    return true;
+  })();
+  return await returning ? WAITING : hard;
 }
 
 // Who listens on 127.0.0.1:7777: launchd's obid of this user's ('mine': this app's agent or its
@@ -87,8 +116,10 @@ export async function send(method: string, path: string, body: unknown, signal?:
   const t = token();
   // (obid writes its token on its first start)
   if (!t) return problem || starting || readOwn('last-start-error', false) ? reason() : { status: 0, text: `No token of obid’s in ${HOME}/api-token: is obid set up on this Mac?` };
+  // launchd is bringing it back: nothing to ask lsof yet
+  if (returning && await returning) return WAITING;
   const who = await listener();
-  if (who !== 'mine') return who === 'foreign' ? { status: 0, text: TAKEN } : reason();
+  if (who !== 'mine') return who === 'foreign' ? { status: 0, text: TAKEN } : gone();
   // a file's bytes (POST /v1/attachments) go as they are; anything else as JSON
   const raw = body instanceof Uint8Array;
   try {
@@ -106,7 +137,7 @@ export async function send(method: string, path: string, body: unknown, signal?:
     problem = null;
     return r;
   } catch (e) {
-    return reason(e);
+    return gone(e);
   }
 }
 
@@ -152,7 +183,8 @@ const helper = () => join(process.resourcesPath, '../Helpers/obid');
 
 // launchctl's `print` of this app's obid (or its session job), or null when launchd hasn't got it
 async function launchd(label = LABEL): Promise<string | null> {
-  try { return (await run('/bin/launchctl', ['print', `${domain()}/${label}`])).stdout; } catch { return null; }
+  // at most 5 s: a launchctl that hangs must never hold a wait for good (ENGINE-12)
+  try { return (await run('/bin/launchctl', ['print', `${domain()}/${label}`], { timeout: 5000 })).stdout; } catch { return null; }
 }
 // one `key = value` line of it
 const field = (printed: string | null, key: string) =>
