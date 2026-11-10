@@ -7,6 +7,13 @@ use super::*;
 /// Who stopped a running job to move it: its run starts over on the new choice.
 const MOVING: &str = "Moved to another account";
 
+/// How the note a new session hears first begins ([`handoff`]): its handoff is written then.
+pub(super) const TAKING_OVER: &str = "You are taking over this task from ";
+
+/// At most this many of the old session's entries, and bytes of them, go in a handoff (LIMITS-17).
+const HANDOFF_ENTRIES: usize = 200;
+const HANDOFF_BYTES: usize = 200 * 1024;
+
 /// Where a job goes, as `POST /v1/jobs/{id}/move`'s body says it: each left out follows from the
 /// rest (docs/runner-api.md).
 #[derive(Default, serde::Deserialize)]
@@ -21,6 +28,82 @@ pub struct Moving {
 }
 
 impl Jobs {
+    /// The owner's words for job `id`'s next turn, taken. When they hand it to a new session
+    /// ([`handoff`]), `.obi/inputs/handoff.md` is written in `worktree` first (LIMITS-17).
+    pub(super) async fn heard_handing_over(&self, id: &str, worktree: &Path) -> Vec<String> {
+        let words = self.take_heard(id);
+        if words.iter().any(|w| w.starts_with(TAKING_OVER))
+            && let Some(job) = self.get(id)
+        {
+            let text = self.handoff_text(&job).await;
+            let written = crate::obi_dir::folder(worktree, "inputs")
+                .and_then(|dir| crate::obi_dir::write_new(&dir, "handoff.md", text.as_bytes()));
+            if let Err(e) = written {
+                tracing::warn!("job {id}: obid couldn't write its handoff: {e}");
+            }
+        }
+        words
+    }
+
+    /// The handoff (LIMITS-17): the task, the owner's words, every earlier round's summary, the
+    /// to-do list, the files changed since it started, and this round's words and tool calls as
+    /// the transcript has them, the oldest left out past [`HANDOFF_ENTRIES`] or [`HANDOFF_BYTES`].
+    /// Rules write it; masked as everything obid shows is ([`crate::detail::mask`]).
+    async fn handoff_text(&self, job: &Job) -> String {
+        let (entries, _) = self.transcripts.read(&job.id, 0, usize::MAX);
+        let todos = entries.iter().rev().find_map(|e| e.todos.clone());
+        let from = entries
+            .iter()
+            .rposition(|e| e.kind == "start")
+            .map_or(0, |i| i + 1);
+        let mut round: Vec<String> = (entries[from..].iter())
+            .filter(|e| e.kind == "said" || e.kind == "tool")
+            .map(|e| match &e.tool {
+                Some(tool) => format!("- {tool}: {}", e.summary),
+                None => format!("- It said: {}", e.text.as_deref().unwrap_or(&e.summary)),
+            })
+            .collect();
+        let mut dropped = round.len().saturating_sub(HANDOFF_ENTRIES);
+        round.drain(..dropped);
+        while round.iter().map(String::len).sum::<usize>() > HANDOFF_BYTES {
+            round.remove(0);
+            dropped += 1;
+        }
+        let changed = match job.start_commit.as_deref() {
+            Some(start) => (self
+                .sandboxed_git(&job.id, &["diff", "--stat", start], None)
+                .await)
+                .map_or_else(
+                    |e| format!("(git couldn't say: {e})"),
+                    |out| String::from_utf8_lossy(&out).trim_end().to_owned(),
+                ),
+            None => "(none yet)".into(),
+        };
+        let list = |items: &[String]| match items.is_empty() {
+            true => "(none)".to_owned(),
+            false => items.join("\n\n"),
+        };
+        let todo: Vec<String> = (todos.unwrap_or_default().iter())
+            .map(|t| format!("- [{}] {}", t.state, t.text))
+            .collect();
+        let cut = match dropped {
+            0 => String::new(),
+            n => {
+                format!("The oldest {n} entries of this round are left out, to keep it short.\n\n")
+            }
+        };
+        let summaries = job.summaries.clone().unwrap_or_default();
+        crate::detail::mask(&format!(
+            "# Handoff: {}\n\n{cut}## The task\n\n{}\n\n## What the owner said\n\n{}\n\n## What each earlier round reported\n\n{}\n\n## The to-do list\n\n{}\n\n## Files changed since it started (git diff --stat)\n\n```\n{changed}\n```\n\n## This round so far\n\n{}\n",
+            job.short_title(),
+            job.task,
+            list(&job.said),
+            list(&summaries),
+            list(&todo),
+            list(&round),
+        ))
+    }
+
     /// LIMITS-16: a queued job starts on the new choice; a running one is stopped and, once its run
     /// and all it started ended, its round starts over there; one that ended runs its next round
     /// there. A move that can't go leaves it as it was.
@@ -169,7 +252,7 @@ impl Jobs {
                 return;
             }
             if had_run {
-                let (because, why) = ("was moved to you by the owner", "Moved by you".into());
+                let (because, why) = ("which the owner moved it away from", "Moved by you".into());
                 let said = Carried {
                     because,
                     why,
@@ -188,6 +271,7 @@ impl Jobs {
                     to: place,
                     why,
                     date,
+                    handoff: false,
                 });
             }
             if let Some(model) = to.model.as_deref() {

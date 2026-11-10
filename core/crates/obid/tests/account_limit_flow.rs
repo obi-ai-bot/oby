@@ -1037,7 +1037,8 @@ fn post_unnamed(obid: &Obid, task: &str) -> String {
 fn codex_heard(folder: &Folder, id: &str) -> String {
     let threads = folder.0.join("home/logins").join(id).join("threads");
     std::fs::read_dir(&threads)
-        .unwrap()
+        .into_iter()
+        .flatten()
         .flatten()
         .filter_map(|e| std::fs::read_to_string(e.path()).ok())
         .collect::<Vec<_>>()
@@ -1254,4 +1255,68 @@ fn limits_16_a_finished_job_runs_its_next_round_there() {
     });
     assert_eq!(done["agent"], "codex", "{done}");
     assert!(!codex_heard(&folder, &id).is_empty());
+}
+
+/// LIMITS-17: a move writes a handoff in the worktree, with the earlier rounds' summaries and the
+/// files changed so far, and the new session's first prompt tells it to read and compress it.
+#[test]
+fn limits_17_a_moved_job_hears_its_handoff() {
+    let folder = Folder::new("limits-17");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let id = post(&obid, "Look around");
+    let first = ended(&obid, &id);
+    let summary = first["summary"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    // A change the first agent left, uncommitted, in a file the branch tracks.
+    let worktree = Path::new(first["worktree"].as_str().unwrap()).to_path_buf();
+    let tracked = std::process::Command::new("git")
+        .args(["-C", worktree.to_str().unwrap(), "ls-files"])
+        .output()
+        .unwrap();
+    let file = String::from_utf8_lossy(&tracked.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    std::fs::write(worktree.join(&file), "changed by the first agent\n").unwrap();
+    let body = json!({"agent": "codex"});
+    let moved = within(60, "it moves once it's published", || {
+        let moved = call_typed(&obid, "POST", &format!("/v1/jobs/{id}/move"), &body);
+        (moved.status != 422 || !moved.text.contains("publishing")).then_some(moved)
+    });
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    assert_eq!(moved.body["moves"][0]["handoff"], true, "{}", moved.text);
+    let again = call_typed(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."}),
+    );
+    assert!(again.status < 300, "{}", again.text);
+    let handoff = worktree.join(".obi/inputs/handoff.md");
+    let text = within(60, "obid writes the handoff", || {
+        std::fs::read_to_string(&handoff).ok()
+    });
+    assert!(
+        text.contains("## What each earlier round reported"),
+        "{text}"
+    );
+    assert!(text.contains(&summary), "{text}");
+    assert!(text.contains(&file), "{text}");
+    assert!(text.contains("Look around"), "{text}");
+    let heard = within(60, "Codex's first prompt", || {
+        let heard = codex_heard(&folder, &id);
+        heard.contains("handoff.md").then_some(heard)
+    });
+    assert!(
+        heard.contains("You are taking over this task from Claude Code on Stub")
+            && heard.contains("Read .obi/inputs/handoff.md first, compress it"),
+        "{heard}"
+    );
 }

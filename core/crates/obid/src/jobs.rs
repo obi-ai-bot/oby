@@ -3356,7 +3356,7 @@ impl Jobs {
                         &offered,
                         &from,
                         Carried {
-                            because: "couldn't go on with its account",
+                            because: "which couldn't go on there",
                             why: "It needs your OK to go on there".into(),
                             by: format!("as {from} needs your OK for work I run by myself"),
                         },
@@ -10146,7 +10146,7 @@ impl Jobs {
             }
         }
 
-        let words = self.take_heard(id);
+        let words = self.heard_handing_over(id, &worktree).await;
         // A restart cut it short while it ran its check or published ("After any restart"): it
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
         // teammates for one). Words the owner sent meanwhile are its next turn instead.
@@ -17859,7 +17859,8 @@ mod tests {
         assert!(
             ran.heard
                 .first()
-                .is_some_and(|h| h.contains("couldn't go on with its account")),
+                .is_some_and(|h| h.contains("which couldn't go on there")
+                    && h.contains(".obi/inputs/handoff.md")),
             "{:?}",
             ran.heard
         );

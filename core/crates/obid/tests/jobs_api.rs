@@ -2065,7 +2065,11 @@ fn usage_limit_jobs_wait_for_room_and_ask_no_one() {
     let post = || {
         post_job(&obid, json!({"repo":"obi-e2e/fixture-app", "kind":"research", "task":"LIMITED WEEK: 86400", "account":"Stub"})).body["id"].as_str().unwrap().to_owned()
     };
-    let waits = |id: &str| until(&obid, id, |j| j["status"] == "queued" && !j["resumesAt"].is_null());
+    let waits = |id: &str| {
+        until(&obid, id, |j| {
+            j["status"] == "queued" && !j["resumesAt"].is_null()
+        })
+    };
     let first = post();
     let job = waits(&first);
     assert!(job["accountLimit"].is_null(), "{job}");

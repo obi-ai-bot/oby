@@ -2160,34 +2160,15 @@ pub(crate) fn forget_login_secrets(login: &Path) {
     }
 }
 
-/// What a new session hears first when it takes over a job from `was`, which hit its usage limit
-/// (#871): where the work is, and what the earlier rounds reported, quoted, with every secret obid
-/// knows taken out.
-pub(super) fn handoff(job: &Job, was: &str, because: &str) -> String {
-    let mut note = format!(
-        "{was} was working on this job and {because}. You're taking it over in the same worktree and branch: its commits are on the branch, and it may have left changes uncommitted. Check `git status` and `git log` before you go on."
-    );
-    let summaries = job.summaries.clone().unwrap_or_default();
-    // What its earlier rounds reported, then what the owner told it (LIMITS-15), each quoted.
-    for (what, who, said) in [
-        (
-            "What its earlier rounds reported",
-            "the agent before you",
-            summaries,
-        ),
-        ("What the owner told it", "the owner", job.said.clone()),
-    ] {
-        if !said.is_empty() {
-            let nonce = crate::brain::briefing::nonce();
-            let said = crate::secrets::known().redact(&said.join("\n\n"));
-            note = format!(
-                "{note}\n\n{what}, quoted:\n\n{}\n{}",
-                crate::brain::briefing::fence_rule(&nonce, who),
-                crate::brain::briefing::fence(&nonce, &said)
-            );
-        }
-    }
-    note
+/// What a new session hears first when it takes over a job from `was` ("Codex · Work"), which
+/// `because` says (LIMITS-17): to read the handoff obid writes as its run starts
+/// ([`Jobs::heard_handing_over`]) and compress it itself. No model call of obid's summarizes.
+pub(super) fn handoff(was: &str, because: &str) -> String {
+    let (tool, account) = was.split_once(" · ").unwrap_or((was, "its account"));
+    format!(
+        "{}{tool} on {account}, {because}. Read .obi/inputs/handoff.md first, compress it into what's done, what's decided and what's left, then continue from there; don't redo finished work. You're in the same worktree and branch: its commits are there, and it may have left changes uncommitted.",
+        super::moves::TAKING_OVER
+    )
 }
 
 /// What a [`carry_over`] says: to the agent taking over, on the job's list of moves, and in its changes.
@@ -2209,8 +2190,7 @@ pub(super) fn carry_over(
     said: Carried,
 ) {
     let to = format!("{} · {}", tool.name(), account.name);
-    let heard = handoff(job, from, said.because);
-    job.heard.insert(0, heard);
+    job.heard.insert(0, handoff(from, said.because));
     on_tool(job, tool);
     job.account = account.id.clone();
     job.session = None;
@@ -2220,8 +2200,12 @@ pub(super) fn carry_over(
         to: to.clone(),
         why: Some(said.why),
         date: obi_protocol::time::now(),
+        handoff: true,
     });
-    job.changed(format!("Moved from {from} to {to} {}", said.by));
+    job.changed(format!(
+        "Moved from {from} to {to} {}, with a handoff (.obi/inputs/handoff.md)",
+        said.by
+    ));
 }
 
 /// Removes `login/<name>`, each folder on the way looked at without following a link: a link (or

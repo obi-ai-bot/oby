@@ -83,7 +83,7 @@ impl Failover {
         let Failover(tool, account, from, line) = self;
         let by = "by itself (Account failover)".into();
         let said = Carried {
-            because: "hit its account's usage limit",
+            because: "which reached its limit",
             why: line.clone(),
             by,
         };
@@ -765,7 +765,7 @@ impl Jobs {
                     offered.as_deref().unwrap_or(&[]),
                     &from,
                     Carried {
-                        because: "hit its account's usage limit",
+                        because: "which reached its limit",
                         why: "Your account-limit choice".into(),
                         by: "by your account-limit choice".into(),
                     },
