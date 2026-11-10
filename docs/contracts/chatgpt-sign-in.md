@@ -165,7 +165,7 @@ All add-only.
 - **CHATGPT-22:** What the owner started needs no yes, on Auto too, nor does their signed follow-up of a routine's job.
 - **CHATGPT-23:** Taking the yes back stops work nobody's watching on the login now, saying why; the next waits; what the owner started goes on. It takes no signature. (Ending a turn nobody watches is retired with it: [rules-delete-supervisor, obi-ai-bot/oby#1952](https://github.com/obi-ai-bot/oby/pull/1952).) A review starts again elsewhere with no error (`chatgpt_23_a_review_stopped_by_the_no_starts_again_elsewhere`), or its task says what it waits for; one resumed after the no doesn't run there. A job already queued waits; one that had run and goes elsewhere moves with its handover.
 - **CHATGPT-24:** The token alone never says yes, nor a signature over another request or one used already; the gateway doesn't have the route; an account that isn't a ChatGPT login has nothing to answer.
-- **CHATGPT-25:** A move past a limit doesn't offer a background job a login with no yes; once there's one it does. The owner's own job is offered it as before (CHATGPT-13).
+- **CHATGPT-25:** A move past a limit (LIMITS-15) never puts a job on a ChatGPT login by itself, yes or no: it shows no room, so the job waits. Only the owner's own move (`POST /v1/jobs/{id}/move`) puts work there, and a background job's still needs the login's yes.
 - **CHATGPT-26:** An account from before there was a question starts with no yes and is asked once, in the app; a no isn't asked again; nothing that ran before fails.
 
 ## Spikes
