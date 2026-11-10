@@ -508,7 +508,8 @@ pub fn resolve_bin(bin: &str) -> Option<PathBuf> {
 /// Runs `argv` in a session of its own, in place of this process: `setsid`, then `exec`. What
 /// `obid __session -- <argv>` does ([`crate::sandbox::SESSION`]), so that a sandboxed process has
 /// no controlling terminal, and its process group (its id) holds everything it starts. Returns only
-/// when it couldn't: then nothing ran.
+/// when it couldn't: then nothing ran. With [`NICE`] in its environment, it runs at that nice, and
+/// the program doesn't see it.
 pub fn exec_in_own_session(argv: &[OsString]) -> std::io::Error {
     use std::os::unix::process::CommandExt;
     let Some((program, args)) = argv.split_first() else {
@@ -517,8 +518,18 @@ pub fn exec_in_own_session(argv: &[OsString]) -> std::io::Error {
     if let Err(errno) = nix::unistd::setsid() {
         return std::io::Error::other(format!("can't start a session of its own: {errno}"));
     }
-    std::process::Command::new(program).args(args).exec()
+    if let Some(nice) = std::env::var(NICE).ok().and_then(|n| n.parse().ok()) {
+        // Raising one's own nice needs no privilege; one obid can't set leaves it as it is.
+        let _ = rustix::process::setpriority_process(None, nice);
+    }
+    std::process::Command::new(program)
+        .args(args)
+        .env_remove(NICE)
+        .exec()
 }
+
+/// What tells `obid __session` the nice its program runs at: a job's agent's (PUBLISHING-30).
+pub const NICE: &str = "OBY_SESSION_NICE";
 
 /// Sends `signal` to the process group `pgid`; a group that's gone is fine.
 pub fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {

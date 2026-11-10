@@ -555,6 +555,43 @@ fn a_check_runs_ps_in_the_box() {
     assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
 }
 
+/// PUBLISHING-30: a job's agent, and what it starts, run at nice 10; its check runs at obid's own.
+#[test]
+fn publishing_30_an_agent_runs_below_the_checks_priority() {
+    let folder = Folder::new("agent-nice");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    // obid sets nice 10 outright, and nobody unprivileged lowers it back: from where this test
+    // started, the agent ends at the higher of the two. Started below 10 (a terminal, the Mac's
+    // check) this proves the lowering; run by a job's own agent, already at 10, it can't.
+    let base: i32 = String::from_utf8(
+        std::process::Command::new("ps")
+            .args(["-o", "nice=", "-p", &std::process::id().to_string()])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .parse()
+    .unwrap();
+    let lowered = base.max(10);
+    let answer = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "NICE",
+               "check": format!("test \"$(ps -o nice= -p $$)\" -eq {base}")}),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(
+        job["summary"],
+        format!("nice={lowered} child={lowered} env=none"),
+        "{job}"
+    );
+    assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
+}
+
 /// PUBLISHING-23: a repository's setup, the owner's line in config.json, runs in the job's box,
 /// in its worktree, before its agent starts; one that fails is quoted to the agent, fenced, the job
 /// goes on, and its report says how the setup went.

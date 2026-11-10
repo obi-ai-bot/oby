@@ -37,6 +37,9 @@ pub const FILE_WINDOWS: u32 = 4;
 /// shorter window): by then the agent has gone quiet, so what it used talking isn't counted.
 const CPU_SETTLE: Duration = Duration::from_secs(1);
 
+/// The nice a job's agent and everything it starts run at (PUBLISHING-30).
+const AGENT_NICE: i32 = 10;
+
 /// Something outside the agent the turn waits on (an Apple check on a Mac): while it says so, the
 /// turn isn't quiet, as while it waits for the owner.
 pub type Waiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
@@ -182,6 +185,9 @@ impl Conn {
             crate::groups::take(group)
                 .await
                 .map_err(std::io::Error::other)?;
+            // PUBLISHING-30: a job's agent, and all it starts, runs below obid's checks, which
+            // decide publishing. Its first program, `obid __session`, sets it before anything runs.
+            command.env(process::NICE, AGENT_NICE.to_string());
         }
         // No process group set here: the command line is the job sandbox's (`Sandbox::wrap`), whose
         // first program starts a session of its own, and so a process group whose id is the child's.

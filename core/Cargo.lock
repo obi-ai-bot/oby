@@ -1577,6 +1577,7 @@ dependencies = [
  "p256",
  "regex",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror",
