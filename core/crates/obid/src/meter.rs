@@ -105,6 +105,17 @@ pub fn tree_cpu(table: &[Process], roots: &[u32]) -> u64 {
     tree_sum(table, roots, |p| p.cpu)
 }
 
+/// The CPU time `pgid`'s tree has used now ([`tree_cpu`]), or `None` when it can't be read.
+pub async fn group_cpu(pgid: u32) -> Option<u64> {
+    tokio::task::spawn_blocking(move || {
+        let table = processes();
+        (!table.is_empty()).then(|| tree_cpu(&table, &[pgid]))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 fn tree_sum(table: &[Process], roots: &[u32], value: impl Fn(&Process) -> u64) -> u64 {
     if roots.is_empty() {
         return 0;

@@ -1,5 +1,49 @@
 //! Why a failed check judged nothing, so the job ends for the owner's Publish by hand: a check
-//! that says so (PUBLISHING-22) or the machine's failure, not the code's (PUBLISHING-17).
+//! that says so (PUBLISHING-22), the machine's failure, not the code's (PUBLISHING-17), or obid
+//! stopping one that did nothing or ran too long (PUBLISHING-29).
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+/// What a check's output ends with when obid stopped it at `limit`, the most it may run, and why
+/// it judged nothing (PUBLISHING-29).
+pub(super) fn too_long(limit: Duration) -> (String, String) {
+    let limit = super::spell(limit);
+    (
+        format!("obid stopped it after {limit}, the most a test run may take."),
+        format!("the check ran past its limit of {limit}"),
+    )
+}
+
+/// Ends once the check whose process group is `pgid` has made no progress for `quiet`: nothing
+/// new in `heard` (the bytes it wrote) and no CPU used by its group, a thousandth of a core at
+/// least (PUBLISHING-29). A reading that fails counts as progress. Then [`too_long`]'s pair for it.
+pub(super) async fn idle(pgid: u32, heard: &AtomicUsize, quiet: Duration) -> (String, String) {
+    let every = (quiet / 15).max(Duration::from_millis(50));
+    let (mut said, mut cpu, mut since) = (0, None, tokio::time::Instant::now());
+    loop {
+        tokio::time::sleep(every).await;
+        let now = (
+            heard.load(Ordering::Relaxed),
+            crate::meter::group_cpu(pgid).await,
+        );
+        let used = match (cpu, now.1) {
+            (Some(was), Some(is)) => u128::from(is.abs_diff(was)) >= every.as_nanos() / 1000,
+            _ => true,
+        };
+        if used || now.0 != said {
+            since = tokio::time::Instant::now();
+        }
+        (said, cpu) = now;
+        if since.elapsed() >= quiet {
+            let quiet = super::spell(quiet);
+            return (
+                format!("obid stopped it: it did nothing for {quiet}."),
+                format!("the check did nothing for {quiet}"),
+            );
+        }
+    }
+}
 
 /// The job's reason when its check judged nothing, for the owner's Publish by hand (PUBLISHING-8).
 pub(super) fn unchecked(why: impl std::fmt::Display) -> String {

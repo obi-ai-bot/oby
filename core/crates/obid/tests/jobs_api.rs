@@ -1729,7 +1729,17 @@ fn recovery_9_a_cut_output_with_no_newline_is_kept() {
         ];
         let (_send, signal) = tokio::sync::watch::channel(Signal::Run);
         let limit = Duration::from_secs(30);
-        let run = obid::jobs::run_check(&argv, &[], &folder.0, limit, signal, None, secrets, None);
+        let run = obid::jobs::run_check(
+            &argv,
+            &[],
+            &folder.0,
+            limit,
+            limit,
+            signal,
+            None,
+            secrets,
+            None,
+        );
         runtime.block_on(run).unwrap().output
     };
     for perl in [
@@ -5118,6 +5128,7 @@ fn publishing_16_a_check_that_times_out_spends_no_round() {
             &argv,
             &[],
             &folder.0,
+            Duration::from_secs(60),
             Duration::from_secs(1),
             signal,
             None,
@@ -5131,14 +5142,15 @@ fn publishing_16_a_check_that_times_out_spends_no_round() {
     );
     assert!(!run.passed);
     assert!(
-        run.output.ends_with(obid::jobs::CHECK_TOO_LONG),
+        run.output
+            .ends_with("obid stopped it after 1 second, the most a test run may take."),
         "{}",
         run.output
     );
     assert_eq!(
         run.unchecked.as_deref(),
         Some(
-            "Not published: the check ran past its 1-second limit, so nothing counts as checked. Read its change, then Publish it by hand."
+            "Not published: the check ran past its limit of 1 second, so nothing counts as checked. Read its change, then Publish it by hand."
         )
     );
 
@@ -5148,6 +5160,7 @@ fn publishing_16_a_check_that_times_out_spends_no_round() {
             &argv,
             &[],
             &folder.0,
+            Duration::from_secs(60),
             Duration::from_secs(60),
             signal,
             None,
@@ -5164,7 +5177,69 @@ fn publishing_16_a_check_that_times_out_spends_no_round() {
     });
     assert!(!stopped.passed);
     assert!(stopped.unchecked.is_none(), "{:?}", stopped.unchecked);
-    assert!(!stopped.output.contains(obid::jobs::CHECK_TOO_LONG));
+    assert!(!stopped.output.contains("obid stopped it"));
+}
+
+/// `run_check` in a group of its own, as the job sandbox runs it, with `quiet` and a 30-second
+/// limit: how it went and how long it took.
+fn checked(perl: &str, quiet: Duration) -> (obid::jobs::CheckRun, Duration) {
+    let folder = Folder::new("check-quiet");
+    let argv: Vec<std::ffi::OsString> = vec![
+        "/usr/bin/perl".into(),
+        "-e".into(),
+        format!("setpgrp(0, 0); {perl}").into(),
+    ];
+    let (_send, signal) = tokio::sync::watch::channel(obid::process::Signal::Run);
+    let started = Instant::now();
+    let run = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(obid::jobs::run_check(
+            &argv,
+            &[],
+            &folder.0,
+            quiet,
+            Duration::from_secs(30),
+            signal,
+            None,
+            None,
+            None,
+        ));
+    (run.unwrap(), started.elapsed())
+}
+
+/// PUBLISHING-29: a check that runs well past its quiet window, printing one while and only
+/// using CPU the next, isn't stopped: it passes.
+#[test]
+fn publishing_29_a_slow_check_that_keeps_working_isnt_stopped() {
+    let perl = r#"$| = 1; for (1..3) { print "compiling\n"; sleep 1 }
+        my $end = time + 3; while (time < $end) {} print "ok\n""#;
+    let (run, took) = checked(perl, Duration::from_millis(1500));
+    assert!(took > Duration::from_secs(5), "{took:?}");
+    assert!(run.passed, "{}", run.output);
+    assert!(run.unchecked.is_none(), "{:?}", run.unchecked);
+    assert_eq!(run.output, "compiling\ncompiling\ncompiling\nok\n");
+}
+
+/// PUBLISHING-29: a check that prints nothing and uses no CPU is stopped once its quiet window
+/// passes, long before its limit, and judged nothing, saying it did nothing.
+#[test]
+fn publishing_29_a_silent_idle_check_is_stopped() {
+    let (run, took) = checked(
+        r#"$| = 1; print "waiting\n"; sleep 30"#,
+        Duration::from_secs(1),
+    );
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(!run.passed);
+    assert_eq!(
+        run.output,
+        "waiting\nobid stopped it: it did nothing for 1 second."
+    );
+    assert_eq!(
+        run.unchecked.as_deref(),
+        Some(
+            "Not published: the check did nothing for 1 second, so nothing counts as checked. Read its change, then Publish it by hand."
+        )
+    );
 }
 
 /// The research job `task` makes, as it ended, and every `step` `/v1/events` showed for it.

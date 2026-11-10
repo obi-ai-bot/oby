@@ -37,12 +37,11 @@ const ACTIVITY_EVERY: Duration = Duration::from_secs(1);
 /// How long a review another Obi asked for may take. The owner's own jobs have no such clock: they
 /// stall when they stop making progress (docs/runner-api.md, `limit`; [`Stall`]).
 pub const ROUND_LIMIT: Duration = Duration::from_secs(45 * 60);
-/// How long one run of the check may take.
-pub const CHECK_LIMIT: Duration = Duration::from_secs(45 * 60);
-/// What a check run that took too long ends with.
+/// How long one run of the check may take, and how long it may do nothing (PUBLISHING-29).
+pub const CHECK_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
+pub const CHECK_QUIET: Duration = Duration::from_secs(15 * 60);
 /// The words of a message that carries only files (`POST /v1/jobs/{id}/messages`).
 pub const FILES_ALONE: &str = "Look at the files I attached.";
-pub const CHECK_TOO_LONG: &str = "obid stopped it after 45 minutes, the most a test run may take.";
 /// How much of a check's output obid keeps: its end.
 const CHECK_OUTPUT_MAX: usize = 64 * 1024;
 
@@ -8670,6 +8669,7 @@ impl Jobs {
             &argv,
             &env,
             &spec.worktree,
+            CHECK_QUIET,
             CHECK_LIMIT,
             signal.clone(),
             Some(watch.clone()),
@@ -8860,6 +8860,7 @@ impl Jobs {
             &argv,
             &env,
             &check.worktree,
+            CHECK_QUIET,
             CHECK_LIMIT,
             signal.clone(),
             Some(watch.clone()),
@@ -14976,8 +14977,8 @@ pub struct CheckRun {
     pub unchecked: Option<String>,
 }
 
-/// Runs a check's command line: its output together, at most [`CHECK_LIMIT`] long, ended with
-/// everything it started when it runs too long or the job stops.
+/// Runs a check's command line: its output together, ended with everything it started when it
+/// does nothing for `quiet`, runs `limit` or the job stops (PUBLISHING-29).
 ///
 /// `secrets` (the values its repository declares, crate::secretspec) are taken out of its output
 /// before it is cut to size or kept. When only its end was kept, its first line, which a value or
@@ -14987,6 +14988,7 @@ pub async fn run_check(
     argv: &[OsString],
     env: &[(OsString, OsString)],
     cwd: &Path,
+    quiet: Duration,
     limit: Duration,
     mut signal: watch::Receiver<Signal>,
     watch: Option<Arc<Mutex<crate::facts::CheckWatch>>>,
@@ -15034,6 +15036,8 @@ pub async fn run_check(
     }
     let _group = Group(pgid);
     let fed = watch.clone();
+    let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hearing = heard.clone();
     let reading = tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let feed = |bytes: &[u8]| {
@@ -15051,6 +15055,7 @@ pub async fn run_check(
             match std::io::Read::read(&mut reader, &mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    hearing.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                     feed(&buffer[..n]);
                     kept.extend_from_slice(&buffer[..n]);
                     if kept.len() > 2 * CHECK_OUTPUT_MAX {
@@ -15064,11 +15069,17 @@ pub async fn run_check(
         feed(b"\n");
         (kept, cut)
     });
-    let mut timed_out = false;
+    // What its output ends with and why it judged nothing, when obid stopped it.
+    let mut stopped = None;
     let status = tokio::select! {
         status = child.wait() => status.ok(),
         () = tokio::time::sleep(limit) => {
-            timed_out = true;
+            stopped = Some(unjudged::too_long(limit));
+            process::end_group(pgid, process::STOPPING).await;
+            child.wait().await.ok()
+        }
+        idle = unjudged::idle(pgid, &heard, quiet) => {
+            stopped = Some(idle);
             process::end_group(pgid, process::STOPPING).await;
             child.wait().await.ok()
         }
@@ -15110,22 +15121,16 @@ pub async fn run_check(
         let start = end.strip_suffix('\n').unwrap_or(end).find('\n');
         output = end[start.map_or(0, |at| at + 1)..].to_owned();
     }
-    if timed_out {
+    if let Some((said, _)) = &stopped {
         if !output.ends_with('\n') && !output.is_empty() {
             output.push('\n');
         }
-        output.push_str(CHECK_TOO_LONG);
+        output.push_str(said);
     }
-    let passed = !timed_out && status.is_some_and(|ended| sandbox_succeeded(&ended, env));
-    // A run past its limit judged nothing: no fix round for it, the owner's Publish by hand
-    // (PUBLISHING-16). A stop never sets `timed_out`.
-    let unchecked = timed_out.then(|| {
-        let limit = match limit.as_secs() {
-            secs if secs >= 60 => format!("{}-minute", secs / 60),
-            secs => format!("{secs}-second"),
-        };
-        unchecked(format!("the check ran past its {limit} limit"))
-    });
+    let passed = stopped.is_none() && status.is_some_and(|ended| sandbox_succeeded(&ended, env));
+    // A run obid stopped judged nothing: no fix round for it, the owner's Publish by hand
+    // (PUBLISHING-16). A stop never sets `stopped`.
+    let unchecked = stopped.map(|(_, why)| unchecked(why));
     Ok(CheckRun {
         passed,
         output,
