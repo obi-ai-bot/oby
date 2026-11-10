@@ -23,6 +23,28 @@ describe('talking on any agent', () => {
     expect(modelChoice('gpt-6-astra', 'auto', offered, true)).toMatchObject({ id: 'gpt-6-astra', unavailable: false });
   });
 
+  it('AGENTS-11: the message box lists Cursor\'s models once, kept to the account\'s own ids, each pick a listed id', async () => {
+    const { menuModels } = await load();
+    const groups = [
+      { base: 'grok-4.7', name: 'Grok 4.7', default: 'grok-4.7-medium', variants: [
+        { id: 'grok-4.7-low', effort: 'low', fast: false }, { id: 'grok-4.7-low-fast', effort: 'low', fast: true },
+        { id: 'grok-4.7-medium', effort: 'medium', fast: false }, { id: 'grok-4.7-medium-fast', effort: 'medium', fast: true }] },
+      { base: 'gpt-5.3-codex', name: 'Codex 5.3', default: 'gpt-5.3-codex', variants: [{ id: 'gpt-5.3-codex', fast: false }, { id: 'gpt-5.3-codex-fast', fast: true }] },
+      { base: 'gone', name: 'Gone', default: 'gone', variants: [{ id: 'gone', fast: false }] },
+    ];
+    const listed = ['grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'own-model', 'gpt-5.3-codex', 'gpt-5.3-codex-fast'].map((id) => ({ id, name: id }));
+    // an account's own id no group has stands alone, in the list's order; a group it lists none of goes
+    expect(menuModels(listed, 'grok-4.7-low-fast', groups)).toEqual([
+      { id: 'grok-4.7-low-fast', name: 'Grok 4.7', on: true },
+      { id: 'own-model', name: 'own-model', on: false },
+      { id: 'gpt-5.3-codex-fast', name: 'Codex 5.3', on: false },
+    ]);
+    // from a model with no effort: each model's default
+    expect(menuModels(listed, 'own-model', groups).map((m) => m.id)).toEqual(['grok-4.7-medium', 'own-model', 'gpt-5.3-codex']);
+    // no groups (an older obid, Claude Code, Codex): the list as it is
+    expect(menuModels(listed.slice(0, 2), 'grok-4.7-low', undefined)).toEqual([{ id: 'grok-4.7-low', name: 'grok-4.7-low', on: true }, { id: 'grok-4.7-low-fast', name: 'grok-4.7-low-fast', on: false }]);
+  });
+
   it('CONVERSATION-AGENT-15: the list shows the 5-hour session and the week, and an Ultra plan only its week', async () => {
     const { accountRow, usageLines } = await load();
     const words = (a: Parameters<typeof usageLines>[0]) => usageLines(a).map((l) => l.words);

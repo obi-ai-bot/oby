@@ -6,23 +6,26 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   chosen: 'p', saved: { p: 'claude-opus-5-5', w: 'claude-sonnet-5-5' } as Record<string, string>,
   tune: vi.fn(), choose: vi.fn(), setDefault: vi.fn(), fail: false,
+  cursorModels: [] as { id: string; name: string }[], groups: undefined as unknown,
 }));
 const LONG_CURSOR = Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}`, name: `Model ${i}` }));
 vi.mock('../SettingsView', async () => {
   const { useState } = await import('react');
+  const { cursorPick, cursorCompose } = await vi.importActual<typeof import('../SettingsView')>('../SettingsView');
   return {
+    cursorPick, cursorCompose,
     fullness: () => '',
     useAccounts: () => [[
       { id: 'p', agent: 'claude', name: 'Personal', used: 34, weekly: true, session: null, modelsRead: true },
       { id: 'w', agent: 'claude', name: 'Work', used: null, session: 12 },
-      { id: 'x', agent: 'cursor', name: 'Cursor', used: null, models: LONG_CURSOR },
+      { id: 'x', agent: 'cursor', name: 'Cursor', used: null, models: state.cursorModels },
     ]],
     useTalkDefault: () => [state.chosen, state.setDefault],
     useModels: () => {
       const [, render] = useState(0);
       return [
         (a: { id: string; agent: string }) => ({ model: state.saved[a.id] ?? (a.agent === 'cursor' ? 'auto' : 'claude-opus-5-5') }),
-        { claude: { models: [{ id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' }] }, cursor: { models: [{ id: 'auto', name: 'Auto' }] } },
+        { claude: { models: [{ id: 'claude-opus-5-5', name: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' }] }, cursor: { models: [{ id: 'auto', name: 'Auto' }], groups: state.groups } },
         async (id: string, change: { model: string }) => {
           state.tune(id, change);
           if (state.fail) throw new Error('Could not save model');
@@ -43,6 +46,7 @@ let root: Root, host: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   state.chosen = 'p'; state.saved = { p: 'claude-opus-5-5', w: 'claude-sonnet-5-5' }; state.fail = false;
+  state.cursorModels = LONG_CURSOR; state.groups = undefined;
   state.tune.mockClear(); state.choose.mockClear(); state.setDefault.mockReset().mockImplementation(async (id: string) => { state.chosen = id; });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
@@ -152,4 +156,26 @@ it('CONVERSATION-AGENT-22: a menu too tall for the window scrolls its accounts, 
   expect(Number.parseFloat(models.style.top)).toBe(top - 40);
   await click(button('Model 39', models));
   expect(state.tune).toHaveBeenCalledWith('x', { model: 'm-39' });
+});
+
+it('AGENTS-11: Cursor\'s models show once each, and a pick keeps the effort and Fast the account runs', async () => {
+  state.cursorModels = [{ id: 'auto', name: 'Auto' }, { id: 'grok-4.7-low', name: 'Grok 4.7 Low' }, { id: 'grok-4.7-low-fast', name: 'Grok 4.7 Low Fast' },
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' }];
+  state.groups = [{ base: 'auto', name: 'Auto', default: 'auto', variants: [{ id: 'auto', fast: false }] },
+    { base: 'grok-4.7', name: 'Grok 4.7', default: 'grok-4.7-medium', variants: [{ id: 'grok-4.7-low', effort: 'low', fast: false }, { id: 'grok-4.7-low-fast', effort: 'low', fast: true }, { id: 'grok-4.7-medium', effort: 'medium', fast: false }] },
+    { base: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', default: 'gemini-3.1-pro', variants: [{ id: 'gemini-3.1-pro', fast: false }] }];
+  state.saved.x = 'grok-4.7-low-fast';
+  await show();
+  expect(button('Cursor').textContent).toContain('Grok 4.7 Low Fast');
+  await click(button('Cursor'));
+  const models = document.querySelector('[aria-label="Cursor models"]')!;
+  expect(Array.from(models.querySelectorAll('button'), (b) => b.textContent)).toEqual(['Auto', 'Grok 4.7', 'Gemini 3.1 Pro']);
+  expect(button('Grok', models).getAttribute('aria-checked')).toBe('true');
+  await click(button('Grok', models));
+  expect(state.tune).toHaveBeenLastCalledWith('x', { model: 'grok-4.7-low-fast' });
+  state.saved.x = 'gemini-3.1-pro';
+  await click(host.querySelector('button')!); await click(button('Cursor', document.querySelector('.talk-menu')!));
+  // this account doesn't list Grok's default (medium): the closest id it lists
+  await click(button('Grok', document.querySelector('[aria-label="Cursor models"]')!));
+  expect(state.tune).toHaveBeenLastCalledWith('x', { model: 'grok-4.7-low' });
 });
