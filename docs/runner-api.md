@@ -10,6 +10,8 @@ The Rust daemon `obid` (`core/`) serves this same API, so the apps run against i
 
 ## Check workflow (shadow)
 
+Agents call the standalone stdio MCP server `oby-check-blok mcp` through its sole tool, `oby_check_affected` (optional string `base`, default `origin/dev`), or run `oby-check-blok --affected [base]` from the repository root instead of running the whole script in their box. Both use the same sequential nodes and script-owned affected planning, force offline Cargo/npm dependency use, and preserve the script's nested-sandbox skips. The JSON contains `verdict` (`passed`, `failed`, `unjudged`), `failing` test names, `reason`, and per-node results; the CLI prints one JSON line to stdout and one human summary to stderr, exiting 0/1/2. MCP returns that JSON as text content. This is a tool for third-party agents, not an obid agent loop: obid runs the full check after the turn. It adds no publishing, approval, merge or secret capability. Agent instructions live in `tools/oby-check-blok/SKILL.md`.
+
 `tools/oby-check-blok` is a standalone Apache-2.0 Cargo workspace outside obid.
 Build both binaries with `cargo build --manifest-path tools/oby-check-blok/Cargo.toml --bins`,
 then run `tools/oby-check-blok/target/debug/oby-check-blok <checkout> [base]` (default `origin/dev`)

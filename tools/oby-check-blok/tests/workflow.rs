@@ -72,6 +72,96 @@ fn git(repo: &Path, args: &[&str]) -> Output {
     output
 }
 
+#[test]
+fn affected_cli_and_mcp_return_structured_verdicts() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let scratch = tempfile::tempdir().unwrap();
+    let repo = scratch.path();
+    std::fs::create_dir(repo.join("scripts")).unwrap();
+    git(repo, &["init", "--quiet"]);
+    git(
+        repo,
+        &[
+            "-c",
+            "user.name=check",
+            "-c",
+            "user.email=check@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    );
+    git(repo, &["update-ref", "refs/remotes/origin/dev", "HEAD"]);
+    for failed in [false, true] {
+        std::fs::write(repo.join("scripts/oby-check.sh"), if failed {
+            "if [[ -n \"$OBY_CHECK_PLAN\" ]]; then echo \"oby-check: group $OBY_CHECK_ONLY\"; exit 0; fi\n echo 'test fixture::fails ... FAILED'; exit 1\n"
+        } else {
+            "if [[ -n \"$OBY_CHECK_PLAN\" ]]; then echo \"oby-check: group $OBY_CHECK_ONLY\"; fi\nexit 0\n"
+        }).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
+            .current_dir(repo)
+            .args(["--affected", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(if failed { 1 } else { 2 })); // Swift has no pilot node.
+        let verdict: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            verdict["verdict"],
+            if failed { "failed" } else { "unjudged" }
+        );
+        assert!(verdict["reason"].is_string());
+        if failed {
+            assert_eq!(verdict["failing"], serde_json::json!(["fixture::fails"]));
+        }
+    }
+    // A passing plan selects only the available Rust node.
+    std::fs::write(repo.join("scripts/oby-check.sh"), "[[ $CARGO_NET_OFFLINE == true && $npm_config_offline == true && -z $OBY_CHECK_ALL && -z $OBY_CHECK_PATHS ]] || exit 1\nif [[ -n \"$OBY_CHECK_PLAN\" && $OBY_CHECK_ONLY == rust ]]; then echo 'oby-check: group rust'; fi\nexit 0\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
+        .current_dir(repo)
+        .args(["--affected"])
+        .env("OBY_CHECK_ALL", "1")
+        .env("OBY_CHECK_PATHS", "core/")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["verdict"],
+        "passed"
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
+        .current_dir(repo)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"oby_check_affected\",\"arguments\":{\"base\":\"HEAD\"}}}\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 3);
+    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        responses[1]["result"]["tools"][0]["name"],
+        "oby_check_affected"
+    );
+    let verdict: serde_json::Value = serde_json::from_str(
+        responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(verdict["verdict"], "passed");
+}
+
 #[tokio::test]
 async fn grpc_port_zero_and_spawn_configuration_reject_unauthorized_calls() {
     use blok::grpc_server::proto::{
