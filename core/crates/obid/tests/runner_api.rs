@@ -1329,6 +1329,25 @@ fn agents_8_the_choices_are_listed() {
         json!(["low", "medium", "high", "xhigh"])
     );
     assert_eq!(options["cursor"]["efforts"], json!([]));
+    // AGENTS-11: Cursor's models also come grouped, every listed id in one group
+    let ids = |v: &Value, key: &str| -> Vec<Value> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m[key].clone())
+            .collect()
+    };
+    let mut grouped: Vec<Value> = options["cursor"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| ids(&g["variants"], "id"))
+        .collect();
+    let mut listed = ids(&options["cursor"]["models"], "id");
+    grouped.sort_by_key(|v| v.to_string());
+    listed.sort_by_key(|v| v.to_string());
+    assert_eq!(grouped, listed);
+    assert!(options["claude"].get("groups").is_none());
     assert_eq!(
         call(&obid, "GET", "/v1/settings/models", None).body,
         call(&obid, "GET", "/v1/status", None).body["models"]
