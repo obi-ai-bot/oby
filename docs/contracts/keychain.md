@@ -42,7 +42,7 @@ Cursor's CLI reports no usage, so obid asks what Cursor's own app and CLI ask (d
 
 The vault and the relay's key stay plaintext files (0600) under Application Support, by the owner's decision #1679 (no Keychain prompts). A Time Machine backup of that folder would copy them.
 
-- **KEYCHAIN-11:** On macOS, when obid prepares its home it makes `home/vault/` (where the vault opens) and `mac_home/keys/` if they're missing (`store::make_private_dir`), then runs `/usr/bin/tmutil addexclusion` on each once. The exclusion is sticky and needs no admin rights. A failure is logged and never stops obid. On Linux, nothing. No master key or encryption is added.
+- **KEYCHAIN-11:** On macOS, when obid prepares its home it makes `home/vault/` and `home/keys/` if they're missing (`store::make_private_dir`), then runs `/usr/bin/tmutil addexclusion` on each once. The exclusion is sticky and needs no admin rights. A failure is logged and never stops obid. On Linux, nothing. No master key or encryption is added.
 
 ### What the owner can still see
 
@@ -54,7 +54,7 @@ The vault and the relay's key stay plaintext files (0600) under Application Supp
 
 - No vault secret is ever read from or written to the Keychain.
 - No Keychain value is asked for twice while its item is unchanged.
-- On macOS, `home/vault/` and `mac_home/keys/` are excluded from Time Machine once home is prepared; a failed exclusion never stops obid.
+- On macOS, `home/vault/` and `home/keys/` are excluded from Time Machine once home is prepared; a failed exclusion never stops obid.
 - obid's API is add-only: no key or route is removed; `tetrix.error` gains one text.
 
 ## Tests

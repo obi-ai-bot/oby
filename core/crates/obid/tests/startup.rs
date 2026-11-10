@@ -39,7 +39,7 @@ fn config(folder: &Path) -> Config {
     Config::parse(&text).unwrap()
 }
 
-/// KEYCHAIN-11: on macOS, `prepare_home` makes `home/vault/` and `mac_home/keys/` and excludes
+/// KEYCHAIN-11: on macOS, `prepare_home` makes `mac_home/vault/` and `mac_home/keys/` and excludes
 /// each from Time Machine (`tmutil isexcluded` says `[Excluded]`). Sticky, no admin; a failure
 /// never stops obid. The scratch is under `Library/Caches`, not `temp_dir()`: macOS already
 /// excludes that temporary ancestor, so `[Excluded]` would not prove `addexclusion` ran.
@@ -50,7 +50,7 @@ fn keychain_11_vault_and_keys_are_excluded_from_backups() {
     let config = config(&folder.0);
     // Make the folders first so isexcluded names them, and prove they aren't excluded yet: then
     // prepare_home's addexclusion is what the later [Excluded] measures.
-    let vault = config.home.join("vault");
+    let vault = config.mac_home.join("vault");
     let keys = config.mac_home.join("keys");
     for path in [&vault, &keys] {
         std::fs::create_dir_all(path).unwrap();
@@ -62,8 +62,8 @@ fn keychain_11_vault_and_keys_are_excluded_from_backups() {
         );
     }
     obid::prepare_home(&config).unwrap();
-    assert!(vault.is_dir(), "prepare_home makes home/vault/");
-    assert!(keys.is_dir(), "prepare_home makes mac_home/keys/");
+    assert!(vault.is_dir(), "prepare_home makes vault/");
+    assert!(keys.is_dir(), "prepare_home makes keys/");
     for path in [&vault, &keys] {
         let text = tmutil_isexcluded(path);
         assert!(
