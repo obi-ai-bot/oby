@@ -96,8 +96,8 @@ struct File {
     /// cursor_keychain_login); left out, obid decides when it starts (crate::jobs::cursor_keychain_wanted).
     #[serde(default)]
     cursor_keychain: Option<bool>,
-    /// The Claude Code accounts whose jobs run in Claude Code's own sandbox with their own folder
-    /// (crate::jobs, `own_sandbox`); left out, none.
+    /// The Claude Code accounts once opted into Claude Code's own sandbox; read, and no longer
+    /// what picks a job's lane (crate::jobs, `own_lane`); left out, none.
     #[serde(default)]
     claude_own_sandbox: Vec<String>,
     /// The control plane the iPhone's pushes go through (crate::push).
@@ -280,10 +280,10 @@ pub struct Config {
     /// `claude_keychain`: `None` when it's left out, and then obid turns it on by itself on macOS when
     /// Cursor's own login is only in the Keychain (crate::jobs::cursor_keychain_wanted).
     pub cursor_keychain: Option<bool>,
-    /// `claudeOwnSandbox`: the Claude Code accounts (by id) whose jobs run unboxed by obid, with the
-    /// account's own folder and login, their shell in Claude Code's own sandbox and their tools kept
-    /// out of obid's home and the person's (the owner's decision of 2026-10-26; crate::jobs,
-    /// `own_sandbox`). Every other account's jobs stay in obid's box with a copy of the login.
+    /// `claudeOwnSandbox`: the Claude Code accounts (by id) the owner's decision of 2026-10-26 ran
+    /// in Claude Code's own sandbox. Every owner's Claude Code job runs there now (LANES-3,
+    /// crate::jobs, `own_lane`), so the list doesn't pick a lane: it's read, and only keeps its
+    /// accounts' interrupted jobs where they are (crate::jobs::account_limits).
     pub claude_own_sandbox: Vec<String>,
     /// How conversations run.
     pub conversation: Conversation,

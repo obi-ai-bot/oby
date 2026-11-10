@@ -399,7 +399,7 @@ pub fn fixed_denial_as(
 /// Whether a call of `tool` names a path outside `worktree`, links followed: a file's path, a
 /// search's folder (Grep's and Glob's `path`), or an absolute Glob pattern's fixed part, before its
 /// first wildcard. A job in Claude Code's own sandbox is refused those whatever its mode (crate::jobs,
-/// `own_sandbox`): its tools run outside any sandbox, where a boxed job's would read only what the
+/// `own_lane`): its tools run outside any sandbox, where a boxed job's would read only what the
 /// box shows.
 pub fn names_outside(tool: &str, input: &Value, worktree: &Path) -> bool {
     let pattern = input

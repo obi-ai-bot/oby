@@ -61,8 +61,8 @@ pub struct Launch {
     pub env: Vec<(OsString, OsString)>,
     pub cwd: PathBuf,
     pub stderr: PathBuf,
-    /// A Claude Code job run in its own sandbox rather than obid's box (`claudeOwnSandbox`,
-    /// crate::jobs, `own_sandbox`): its tools aren't sandboxed, so obid refuses any path outside
+    /// A Claude Code job run in its own sandbox rather than obid's box (the own lane,
+    /// crate::jobs, `own_lane`): its tools aren't sandboxed, so obid refuses any path outside
     /// the worktree.
     pub own_sandbox: bool,
     /// A job's run: its process group is recorded, and holds its worktree's lock, while it runs

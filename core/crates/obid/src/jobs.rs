@@ -62,6 +62,7 @@ const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 mod account_limits;
 mod authors;
 mod budget;
+mod lanes;
 mod logins;
 mod retry;
 mod secrets;
@@ -5034,7 +5035,7 @@ impl Jobs {
                     .as_ref(),
                 self.confines_egress(),
                 self.job_account(job)
-                    .is_ok_and(|(tool, account)| !self.own_sandbox(tool, &account)),
+                    .is_ok_and(|(tool, _)| !Self::own_lane(job, tool)),
                 call,
                 bounds,
             )
@@ -7381,9 +7382,11 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra = spec.git_env();
         extra.extend(process::no_publish_env(&spec.temp));
-        // Its only way off the Mac: obid's proxy, which lets its tool's own services through and
-        // decides every other site (crate::egress, #616). Never the network without it.
-        if sandbox.confines_egress() {
+        let own = Self::own_lane(job, tool);
+        // A boxed run's only way off the Mac: obid's proxy, which lets its tool's own services
+        // through and decides every other site (crate::egress, #616). An own run's network is its
+        // CLI's sandbox's (LANES-6).
+        if !own && sandbox.confines_egress() {
             let egress = self.egress.get().ok_or_else(|| {
                 format!(
                     "obid's egress proxy isn't running, so {} didn't start.",
@@ -7424,7 +7427,6 @@ impl Jobs {
         {
             chatgpt.runs.begin(&job.id);
         }
-        let own = self.own_sandbox(tool, account);
         self.update(&job.id, |job| job.own_lane = own);
         match (&account.config_dir, tool) {
             // In Claude Code's own sandbox, with the account's own folder and login: no copy.
@@ -7583,23 +7585,13 @@ impl Jobs {
             .or_else(|| self.accounts(tool).into_iter().next())
     }
 
-    /// Whether `account`'s jobs run Claude Code unboxed by obid, in Claude Code's own sandbox with
-    /// the account's own folder and login (`claudeOwnSandbox`, the owner's decision of 2026-10-26):
-    /// [`own_sandbox_env`], [`own_sandbox_settings`]. Every other run is boxed with a copy.
-    pub(crate) fn own_sandbox(&self, tool: Tool, account: &crate::config::Account) -> bool {
-        tool == Tool::Claude && self.config.claude_own_sandbox.contains(&account.id)
-    }
-
     /// Before a boxed Claude Code run on `account` (none: the brain's), its Keychain login is
     /// fresh ([`keychain_ready`]). Without a binary or an account it's the launch that says so.
-    /// One in its own sandbox needs nothing: Claude Code reads and refreshes its own login.
+    /// An own run doesn't ask: Claude Code reads and refreshes its own login (LANES-3).
     pub async fn claude_login_ready(
         &self,
         account: Option<&crate::config::Account>,
     ) -> Result<(), String> {
-        if account.is_some_and(|account| self.own_sandbox(Tool::Claude, account)) {
-            return Ok(());
-        }
         let account = match account {
             Some(account) => account.clone(),
             None => match self.brain_account(Tool::Claude) {
@@ -8582,12 +8574,7 @@ impl Jobs {
         // Whether the job's agent had a network of its own: every agent's way off a Mac is obid's
         // egress proxy (`confines_egress`, as each launch sets `proxied`); elsewhere it isn't.
         let raw_network = spec.network && !sandbox.confines_egress();
-        let mut spec = spec.clone();
-        spec.network = false;
-        // An owner's job's tests may serve on 127.0.0.1, which its agent, run here, reaches
-        // anyway; another Obi's branch, or commits from a teammate's Mac, get no network at all.
-        spec.loopback = self.get(id).is_some_and(|job| job.check_keeps_loopback());
-        spec.accounts.clear();
+        let spec = self.check_spec(id, spec);
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
         let round = self.get(id).map_or(1, |job| job.current_round());
         let marker = format!("obid-step-{}", random_check_id()?);
@@ -10541,6 +10528,7 @@ impl Jobs {
                 }
                 // A job run on a teammate's Mac uses the company API key, not this account's login.
                 if tool == Tool::Claude
+                    && !Self::own_lane(&job, tool)
                     && let Err(why) = self.claude_login_ready(Some(&account)).await
                 {
                     return Err(why.into());
@@ -15245,7 +15233,7 @@ mod tests {
     }
 
     /// PERMISSIONS-2 (docs/contracts/permissions.md): a Claude Code job starts with its telemetry
-    /// and error reports off, in obid's box and in its own sandbox (`claudeOwnSandbox`) alike.
+    /// and error reports off, in obid's box and in its own lane alike.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn permissions_2_an_agent_runs_with_its_telemetry_off() {
@@ -15269,15 +15257,14 @@ mod tests {
         let config = crate::config::Config::parse(
             &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o",
                 "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
-                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": accounts}},
-                "claudeOwnSandbox": ["own"]})
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": accounts}}})
             .to_string(),
         )
         .unwrap();
         let sandbox = Sandbox::detect(&session);
         let jobs = Jobs::open(config, crate::events::Events::new(), sandbox).unwrap();
         for id in ["boxed", "own"] {
-            let job = Job::new(
+            let mut job = Job::new(
                 id.into(),
                 "o/r".into(),
                 "fix".into(),
@@ -15285,6 +15272,7 @@ mod tests {
                 "claude".into(),
                 id.into(),
             );
+            job.untrusted = id == "boxed";
             let [worktree, admin, common, temp] =
                 ["worktree", "admin", "common", "temp"].map(|d| root.join(id).join(d));
             for dir in [&worktree, &admin, &common, &temp] {

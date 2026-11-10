@@ -4,6 +4,8 @@
 //! `waitAnswersWithTheJobOnceItEnded`; StopTests; DismissTests), with a stand-in agent
 //! (tests/agents/fake-claude) run by obid's Claude Code adapter in the job sandbox.
 
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -4788,6 +4790,188 @@ fn a_job_never_writes_its_accounts_folder() {
         state.contains("owner@example.com") && !state.contains("mcpServers"),
         "{state}"
     );
+    assert!(!login.join(".credentials.json").exists());
+}
+
+/// Claude Code as `fake-claude-recording` in front of `fake-claude`, recording each launch in
+/// `folder/launches` (support::planner_state), on an account in `folder/account` whose login has a
+/// refresh token, and with `claudeOwnSandbox` naming another account, which changes nothing.
+fn recording_config(folder: &Path, remote: &Path) -> (Value, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut config = config(folder, remote);
+    let account = folder.join("account");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(
+        account.join(".credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"test-access","refreshToken":"test-refresh","expiresAt":4102444800000}}"#,
+    )
+    .unwrap();
+    std::fs::write(account.join(".claude.json"), "{}").unwrap();
+    let url = support::planner_state(folder.join("launches"));
+    let node = Command::new("sh")
+        .args(["-c", "command -v node"])
+        .output()
+        .unwrap();
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let claude = folder.join("claude");
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nexec '{}' '{}' '{url}' '{}' \"$@\"\n",
+            String::from_utf8(node.stdout).unwrap().trim(),
+            agents.join("fake-claude-recording").display(),
+            agents.join("fake-claude").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    config["agents"]["claude"]["bin"] = json!(claude);
+    config["agents"]["claude"]["accounts"][0]["configDir"] = json!(account);
+    config["claudeOwnSandbox"] = json!(["another"]);
+    (config, account)
+}
+
+/// The last launch `folder/launches` recorded: its arguments and the names in its environment.
+fn last_launch(folder: &Path) -> (Vec<String>, Vec<String>) {
+    let calls = folder.join("launches/calls");
+    let n = std::fs::read_dir(&calls).map_or(0, |dir| dir.count());
+    let lines = |file: &str| -> Vec<String> {
+        std::fs::read_to_string(calls.join(n.to_string()).join(file))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    (lines("args"), lines("input"))
+}
+
+/// Job `id`, ended, marked `untrusted` as a conversation that read something untrusted marks one,
+/// then told `text`: its next run, which it waits for.
+fn marked_untrusted(
+    folder: &Path,
+    config: &Value,
+    obid: Obid,
+    id: &str,
+    text: &str,
+) -> (Obid, Value) {
+    drop(obid);
+    let file = folder.join(format!("home/jobs/{id}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["untrusted"] = json!(true);
+    kept["status"] = json!("interrupted");
+    kept["nextStep"] = json!("Try again");
+    kept["reason"] = json!("Stopped part way.");
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    let obid = start(folder, config);
+    let told = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": text}).to_string()),
+    );
+    assert_eq!(told.status, 200, "{}", told.text);
+    let job = until(&obid, id, |j| {
+        j["round"] == 2 && j["status"] != "queued" && j["status"] != "running"
+    });
+    (obid, job)
+}
+
+/// LANES-1 and LANES-3 (docs/contracts/lanes.md): the owner's Claude Code job runs in its own lane
+/// whatever `claudeOwnSandbox` lists: Claude Code gets obid's `--settings` for its own sandbox, no
+/// egress proxy and no box (it writes its account's own folder, `dir=account`), on that folder's
+/// login, refresh token and all, with no copy. Once marked untrusted, its next run is boxed with a
+/// copy (another Oby's job is foreign too: `lanes_1_whose_work_picks_the_lane`).
+#[test]
+fn lanes_1_the_owners_job_runs_in_its_own_lane_and_another_obys_stays_boxed() {
+    let folder = Folder::new("lanes-1");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (config, account) = recording_config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let task = format!("PLANT: {}", account.display());
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        job["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("plant: dir=account refresh=kept"),
+        "{job}"
+    );
+    let (args, env) = last_launch(&folder.0);
+    assert!(args.iter().any(|a| a == "--settings"), "{args:?}");
+    assert!(env.iter().any(|name| name == "CLAUDE_ENV_FILE"), "{env:?}");
+    assert!(!env.iter().any(|name| name.ends_with("_PROXY")), "{env:?}");
+    assert!(
+        !obid
+            .home
+            .join("logins")
+            .join(&id)
+            .join(".credentials.json")
+            .exists()
+    );
+
+    let (_obid, job) = marked_untrusted(&folder.0, &config, obid, &id, &task);
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(
+        job["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("plant: dir=own refresh=none"),
+        "{job}"
+    );
+    let (args, env) = last_launch(&folder.0);
+    assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
+    assert!(env.iter().any(|name| name == "HTTPS_PROXY"), "{env:?}");
+}
+
+/// LANES-10 (docs/contracts/lanes.md): a foreign job runs as every job did before the lanes: in
+/// Oby's box with a copy of its login and no refresh token, through obid's egress proxy, with
+/// `--setting-sources ""` and `--strict-mcp-config`, and its account's own folder out of reach.
+#[test]
+fn lanes_10_a_foreign_job_keeps_the_box_and_its_copy() {
+    let folder = Folder::new("lanes-10");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (config, account) = recording_config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "Look around."}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let task = format!("PLANT: {}", account.display());
+    let before = std::fs::read_dir(&account).unwrap().count();
+    let (obid, job) = marked_untrusted(&folder.0, &config, obid, &id, &task);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(
+        job["summary"],
+        "plant: dir=own refresh=none settings=ok state=ok real=no real-state=no read=no"
+    );
+    let (args, env) = last_launch(&folder.0);
+    let after = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .map(|i| args[i + 1].clone())
+    };
+    assert_eq!(after("--setting-sources").as_deref(), Some(""), "{args:?}");
+    assert!(args.iter().any(|a| a == "--strict-mcp-config"), "{args:?}");
+    assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
+    assert!(env.iter().any(|name| name == "HTTPS_PROXY"), "{env:?}");
+    assert!(!env.iter().any(|name| name == "CLAUDE_ENV_FILE"), "{env:?}");
+    assert_eq!(std::fs::read_dir(&account).unwrap().count(), before);
+    assert!(!account.join("settings.json").exists());
+    let login = obid.home.join("logins").join(&id);
     assert!(!login.join(".credentials.json").exists());
 }
 
