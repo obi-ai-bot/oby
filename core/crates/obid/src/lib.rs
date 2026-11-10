@@ -102,6 +102,8 @@ pub const CLEAN_FIRST: Duration = Duration::from_secs(30);
 
 /// How often the cleanup pass runs when no job settles meanwhile.
 pub const CLEAN_EVERY: Duration = Duration::from_secs(3 * 60 * 60);
+/// How often obid looks at its disk's free space (CLEANUP-2).
+const DISK_EVERY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
@@ -196,20 +198,24 @@ fn keep_private(folder: &std::path::Path) -> std::io::Result<()> {
 }
 
 /// The cleanup pass (docs/runner-api.md, `cleanup`): [`CLEAN_FIRST`] after obid starts, then
-/// whenever a job may have settled, and every [`CLEAN_EVERY`] for the jobs that settle as time
-/// passes. A pass that removed a worktree measures the folder again, unless obid is stopping
-/// (`cancelled`).
+/// whenever a job may have settled, every [`CLEAN_EVERY`] for the jobs that settle as time
+/// passes, and while the disk, looked at every [`DISK_EVERY`], is low (CLEANUP-2). A pass that
+/// removed a worktree measures the folder again, unless obid is stopping (`cancelled`).
 async fn keep_worktrees_clean(shared: Arc<api::Shared>, cancelled: Arc<AtomicBool>) {
     tokio::time::sleep(CLEAN_FIRST).await;
+    let (mut woken, mut last) = (true, 0);
     loop {
-        let now = obi_protocol::time::now();
-        if shared.jobs.clean_worktrees(now, shared.cleared.at()).await > 0 {
-            let (shared, cancelled) = (shared.clone(), cancelled.clone());
-            let _ =
-                tokio::task::spawn_blocking(move || shared.cleanup.remeasure_unless(&cancelled))
-                    .await;
+        let (now, cleared) = (obi_protocol::time::now(), shared.cleared.at());
+        let wanted = jobs::disk_wanted(api::disk_free(&shared.config.home));
+        if woken || now - last >= CLEAN_EVERY.as_secs() as i64 || wanted > 0 {
+            last = now;
+            if shared.jobs.clean_worktrees(now, cleared, wanted).await > 0 {
+                let (shared, cancelled) = (shared.clone(), cancelled.clone());
+                let measure = move || shared.cleanup.remeasure_unless(&cancelled);
+                let _ = tokio::task::spawn_blocking(measure).await;
+            }
         }
-        shared.jobs.wait_to_clean(CLEAN_EVERY).await;
+        woken = shared.jobs.wait_to_clean(DISK_EVERY).await;
     }
 }
 
