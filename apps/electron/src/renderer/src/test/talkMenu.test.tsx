@@ -130,3 +130,26 @@ it('CONVERSATION-AGENT-22: the model menu uses that account\'s list and scrolls 
   expect(button('Model 39', models)).toBeTruthy();
   expect(button('Auto', models)).toBeUndefined();
 });
+
+it('CONVERSATION-AGENT-22: a menu too tall for the window scrolls its accounts, and an account\'s models still open beside it', async () => {
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 });
+  await show();
+  const menu = document.querySelector<HTMLElement>('.row-menu')!;
+  expect(Number.parseFloat(menu.style.maxHeight)).toBeLessThanOrEqual(300);
+  // the whole menu scrolling would clip the models beside it
+  expect(menu.className).not.toContain('is-scroll');
+  const accounts = menu.querySelector<HTMLElement>('.talk-menu')!;
+  expect(accounts.className).toContain('menu-scroll');
+  await click(button('Cursor'));
+  const models = document.querySelector<HTMLElement>('[aria-label="Cursor models"]')!;
+  expect(models.parentElement).toBe(menu);
+  expect(models.closest('.menu-scroll')).toBeNull();
+  // it follows its row as the accounts scroll
+  const top = Number.parseFloat(models.style.top);
+  accounts.scrollTop = 40;
+  await act(async () => accounts.dispatchEvent(new Event('scroll')));
+  expect(accounts.scrollTop).toBe(40);
+  expect(Number.parseFloat(models.style.top)).toBe(top - 40);
+  await click(button('Model 39', models));
+  expect(state.tune).toHaveBeenCalledWith('x', { model: 'm-39' });
+});

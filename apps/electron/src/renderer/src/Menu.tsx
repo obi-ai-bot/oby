@@ -1,25 +1,43 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
-// A small menu under its ⋮ button (above it if there's no room below), e.g. a
+// How far a menu keeps from the window's edge, and from its button.
+const EDGE = 8, GAP = 4;
+
+// Where a menu goes: under its button if it fits there, else on the side with more room, never
+// taller than that room (it scrolls instead), so it always stays inside the window.
+export function menuPlace(at: DOMRect, height: number, windowHeight = innerHeight) {
+  const below = windowHeight - at.bottom - GAP - EDGE, above = at.top - GAP - EDGE;
+  const up = height > below && above > below;
+  const room = Math.max(0, up ? above : below);
+  return { up, maxHeight: room, scroll: height > room };
+}
+
+// A small menu under its ⋮ button (above it if there's more room there: menuPlace), e.g. a
 // task's, or a section's options; lined up with the button's right edge, or its
 // left (align: 'left') where it would otherwise cover what's before the button. Drawn over everything, so the folding groups
-// can't clip it. Esc or a click outside closes it (anywhere: see useClicksEverywhere);
+// can't clip it. Too tall for the window, it scrolls, its checked item in view: the whole menu,
+// or only its .menu-scroll part (scrollPart), so a submenu beside the rest isn't clipped.
+// Esc or a click outside closes it (anywhere: see useClicksEverywhere);
 // a click on the button that opened it is left to that button, which closes it
 // (a toggle, not a reopen). The window changing size closes it too, as a macOS
 // menu does, rather than leaving it where the button no longer is.
-export function Menu({ at, onClose, onEscape = onClose, height = 90, align = 'right', width, style: placement, children }: {
+export function Menu({ at, onClose, onEscape = onClose, height = 90, align = 'right', width, scrollPart = false, style: placement, children }: {
   at: DOMRect;
   onClose: () => void;
   onEscape?: () => void;
   height?: number;  // about how tall it is, to tell whether it fits below
   align?: 'left' | 'right';
   width?: number;  // wider than its 148px least, where its items want room
+  scrollPart?: boolean;  // a .menu-scroll inside it scrolls, not the whole menu
   style?: React.CSSProperties;
   children: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useClicksEverywhere(true);
+  useLayoutEffect(() => {
+    ref.current?.querySelector('[aria-checked="true"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onEscape(); } };
     const onDown = (e: PointerEvent) => {
@@ -32,15 +50,16 @@ export function Menu({ at, onClose, onEscape = onClose, height = 90, align = 'ri
     return () => { removeEventListener('keydown', onKey, true); removeEventListener('pointerdown', onDown, true); removeEventListener('resize', onClose); };
   }, [onClose, onEscape, at]);
 
-  const up = at.bottom + height > innerHeight;
+  const { up, maxHeight, scroll } = menuPlace(at, height);
   const style: React.CSSProperties = {
     ...(align === 'left' ? { left: at.left } : { right: innerWidth - at.right }),
     ...(width ? { minWidth: width } : {}),
-    ...(up ? { bottom: innerHeight - at.top + 4 } : { top: at.bottom + 4 }),
+    ...(up ? { bottom: innerHeight - at.top + GAP } : { top: at.bottom + GAP }),
+    maxHeight,
     ...placement,
   };
   return createPortal(
-    <div ref={ref} className={`row-menu${up ? ' is-up' : ''}${align === 'left' ? ' is-left' : ''}`} style={style} role="menu">{children}</div>,
+    <div ref={ref} className={`row-menu${up ? ' is-up' : ''}${align === 'left' ? ' is-left' : ''}${scroll && !scrollPart ? ' is-scroll' : ''}`} style={style} role="menu">{children}</div>,
     document.body,
   );
 }

@@ -45,6 +45,7 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 - **AGENTS-7:** Once obid's status says `defaultAccount`, a choice this Mac kept before (`agent.default`, `models.mine` in `localStorage`) is sent to obid once and then forgotten here, so nothing the owner chose is lost: a default only when obid has none yet (one set on another device wins); a choice for an account that's gone is dropped; one obid refused stays and is tried again at the next connection. Before that it keeps them here, as before.
 - A choice obid refuses is reported as the app reports any failure (`live.ts`, `say`), and the menu stays on obid's value. Sangam's screen has no words of its own for it yet.
 - An account with nothing chosen shows and runs the tool's model from `status.models` (CONVERSATION-AGENT-21). The menu has no separate "Default" entry.
+- **AGENTS-10:** The Model menu stays inside the window, at its smallest size too: under its button where it fits, else on the side with more room, never taller than that room. A list longer than the room (Cursor's) scrolls under the Model label, the chosen model scrolled into view; Effort stays below the list and opens its submenu beside it, inside the window.
 
 ## Invariants
 
@@ -64,6 +65,7 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 | AGENTS-7 | `apps/electron/src/renderer/src/test/agents.test.ts` |
 | AGENTS-8 | `runner_api::agents_8_the_choices_are_listed` |
 | AGENTS-9 | `runner_api::agents_9_the_owners_limits_are_settings_with_defaults` |
+| AGENTS-10 | `apps/electron/src/renderer/src/test/modelMenu.test.tsx` |
 
 ## Test it when it's done (on a real Mac)
 
@@ -71,3 +73,4 @@ The business behavior contract for Settings › Agents' **New tasks go to** and 
 2. Fill the second (or sign it out): the next task runs on the first.
 3. Set the second account's model to Sonnet 5.5 at High, Effort on complex tasks Max; start a task: its page shows Sonnet; ask for something large: `ps` shows `--effort max`.
 4. With a 0.4.x app's choices kept locally, update: the same choices show after the first connection, and quitting and reopening keeps them.
+5. With a Cursor account, make the window its smallest and open its Model menu, near the window's bottom and then scrolled near its top: the whole menu shows, Model label included, its list scrolls to every model, the chosen one in view. On a Codex account, Effort below the list still opens its efforts beside it.
