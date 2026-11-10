@@ -9,7 +9,10 @@ impl Job {
     }
 
     pub(crate) fn has_report(&self) -> bool {
-        self.kind == "research" && self.status == Status::Done && !self.summary.trim().is_empty()
+        self.kind == "research"
+            && self.status == Status::Done
+            && self.start_commit.is_some()
+            && !self.summary.trim().is_empty()
     }
 
     /// The saved summary is the report; no second copy or agent-authored proposals are stored.
@@ -31,7 +34,7 @@ mod tests {
     use crate::job::Phase;
 
     #[test]
-    fn publishing_28_research_skips_checks_on_restart_too() {
+    fn publishing_28_research_check_stage_is_always_skipped() {
         let mut job = Job::new(
             "r".into(),
             "o/r".into(),
@@ -72,6 +75,7 @@ mod tests {
             "a".into(),
         );
         job.summary = "# Findings\nSaved report".into();
+        job.start_commit = Some("abc".into());
         assert!(job.saved_report().is_none());
         job.status = Status::Done;
         assert_eq!(job.saved_report().unwrap()["markdown"], job.summary);
