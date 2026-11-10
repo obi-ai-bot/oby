@@ -1605,7 +1605,7 @@ fn tasks_18_a_stopped_job_says_who_stopped_it() {
     let asking = post_job(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "research",
-               "task": format!("ASK: {}", json!({"tool": "Glob", "input": {"pattern": "/etc/*"}}))}),
+               "task": format!("ASK: {}", json!({"tool": "WebFetch", "input": {"url": "https://example.com/a"}}))}),
     )
     .body["id"]
         .as_str()
@@ -2464,17 +2464,29 @@ fn a_follow_up_doesnt_repush_its_first_jobs_pushed_commits() {
 fn try_again_after_a_limit_keeps_the_rounds_summary() {
     let folder = Folder::new("limit-again");
     let remote = fixture(&folder.0.join("fixture"));
+    // Foreign (LANES-1), so the stand-in's HOME is the check's: in the own lane only its commands
+    // get that one, through Claude Code's CLAUDE_ENV_FILE, which the stand-in doesn't read.
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    for (id, file, words) in [("aaaa2401", "a.txt", " Done."), ("aaaa2402", "b.txt", "")] {
+        let mut job = obid::job::Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "build".into(),
+            format!("COMMIT: {file} AGAIN:{words}"),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.branch = format!("oby/build-{id}");
+        job.check = Some("test -e \"$HOME/tried\"".into());
+        job.rounds = Some(1);
+        job.untrusted = true;
+        let text = serde_json::to_vec(&job).unwrap();
+        std::fs::write(jobs.join(format!("{id}.json")), text).unwrap();
+    }
     let obid = start(&folder.0, &config(&folder.0, &remote));
-    let tried = |file: &str, words: &str| {
-        let id = post_job(
-            &obid,
-            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("COMMIT: {file} AGAIN:{words}"), "check": "test -e \"$HOME/tried\"", "rounds": 1}),
-        )
-        .body["id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let job = wait(&obid, &id);
+    let tried = |id: &str| {
+        let job = wait(&obid, id);
         // At its limit it needs you (#725), One more round its next step.
         assert_eq!(job["status"], "interrupted", "{job}");
         assert_eq!(job["nextStep"], "One more round", "{job}");
@@ -2490,18 +2502,18 @@ fn try_again_after_a_limit_keeps_the_rounds_summary() {
         );
         assert_eq!(more.status, 200, "{}", more.text);
         // Round 2 starts, then ends however long publishing takes on a busy machine.
-        until(&obid, &id, |j| j["round"] == 2);
-        let job = wait(&obid, &id);
+        until(&obid, id, |j| j["round"] == 2);
+        let job = wait(&obid, id);
         assert_eq!(job["round"], 2, "{job}");
         assert_eq!(job["status"], "done", "{job}");
         job
     };
 
-    let job = tried("a.txt", " Done.");
+    let job = tried("aaaa2401");
     assert_eq!(job["summary"], "Done.", "{job}");
     assert_eq!(job["summaries"], json!(["Added a.txt.", "Done."]), "{job}");
 
-    let job = tried("b.txt", "");
+    let job = tried("aaaa2402");
     assert_eq!(job["summary"], "Added b.txt.", "{job}");
     assert_eq!(job["summaries"], json!(["Added b.txt."]), "{job}");
 }
@@ -3479,11 +3491,30 @@ fn work_inside_the_sandbox_is_answered_without_the_owner() {
 fn what_leaves_the_sandbox_still_asks() {
     let folder = Folder::new("sandbox-outside");
     let remote = fixture(&folder.0.join("fixture"));
+    // A Glob outside the worktree asks in Oby's box, so in a foreign job (LANES-1): the own lane
+    // refuses it whatever the mode. Written before obid starts, it's the first to ask.
+    let glob = json!({"tool": "Glob", "input": {"pattern": "/etc/*"}});
+    let mut foreign = obid::job::Job::new(
+        "aaaa3391".into(),
+        "obi-e2e/fixture-app".into(),
+        "research".into(),
+        format!("ASK: {glob}"),
+        "claude".into(),
+        "stub".into(),
+    );
+    foreign.branch = "oby/research-aaaa3391".into();
+    foreign.mode = Some("sandbox".into());
+    foreign.untrusted = true;
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    let text = serde_json::to_vec(&foreign).unwrap();
+    std::fs::write(jobs.join("aaaa3391.json"), text).unwrap();
     let obid = start(&folder.0, &config(&folder.0, &remote));
     // The account's own folder (its `configDir`), as obid gives it to the agent.
     let login = folder.0.join("home/accounts/stub/settings.json");
     let read_login = format!("cat '{}'", login.to_string_lossy().replace('\'', "'\\''"));
     for (ask, why, always) in [
+        (glob, "It reads outside the job's worktree.", true),
         (
             json!({"tool": "Bash", "input": {"command": read_login}}),
             "It touches secrets or the vault.",
@@ -3509,21 +3540,19 @@ fn what_leaves_the_sandbox_still_asks() {
             "It touches secrets or the vault.",
             false,
         ),
-        (
-            json!({"tool": "Glob", "input": {"pattern": "/etc/*"}}),
-            "It reads outside the job's worktree.",
-            true,
-        ),
     ] {
-        let id = post_job(
-            &obid,
-            json!({"repo": "obi-e2e/fixture-app", "kind": "research",
-                   "task": format!("ASK: {ask}")}),
-        )
-        .body["id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let id = match ask["tool"] == "Glob" {
+            true => foreign.id.clone(),
+            false => post_job(
+                &obid,
+                json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+                       "task": format!("ASK: {ask}")}),
+            )
+            .body["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        };
         let waiting = until(&obid, &id, |j| j["permission"].is_object());
         assert_eq!(waiting["permission"]["why"], why, "{ask}");
         assert_eq!(
@@ -4691,16 +4720,24 @@ fn the_default_login_is_a_copy_the_person_keeps_unchanged() {
     for (name, text) in files {
         std::fs::write(person.join(name), text).unwrap();
     }
+    // A foreign job's (LANES-10): the owner's own runs on `~/.claude` itself, under Claude Code's
+    // own sandbox (LANES-3).
+    let id = "aaaa4399".to_owned();
+    let mut foreign = obid::job::Job::new(
+        id.clone(),
+        "obi-e2e/fixture-app".into(),
+        "research".into(),
+        format!("LOGIN: {}", person.display()),
+        "claude".into(),
+        "stub".into(),
+    );
+    foreign.branch = format!("oby/research-{id}");
+    foreign.untrusted = true;
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    let text = serde_json::to_vec(&foreign).unwrap();
+    std::fs::write(jobs.join(format!("{id}.json")), text).unwrap();
     let obid = start(&folder.0, &config);
-    let task = format!("LOGIN: {}", person.display());
-    let id = post_job(
-        &obid,
-        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task}),
-    )
-    .body["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
     let job = wait(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
     assert_eq!(
