@@ -64,6 +64,7 @@ mod authors;
 mod budget;
 mod lanes;
 mod logins;
+mod research;
 mod retry;
 mod secrets;
 mod setup;
@@ -4609,7 +4610,8 @@ impl Jobs {
             return;
         };
         let same = |r: &String| r.eq_ignore_ascii_case(&job.repo);
-        if job.check.is_some()
+        if job.kind == "research"
+            || job.check.is_some()
             || job.review_of.is_some()
             || self
                 .repo(&job.repo)
@@ -10340,10 +10342,7 @@ impl Jobs {
         // ([`asks_goal_line`]), and whether a turn that ended its last round without one was told
         // to say it (TASKS-19).
         let (mut goal, mut goal_nudged): (Option<String>, bool) = (None, false);
-        // Picked up where a restart cut it: its check run again on what it committed rather than
-        // its agent's turn (one with no check goes straight on), and a pass goes on to publish as
-        // after its last round. Running at once, at the phase it was in, so another restart cuts
-        // it there again.
+        // Resume at the interrupted stage, with research excluded from checks (PUBLISHING-28).
         let mut to_publish = false;
         if picks_up {
             self.update(id, |job| {
@@ -10353,11 +10352,11 @@ impl Jobs {
             });
             let job = self.get(id).ok_or("the job is gone")?;
             // On its base as it is now, as any check is: a conflict is its agent's round.
-            let onto = match job.check {
+            let onto = match job.repository_check() {
                 Some(_) => self.onto_base(id, &start_commit).await,
                 None => Onto::Same,
             };
-            match (job.check.clone(), onto) {
+            match (job.repository_check().cloned(), onto) {
                 (None, _) => {
                     to_publish = true;
                     // Its last GOAL line, from the replies it kept, so a restart holds what its
@@ -10954,7 +10953,7 @@ impl Jobs {
                 let job = self.get(id).ok_or("the job is gone")?;
                 let more_rounds = round < job.max_rounds();
                 // What it's checked on, and publishes, is on its base as it is now.
-                if job.check.is_some() {
+                if job.repository_check().is_some() {
                     match self.onto_base(id, &start_commit).await {
                         Onto::Same => {}
                         Onto::Rebased(base) => start_commit = base,
@@ -10973,7 +10972,7 @@ impl Jobs {
                         Onto::Conflict(files) => return Err(not_rebased(&job, &files)),
                     }
                 }
-                if let Some(command) = &job.check {
+                if let Some(command) = job.repository_check() {
                     self.update(id, |job| {
                         job.phase = Some(Phase::Check);
                         job.step = format!("Running {command}");
@@ -14333,7 +14332,7 @@ fn budget<'a>(jobs: impl Iterator<Item = &'a Job> + Clone, job: &Job) -> u64 {
 /// (`checkPeakRss`), whatever their job, and at least [`DEFAULT_BUDGET`] until 3 were; nothing for
 /// a job with no check.
 fn check_budget<'a>(jobs: impl Iterator<Item = &'a Job>, job: &Job) -> u64 {
-    if job.check.is_none() {
+    if job.repository_check().is_none() {
         return 0;
     }
     let peaks: Vec<(i64, u64)> = jobs
@@ -14790,7 +14789,7 @@ fn owner_prompt(job: &Job) -> String {
     if let Some(brief) = &job.brief {
         lines.push(brief_section(brief));
     }
-    if let Some(check) = &job.check {
+    if let Some(check) = job.repository_check() {
         // TASKS-15: no round count; PUBLISHING-6: where the check really runs.
         lines.push(format!("The work counts as done only when `{check}` succeeds. obid runs it after you finish, in its own clean checkout of your last commit, with no network: nothing uncommitted, untracked or ignored is there (node_modules, .venv, .env, build folders); usually only the caches in your HOME (cargo's, npm's) carry over, and when the repository declares secrets for its check, not even those. So what it needs must be committed, or installed by the command itself from those caches. Run it yourself first, from a clean state."));
     }
@@ -14801,7 +14800,7 @@ fn owner_prompt(job: &Job) -> String {
 /// `GOAL NOT MET: <what's left>`, which decides its rounds and whether it goes out by itself
 /// (TASKS-19). Not a review: its last line is its verdict.
 fn asks_goal_line(job: &Job) -> bool {
-    job.check.is_none()
+    job.repository_check().is_none()
         && (COMMITTING.contains(&job.kind.as_str()) || job.max_rounds() > 1)
         && job.review_of.is_none()
         && job.kind != "review"

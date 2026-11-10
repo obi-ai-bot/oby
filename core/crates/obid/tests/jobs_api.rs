@@ -329,6 +329,186 @@ fn wait(obid: &Obid, id: &str) -> Value {
     answer.body
 }
 
+#[test]
+fn publishing_28_research_commits_skip_the_check_and_keep_the_report() {
+    let folder = Folder::new("research-no-check");
+    let remote = fixture(&folder.0);
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["check"] = json!("sleep 60; exit 1");
+    let obid = start(&folder.0, &config);
+    let holder = post_job(
+        &obid,
+        json!({
+            "repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: code.txt"
+        }),
+    );
+    let holder_id = holder.body["id"].as_str().unwrap();
+    until(&obid, holder_id, |job| {
+        job["step"] == "Running sleep 60; exit 1"
+    });
+    let created = post_job(
+        &obid,
+        json!({
+            "repo": "obi-e2e/fixture-app", "kind": "research",
+            "task": "COMMIT: report.md ENDS: Research report saved."
+        }),
+    );
+    assert_eq!(created.status, 201, "{}", created.text);
+    let id = created.body["id"].as_str().unwrap();
+    let job = wait(&obid, id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["commits"], 1, "{job}");
+    assert!(job["pushed"].is_null(), "{job}");
+    assert!(job["checks"].is_null(), "{job}");
+    let holding = request(&obid, "GET", &format!("/v1/jobs/{holder_id}"), None);
+    assert_eq!(holding.body["status"], "running", "{}", holding.text);
+    request(&obid, "POST", &format!("/v1/jobs/{holder_id}/stop"), None);
+    let check = job["pipeline"]["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stage| stage["id"] == "check")
+        .unwrap();
+    assert_eq!(check["state"], "skipped", "{check}");
+    assert_eq!(check["detail"], "A research job changes no code");
+    let stages =
+        std::fs::read_to_string(obid.home.join("logs").join(id).join("stages.log")).unwrap();
+    assert!(
+        !stages.lines().any(|line| line.contains("check")),
+        "{stages}"
+    );
+    wait(&obid, holder_id);
+    let home = obid.folder.clone();
+    drop(obid);
+    let obid = start(&home, &config);
+    let saved = request(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(saved.status, 200);
+    assert!(
+        saved.body["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Research report saved."),
+        "{}",
+        saved.text
+    );
+    let report = request(&obid, "GET", &format!("/v1/jobs/{id}/report"), None);
+    assert_eq!(report.status, 200, "{}", report.text);
+    assert_eq!(report.body["job"], id);
+    assert_eq!(report.body["markdown"], saved.body["summary"]);
+    assert_eq!(report.body["commit"].as_str().unwrap().len(), 40);
+    assert_eq!(report.body["proposals"], json!([]));
+    assert_eq!(saved.body["report"], true);
+    let missing = request(&obid, "GET", "/v1/jobs/missing/report", None);
+    assert_eq!(missing.status, 404);
+    let no_report = request(&obid, "GET", &format!("/v1/jobs/{holder_id}/report"), None);
+    assert_eq!(no_report.status, 404);
+}
+
+#[test]
+fn publishing_28_research_skips_checks_on_restart_too() {
+    let folder = Folder::new("research-restart-no-check");
+    let remote = fixture(&folder.0);
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["check"] = json!("exit 1");
+    let mut obid = start(&folder.0, &config);
+    let created = post_job(
+        &obid,
+        json!({
+            "repo": "obi-e2e/fixture-app", "kind": "research",
+            "task": "COMMIT: report.md QUIET ONCE"
+        }),
+    );
+    assert_eq!(created.status, 201, "{}", created.text);
+    let id = created.body["id"].as_str().unwrap().to_owned();
+    // The stand-in emits Write only after committing, then waits for the restart.
+    until(&obid, &id, |job| {
+        job["step"]
+            .as_str()
+            .is_some_and(|step| step.contains("report.md"))
+    });
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(obid.child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
+    assert!(obid.child.wait().unwrap().success());
+    let kept: Value = serde_json::from_slice(
+        &std::fs::read(obid.home.join("jobs").join(format!("{id}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept["status"], "running");
+    drop(obid);
+    let obid = start(&folder.0, &config);
+    let restarted = wait(&obid, &id);
+    assert_eq!(restarted["status"], "done", "{restarted}");
+    assert_eq!(restarted["commits"], 1, "{restarted}");
+    // Use a separate finished report: the stand-in also reads QUIET in quoted history.
+    let parent = post_job(
+        &obid,
+        json!({
+            "repo": "obi-e2e/fixture-app", "kind": "research", "task": "COMMIT: findings.md"
+        }),
+    );
+    assert_eq!(parent.status, 201, "{}", parent.text);
+    let parent_id = parent.body["id"].as_str().unwrap();
+    assert_eq!(wait(&obid, parent_id)["status"], "done");
+    let told = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{parent_id}/messages"),
+        Some(&json!({"text": "COMMIT: follow-up.md"}).to_string()),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    let next = told.body["id"].as_str().unwrap();
+    let follow = wait(&obid, next);
+    assert_eq!(follow["kind"], "research");
+    assert_eq!(follow["status"], "done", "{follow}");
+    assert!(follow["commits"].as_u64().unwrap() > 0, "{follow}");
+    for job_id in [&id, next] {
+        let job = request(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body;
+        assert!(job["checks"].is_null(), "{job}");
+        let stages =
+            std::fs::read_to_string(obid.home.join("logs").join(job_id).join("stages.log"))
+                .unwrap();
+        assert!(
+            !stages.lines().any(|line| line.contains("check")),
+            "{stages}"
+        );
+    }
+}
+
+#[test]
+fn publishing_28_a_report_always_has_a_commit() {
+    let folder = Folder::new("research-report-commit");
+    let remote = fixture(&folder.0);
+    let config = config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let created = post_job(
+        &obid,
+        json!({
+            "repo": "obi-e2e/fixture-app", "kind": "research", "task": "Read it"
+        }),
+    );
+    let id = created.body["id"].as_str().unwrap();
+    let job = wait(&obid, id);
+    assert_eq!(job["report"], true, "{job}");
+    let report = request(&obid, "GET", &format!("/v1/jobs/{id}/report"), None);
+    assert_eq!(report.status, 200);
+    assert!(report.body["commit"].is_string());
+    let path = obid.home.join("jobs").join(format!("{id}.json"));
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    saved.as_object_mut().unwrap().remove("startCommit");
+    drop(obid);
+    std::fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let obid = start(&folder.0, &config);
+    let job = request(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(job.body["report"], false, "{}", job.text);
+    assert_eq!(
+        request(&obid, "GET", &format!("/v1/jobs/{id}/report"), None).status,
+        404
+    );
+}
+
 /// Polls `GET /v1/jobs/{id}` until `ready` holds, for at most 30 seconds.
 fn until(obid: &Obid, id: &str, ready: impl Fn(&Value) -> bool) -> Value {
     let give_up_at = Instant::now() + Duration::from_secs(30);
@@ -2813,7 +2993,7 @@ fn taskconv_14_words_wait_for_a_job_that_isnt_at_work() {
         "{asked:?}"
     );
 
-    let checked = new(json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+    let checked = new(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate",
                              "task": "KEEP PROMPTS", "check": "sleep 3"}));
     until(&obid, &checked, |j| j["step"] == "Running sleep 3");
     let told = tell(&checked, "One more thing: list the tests too.");
