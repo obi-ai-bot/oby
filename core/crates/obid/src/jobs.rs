@@ -14343,7 +14343,7 @@ fn budget<'a>(jobs: impl Iterator<Item = &'a Job> + Clone, job: &Job) -> u64 {
 /// (`checkPeakRss`), whatever their job, and at least [`DEFAULT_BUDGET`] until 3 were; nothing for
 /// a job with no check.
 fn check_budget<'a>(jobs: impl Iterator<Item = &'a Job>, job: &Job) -> u64 {
-    if job.check.is_none() {
+    if job.repository_check().is_none() {
         return 0;
     }
     let peaks: Vec<(i64, u64)> = jobs
@@ -14800,7 +14800,7 @@ fn owner_prompt(job: &Job) -> String {
     if let Some(brief) = &job.brief {
         lines.push(brief_section(brief));
     }
-    if let Some(check) = &job.check {
+    if let Some(check) = job.repository_check() {
         // TASKS-15: no round count; PUBLISHING-6: where the check really runs.
         lines.push(format!("The work counts as done only when `{check}` succeeds. obid runs it after you finish, in its own clean checkout of your last commit, with no network: nothing uncommitted, untracked or ignored is there (node_modules, .venv, .env, build folders); usually only the caches in your HOME (cargo's, npm's) carry over, and when the repository declares secrets for its check, not even those. So what it needs must be committed, or installed by the command itself from those caches. Run it yourself first, from a clean state."));
     }
@@ -14811,7 +14811,7 @@ fn owner_prompt(job: &Job) -> String {
 /// `GOAL NOT MET: <what's left>`, which decides its rounds and whether it goes out by itself
 /// (TASKS-19). Not a review: its last line is its verdict.
 fn asks_goal_line(job: &Job) -> bool {
-    job.check.is_none()
+    job.repository_check().is_none()
         && (COMMITTING.contains(&job.kind.as_str()) || job.max_rounds() > 1)
         && job.review_of.is_none()
         && job.kind != "review"

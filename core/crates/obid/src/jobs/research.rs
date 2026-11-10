@@ -34,6 +34,36 @@ mod tests {
     use crate::job::Phase;
 
     #[test]
+    fn publishing_28_research_has_no_check_instructions_or_reservation() {
+        let mut job = Job::new(
+            "r".into(),
+            "o/r".into(),
+            "research".into(),
+            "Read it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.check = Some("scripts/oby-check.sh".into());
+        job.rounds = Some(2);
+        let prompt = super::super::owner_prompt(&job);
+        assert!(!prompt.contains("scripts/oby-check.sh"), "{prompt}");
+        assert!(!prompt.contains("Run it yourself first"), "{prompt}");
+        assert_eq!(super::super::check_budget(std::iter::empty(), &job), 0);
+        assert!(super::super::asks_goal_line(&job));
+        assert!(
+            super::super::standing_rules(&job)
+                .unwrap()
+                .contains("GOAL MET")
+        );
+
+        // A build still gets its configured check, reservation and check-based completion.
+        job.kind = "build".into();
+        assert!(super::super::owner_prompt(&job).contains("`scripts/oby-check.sh` succeeds"));
+        assert!(super::super::check_budget(std::iter::empty(), &job) > 0);
+        assert!(!super::super::asks_goal_line(&job));
+    }
+
+    #[test]
     fn publishing_28_research_check_stage_is_always_skipped() {
         let mut job = Job::new(
             "r".into(),

@@ -740,6 +740,8 @@ On startup the runner keeps the latest 50 jobs in memory, plus every job that st
 
 ### `GET /v1/jobs/{id}/report`
 
+Research jobs receive no instruction to run the repository check and reserve no check memory. They follow the completion rules for jobs without a check, including GOAL lines when they have several rounds (PUBLISHING-28).
+
 Returns a finished research job's saved report as `{"job":"…","commit":"…","markdown":"…","proposals":[]}`. `markdown` is its saved `summary`, with the same masking as the job endpoint; `commit` is always a string, its pinned `startCommit`. No separate report or proposals are stored. `404` for an unknown job or one without a report (not research, not done, an empty summary, or no start commit). A research job without a start commit advertises `report: false`.
 
 ### `POST /v1/jobs/{id}/proposals/{index}/file`
