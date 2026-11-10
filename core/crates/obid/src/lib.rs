@@ -159,64 +159,20 @@ fn raise_open_files() {
 
 /// Makes `mac_home` if it isn't there yet, and keeps it its owner's alone (0700): it holds the API
 /// token, the Obi key, clones and the database. A home that is there already with group or
-/// world access is tightened to 0700, the way `home/api-token` is to 0600. On macOS it also makes
-/// `vault/` and `keys/` under `mac_home` and excludes each from Time Machine (KEYCHAIN-11).
-/// Vault exclusion stays on `mac_home` (not `config.home`): creating `home/vault` here would make
-/// a distinct profile `home` exist before `vault::install`, which PROFILES-12 forbids.
+/// world access is tightened to 0700, the way `home/api-token` is to 0600.
 pub fn prepare_home(config: &Config) -> Result<(), StartError> {
     let home = &config.mac_home;
     let err = |source| StartError::Home {
         path: home.clone(),
         source,
     };
-    if !home.is_dir() {
-        // `recursive` makes missing parents with the umask's mode; `home` itself gets 0700 even
-        // when it raced into existence another way.
-        store::make_private_dir(home).map_err(err)?;
+    if home.is_dir() {
+        return keep_private(home).map_err(err);
     }
-    keep_private(home).map_err(err)?;
-    exclude_secrets_from_backups(home);
-    Ok(())
-}
-
-/// On macOS, makes `home/vault` and `home/keys` if missing and excludes each from Time Machine
-/// (`/usr/bin/tmutil addexclusion`): sticky, no admin, so an Application Support backup never
-/// carries the vault's plaintext secrets or the relay's key. `home` is `Config.mac_home`. A
-/// failure is logged and never stops obid. On Linux, nothing.
-fn exclude_secrets_from_backups(home: &std::path::Path) {
-    #[cfg(target_os = "macos")]
-    {
-        for folder in [vault::folder(home), home.join("keys")] {
-            if let Err(e) = store::make_private_dir(&folder) {
-                tracing::warn!(
-                    "couldn't make {} for Time Machine exclusion: {e}",
-                    folder.display()
-                );
-                continue;
-            }
-            match std::process::Command::new("/usr/bin/tmutil")
-                .arg("addexclusion")
-                .arg(&folder)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .output()
-            {
-                Ok(out) if out.status.success() => {}
-                Ok(out) => tracing::warn!(
-                    "couldn't exclude {} from Time Machine: {}",
-                    folder.display(),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                ),
-                Err(e) => tracing::warn!(
-                    "couldn't exclude {} from Time Machine: {e}",
-                    folder.display()
-                ),
-            }
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = home;
+    store::make_private_dir(home).map_err(err)?;
+    // `recursive` makes missing parents with the umask's mode; `home` itself gets 0700 even
+    // when it raced into existence another way.
+    keep_private(home).map_err(err)
 }
 
 /// A folder its group or others can reach is made its owner's alone again.
