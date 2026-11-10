@@ -2,8 +2,9 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { confirming, notificationWords } from '../../../main/device';
-import { input, takeInput } from '../../../main/words';
+import { confirming, notificationWords, ownersWords, deviceKey } from '../../../main/device';
+import { input, keyInput, takeInput } from '../../../main/words';
+import { createHash, createPublicKey, verify } from 'node:crypto';
 
 // Main's Confirm as the window reaches it (docs/contracts/peer-thread.md, PEER-17): what it signs,
 // through its real handler, with obid and Electron's own parts stood in for.
@@ -29,6 +30,50 @@ vi.mock('../../../main/obid', () => ({
 }));
 
 describe('obid-confirm', () => {
+  it('words_14_default_mode_navigation_signs_in_main_once_and_only_within_two_seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const path = '/v1/settings/permissions', body = { mode: 'bypass' };
+      const key = (key = 'ArrowDown', type = 'keyDown', isAutoRepeat = false) => keyInput({ key, code: key, type, isAutoRepeat });
+      // Focus and an earlier click are no longer fresh when the select changes.
+      input();
+      vi.advanceTimersByTime(2000);
+      await ownersWords('PUT', path, body);
+      expect(the.calls.at(-1)?.words).toBeUndefined();
+      key();
+      // A navigation token cannot sign ordinary words, a task's mode, extra keys or Confirm.
+      expect(takeInput()).toBe(false);
+      for (const [method, target, sent] of [
+        ['POST', '/v1/jobs/j1/messages', { text: 'made up' }],
+        ['POST', '/v1/jobs/j1/mode', body],
+        ['PUT', path, { ...body, extra: true }],
+      ] as const) {
+        await ownersWords(method, target, sent);
+        expect(the.calls.at(-1)?.words).toBeUndefined();
+      }
+      await ownersWords('PUT', path, body);
+      const [, at, signature] = the.calls.at(-1)!.words!.split(' ');
+      const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex');
+      expect(verify('sha256', Buffer.from(`oby-words\nPUT\n${path}\n${digest}\n${at}`), createPublicKey(deviceKey()), Buffer.from(signature, 'base64'))).toBe(true);
+      await ownersWords('PUT', path, body);
+      expect(the.calls.at(-1)?.words).toBeUndefined();
+      key();
+      vi.advanceTimersByTime(2000);
+      await ownersWords('PUT', path, body);
+      expect(the.calls.at(-1)?.words).toBeUndefined();
+      key('ArrowDown', 'keyUp');
+      key('ArrowDown', 'keyDown', true);
+      key('Tab');
+      await ownersWords('PUT', path, body);
+      expect(the.calls.at(-1)?.words).toBeUndefined();
+      // Enter grants just its existing token, with no second select token.
+      key('Enter');
+      await ownersWords('PUT', path, body);
+      expect(the.calls.at(-1)?.words).toMatch(/^d1 /);
+      await ownersWords('PUT', path, body);
+      expect(the.calls.at(-1)?.words).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+  });
   it('words_15_notification_signs_without_window_input_and_preserves_its_request', async () => {
     for (const decision of ['allow', 'deny']) {
       const path = '/v1/jobs/j1/permission', body = { id: 'p1', decision };
