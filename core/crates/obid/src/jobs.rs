@@ -684,6 +684,34 @@ fn consent_words(name: &str) -> String {
     format!("your OK for work I run by myself to use the ChatGPT plan on {name}")
 }
 
+/// What a job whose head needs a second review says while it waits for one (`noReviewer`,
+/// MERGING-34): the other tools signed in with no room, and until when; else the ChatGPT plan's
+/// OK it waits for; else that no tool but `by`, the first reviewer's, is signed in. No card: the
+/// review starts once one has room, and the pull request merges by itself once it approves.
+fn second_review_waits(by: Tool, full: &[(Tool, Option<i64>)], not_yet: Option<&str>) -> String {
+    if !full.is_empty() {
+        let tools: Vec<String> = full
+            .iter()
+            .map(|(tool, at)| match at {
+                Some(at) => format!(
+                    "{} has no room until {}",
+                    tool.name(),
+                    obi_protocol::time::format(*at)
+                ),
+                None => format!("{} has no room", tool.name()),
+            })
+            .collect();
+        return format!("Waiting for a second review: {}.", tools.join("; "));
+    }
+    match not_yet {
+        Some(name) => format!("Waiting for a second review: {}.", consent_words(name)),
+        None => format!(
+            "Waiting for a second review: no tool other than {} is signed in.",
+            by.name()
+        ),
+    }
+}
+
 /// What a job says when it stopped because the owner took their yes back (CHATGPT-23).
 const BACKGROUND_OFF: &str =
     "You turned off work I run by myself on this ChatGPT plan, so I stopped.";
@@ -11735,6 +11763,8 @@ impl Jobs {
             .filter(|t| *t != Tool::Cursor && !approved.contains(&t.id()));
         let mut theirs = None;
         let mut held = Vec::new();
+        // The tools that have no room now, each with when its first account does, if it's known.
+        let mut full: Vec<(Tool, Option<i64>)> = Vec::new();
         let mut not_yet = None;
         for tool in tools {
             for account in self.accounts(tool) {
@@ -11748,8 +11778,14 @@ impl Jobs {
                     not_yet.get_or_insert(account.name);
                     continue;
                 }
-                if let Some(why) = self.usage.get(&account.id).held(now) {
+                let usage = self.usage.get(&account.id);
+                if let Some(why) = usage.held(now) {
                     held.push(format!("{} {why}", account.name));
+                    let at = usage.free_at(now);
+                    match full.iter_mut().find(|(t, _)| *t == tool) {
+                        Some((_, free)) => *free = [*free, at].into_iter().flatten().min(),
+                        None => full.push((tool, at)),
+                    }
                 } else if Some(tool) == own && account.id == author.account {
                     theirs = Some((tool, account));
                 } else {
@@ -11759,10 +11795,7 @@ impl Jobs {
         }
         theirs.ok_or_else(|| {
             if let Some(by) = approved.first().and_then(|a| Tool::from_id(a)) {
-                format!(
-                    "Oby's second review waits for a tool other than {} signed in with room.",
-                    by.name()
-                )
+                second_review_waits(by, &full, not_yet.as_deref())
             } else if let Some(name) = not_yet.filter(|_| held.is_empty()) {
                 format!("My review waits for {}.", consent_words(&name))
             } else if held.is_empty() {
@@ -13293,14 +13326,79 @@ impl Jobs {
     /// then it merges, `mergedBy` the owner. `remember` then keeps that workflow, the owner's yes
     /// to the card's "Can I remember that?". Why not, otherwise: nothing was sent. `lift`: what
     /// their answer lifts (crate::merge::Lift): an answer their app signed lifts what its card
-    /// named and remembers as theirs; any other, only the holds of before (MERGING-20).
+    /// named and remembers as theirs; any other, only the holds of before (MERGING-20). While
+    /// GitHub is still working out whether it can merge, their Merge is kept and tried again by
+    /// itself ([`Jobs::keep_merge`], MERGING-35): `Ok` with [`crate::merge::KEPT`].
     pub async fn merge_by_owner(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         head: &str,
         remember: bool,
         lift: crate::merge::Lift<'_>,
     ) -> Result<Option<String>, String> {
+        match self.merge_by_owner_now(id, head, remember, &lift).await {
+            Err(NotMerged::Held(blocked)) if blocked.why == crate::merge::WORKING_OUT => {
+                self.keep_merge(id, head, remember, crate::merge::KeptLift::of(&lift));
+                Ok(Some(crate::merge::KEPT.into()))
+            }
+            merged => merged.map_err(NotMerged::why),
+        }
+    }
+
+    /// The owner's Merge kept while GitHub works out whether it can merge (MERGING-35): tried
+    /// again every [`crate::merge::KEEP_EVERY`] for [`crate::merge::KEEP_FOR`], as long as GitHub
+    /// only waits, until it merges. A real refusal comes back to the owner in its own words, a
+    /// card; so does GitHub still working it out at the end. A pull request merged, closed or
+    /// pushed to meanwhile ends it quietly: the follower takes it from there. Kept in memory only:
+    /// a restart drops it, and the follower's next card asks again.
+    fn keep_merge(
+        self: &Arc<Self>,
+        id: &str,
+        head: &str,
+        remember: bool,
+        lift: crate::merge::KeptLift,
+    ) {
+        let (jobs, id, head) = (Arc::clone(self), id.to_owned(), head.to_owned());
+        tokio::spawn(async move {
+            let until = tokio::time::Instant::now() + crate::merge::KEEP_FOR;
+            let mut last = crate::merge::WORKING_OUT.to_owned();
+            let why = loop {
+                if tokio::time::Instant::now() >= until {
+                    break Some(crate::merge::kept_too_long(&last));
+                }
+                tokio::time::sleep(crate::merge::KEEP_EVERY).await;
+                match jobs
+                    .merge_by_owner_now(&id, &head, remember, &lift.lift())
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!("job {id}: merged on the owner's kept Merge");
+                        break None;
+                    }
+                    Err(NotMerged::Held(b)) if crate::merge::try_again(&b) => last = b.why,
+                    Err(NotMerged::Held(b)) if !b.needs_you => break None,
+                    Err(NotMerged::Moved) => break None,
+                    Err(NotMerged::Held(b)) => break Some(b.why),
+                    Err(NotMerged::Unread(why)) => last = why,
+                }
+            };
+            tracing::info!("job {id}: the owner's kept Merge ended: {why:?}");
+            if let (Some(why), Some(job)) = (why, jobs.get(&id)) {
+                let link = jobs.link.get().and_then(std::sync::Weak::upgrade);
+                let card = crate::merge::stopped_card(&job, &head, &why);
+                jobs.offer_merge_card(&id, link.as_deref(), Some(card));
+            }
+        });
+    }
+
+    /// [`Jobs::merge_by_owner`], once, now.
+    async fn merge_by_owner_now(
+        &self,
+        id: &str,
+        head: &str,
+        remember: bool,
+        lift: &crate::merge::Lift<'_>,
+    ) -> Result<Option<String>, NotMerged> {
         let signed = !matches!(lift, crate::merge::Lift::Before);
         let OwnersMerge {
             job,
@@ -13312,7 +13410,13 @@ impl Jobs {
             learned,
             workflow,
             number,
-        } = self.owners_merge(id, head).await?;
+        } = self.owners_merge(id, head).await.map_err(|why| {
+            if why == HEAD_MOVED {
+                NotMerged::Moved
+            } else {
+                NotMerged::Unread(why)
+            }
+        })?;
         let id = job.id.as_str();
         // What their word goes over is said, never a reason to refuse (MERGING-27).
         let open = matches!(lift, crate::merge::Lift::Word)
@@ -13321,7 +13425,7 @@ impl Jobs {
         crate::merge::on_owners_word(
             true,
             crate::merge::ready_as(
-                Some(&lift),
+                Some(lift),
                 &job,
                 Some(&workflow),
                 &pr,
@@ -13329,7 +13433,7 @@ impl Jobs {
                 Some(&reviewers),
             ),
         )
-        .map_err(|b| b.why)?;
+        .map_err(NotMerged::Held)?;
         let by = crate::job::MergedBy {
             by: "owner".into(),
             memory: None,
@@ -13337,9 +13441,9 @@ impl Jobs {
         };
         let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
         let outcome =
-            crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, Some(&lift), &go).await;
+            crate::merge::merge(&gh, &home, &job, &workflow, &reviewers, Some(lift), &go).await;
         self.update(id, |job| crate::merge::note(job, &outcome, by));
-        let merged = outcome.map_err(|b| b.why)?;
+        let merged = outcome.map_err(NotMerged::Held)?;
         for sent in &merged.outgoing {
             tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
         }
@@ -13397,7 +13501,7 @@ impl Jobs {
             crate::github::view_merging(&gh, &job.repo, number, obi_protocol::time::now()).await?;
         let merging = merging?;
         if pr.head.as_deref() != Some(head) {
-            return Err("Its head moved since: a new card comes when it's ready again.".into());
+            return Err(HEAD_MOVED.into());
         }
         let owner = crate::github_login::read_status(&gh)
             .await
@@ -13423,6 +13527,29 @@ impl Jobs {
             workflow,
             number,
         })
+    }
+}
+
+/// Why the owner's Merge of a pull request whose head moved since their card didn't go.
+const HEAD_MOVED: &str = "Its head moved since: a new card comes when it's ready again.";
+
+/// Why the owner's Merge didn't go, once ([`Jobs::merge_by_owner`]).
+enum NotMerged {
+    /// Its head moved since their card ([`HEAD_MOVED`]).
+    Moved,
+    /// What it goes on couldn't be read, or isn't there ([`Jobs::owners_merge`]).
+    Unread(String),
+    /// A rule held it ([`crate::merge::ready_as`], [`crate::merge::merge`]).
+    Held(crate::merge::Blocked),
+}
+
+impl NotMerged {
+    fn why(self) -> String {
+        match self {
+            NotMerged::Moved => HEAD_MOVED.into(),
+            NotMerged::Unread(why) => why,
+            NotMerged::Held(blocked) => blocked.why,
+        }
     }
 }
 

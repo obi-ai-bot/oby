@@ -2059,8 +2059,9 @@ impl Job {
                         (None, None, Some(review))
                             if review.approved() && self.second_review_due() =>
                         {
+                            // What it waits for, in its own words (MERGING-34).
                             let detail = match &self.no_reviewer {
-                                Some(why) => format!("Waiting for review · {why}"),
+                                Some(why) => why.clone(),
                                 None => "Waiting for a second review".into(),
                             };
                             set(&mut stages, "review", "current", Some(&detail), None);

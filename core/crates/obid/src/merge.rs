@@ -106,11 +106,40 @@ pub enum Lift<'a> {
 
 impl Lift<'_> {
     /// Whether the card said `why`: as the hold is written, or as the card lists it ([`hold_line`]).
+    /// A second review that waits is a hold of before: any answer lifts it.
     fn names(&self, why: &str) -> bool {
+        if why == SECOND_REVIEW_WAITS {
+            return true;
+        }
         match self {
             Lift::Before => false,
             Lift::Named(said) => said.contains(why) || said.contains(&hold_line(why)),
             Lift::Word => true,
+        }
+    }
+}
+
+/// A [`Lift`] kept with the owner's Merge while it's tried again (MERGING-35).
+pub enum KeptLift {
+    Before,
+    Named(String),
+    Word,
+}
+
+impl KeptLift {
+    pub fn of(lift: &Lift<'_>) -> Self {
+        match lift {
+            Lift::Before => KeptLift::Before,
+            Lift::Named(said) => KeptLift::Named((*said).to_owned()),
+            Lift::Word => KeptLift::Word,
+        }
+    }
+
+    pub fn lift(&self) -> Lift<'_> {
+        match self {
+            KeptLift::Before => Lift::Before,
+            KeptLift::Named(said) => Lift::Named(said),
+            KeptLift::Word => Lift::Word,
         }
     }
 }
@@ -213,6 +242,37 @@ pub fn on_owners_word(owner: bool, ready: Result<(), Blocked>) -> Result<(), Blo
         ready => ready,
     }
 }
+
+/// Why it waits while GitHub's mergeability is still unknown. The owner's Merge then is kept and
+/// tried again by itself ([`KEEP_EVERY`], MERGING-35).
+pub const WORKING_OUT: &str = "Not merged yet: GitHub is still working out whether it can merge.";
+
+/// How often, and for how long, the owner's Merge kept while GitHub works out whether it can merge
+/// is tried again (MERGING-35): every 5 seconds, for 5 minutes.
+pub const KEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+pub const KEEP_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What the owner hears when their Merge is kept (MERGING-35).
+pub const KEPT: &str = "GitHub is still working out whether it can merge: Oby merges it as soon as GitHub says it can.";
+
+/// Whether a refusal of the owner's kept Merge is only GitHub still working something out, to try
+/// again shortly: anything that waits ([`Blocked::needs_you`] false) but a pull request merged or
+/// closed meanwhile.
+pub fn try_again(blocked: &Blocked) -> bool {
+    !blocked.needs_you && !matches!(blocked.why.as_str(), MERGED_ALREADY | CLOSED)
+}
+
+/// What the owner hears when GitHub still hadn't worked it out by [`KEEP_FOR`]'s end, `last` the
+/// last reason it gave.
+pub fn kept_too_long(last: &str) -> String {
+    format!(
+        "Not merged: Oby tried your Merge for 5 minutes. {} Merge it on GitHub, or ask Oby again.",
+        hold_line(last)
+    )
+}
+
+const MERGED_ALREADY: &str = "It's merged already.";
+const CLOSED: &str = "Not merged: it's closed.";
 
 /// How long GitHub's checks may run, or not show at all, after obid pushed the head before the
 /// owner hears of it: an hour.
@@ -429,10 +489,9 @@ pub fn ready_as(
             ),
             Some(_) => {}
         }
-        // A second review no tool can give is the owner's Merge, once every other rule holds, and
-        // so is a review whose changes were left to them (MERGING-17).
+        // A review whose changes were left to the owner is their Merge, once every other rule
+        // holds (MERGING-17); a second review waits by itself (MERGING-34).
         match oby_approval(job, head) {
-            Err(blocked) if blocked.yours => second = Some(blocked),
             Err(_) if left_to_owner(job, head) => second = Some(yours(REVIEW_ASKS)),
             Err(blocked) => lifted.push(held(blocked.why)),
             Ok(()) => {}
@@ -454,10 +513,8 @@ pub fn ready_as(
             .iter()
             .any(|r| counts(r, head, author, by, reviewers))
         {
-            // Oby's reviewer account approves only once Oby's own reviews are in: where no tool
-            // can give the second, the owner's Merge stands for both (MERGING-14).
+            // Oby's reviewer account approves only once Oby's own reviews are in (MERGING-14).
             match oby_approval(job, head) {
-                Err(blocked) if blocked.yours && by == Approval::Reviewer => second = Some(blocked),
                 Err(_) if by == Approval::Reviewer && left_to_owner(job, head) => {
                     second = Some(yours(REVIEW_ASKS));
                 }
@@ -523,11 +580,7 @@ pub fn ready_as(
     match merging.mergeable.as_deref() {
         Some("MERGEABLE") => {}
         Some("CONFLICTING") => return Err(conflict()),
-        _ => {
-            return Err(wait(
-                "Not merged yet: GitHub is still working out whether it can merge.",
-            ));
-        }
+        _ => return Err(wait(WORKING_OUT)),
     }
     // Checks that aren't green leave it UNSTABLE: GitHub merges it on the owner's word.
     let clean = match merging.merge_state.as_deref() {
@@ -879,16 +932,16 @@ fn oby_approval(job: &Job, head: &str) -> Result<(), Blocked> {
         ));
     }
     match job.two_reviews_why() {
-        Some(why) if job.approving_tools().len() < 2 => Err(match &job.no_reviewer {
-            Some(_) => yours(format!(
-                "Oby's review approved it, but it needs a second approving review by another tool ({}), and no other tool is signed in with room. It's yours to merge.",
-                plain_why(job, &why)
-            )),
-            None => wait("Not merged yet: it waits for a second review, by another tool."),
-        }),
+        Some(_) if job.approving_tools().len() < 2 => Err(wait(SECOND_REVIEW_WAITS)),
         _ => Ok(()),
     }
 }
+
+/// Why a head that needs two approving reviews waits for the second: by itself, with no card, until
+/// a tool other than the first reviewer's has room, its line saying for what (`noReviewer`,
+/// MERGING-34). Any answer of the owner's Merge lifts it ([`Lift::names`], MERGING-20).
+pub const SECOND_REVIEW_WAITS: &str =
+    "Not merged yet: it waits for a second review, by another tool.";
 
 /// Why a pull request into `base` merges only on the owner's own word: Oby doesn't merge into
 /// main, master or trunk by itself, and their Merge does (the owner's decision of 2026-10-31,
@@ -935,11 +988,14 @@ fn oby_approved(job: &Job, head: &str) -> bool {
     oby_approval(job, head).is_ok()
 }
 
-/// [`oby_approved`], or approved but for a second review no tool can give, which only the owner's
-/// Merge stands for once every other rule holds: a workflow proposed and a teammate asked go on
-/// from there.
-fn oby_approved_but_yours(job: &Job, head: &str) -> bool {
-    oby_approval(job, head).map_or_else(|b| b.yours, |()| true)
+/// [`oby_approved`], or approved but for a second review waiting for a tool with room
+/// (`noReviewer`, MERGING-34): a workflow proposed and a teammate asked go on from there.
+fn oby_approved_but_waiting(job: &Job, head: &str) -> bool {
+    oby_approved(job, head)
+        || (job.no_reviewer.is_some()
+            && job
+                .current_review()
+                .is_some_and(|r| r.approved() && r.commit == head))
 }
 
 /// The paths where a change merges only after two approving reviews by different tools, whoever
@@ -1062,7 +1118,7 @@ pub fn needs_another_person(
             .owner
             .as_deref()
             .is_some_and(|owner| author.eq_ignore_ascii_case(owner))
-        && oby_approved_but_yours(job, head)
+        && oby_approved_but_waiting(job, head)
         && !asked_for_changes(pr, merging)
         && another_needed(pr, merging, head, author, reviewers) == Some(true)
 }
@@ -1160,8 +1216,8 @@ fn owned<'a>(
     }
     match pr.state.as_str() {
         "OPEN" => {}
-        "MERGED" => return Err(wait("It's merged already.")),
-        _ => return Err(wait("Not merged: it's closed.")),
+        "MERGED" => return Err(wait(MERGED_ALREADY)),
+        _ => return Err(wait(CLOSED)),
     }
     if job.status != Status::Done {
         lifted.push(held("Not merged yet: the task isn't done."));
@@ -1540,8 +1596,8 @@ pub fn proposed(
         method: Method::Squash,
         rebase_first: false,
         // Oby's own review first: the default for the owner's own repositories.
-        // A second review no tool can give still proposes Oby's: the owner's Merge stands for it.
-        review: if oby_approved_but_yours(job, head) || left_to_owner(job, head) {
+        // A second review waiting for a tool with room still proposes Oby's (MERGING-34).
+        review: if oby_approved_but_waiting(job, head) || left_to_owner(job, head) {
             Approval::Oby
         } else if by_reviewer {
             Approval::Reviewer
@@ -2586,22 +2642,14 @@ mod tests {
         });
         assert!(!two.second_review_due());
         assert_eq!(ready_now(&two), Ok(()));
-        // No other tool signed in with room: the owner's Merge, once every other rule holds.
+        // No other tool signed in with room: it waits the same, by itself (MERGING-34), and the
+        // owner's own Merge still goes over it.
         let mut alone = job.clone();
-        alone.no_reviewer = Some(
-            "Oby's second review waits for a tool other than Codex signed in with room.".into(),
-        );
+        alone.no_reviewer =
+            Some("Waiting for a second review: no tool other than Codex is signed in.".into());
         let blocked = ready_now(&alone).unwrap_err();
-        assert_eq!(
-            blocked,
-            yours(
-                "Oby's review approved it, but it needs a second approving review by another tool (its task read something Oby didn't write), and no other tool is signed in with room. It's yours to merge."
-            )
-        );
+        assert_eq!(blocked, waits);
         assert_eq!(on_owners_word(true, Err(blocked.clone())), Ok(()));
-        let card = blocked_card(&alone, &head(), &blocked, &oby, "dev");
-        assert_eq!(card.title, "Ready to merge: Fix the thing");
-        assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
         let red = view(|v| v["mergeStateStatus"] = json!("DIRTY"));
         let (red_pr, red_merging) = read(&red, &pages(vec![]));
         assert!(
@@ -2609,13 +2657,12 @@ mod tests {
                 .unwrap_err()
                 .yours
         );
-        // A repository Oby hasn't learned proposes Oby's own review, and asks the same way.
+        // A repository Oby hasn't learned proposes Oby's own review, and waits the same way.
         let proposed = proposed(&alone, &pr, &merging, &nobody).unwrap();
         assert_eq!(proposed.review, Approval::Oby);
-        assert!(
-            ready(&alone, Some(&proposed), &pr, &merging, Some(&nobody))
-                .unwrap_err()
-                .yours
+        assert_eq!(
+            ready(&alone, Some(&proposed), &pr, &merging, Some(&nobody)),
+            waits
         );
         // The owner's own task with nothing on a security path needs one.
         assert_eq!(two_reviews(&reviewed("approved", &head()), Some(&[])), None);
@@ -2639,7 +2686,7 @@ mod tests {
         assert!(before.second_review_due());
         assert_eq!(ready_now(&before), waits);
         // Where GitHub needs another person's approval, a teammate's Oby is asked first; once
-        // theirs is in, the missing second review is the owner's Merge.
+        // theirs is in, it still waits for the second review.
         let (required_pr, mut required) = read(&view(|_| {}), &pages(vec![]));
         required.required_approvals = Some(1);
         assert!(needs_another_person(
@@ -2658,10 +2705,10 @@ mod tests {
         teammate.required_approvals = Some(1);
         assert_eq!(
             ready(&alone, Some(&oby), &teammate_pr, &teammate, Some(&nobody)),
-            Err(blocked.clone())
+            waits
         );
-        // With a check that can't stand for the Mac's too, one card says both, and Merge lifts
-        // only what it says.
+        // With a check that can't stand for the Mac's too, the one card is the check's, and it
+        // names the second review it waits for; any answer lifts that.
         let mut mac = oby.clone();
         mac.checks = Checks::Mac;
         let mut left = alone.clone();
@@ -2673,22 +2720,101 @@ mod tests {
         });
         let none = view(|v| v["statusCheckRollup"] = json!([]));
         let (mac_pr, mac_merging) = read(&none, &pages(vec![]));
+        let both = ready(&left, Some(&mac), &mac_pr, &mac_merging, Some(&nobody));
         assert_eq!(
-            ready(&left, Some(&mac), &mac_pr, &mac_merging, Some(&nobody)),
-            Err(yours(format!("{}\n{MAC_LEFT}", blocked.why)))
+            both,
+            Err(yours(format!("{MAC_LEFT}\n{SECOND_REVIEW_WAITS}")))
         );
+        let card = blocked_card(&left, &head(), &both.clone().unwrap_err(), &mac, "dev");
+        assert_eq!(card.options, vec![MERGE, LEAVE_OPEN]);
+        let unsigned = ready_as(
+            Some(&Lift::Before),
+            &left,
+            Some(&mac),
+            &mac_pr,
+            &mac_merging,
+            Some(&nobody),
+        );
+        assert_eq!(on_owners_word(true, unsigned), Ok(()));
         // A `reviewer` workflow with its account signed in: Oby's reviewer account posts nothing,
-        // and the same Ready to merge asks the owner.
+        // and it waits the same, with no card.
         let (pr_reviewer, merging_reviewer) = read(&view(|_| {}), &pages(vec![]));
+        let quiet = ready(
+            &alone,
+            Some(&obis()),
+            &pr_reviewer,
+            &merging_reviewer,
+            Some(&signed_in()),
+        )
+        .unwrap_err();
+        assert!(!quiet.needs_you, "{quiet:?}");
+    }
+
+    /// MERGING-34: a head that needs a second approving review, with no other tool signed in with
+    /// room, waits for it by itself: no card (`needs_you` false), by the workflow Oby learned or the
+    /// one a card would propose. Once another tool's review approves the same head, it merges by
+    /// itself.
+    #[test]
+    fn merging_34_a_second_review_waits_with_no_card_then_merges() {
+        let mut oby = obis();
+        oby.review = Approval::Oby;
+        let nobody = Reviewers {
+            owner: Some("wellprado".into()),
+            ..Reviewers::default()
+        };
+        let (pr, merging) = read(&view(|_| {}), &pages(vec![]));
+        let mut job = reviewed("approved", &head());
+        job.review.as_mut().unwrap().two_reviews = Some("it changes AGENTS.md".into());
+        job.approvals = vec![job.review.clone().unwrap()];
+        job.no_reviewer =
+            Some("Waiting for a second review: Claude Code has no room until 2026-11-10T01:47:00Z.".into());
+        for workflow in [Some(oby.clone()), proposed(&job, &pr, &merging, &nobody)] {
+            let blocked = ready(&job, workflow.as_ref(), &pr, &merging, Some(&nobody)).unwrap_err();
+            assert_eq!(blocked.why, SECOND_REVIEW_WAITS);
+            assert!(!blocked.needs_you, "no card: {blocked:?}");
+        }
+        // The second review approved: it merges by itself, and nothing waits.
+        let mut two = job.clone();
+        two.no_reviewer = None;
+        two.approvals.push(crate::job::Review {
+            agent: "claude".into(),
+            ..job.review.clone().unwrap()
+        });
+        assert_eq!(ready(&two, Some(&oby), &pr, &merging, Some(&nobody)), Ok(()));
+    }
+
+    /// MERGING-35: while GitHub is still working out whether it can merge, the owner's Merge is
+    /// kept and tried again; only a refusal that needs them comes back, and a pull request merged
+    /// or closed meanwhile ends it quietly.
+    #[test]
+    fn merging_35_only_githubs_working_out_is_tried_again() {
+        let (pr, merging) = read(
+            &view(|v| {
+                v["mergeable"] = json!("UNKNOWN");
+                v["mergeStateStatus"] = json!("UNKNOWN");
+            }),
+            &approved(),
+        );
+        let mut oby = obis();
+        oby.review = Approval::Oby;
+        let owner = Reviewers {
+            owner: Some("wellprado".into()),
+            ..Reviewers::default()
+        };
+        let job = reviewed("approved", &head());
+        let blocked = on_owners_word(
+            true,
+            ready_as(Some(&Lift::Word), &job, Some(&oby), &pr, &merging, Some(&owner)),
+        )
+        .unwrap_err();
+        assert_eq!(blocked.why, WORKING_OUT);
+        assert!(try_again(&blocked));
+        assert!(!try_again(&conflicts("dev")));
+        assert!(!try_again(&wait(MERGED_ALREADY)));
+        assert!(!try_again(&wait(CLOSED)));
         assert_eq!(
-            ready(
-                &alone,
-                Some(&obis()),
-                &pr_reviewer,
-                &merging_reviewer,
-                Some(&signed_in())
-            ),
-            Err(blocked.clone())
+            kept_too_long(WORKING_OUT),
+            "Not merged: Oby tried your Merge for 5 minutes. GitHub is still working out whether it can merge. Merge it on GitHub, or ask Oby again."
         );
     }
 
