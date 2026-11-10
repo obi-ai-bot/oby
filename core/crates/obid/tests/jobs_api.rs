@@ -514,6 +514,24 @@ fn a_check_runs_ps_in_the_box() {
     assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
 }
 
+/// PUBLISHING-30: a job's agent, and what it starts, run at nice 10; its check runs at obid's own.
+#[test]
+fn publishing_30_an_agent_runs_below_the_checks_priority() {
+    let folder = Folder::new("agent-nice");
+    let remote = fixture(&folder.0.join("fixture"));
+    let bin = fake_gh(&folder.0);
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&bin));
+    let answer = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "NICE",
+               "check": "test \"$(ps -o nice= -p $$)\" -eq 0"}),
+    );
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let job = wait(&obid, answer.body["id"].as_str().unwrap());
+    assert_eq!(job["summary"], "nice=10 child=10", "{job}");
+    assert_eq!(job["checks"][0]["steps"][0]["passed"], true, "{job}");
+}
+
 /// PUBLISHING-23: a repository's setup, the owner's line in config.json, runs in the job's box,
 /// in its worktree, before its agent starts; one that fails is quoted to the agent, fenced, the job
 /// goes on, and its report says how the setup went.
