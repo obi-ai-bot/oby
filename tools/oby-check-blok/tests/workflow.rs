@@ -73,6 +73,82 @@ fn git(repo: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn plans_without_groups_are_unjudged_unless_nothing_would_run() {
+    use std::io::Write;
+    use std::process::Stdio;
+    for (script, expected, reason, code) in [
+        (
+            "echo '==> cargo test'\n",
+            "unjudged",
+            "the script names no groups (older than #2052)",
+            2,
+        ),
+        ("exit 0\n", "passed", "nothing to check", 0),
+        (
+            "echo 'oby-check: group unknown'\n",
+            "unjudged",
+            "no nodes ran",
+            2,
+        ),
+    ] {
+        let scratch = tempfile::tempdir().unwrap();
+        let repo = scratch.path();
+        std::fs::create_dir(repo.join("scripts")).unwrap();
+        std::fs::write(repo.join("scripts/oby-check.sh"), script).unwrap();
+        git(repo, &["init", "--quiet"]);
+        git(repo, &["add", "."]);
+        git(
+            repo,
+            &[
+                "-c",
+                "user.name=check",
+                "-c",
+                "user.email=check@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+        );
+        for affected in [false, true] {
+            let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
+                .current_dir(repo)
+                .args([if affected { "--affected" } else { "." }, "HEAD"])
+                .env("HOME", repo)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(code));
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["verdict"], expected);
+            assert_eq!(report["reason"], reason);
+            if expected == "passed" {
+                assert_eq!(report["nodes"], serde_json::json!({}));
+            }
+        }
+        let mut child = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
+            .current_dir(repo)
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"oby_check_affected\",\"arguments\":{\"base\":\"HEAD\"}}}\n"
+        ).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(report["verdict"], expected);
+        assert_eq!(report["reason"], reason);
+    }
+}
+
+#[test]
 fn affected_cli_and_mcp_return_structured_verdicts() {
     use std::io::Write;
     use std::process::Stdio;

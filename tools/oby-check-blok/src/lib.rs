@@ -28,13 +28,15 @@ impl Verdict {
 }
 
 pub fn fold(verdicts: impl IntoIterator<Item = Verdict>) -> Verdict {
-    verdicts
-        .into_iter()
-        .fold(Verdict::Passed, |a, b| match (a, b) {
-            (Verdict::Failed, _) | (_, Verdict::Failed) => Verdict::Failed,
-            (Verdict::Unjudged, _) | (_, Verdict::Unjudged) => Verdict::Unjudged,
-            _ => Verdict::Passed,
-        })
+    let mut verdicts = verdicts.into_iter();
+    let Some(first) = verdicts.next() else {
+        return Verdict::Unjudged;
+    };
+    verdicts.fold(first, |a, b| match (a, b) {
+        (Verdict::Failed, _) | (_, Verdict::Failed) => Verdict::Failed,
+        (Verdict::Unjudged, _) | (_, Verdict::Unjudged) => Verdict::Unjudged,
+        _ => Verdict::Passed,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -222,7 +224,7 @@ mod tests {
     #[test]
     fn fold_prioritizes_failed_then_unjudged() {
         use Verdict::*;
-        assert_eq!(fold([]), Passed);
+        assert_eq!(fold([]), Unjudged);
         for a in [Passed, Failed, Unjudged] {
             for b in [Passed, Failed, Unjudged] {
                 let expected = if [a, b].contains(&Failed) {

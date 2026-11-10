@@ -22,11 +22,14 @@ struct Run {
     workflow: &'static str,
     nodes: BTreeMap<String, CheckResult>,
     verdict: Verdict,
+    reason: String,
     started: String,
 }
 
-async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>) -> Result<()> {
+async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>) -> Result<bool> {
     let mut needed = vec![];
+    let mut has_steps = false;
+    let mut has_groups = false;
     // Planning, including skipped suites and line limits, belongs to the shell.
     for (name, group) in GROUPS.into_iter().chain([("swift", "swift")]) {
         let output = check_command(input, group)
@@ -37,8 +40,11 @@ async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>)
             bail!("script planning failed for {group}");
         }
         let text = text_output(&output);
-        let has_steps = planned_group(&text, group);
-        if has_steps {
+        has_steps |= text.lines().any(|line| line.starts_with("==>"));
+        has_groups |= text
+            .lines()
+            .any(|line| line.starts_with("oby-check: group "));
+        if planned_group(&text, group) {
             if group == "swift" {
                 nodes.insert(
                     name.into(),
@@ -52,8 +58,15 @@ async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>)
             }
         }
     }
+    if has_steps && !has_groups {
+        bail!("the script names no groups (older than #2052)");
+    }
     if needed.is_empty() {
-        return Ok(());
+        anyhow::ensure!(
+            !nodes.is_empty() || !has_steps,
+            "the plan has steps but no supported groups"
+        );
+        return Ok(nodes.is_empty() && !has_groups);
     }
     let mut random = [0u8; 32];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
@@ -141,7 +154,7 @@ async fn workflow(input: &CheckInput, nodes: &mut BTreeMap<String, CheckResult>)
     .await;
     child.kill().await?;
     child.wait().await?;
-    result
+    result.map(|()| false)
 }
 
 fn planned_group(text: &str, group: &str) -> bool {
@@ -172,16 +185,33 @@ async fn report(checkout: String, base: String) -> Result<Run> {
         workflow: "oby-check",
         nodes: BTreeMap::new(),
         verdict: Verdict::Unjudged,
+        reason: String::new(),
         started: chrono::Utc::now().to_rfc3339(),
     };
-    if let Err(error) = workflow(&input, &mut report.nodes).await {
+    let outcome = workflow(&input, &mut report.nodes).await;
+    let nothing_to_check = matches!(outcome, Ok(true));
+    if let Err(error) = outcome {
         eprintln!("shadow check: {error:#}");
         report.nodes.insert(
             "workflow".into(),
-            CheckResult::unjudged(format!("workflow could not complete: {error:#}"), 0.0),
+            CheckResult::unjudged(format!("{error:#}"), 0.0),
         );
     }
     report.verdict = fold(report.nodes.values().map(|n| n.verdict));
+    report.reason = if nothing_to_check {
+        report.verdict = Verdict::Passed;
+        "nothing to check".into()
+    } else if report.nodes.is_empty() {
+        "no nodes ran".into()
+    } else {
+        report
+            .nodes
+            .values()
+            .filter(|node| node.verdict != Verdict::Passed)
+            .map(|node| node.reason.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
     Ok(report)
 }
 
@@ -193,14 +223,7 @@ async fn affected(base: String) -> serde_json::Value {
                 .values()
                 .flat_map(|node| node.failing.iter().cloned())
                 .collect();
-            let reason = report
-                .nodes
-                .values()
-                .filter(|node| node.verdict != Verdict::Passed)
-                .map(|node| node.reason.as_str())
-                .collect::<Vec<_>>()
-                .join("; ");
-            serde_json::json!({"verdict": report.verdict, "failing": failing, "reason": reason, "nodes": report.nodes})
+            serde_json::json!({"verdict": report.verdict, "failing": failing, "reason": report.reason, "nodes": report.nodes})
         }
         Err(error) => {
             serde_json::json!({"verdict": "unjudged", "failing": [], "reason": format!("{error:#}"), "nodes": {}})
