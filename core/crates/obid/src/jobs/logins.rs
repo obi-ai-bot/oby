@@ -329,7 +329,16 @@ pub(super) fn own_sandbox_settings(spec: &Spec, login: &Path) -> Result<String, 
     let mut kept = spec.pointers();
     kept.extend([login.join("Library"), login.join("env.sh")]);
     kept.push(keychains.clone());
-    let mut hidden = spec.hidden.clone();
+    // The box's own hiding of the shared temp folders isn't the own lane's: its commands read them
+    // as the owner's terminal does (docs/contracts/lanes.md).
+    let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
+    let temps: Vec<PathBuf> = crate::sandbox::shared_temps().iter().map(real).collect();
+    let mut hidden: Vec<PathBuf> = spec
+        .hidden
+        .iter()
+        .filter(|p| !temps.contains(&real(p)))
+        .cloned()
+        .collect();
     hidden.push(keychains.clone());
     let mut rules = Vec::new();
     for path in names(&kept)? {

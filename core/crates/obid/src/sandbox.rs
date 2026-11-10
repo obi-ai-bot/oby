@@ -558,13 +558,21 @@ pub const SYSTEM_READS_LINUX: [&str; 10] = [
 pub fn job_hidden(home: &Path, homes: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut hidden = vec![home.to_path_buf()];
     hidden.extend(homes);
+    hidden.extend(shared_temps());
+    hidden
+}
+
+/// The folders every program on the Mac shares, which Oby's box hides (on Linux its `/tmp` is
+/// already its own): never the own lane's, which reads them as the owner's terminal does.
+pub fn shared_temps() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
-    hidden.extend([
+    return vec![
         PathBuf::from("/private/tmp"),
         PathBuf::from("/Users/Shared"),
         std::env::temp_dir(),
-    ]);
-    hidden
+    ];
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
 }
 
 /// What a confined process reads of the system on macOS: the system's own folders, the
