@@ -63,6 +63,7 @@ mod account_limits;
 mod authors;
 mod budget;
 mod logins;
+mod research;
 mod retry;
 mod secrets;
 mod setup;
@@ -4608,7 +4609,8 @@ impl Jobs {
             return;
         };
         let same = |r: &String| r.eq_ignore_ascii_case(&job.repo);
-        if job.check.is_some()
+        if job.kind == "research"
+            || job.check.is_some()
             || job.review_of.is_some()
             || self
                 .repo(&job.repo)
@@ -10352,10 +10354,7 @@ impl Jobs {
         // ([`asks_goal_line`]), and whether a turn that ended its last round without one was told
         // to say it (TASKS-19).
         let (mut goal, mut goal_nudged): (Option<String>, bool) = (None, false);
-        // Picked up where a restart cut it: its check run again on what it committed rather than
-        // its agent's turn (one with no check goes straight on), and a pass goes on to publish as
-        // after its last round. Running at once, at the phase it was in, so another restart cuts
-        // it there again.
+        // Resume at the interrupted stage, with research excluded from checks (PUBLISHING-28).
         let mut to_publish = false;
         if picks_up {
             self.update(id, |job| {
@@ -10365,11 +10364,11 @@ impl Jobs {
             });
             let job = self.get(id).ok_or("the job is gone")?;
             // On its base as it is now, as any check is: a conflict is its agent's round.
-            let onto = match job.check {
+            let onto = match job.repository_check() {
                 Some(_) => self.onto_base(id, &start_commit).await,
                 None => Onto::Same,
             };
-            match (job.check.clone(), onto) {
+            match (job.repository_check().cloned(), onto) {
                 (None, _) => {
                     to_publish = true;
                     // Its last GOAL line, from the replies it kept, so a restart holds what its
@@ -10965,7 +10964,7 @@ impl Jobs {
                 let job = self.get(id).ok_or("the job is gone")?;
                 let more_rounds = round < job.max_rounds();
                 // What it's checked on, and publishes, is on its base as it is now.
-                if job.check.is_some() {
+                if job.repository_check().is_some() {
                     match self.onto_base(id, &start_commit).await {
                         Onto::Same => {}
                         Onto::Rebased(base) => start_commit = base,
@@ -10984,7 +10983,7 @@ impl Jobs {
                         Onto::Conflict(files) => return Err(not_rebased(&job, &files)),
                     }
                 }
-                if let Some(command) = &job.check {
+                if let Some(command) = job.repository_check() {
                     self.update(id, |job| {
                         job.phase = Some(Phase::Check);
                         job.step = format!("Running {command}");

@@ -329,6 +329,81 @@ fn wait(obid: &Obid, id: &str) -> Value {
     answer.body
 }
 
+#[test]
+fn publishing_28_research_commits_skip_the_check_and_keep_the_report() {
+    let folder = Folder::new("research-no-check");
+    let remote = fixture(&folder.0);
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["check"] = json!("sleep 60; exit 1");
+    let obid = start(&folder.0, &config);
+    let holder = post_job(
+        &obid,
+        json!({
+            "repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: code.txt"
+        }),
+    );
+    let holder_id = holder.body["id"].as_str().unwrap();
+    until(&obid, holder_id, |job| {
+        job["step"] == "Running sleep 60; exit 1"
+    });
+    let created = post_job(
+        &obid,
+        json!({
+            "repo": "obi-e2e/fixture-app", "kind": "research",
+            "task": "COMMIT: report.md ENDS: Research report saved."
+        }),
+    );
+    assert_eq!(created.status, 201, "{}", created.text);
+    let id = created.body["id"].as_str().unwrap();
+    let job = wait(&obid, id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["commits"], 1, "{job}");
+    assert!(job["pushed"].is_null(), "{job}");
+    assert!(job["checks"].is_null(), "{job}");
+    let holding = request(&obid, "GET", &format!("/v1/jobs/{holder_id}"), None);
+    assert_eq!(holding.body["status"], "running", "{}", holding.text);
+    request(&obid, "POST", &format!("/v1/jobs/{holder_id}/stop"), None);
+    let check = job["pipeline"]["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stage| stage["id"] == "check")
+        .unwrap();
+    assert_eq!(check["state"], "skipped", "{check}");
+    assert_eq!(check["detail"], "A research job changes no code");
+    let stages =
+        std::fs::read_to_string(obid.home.join("logs").join(id).join("stages.log")).unwrap();
+    assert!(
+        !stages.lines().any(|line| line.contains("check")),
+        "{stages}"
+    );
+    wait(&obid, holder_id);
+    let home = obid.folder.clone();
+    drop(obid);
+    let obid = start(&home, &config);
+    let saved = request(&obid, "GET", &format!("/v1/jobs/{id}"), None);
+    assert_eq!(saved.status, 200);
+    assert!(
+        saved.body["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Research report saved."),
+        "{}",
+        saved.text
+    );
+    let report = request(&obid, "GET", &format!("/v1/jobs/{id}/report"), None);
+    assert_eq!(report.status, 200, "{}", report.text);
+    assert_eq!(report.body["job"], id);
+    assert_eq!(report.body["markdown"], saved.body["summary"]);
+    assert_eq!(report.body["commit"].as_str().unwrap().len(), 40);
+    assert_eq!(report.body["proposals"], json!([]));
+    assert_eq!(saved.body["report"], true);
+    let missing = request(&obid, "GET", "/v1/jobs/missing/report", None);
+    assert_eq!(missing.status, 404);
+    let no_report = request(&obid, "GET", &format!("/v1/jobs/{holder_id}/report"), None);
+    assert_eq!(no_report.status, 404);
+}
+
 /// Polls `GET /v1/jobs/{id}` until `ready` holds, for at most 30 seconds.
 fn until(obid: &Obid, id: &str, ready: impl Fn(&Value) -> bool) -> Value {
     let give_up_at = Instant::now() + Duration::from_secs(30);

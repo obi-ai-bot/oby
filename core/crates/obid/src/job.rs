@@ -1671,7 +1671,7 @@ impl Job {
             "mergeNeedsYou": self.merge_needs_you,
             "reviewNeedsYou": self.review_needs_you(),
             "cloudNeedsYou": false,
-            "report": false,
+            "report": self.has_report(),
             "obi": self.obi,
             "worktree": self.worktree,
             "conversation": self.conversation,
@@ -1876,7 +1876,10 @@ impl Job {
                    "detail": format!("Round {} of {}{}", self.current_round(), self.current_round().max(self.max_rounds()),
                                      if working && !self.step.is_empty() { format!(" · {}", self.step) } else { String::new() })}),
         ];
-        if let Some(check) = self.check.as_deref().filter(|c| !c.trim().is_empty()) {
+        if self.kind == "research" {
+            stages.push(json!({"id": "check", "title": "Check", "state": "skipped",
+                "detail": "A research job changes no code"}));
+        } else if let Some(check) = self.check.as_deref().filter(|c| !c.trim().is_empty()) {
             stages.push(
                 json!({"id": "check", "title": "Check", "state": "upcoming", "detail": check}),
             );
@@ -2106,6 +2109,15 @@ impl Job {
             for stage in stages.iter_mut().skip(publish + 1) {
                 stage["state"] = json!("skipped");
             }
+        }
+        if self.kind == "research" {
+            set(
+                &mut stages,
+                "check",
+                "skipped",
+                Some("A research job changes no code"),
+                None,
+            );
         }
         let position = stages
             .iter()

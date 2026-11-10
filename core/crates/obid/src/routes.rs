@@ -236,6 +236,21 @@ pub struct After {
     limit: Option<String>,
 }
 
+/// `GET /v1/jobs/{id}/report`: a finished research job's saved summary (PUBLISHING-28).
+pub async fn report(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let job = shared
+        .jobs
+        .get(&id)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+    let report = job
+        .saved_report()
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no saved research report."))?;
+    Ok(json(StatusCode::OK, report))
+}
+
 /// `GET /v1/jobs/{id}/transcript?after=<n>&limit=<k>`: the entries that came or changed after
 /// entry `n`, at most `k`, and the `n` to ask after next when there's more.
 pub async fn transcript(
