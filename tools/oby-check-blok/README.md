@@ -6,6 +6,7 @@ publishing and merging; this tool only records what the workflow would have said
 
 - `oby-check-blok <checkout> [base]`: one shadow run, appended to `runs.jsonl`.
 - `oby-check-blok --affected [base]` and `oby-check-blok mcp`: the agents' affected check (SKILL.md).
+- `oby-check-blok validate <workflow.json>`: the rules a run applies, for an editor's draft (`{"valid": …}`).
 
 ## The workflow file
 

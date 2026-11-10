@@ -378,7 +378,30 @@ async fn run() -> Result<Verdict> {
     let mut args = std::env::args().skip(1);
     let mode = args
         .next()
-        .context("usage: oby-check-blok --affected [base] | mcp | <checkout> [base]")?;
+        .context("usage: oby-check-blok --affected [base] | mcp | validate <workflow.json> | <checkout> [base]")?;
+    // The same rules a run applies, for an editor checking a draft before it saves it.
+    if mode == "validate" {
+        let file = args
+            .next()
+            .context("usage: oby-check-blok validate <workflow.json>")?;
+        anyhow::ensure!(args.next().is_none(), "validate takes one file");
+        let checked = std::fs::read_to_string(&file)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| parse_workflow(&text));
+        let ok = checked.is_ok();
+        let line = match checked {
+            Ok(steps) => {
+                serde_json::json!({"valid": true, "steps": steps.iter().map(|s| &s.id).collect::<Vec<_>>()})
+            }
+            Err(error) => serde_json::json!({"valid": false, "error": format!("{error:#}")}),
+        };
+        println!("{line}");
+        return Ok(if ok {
+            Verdict::Passed
+        } else {
+            Verdict::Unjudged
+        });
+    }
     if mode == "mcp" {
         anyhow::ensure!(args.next().is_none(), "mcp takes no arguments");
         mcp().await?;

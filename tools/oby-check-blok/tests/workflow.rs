@@ -547,6 +547,29 @@ fn the_workflow_file_decides_order_skips_stops_and_refusals() {
         "the workflow has no step for this group"
     );
 
+    // `validate` applies the same rules to a file, for an editor's draft.
+    for (text, valid) in [
+        (
+            r#"{"schemaVersion":"2","name":"oby-check","steps":[{"id":"s","use":"secret-scan"}]}"#,
+            true,
+        ),
+        (
+            r#"{"schemaVersion":"2","name":"oby-check","steps":[{"id":"x","use":"secret-scan","switch":{}}]}"#,
+            false,
+        ),
+    ] {
+        let file = repo.join("draft.json");
+        std::fs::write(&file, text).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
+            .arg("validate")
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(if valid { 0 } else { 2 }));
+        let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(answer["valid"], valid);
+    }
+
     // A step this host can't run makes the whole run unjudged, with the reason.
     let report = run(Some(
         r#"{"schemaVersion":"2","name":"oby-check","steps":[{"id":"x","use":"secret-scan","switch":{}}]}"#,
