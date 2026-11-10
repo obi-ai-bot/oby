@@ -8571,9 +8571,10 @@ impl Jobs {
             .sandbox
             .as_ref()
             .map_err(|why| format!("obid can't run the check: {why}"))?;
-        // Whether the job's agent had a network of its own: every agent's way off a Mac is obid's
-        // egress proxy (`confines_egress`, as each launch sets `proxied`); elsewhere it isn't.
-        let raw_network = spec.network && !sandbox.confines_egress();
+        // Whether the job's agent had a network of its own: a boxed agent's way off a Mac is obid's
+        // egress proxy (`confines_egress`, as each launch sets `proxied`); elsewhere, or in the
+        // own lane, it isn't.
+        let raw_network = spec.network && (!sandbox.confines_egress() || self.ran_unproxied(id));
         let spec = self.check_spec(id, spec);
         // Each step between its top-level `&&`s timed, its tests counted, live (#734).
         let round = self.get(id).map_or(1, |job| job.current_round());

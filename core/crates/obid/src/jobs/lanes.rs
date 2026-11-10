@@ -14,6 +14,22 @@ impl Jobs {
         tool == Tool::Claude && job.obi.is_none() && !job.untrusted && job.review_of.is_none()
     }
 
+    /// Whether job `id`'s agent had a network obid's proxy didn't see: Claude Code ran it, now or
+    /// before a move ([`Job::moves`]), in the own lane, where no proxy marks a site it reached
+    /// `reached`. Until a command's sites do (LANES-6), its check gets no declared secrets, as a
+    /// job whose agent reached past the package registries gets none.
+    pub(super) fn ran_unproxied(&self, id: &str) -> bool {
+        self.get(id).is_some_and(|job| {
+            let claude = Tool::Claude.name();
+            let ran_claude = job.agent == Tool::Claude.id()
+                || job
+                    .moves
+                    .iter()
+                    .any(|m| m.from.starts_with(claude) || m.to.starts_with(claude));
+            ran_claude && Self::own_lane(&job, Tool::Claude)
+        })
+    }
+
     /// The box job `id`'s check runs in, from its agent's `spec`, in either lane (LANES-6): Oby's,
     /// with no network and no account's folder, loopback only for a job no other Oby asked for
     /// ([`Job::check_keeps_loopback`]).
@@ -122,7 +138,30 @@ mod tests {
                 assert_eq!(std::env::var_os(name).as_ref(), Some(value), "{name:?}");
             }
         }
+        // No proxy saw what it reached, so its check gets no declared secrets; a boxed job's,
+        // and a Codex job's that never ran on Claude Code, are judged as before.
+        let mut boxed = job.clone();
+        boxed.id = "boxed".into();
+        boxed.untrusted = true;
+        let mut codex = job.clone();
+        codex.id = "codex".into();
+        codex.agent = "codex".into();
+        let mut moved = codex.clone();
+        moved.id = "moved".into();
+        moved.moves.push(crate::job::Move {
+            from: "Claude Code · A".into(),
+            to: "Codex · B".into(),
+            why: None,
+            date: 0,
+        });
+        for other in [boxed, codex, moved] {
+            jobs.lock().jobs.insert(other.id.clone(), other);
+        }
         jobs.lock().jobs.insert(job.id.clone(), job);
+        assert!(jobs.ran_unproxied("own"));
+        assert!(jobs.ran_unproxied("moved"));
+        assert!(!jobs.ran_unproxied("boxed"));
+        assert!(!jobs.ran_unproxied("codex"));
         spec.accounts.push(root.join("account"));
         let check = jobs.check_spec("own", &spec);
         assert!(!check.network);
