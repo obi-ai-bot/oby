@@ -4850,7 +4850,18 @@ fn recording_config(folder: &Path, remote: &Path) -> (Value, PathBuf) {
         .args(["-c", "command -v node"])
         .output()
         .unwrap();
-    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    // The box hides the person's home, where a checkout (and obid's own clones) live: the stand-ins
+    // go next to the wrapper, which a boxed run can read (as issue_1867's in claude_bare.rs).
+    let agents = folder.to_path_buf();
+    for name in ["fake-claude", "fake-claude-recording"] {
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/agents")
+                .join(name),
+            agents.join(name),
+        )
+        .unwrap();
+    }
     let claude = folder.join("claude");
     std::fs::write(
         &claude,
