@@ -1,7 +1,8 @@
 // Which account a conversation talks through (docs/contracts/conversation-agent.md), as the chat
 // window's pill and its menu show it: what obid says, in words. obid decides; this only reads.
 import { AGENTS, type Agent } from './mock';
-import { fullness, type Account } from './SettingsView';
+import { cursorCompose, cursorPick, fullness, type Account } from './SettingsView';
+import type { CursorGroup } from './obid';
 
 // obid's word for "whichever has room"
 export const AUTO = 'auto';
@@ -30,6 +31,21 @@ export function modelChoice(saved: string, fallback: string, options: readonly {
 // tool options), else the tool's options (CONVERSATION-AGENT-22).
 export function accountModels(a: Account, toolOptions: readonly { id: string; name: string }[] | undefined) {
   return a.models?.length ? a.models : toolOptions ?? [];
+}
+// The account's model submenu (AGENTS-11): with Cursor's groups, each model once, kept to this
+// account's own ids (one of them in no group stands alone); a pick is the listed id that keeps the
+// effort and Fast the account runs, else the model's default (cursorCompose, as Settings › Agents)
+export function menuModels(models: readonly { id: string; name: string }[], current: string, groups?: CursorGroup[]) {
+  if (!groups) return models.map((m) => ({ id: m.id, name: m.name, on: m.id === current }));
+  const ids = new Set(models.map((m) => m.id));
+  const kept = groups.map((g) => ({ ...g, variants: g.variants.filter((v) => ids.has(v.id)) })).filter((g) => g.variants.length);
+  const all: CursorGroup[] = [];
+  for (const m of models) {
+    const g = cursorPick(kept, m.id)?.g ?? { base: m.id, name: m.name, default: m.id, variants: [{ id: m.id, fast: false }] };
+    if (!all.includes(g)) all.push(g);
+  }
+  const at = cursorPick(all, current);
+  return all.map((g) => ({ id: g === at?.g ? current : cursorCompose(g, at?.v.effort, !!at?.v.fast), name: g.name, on: g === at?.g }));
 }
 export function modelUsage(a: Account) {
   if (a.full) return 'Full';

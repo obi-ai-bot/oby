@@ -5,7 +5,7 @@ import { Menu } from './Menu';
 import { everything } from './lean';
 import { useAccounts, useModels, useTalkDefault, type Account } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
-import { AUTO, PILL_TOOL_NAME, accountModels, chosenOf, dot, list, modelChoice, modelUsage, percent, rowTitle, shownAccount, usageLines } from './talk';
+import { AUTO, PILL_TOOL_NAME, accountModels, chosenOf, dot, list, menuModels, modelChoice, modelUsage, percent, rowTitle, shownAccount, usageLines } from './talk';
 import type { Agent } from './mock';
 
 const MARKS: Record<Agent, Brand> = { claude: BRANDS.claude, codex: BRANDS.openai, cursor: BRANDS.cursor };
@@ -39,6 +39,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const closeSub = () => { sub?.button.focus(); setSub(null); };
   const modelsOf = (a: Account) => accountModels(a, options[a.agent]?.models);
   const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent]?.model ?? 'auto', modelsOf(a), !!(a.modelsRead || a.models?.length));
+  const menuOf = (a: Account) => menuModels(modelsOf(a), modelOf(a).id, options[a.agent]?.groups);
   const pick = async (account: string, model?: string) => {
     if (saving) return;
     setSaving(true);
@@ -53,7 +54,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const openModels = (a: Account, button: HTMLButtonElement) => {
     // Keep the submenu inside the window at its smallest size: scroll when the list is long.
     const room = Math.max(120, innerHeight - button.getBoundingClientRect().top - 12);
-    const tall = Math.min(modelsOf(a).length * 30 + 14, room);
+    const tall = Math.min(menuOf(a).length * 30 + 14, room);
     setSub({ account: a, button, row: button.parentElement?.offsetTop ?? 0, top: Math.min(-8, innerHeight - 12 - tall - button.getBoundingClientRect().top), maxHeight: tall });
   };
   useEffect(() => {
@@ -133,8 +134,8 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
           </div>
           {/* beside the menu as it was beside its row: the menu's padding nearer (right) */}
           {sub && subAccount && <span ref={models} role="menu" aria-label={`${rowTitle(subAccount, accounts)} models`} className="row-menu row-submenu is-left is-scroll" style={{ top: sub.row - scrolled + sub.top, right: 'calc(100% + 4px)', minWidth: 200, maxHeight: sub.maxHeight }} onKeyDown={(e) => move(e, e.currentTarget, true)}>
-            {modelsOf(subAccount).map((m) => <button key={m.id} role="menuitemradio" aria-checked={modelOf(subAccount).id === m.id} disabled={saving} onClick={() => void pick(subAccount.id, m.id)}>
-              {m.name}{modelOf(subAccount).id === m.id && <Check size={14} strokeWidth={1.8} className="menu-check" />}
+            {menuOf(subAccount).map((m) => <button key={m.id} role="menuitemradio" aria-checked={m.on} disabled={saving} onClick={() => void pick(subAccount.id, m.id)}>
+              {m.name}{m.on && <Check size={14} strokeWidth={1.8} className="menu-check" />}
             </button>)}
           </span>}
         </Menu>
