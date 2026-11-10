@@ -706,7 +706,11 @@ fn limits_9_a_signed_resume_gives_no_new_tries() {
         (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
     });
     assert!(waits["accountLimit"].is_null(), "{waits}");
-    assert_eq!(read_job(&folder, "cccc0901").recovery.limit_resumes, 4);
+    let counted = within(30, "its wait is counted on", || {
+        let tries = read_job(&folder, "cccc0901").recovery.limit_resumes;
+        (tries > 3).then_some(tries)
+    });
+    assert_eq!(counted, 4);
     assert!(pending_decisions(&obid).is_empty());
 }
 
