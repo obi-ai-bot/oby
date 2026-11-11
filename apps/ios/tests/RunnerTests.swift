@@ -221,6 +221,10 @@ struct RunnerTests {
         job.offersPublish = false
         #expect(!job.canPublish && !job.needsYou)
         job.offersPublish = true
+        // Publish kept after 24 hours of checks that judged nothing: offered, never needing you (PUBLISHING-31).
+        let kept = self.job.replacingOccurrences(of: #""published": null}"#, with: #""published": null, "canPublish": true, "unjudged": {"tries": 10, "next": null}}"#)
+        let quiet = try Runner.decoder.decode(Job.self, from: Data(kept.utf8))
+        #expect(quiet.canPublish && !quiet.needsYou)
         job.commits = 0
         #expect(job.canPublish)
         // Published from this phone: not offered again before obid's next word.

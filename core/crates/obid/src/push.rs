@@ -112,10 +112,8 @@ pub fn notice(job: &Job) -> Option<Notice> {
     if !job.needs_you() {
         return None;
     }
-    // A check obid ran again for 24 hours with no judgment keeps Publish on its page, quietly
-    // (PUBLISHING-31).
     if job.can_publish() {
-        return job.unjudged.is_none().then_some(Notice::Ready);
+        return Some(Notice::Ready);
     }
     match job.status {
         Status::Failed => Some(Notice::Failed),
@@ -1600,11 +1598,14 @@ mod tests {
         kept.commits = Some(1);
         kept.checked_head = Some("a".repeat(40));
         kept.unjudged.as_mut().unwrap().next = None;
-        assert!(kept.can_publish());
+        // Publish stays on its page, and the job doesn't need the owner: not on the phone's or
+        // the brain's Needs you either.
+        assert!(kept.can_publish() && !kept.needs_you());
         assert_eq!(notice(&kept), None);
         assert!(wanted(std::slice::from_ref(&kept), &[]).is_empty());
         // The same job, its check judged: Ready to publish, as before.
         kept.unjudged = None;
+        assert!(kept.needs_you());
         assert_eq!(notice(&kept), Some(Notice::Ready));
     }
 

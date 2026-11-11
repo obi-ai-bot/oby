@@ -1626,8 +1626,9 @@ impl Job {
     /// failed or interrupted, Oby's review left for the owner, or its merge stopped where only
     /// the owner takes it on (crate::merge), and not dismissed.
     pub fn needs_you(&self) -> bool {
+        // Publish kept after 24 hours of checks that judged nothing asks nothing (PUBLISHING-31).
         self.dismissed.is_none()
-            && (self.can_publish()
+            && (self.can_publish() && self.unjudged.is_none()
                 || self.stranded()
                 || self.status == Status::Failed
                 || self.status == Status::Interrupted
