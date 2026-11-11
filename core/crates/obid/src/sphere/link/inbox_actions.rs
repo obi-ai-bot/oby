@@ -1268,7 +1268,7 @@ impl Link {
                 }
                 Err(why) => {
                     // Settled with why (`watch.answerError`), never open again by itself: the app
-                    // says it once, and the review stays on its job's page (MERGING-41).
+                    // says it once, and the review stays on its job's page (MERGING-43).
                     tracing::warn!("the review in inbox item {} wasn't posted: {why}", open.id);
                     let settled = self.lock().inbox.get_mut(&open.id).map(|item| {
                         item.done.get_or_insert_with(time::now);

@@ -821,7 +821,7 @@ async fn opened_by_owner(gh: &Path, repo: &str, number: u64) -> Result<(String, 
     Ok((owner, own))
 }
 
-/// The card that posts the owner's finished review `job` (MERGING-40), or none. Only a review
+/// The card that posts the owner's finished review `job` (MERGING-42), or none. Only a review
 /// started from a review request in the GitHub feed (crate::github_work keeps its quote of the pull
 /// request under obid's `attachments/github`) of a pull request someone else opened raises one:
 /// a review asked for through the API or a conversation keeps its verdict on its job's page, and
@@ -1417,11 +1417,11 @@ mod tests {
         assert_ne!(posted[0].3.parent(), posted[1].3.parent(), "a folder each");
     }
 
-    /// MERGING-41: the owner's Approve on the inbox claims the item; when nothing was posted it's
+    /// MERGING-43: the owner's Approve on the inbox claims the item; when nothing was posted it's
     /// settled with why (`watch.answerError`), and it never opens again by itself, nor does one
     /// the owner dismissed, when the same review is offered again.
     #[tokio::test]
-    async fn merging_41_a_failed_approve_settles_with_why_and_never_reopens() {
+    async fn merging_43_a_failed_approve_settles_with_why_and_never_reopens() {
         let home = scratch("listen-approve");
         let config = crate::config::Config::parse(
             &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
@@ -1469,12 +1469,12 @@ mod tests {
         assert!(link.item(&stuck.id).unwrap().done.is_some(), "dismissed");
     }
 
-    /// MERGING-40: only a review started from a review request in the GitHub feed, of a pull
+    /// MERGING-42: only a review started from a review request in the GitHub feed, of a pull
     /// request someone else opened, raises the card that posts it; one asked for through the API
     /// (no quote of the feed's) raises none and asks gh nothing, nor does one of the owner's own
     /// pull request, in any letter case.
     #[tokio::test]
-    async fn merging_40_only_a_feed_review_of_someone_elses_pull_request_raises_a_card() {
+    async fn merging_42_only_a_feed_review_of_someone_elses_pull_request_raises_a_card() {
         let home = scratch("ready-card");
         let gh = stand_in_gh(&home);
         std::fs::write(home.join("author"), "someone").unwrap();
