@@ -128,21 +128,20 @@ mod tests {
             "grep -n greet src/greet.js",
             "git diff origin/dev...HEAD",
             "cat src/greet.js",
-            "sed -n 's/greet/hi/p' src/greet.js",
-            "awk 'NR < 3' src/greet.js | sort",
+            "sed -n '1,20p' src/greet.js",
         ] {
             assert!(runs(&review, false, read), "{read}");
             assert!(runs(&review, true, read), "{read}");
         }
+        // A sed or awk script obid can't prove only prints (macOS sed keeps `/` inside `[…]`).
         for asks in [
             "python3 -c 'print(1)'",
             "node -e 'require(\"fs\").writeFileSync(\"x\", \"\")'",
             "sed -n '1w copy.js' src/greet.js",
-            "sed 's/a/b/w copy.js' src/greet.js",
-            "sed -n '1e touch x' src/greet.js",
+            "sed -n 's/[/]/g;s/w .//1' src/greet.js",
+            "sed -n 's/greet/hi/p' src/greet.js",
             "awk 'BEGIN{system(\"touch x\")}'",
-            "awk '{print | \"sh\"}' src/greet.js",
-            "awk 'BEGIN{while ((getline l < \"/etc/hosts\") > 0) print l}'",
+            "awk 'NR < 3' src/greet.js",
             "npm test",
             "make",
             "curl https://example.com",

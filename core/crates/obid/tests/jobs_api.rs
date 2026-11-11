@@ -3416,8 +3416,8 @@ fn pull_request_90(remote: &Path) {
 
 /// MERGING-36: a review the owner dispatched with a pull request runs no check, so it takes no
 /// check permit (it ends while another job's check holds it), and has no Check stage; it runs
-/// its reads without asking, `sed` with a script and `awk` too, as Oby's own review does, and is
-/// told obid runs the check, not the review.
+/// its reads without asking (`grep`, `git diff`, `sed -n '1,9p'`), and is told obid runs the
+/// check, not the review.
 #[test]
 fn merging_36_a_review_runs_no_check_and_reads_without_asking() {
     let folder = Folder::new("review-no-check");
@@ -3436,8 +3436,8 @@ fn merging_36_a_review_runs_no_check_and_reads_without_asking() {
     });
     let bash = |command: &str| json!({"tool": "Bash", "input": {"command": command}});
     let reads = [
-        bash("sed -n 's/greet/hi/p' src/greet.js"),
-        bash("awk 'NR < 3' src/greet.js | sort"),
+        bash("grep -n greet src/greet.js | sort; sed -n '1,9p' src/greet.js"),
+        bash("git diff origin/main...HEAD"),
     ];
     let id = post_job(
         &obid,
@@ -3570,6 +3570,53 @@ fn merging_36_a_review_of_someone_elses_commits_asks_for_its_reads() {
         j["permission"].is_object() || !matches!(j["status"].as_str(), Some("queued" | "running"))
     });
     assert_eq!(job["permission"]["detail"], command, "{job}");
+    // Only the fix boxes it: in the own lane `python3 -c` would ask all the same.
+    let (args, _) = last_launch(&folder.0);
+    assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
+}
+
+/// MERGING-36: a review the owner dispatched (signed, so obid asks GitHub who wrote the pull
+/// request) on a pull request a member of the owner's organization wrote is someone else's code
+/// (`foreign`, not only `reached` as a fix on it would be: ISSUETASK-5), so it runs in Oby's box.
+#[test]
+fn merging_36_a_review_of_a_members_pull_request_is_someone_elses_code() {
+    let folder = Folder::new("review-member");
+    let remote = fixture(&folder.0.join("fixture"));
+    pull_request_90(&remote);
+    let (config, _account) = recording_config(&folder.0, &remote);
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let obid = start_with(&folder.0, &config, Some(&agents));
+    // The stand-in gh (tests/agents/gh): the owner is wellington of obi-e2e, and sangam, a
+    // member, wrote the pull request.
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("user"), "wellington\n").unwrap();
+    std::fs::write(gh.join("orgs"), "obi-e2e\n").unwrap();
+    let none = json!({"pageInfo": {"hasNextPage": false}, "nodes": []});
+    let pr = json!({"author": {"login": "sangam"}, "authorAssociation": "MEMBER", "body": "A line",
+                    "userContentEdits": none, "timelineItems": none, "comments": none, "reviews": none});
+    let who = json!({"data": {"viewer": {"login": "wellington"}, "repository": {"issueOrPullRequest": pr}}});
+    std::fs::write(gh.join("who.json"), who.to_string()).unwrap();
+    let started = typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 90,
+                        "task": "SEES: moved.txt"}}),
+    );
+    assert_eq!(started.status, 201, "{}", started.text);
+    let id = started.body["id"].as_str().unwrap();
+    let job = wait(&obid, id);
+    assert_eq!(job["status"], "done", "{job}");
+    let file: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    assert!(
+        file["foreign"]
+            .as_str()
+            .is_some_and(|why| why.contains("pull request #90") && why.contains("members")),
+        "{file}"
+    );
     let (args, _) = last_launch(&folder.0);
     assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
 }
