@@ -109,9 +109,10 @@ pub struct RpcError {
 pub struct Conn {
     child: Child,
     pgid: u32,
-    /// An own run's commands' temp folder and its `login` folder (`env.sh`'s), what its
-    /// leftovers are found by when it ends ([`process::end_sandboxed`], LANES-16).
-    leftovers: Option<(PathBuf, PathBuf)>,
+    /// An own run's commands' temp folder, its working folder and its `login` folder
+    /// (`env.sh`'s), what its leftovers are found by when it ends ([`process::end_sandboxed`],
+    /// LANES-16).
+    leftovers: Option<(PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,
@@ -218,7 +219,7 @@ impl Conn {
         };
         let leftovers = launch.own_sandbox.then(|| {
             let login = set("CLAUDE_ENV_FILE")?.parent()?.to_path_buf();
-            Some((set(process::CLAUDE_TMPDIR)?, login))
+            Some((set(process::CLAUDE_TMPDIR)?, launch.cwd.clone(), login))
         });
         Ok(Conn {
             child,
@@ -526,12 +527,27 @@ impl Drop for Conn {
 }
 
 impl Conn {
-    /// Ends now what an own run's commands left running (LANES-16), and never again for this run:
-    /// a conversation's waiting session does so as it ends, before the next session on the same
-    /// folders starts, whose commands its later drop must not reach.
+    /// Ends now what an own run's commands left running (LANES-16), and never again for this run
+    /// once a sweep proved none is left; one that couldn't is logged, and the drop tries again.
     pub fn end_leftovers(&mut self) {
-        if let Some((temp, login)) = self.leftovers.take() {
-            process::end_sandboxed(&temp, &login);
+        let Some((temp, room, login)) = &self.leftovers else {
+            return;
+        };
+        match process::end_sandboxed(temp, room, login) {
+            Ok(_) => self.leftovers = None,
+            Err(why) => tracing::warn!("an own run's leftovers may still run: {why}"),
+        }
+    }
+
+    /// An own run's agent, and all its group, end now, then what its commands left running
+    /// (LANES-16): a conversation's waiting session, before a next session starts on the same
+    /// folders. Nothing of the agent's can start another command after it. A boxed run's agent
+    /// isn't touched: it ends by itself ([`Conn::finish`]).
+    pub fn end_own_now(&mut self) {
+        if self.leftovers.is_some() {
+            process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+            let _ = self.child.start_kill();
+            self.end_leftovers();
         }
     }
 }
@@ -625,16 +641,19 @@ mod tests {
     #[tokio::test]
     async fn lanes_16_an_own_runs_leftover_ends_with_its_conn() {
         let dir = std::env::temp_dir().join(format!("obid-lanes-16c-{}", uuid::Uuid::new_v4()));
-        let [temp, login] = ["temp", "login"].map(|d| dir.join(d));
-        std::fs::create_dir_all(&temp).unwrap();
-        std::fs::create_dir_all(&login).unwrap();
-        let (temp, login) = (temp.canonicalize().unwrap(), login.canonicalize().unwrap());
+        let [temp, room, login] = ["temp", "room", "login"].map(|d| dir.join(d));
+        for folder in [&temp, &room, &login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let [temp, room, login] = [temp, room, login].map(|d| d.canonicalize().unwrap());
         let env_file = login.join("env.sh");
         std::fs::write(&env_file, "").unwrap();
+        // As Claude Code's own sandbox for the run: its temp folder and room, nothing else of it.
         let profile = format!(
-            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
-            login.display(),
-            temp.display()
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            dir.canonicalize().unwrap().display(),
+            temp.display(),
+            room.display()
         );
         let pid_file = temp.join("pid");
         // What the test starts, killed however it ends (crate::process::tests::Started).
@@ -653,7 +672,7 @@ mod tests {
                 (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
                 ("CLAUDE_ENV_FILE".into(), env_file.into()),
             ],
-            cwd: dir.clone(),
+            cwd: room.clone(),
             stderr: dir.join("stderr"),
             own_sandbox: true,
             group: None,
@@ -680,7 +699,18 @@ mod tests {
         assert!(alive());
         // A waiting conversation's session ends its leftovers as it ends (`Warm::end`), before
         // the next session on the same folders starts; its drop later spares that one's commands.
+        // A sweep that can't prove which processes are the run's (its `login` folder gone)
+        // ends nothing, and the run stays to be swept again.
+        std::fs::rename(&login, dir.join("away")).unwrap();
         conn.end_leftovers();
+        assert!(
+            conn.leftovers.is_some(),
+            "a sweep that proved nothing forgot its run"
+        );
+        assert!(alive());
+        std::fs::rename(dir.join("away"), &login).unwrap();
+        conn.end_leftovers();
+        assert!(conn.leftovers.is_none());
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!alive(), "the leftover outlived its run");
         let next = std::process::Command::new("/usr/bin/sandbox-exec")

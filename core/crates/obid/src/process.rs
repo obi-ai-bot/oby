@@ -659,64 +659,140 @@ pub fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {
     }
 }
 
-/// Ends what an own run's commands left running (LANES-16): every process of this user's whose
-/// Seatbelt sandbox may write `writes` (the run's commands' temp folder) but may not write a file
-/// obid makes fresh in `denied` (the run's `login` folder, which its commands never write), as
-/// Claude Code's own sandbox for that run is (measured with 2.1.302), one that left the run's
-/// process group with `setsid` too: no process leaves its sandbox. The person's own processes
-/// may write that file, so they never match, nor do other runs' sandboxes, which may not write this
-/// temp folder. Nothing is ended unless obid itself, unsandboxed, is told it may write both (macOS
-/// answers no for a path that isn't there, so a missing one would match everyone). It sweeps again
-/// until a sweep finds none (at most [`SWEEPS`]), so what one forks while it's ended goes too.
-/// Returns how many it ended.
-// ponytail: a process ended between the check and the kill may lend its id to a new one, which
-// would be ended with it; macOS hands out ids in turn, so that needs the ids to wrap meanwhile.
+/// Ends what an own run's commands left running (LANES-16), as far as it can prove which they
+/// are: every process of this user's, not a zombie, whose Seatbelt sandbox may write `writes` (the
+/// run's commands' temp folder) and `room` (its worktree, or a conversation's room) but may write
+/// neither a file obid makes fresh in `denied` (the run's `login` folder, which its commands never
+/// write) nor one beside `writes` (so its sandbox opens this run's folder, not a parent of it), as
+/// Claude Code's own sandbox for that run is (measured with 2.1.302); one that left the run's
+/// process group with `setsid` too: no process leaves its sandbox. The person's own processes may
+/// write those files, so they never match; a terminal's Claude Code started in obid's temp folders
+/// may not write the run's `room`. The files are this call's own (a fresh name each), and obid
+/// proves, again before each process it stops, that they're there and that it, unsandboxed, may
+/// write them, `writes` and `room`: macOS answers no about a path that isn't there, so a missing
+/// one would match everyone. Each sweep stops what it found, then kills it, so a tree of them can't
+/// fork meanwhile. Ok with how many it ended once a sweep found none; an error when it couldn't
+/// prove that (a proof gone, a listing that failed, processes still forking after [`SWEEPS`]
+/// sweeps: best effort against a chain that forks faster than a sweep), for its caller to log and
+/// try again.
+// ponytail: a process ended between the check and the stop may lend its id to a new one, which
+// would be stopped with it; macOS hands out ids in turn, so that needs the ids to wrap meanwhile.
 #[cfg(target_os = "macos")]
-pub fn end_sandboxed(writes: &Path, denied: &Path) -> usize {
+pub fn end_sandboxed(writes: &Path, room: &Path, denied: &Path) -> Result<usize, String> {
+    use libproc::bsd_info::BSDInfo;
     use libproc::processes::{ProcFilter, pids_by_type};
-    use std::os::unix::fs::OpenOptionsExt;
-    let canary = denied.join(".oby-reap");
-    let _ = std::fs::remove_file(&canary);
-    let made = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&canary);
+    use nix::sys::signal::Signal;
+    let name = writes
+        .file_name()
+        .ok_or("no folder to sweep")?
+        .to_string_lossy();
+    let call = uuid::Uuid::new_v4().simple();
+    let files = [
+        denied.join(format!(".oby-reap-{call}")),
+        writes.with_file_name(format!("{name}.oby-reap-{call}")),
+    ];
+    let made = files.iter().try_for_each(|file| {
+        fresh(file).map_err(|e| format!("obid can't make {}: {e}", file.display()))
+    });
     let me = std::process::id();
-    let ours = |path: &Path| may_write(me, path) == Some(true);
-    if made.is_err()
-        || !std::fs::metadata(writes).is_ok_and(|m| m.is_dir())
-        || !ours(writes)
-        || !ours(&canary)
-    {
-        return 0;
-    }
-    let uid = nix::unistd::getuid().as_raw();
-    let theirs =
-        |pid: u32| may_write(pid, writes) == Some(true) && may_write(pid, &canary) == Some(false);
-    let kill = |pid: u32| {
-        nix::sys::signal::kill(Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGKILL)
+    let folder = |path: &Path| std::fs::metadata(path).is_ok_and(|m| m.is_dir());
+    let proven = || {
+        [writes, room]
+            .iter()
+            .all(|f| folder(f) && may_write(me, f) == Some(true))
+            && files.iter().all(|file| {
+                std::fs::symlink_metadata(file).is_ok_and(|m| m.is_file())
+                    && may_write(me, file) == Some(true)
+            })
     };
+    // A zombie keeps its sandbox until its parent reaps it, and can't be ended again.
+    let zombie = |pid: u32| {
+        libproc::proc_pid::pidinfo::<BSDInfo>(pid as i32, 0).is_ok_and(|info| info.pbi_status == 5)
+    };
+    let theirs = |pid: u32| {
+        !zombie(pid)
+            && [writes, room]
+                .iter()
+                .all(|f| may_write(pid, f) == Some(true))
+            && files.iter().all(|file| may_write(pid, file) == Some(false))
+    };
+    let uid = nix::unistd::getuid().as_raw();
+    let list = || pids_by_type(ProcFilter::ByUID { uid }).map_err(|e| e.to_string());
+    let signal = |pid: u32, last: bool| {
+        let sig = if last {
+            Signal::SIGKILL
+        } else {
+            Signal::SIGSTOP
+        };
+        nix::sys::signal::kill(Pid::from_raw(pid as i32), sig).is_ok()
+    };
+    let swept = made.and_then(|()| sweep(&list, &theirs, &proven, &signal));
+    for file in &files {
+        let _ = std::fs::remove_file(file);
+    }
+    swept
+}
+
+/// `path` as a new empty file (0600), never through what was there.
+#[cfg(target_os = "macos")]
+fn fresh(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true).mode(0o600);
+    open.custom_flags(libc::O_NOFOLLOW).open(path).map(drop)
+}
+
+/// [`end_sandboxed`]'s rule, apart from macOS: of the processes `list` names, those `theirs` are
+/// (never 0, which a signal would read as obid's own group, launchd or obid) are stopped, each only
+/// while `proven` holds, then killed (`signal`'s `last`), again until a sweep finds none,
+/// [`SWEEPS`] at most. A listing that fails or a proof that no longer holds stops it with an
+/// error, never as an empty sweep.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn sweep(
+    list: &dyn Fn() -> Result<Vec<u32>, String>,
+    theirs: &dyn Fn(u32) -> bool,
+    proven: &dyn Fn() -> bool,
+    signal: &dyn Fn(u32, bool) -> bool,
+) -> Result<usize, String> {
+    let me = std::process::id();
+    let unproven = || Err("obid can't prove which processes are the run's".to_string());
+    // Nothing it can't prove reads as a clean sweep, not even one that would find none.
+    if !proven() {
+        return unproven();
+    }
     let mut ended = 0;
     for _ in 0..SWEEPS {
-        let pids = pids_by_type(ProcFilter::ByUID { uid }).unwrap_or_default();
-        // `pid > 1`: never 0 (`kill` would reach obid's own group) nor launchd.
-        let found = pids
+        let found = list()?
             .into_iter()
             .filter(|&pid| pid > 1 && pid != me && theirs(pid));
-        let now = found.filter(|&pid| kill(pid).is_ok()).count();
-        if now == 0 {
-            break;
+        let found: Vec<u32> = found.collect();
+        if found.is_empty() {
+            return Ok(ended);
         }
-        ended += now;
+        let mut stopped = Vec::new();
+        // What it stopped was proven the run's when stopped: it's killed even when a later proof
+        // fails, which ends the sweep.
+        let mut lost = false;
+        for pid in found {
+            lost = !proven();
+            if lost {
+                break;
+            }
+            if signal(pid, false) {
+                stopped.push(pid);
+            }
+        }
+        ended += stopped.into_iter().filter(|&pid| signal(pid, true)).count();
+        if lost {
+            return unproven();
+        }
     }
-    let _ = std::fs::remove_file(&canary);
-    ended
+    Err(format!(
+        "the run's processes still ran after {SWEEPS} sweeps"
+    ))
 }
 
 /// How many times [`end_sandboxed`] sweeps at most.
-#[cfg(target_os = "macos")]
 const SWEEPS: usize = 10;
 
 /// Whether process `pid`'s Seatbelt sandbox lets it write `path`, as macOS's `sandbox_check`
@@ -758,8 +834,8 @@ fn may_write(pid: u32, path: &Path) -> Option<bool> {
 /// [`end_sandboxed`]: only macOS runs an own run's commands in a sandbox obid can ask about
 /// (Linux's own lane, and what an obid that crashed left, are later work: docs/contracts/lanes.md).
 #[cfg(not(target_os = "macos"))]
-pub fn end_sandboxed(_writes: &Path, _denied: &Path) -> usize {
-    0
+pub fn end_sandboxed(_writes: &Path, _room: &Path, _denied: &Path) -> Result<usize, String> {
+    Ok(0)
 }
 
 /// SIGTERM to the group now, SIGKILL `grace` later: everything it started ends.
@@ -1122,18 +1198,19 @@ pub(crate) mod tests {
 
     impl Drop for Started {
         fn drop(&mut self) {
+            // Its own children first, a spawner among them, so none adds to the list meanwhile.
+            for child in &mut self.children {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             let listed = self
                 .file
                 .as_ref()
                 .and_then(|f| std::fs::read_to_string(f).ok());
             let listed = listed.unwrap_or_default();
             for pid in listed.lines().filter_map(|l| l.trim().parse::<i32>().ok()) {
-                let _ =
-                    nix::sys::signal::kill(Pid::from_raw(pid), nix::sys::signal::Signal::SIGKILL);
-            }
-            for child in &mut self.children {
-                let _ = child.kill();
-                let _ = child.wait();
+                let pid = Pid::from_raw(pid);
+                let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
             }
         }
     }
@@ -1207,14 +1284,16 @@ pub(crate) mod tests {
         let root = std::env::temp_dir().join(format!("obid-lanes-16-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        // Each run's temporary folder, and its `login` folder, which its commands may not write.
+        // Each run's temporary folder, its room, and its `login` folder, which its commands may
+        // not write.
         let run = |name: &str| {
-            let [temp, login] = ["temp", "login"].map(|d| root.join(name).join(d));
-            std::fs::create_dir_all(&temp).unwrap();
-            std::fs::create_dir_all(&login).unwrap();
-            (temp, login)
+            let [temp, room, login] = ["temp", "room", "login"].map(|d| root.join(name).join(d));
+            for dir in [&temp, &room, &login] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            (temp, room, login)
         };
-        let ((temp, login), (other, _)) = (run("this"), run("other"));
+        let ((temp, room, login), (other, other_room, _)) = (run("this"), run("other"));
         // Short-lived, and every one killed when the test ends however it ends.
         let sleeper = "use POSIX; setsid(); exec q(sleep), 60";
         let pids = root.join("pids");
@@ -1222,29 +1301,31 @@ pub(crate) mod tests {
             children: Vec::new(),
             file: Some(pids.clone()),
         };
-        let boxed = |writes: &Path, program: &[&str]| {
-            let profile = format!(
-                "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
-                root.display(),
-                writes.display(),
-                pids.display()
+        let boxed = |writes: &[&Path], program: &[&str]| {
+            let mut profile = format!(
+                "(version 1)(allow default)(deny file-write* (subpath \"{}\"))",
+                root.display()
             );
+            for path in writes {
+                profile += &format!("(allow file-write* (subpath \"{}\"))", path.display());
+            }
+            profile += &format!("(allow file-write* (literal \"{}\"))", pids.display());
+            // A broad one may name the run's `login` folder last: it stays denied.
+            profile += &format!("(deny file-write* (subpath \"{}\"))", login.display());
             std::process::Command::new("/usr/bin/sandbox-exec")
                 .args(["-p", &profile])
                 .args(program)
                 .spawn()
                 .unwrap()
         };
-        started
-            .children
-            .push(boxed(&temp, &["/usr/bin/perl", "-e", sleeper]));
-        started
-            .children
-            .push(boxed(&other, &["/usr/bin/perl", "-e", sleeper]));
-        let persons = std::process::Command::new("/usr/bin/perl")
-            .args(["-e", sleeper])
-            .spawn();
+        let perl = ["/usr/bin/perl", "-e", sleeper];
+        started.children.push(boxed(&[&temp, &room], &perl));
+        started.children.push(boxed(&[&other, &other_room], &perl));
+        let persons = std::process::Command::new(perl[0]).args(&perl[1..]).spawn();
         started.children.push(persons.unwrap());
+        // A sandbox of someone else's that opens a parent of the run's folders: not the run's.
+        let parent = temp.parent().unwrap();
+        started.children.push(boxed(&[parent], &perl));
         // One that forks detached children, 400 at most, while it's being ended; each listed.
         let forks = format!(
             "i=0; while [ $i -lt 400 ]; do /usr/bin/perl -e '{sleeper}' & echo $! >> '{}'; i=$((i+1)); /bin/sleep 0.001; done",
@@ -1252,36 +1333,87 @@ pub(crate) mod tests {
         );
         started
             .children
-            .push(boxed(&temp, &["/bin/sh", "-c", &forks]));
+            .push(boxed(&[&temp, &room], &["/bin/sh", "-c", &forks]));
         // Mid-way through its forking.
         std::thread::sleep(std::time::Duration::from_millis(150));
         // What obid can't prove is the run's ends nothing: a folder that isn't there (macOS says
         // no one may write it, the person's own processes included).
-        assert_eq!(end_sandboxed(&temp, &root.join("gone")), 0);
-        assert_eq!(end_sandboxed(&root.join("gone"), &login), 0);
+        assert!(end_sandboxed(&temp, &room, &root.join("gone")).is_err());
+        assert!(end_sandboxed(&root.join("gone"), &room, &login).is_err());
+        assert!(end_sandboxed(&temp, &root.join("gone"), &login).is_err());
         assert!(started.children[0].try_wait().unwrap().is_none());
-        assert!(end_sandboxed(&temp, &login) >= 3);
+        assert!(end_sandboxed(&temp, &room, &login).unwrap() >= 3);
         // Nothing of the run's is left, a child forked during the sweep included.
         assert_eq!(
-            end_sandboxed(&temp, &login),
-            0,
+            end_sandboxed(&temp, &room, &login),
+            Ok(0),
             "a leftover escaped the sweep"
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
-        for at in [0, 3] {
+        for at in [0, 4] {
             let ended = started.children[at].try_wait().unwrap();
             assert!(ended.is_some(), "the run's leftover still runs");
         }
-        for at in [1, 2] {
+        for at in [1, 2, 3] {
             let ended = started.children[at].try_wait().unwrap();
-            assert!(ended.is_none(), "another's process ended");
+            assert!(ended.is_none(), "another's process ended ({at})");
         }
         drop(started);
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LANES-16: the sweep ends a process only while obid can prove it's the run's, kills what it
+    /// stopped, and says when it couldn't finish: a listing that failed, a proof lost part way
+    /// (the run's folders deleted meanwhile), processes still there after every sweep. It never
+    /// reads any of those as a clean sweep.
+    #[test]
+    fn lanes_16_a_sweep_proves_each_kill_and_says_when_it_cant() {
+        use std::cell::{Cell, RefCell};
+        let signalled = RefCell::new(Vec::new());
+        let signal = |pid: u32, last: bool| {
+            signalled.borrow_mut().push((pid, last));
+            true
+        };
+        let theirs = |_: u32| true;
+        let failed = || Err("no listing".to_string());
+        assert!(sweep(&failed, &theirs, &|| true, &signal).is_err());
+        assert!(signalled.borrow().is_empty());
+        // A proof that doesn't hold to begin with signals nothing, even when nothing would match.
+        let none = || Ok(Vec::new());
+        assert!(sweep(&none, &theirs, &|| false, &signal).is_err());
+        assert!(signalled.borrow().is_empty());
+        // The proof holds at the start and for the first process only: that one's stopped and
+        // killed, the next isn't.
+        let proofs = Cell::new(0);
+        let proven = || {
+            proofs.set(proofs.get() + 1);
+            proofs.get() <= 2
+        };
+        let two = || Ok(vec![100, 101]);
+        assert!(sweep(&two, &theirs, &proven, &signal).is_err());
+        assert_eq!(*signalled.borrow(), [(100, false), (100, true)]);
+        signalled.borrow_mut().clear();
+        // Still there after every sweep.
+        assert!(sweep(&two, &theirs, &|| true, &signal).is_err());
+        assert_eq!(signalled.borrow().len(), 2 * 2 * SWEEPS);
+        signalled.borrow_mut().clear();
+        // Gone after the first: a clean sweep, and never obid itself, launchd or 0.
+        let sweeps = Cell::new(0);
+        let once = || {
+            sweeps.set(sweeps.get() + 1);
+            Ok(match sweeps.get() {
+                1 => vec![0, 1, std::process::id(), 100],
+                _ => vec![0, 1, std::process::id()],
+            })
+        };
+        assert_eq!(sweep(&once, &theirs, &|| true, &signal), Ok(1));
+        assert_eq!(*signalled.borrow(), [(100, false), (100, true)]);
+    }
+
     /// UNSAFE-1 (the owner's decision of 2026-11-11): `process::may_write` is obid's one function
-    /// allowed `unsafe`; no other file of the core's allows, expects or warns of it.
+    /// allowed `unsafe`. Every attribute in the core's sources is read whole, however it's laid out
+    /// over lines, and only one allows, expects or warns of the lint, on `fn may_write` in this
+    /// file; the workspace denies it, and no crate's manifest names it.
     #[test]
     fn unsafe_1_only_may_write_is_unsafe() {
         let lint = ["unsafe", "_code"].concat();
@@ -1293,17 +1425,59 @@ pub(crate) mod tests {
                 let path = entry.path();
                 if path.is_dir() {
                     folders.push(path);
+                } else if path.file_name().is_some_and(|n| n == "Cargo.toml") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(!text.contains(&lint), "{} names {lint}", path.display());
+                    assert!(
+                        text.contains("[lints]\nworkspace = true"),
+                        "{}",
+                        path.display()
+                    );
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let text = std::fs::read_to_string(&path).unwrap();
-                    let lines = text
-                        .lines()
-                        .filter(|l| l.contains(&lint) && l.contains('('));
-                    found.extend(lines.map(|l| format!("{}: {}", path.display(), l.trim())));
+                    // Each `#[…]` and `#![…]`, to its matching bracket, with no whitespace.
+                    for (at, _) in text.match_indices('#') {
+                        let rest = &text[at + 1..];
+                        let rest = rest.strip_prefix('!').unwrap_or(rest);
+                        let Some(body) = rest.strip_prefix('[') else {
+                            continue;
+                        };
+                        let mut depth = 1;
+                        let end = body.char_indices().find_map(|(i, c)| {
+                            depth += match c {
+                                '[' => 1,
+                                ']' => -1,
+                                _ => 0,
+                            };
+                            (depth == 0).then_some(i)
+                        });
+                        let Some(end) = end else { continue };
+                        let attribute: String =
+                            body[..end].chars().filter(|c| !c.is_whitespace()).collect();
+                        let levels = ["allow(", "expect(", "warn("];
+                        if attribute.contains(&lint)
+                            && levels.iter().any(|l| attribute.starts_with(l))
+                        {
+                            let after = &body[end + 1..];
+                            found.push((path.clone(), attribute, after.trim_start().to_owned()));
+                        }
+                    }
                 }
             }
         }
-        assert_eq!(found.len(), 1, "{found:#?}");
-        assert!(found[0].contains("process.rs: #[allow("), "{found:#?}");
+        assert_eq!(
+            found.len(),
+            1,
+            "{:#?}",
+            found.iter().map(|f| (&f.0, &f.1)).collect::<Vec<_>>()
+        );
+        let (path, _, after) = &found[0];
+        assert!(path.ends_with("obid/src/process.rs"), "{}", path.display());
+        assert!(
+            after.starts_with("fn may_write("),
+            "{}",
+            &after[..after.len().min(80)]
+        );
         let workspace =
             std::fs::read_to_string(crates.parent().unwrap().join("Cargo.toml")).unwrap();
         assert!(

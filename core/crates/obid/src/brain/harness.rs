@@ -248,12 +248,12 @@ struct Warm {
 }
 
 impl Warm {
-    /// Its login copy goes now, and so does what its commands left running (LANES-16), before a
-    /// next session starts on the same folders; it ends (its stdin closed, it exits) in the
-    /// background.
+    /// Its login copy goes now. An own session's Claude Code, its group and what its commands
+    /// left running end now too (LANES-16), before a next session starts on the same folders; a
+    /// boxed one ends (its stdin closed, it exits) in the background.
     fn end(mut self) {
         self.place.forget_login();
-        self.conn.end_leftovers();
+        self.conn.end_own_now();
         tokio::spawn(self.conn.finish());
     }
 }
@@ -3727,6 +3727,93 @@ mod tests {
         assert!(!own_conversation(true, Tool::Claude, true));
         assert!(!own_conversation(true, Tool::Codex, false));
         assert!(!own_conversation(true, Tool::Cursor, false));
+    }
+
+    /// LANES-16: when an own conversation's waiting session ends (`Warm::end`), its Claude Code
+    /// stops at once and what its commands left running, `setsid` included, is gone by the time it
+    /// returns; a command the next session on the same folders starts after that survives the old
+    /// session's end, which runs on in the background.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lanes_16_an_own_sessions_end_takes_its_leftovers_and_spares_the_next() {
+        let home = std::env::temp_dir().join(format!("obid-lanes-16w-{}", uuid::Uuid::new_v4()));
+        let place = Place::of(&home, "c");
+        for folder in [&place.temp, &place.room, &place.login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let canonical = |p: &PathBuf| p.canonicalize().unwrap();
+        let (temp, room, login) = (
+            canonical(&place.temp),
+            canonical(&place.room),
+            canonical(&place.login),
+        );
+        std::fs::write(login.join("env.sh"), "").unwrap();
+        let profile = format!(
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            canonical(&place.folder).display(),
+            temp.display(),
+            room.display()
+        );
+        let pid_file = temp.join("pid");
+        let mut started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: Some(pid_file.clone()),
+        };
+        let sleeper = "use POSIX; setsid(); exec q(sleep), 60";
+        // Its "Claude Code": a command of its left a `setsid` process, then it waits.
+        let script = format!(
+            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e '{sleeper}' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nsleep 60\n",
+            pid_file.display()
+        );
+        let launch = crate::agent::Launch {
+            argv: ["/bin/sh".into(), "-c".into(), script.into()].into(),
+            env: vec![
+                ("PATH".into(), "/bin:/usr/bin".into()),
+                (crate::process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
+            ],
+            cwd: room.clone(),
+            stderr: home.join("stderr"),
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = tokio::sync::watch::channel(crate::process::Signal::Run);
+        let mut conn = crate::conn::Conn::spawn(&launch, Duration::from_secs(30), stop, false)
+            .await
+            .unwrap();
+        assert_eq!(conn.next().await.unwrap(), json!({}));
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let alive =
+            |pid: i32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+        assert!(alive(pid));
+        let warm = Warm {
+            conn,
+            token: String::new(),
+            account: "a".into(),
+            config_dir: None,
+            session: None,
+            key: 0,
+            place: place.clone(),
+            since: Instant::now(),
+        };
+        warm.end();
+        // Ended by the time it returned: its parent, killed with it, left no zombie to reap.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!alive(pid), "the leftover outlived its session");
+        let next = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &profile, "/usr/bin/perl", "-e", sleeper])
+            .spawn()
+            .unwrap();
+        started.children.push(next);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let ended = started.children[0].try_wait().unwrap();
+        assert!(ended.is_none(), "the next session's command ended");
+        drop(started);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// LANES-14: every tool an own session has is one obid's `ask` rules name, so it asks obid.

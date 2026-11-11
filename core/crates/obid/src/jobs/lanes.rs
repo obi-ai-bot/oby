@@ -1240,7 +1240,7 @@ mod tests {
         std::fs::write(&env_file, "").unwrap();
         let pid_file = temp.join("pid");
         // The leftover, killed however the test ends (crate::process::tests::Started).
-        let _started = crate::process::tests::Started {
+        let mut started = crate::process::tests::Started {
             children: Vec::new(),
             file: Some(pid_file.clone()),
         };
@@ -1285,7 +1285,16 @@ mod tests {
             .unwrap()
             .write_all(prompt.as_bytes())
             .unwrap();
-        child.wait().unwrap();
+        // Claude Code itself is the guard's too, and waited for two minutes at most.
+        started.children.push(child);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while started.children[0].try_wait().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Claude Code didn't finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
         let pid: i32 = std::fs::read_to_string(&pid_file)
             .unwrap()
             .trim()
@@ -1293,7 +1302,7 @@ mod tests {
             .unwrap();
         let alive = || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
         assert!(alive(), "no leftover: the probe proves nothing");
-        assert!(crate::process::end_sandboxed(&temp, &login) >= 1);
+        assert!(crate::process::end_sandboxed(&temp, &work, &login).unwrap() >= 1);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(
             !alive(),

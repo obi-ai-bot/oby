@@ -1421,8 +1421,14 @@ impl Conversations {
             Err(e) => return Err(Error::Io(e)),
         }
         let gone = threads.remove(index);
-        // Its agent session's room, checkouts and login go with it (crate::brain::harness).
-        let _ = std::fs::remove_dir_all(self.dir.join(&id));
+        // What its own session's commands left running ends first, while the folders that tell
+        // them apart are there (LANES-16); then its room, checkouts and login go with it.
+        let place = self.dir.join(&id);
+        let [home, room, login] = ["home", "room", "login"].map(|d| place.join(d));
+        if let Err(why) = crate::process::end_sandboxed(&home, &room, &login) {
+            tracing::warn!("a deleted conversation's leftovers may still run: {why}");
+        }
+        let _ = std::fs::remove_dir_all(&place);
         if let Some(home) = self.dir.parent() {
             let _ = std::fs::remove_dir_all(cursor_folder(home, &id));
         }
@@ -2039,6 +2045,8 @@ pub async fn remove(
 /// The conversation `id` goes, with the files attached to its words, and the offers made in it
 /// close.
 async fn forget(shared: &Shared, id: &str) -> Result<(), Error> {
+    // Its waiting Claude Code ends before its folders go (LANES-16).
+    shared.harness.end_warm(id);
     let uploads = shared.conversations.delete(id)?;
     crate::brain::drop_uploads(shared, uploads).await;
     // What Oby offered there can't be started from it any more.
