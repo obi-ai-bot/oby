@@ -12,6 +12,12 @@
       "maxDuration": "45m"
     },
     {
+      "id": "swift-tests",
+      "use": "runtime.rust:swift-tests",
+      "description": "The Apple apps' touched suites and swift test. In a job's box the script skips them, as it says, and passes.",
+      "maxDuration": "45m"
+    },
+    {
       "id": "ts-checks",
       "use": "runtime.rust:ts-checks",
       "description": "The Electron app's typecheck, build and vitest.",

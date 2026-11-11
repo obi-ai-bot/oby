@@ -31,8 +31,15 @@ struct Run {
     started: String,
 }
 
-// The workflow file: OBY_CHECK_WORKFLOW, else the copy the pipelines editor saves, else this tool's own.
-fn load_workflow() -> Result<(Vec<Step>, String)> {
+// How long the nodes child may take to report its port, then to answer (a cold Mac is slow).
+const STARTUP: Duration = Duration::from_secs(60);
+
+// The workflow file: OBY_CHECK_WORKFLOW, else the copy the pipelines editor saves, else this tool's
+// own. The real check (`check`) runs only its own (BLOK-2).
+fn load_workflow(check: bool) -> Result<(Vec<Step>, String)> {
+    if check {
+        return Ok((parse_workflow(DEFAULT_WORKFLOW)?, "built-in".into()));
+    }
     let saved = std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join(".oby-flow/workflows/oby-check.json"));
     let path = std::env::var_os("OBY_CHECK_WORKFLOW")
@@ -53,53 +60,52 @@ async fn workflow(
     input: &CheckInput,
     steps: &[Step],
     nodes: &mut BTreeMap<String, CheckResult>,
+    check: bool,
 ) -> Result<bool> {
+    // The real check plans what obid asked for (OBY_CHECK_PATHS on a job's base, PUBLISHING-18;
+    // OBY_CHECK_ALL); the shadow and affected runs plan what changed.
+    let scope = |command: &mut Command| {
+        if !check {
+            command
+                .env_remove("OBY_CHECK_ALL")
+                .env_remove("OBY_CHECK_PATHS");
+        }
+    };
     let mut needed = vec![];
     let mut has_steps = false;
     let mut has_groups = false;
     // Planning, including skipped suites and line limits, belongs to the shell.
-    for (name, group) in GROUPS.into_iter().chain([("swift", "swift")]) {
-        let output = check_command(input, group)
-            .env("OBY_CHECK_PLAN", "1")
-            .output()
-            .await?;
-        if !output.status.success() {
-            bail!("script planning failed for {group}");
-        }
+    for (name, group) in GROUPS {
+        let mut plan = check_command(input, group);
+        scope(plan.env("OBY_CHECK_PLAN", "1"));
+        let output = plan.output().await?;
         let text = text_output(&output);
+        if !output.status.success() {
+            let said = text.trim().lines().last().unwrap_or_default();
+            bail!("script planning failed for {group}: {said}");
+        }
         has_steps |= text.lines().any(|line| line.starts_with("==>"));
         has_groups |= text
             .lines()
             .any(|line| line.starts_with("oby-check: group "));
         if planned_group(&text, group) {
-            if group == "swift" {
-                nodes.insert(
-                    name.into(),
-                    CheckResult::unjudged(
-                        "Swift has planned work but no shadow node in this pilot",
-                        0.0,
-                    ),
-                );
-            } else {
-                needed.push(name);
-            }
+            needed.push(name);
         }
     }
     if has_steps && !has_groups {
         bail!("the script names no groups (older than #2052)");
     }
     if needed.is_empty() {
-        anyhow::ensure!(
-            !nodes.is_empty() || !has_steps,
-            "the plan has steps but no supported groups"
-        );
-        return Ok(nodes.is_empty() && !has_groups);
+        anyhow::ensure!(!has_steps, "the plan has steps but no supported groups");
+        return Ok(!has_groups);
     }
     let mut random = [0u8; 32];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-    let binary = std::env::current_exe()?.with_file_name("nodes");
-    let mut child = Command::new(&binary)
+    let binary = std::env::current_exe()?.with_file_name("oby-check-blok-nodes");
+    let mut nodes_child = Command::new(&binary);
+    scope(&mut nodes_child);
+    let mut child = nodes_child
         .env("GRPC_PORT", "0")
         .env("OBY_CHECK_DIR", &input.checkout)
         .env("OBY_CHECK_BASE", &input.base)
@@ -107,12 +113,19 @@ async fn workflow(
         .env_remove("BLOK_BLOB_DIR")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
+        // The real check shows each node's script as it runs (PUBLISHING-16); the others print
+        // only their verdict.
+        .stderr(if check {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
         .kill_on_drop(true)
         .spawn()
-        .context("start sibling nodes binary (build both binaries first)")?;
+        .context("start sibling oby-check-blok-nodes binary (build both binaries first)")?;
     // blok-rs logs the actual local address after binding, including with port 0.
     let mut stdout = BufReader::new(child.stdout.take().context("nodes stdout missing")?).lines();
-    let port = tokio::time::timeout(Duration::from_secs(10), async {
+    let port = tokio::time::timeout(STARTUP, async {
         while let Some(line) = stdout.next_line().await? {
             if let Some(rest) = line
                 .split_once("listening on 127.0.0.1:")
@@ -143,7 +156,7 @@ async fn workflow(
                 break client;
             }
         }
-        if start.elapsed() > Duration::from_secs(10) {
+        if start.elapsed() > STARTUP {
             bail!("nodes did not become ready");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -241,7 +254,7 @@ fn planned_group(text: &str, group: &str) -> bool {
         .any(|line| line == format!("oby-check: group {group}"))
 }
 
-async fn report(checkout: String, base: String) -> Result<Run> {
+async fn report(checkout: String, base: String, check: bool) -> Result<Run> {
     let checkout = std::fs::canonicalize(checkout)?
         .to_string_lossy()
         .into_owned();
@@ -268,10 +281,10 @@ async fn report(checkout: String, base: String) -> Result<Run> {
         reason: String::new(),
         started: chrono::Utc::now().to_rfc3339(),
     };
-    let outcome = match load_workflow() {
+    let outcome = match load_workflow(check) {
         Ok((steps, file)) => {
             report.workflow_file = file;
-            workflow(&input, &steps, &mut report.nodes).await
+            workflow(&input, &steps, &mut report.nodes, check).await
         }
         Err(error) => Err(error),
     };
@@ -302,7 +315,7 @@ async fn report(checkout: String, base: String) -> Result<Run> {
 }
 
 async fn affected(base: String) -> serde_json::Value {
-    match report(".".into(), base).await {
+    match report(".".into(), base, false).await {
         Ok(report) => {
             let failing: std::collections::BTreeSet<_> = report
                 .nodes
@@ -374,11 +387,48 @@ async fn mcp() -> Result<()> {
     Ok(())
 }
 
+/// The script's whole run, as obid reads it: each node's output as it comes, then `oby-check:
+/// passed` (0), or `couldn't judge: <why>` (2) or nothing, and `oby-check: failed: <nodes>` (1).
+/// No record in runs.jsonl.
+async fn check(base: String) -> Result<Verdict> {
+    let report = report(".".into(), base, true).await?;
+    let (mut verdict, mut why) = (report.verdict, report.reason);
+    // Never a pass with nothing scanned (F-M2-35): a plan with no work, or one without the scan.
+    let scanned = report
+        .nodes
+        .get("secret-scan")
+        .is_some_and(|node| node.verdict == Verdict::Passed);
+    if verdict == Verdict::Passed && !scanned {
+        verdict = Verdict::Unjudged;
+        why = "the secret scan judged nothing, and nothing passes unscanned".into();
+    }
+    if verdict == Verdict::Passed {
+        println!("oby-check: passed");
+        return Ok(verdict);
+    }
+    if verdict == Verdict::Unjudged {
+        println!("couldn't judge: {why}");
+    }
+    let names: Vec<_> = report
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.verdict != Verdict::Passed)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let names = if names.is_empty() {
+        why
+    } else {
+        names.join(", ")
+    };
+    eprintln!("oby-check: failed: {names}");
+    Ok(verdict)
+}
+
 async fn run() -> Result<Verdict> {
     let mut args = std::env::args().skip(1);
     let mode = args
         .next()
-        .context("usage: oby-check-blok --affected [base] | mcp | validate <workflow.json> | <checkout> [base]")?;
+        .context("usage: oby-check-blok check [base] | --affected [base] | mcp | validate <workflow.json> | <checkout> [base]")?;
     // The same rules a run applies, for an editor checking a draft before it saves it.
     if mode == "validate" {
         let file = args
@@ -415,7 +465,10 @@ async fn run() -> Result<Verdict> {
         eprintln!("Affected check: {}", result["verdict"].as_str().unwrap());
         return Ok(serde_json::from_value(result["verdict"].clone())?);
     }
-    let report = report(mode, base).await?;
+    if mode == "check" {
+        return check(base).await;
+    }
+    let report = report(mode, base, false).await?;
     let line = serde_json::to_string(&report)?;
     let folder = PathBuf::from(std::env::var_os("HOME").context("HOME is unset")?)
         .join(".oby-flow/pipelines");
