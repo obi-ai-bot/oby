@@ -489,8 +489,19 @@ for set in OBY_CHECK_INNER=1 OBY_CHECK_PLAN=1 OBY_CHECK_ONLY=scan; do
         exit 1
     }
 done
-# None installed, or one the checked code could have put there: nothing passes, and the script
-# never runs its own check instead. Each case: what it is, then PATH, then TMPDIR for the run.
+# None installed, or one the checked code could have put there or anyone else could change: nothing
+# passes, the script never runs its own check instead, and it says why.
+refuses() { # what PATH TMPDIR why
+    local said
+    if said=$(handed PATH="$2" TMPDIR="$3" ./oby-check.sh HEAD); then
+        echo "oby-check-test: with $1, the check passed: $said" >&2
+        exit 1
+    fi
+    grep -q "^oby-check: failed: oby-check-blok (.*$4" <<<"$said" && ! grep -q 'blok stand-in\|^==> \|planted ran' <<<"$said" || {
+        echo "oby-check-test: with $1, it didn't fail naming oby-check-blok and \"$4\": $said" >&2
+        exit 1
+    }
+}
 stand_in rel
 stand_in "$blok/writable"
 chmod g+w "$blok/writable/oby-check-blok"
@@ -511,27 +522,68 @@ ln -s "$blok/writable/oby-check-blok" "$blok/link-out/oby-check-blok"
 stand_in "$blok/nodes-folder"
 rm "$blok/nodes-folder/oby-check-blok-nodes"
 mkdir -m 755 "$blok/nodes-folder/oby-check-blok-nodes"
-while IFS='|' read -r what path tmp; do
-    if said=$(handed PATH="$path" TMPDIR="$tmp" ./oby-check.sh HEAD); then
-        echo "oby-check-test: with $what, the check passed: $said" >&2
+# A path with a newline in it, which a comparison of paths would lose at its end.
+stand_in "$blok/new"$'\n'"line"
+tmp="$repo/.tmp"
+refuses 'none installed' "$bare" "$tmp" "isn't installed on PATH"
+refuses 'one only on a relative path' "rel:$bare" "$tmp" "isn't installed on PATH"
+refuses 'a link into the checked repository' "$blok/linked:$bare" "$tmp" 'inside .* which the checked code can write'
+refuses 'one in TMPDIR' "$blok/bin:$bare" "$blok" 'inside .* which the checked code can write'
+refuses 'one its group may write' "$blok/writable:$bare" "$tmp" 'others may write'
+refuses 'one in a folder others may write' "$blok/open:$bare" "$tmp" 'others may write'
+refuses 'a nodes binary its group may write' "$blok/nodes:$bare" "$tmp" 'others may write'
+refuses 'a link to one its group may write' "$blok/link-out:$bare" "$tmp" 'others may write'
+refuses "a nodes binary that's a folder" "$blok/nodes-folder:$bare" "$tmp" "isn't a regular file"
+refuses 'no nodes binary beside it' "$blok/no-nodes:$bare" "$tmp" 'no oby-check-blok-nodes beside'
+refuses 'a newline in its path' "$blok/new"$'\n'"line:$bare" "$tmp" 'newline in its path'
+refuses 'a TMPDIR ending in a newline' "$blok/bin:$bare" "$tmp"$'\n' 'has a newline in its name'
+# On macOS: an access list, on the binary or its folder (macOS's ls marks such a file `@`, not `+`,
+# when it has extended attributes, as cargo's installs do), and a folder that belongs to someone
+# else, though nobody else may write it: its owner could swap the binary.
+if [[ "$OSTYPE" == darwin* ]]; then
+    stand_in "$blok/acl-file"
+    xattr -w com.example.oby-check-test 1 "$blok/acl-file/oby-check-blok"
+    chmod +a 'everyone allow write' "$blok/acl-file/oby-check-blok"
+    refuses 'an access list on the binary' "$blok/acl-file:$bare" "$tmp" 'has an access list'
+    stand_in "$blok/acl-folder"
+    chmod +a 'everyone allow add_file,delete_child' "$blok/acl-folder"
+    refuses 'an access list on its folder' "$blok/acl-folder:$bare" "$tmp" 'has an access list'
+    # /private/var/at is daemon's; the root-owned file in it passes every other rule.
+    if [[ -f /private/var/at/cron.deny ]]; then
+        stand_in "$blok/foreign"
+        ln -sf /private/var/at/cron.deny "$blok/foreign/oby-check-blok-nodes"
+        refuses 'a nodes binary in a folder of someone else' "$blok/foreign:$bare" "$tmp" 'belongs to someone else'
+    fi
+fi
+# Resolved once: what's vetted is what runs. A link on PATH flips between the installed stand-in and
+# one planted in the checked repository (its nodes binary the installed one's): each run hands off
+# to the installed one or fails, and never runs the planted one.
+mkdir -p planted "$blok/flip"
+chmod 755 "$blok/flip"
+printf '#!/bin/bash\necho "planted ran"\nexit 0\n' >planted/oby-check-blok
+chmod 755 planted/oby-check-blok
+ln -s "$installed/oby-check-blok-nodes" planted/oby-check-blok-nodes
+(while :; do
+    ln -sfn "$installed/oby-check-blok" "$blok/flip/oby-check-blok"
+    ln -sfn "$(pwd)/planted/oby-check-blok" "$blok/flip/oby-check-blok"
+done) &
+flipper=$!
+ran=0
+for _ in $(seq 40); do
+    said=$(handed PATH="$blok/flip:$bare" ./oby-check.sh HEAD) || true
+    if grep -q 'planted ran' <<<"$said"; then
+        kill "$flipper"
+        echo "oby-check-test: a link swapped while it was vetted ran the planted binary: $said" >&2
         exit 1
     fi
-    grep -q '^oby-check: failed: oby-check-blok' <<<"$said" && ! grep -q 'blok stand-in\|^==> ' <<<"$said" || {
-        echo "oby-check-test: with $what, it didn't fail naming oby-check-blok: $said" >&2
-        exit 1
-    }
-done <<CASES
-none installed|$bare|$repo/.tmp
-one only on a relative path|rel:$bare|$repo/.tmp
-a link into the checked repository|$blok/linked:$bare|$repo/.tmp
-one in TMPDIR|$blok/bin:$bare|$blok
-one its group may write|$blok/writable:$bare|$repo/.tmp
-one in a folder others may write|$blok/open:$bare|$repo/.tmp
-a nodes binary its group may write|$blok/nodes:$bare|$repo/.tmp
-a link to one its group may write|$blok/link-out:$bare|$repo/.tmp
-a nodes binary that's a folder|$blok/nodes-folder:$bare|$repo/.tmp
-no nodes binary beside it|$blok/no-nodes:$bare|$repo/.tmp
-CASES
-rm -r rel
+    ! grep -q 'blok stand-in' <<<"$said" || ran=$((ran + 1))
+done
+kill "$flipper"
+wait "$flipper" 2>/dev/null || true
+((ran > 0)) || {
+    echo "oby-check-test: the installed stand-in never ran while the link flipped" >&2
+    exit 1
+}
+rm -r rel planted
 
 echo 'oby-check-test: passed'

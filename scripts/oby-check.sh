@@ -55,47 +55,78 @@ cd "$(dirname "$0")/.."
 # The check is the installed oby-check-blok's (BLOK-1, docs/contracts/publishing.md, PUBLISHING-26):
 # its built-in workflow (BLOK-2) runs this script's groups, each with OBY_CHECK_INNER and
 # OBY_CHECK_ONLY set, so it never comes back here. OBY_CHECK_PLAN and OBY_CHECK_ONLY stay this
-# script's own. The one on PATH runs only once it and the nodes binary beside it, each resolved
-# through its links, are regular files of this user's that nobody else may write, in folders nobody
-# else may write, and outside the checked repository and TMPDIR, which a job's code can write: so a
-# binary planted earlier on PATH, or a link into what the job wrote, never judges. Else nothing
-# passes, as without gitleaks: this script never runs its own check instead.
-# ponytail: the folders above the binary's aren't vetted; a home whose ~/.cargo others may write
-# could swap its bin.
-resolved() { # a path through its links
-    /bin/realpath "$1" 2>/dev/null || /usr/bin/realpath "$1" 2>/dev/null ||
-        /usr/bin/perl -MCwd -e '$p = Cwd::abs_path($ARGV[0]); defined $p && -e $p or exit 1; print $p' "$1"
+# script's own. The first one on PATH is resolved through its links once, and that path is the one
+# vetted and run: it and the nodes binary beside it (resolved too) must be regular files of this
+# user's or root's that nobody else may write, with no access list, in a folder of this user's or
+# root's that nobody else may write, with none either, and outside the checked repository and
+# TMPDIR, which a job's code can write. A path or one of those folders with a newline in it is
+# refused. So a binary planted earlier on PATH, or a link into what the job wrote, never judges.
+# Else nothing passes, as without gitleaks: this script never runs its own check instead.
+# ponytail: the folders above the binary's aren't vetted (a home whose ~/.cargo others may write
+# could swap its bin), nor a folder the owner put first on PATH themselves; on Linux an access list
+# is seen only as GNU ls's `+`.
+resolved() { # a path through its links, never one with a newline (a trailing one would be lost)
+    local out
+    out=$({ /bin/realpath "$1" 2>/dev/null || /usr/bin/realpath "$1" 2>/dev/null ||
+        /usr/bin/perl -MCwd -e '$p = Cwd::abs_path($ARGV[0]); defined $p && -e $p or exit 1; print "$p\n"' "$1"; } && echo .) || return 1
+    out=${out%.}
+    out=${out%$'\n'}
+    [[ "$out" == /* && "$out" != *$'\n'* ]] || return 1
+    printf '%s' "$out"
 }
-refused() { # a binary: why it isn't one the Mac installed, or nothing
-    local real at mode unsafe
-    real=$(resolved "$1") || { echo "$1 isn't there"; return; }
-    [[ -f "$real" ]] || { echo "$real isn't a regular file"; return; }
-    [[ -O "$real" ]] || { echo "$real isn't this user's"; return; }
-    for at in "$real" "$(dirname "$real")"; do
-        mode=$(ls -ld "$at")
-        # Group or others may write it, or an access list may let them.
-        [[ "${mode:5:1}${mode:8:1}${mode:10:1}" != *[w+]* ]] || { echo "others may write $at"; return; }
+shut() { # a file or folder: why someone else may change it, or nothing
+    local listing mode links uid
+    if [[ "$OSTYPE" == darwin* ]]; then
+        listing=$(/bin/ls -lden "$1" 2>/dev/null) || true
+    else
+        listing=$(/bin/ls -ldn "$1" 2>/dev/null) || true
+    fi
+    read -r mode links uid _ <<<"$listing"
+    [[ "$mode" == [-d]* ]] || { echo "its mode can't be read: $1"; return; }
+    [[ "$uid" == "$EUID" || "$uid" == 0 ]] || { echo "$1 belongs to someone else"; return; }
+    [[ "${mode:5:1}${mode:8:1}" != *w* ]] || { echo "others may write $1"; return; }
+    # macOS's `ls -e` lists an access list's entries under the first line; GNU's ls marks it `+`.
+    [[ "$listing" != *$'\n'* && "${mode:10:1}" != + ]] || { echo "$1 has an access list"; return; }
+}
+refused() { # a resolved binary: why it isn't one the Mac installed, or nothing
+    local folder at why unsafe
+    [[ -f "$1" ]] || { echo "$1 isn't a regular file"; return; }
+    folder=${1%/*}
+    for at in "$1" "${folder:-/}"; do
+        why=$(shut "$at")
+        [[ -z "$why" ]] || { echo "$why"; return; }
     done
     for unsafe in "$PWD" "${TMPDIR:-}"; do
-        [[ -n "$unsafe" ]] && unsafe=$(resolved "$unsafe") || continue
-        [[ "$real" != "$unsafe"/* ]] || { echo "$real is inside $unsafe, which the checked code can write"; return; }
+        [[ -n "$unsafe" ]] || continue
+        [[ "$unsafe" != *$'\n'* ]] || { echo "a folder the checked code can write has a newline in its name"; return; }
+        # One that isn't there holds nothing.
+        unsafe=$(resolved "$unsafe") || continue
+        [[ "$1" != "${unsafe%/}"/* ]] || { echo "$1 is inside $unsafe, which the checked code can write"; return; }
     done
 }
 if [[ -z "${OBY_CHECK_INNER:-}${OBY_CHECK_PLAN:-}${OBY_CHECK_ONLY:-}" ]]; then
-    blok=$(command -v oby-check-blok || true)
-    if [[ "$blok" != /* ]]; then
+    found=$(command -v oby-check-blok || true)
+    if [[ "$found" != /* ]]; then
         why="it isn't installed on PATH (cargo install --locked --path tools/oby-check-blok)"
+    elif ! blok=$(resolved "$found"); then
+        why="the one on PATH doesn't resolve, or has a newline in its path"
     else
         why=$(refused "$blok")
-        blok=$(resolved "$blok") || true
-        [[ -n "$why" ]] || why=$(refused "$(dirname "$blok")/oby-check-blok-nodes")
+        if [[ -z "$why" ]]; then
+            if nodes=$(resolved "${blok%/*}/oby-check-blok-nodes"); then
+                why=$(refused "$nodes")
+            else
+                why="no oby-check-blok-nodes beside $blok, or one with a newline in its path"
+            fi
+        fi
     fi
     if [[ -n "$why" ]]; then
         echo "oby-check: oby-check-blok can't judge this: nothing passes unchecked" >&2
         echo "oby-check: failed: oby-check-blok ($why)" >&2
         exit 1
     fi
-    # Resolved, so the nodes binary it starts beside itself is the one vetted here.
+    # The path resolved once and vetted, never PATH's again: the nodes binary it starts beside
+    # itself is the one vetted here.
     exec "$blok" check "${1:-origin/dev}"
 fi
 
