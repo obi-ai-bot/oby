@@ -308,6 +308,10 @@ pub(crate) fn own_settings_allowed(
     spec: &Spec,
     ours: &[(&'static str, OsString)],
 ) -> Result<(), String> {
+    // Claude Code's managed settings outrank obid's `--settings` (LANES-17); its account's
+    // `remote-settings.json`, the organization's, is beside `file`.
+    let remote = file.with_file_name("remote-settings.json");
+    managed_hooks_allowed(Path::new(MANAGED_FOLDER), &MANAGED_PLISTS, &remote)?;
     let tree = spec.worktree.clone();
     let spec = spec.canonical();
     let home = login_home();
@@ -410,6 +414,96 @@ pub(crate) fn own_settings_allowed(
         }
     }
     Ok(())
+}
+
+/// Where Claude Code 2.1.302 reads its managed settings: `managed-settings.json` and the `.json`
+/// files of `managed-settings.d` in this folder, and, on macOS, its managed preferences.
+#[cfg(target_os = "macos")]
+const MANAGED_FOLDER: &str = "/Library/Application Support/ClaudeCode";
+#[cfg(not(target_os = "macos"))]
+const MANAGED_FOLDER: &str = "/etc/claude-code";
+const MANAGED_PLISTS: [&str; 2] = [
+    "/Library/Managed Preferences/com.anthropic.claudecode.plist",
+    "/Library/Managed Preferences/$USER/com.anthropic.claudecode.plist",
+];
+
+/// Refused, naming the document and its key, when Claude Code's managed settings (in `folder`,
+/// the `plists`, the organization's `remote` ones) name any hook setting but `disableAllHooks:
+/// true`: they outrank obid's `--settings`, so a managed `disableAllHooks: false` or a managed hook
+/// would run hooks outside the sandbox with the owner's rights (LANES-17, the owner's LANE-6b).
+/// One obid can't read, or that isn't JSON, is refused too: obid can't tell what it sets.
+pub(super) fn managed_hooks_allowed(
+    folder: &Path,
+    plists: &[&str],
+    remote: &Path,
+) -> Result<(), String> {
+    let cant = |doc: &Path, e: &dyn std::fmt::Display| {
+        format!(
+            "obid can't read Claude Code's managed settings in {} ({e}), so it can't tell whether they run hooks: an own run never does.",
+            doc.display()
+        )
+    };
+    let drop_ins = folder.join("managed-settings.d");
+    let mut docs = vec![folder.join("managed-settings.json"), remote.to_path_buf()];
+    match std::fs::read_dir(&drop_ins) {
+        Ok(entries) => docs.extend(entries.flatten().map(|e| e.path()).filter(|p| {
+            p.extension().is_some_and(|e| e == "json")
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {}
+        Err(e) => return Err(cant(&drop_ins, &e)),
+    }
+    // As Claude Code names the person: the password database's, not `$USER`.
+    let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten();
+    let user = user.map(|user| user.name).unwrap_or_default();
+    let plists = plists
+        .iter()
+        .map(|p| PathBuf::from(p.replace("$USER", &user)));
+    for (doc, plist) in docs
+        .into_iter()
+        .map(|d| (d, false))
+        .chain(plists.map(|p| (p, true)))
+    {
+        let text = match std::fs::read(&doc) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(cant(&doc, &e)),
+            Ok(_) if plist => std::process::Command::new("/usr/bin/plutil")
+                .args(["-convert", "json", "-o", "-", "--"])
+                .arg(&doc)
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| out.stdout)
+                .ok_or_else(|| cant(&doc, &"plutil can't convert it"))?,
+            Ok(text) => text,
+        };
+        let set: Value = serde_json::from_slice(&text).map_err(|e| cant(&doc, &e))?;
+        if let Some(key) = hook_key(&set) {
+            return Err(format!(
+                "Claude Code's managed settings in {} set {key}, which would run hooks in an own run outside its sandbox, and they outrank obid's settings: an own run never runs hooks, so it doesn't start. Ask whoever manages this Mac to take it out.",
+                doc.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The first key in `value`, at any depth, that names hooks (`hooks`, `allowManagedHooksOnly`,
+/// a hook setting a later Claude Code adds), but a `disableAllHooks` that's `true`.
+fn hook_key(value: &Value) -> Option<String> {
+    value.as_object()?.iter().find_map(|(key, value)| {
+        let hooks = key.to_ascii_lowercase().contains("hook")
+            && !(key == "disableAllHooks" && value == &Value::Bool(true));
+        if hooks {
+            Some(key.clone())
+        } else {
+            hook_key(value)
+        }
+    })
 }
 
 /// The path a settings file's sandbox `path` names, as Claude Code reads it: `~/…` in `home`, `/…`

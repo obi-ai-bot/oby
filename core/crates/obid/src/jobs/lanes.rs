@@ -1117,6 +1117,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LANES-17: Claude Code's managed settings outrank obid's `disableAllHooks`, so an own run
+    /// doesn't start when they'd run a hook (`disableAllHooks: false`, `hooks`, in the managed
+    /// file, a drop-in, the organization's remote settings or a managed preferences plist), nor
+    /// when one can't be read; with none of them, or only `disableAllHooks: true`, it starts.
+    #[test]
+    fn lanes_17_managed_settings_that_would_run_hooks_stop_an_own_run() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-17-{}", uuid::Uuid::new_v4()));
+        let [folder, account] = ["managed", "account"].map(|d| root.join(d));
+        let drop_ins = folder.join("managed-settings.d");
+        std::fs::create_dir_all(&drop_ins).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        let (file, remote) = (
+            folder.join("managed-settings.json"),
+            account.join("remote-settings.json"),
+        );
+        let plist = root.join("com.anthropic.claudecode.plist");
+        let plists = [plist.to_str().unwrap()];
+        let allowed = || managed_hooks_allowed(&folder, &plists, &remote);
+        assert_eq!(allowed(), Ok(()));
+        let hook = json!({"PreToolUse": [{"hooks": [{"type": "command", "command": "x"}]}]});
+        std::fs::write(
+            &file,
+            json!({"disableAllHooks": true, "model": "m"}).to_string(),
+        )
+        .unwrap();
+        // Claude Code skips a drop-in whose name starts with a dot.
+        std::fs::write(
+            drop_ins.join(".off.json"),
+            json!({"hooks": hook}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(allowed(), Ok(()));
+        let refused = |doc: &Path, set: Value, key: &str| {
+            std::fs::write(doc, set.to_string()).unwrap();
+            let why = allowed().unwrap_err();
+            assert!(
+                why.contains(&doc.display().to_string()) && why.contains(key),
+                "{why}"
+            );
+            std::fs::remove_file(doc).unwrap();
+        };
+        refused(&file, json!({"disableAllHooks": false}), "disableAllHooks");
+        refused(
+            &drop_ins.join("10-team.json"),
+            json!({"hooks": hook}),
+            "hooks",
+        );
+        refused(
+            &remote,
+            json!({"allowManagedHooksOnly": true}),
+            "allowManagedHooksOnly",
+        );
+        // One that isn't JSON, or can't be read, stops it too.
+        std::fs::write(&file, "{not json").unwrap();
+        assert!(allowed().is_err());
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(&file).unwrap();
+        assert!(allowed().is_err());
+        std::fs::remove_dir(&file).unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let json = root.join("plist.json");
+            std::fs::write(&json, json!({"hooks": hook}).to_string()).unwrap();
+            let made = std::process::Command::new("/usr/bin/plutil")
+                .args(["-convert", "xml1", "-o"])
+                .args([&plist, &json])
+                .status()
+                .unwrap();
+            assert!(made.success());
+            let why = allowed().unwrap_err();
+            assert!(
+                why.contains("com.anthropic.claudecode.plist") && why.contains("hooks"),
+                "{why}"
+            );
+            std::fs::remove_file(&plist).unwrap();
+        }
+        assert_eq!(allowed(), Ok(()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// LANES-15: an own conversation's file tools never read or change the stored threads,
     /// every conversation's (`conversations/<id>.json`), nor the next one's id.
     #[test]
