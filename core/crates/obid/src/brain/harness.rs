@@ -599,9 +599,18 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 /// LANES-12): the owner's Claude Code conversation, on the account's own login in Claude Code's own
 /// sandbox, with its own Bash and the owner's settings, skills and MCP servers. Another Oby's
 /// conversation, and Codex's and Cursor's, stay boxed. What it read doesn't move it: its untrusted
-/// mark and the owner's Confirm guard what goes out (CONVO-1).
+/// mark and the owner's Confirm guard what goes out (CONVO-1). Only on macOS for now: elsewhere it
+/// stays boxed until it's proven there ([`own_conversation`]).
 fn own_lane(shared: &Shared, tool: Tool, conversation: &str) -> bool {
-    tool == Tool::Claude && !shared.conversations.is_from_obys(conversation)
+    let from_obys = shared.conversations.is_from_obys(conversation);
+    own_conversation(cfg!(target_os = "macos"), tool, from_obys)
+}
+
+/// [`own_lane`]'s choice: the owner's Claude Code conversation, on macOS.
+// ponytail: macOS only; on Linux every own session "failed twice" (tetrix-lab, 2026-11-11), so it
+// stays boxed there until the own lane is proven on Linux.
+fn own_conversation(macos: bool, tool: Tool, from_obys: bool) -> bool {
+    macos && tool == Tool::Claude && !from_obys
 }
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
@@ -3688,6 +3697,17 @@ mod tests {
         );
         assert!(web.load(Ordering::SeqCst));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// LANES-12 (docs/contracts/lanes.md): the owner's Claude Code conversation is own on macOS
+    /// only; elsewhere, another Oby's, Codex's and Cursor's stay boxed.
+    #[test]
+    fn lanes_12_only_the_owners_claude_conversation_on_macos_is_own() {
+        assert!(own_conversation(true, Tool::Claude, false));
+        assert!(!own_conversation(false, Tool::Claude, false));
+        assert!(!own_conversation(true, Tool::Claude, true));
+        assert!(!own_conversation(true, Tool::Codex, false));
+        assert!(!own_conversation(true, Tool::Cursor, false));
     }
 
     /// LANES-12 (docs/contracts/lanes.md): an own session runs its own Bash in its room by the same

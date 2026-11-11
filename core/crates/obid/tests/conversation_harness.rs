@@ -239,7 +239,12 @@ fn a_turn_streams_its_words_and_ends_in_a_turn() {
     assert!(!argv.contains(&"--resume"), "{argv:?}");
     // The owner's conversation is in the own lane, with its own Bash but no other code-runner
     // (LANES-12); a boxed one's tools name none (the_room_cannot_write_outside_itself).
-    assert!(ran_own(&obid, &recorded[0]), "{argv:?}");
+    // Own on macOS only for now; boxed elsewhere (LANES-12).
+    assert_eq!(
+        ran_own(&obid, &recorded[0]),
+        cfg!(target_os = "macos"),
+        "{argv:?}"
+    );
     let tools = argv[argv.iter().position(|a| *a == "--tools").unwrap() + 1];
     assert!(
         tools.contains("Read") && tools.contains("WebFetch"),
@@ -420,7 +425,8 @@ fn a_new_conversation_finds_its_claude_code_started() {
 
     // Its token connects and lists the tools, and calls none; another token is refused.
     let config: Value = serde_json::from_slice(
-        &std::fs::read(conversations.join(format!("{next}/login/oby-mcp.json"))).unwrap(),
+        &std::fs::read(conversations.join(format!("{next}/{}/oby-mcp.json", mcp_folder())))
+            .unwrap(),
     )
     .unwrap();
     let token = config["mcpServers"]["oby"]["headers"]["Authorization"]
@@ -2825,6 +2831,16 @@ fn the_taint_lasts_across_resumed_turns() {
     started_untrusted(&obid, &answer);
 }
 
+/// Where an owner's conversation's `oby-mcp.json` is: its `login` folder in the own lane (macOS),
+/// its `HOME` boxed (LANES-12).
+fn mcp_folder() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "login"
+    } else {
+        "home"
+    }
+}
+
 /// Whether `turn` ran in the own lane (LANES-12): on the account's own folder, with the owner's
 /// settings and MCP servers, Claude Code's own Bash and its sandbox's settings.
 fn ran_own(obid: &Obid, turn: &Value) -> bool {
@@ -2846,6 +2862,8 @@ fn ran_own(obid: &Obid, turn: &Value) -> bool {
 /// LANES-12 (docs/contracts/lanes.md): the owner's conversation runs on its account's own folder
 /// and login with the owner's settings and MCP servers, and `git status` runs through Claude Code's
 /// own Bash in its room, not `oby_shell`.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
 #[test]
 fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
     let (_folder, obid) = obid("harness-lanes-12-bash", true);
@@ -2866,6 +2884,8 @@ fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
 
 /// LANES-12, CONVO-1: after the conversation reads something untrusted, its next turn is still in
 /// the own lane, with its own Bash, and the mark stays, so what it starts still waits for the owner.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
 #[test]
 fn lanes_12_after_an_untrusted_read_the_turn_stays_own_and_the_mark_stays() {
     let (_folder, obid) = obid("harness-lanes-12-taint", true);

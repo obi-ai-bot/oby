@@ -1349,9 +1349,14 @@ fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
     // Between turns its token lists and calls nothing; any other token is refused, another
     // conversation's too.
     let tetrix_of = |conversation: &str| -> (String, String) {
-        let file = obid
-            .home
-            .join(format!("conversations/{conversation}/login/oby-mcp.json"));
+        let file = obid.home.join(format!(
+            "conversations/{conversation}/{}/oby-mcp.json",
+            if cfg!(target_os = "macos") {
+                "login"
+            } else {
+                "home"
+            }
+        ));
         let mcp: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
         let server = &mcp["mcpServers"]["tetrix"];
         let url = server["url"].as_str().unwrap();
