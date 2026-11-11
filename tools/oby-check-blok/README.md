@@ -1,8 +1,9 @@
 # oby-check-blok
 
-The check (`scripts/oby-check.sh`) as a BLOK workflow, in shadow mode (#2046): the script still decides
-publishing and merging; this tool only records what the workflow would have said, in
-`~/.oby-flow/pipelines/runs.jsonl`, for the pipelines viewer.
+The check (`scripts/oby-check.sh`) as a BLOK workflow. Installed, it is the check: the script hands its
+run to `oby-check-blok check` (BLOK-1, docs/contracts/publishing.md PUBLISHING-26). Its shadow runs
+(#2046) still record what an edited workflow would have said, in `~/.oby-flow/pipelines/runs.jsonl`, for
+the pipelines viewer.
 
 - `oby-check-blok <checkout> [base]`: one shadow run, appended to `runs.jsonl`.
 - `oby-check-blok --affected [base]` and `oby-check-blok mcp`: the agents' affected check (SKILL.md).
@@ -31,6 +32,30 @@ for the script to exec an installed copy (`cargo install --locked --path tools/o
   none for the scan, is unjudged.
 - Every script it runs gets `OBY_CHECK_INNER=1`, so the script never execs this tool again under it.
 - It waits up to 60 seconds for the nodes binary to start and answer.
+
+## Adopt it
+
+Another project makes its check this workflow in four steps; obid needs no change.
+
+1. Install the tool on each Mac that runs the check, from this repository, and again whenever it
+   changes: `cargo install --locked --path tools/oby-check-blok`. Both binaries land side by side in
+   `~/.cargo/bin`, which must be on the login shell's `PATH`.
+2. Name the check `scripts/oby-check.sh` (the nodes run that path from the repository's root) and
+   make it plan by groups: with `OBY_CHECK_PLAN=1` and `OBY_CHECK_ONLY=<group>` it runs nothing and
+   prints `oby-check: group <group>` once when that group has work; with `OBY_CHECK_ONLY` alone it
+   runs that group and exits 0 when it passed, else non-zero, and a line starting `couldn't judge: `
+   when it couldn't judge. The groups are `rust`, `electron`, `swift` and `scan` today (the nodes
+   `rust-affected-tests`, `ts-checks`, `swift-tests`, `secret-scan`), whatever each runs in that
+   project. Nothing passes unless `scan` planned work and passed.
+3. Put the same hand-off at the script's top, after its `cd` to the repository's root: this
+   repository's `scripts/oby-check.sh`, from `resolved()` to its `exec`. It resolves the first
+   `oby-check-blok` on `PATH` once and runs that path only when it and the nodes binary beside it are
+   regular files of the check's user or root that no other user may write, with no access list, in a
+   folder of the check's user or root likewise, outside the checked repository and `TMPDIR`, with no
+   newline in any of those paths. A binary the checked code planted never judges it, and with none
+   that passes, the check fails rather than running anything else. It doesn't check the folders above
+   the binary's folder, nor a folder the owner deliberately put first on `PATH`.
+4. Point obid at it: `"check": "scripts/oby-check.sh"` on the repository in obid's `config.json`.
 
 ## The workflow file
 
