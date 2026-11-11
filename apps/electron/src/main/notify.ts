@@ -49,6 +49,8 @@ type ObidJob = Job & {
   reviewError?: string | null;
   mergeNeedsYou?: boolean;
   mergeError?: string | null;
+  // obid runs a check that judged nothing again; kept once it stopped trying (PUBLISHING-31)
+  unjudged?: { tries: number; next: string | null } | null;
   outgoing?: { action: string; branch?: string | null; id: string }[];
   permission: (NonNullable<Job['permission']> & { question?: unknown }) | null;
 };
@@ -147,7 +149,8 @@ export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string,
     // how it ended, once per end
     const end = (how: string) => `${how}:${j.finished ?? j.created}`;
     const why = (otherwise: string) => firstLine(j.reason) ?? firstLine(j.summary) ?? otherwise;
-    if (canPublish(j)) say(end('ready'), true, j.publishError ? 'Couldn’t publish' : 'Ready to publish', firstLine(j.publishError) ?? firstLine(j.summary) ?? 'Done');
+    // (Publish kept after 24 hours of checks that judged nothing asks nothing: PUBLISHING-31)
+    if (canPublish(j) && !j.unjudged) say(end('ready'), true, j.publishError ? 'Couldn’t publish' : 'Ready to publish', firstLine(j.publishError) ?? firstLine(j.summary) ?? 'Done');
     else if (j.status === 'failed') say(end('failed'), true, 'Failed', why('Failed'));
     else if (j.status === 'interrupted' && !j.accountLimit && ![...limits.values()].some((d) => d.jobs.some((job) => job.id === j.id))) say(end('interrupted'), true, 'Needs you', why('Interrupted'));
     else if (j.status === 'done') { const done = j.nothingDone ? 'Nothing done' : 'Done'; say(end('done'), false, done, firstLine(j.summary) ?? done); }

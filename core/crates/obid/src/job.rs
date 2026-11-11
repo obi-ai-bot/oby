@@ -322,6 +322,18 @@ pub struct BuildFreed {
     pub at: i64,
 }
 
+/// A check that judged nothing, run again by itself (PUBLISHING-31): how many of its runs judged
+/// nothing, when the next one starts, in seconds since the epoch (none once obid stopped trying),
+/// and why the last judged nothing, in obid's words.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Unjudged {
+    pub tries: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<i64>,
+    #[serde(default)]
+    pub why: String,
+}
+
 /// A job as obid keeps it (`home/jobs/<id>.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -609,6 +621,10 @@ pub struct Job {
     /// job, an older release's wait, made a pending decision when obid starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes_at: Option<i64>,
+    /// Its check judged nothing, so obid runs it again by itself (PUBLISHING-31). Kept on a job
+    /// that ended once obid stopped trying: its Publish raises no card or alert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unjudged: Option<Unjudged>,
     /// This job stopped at an account limit and awaits an owner decision (#1563).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub account_limit_blocked: bool,
@@ -1201,6 +1217,7 @@ impl Job {
             next_step: None,
             stopped_by: None,
             resumes_at: None,
+            unjudged: None,
             account_limit_blocked: false,
             account_limit_episode: None,
             account_limit_nonce: None,
@@ -1781,6 +1798,9 @@ impl Job {
         value["runsOn"] = Value::Null;
         value["nextStep"] = json!(self.next_step);
         value["resumesAt"] = json!(date(self.resumes_at));
+        if let Some(unjudged) = &self.unjudged {
+            value["unjudged"] = json!({"tries": unjudged.tries, "next": date(unjudged.next)});
+        }
         value["accountLimit"] = if self.account_limit_blocked
             && self.account_limit_episode.is_some()
         {

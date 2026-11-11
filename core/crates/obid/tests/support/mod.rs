@@ -300,6 +300,9 @@ pub fn start_with(
         // No first failing check run again on the base (PUBLISHING-18): tests' checks fail
         // everywhere to drive their rounds. Its own tests turn it on.
         .env("OBID_BASE_CHECK", "off")
+        // A check that judged nothing isn't run again (PUBLISHING-31), but in its own tests: the
+        // job ends at once as obid stopping trying ends it.
+        .env("OBID_RECHECK_MS", "0")
         .envs(env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(

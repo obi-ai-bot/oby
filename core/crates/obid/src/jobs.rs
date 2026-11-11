@@ -8593,7 +8593,7 @@ impl Jobs {
             &env,
             &spec.worktree,
             CHECK_QUIET,
-            CHECK_LIMIT,
+            unjudged::limit(),
             signal.clone(),
             Some(watch.clone()),
             Some(&secrets),
@@ -8729,7 +8729,7 @@ impl Jobs {
             [] => "the same way".to_owned(),
             tests => format!("on {}", tests.join(", ")),
         };
-        Some(unchecked(format!(
+        Some(unjudged::by_hand(format!(
             "`{command}` already fails on the base {start:.7} as it fails on this change's {head:.7}, {what}"
         )))
     }

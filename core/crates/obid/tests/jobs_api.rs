@@ -188,6 +188,8 @@ fn start_fresh(folder: &Path, config: &Value, path_first: Option<&Path>, base_ch
         // No first failing check run again on the base (PUBLISHING-18), but in its own tests:
         // the others' checks fail everywhere to drive their rounds.
         .env("OBID_BASE_CHECK", if base_check { "on" } else { "off" })
+        // A check that judged nothing isn't run again (support::start, PUBLISHING-31).
+        .env("OBID_RECHECK_MS", "0")
         // Never the person's real Keychain (support::start): obid asks it at start when
         // claudeKeychain is left out.
         .env(
@@ -6070,7 +6072,7 @@ fn publishing_17_a_check_that_cant_reach_the_network_spends_no_round() {
     assert_eq!(job["round"], 1, "{job}");
     assert_eq!(
         job["reason"],
-        "Not published: the check couldn't resolve a host, which is this Mac's doing, not the change's, so nothing counts as checked. Read its change, then Publish it by hand.",
+        "Not published: the check couldn't resolve a host, which is this Mac's doing, not the change's, so nothing counts as checked. Oby ran it again by itself for 24 hours and none of its runs judged it: Publish it from its page once you've read its change.",
         "{job}"
     );
 }
@@ -6343,7 +6345,7 @@ fn publishing_16_a_check_that_times_out_spends_no_round() {
     assert_eq!(
         run.unchecked.as_deref(),
         Some(
-            "Not published: the check ran past its limit of 1 second, so nothing counts as checked. Read its change, then Publish it by hand."
+            "Not published: the check ran past its limit of 1 second, so nothing counts as checked."
         )
     );
 
@@ -6429,9 +6431,7 @@ fn publishing_29_a_silent_idle_check_is_stopped() {
     );
     assert_eq!(
         run.unchecked.as_deref(),
-        Some(
-            "Not published: the check did nothing for 1 second, so nothing counts as checked. Read its change, then Publish it by hand."
-        )
+        Some("Not published: the check did nothing for 1 second, so nothing counts as checked.")
     );
 }
 
