@@ -447,8 +447,11 @@ pub struct Conversations {
     next: Mutex<Option<String>>,
     /// What ends a conversation's waiting session (crate::brain::harness, `end_warm`), set once
     /// obid starts: every deletion runs it before its folders are swept (LANES-16).
-    ending: std::sync::OnceLock<Box<dyn Fn(&str) + Send + Sync>>,
+    ending: std::sync::OnceLock<Ending>,
 }
+
+/// What ends a conversation's waiting session ([`Conversations::end_sessions_with`]).
+type Ending = Box<dyn Fn(&str) + Send + Sync>;
 
 /// Where the next new conversation's id is kept.
 const NEXT: &str = "next-id";
@@ -2397,7 +2400,7 @@ mod tests {
         started.children.push(left);
         std::thread::sleep(std::time::Duration::from_millis(300));
         conversations.delete(&id).unwrap();
-        assert_eq!(*ended.lock().unwrap(), [id.clone()]);
+        assert_eq!(*ended.lock().unwrap(), std::slice::from_ref(&id));
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(
             started.children[0].try_wait().unwrap().is_some(),
