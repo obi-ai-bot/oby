@@ -10,7 +10,9 @@
 //                    the rest of the prompt
 //   COMMIT WHEN TOLD told by obid to commit what it left uncommitted, commits it all and ends the
 //                    turn with "Committed the draft." (without it, that turn is "Nothing to do.")
-//   KEEP PROMPTS     from now on appends every prompt it gets to .obi/prompts.log, each ended by a
+//   .obi/fix-checks  (a file a test puts in the worktree) told by obid that GitHub's checks failed,
+//                    commits checks.txt holding what .obi/inputs/checks.md quoted (MERGING-39)
+//   KEEP PROMPTS    from now on appends every prompt it gets to .obi/prompts.log, each ended by a
 //                    line "<<<end of prompt>>>", and every answer to its permission prompts to
 //                    .obi/answers.log, one per line
 //   SLEEP            beats: writes a growing count to .obi/beat every 50 ms until it is ended
@@ -562,6 +564,12 @@ rl.on("line", (line) => {
     execFileSync("git", ["add", "--all"]);
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "Add the draft"]);
     return result("Committed the draft.");
+  }
+  if (prompt.includes(".obi/inputs/checks.md") && existsSync(".obi/fix-checks")) {
+    writeFileSync("checks.txt", readFileSync(".obi/inputs/checks.md"));
+    execFileSync("git", ["add", "checks.txt"]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "Fix the checks"]);
+    return result("Fixed the checks.");
   }
   // obid's word on a committing job's last line (TASKS-19): it carries on, then says it.
   // With SILENT ROUND, its first such reply says no line at all.

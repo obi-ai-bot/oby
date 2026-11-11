@@ -1253,4 +1253,47 @@ mod tests {
         assert_eq!(said(""), "no reason given");
         assert_eq!(said(&"x".repeat(400)).chars().count(), 300);
     }
+
+    /// MERGING-39: the failed checks' names come with the rollup; their logs are the last 300 lines
+    /// of each of the first 3 failed runs, one whose log can't be read left out; with none, the
+    /// names alone.
+    #[tokio::test]
+    async fn failed_logs_keep_each_runs_last_lines_else_the_names() {
+        use std::os::unix::fs::PermissionsExt;
+        let rollup = json!({"statusCheckRollup": [
+            {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"context": "ci/lint", "state": "ERROR"},
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]});
+        let failed = decode_merging(&rollup.to_string()).unwrap().failed;
+        assert_eq!(failed, ["test", "ci/lint"]);
+        let dir = std::env::temp_dir().join(format!("obid-failed-logs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let head = "a".repeat(40);
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in\n  \"run list --repo o/r --commit {head} --status failure --json databaseId\") cat '{}/runs.json' ;;\n  \"run view \"*\" --repo o/r --log-failed\") [ \"$3\" = 2 ] && exit 1; seq 1 400 ;;\n  *) exit 1 ;;\nesac\n",
+            dir.display()
+        );
+        let gh = dir.join("gh");
+        std::fs::write(&gh, script).unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runs = |ids: &str| std::fs::write(dir.join("runs.json"), ids).unwrap();
+        runs(r#"[{"databaseId": 1}, {"databaseId": 2}, {"databaseId": 3}, {"databaseId": 4}]"#);
+        let logs = failed_logs(&gh, "o/r", &head, &failed).await;
+        assert!(
+            logs.starts_with("Failed run 1, its last lines:\n101\n"),
+            "{logs}"
+        );
+        assert!(
+            logs.contains("\n400\n\nFailed run 3, its last lines:\n101\n"),
+            "{logs}"
+        );
+        assert!(!logs.contains("\n100\n") && !logs.contains("run 2") && !logs.contains("run 4"));
+        runs("[]");
+        assert_eq!(
+            failed_logs(&gh, "o/r", &head, &failed).await,
+            "No log of the failed runs could be read. The checks that failed: test, ci/lint."
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

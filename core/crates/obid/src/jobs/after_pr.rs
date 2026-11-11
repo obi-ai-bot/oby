@@ -40,7 +40,10 @@ impl Jobs {
         merging: &crate::github::Merging,
     ) -> bool {
         let red = stop.as_deref() == Some(crate::merge::RED_CHECKS);
-        if !red || !may_round(&self.lock().jobs, id, head, true) {
+        if !red
+            || !self.worktree_path(id).join(".git").exists()
+            || !may_round(&self.lock().jobs, id, head, true)
+        {
             return false;
         }
         let Some(job) = self.get(id) else {
