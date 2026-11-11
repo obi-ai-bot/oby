@@ -117,7 +117,8 @@ pub fn notice(job: &Job) -> Option<Notice> {
     }
     match job.status {
         Status::Failed => Some(Notice::Failed),
-        Status::Interrupted => Some(Notice::Interrupted),
+        // At a limit it moves or waits by itself (LIMITS-15): nothing to say (ALERTS-6).
+        Status::Interrupted if !job.account_limit_blocked => Some(Notice::Interrupted),
         _ => None,
     }
 }
@@ -367,11 +368,40 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             reviewed.insert(&job.id);
             continue;
         }
+        // Its merge waits on the owner, titled as its card (ALERTS-7, the Mac's `mergeAlert`); one
+        // waiting on a second review or on GitHub isn't `merge_needs_you` (MERGING-34, 35).
+        if job.status == Status::Done && !job.can_publish() && job.merge_needs_you {
+            let card = inbox.iter().find(|i| {
+                i["kind"] == "merge" && i["job"] == job.id.as_str() && i["state"] == "open"
+            });
+            let card_title = card.and_then(|c| c["title"].as_str()?.split(": ").next());
+            let title = card_title.filter(|t| !t.is_empty()).unwrap_or("Not merged");
+            let body = job.merge_error.as_deref().and_then(first_line);
+            let body = body.unwrap_or("Not merged").to_owned();
+            let head = job.pushed_head().unwrap_or_default();
+            let key = card.and_then(|c| c["id"].as_str()).unwrap_or(head);
+            let said = (format!("{title}: {}", job.short_title()), body, "job");
+            wanted.push((format!("merge:{key}"), alert(said, true), Need::Owner));
+            continue;
+        }
+        // Held for the owner's yes to a ChatGPT login (ALERTS-4, CHATGPT-20), once; a weekly
+        // reserve's hold and a limit's wait say what they wait for on their line (ALERTS-HOLD).
+        if let Some(wait) = job
+            .waiting
+            .as_ref()
+            .filter(|w| job.status == Status::Queued && w.for_consent())
+        {
+            let said = format!("Needs your OK: {}", job.short_title());
+            let said = (said, wait.text.clone(), "job");
+            wanted.push(("consent".into(), alert(said, true), Need::Owner));
+            continue;
+        }
         // How it ended: Publish, or what failed, waits on the owner; done with nothing to decide
-        // is FYI (the job's page says it).
+        // is FYI (the job's page says it). At a limit it moves or waits by itself (ALERTS-6).
         let (said, need) = match job.status {
             Status::Done if job.can_publish() => (self::alert(job, Notice::Ready), Need::Owner),
             Status::Failed => (self::alert(job, Notice::Failed), Need::Owner),
+            Status::Interrupted if job.account_limit_blocked => continue,
             Status::Interrupted => (self::alert(job, Notice::Interrupted), Need::Owner),
             Status::Done => (
                 (
@@ -406,6 +436,8 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
         }
         let category = match item["kind"].as_str() {
             Some("permission") if job.is_some() => continue,
+            // A merge card alerts as its job (ALERTS-7); a limit never does (ALERTS-6).
+            Some("merge" | "limit") => continue,
             Some("permission")
                 if item["options"]
                     .as_array()
@@ -1483,6 +1515,95 @@ mod tests {
             "Oby couldn't review #7: The Mac's Codex login has ended."
         );
         assert!(said[0].1.urgent);
+    }
+
+    /// A queued job held for the owner's yes to a ChatGPT login (CHATGPT-20) alerts, once.
+    #[test]
+    fn alerts_4_a_job_held_for_the_owners_yes_alerts() {
+        let mut held = job("c1");
+        let text = "your OK for work I run by myself to use the ChatGPT plan on Work: you can allow it on your Mac, in Settings › Agents";
+        held.waiting = Some(crate::job::Waiting {
+            kind: "limit".into(),
+            text: text.into(),
+            reserved: Some(Vec::new()),
+            tool: None,
+        });
+        let said = wanted(std::slice::from_ref(&held), &[]);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].0, "consent");
+        assert_eq!(said[0].1.title, "Needs your OK: Android push");
+        assert_eq!(said[0].1.body, clipped(text, BODY));
+        assert!(said[0].1.urgent);
+    }
+
+    /// A LIMITS-5 wait and a weekly reserve's hold say what they wait for on their line: only the
+    /// ChatGPT yes beside them alerts (ALERTS-HOLD).
+    #[test]
+    fn alerts_4_a_limits_5_wait_stays_silent() {
+        let wait = |kind: &str, reserved: Option<Vec<String>>| crate::job::Waiting {
+            kind: kind.into(),
+            text: "waits".into(),
+            reserved,
+            tool: None,
+        };
+        let mut capped = job("w1");
+        capped.waiting = Some(wait("cap", None));
+        capped.resumes_at = Some(1_900_000_000);
+        let mut reserve = job("w2");
+        reserve.waiting = Some(wait("limit", Some(vec!["personal".into()])));
+        let mut held = job("w3");
+        held.waiting = Some(wait("limit", Some(Vec::new())));
+        let said = wanted(&[capped, reserve, held], &[]);
+        let jobs: Vec<_> = said.iter().map(|(_, a)| a.job.as_deref()).collect();
+        assert_eq!(jobs, [Some("w3")]);
+    }
+
+    /// A job at a limit moves or waits by itself (LIMITS-15): an interrupted one at a limit isn't
+    /// "Interrupted", and an older release's #1563 decision says nothing.
+    #[test]
+    fn alerts_6_a_limit_move_or_wait_never_alerts() {
+        let mut limited = job("l1");
+        limited.status = Status::Interrupted;
+        limited.account_limit_blocked = true;
+        limited.account_limit_episode = Some("e1".into());
+        let decision = json!({"id": "limit-l1", "kind": "limit", "state": "open", "job": "l1",
+            "triage": "needs_you", "title": "Usage limit", "text": "Move it?"});
+        assert_eq!(notice(&limited), None);
+        let said = wanted(
+            std::slice::from_ref(&limited),
+            std::slice::from_ref(&decision),
+        );
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// A merge left to the owner alerts once, titled as its card; one waiting on a second review
+    /// or on GitHub (not `merge_needs_you`) says nothing (MERGING-34, 35).
+    #[test]
+    fn alerts_7_a_merge_wait_alerts_once_as_its_card() {
+        let mut job = job("m1");
+        job.status = Status::Done;
+        job.published = Some("https://github.com/deskree-inc/oby/pull/7".into());
+        job.branch = "oby/fix-m1".into();
+        job.outgoing.push(crate::publish::Outgoing::new(
+            "push",
+            &job.repo,
+            "abc",
+            Some("oby/fix-m1"),
+        ));
+        let card = json!({"id": "m1-merge-x", "kind": "merge", "state": "open", "job": "m1",
+            "triage": "needs_you", "title": "Ready to merge: Android push", "text": "Merge?"});
+        let waits = wanted(std::slice::from_ref(&job), std::slice::from_ref(&card));
+        assert!(waits.is_empty(), "a second review or GitHub: {waits:?}");
+        job.merge_needs_you = true;
+        job.merge_error = Some("Merge oby #7 into dev?\nOnly your Merge is missing.".into());
+        let said = wanted(std::slice::from_ref(&job), std::slice::from_ref(&card));
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].0, "merge:m1-merge-x");
+        assert_eq!(said[0].1.title, "Ready to merge: Android push");
+        assert_eq!(said[0].1.body, "Merge oby #7 into dev?");
+        assert!(said[0].1.urgent);
+        let refused = wanted(std::slice::from_ref(&job), &[]);
+        assert_eq!(refused[0].1.title, "Not merged: Android push");
     }
 
     fn permission() -> crate::permissions::Permission {
