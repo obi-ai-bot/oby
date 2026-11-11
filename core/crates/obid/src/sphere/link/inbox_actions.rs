@@ -518,6 +518,8 @@ impl Link {
                     None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
                 }
             }
+            // Carried out by the route, which holds the conversations (crate::conversation::confirmed).
+            inbox::action::DELETE_CONVERSATIONS => Ok(()),
             inbox::action::DELETE_JOB => match self.jobs.delete(target).await {
                 Some(Ok(_)) => {
                     self.settle_job(target);

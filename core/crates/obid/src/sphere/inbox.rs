@@ -116,6 +116,10 @@ pub mod action {
     pub const CONTINUE_JOB: &str = "continue_job";
     /// Delete a job that ended, its worktree and local branch (`oby_delete_job`): `target` the job.
     pub const DELETE_JOB: &str = "delete_job";
+    /// Delete conversations for good (`oby_delete_conversations`): `payload` `{"conversations":
+    /// [{"id", "cursor"}]}`, each where it stood when Oby asked. The link holds no conversations:
+    /// the route that takes the Confirm carries it out ([`crate::conversation::confirmed`]).
+    pub const DELETE_CONVERSATIONS: &str = "delete_conversations";
     /// Change a job's mode, tool or account (`oby_change_job`): `target` the job, `payload`
     /// `{"mode": "…"}`, `{"agent": "…", "account": "…"}` or both.
     pub const CHANGE_JOB: &str = "change_job";

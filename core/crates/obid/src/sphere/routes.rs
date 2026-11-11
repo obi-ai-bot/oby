@@ -357,6 +357,8 @@ pub async fn answer(
         .await;
     if let Err(why) = &answered {
         crate::brain::ask::refused_after_the_click(&shared, &item, why);
+    } else {
+        crate::conversation::confirmed(&shared, &item).await;
     }
     Ok(json(StatusCode::OK, answered?))
 }

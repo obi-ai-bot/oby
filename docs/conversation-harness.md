@@ -40,7 +40,8 @@ The same for every agent. obid checks every call against the same action rules (
 | `oby_inbox` | `{}` | What waits for the owner, what needs them first, each item with its `triage`. |
 | `oby_github` | `{list?}` | What GitHub wants from the owner, as obid's own `gh` login last read it (`mine`, `reviews`, `assigned`); titles quoted. |
 | `oby_answer` | `{item, answer}` | Answers an inbox item the brain may answer; the owner's own decisions (permissions, confirms, publishing) are refused with why. |
-| `oby_conversations` | `{query}` | Finds past conversations by what was said (#593). |
+| `oby_conversations` | `{query?}` | Finds past conversations by what was said (#593); with no query, lists them all with their dates (#2085). |
+| `oby_delete_conversations` | `{ids}` | Deletes conversations for good, only on the owner's Confirm, one for them all (#2085). |
 | `oby_room_read` | `{}` | The Obysphere's room's newest posts, in a quoted file in the room, `repos/sphere-room.json`; marks the conversation as having read something untrusted (docs/contracts/rooms.md). |
 | `oby_room_post` | `{kind, text, about?, replyTo?}` | A `need` or `found` in the Obysphere's room, on the owner's word, else their Confirm. |
 | `oby_artifact` | `{title, path, kind?, artifact?}` | Publishes a file or folder from the room as an artifact, or a new version of `artifact` (section 4). |

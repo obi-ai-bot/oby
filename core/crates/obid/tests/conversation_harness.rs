@@ -792,7 +792,7 @@ fn oby_dispatch_starts_a_job_whose_card_is_on_the_turn() {
     let conversation = tools.body["conversation"].as_str().unwrap().to_owned();
     assert_eq!(
         tools.body["text"],
-        "tools: oby_jobs,oby_job,oby_dispatch,oby_offer,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_merge,oby_github_write,oby_settings,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_room_read,oby_room_post,oby_conversations,oby_members,oby_ask,oby_asks,oby_artifact,oby_read,oby_search,oby_list,oby_shell,oby_shell_output,oby_shell_stop",
+        "tools: oby_jobs,oby_job,oby_dispatch,oby_offer,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_merge,oby_github_write,oby_settings,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_room_read,oby_room_post,oby_conversations,oby_delete_conversations,oby_members,oby_ask,oby_asks,oby_artifact,oby_read,oby_search,oby_list,oby_shell,oby_shell_output,oby_shell_stop",
         "{}",
         tools.text
     );
@@ -3272,6 +3272,85 @@ fn confirmed(obid: &Obid, item: &Value) -> Answer {
     confirm(obid, item["id"].as_str().unwrap())
 }
 
+/// CONVERSATION-AGENT-23: oby_conversations with no query lists every conversation with its dates;
+/// oby_delete_conversations always waits for the owner's Confirm, one for them all, and only that
+/// deletes them: one the owner used since Oby asked stays.
+#[test]
+fn conversations_are_listed_with_dates_and_deleted_only_on_confirm() {
+    let (_folder, obid) = obid("harness-delete-conversations", true);
+    let start = || {
+        said(&obid, json!({"said": "HELLO", "new": true})).body["conversation"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (old, older, used) = (start(), start(), start());
+    let asking = said(
+        &obid,
+        json!({"said": "OBY oby_conversations {}", "new": true}),
+    );
+    let here = asking.body["conversation"].as_str().unwrap().to_owned();
+    let listed = oby_said(&asking);
+    for id in [&old, &older, &used] {
+        assert!(listed.contains(id.as_str()), "{listed}");
+    }
+    assert!(listed.contains(r#""lastActivity":"20"#), "{listed}");
+    assert!(
+        listed.contains(&format!(r#""id":"{here}""#))
+            && listed.contains(r#""thisConversation":true"#),
+        "{listed}"
+    );
+    let kept = || -> Vec<String> {
+        call(&obid, "GET", "/v1/conversations", None)
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let asks = || -> Vec<Value> {
+        inbox(&obid)
+            .into_iter()
+            .filter(|i| i["confirm"]["action"] == "delete_conversations")
+            .collect()
+    };
+
+    // One obid doesn't keep: refused, and nothing is asked.
+    let wrong = format!(r#"OBY oby_delete_conversations {{"ids": ["{old}", "nope"]}}"#);
+    let refused = said(&obid, json!({"said": wrong, "conversation": here}));
+    assert!(
+        oby_said(&refused).contains("There's no conversation nope"),
+        "{}",
+        refused.text
+    );
+    assert!(asks().is_empty());
+
+    let delete =
+        format!(r#"OBY oby_delete_conversations {{"ids": ["{old}", "{older}", "{used}"]}}"#);
+    let waits = said(&obid, json!({"said": delete, "conversation": here}));
+    assert!(
+        oby_said(&waits).contains("Delete 3 conversations waits for your OK"),
+        "{}",
+        waits.text
+    );
+    let item = asks().pop().unwrap();
+    assert_eq!(item["title"], "Delete 3 conversations", "{item}");
+    assert!(
+        item["text"].as_str().unwrap().contains("(last used 20"),
+        "{item}"
+    );
+    assert_eq!(kept().len(), 4, "nothing yet");
+
+    // The owner goes back to one before they confirm: it stays.
+    said(&obid, json!({"said": "HELLO", "conversation": used}));
+    let done = confirmed(&obid, &item);
+    assert_eq!(done.status, 200, "{}", done.text);
+    let left = kept();
+    assert!(!left.contains(&old) && !left.contains(&older), "{left:?}");
+    assert!(left.contains(&used) && left.contains(&here), "{left:?}");
+}
+
 /// oby_continue_job picks a job that ended up again in its own session, its agent hearing Try
 /// again's words and the conversation's quoted; another conversation's job, or a turn that read
 /// something untrusted, waits for the owner's Confirm, which then continues it.
@@ -3485,6 +3564,10 @@ fn archive_is_at_once_and_delete_waits_for_confirm() {
         json!({"said": r#"OBY oby_jobs {"archived": true}"#, "conversation": conversation}),
     );
     assert!(oby_said(&archived).contains(&id), "{}", archived.text);
+    // When it was created and ended, so "the ones from before yesterday" has an answer (#2085).
+    for date in [r#""created": "20"#, r#""ended": "20"#] {
+        assert!(oby_said(&archived).contains(date), "{}", archived.text);
+    }
     let back = call(
         &obid,
         "POST",

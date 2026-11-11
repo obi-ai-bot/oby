@@ -1237,7 +1237,7 @@ impl Conversations {
     /// Up to `limit` conversations listed after `after` (or from the first): the pinned ones,
     /// then the rest, each newest first. A cursor is a place, not a conversation, so one that
     /// moved since is skipped or listed again, never anything else.
-    fn list(&self, after: Option<Cursor>, limit: usize) -> Vec<Value> {
+    pub(crate) fn list(&self, after: Option<Cursor>, limit: usize) -> Vec<Value> {
         let threads = self.lock();
         ordered(&threads, after)
             .iter()
@@ -2032,11 +2032,48 @@ pub async fn remove(
     State(shared): State<std::sync::Arc<Shared>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Response, ApiError> {
-    let uploads = shared.conversations.delete(&id)?;
-    crate::brain::drop_uploads(&shared, uploads).await;
-    // What Oby offered there can't be started from it any more.
-    shared.link.close_offers(&id);
+    forget(&shared, &id).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The conversation `id` goes, with the files attached to its words, and the offers made in it
+/// close.
+async fn forget(shared: &Shared, id: &str) -> Result<(), Error> {
+    let uploads = shared.conversations.delete(id)?;
+    crate::brain::drop_uploads(shared, uploads).await;
+    // What Oby offered there can't be started from it any more.
+    shared.link.close_offers(id);
+    Ok(())
+}
+
+/// The owner confirmed `item`. When it's Oby's ask to delete conversations
+/// (`oby_delete_conversations`), each one it named goes as `DELETE /v1/conversations/{id}` takes
+/// it. One used or pinned since Oby asked (its `cursor` moved) stays: the owner went back to it. One
+/// gone already is gone.
+pub async fn confirmed(shared: &Shared, item: &crate::sphere::inbox::Item) {
+    use crate::sphere::inbox::action::DELETE_CONVERSATIONS;
+    let Some(asked) = item
+        .confirm
+        .as_deref()
+        .filter(|c| c.action == DELETE_CONVERSATIONS)
+    else {
+        return;
+    };
+    let now = shared.conversations.list(None, usize::MAX);
+    for named in asked.payload["conversations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let unchanged = now
+            .iter()
+            .any(|c| c["id"] == named["id"] && c["cursor"] == named["cursor"]);
+        if let Some(id) = named["id"].as_str().filter(|_| unchanged)
+            && let Err(why) = forget(shared, id).await
+        {
+            tracing::warn!("conversation {id} wasn't deleted: {why:?}");
+        }
+    }
 }
 
 #[cfg(test)]
