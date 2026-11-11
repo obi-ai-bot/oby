@@ -285,6 +285,10 @@ impl Usages {
             if usage.full_until.is_some() {
                 kept.full_until = usage.full_until;
                 kept.full_until_inferred = usage.full_until_inferred;
+            } else if kept.overage && (usage.five_hour.is_some() || usage.seven_day.is_some()) {
+                // USAGE-12: overage carries its work now, so no earlier hold stands.
+                kept.full_until = None;
+                kept.full_until_inferred = false;
             } else if kept.full_until_inferred
                 && usage.five_hour.is_some_and(|used| used < NEARLY_FULL)
                 && usage.seven_day.is_some_and(|used| used < NEARLY_FULL)
@@ -1436,6 +1440,15 @@ mod tests {
         spent["rate_limit_info"]["overageInUse"] = json!(false);
         let (_, kept) = usages.record("claude", &claude(&spent));
         assert!(kept.window_full(before));
+        assert_eq!(kept.full_until_at(before), Some(1_762_880_400));
+        // Then overage takes the work on (the owner turned it on): the hold goes with it.
+        let (_, kept) = usages.record("claude", &usage);
+        assert_eq!(kept.full_until, None);
+        assert!(!kept.window_full(before));
+        assert!(
+            kept.held(before).is_some(),
+            "new work still prefers room (USAGE-11)"
+        );
         // `overageInUse` alone says it too, while the overage still allows.
         let mut in_use = event.clone();
         in_use["rate_limit_info"]["isUsingOverage"] = json!(false);

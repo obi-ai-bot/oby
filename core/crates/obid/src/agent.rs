@@ -738,6 +738,9 @@ pub async fn turn_on(
                 if let Some(at) = crate::limits::claude_full_until(&message) {
                     turn.resets = Some(at);
                     turn.scoped = false;
+                } else if crate::usage::claude_overage(&message["rate_limit_info"]) {
+                    // USAGE-12: overage carries it now, whatever an earlier event said.
+                    (turn.resets, turn.scoped) = (None, false);
                 } else if crate::usage::claude_scoped(&message["rate_limit_info"]) {
                     turn.scoped = turn.resets.is_none();
                 }
@@ -1118,6 +1121,32 @@ mod tests {
         assert!(turn.succeeded());
         assert_eq!(turn.text(), "");
         assert_eq!(turn.last_said(), "Fixed it; the tests pass.");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// USAGE-12: a turn whose 5-hour window filled, then went on on the account's overage (claude
+    /// 2.1.302's event), names no reset: a passing error after it is no limit. The other way
+    /// round, the full window's reset stands.
+    #[tokio::test]
+    async fn usage_12_overage_in_use_after_a_full_window_names_no_reset() {
+        let overage = include_str!("../tests/fixtures/claude-rate-limit-overage.json").trim();
+        let spent = overage
+            .replace(r#""isUsingOverage":true"#, r#""isUsingOverage":false"#)
+            .replace(r#""overageInUse":true"#, r#""overageInUse":false"#)
+            .replace(
+                r#""overageStatus":"allowed""#,
+                r#""overageStatus":"rejected""#,
+            );
+        let passing = r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":529,"result":"API Error: 529 Overloaded","session_id":"s1"}"#;
+        let (turn, _, root) =
+            fake_turn_saying("usage-12-then", &[&spent, overage, passing], "").await;
+        assert_eq!(turn.resets, None);
+        assert!(!turn.says_limit(turn.error()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (turn, _, root) =
+            fake_turn_saying("usage-12-spent", &[overage, &spent, passing], "").await;
+        assert_eq!(turn.resets, Some(1_762_880_400));
         let _ = std::fs::remove_dir_all(&root);
     }
 
