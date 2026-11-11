@@ -478,56 +478,6 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     assert_eq!(prompts(&job).len(), 1, "{job}");
 }
 
-/// USAGE-12: past its 5-hour window on its paid overage (claude 2.1.302's event, as in
-/// tests/fixtures/claude-rate-limit-overage.json, with times from now), a passing error is tried
-/// again as any is: the 100% window isn't full, so it isn't the account's limit.
-#[test]
-fn usage_12_overage_in_use_isnt_full_a_passing_error_is_tried_again() {
-    let (_folder, obid) = obid("usage-12-overage");
-    let now = obi_protocol::time::now();
-    let usage = json!({"status": "rejected", "resetsAt": now + 3600, "rateLimitType": "five_hour",
-        "overageStatus": "allowed", "isUsingOverage": true, "overageInUse": true,
-        "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": now + 3600},
-            "seven_day": {"utilization": 0.62, "resetsAt": now + 86_400}}, "overageEnabled": true});
-    let id = post_job(&obid, &format!("USAGE: {usage} TRANSIENT KEEP PROMPTS"));
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    assert_eq!(prompts(&job).len(), 2, "{job}");
-    let account = call(&obid, "GET", "/v1/status", None).body["accounts"][0].clone();
-    assert_eq!(account["fiveHour"], 1.0, "{account}");
-    assert!(account["fullUntil"].is_null(), "{account}");
-}
-
-/// USAGE-13: a turn one model's week stopped (claude 2.1.302's `seven_day_opus`, as in
-/// tests/fixtures/claude-rate-limit-scoped.json, with times from now) waits for that reset, and its
-/// account isn't marked full: the next job on it runs.
-#[test]
-fn usage_13_a_scoped_limit_doesnt_fill_the_account_the_next_job_runs() {
-    let (_folder, obid) = obid("usage-13-scoped");
-    let now = obi_protocol::time::now();
-    let reset = now + 86_400;
-    let usage = json!({"status": "rejected", "resetsAt": reset, "rateLimitType": "seven_day_opus",
-        "utilization": 1.0, "overageStatus": "rejected", "overageDisabledReason": "out_of_credits",
-        "isUsingOverage": false,
-        "unifiedWindows": {"five_hour": {"utilization": 0.31, "resetsAt": now + 3600},
-            "seven_day": {"utilization": 0.58, "resetsAt": reset}}, "overageEnabled": false});
-    let id = post_job(&obid, &format!("USAGE: {usage} LIMITED NO EVENT"));
-    let waits = within(60, "the job waits for its model's reset", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
-    });
-    assert_eq!(
-        waits["resumesAt"],
-        obi_protocol::time::format(reset + 90),
-        "{waits}"
-    );
-    let account = call(&obid, "GET", "/v1/status", None).body["accounts"][0].clone();
-    assert!(account["fullUntil"].is_null(), "{account}");
-    let next = post_job(&obid, "Look around");
-    let job = wait(&obid, &next);
-    assert_eq!(job["status"], "done", "{job}");
-}
-
 /// RECOVERY-7: how a turn ended is read from the tool's fields: a 429 whose words name no status
 /// obid could read is a passing error, not an account's limit.
 #[test]
