@@ -448,56 +448,130 @@ fn nvm_default_bin(home: &Path) -> Option<PathBuf> {
         .map(|(_, name)| versions.join(name).join("bin"))
 }
 
-/// The login shell's `PATH`: the shell from the password database (it can differ from `$SHELL`),
-/// run as `<shell> -l -c /usr/bin/env`. Empty when it can't be read within 5 seconds.
+/// The login shell's `PATH` ([`login_env`]'s): empty when it can't be read.
 fn login_shell_path() -> Vec<PathBuf> {
-    let Ok(Some(user)) = nix::unistd::User::from_uid(nix::unistd::getuid()) else {
-        return Vec::new();
-    };
-    let shell = user.shell;
-    if !shell.is_absolute() {
-        return Vec::new();
-    }
-    use std::os::unix::process::CommandExt;
-    let child = std::process::Command::new(&shell)
-        .args(["-l", "-c", "/usr/bin/env"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .spawn();
-    let Ok(mut child) = child else {
-        return Vec::new();
-    };
-    let give_up_at = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < give_up_at => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-            _ => {
-                let _ = killpg(
-                    Pid::from_raw(child.id() as i32),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
-                let _ = child.wait();
-                return Vec::new();
-            }
-        }
-    }
-    let mut out = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
-    }
-    out.lines()
-        .find_map(|line| line.strip_prefix("PATH="))
-        .map(|path| {
-            std::env::split_paths(path)
+    login_env()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|(name, _)| name == "PATH")
+        .map(|(_, path)| {
+            std::env::split_paths(&path)
                 .filter(|p| p.is_absolute())
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The files a login shell reads, as `$HOME` joins them (an absolute one stays itself).
+const SHELL_FILES: &[&str] = &[
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".profile",
+    ".bash_profile",
+    ".bash_login",
+    ".config/fish/config.fish",
+    "/etc/zshenv",
+    "/etc/zprofile",
+    "/etc/profile",
+];
+
+/// The owner's login shell's environment, as a terminal starts with it (LANES-4): the shell from
+/// the password database (it can differ from `$SHELL`; `OBID_LOGIN_SHELL` in obid's tests), run as
+/// `<shell> -l -c '/usr/bin/env -0'` with only what login(1) gives it, none of obid's own. Read
+/// again once one of [`SHELL_FILES`] changes; `None` when the shell didn't answer within 10 seconds.
+pub fn login_env() -> Option<Vec<(OsString, OsString)>> {
+    type Read = (
+        Vec<Option<std::time::SystemTime>>,
+        Option<Vec<(OsString, OsString)>>,
+    );
+    static READ: std::sync::Mutex<Option<Read>> = std::sync::Mutex::new(None);
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let stamps: Vec<_> = SHELL_FILES
+        .iter()
+        .map(|file| {
+            std::fs::metadata(home.join(file))
+                .and_then(|m| m.modified())
+                .ok()
+        })
+        .collect();
+    let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
+    match &*read {
+        Some((at, env)) if *at == stamps => env.clone(),
+        _ => read.insert((stamps, read_login_env())).1.clone(),
+    }
+}
+
+fn read_login_env() -> Option<Vec<(OsString, OsString)>> {
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::process::CommandExt;
+    let shell = std::env::var_os("OBID_LOGIN_SHELL")
+        .map(PathBuf::from)
+        .or_else(|| {
+            Some(
+                nix::unistd::User::from_uid(nix::unistd::getuid())
+                    .ok()??
+                    .shell,
+            )
+        })
+        .filter(|shell| shell.is_absolute())?;
+    let mut child = std::process::Command::new(&shell)
+        .args(["-l", "-c", "/usr/bin/env -0"])
+        .env_clear()
+        .envs(
+            ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TERM"]
+                .into_iter()
+                .filter_map(|n| Some((n, std::env::var_os(n)?))),
+        )
+        .env("SHELL", &shell)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    // Read as it writes (an environment past the pipe's buffer would never let the shell end), until
+    // nothing holds the pipe; then whatever its group left goes, the shell not yet reaped.
+    let mut stdout = child.stdout.take()?;
+    let (sent, read) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+        let _ = sent.send(out);
+    });
+    let out = read.recv_timeout(Duration::from_secs(10));
+    let _ = killpg(
+        Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+    let _ = child.wait();
+    let out = out.ok()?;
+    Some(
+        out.split(|b| *b == 0)
+            .filter_map(|entry| {
+                let at = entry.iter().position(|b| *b == b'=')?;
+                let value = OsString::from_vec(entry[at + 1..].to_vec());
+                Some((OsString::from_vec(entry[..at].to_vec()), value))
+            })
+            .collect(),
+    )
+}
+
+/// `owners` ([`login_env`]'s) under `env`, an own run's (LANES-4): every variable `env` doesn't set,
+/// but what pushes or signs in to a code host ([`agent_withheld`]'s: Claude Code's and Anthropic's
+/// are the owner's gateway, and theirs), git's and obid's own, and the shell's own bookkeeping.
+pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsString)]) {
+    for (name, value) in owners {
+        let n = name.to_string_lossy();
+        let gateway = n.starts_with("ANTHROPIC_") || n.starts_with("CLAUDE_CODE_");
+        let withheld = (agent_withheld(&n) && !gateway)
+            || ["GIT_", "OBY_", "OBID_"].iter().any(|p| n.starts_with(p))
+            || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n);
+        if !withheld && !env.iter().any(|(set, _)| set == name) {
+            env.push((name.clone(), value.clone()));
+        }
+    }
 }
 
 /// `bin` as a path: itself when it names one, else found on [`tools_path`].

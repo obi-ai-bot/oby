@@ -261,14 +261,16 @@ pub fn models(tool: crate::agent::Tool) -> &'static [(&'static str, &'static str
     }
 }
 
-/// A model id obid passes on as one argument: letters, digits, `-`, `.` and `_`, and never a
-/// leading `-`, which a CLI would read as a flag.
+/// A model id obid passes on as one argument: letters, digits and `-._:@/[]`, so a provider's id is
+/// one too (Bedrock's `us.anthropic.claude-…-v1:0` or its ARN, Vertex's `claude-…@2026…`, LANES-4),
+/// and never a leading `-`, which a CLI would read as a flag.
 pub fn valid_model(model: &str) -> bool {
     !model.trim().is_empty()
         && !model.starts_with('-')
-        && model
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+        && model.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'-' | b'.' | b'_' | b':' | b'@' | b'/' | b'[' | b']')
+        })
 }
 
 impl Settings {
@@ -396,6 +398,21 @@ pub fn no_check(home: &Path, repo: &str, no: bool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LANES-4 (docs/contracts/lanes.md): a provider's model id is one, as written; a flag isn't.
+    #[test]
+    fn lanes_4_a_providers_model_id_is_a_model() {
+        for id in [
+            "us.anthropic.claude-sonnet-5-5-v1:0",
+            "claude-opus-5-5@20261101",
+            "claude-opus-5-5[1m]",
+        ] {
+            assert!(valid_model(id), "{id}");
+        }
+        for id in ["--model", "a b", "a;b", ""] {
+            assert!(!valid_model(id), "{id}");
+        }
+    }
 
     /// AGENTS-6 (docs/contracts/agents.md): a complex task runs at the account's complex-task
     /// effort, else at its effort.

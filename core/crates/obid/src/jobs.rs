@@ -7372,6 +7372,16 @@ impl Jobs {
             chatgpt.runs.begin(&job.id);
         }
         self.update(&job.id, |job| job.own_lane = own);
+        // The owner's environment under obid's (LANES-4): a shell that doesn't answer leaves the run
+        // obid's allowlist, and the job says so.
+        let owners = if own {
+            process::login_env()
+        } else {
+            Some(Vec::new())
+        };
+        if owners.is_none() {
+            self.note_change(&job.id, "Your login shell didn't answer within 10 seconds, so this run has none of its environment.".into());
+        }
         match (&account.config_dir, tool) {
             // In Claude Code's own sandbox, with the account's own folder and login: no copy.
             _ if own => extra.extend(own_sandbox_env(account, &spec, &self.login_path(&job.id))?),
@@ -7505,7 +7515,9 @@ impl Jobs {
                         extra.push((name, "1".into()));
                     }
                 }
-                process::sandbox_env(&process::tools_path(), &spec.temp, &extra)
+                let mut env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
+                process::with_owners(&mut env, &owners.unwrap_or_default());
+                env
             },
             cwd: spec.worktree.clone(),
             stderr: self.log_path(&job.id, "agent.log"),
@@ -10428,7 +10440,18 @@ impl Jobs {
                     .model
                     .as_deref()
                     .unwrap_or_else(|| crate::settings::default_model(tool));
-                flags.extend(["--model".into(), model.into()]);
+                // An own run whose login shell names a model (LANES-4) runs on it as written, unless
+                // the job or its account picked one.
+                let named = Self::own_lane(&job, tool)
+                    && job.model.is_none()
+                    && tokio::task::spawn_blocking(process::login_env)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|env| env.iter().any(|(name, _)| name == "ANTHROPIC_MODEL"));
+                if !named {
+                    flags.extend(["--model".into(), model.into()]);
+                }
                 if let Some(effort) = &job.effort {
                     flags.extend(["--effort".into(), effort.into()]);
                 }

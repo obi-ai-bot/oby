@@ -203,7 +203,35 @@ esac
 }
 
 fn agent() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/secretspec-claude")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/secretspec-agent")
+}
+
+/// Gives `config` the stand-in as Cursor, signed in, on an account of its own; with `alone`, as
+/// its only agent. An owner's Claude Code job runs in its own lane, past obid's egress proxy, so
+/// its check gets none of the owner's values (LANE-3a, docs/contracts/lanes.md); Cursor stays in
+/// Oby's box, behind the proxy, so its job is the owner's job whose check can get them.
+fn cursor(config: &mut Value, folder: &Path, alone: bool) {
+    let account = folder.join("home/accounts/cursor");
+    // Where Cursor's file store keeps its login.
+    let login = account.join(if cfg!(target_os = "macos") {
+        ".cursor/auth.json"
+    } else {
+        ".config/cursor/auth.json"
+    });
+    std::fs::create_dir_all(login.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(account.join(".config")).unwrap();
+    std::fs::write(&login, "{}").unwrap();
+    std::fs::write(
+        account.join("cli-config.json"),
+        r#"{"version": 1, "permissions": {"allow": [], "deny": []}}"#,
+    )
+    .unwrap();
+    let cursor = json!({"bin": agent(), "accounts": [{"id": "cursor", "name": "Cursor", "configDir": account}]});
+    if alone {
+        config["agents"] = json!({ "cursor": cursor });
+    } else {
+        config["agents"]["cursor"] = cursor;
+    }
 }
 
 /// An owner's job whose agent widens `secretspec.toml` on its branch: its check gets the base's
@@ -215,8 +243,9 @@ fn an_owners_check_gets_the_bases_values_and_nothing_leaves_it() {
     let folder = Folder::new("secretspec-owner");
     let remote = fixture(&folder.0.join("fixture"));
     declare_on_main(&folder.0, &remote);
-    let config = config(&folder.0, &remote, &agent());
+    let mut config = config(&folder.0, &remote, &agent());
     put_token(&config, TOKEN);
+    cursor(&mut config, &folder.0, true);
     let path = folder.0.join("config.json");
     std::fs::write(&path, config.to_string()).unwrap();
     add(&path, "check.FAKE_CHECK_TOKEN", &fake());
@@ -319,8 +348,9 @@ fn publishing_18_a_check_with_the_owners_secrets_never_runs_on_the_base() {
     let folder = Folder::new("secretspec-base-run");
     let remote = fixture(&folder.0.join("fixture"));
     declare_on_main(&folder.0, &remote);
-    let config = config(&folder.0, &remote, &agent());
+    let mut config = config(&folder.0, &remote, &agent());
     put_token(&config, TOKEN);
+    cursor(&mut config, &folder.0, true);
     let path = folder.0.join("config.json");
     std::fs::write(&path, config.to_string()).unwrap();
     add(&path, "check.FAKE_CHECK_TOKEN", &fake());
@@ -347,28 +377,29 @@ fn publishing_18_a_check_with_the_owners_secrets_never_runs_on_the_base() {
 /// and the stand-in gh; runs one job `job`, as the owner typed it in Oby's apps, to its end: obid,
 /// and the job's check log.
 fn run_one(name: &str, job: Value) -> (Folder, Obid, String) {
-    let (folder, obid) = declared(name, &agent(), None);
+    let (folder, obid) = declared(name, None, None);
     let log = dispatch_and_log(&obid, job);
     (folder, obid, log)
 }
 
 /// obid with the fixture, `main` declaring FAKE_CHECK_TOKEN, the fake value in the vault and the
-/// stand-in gh; `agent` as Claude Code, and `conversation` as the configuration's when given.
-fn declared(name: &str, agent: &Path, conversation: Option<Value>) -> (Folder, Obid) {
-    declared_with(name, agent, conversation, None)
+/// stand-in gh; the stand-in as Cursor ([`cursor`]), with `claude` as Claude Code beside it when
+/// given, and `conversation` as the configuration's when given.
+fn declared(name: &str, claude: Option<&Path>, conversation: Option<Value>) -> (Folder, Obid) {
+    declared_with(name, claude, conversation, None)
 }
 
 /// [`declared`], with the repository's `setup` line when given (PUBLISHING-24).
 fn declared_with(
     name: &str,
-    agent: &Path,
+    claude: Option<&Path>,
     conversation: Option<Value>,
     setup: Option<&str>,
 ) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let remote = fixture(&folder.0.join("fixture"));
     declare_on_main(&folder.0, &remote);
-    let mut config = config(&folder.0, &remote, agent);
+    let mut config = config(&folder.0, &remote, claude.unwrap_or(&agent()));
     if let Some(setup) = setup {
         config["repos"][0]["setup"] = json!(setup);
     }
@@ -379,6 +410,7 @@ fn declared_with(
         std::fs::write(account.join(".credentials.json"), "{}").unwrap();
     }
     put_token(&config, TOKEN);
+    cursor(&mut config, &folder.0, claude.is_none());
     let path = folder.0.join("config.json");
     std::fs::write(&path, config.to_string()).unwrap();
     add(&path, "check.FAKE_CHECK_TOKEN", &fake());
@@ -420,7 +452,7 @@ fn refused(log: &str, why: &str) {
 #[test]
 fn publishing_24_a_check_with_declared_secrets_runs_without_the_setup() {
     let setup = "exit 3";
-    let (_folder, obid) = declared_with("secretspec-setup", &agent(), None, Some(setup));
+    let (_folder, obid) = declared_with("secretspec-setup", None, None, Some(setup));
     let answer = call_typed(
         &obid,
         "POST",
@@ -441,6 +473,22 @@ fn publishing_24_a_check_with_declared_secrets_runs_without_the_setup() {
             .flatten()
             .any(|c| c["what"] == skipped.as_str()),
         "{job}"
+    );
+}
+
+/// LANE-3a (docs/contracts/lanes.md): the owner's own Claude Code job runs in its own lane, past
+/// obid's egress proxy, so its check gets none of the values, and says why.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_3a_an_own_claude_jobs_check_gets_nothing() {
+    let (_folder, obid) = declared("secretspec-own-lane", Some(&agent()), None);
+    let log = dispatch_and_log(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "agent": "claude", "task": "Nothing to do here", "check": "sh check.sh"}),
+    );
+    refused(
+        &log,
+        "its agent had a network of its own, past obid's egress proxy",
     );
 }
 
@@ -505,7 +553,7 @@ fn an_agent_that_reaches_a_code_host_gets_nothing() {
 #[cfg(target_os = "macos")]
 #[test]
 fn merging_31_a_package_fetch_withholds_secrets_but_needs_one_review() {
-    let (_folder, obid) = declared("secretspec-merging-31", &agent(), None);
+    let (_folder, obid) = declared("secretspec-merging-31", None, None);
     let job = json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "FETCH", "check": "sh check.sh", "mode": "bypass"}});
     let started = call_typed(&obid, "POST", "/v1/jobs", &job);
     assert_eq!(started.status, 201, "{}", started.text);
@@ -605,13 +653,11 @@ fn a_payload_from_another_jobs_branch_isnt_there_to_take() {
 
 /// Each channel that brings an agent content obid's proxy doesn't see, used once in a turn: the
 /// vendor's own web search, Tetrix's MCP server, a plug-in's, obid's connected apps, a helper
-/// agent, and any tool of a kind obid doesn't know. Its check gets nothing.
+/// agent, and any tool of a kind obid doesn't know. Its check gets nothing. Claude Code's tools,
+/// so its jobs run on Claude Code.
 #[test]
 fn content_from_outside_the_proxy_gives_nothing() {
-    let (_folder, obid, _) = run_one(
-        "secretspec-channels",
-        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "TOOL: WebSearch", "check": "sh check.sh"}),
-    );
+    let (_folder, obid) = declared("secretspec-channels", Some(&agent()), None);
     for name in [
         "WebSearch",
         "mcp__tetrix__search_entities",
@@ -623,7 +669,7 @@ fn content_from_outside_the_proxy_gives_nothing() {
     ] {
         let log = dispatch_and_log(
             &obid,
-            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": format!("TOOL: {name}"), "check": "sh check.sh"}),
+            json!({"repo": "obi-e2e/fixture-app", "kind": "build", "agent": "claude", "task": format!("TOOL: {name}"), "check": "sh check.sh"}),
         );
         assert!(
             log.contains(&format!(
@@ -810,7 +856,7 @@ async fn a_received_reviews_check_gets_nothing() {
 #[cfg(target_os = "macos")]
 #[test]
 fn words_no_app_of_the_owners_signed_give_nothing() {
-    let (_folder, obid) = declared("secretspec-unsigned", &agent(), None);
+    let (_folder, obid) = declared("secretspec-unsigned", None, None);
     // One round each, a safe tool call and no commit: no job's commit is another's.
     let job = json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "TOOL: Read", "check": "sh check.sh", "rounds": 1}});
     let unsigned = call(&obid, "POST", "/v1/jobs", Some(&job));
@@ -876,11 +922,11 @@ fn harness() -> PathBuf {
 fn a_task_the_owner_typed_and_oby_planned_gets_the_values() {
     let (_folder, obid) = declared(
         "secretspec-planned",
-        &harness(),
+        Some(&harness()),
         Some(json!({"agent": "claude"})),
     );
     // The owner names the check; the stand-in does what the last line says.
-    let dispatch = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "JOB-COMMITS: greeting.txt", "kind": "build", "check": "sh check.sh"}"#;
+    let dispatch = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "JOB-COMMITS: greeting.txt", "kind": "build", "check": "sh check.sh", "agent": "cursor"}"#;
     let plan = format!("Check: sh check.sh\n{dispatch}");
     let started = |answer: &Answer| {
         let jobs = answer.body["jobs"].as_array().cloned().unwrap_or_default();
@@ -967,11 +1013,11 @@ fn a_comment_deleted_before_the_check_still_gives_nothing() {
 fn an_inbox_answer_no_app_signed_gives_nothing() {
     let (_folder, obid) = declared(
         "secretspec-inbox",
-        &harness(),
+        Some(&harness()),
         Some(json!({"agent": "claude"})),
     );
     let asked = |obid: &Obid| {
-        let job = json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "JOB-ASKS-QUESTION", "check": "sh check.sh", "rounds": 1}});
+        let job = json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "JOB-ASKS-QUESTION", "check": "sh check.sh", "rounds": 1, "agent": "cursor"}});
         let started = call_typed(obid, "POST", "/v1/jobs", &job);
         assert_eq!(started.status, 201, "{}", started.text);
         let id = started.body["id"].as_str().unwrap().to_owned();
@@ -1007,7 +1053,7 @@ fn an_inbox_answer_no_app_signed_gives_nothing() {
         &obid,
         "POST",
         "/v1/jobs",
-        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do", "check": "true", "rounds": 1}}),
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Nothing to do", "check": "true", "rounds": 1, "agent": "cursor"}}),
     );
     let id = owners.body["id"].as_str().unwrap().to_owned();
     call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
@@ -1042,7 +1088,7 @@ fn an_inbox_answer_no_app_signed_gives_nothing() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_memory_found_in_someone_elses_words_gives_nothing() {
-    let (_folder, obid) = declared("secretspec-memory", &agent(), None);
+    let (_folder, obid) = declared("secretspec-memory", None, None);
     let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "TOOL: Read", "check": "sh check.sh", "rounds": 1});
     let memories = obid.home.join("memory/user");
     std::fs::create_dir_all(&memories).unwrap();
