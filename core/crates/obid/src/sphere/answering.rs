@@ -531,6 +531,9 @@ async fn run(
         fixed: Vec::new(),
     };
     let mut extra: Vec<(&str, OsString)> = Vec::new();
+    // Its copy of the login is renewed by nothing once it runs: refreshed first when it's due
+    // (KEYCHAIN-10).
+    jobs.claude_login_ready(Some(&account)).await?;
     match &account.config_dir {
         // Never the account's own folder (#655): a copy of its login, without the refresh token, from
         // its file or, on a Mac where the login is only there, the Keychain (ASK-15: with no login

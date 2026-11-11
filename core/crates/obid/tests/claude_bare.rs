@@ -393,6 +393,64 @@ async fn issue_1867_an_answer_to_another_oby_never_runs_bare() {
     never_bare("an answer", &seen, |l| l.has("--permission-prompts"));
 }
 
+/// KEYCHAIN-10 (docs/contracts/keychain.md): with no keeper, the answer to another Oby's question
+/// runs boxed on a copy of the account's Keychain login, so a login near its end is refreshed by
+/// the Mac's own Claude Code before that copy is made.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keychain_10_an_answer_to_another_oby_refreshes_its_login_first() {
+    let folder = Folder::new("keychain-10-answer");
+    let sphere = FakeSphere::start().await;
+    let mut config = signed_in(&folder.0, "fake-answerer");
+    config["claudeKeychain"] = json!(true);
+    let obid = start_with(&folder.0, &config, None, &OWN_ENV);
+    tokio::task::block_in_place(|| {
+        let accepts = ["review_request", "question"];
+        join_a_accepting(&obid, &sphere, &Owner::new("wellington"), &accepts);
+        let rule =
+            json!({"for": ["ernesto"], "repos": ["obi-e2e/fixture-app"], "tells": ["jobStatus"]});
+        let made = call_signed(&obid, "POST", "/v1/obid/sharing/rules", Some(&rule));
+        assert_eq!(made.status, 201, "{}", made.text);
+    });
+    // From now on the account's login is only its Keychain item (where the stand-in `security`
+    // finds it), ending in a minute.
+    let dir = obid.home.join("accounts/stub");
+    std::fs::remove_file(dir.join(".credentials.json")).unwrap();
+    let digest = obi_protocol::keys::sha256(dir.as_os_str().as_encoded_bytes());
+    let item = folder.0.join(format!(
+        "tmp/obid-test-keychain/Claude Code-credentials-{}",
+        &hex::encode(digest)[..8]
+    ));
+    std::fs::create_dir_all(item.parent().unwrap()).unwrap();
+    let ends = (obi_protocol::time::now() + 60) * 1000;
+    let login =
+        json!({"claudeAiOauth": {"accessToken": "tok-old-plain-test-login", "expiresAt": ends}});
+    std::fs::write(&item, login.to_string()).unwrap();
+    let ernesto = TestObi::join_accepting(
+        &sphere,
+        "obi-ernesto",
+        "ernesto",
+        &["review_request", "question"],
+    )
+    .await;
+    let about = json!([{"kind": "repo", "repo": "obi-e2e/fixture-app"}]);
+    let question = ernesto.request(
+        "obi-wellington",
+        "question",
+        json!({"text": "Is the average fix landing Thursday?", "about": about}),
+        3600,
+    );
+    ernesto.send(&question).await;
+    tokio::task::block_in_place(|| {
+        waiting_for(&folder.0, "the refresh before the answer", |l| {
+            l.has("/usage")
+                && l.env
+                    .iter()
+                    .any(|name| name == "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        })
+    });
+}
+
 /// The launches that ran a model's turn, a little later: nothing launches it again by itself.
 fn turns_after_a_while(folder: &Path) -> usize {
     std::thread::sleep(Duration::from_secs(3));

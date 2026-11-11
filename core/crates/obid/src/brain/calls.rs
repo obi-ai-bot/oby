@@ -45,8 +45,9 @@ pub enum Failure {
 /// With a quoted file to read, it has Read and nothing else, boxed like a job.
 pub struct Quick {
     bin: PathBuf,
-    /// The account to think with (`CLAUDE_CONFIG_DIR`), or none for the default login.
-    config_dir: Option<PathBuf>,
+    /// The account to think with (its folder is `CLAUDE_CONFIG_DIR`), or none for the default
+    /// login.
+    account: Option<crate::config::Account>,
     home: PathBuf,
     jobs: Arc<crate::jobs::Jobs>,
     /// What the call is for, in its record: `triage`, `memory`, `recap`.
@@ -63,7 +64,7 @@ pub fn quick(shared: &Shared, kind: &'static str) -> Option<Quick> {
     let account = crate::jobs::claude_accounts(claude).into_iter().next();
     Some(Quick {
         bin,
-        config_dir: account.and_then(|a| a.config_dir),
+        account,
         home: shared.config.home.clone(),
         jobs: shared.jobs.clone(),
         kind,
@@ -182,9 +183,16 @@ impl Quick {
             "--json-schema".into(),
             secrets.redact(schema).into(),
         ]);
+        // Either way it runs on a copy of its login, which nothing renews once it runs: the
+        // login is refreshed first when it's due (KEYCHAIN-10). Boxed, it's the brain's account.
+        let ready = if quoted.is_some() {
+            None
+        } else {
+            self.account.as_ref()
+        };
+        self.jobs.claude_login_ready(ready).await.map_err(failed)?;
         // With nothing to read it has no tool at all; with the quoted file it reads, boxed.
         let (launch, own_group) = if quoted.is_some() {
-            self.jobs.claude_login_ready(None).await.map_err(failed)?;
             let launch = self
                 .jobs
                 .brain_launch(Tool::Claude, &folder.0, flags)
@@ -193,7 +201,7 @@ impl Quick {
         } else {
             let env = unboxed_env(
                 |name| std::env::var_os(name),
-                self.config_dir.as_deref(),
+                self.account.as_ref().and_then(|a| a.config_dir.as_deref()),
                 &folder.0,
             )
             .map_err(failed)?;

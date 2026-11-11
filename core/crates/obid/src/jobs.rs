@@ -395,19 +395,19 @@ fn waits_for_later(said: &str) -> bool {
 /// ([`agent::Failure`]: a 5xx or 429, overloaded, a dropped connection) and a CLI that ended with
 /// no result get [`CUT_WAITS`]'; an unknown error one, in its `session`. The tool's own fields
 /// decide first (RECOVERY-7): a 529 whose words hold `401` is still passing. A login refused on a
-/// run with a copy of it (`copy`: a boxed Claude Code run) gets one: the copy can end mid-run, and
-/// the next launch refreshes it first (KEYCHAIN-10).
+/// run whose copy of it ended mid-run (`ended`: a boxed Claude Code run's) gets one: the next launch
+/// refreshes it first (KEYCHAIN-10). A login refused for any other reason (revoked) gets none.
 fn retries(
     cause: Option<agent::Cause>,
     words: &str,
     session: bool,
     no_result: bool,
-    copy: bool,
+    ended: bool,
 ) -> usize {
     use agent::Cause;
     match cause {
         Some(Cause::Passing | Cause::Busy) => CUT_WAITS.len(),
-        Some(Cause::Login) => usize::from(copy),
+        Some(Cause::Login) => usize::from(ended),
         Some(Cause::Limit | Cause::TooLong | Cause::SessionGone) => 0,
         _ if retrying_wont_mend(words) || codex_login_refused(words) => 0,
         _ if no_result => CUT_WAITS.len(),
@@ -10738,8 +10738,11 @@ impl Jobs {
                         None if !chatgpt && limit_said => 0,
                         None => {
                             let words = if no_result { &ended } else { &error };
-                            let copy = tool == Tool::Claude && !Self::own_lane(&job, tool);
-                            retries(turn.cause(), words, session, no_result, copy)
+                            // KEYCHAIN-10: a boxed run's copy that ended, never a revoked login.
+                            let ended = tool == Tool::Claude
+                                && !Self::own_lane(&job, tool)
+                                && !login_copy_lasts(&self.login_path(id));
+                            retries(turn.cause(), words, session, no_result, ended)
                         }
                     };
                     let recovery = self.get(id).map(|j| j.recovery).unwrap_or_default();
@@ -16034,8 +16037,9 @@ mod tests {
 
     /// KEYCHAIN-10: with no keeper writing a running box's login copy again, a boxed Claude Code
     /// run whose copy ended mid-run is refused its login: it gets one more try, whose launch has
-    /// the Mac's own Claude Code refresh the login first and writes a new copy. A run on the
-    /// account's own login (the own lane), or a refusal on the try after, gets none.
+    /// the Mac's own Claude Code refresh the login first and writes a new copy. A refusal of a copy
+    /// that hasn't ended (a revoked login), a run on the account's own login (the own lane), or a
+    /// refusal on the try after, gets none.
     #[test]
     fn keychain_10_a_boxed_runs_ended_copy_gets_one_more_try() {
         use crate::agent::{Cause, Failure};

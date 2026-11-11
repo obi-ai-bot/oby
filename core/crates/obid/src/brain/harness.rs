@@ -1546,8 +1546,8 @@ async fn attempts(
             flags.extend(["--resume".into(), session.into()]);
         }
         flags.extend(["--mcp-config".into(), mcp.clone().into_os_string()]);
-        // As before a job's run (#651): the Keychain's default login refreshed when it's due and
-        // kept fresh while the turn runs; an account with a folder of its own refused near its end.
+        // As before a job's run (#651, KEYCHAIN-10): the Keychain's login refreshed when it's due,
+        // then copied; nothing renews the copy while the turn runs.
         if tool == Tool::Claude {
             shared
                 .jobs
