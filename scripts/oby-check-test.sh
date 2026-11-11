@@ -504,6 +504,13 @@ mkdir -p "$blok/linked"
 chmod 755 "$blok/linked"
 ln -s "$(pwd)/rel/oby-check-blok" "$blok/linked/oby-check-blok"
 ln -s "$(pwd)/rel/oby-check-blok-nodes" "$blok/linked/oby-check-blok-nodes"
+# A link in a folder nobody else may write, to a binary its group may write: judged where it leads.
+mkdir -p "$blok/link-out"
+chmod 755 "$blok/link-out"
+ln -s "$blok/writable/oby-check-blok" "$blok/link-out/oby-check-blok"
+stand_in "$blok/nodes-folder"
+rm "$blok/nodes-folder/oby-check-blok-nodes"
+mkdir -m 755 "$blok/nodes-folder/oby-check-blok-nodes"
 while IFS='|' read -r what path tmp; do
     if said=$(handed PATH="$path" TMPDIR="$tmp" ./oby-check.sh HEAD); then
         echo "oby-check-test: with $what, the check passed: $said" >&2
@@ -521,6 +528,8 @@ one in TMPDIR|$blok/bin:$bare|$blok
 one its group may write|$blok/writable:$bare|$repo/.tmp
 one in a folder others may write|$blok/open:$bare|$repo/.tmp
 a nodes binary its group may write|$blok/nodes:$bare|$repo/.tmp
+a link to one its group may write|$blok/link-out:$bare|$repo/.tmp
+a nodes binary that's a folder|$blok/nodes-folder:$bare|$repo/.tmp
 no nodes binary beside it|$blok/no-nodes:$bare|$repo/.tmp
 CASES
 rm -r rel
