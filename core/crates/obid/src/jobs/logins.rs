@@ -580,9 +580,10 @@ pub(super) fn own_sandbox_settings(
             .ok_or_else(|| format!("obid has no {wanted} it can give Claude Code."))?;
         pinned.insert(wanted.into(), value.into());
     }
+    let asked: Vec<&str> = FILE_TOOLS.iter().chain(&ASKED).copied().collect();
     Ok(json!({
         "env": pinned,
-        "permissions": {"deny": rules, "ask": FILE_TOOLS.iter().chain(&ASKED).collect::<Vec<_>>()},
+        "permissions": {"deny": rules, "ask": asked},
         "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,
