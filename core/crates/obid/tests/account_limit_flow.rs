@@ -1320,14 +1320,13 @@ fn limits_16_a_running_job_moves_by_hand() {
     assert_eq!(moves[0]["why"], "Claude keeps looping", "{}", moved.text);
     assert_eq!(moved.body["branch"], running["branch"], "{}", moved.text);
     // Codex's new session hears where the job was and why (the stand-in keeps sleeping there).
-    let threads = folder.0.join("home/logins").join(&id).join("threads");
-    let heard = within(60, "Codex takes the round over", || {
-        threads.is_dir().then(|| codex_heard(&folder, &id))
+    // fake-codex saves its thread at `thread/start` with no task yet and the task at `turn/start`:
+    // wait for the words themselves, not the thread folder.
+    within(60, "Codex takes the round over, hearing why", || {
+        let heard = codex_heard(&folder, &id);
+        (heard.contains("Claude keeps looping") && heard.contains("same worktree and branch"))
+            .then_some(())
     });
-    assert!(
-        heard.contains("Claude keeps looping") && heard.contains("same worktree and branch"),
-        "{heard}"
-    );
     call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
 }
 
