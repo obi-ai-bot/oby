@@ -12,7 +12,9 @@
 #                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
 #                                  obid sets it when it runs this on a job's base, which changed
 #                                  nothing, to see whether the base fails as the job does
-#                                  (docs/contracts/publishing.md, PUBLISHING-18)
+#                                  (docs/contracts/publishing.md, PUBLISHING-18); with neither
+#                                  OBY_CHECK_PLAN nor OBY_CHECK_ONLY, the installed
+#                                  `oby-check-blok check [base]` runs it, group by group (below)
 #
 #   core/                 the line limit below; cargo fmt --check; clippy -D warnings on the touched
 #                         crates; obid's lib tests of each touched module (src/a/b.rs: `a::b::`; all of them for
@@ -49,6 +51,21 @@ set -eo pipefail
 jobs="${OBY_BUILD_JOBS:-4}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-$jobs}"
 cd "$(dirname "$0")/.."
+
+# The check is the installed oby-check-blok's (BLOK-1, docs/contracts/publishing.md, PUBLISHING-26):
+# its built-in workflow (BLOK-2) runs this script's groups, each with OBY_CHECK_INNER and
+# OBY_CHECK_ONLY set, so it never comes back here. Only the copy on this Mac's PATH, by its absolute
+# path (it starts the nodes binary beside it), never one a commit carries; without it nothing
+# passes, as without gitleaks. OBY_CHECK_PLAN and OBY_CHECK_ONLY stay this script's own.
+if [[ -z "${OBY_CHECK_INNER:-}${OBY_CHECK_PLAN:-}${OBY_CHECK_ONLY:-}" ]]; then
+    blok=$(command -v oby-check-blok || true)
+    if [[ "$blok" != /* ]]; then
+        echo "oby-check: oby-check-blok isn't installed on PATH (cargo install --locked --path tools/oby-check-blok): nothing passes unchecked" >&2
+        echo 'oby-check: failed: oby-check-blok' >&2
+        exit 1
+    fi
+    exec "$blok" check "${1:-origin/dev}"
+fi
 
 base=$(git merge-base "${1:-origin/dev}" HEAD) || {
     echo "oby-check: can't find where the change starts (${1:-origin/dev})" >&2

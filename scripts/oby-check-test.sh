@@ -4,6 +4,9 @@
 set -eo pipefail
 # Each case plans what it changed: a full check's own OBY_CHECK_ALL or OBY_CHECK_PATHS isn't theirs.
 unset OBY_CHECK_ALL OBY_CHECK_PATHS OBY_CHECK_ONLY
+# Their runs are the script's own, never the installed oby-check-blok's (which sets this itself);
+# the cases of that hand-off, at the end, unset it.
+export OBY_CHECK_INNER=1
 script="$(cd "$(dirname "$0")" && pwd)/oby-check.sh"
 # obid installs the base's authoritative check script before running this test. Keep testing
 # its existing rules below, but test the new group interface against the commit that adds it.
@@ -445,5 +448,52 @@ said=$(OBY_CHECK_PATHS=README.md OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1
 ! grep -qE '^oby-check: group (rust|electron|swift)$' <<<"$said" || {
     echo "oby-check-test: unchanged groups were planned: $said" >&2; exit 1;
 }
+
+# The check is the installed oby-check-blok's (BLOK-1, PUBLISHING-26): a run with none of
+# OBY_CHECK_INNER, OBY_CHECK_PLAN and OBY_CHECK_ONLY hands itself to the one on PATH, by its absolute
+# path, from the repository's root, with its base. A stand-in says how it was called.
+blok=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-blok.XXXXXX")
+trap 'rm -rf "$repo" "$fake" "$blok"' EXIT
+printf '#!/bin/bash\necho "blok stand-in: $0 $* from $PWD"\nexit 7\n' >"$blok/oby-check-blok"
+chmod +x "$blok/oby-check-blok"
+# PATH with no oby-check-blok on it, the installed one included.
+bare=$(tr ':' '\n' <<<"$PATH" | while IFS= read -r dir; do
+    [[ -z "$dir" || -e "$dir/oby-check-blok" ]] || printf '%s:' "$dir"
+done)
+bare=${bare%:}
+handed() { (cd scripts && env -u OBY_CHECK_INNER -u OBY_CHECK_PLAN -u OBY_CHECK_ONLY OBY_CHECK_PATHS=README.md "$@" 2>&1); }
+said=$(handed PATH="$blok:$bare" ./oby-check.sh HEAD) && status=0 || status=$?
+[[ $status == 7 && "$said" == "blok stand-in: $blok/oby-check-blok check HEAD from $(pwd)" ]] || {
+    echo "oby-check-test: a run didn't hand itself to oby-check-blok, its status kept ($status): $said" >&2
+    exit 1
+}
+said=$(handed PATH="$blok:$bare" ./oby-check.sh) || true
+grep -qxF "blok stand-in: $blok/oby-check-blok check origin/dev from $(pwd)" <<<"$said" || {
+    echo "oby-check-test: with no base, oby-check-blok wasn't given origin/dev: $said" >&2
+    exit 1
+}
+# Under oby-check-blok (OBY_CHECK_INNER), and planning or running one group, the script runs itself.
+for set in OBY_CHECK_INNER=1 OBY_CHECK_PLAN=1 OBY_CHECK_ONLY=scan; do
+    said=$(handed PATH="$blok:$bare" "$set" ./oby-check.sh HEAD) || true
+    ! grep -q 'blok stand-in' <<<"$said" && grep -q '^==> \|oby-check: gitleaks' <<<"$said" || {
+        echo "oby-check-test: with $set, the script didn't run itself: $said" >&2
+        exit 1
+    }
+done
+# None installed, or only by a relative path a commit could carry: nothing passes, and the script
+# never runs its own check instead.
+mkdir -p rel
+cp "$blok/oby-check-blok" rel/
+for path in "$bare" "rel:$bare"; do
+    if said=$(handed PATH="$path" ./oby-check.sh HEAD); then
+        echo "oby-check-test: with no oby-check-blok installed ($path), the check passed: $said" >&2
+        exit 1
+    fi
+    grep -qxF 'oby-check: failed: oby-check-blok' <<<"$said" && ! grep -q 'blok stand-in\|^==> ' <<<"$said" || {
+        echo "oby-check-test: with no oby-check-blok installed ($path), it didn't fail naming it: $said" >&2
+        exit 1
+    }
+done
+rm -r rel
 
 echo 'oby-check-test: passed'
