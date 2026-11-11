@@ -266,7 +266,7 @@ pub(crate) fn own_sandbox_env(
 }
 
 /// `account`'s Claude Code folder: its `configDir`, else `~/.claude` in `home`.
-fn claude_folder(account: &crate::config::Account, home: &Path) -> PathBuf {
+pub(super) fn claude_folder(account: &crate::config::Account, home: &Path) -> PathBuf {
     account
         .config_dir
         .clone()
@@ -308,6 +308,10 @@ pub(crate) fn own_settings_allowed(
     spec: &Spec,
     ours: &[(&'static str, OsString)],
 ) -> Result<(), String> {
+    // Claude Code's managed settings outrank obid's `--settings` (LANES-17); its account's
+    // `remote-settings.json`, the organization's, is beside `file`.
+    let remote = file.with_file_name("remote-settings.json");
+    managed_hooks_allowed(Path::new(MANAGED_FOLDER), &MANAGED_PLISTS, &remote)?;
     let tree = spec.worktree.clone();
     let spec = spec.canonical();
     let home = login_home();
@@ -412,6 +416,108 @@ pub(crate) fn own_settings_allowed(
     Ok(())
 }
 
+/// Where Claude Code 2.1.302 reads its managed settings: `managed-settings.json` and the `.json`
+/// files of `managed-settings.d` in this folder, and, on macOS, its managed preferences.
+#[cfg(target_os = "macos")]
+const MANAGED_FOLDER: &str = "/Library/Application Support/ClaudeCode";
+#[cfg(not(target_os = "macos"))]
+const MANAGED_FOLDER: &str = "/etc/claude-code";
+const MANAGED_PLISTS: [&str; 2] = [
+    "/Library/Managed Preferences/com.anthropic.claudecode.plist",
+    "/Library/Managed Preferences/$USER/com.anthropic.claudecode.plist",
+];
+
+/// Refused, naming the document and its key, when Claude Code's managed settings (in `folder`,
+/// the `plists`, the organization's `remote` ones) name any hook setting but `disableAllHooks:
+/// true`: they outrank obid's `--settings`, so a managed `disableAllHooks: false` or a managed hook
+/// would run hooks outside the sandbox with the owner's rights (LANES-17, the owner's LANE-6b).
+/// One obid can't read, or that isn't JSON, is refused too: obid can't tell what it sets.
+pub(super) fn managed_hooks_allowed(
+    folder: &Path,
+    plists: &[&str],
+    remote: &Path,
+) -> Result<(), String> {
+    let cant = |doc: &Path, e: &dyn std::fmt::Display| {
+        format!(
+            "obid can't read Claude Code's managed settings in {} ({e}), so it can't tell whether they run hooks: an own run never does.",
+            doc.display()
+        )
+    };
+    let drop_ins = folder.join("managed-settings.d");
+    let mut docs = vec![folder.join("managed-settings.json"), remote.to_path_buf()];
+    match std::fs::read_dir(&drop_ins) {
+        // As Claude Code: a file or a link named `*.json`, not starting with a dot.
+        Ok(entries) => docs.extend(
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file() || t.is_symlink()))
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension().is_some_and(|e| e == "json")
+                        && !p
+                            .file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+                }),
+        ),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {}
+        Err(e) => return Err(cant(&drop_ins, &e)),
+    }
+    // As Claude Code names the person: the password database's, not `$USER`.
+    let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten();
+    let user = user.map(|user| user.name).unwrap_or_default();
+    let plists = plists
+        .iter()
+        .map(|p| PathBuf::from(p.replace("$USER", &user)));
+    for (doc, plist) in docs
+        .into_iter()
+        .map(|d| (d, false))
+        .chain(plists.map(|p| (p, true)))
+    {
+        let text = match std::fs::read(&doc) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(cant(&doc, &e)),
+            Ok(_) if plist => std::process::Command::new("/usr/bin/plutil")
+                .args(["-convert", "json", "-o", "-", "--"])
+                .arg(&doc)
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| out.stdout)
+                .ok_or_else(|| cant(&doc, &"plutil can't convert it"))?,
+            Ok(text) => text,
+        };
+        let set: Value = serde_json::from_slice(&text).map_err(|e| cant(&doc, &e))?;
+        if let Some(key) = hook_key(&set) {
+            return Err(format!(
+                "Claude Code's managed settings in {} set {key}, which would run hooks, plugins or a policy helper in an own run outside its sandbox, and they outrank obid's settings: an own run never runs hooks, so it doesn't start. Ask whoever manages this Mac to take it out.",
+                doc.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The managed setting in `set` that would run hooks past obid's `disableAllHooks: true` (the
+/// owner's MANAGED-1): `hooks`, `disableAllHooks: false`, a plugin it
+/// turns on (`enabledPlugins`: a managed plugin's hooks still run), or a policy helper, a program
+/// whose answer is more managed settings (`policyHelper`, `policyHelpers`). Not
+/// `allowManagedHooksOnly`: it turns no hook on, and obid's `disableAllHooks` runs none anyway.
+fn hook_key(set: &Value) -> Option<String> {
+    let on = |key: &str| match &set[key] {
+        Value::Null => false,
+        Value::Bool(on) => *on != (key == "disableAllHooks"),
+        Value::Object(plugins) if key == "enabledPlugins" => {
+            plugins.values().any(|on| on != &Value::Bool(false))
+        }
+        _ => true,
+    };
+    #[rustfmt::skip]
+    let keys = ["hooks", "disableAllHooks", "enabledPlugins", "policyHelper", "policyHelpers"];
+    keys.into_iter().find(|key| on(key)).map(str::to_owned)
+}
+
 /// The path a settings file's sandbox `path` names, as Claude Code reads it: `~/…` in `home`, `/…`
 /// (or the older `//…`) from the root, anything else from `dir` (the project's folder for its
 /// settings, `~/.claude` for the user's: its folder). None for a `~` with no `home`.
@@ -425,14 +531,51 @@ fn settings_path(path: &str, dir: &Path, home: Option<&Path>) -> Option<PathBuf>
     })
 }
 
+/// Every built-in tool of Claude Code's: 2.1.302's (its `init` event's `tools`, with `--tools`
+/// naming each it can turn on), then names it took before or takes as another's (`Agent` for
+/// `Task`, `KillShell` for `TaskStop`). An own run asks obid before every call of each, and of
+/// every MCP tool ([`own_sandbox_settings`]'s `ask`, LANES-14): an ask rule beats a skill's
+/// `allowed-tools`, an allow rule and a hook's `allow` (measured with 2.1.302), so nothing of the
+/// owner's lets a call past obid's rules. A tool a later Claude Code adds and this doesn't name
+/// skips them: `lanes_14_a_skills_grant_still_asks_obid` says which.
+#[rustfmt::skip]
+pub(crate) const CLAUDE_TOOLS: [&str; 48] = [
+    "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+    "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep", "ListAgents",
+    "Monitor", "NotebookEdit", "PushNotification", "Read", "RemoteTrigger", "ReportFindings",
+    "ScheduleWakeup", "SendMessage", "Skill", "Task", "TaskCreate", "TaskGet", "TaskList",
+    "TaskStop", "TaskUpdate", "ToolSearch", "WebFetch", "WebSearch", "Workflow", "Write",
+    // Its MCP servers' resources, which it lists only for a server that has some, and a helper's
+    // report back.
+    "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool", "SubagentHandback",
+    // Older names, and others' it still takes.
+    "Agent", "BashOutput", "KillBash", "KillShell", "LS", "LSP", "MultiEdit", "NotebookRead",
+    "TaskOutput", "TodoWrite",
+];
+
+/// Claude Code's tools that read the owner's MCP servers' resources: the owner's MCP servers'
+/// reads, as their tools are (LANE-12), so obid lets them run, and each one counts as the run
+/// having read something untrusted.
+pub(crate) const MCP_RESOURCE_TOOLS: [&str; 3] = [
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+    "ReadMcpResourceDirTool",
+];
+
+/// The built-in tools an own job's Claude Code has (`--tools`, LANES-14): 2.1.302's default ones
+/// obid knows how to answer, and its MCP servers' resources. One it adds later, or one it has but
+/// obid doesn't answer (`Monitor`, `EnterWorktree`, the `Cron*` and remote tools), isn't there.
+pub(crate) const OWN_JOB_TOOLS: &str = "AskUserQuestion,Bash,Edit,EnterPlanMode,ExitPlanMode,ListAgents,NotebookEdit,Read,Skill,Task,TaskStop,ToolSearch,WebFetch,WebSearch,Write,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
+
 /// The tools whose permission rules name files they read or write: an allow rule for one reaches
 /// what it names without asking ([`own_settings_allowed`]).
-const FILE_TOOLS: [&str; 8] = [
+pub(super) const FILE_TOOLS: [&str; 9] = [
     "Read",
     "Edit",
     "Write",
     "MultiEdit",
     "NotebookEdit",
+    "NotebookRead",
     "Grep",
     "Glob",
     "LS",
@@ -516,9 +659,10 @@ pub(super) fn shell_quoted(text: &str) -> String {
 /// only where the box would ([`Spec::writable`]), and never the git pointers, `oby-common` or
 /// `env.sh` in `login`, which Claude Code lets its commands write whatever the settings say: obid
 /// writes it again every turn, never through a link, [`write_fresh`], and what it sets reaches only
-/// them. Its Read and Edit tools ask before going outside the worktree, which obid refuses in this
-/// mode (`policy::names_outside`), and are denied the pointers and that file outright. obid still
-/// answers each of its commands (`autoAllowBashIfSandboxed` off). A path the settings can't name
+/// them. Every call of a built-in tool or an MCP tool asks obid ([`CLAUDE_TOOLS`]),
+/// which refuses a path outside the worktree in this mode (crate::jobs, `own_reach`); its Edit is
+/// denied the pointers and that file outright. obid answers each of its commands too
+/// (`autoAllowBashIfSandboxed` off). A path the settings can't name
 /// stops the run. They outrank the owner's user settings the run loads too (LANES-5): the sandbox
 /// stays on, its filesystem rules too (`filesystem.disabled`, a key Claude Code 2.1.302 reads),
 /// neither weaker mode, and the [`PINNED_ENV`] values are `env`'s (the run's own), whatever that
@@ -574,9 +718,13 @@ pub(super) fn own_sandbox_settings(
             .ok_or_else(|| format!("obid has no {wanted} it can give Claude Code."))?;
         pinned.insert(wanted.into(), value.into());
     }
+    let asked: Vec<&str> = CLAUDE_TOOLS.iter().chain(&["mcp__*"]).copied().collect();
     Ok(json!({
         "env": pinned,
-        "permissions": {"deny": rules},
+        "permissions": {"deny": rules, "ask": asked},
+        // None of the owner's hooks, a skill's included: they run outside the sandbox with the
+        // owner's rights, and one could run what the run wrote (LANES-17, the owner's LANE-6b).
+        "disableAllHooks": true,
         "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,

@@ -41,6 +41,78 @@ impl Jobs {
         })
     }
 
+    /// obid's fixed answer to an own run's call in `worktree` of job `id` (LANES-14), which Claude
+    /// Code asks about whatever the owner's settings, skills or hooks allow (its `ask` rules,
+    /// [`own_sandbox_settings`]): its tools run unboxed, so never the worktree's `.git`, which
+    /// obid's later git calls would otherwise follow, nor a path outside the worktree but Claude
+    /// Code's own places ([`claude_place`]). None: the job's mode and rules answer it.
+    pub(super) fn own_reach(
+        &self,
+        id: &str,
+        name: &str,
+        input: &Value,
+        worktree: &Path,
+    ) -> Option<Answer> {
+        if Self::OWN_QUIET.contains(&name) || MCP_RESOURCE_TOOLS.contains(&name) {
+            return Some(Answer::Allow);
+        }
+        let pointer = policy::real_path(&worktree.join(".git"));
+        let names_pointer = ["file_path", "notebook_path"]
+            .iter()
+            .filter_map(|key| input.get(*key).and_then(Value::as_str))
+            .any(|path| policy::real_path(&worktree.join(path)) == pointer);
+        if names_pointer {
+            return Some(Answer::Deny(
+                "obid keeps the worktree's .git as it made it.".into(),
+            ));
+        }
+        if !policy::names_outside(name, input, worktree) {
+            return None;
+        }
+        let plan = self
+            .get(id)
+            .is_some_and(|j| Self::mode_of(&j) == Mode::Plan);
+        let temp = self.temp_path(id);
+        Some(
+            match claude_place(
+                name,
+                input,
+                worktree,
+                Some(&temp),
+                &self.claude_folders(),
+                plan,
+            ) {
+                true => Answer::Allow,
+                false => Answer::Deny(format!(
+                    "Stay inside this job's worktree ({}).",
+                    worktree.display()
+                )),
+            },
+        )
+    }
+
+    /// The built-in tools of Claude Code's an own run asks obid about (its `ask` rules, LANES-14)
+    /// that reach nothing past the session: finding a deferred tool, its task list, its own
+    /// background tasks, its agents' names, planning, a helper's report, a skill of the owner's
+    /// (whose `allowed-tools` no longer skip obid, and whose hooks never run: LANES-17). obid lets
+    /// them run at once, as Claude Code did.
+    #[rustfmt::skip]
+    pub(crate) const OWN_QUIET: [&'static str; 11] = [
+        "ToolSearch", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop",
+        "ListAgents", "EnterPlanMode", "Skill", "SubagentHandback",
+    ];
+
+    /// Every Claude Code account's folder: each `configDir`, and the person's `~/.claude`.
+    pub(crate) fn claude_folders(&self) -> Vec<PathBuf> {
+        let mut folders: Vec<PathBuf> = self
+            .accounts(Tool::Claude)
+            .into_iter()
+            .filter_map(|account| account.config_dir)
+            .collect();
+        folders.extend(login_home().map(|person| person.join(".claude")));
+        folders
+    }
+
     /// An own Claude Code conversation's session (crate::brain::harness, LANES-12), as an own job's
     /// run: on `account`'s own folder and login, unboxed by obid, its Bash in Claude Code's own
     /// sandbox ([`own_sandbox_settings`]), which writes only `room` (not `frozen` in it) and `temp`,
@@ -150,6 +222,8 @@ impl Jobs {
             .collect();
         places.extend(["vault", "keys", "api-token", "accounts", "logins"].map(|n| home.join(n)));
         let conversations = home.join("conversations");
+        // The stored threads, every conversation's (LANES-15), and the next one's id.
+        places.extend(["*.json", "next-id"].map(|n| conversations.join(n)));
         let each = conversations.join("*");
         // `login` whole: a running turn's Oby and Tetrix tokens (`oby-mcp.json`), its `env.sh`, a
         // boxed one's login copy.
@@ -169,16 +243,8 @@ impl Jobs {
         places.extend(
             [CONVERSATION_MCP_FILE, ".claude", ".claude.json"].map(|n| each.join("home").join(n)),
         );
-        let mut folders: Vec<PathBuf> = self
-            .accounts(Tool::Claude)
-            .into_iter()
-            .filter_map(|account| account.config_dir)
-            .collect();
-        if let Some(person) = login_home() {
-            folders.push(person.join(".claude"));
-            places.push(person.join(".claude.json"));
-        }
-        for folder in folders {
+        places.extend(login_home().map(|person| person.join(".claude.json")));
+        for folder in self.claude_folders() {
             let made = [
                 "settings*.json",
                 ".claude.json",
@@ -222,6 +288,69 @@ impl Jobs {
         spec.accounts.clear();
         spec
     }
+}
+
+/// Whether an own run's `tool` call, which names a path outside its working folder `cwd`, reaches
+/// only Claude Code's own places, which it read or wrote without asking before its `ask` rules
+/// (LANES-14): to read, its commands' `temp` folder (their background output, `CLAUDE_CODE_TMPDIR`)
+/// and `projects/<cwd as Claude Code names it>` in an account's `folders` (long outputs it saved,
+/// its memory); in `plan` mode, to write, a plan in an account's `plans/`, never through a link,
+/// nor one of a file's other names (a hard link).
+/// Only absolute paths: a relative one is the working folder's, which a link there may lead out of.
+pub(crate) fn claude_place(
+    tool: &str,
+    input: &Value,
+    cwd: &Path,
+    temp: Option<&Path>,
+    folders: &[PathBuf],
+    plan: bool,
+) -> bool {
+    let named = ["file_path", "notebook_path", "path"]
+        .iter()
+        .filter_map(|key| input.get(*key).and_then(Value::as_str));
+    if !named.clone().all(|p| p.starts_with('/')) {
+        return false;
+    }
+    let real = |p: &Path| p.canonicalize().ok();
+    if ["Read", "Grep", "Glob", "LS", "NotebookRead"].contains(&tool) {
+        // Claude Code's name for a folder: every character but a letter or digit is `-`.
+        let name = |p: &Path| -> String {
+            let p = p.to_string_lossy();
+            p.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect()
+        };
+        let names = [Some(cwd.to_path_buf()), real(cwd)].map(|p| p.map(|p| name(&p)));
+        let projects = folders.iter().flat_map(|f| {
+            names
+                .iter()
+                .flatten()
+                .map(move |n| f.join("projects").join(n))
+        });
+        return temp
+            .map(Path::to_path_buf)
+            .into_iter()
+            .chain(projects)
+            .any(|root| !policy::names_outside(tool, input, &root));
+    }
+    let plans: Vec<PathBuf> = folders
+        .iter()
+        .filter_map(|f| real(&f.join("plans")))
+        .collect();
+    plan && matches!(tool, "Write" | "Edit")
+        && input["file_path"]
+            .as_str()
+            .map(Path::new)
+            .is_some_and(|file| {
+                file.extension().is_some_and(|e| e == "md")
+                    && std::fs::symlink_metadata(file).map_or(true, |m| {
+                        m.is_file() && std::os::unix::fs::MetadataExt::nlink(&m) == 1
+                    })
+                    && file
+                        .parent()
+                        .and_then(real)
+                        .is_some_and(|dir| plans.contains(&dir))
+            })
 }
 
 #[cfg(test)]
@@ -571,6 +700,545 @@ mod tests {
         assert!(!check.proxied);
         assert!(check.loopback);
         assert!(check.accounts.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// obid's jobs on a home in `root`, with one Claude Code account with a folder of its own, and
+    /// a "sandbox" that runs what it's given (`root/session`).
+    fn own_jobs(root: &Path) -> Arc<Jobs> {
+        use std::os::unix::fs::PermissionsExt;
+        let session = root.join("session");
+        std::fs::write(&session, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(root.join("account")).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "a", "name": "A", "configDir": root.join("account")}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let events = crate::events::Events::new();
+        Jobs::open(config, events, Sandbox::detect(&session)).unwrap()
+    }
+
+    /// Claude Code 2.1.302's built-in tools, as its stream-json `init` event lists them with
+    /// `--tools` naming every tool it might have (`lanes_14_a_skills_grant_still_asks_obid` reads
+    /// a later Claude Code's list itself).
+    #[rustfmt::skip]
+    const INIT_TOOLS: [&str; 34] = [
+        "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+        "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep",
+        "ListAgents", "Monitor", "NotebookEdit", "PushNotification", "Read", "RemoteTrigger",
+        "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "Task", "TaskCreate",
+        "TaskGet", "TaskList", "TaskStop", "TaskUpdate", "ToolSearch", "WebFetch", "WebSearch",
+        "Workflow", "Write",
+    ];
+
+    /// LANES-14: every built-in tool of Claude Code's is one an own run asks obid about, and so is
+    /// every tool obid's lists name (the file tools' rules, the harmless ones it lets run).
+    #[test]
+    fn lanes_14_every_built_in_tool_asks_obid() {
+        for tool in INIT_TOOLS.iter().chain(&FILE_TOOLS).chain(&Jobs::OWN_QUIET) {
+            assert!(CLAUDE_TOOLS.contains(tool), "{tool}");
+        }
+    }
+
+    /// LANES-17: an own job's Claude Code runs none of the owner's hooks (`disableAllHooks`); and
+    /// (LANES-14) it has only the built-in tools obid answers (`--tools`), its MCP servers'
+    /// resources among them, never one obid doesn't know.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_17_an_own_job_has_only_the_tools_obid_answers_and_no_hooks() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-14e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let job = Job::new(
+            "own".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        let [worktree, admin, common, temp] =
+            ["worktree", "admin", "common", "temp"].map(|d| root.join(d));
+        for dir in [&worktree, &admin, &common, &temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
+        let account = jobs.accounts(Tool::Claude).remove(0);
+        let launch = jobs
+            .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
+            .unwrap();
+        let argv: Vec<&str> = launch.argv.iter().filter_map(|a| a.to_str()).collect();
+        let at = argv.iter().position(|a| *a == "--tools").unwrap();
+        let tools: Vec<&str> = argv[at + 1].split(',').collect();
+        for tool in &tools {
+            assert!(CLAUDE_TOOLS.contains(tool), "{tool}");
+        }
+        for tool in MCP_RESOURCE_TOOLS
+            .iter()
+            .chain(&["Read", "Bash", "Skill", "Task"])
+        {
+            assert!(tools.contains(tool), "{tool}: {tools:?}");
+        }
+        for tool in [
+            "Monitor",
+            "EnterWorktree",
+            "CronCreate",
+            "RemoteTrigger",
+            "Workflow",
+        ] {
+            assert!(!tools.contains(&tool), "{tool}: {tools:?}");
+        }
+        let at = argv.iter().position(|a| *a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(argv[at + 1]).unwrap();
+        assert_eq!(settings["disableAllHooks"], true, "{settings}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-14: of what an own run asks obid, what reaches nothing past the session runs at once;
+    /// any other tool goes to the job's mode and rules, and a file outside the worktree is refused.
+    #[test]
+    fn lanes_14_an_own_runs_harmless_tools_run_at_once() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-14d-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let worktree = root.join("worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let reach = |tool: &str, input: Value| jobs.own_reach("j", tool, &input, &worktree);
+        for tool in ["Skill", "ToolSearch", "TaskStop", "TodoWrite"] {
+            assert_eq!(reach(tool, json!({})), Some(Answer::Allow), "{tool}");
+        }
+        assert_eq!(reach("Monitor", json!({"command": "ls"})), None);
+        let secret = json!({"file_path": root.join("home/vault/secrets.json")});
+        assert!(matches!(reach("Read", secret), Some(Answer::Deny(_))));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-14 (docs/contracts/lanes.md): an own run's Claude Code asks obid before every call of
+    /// a built-in or MCP tool, whatever the owner's skills, settings or hooks allow: its
+    /// `--settings` name them all as `ask` rules, which beat those.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_14_every_call_of_an_own_run_asks_obid() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-14-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let place = jobs.config.home.join("conversations/c");
+        let [room, temp, login] = ["room", "home", "login"].map(|d| place.join(d));
+        for dir in [&room, &temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let claude = jobs.accounts(Tool::Claude).remove(0);
+        let launch = jobs
+            .conversation_own_launch(
+                &claude,
+                &room,
+                &temp,
+                &login,
+                Vec::new(),
+                Vec::new(),
+                place.join("log"),
+            )
+            .unwrap();
+        let at = launch.argv.iter().position(|a| a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(launch.argv[at + 1].to_str().unwrap()).unwrap();
+        // LANES-17: none of the owner's hooks, in a conversation as in a job.
+        assert_eq!(settings["disableAllHooks"], true, "{settings}");
+        let asked = &settings["permissions"]["ask"];
+        for tool in CLAUDE_TOOLS.iter().chain(&["mcp__*"]) {
+            assert!(
+                asked
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|t| t == tool)),
+                "{tool}: {asked}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-14: of what lies outside an own run's working folder obid lets it reach only Claude
+    /// Code's own places: its commands' temp folder and its account's `projects/<that folder>` to
+    /// read, and in Plan mode a plan in `plans/`; never another folder, a relative path a link
+    /// in the room could lead out of, a link in those places, or a plan that isn't one.
+    #[test]
+    fn lanes_14_an_own_run_reaches_only_claude_codes_own_places() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-14b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let [cwd, temp, folder, outside] =
+            ["work tree", "temp", "account", "outside"].map(|d| root.join(d));
+        let name: String = cwd
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let saved = folder.join("projects").join(&name).join("s/tool-results");
+        for dir in [&cwd, &temp, &saved, &folder.join("plans"), &outside] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(outside.join("secret"), "s").unwrap();
+        std::os::unix::fs::symlink(&outside, temp.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside, cwd.join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret"), folder.join("plans/linked.md")).unwrap();
+        std::fs::hard_link(outside.join("secret"), folder.join("plans/also.md")).unwrap();
+        let folders = vec![folder.clone()];
+        let place = |tool: &str, path: &Path, plan: bool| {
+            let key = if tool == "Grep" { "path" } else { "file_path" };
+            let input = json!({ key: path });
+            claude_place(tool, &input, &cwd, Some(&temp), &folders, plan)
+        };
+        assert!(place(
+            "Read",
+            &temp.join("claude-501/x/tasks/t.output"),
+            false
+        ));
+        assert!(place("Read", &saved.join("r.txt"), false));
+        assert!(place("Grep", &folder.join("projects").join(&name), false));
+        assert!(place("Write", &folder.join("plans/a-plan.md"), true));
+        for (tool, path, plan) in [
+            ("Read", outside.join("secret"), false),
+            ("Read", temp.join("link/secret"), false),
+            ("Read", folder.join("projects/-other/r.txt"), false),
+            ("Read", folder.join("settings.json"), false),
+            ("Edit", temp.join("x"), false),
+            ("Write", folder.join("plans/a-plan.md"), false),
+            ("Write", folder.join("plans/linked.md"), true),
+            ("Write", folder.join("plans/also.md"), true),
+            ("Write", folder.join("plans/a.json"), true),
+            ("Write", folder.join("plans/../settings.md"), true),
+        ] {
+            assert!(!place(tool, &path, plan), "{tool} {}", path.display());
+        }
+        // Claude Code reads it as the working folder's `out/secret`, the link's: not the temp's.
+        assert!(!place("Read", Path::new("out/secret"), false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-14, measured on this Mac's real Claude Code: a skill whose `allowed-tools` grants
+    /// Write, a hook that answers `allow`, and an allow rule for an MCP tool each let a call through
+    /// without asking, unless obid's `ask` rules are there; then it asks, and with no one to answer
+    /// (`-p`) nothing happens. Every built-in tool its `init` event lists is one obid's rules name
+    /// (`NotebookRead` is no tool of 2.1.302's). Nothing of the login is read or printed.
+    /// `cargo test -p obid --lib lanes_14_a_skill -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "runs the real Claude Code on this Mac's own login"]
+    fn lanes_14_a_skills_grant_still_asks_obid() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lanes-14c-{}", uuid::Uuid::new_v4()));
+        let [work, outside] = ["work", "outside"].map(|d| root.join(d));
+        let skill = work.join(".claude/skills/probe");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: probe\ndescription: Writes any file the user names.\nallowed-tools: Edit, Write, Read\n---\nWrite the file the user names with the Write tool.\n",
+        )
+        .unwrap();
+        // A hook that allows every call, and an MCP server whose one tool leaves a file when called.
+        let script = |name: &str, text: String| {
+            let path = root.join(name);
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let hook = script(
+            "allow.sh",
+            "#!/bin/sh\necho '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'\n".into(),
+        );
+        let called = outside.join("mcp-called");
+        let server = script(
+            "mcp.pl",
+            format!(
+                r#"#!/usr/bin/perl
+                $| = 1;
+                while (<STDIN>) {{
+                  next unless /"id":\s*(\d+)/; my $id = $1; my $r = "{{}}";
+                  if (/"initialize"/) {{ $r = '{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}},"resources":{{}}}},"serverInfo":{{"name":"probe","version":"1"}}}}' }}
+                  elsif (/"tools\/list"/) {{ $r = '{{"tools":[{{"name":"echo","description":"Echoes.","inputSchema":{{"type":"object"}}}}]}}' }}
+                  elsif (/"tools\/call"/) {{ open(my $f, ">", "{}"); close $f; $r = '{{"content":[{{"type":"text","text":"ok"}}]}}' }}
+                  print "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$r}}\n";
+                }}
+"#,
+                called.display()
+            ),
+        );
+        let mcp = root.join("mcp.json");
+        let servers = json!({"mcpServers": {"probe": {"command": server}}});
+        std::fs::write(&mcp, servers.to_string()).unwrap();
+        // obid lets its harmless tools run at once (`OWN_QUIET`); with no one to answer here,
+        // `--allowedTools` stands in for that answer, and they're left out of the `ask` rules.
+        let quiet = |t: &&&str| !Jobs::OWN_QUIET.contains(t);
+        let ask: Vec<&str> = CLAUDE_TOOLS
+            .iter()
+            .filter(quiet)
+            .chain(&["mcp__*"])
+            .copied()
+            .collect();
+        // What Claude Code did with `settings` and `prompt`, and the built-in tools it had.
+        let run = |settings: Value, prompt: &str, tools: Option<&str>| -> Vec<String> {
+            let mut command = std::process::Command::new("claude");
+            command
+                .current_dir(&work)
+                .args([
+                    "-p",
+                    "--no-session-persistence",
+                    "--setting-sources",
+                    "project",
+                ])
+                .args(["--permission-mode", "default", "--model", "sonnet"])
+                .args([
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--allowedTools",
+                ])
+                .arg(Jobs::OWN_QUIET.join(","))
+                .args(tools.map(|tools| ["--tools", tools]).into_iter().flatten())
+                .args(["--strict-mcp-config", "--mcp-config", mcp.to_str().unwrap()])
+                .args(["--settings", &settings.to_string()])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            for (name, _) in std::env::vars() {
+                if name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC_") {
+                    command.env_remove(name);
+                }
+            }
+            let mut child = command.spawn().unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(prompt.as_bytes())
+                .unwrap();
+            let mut tools = Vec::new();
+            for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
+                let line: Value = serde_json::from_str(&line.unwrap()).unwrap_or_default();
+                if line["subtype"] == "init" {
+                    let names = line["tools"].as_array().cloned().unwrap_or_default();
+                    tools = names
+                        .iter()
+                        .filter_map(|t| t.as_str().map(str::to_owned))
+                        .collect();
+                }
+            }
+            child.wait().unwrap();
+            tools
+        };
+        let with = |settings: Value, asked: bool| match asked {
+            true => {
+                let mut settings = settings;
+                settings["permissions"]["ask"] = json!(ask);
+                settings
+            }
+            false => settings,
+        };
+        let write = |name: &str| {
+            format!(
+                "Use the Write tool to create {} containing the word x. If refused, stop.",
+                outside.join(name).display()
+            )
+        };
+        let hooked = json!({"hooks": {"PreToolUse": [{"matcher": "Write",
+            "hooks": [{"type": "command", "command": hook}]}]}});
+        let allowed = json!({"permissions": {"allow": ["mcp__probe__echo"]}});
+        for asked in [false, true] {
+            let tag = if asked { "asked" } else { "granted" };
+            let skill = format!(
+                "Invoke the probe skill with the Skill tool, then: {}",
+                write(tag)
+            );
+            let tools = run(with(json!({}), asked), &skill, None);
+            for tool in tools.iter().filter(|t| !t.starts_with("mcp__")) {
+                assert!(
+                    CLAUDE_TOOLS.contains(&tool.as_str()),
+                    "{tool} skips obid's rules"
+                );
+            }
+            assert_eq!(outside.join(tag).exists(), !asked, "a skill's grant, {tag}");
+            let hook = format!("hook-{tag}");
+            run(with(hooked.clone(), asked), &write(&hook), None);
+            assert_eq!(
+                outside.join(&hook).exists(),
+                !asked,
+                "a hook's allow, {tag}"
+            );
+            let _ = std::fs::remove_file(&called);
+            run(
+                with(allowed.clone(), asked),
+                "Call the MCP tool mcp__probe__echo once. If refused, stop.",
+                None,
+            );
+            assert_eq!(called.exists(), !asked, "an MCP allow rule, {tag}");
+        }
+        // LANES-17: neither a hook in the settings nor a skill's runs under obid's settings, which
+        // outrank the project's `disableAllHooks: false` as they do the user's; and with an own
+        // job's `--tools` the skills, the MCP tools and their resources stay.
+        let fired = [outside.join("settings-hook"), outside.join("skill-hook")];
+        let touch =
+            |at: &Path| json!([{"type": "command", "command": format!("touch {}", at.display())}]);
+        let settings = json!({"disableAllHooks": false,
+            "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": touch(&fired[0])}]}});
+        std::fs::write(work.join(".claude/settings.json"), settings.to_string()).unwrap();
+        let hooked = work.join(".claude/skills/hooked");
+        std::fs::create_dir_all(&hooked).unwrap();
+        let skill_hook = format!(
+            "---\nname: hooked\ndescription: Reads a file.\nhooks:\n  PreToolUse:\n    - matcher: \"Read\"\n      hooks:\n        - type: command\n          command: \"touch {}\"\n---\nRead the file the user names.\n",
+            fired[1].display()
+        );
+        std::fs::write(hooked.join("SKILL.md"), skill_hook).unwrap();
+        std::fs::write(work.join("in.txt"), "in").unwrap();
+        let read = "Invoke the hooked skill with the Skill tool, then Read in.txt in this folder.";
+        run(json!({}), read, None);
+        assert!(
+            fired.iter().all(|f| f.exists()),
+            "no hook ran: the probe proves nothing"
+        );
+        fired.iter().for_each(|f| drop(std::fs::remove_file(f)));
+        let tools = run(json!({"disableAllHooks": true}), read, Some(OWN_JOB_TOOLS));
+        assert!(!fired.iter().any(|f| f.exists()), "a hook ran");
+        for tool in ["Skill", "mcp__probe__echo", "ReadMcpResourceTool"] {
+            assert!(tools.iter().any(|t| t == tool), "{tool}: {tools:?}");
+        }
+        assert!(!tools.iter().any(|t| t == "Monitor"), "{tools:?}");
+        // The empty memory folder Claude Code makes for its working folder, in the person's own.
+        let name: String = (work.canonicalize().unwrap().to_string_lossy().chars())
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let projects = login_home().unwrap().join(".claude/projects");
+        let _ = std::fs::remove_dir_all(projects.join(name));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-17: Claude Code's managed settings outrank obid's `disableAllHooks`, so an own run
+    /// doesn't start when they'd run a hook (`disableAllHooks: false`, `hooks`, in the managed
+    /// file, a drop-in, the organization's remote settings or a managed preferences plist), nor
+    /// when one can't be read; with none of them, or only `disableAllHooks: true`, it starts.
+    #[test]
+    fn lanes_17_managed_settings_that_would_run_hooks_stop_an_own_run() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-17-{}", uuid::Uuid::new_v4()));
+        let [folder, account] = ["managed", "account"].map(|d| root.join(d));
+        let drop_ins = folder.join("managed-settings.d");
+        std::fs::create_dir_all(&drop_ins).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        let (file, remote) = (
+            folder.join("managed-settings.json"),
+            account.join("remote-settings.json"),
+        );
+        let plist = root.join("com.anthropic.claudecode.plist");
+        let plists = [plist.to_str().unwrap()];
+        let allowed = || managed_hooks_allowed(&folder, &plists, &remote);
+        assert_eq!(allowed(), Ok(()));
+        let hook = json!({"PreToolUse": [{"hooks": [{"type": "command", "command": "x"}]}]});
+        std::fs::write(
+            &file,
+            json!({"disableAllHooks": true, "model": "m"}).to_string(),
+        )
+        .unwrap();
+        // Claude Code skips a drop-in whose name starts with a dot.
+        std::fs::write(
+            drop_ins.join(".off.json"),
+            json!({"hooks": hook}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(allowed(), Ok(()));
+        let refused = |doc: &Path, set: Value, key: &str| {
+            std::fs::write(doc, set.to_string()).unwrap();
+            let why = allowed().unwrap_err();
+            assert!(
+                why.contains(&doc.display().to_string()) && why.contains(key),
+                "{why}"
+            );
+            std::fs::remove_file(doc).unwrap();
+        };
+        refused(&file, json!({"disableAllHooks": false}), "disableAllHooks");
+        refused(
+            &drop_ins.join("10-team.json"),
+            json!({"hooks": hook}),
+            "hooks",
+        );
+        refused(&remote, json!({"hooks": hook}), "hooks");
+        // A drop-in that's a link to a file, as Claude Code reads it.
+        let linked = root.join("linked.json");
+        std::fs::write(&linked, json!({"hooks": hook}).to_string()).unwrap();
+        std::os::unix::fs::symlink(&linked, drop_ins.join("30.json")).unwrap();
+        assert!(allowed().unwrap_err().contains("30.json"));
+        std::fs::remove_file(drop_ins.join("30.json")).unwrap();
+        // MANAGED-1: a plugin managed settings turn on (its hooks still run), a policy helper.
+        let plugins = json!({"enabledPlugins": {"off@org": false, "team-policy@org": true}});
+        refused(&file, plugins, "enabledPlugins");
+        refused(
+            &file,
+            json!({"policyHelper": {"path": "/usr/local/bin/p"}}),
+            "policyHelper",
+        );
+        refused(
+            &drop_ins.join("20.json"),
+            json!({"policyHelpers": []}),
+            "policyHelpers",
+        );
+        // Only what runs hooks: a variable named like one, a plugin left off, `allowManagedHooksOnly`
+        // (it turns no hook on) and a folder named `*.json` in the drop-ins, which Claude Code
+        // skips, don't stop it.
+        let env = json!({"env": {"WEBHOOK_URL": "u"}, "enabledPlugins": {"hookify@org": false},
+            "allowManagedHooksOnly": true});
+        std::fs::write(&file, env.to_string()).unwrap();
+        std::fs::create_dir_all(drop_ins.join("folder.json")).unwrap();
+        assert_eq!(allowed(), Ok(()));
+        std::fs::remove_file(&file).unwrap();
+        // One that isn't JSON, or can't be read, stops it too.
+        std::fs::write(&file, "{not json").unwrap();
+        assert!(allowed().is_err());
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(&file).unwrap();
+        assert!(allowed().is_err());
+        std::fs::remove_dir(&file).unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let json = root.join("plist.json");
+            std::fs::write(&json, json!({"hooks": hook}).to_string()).unwrap();
+            let made = std::process::Command::new("/usr/bin/plutil")
+                .args(["-convert", "xml1", "-o"])
+                .args([&plist, &json])
+                .status()
+                .unwrap();
+            assert!(made.success());
+            let why = allowed().unwrap_err();
+            assert!(
+                why.contains("com.anthropic.claudecode.plist") && why.contains("hooks"),
+                "{why}"
+            );
+            std::fs::remove_file(&plist).unwrap();
+        }
+        assert_eq!(allowed(), Ok(()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-15: an own conversation's file tools never read or change the stored threads,
+    /// every conversation's (`conversations/<id>.json`), nor the next one's id.
+    #[test]
+    fn lanes_15_an_own_conversation_never_reaches_the_stored_threads() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-15-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let conversations = jobs.config.home.join("conversations");
+        std::fs::create_dir_all(&conversations).unwrap();
+        let denied = jobs.conversation_denials(&conversations.join("c/room"));
+        for name in ["*.json", "next-id"] {
+            let path = conversations.join(name);
+            for tool in ["Read", "Edit"] {
+                let rule = format!("{tool}(/{})", path.display());
+                assert!(denied.contains(&rule), "{rule}: {denied:?}");
+            }
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
