@@ -200,6 +200,58 @@ impl Jobs {
         at.max(now) + RESUME_AFTER_RESET
     }
 
+    /// When every signed-in account of `agent`'s tool (any, for none or `auto`) is at its limit
+    /// (LIMITS-18): the one free soonest, for a new job that names none to wait on as a limit's
+    /// job waits ([`Jobs::wait_as_vetted`]), its `cap` the mark that it does.
+    pub(super) fn no_room(
+        &self,
+        agent: Option<&str>,
+        background: bool,
+    ) -> Option<(Tool, crate::config::Account, Option<Waiting>)> {
+        let tools = match agent
+            .map(str::trim)
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case("auto"))
+        {
+            None => Tool::ALL.to_vec(),
+            Some(id) => vec![Tool::from_id(id)?],
+        };
+        let (home, now) = (login_home(), obi_protocol::time::now());
+        let (tool, account) = tools
+            .into_iter()
+            .filter(|t| self.agent_config(*t).is_some())
+            .flat_map(|tool| self.accounts(tool).into_iter().map(move |a| (tool, a)))
+            .filter(|(tool, a)| {
+                !self.being_changed(&a.id)
+                    && signed_in(*tool, a, home.as_deref())
+                    && (!background || self.takes_background(a))
+                    && self.usage.get(&a.id).held(now).is_some()
+            })
+            .min_by_key(|(_, a)| self.limit_wait_until(&a.id, None))?;
+        let wait = Waiting {
+            kind: "cap".into(),
+            text: String::new(),
+            reserved: None,
+            tool: None,
+        };
+        Some((tool, account, Some(wait)))
+    }
+
+    /// A new job waits as `vetted` found it must: for room or a yes (#872, CHATGPT-20), or, placed
+    /// by [`Jobs::no_room`], `queued` with no slot and no card until its account's reset or another
+    /// account with room (LIMITS-18, as LIMITS-5 and 15).
+    pub(super) fn wait_as_vetted(&self, job: &mut Job, waiting: Option<Waiting>) {
+        match waiting {
+            Some(wait) if wait.kind == "cap" => {
+                wait_for_reset(job, self.limit_wait_until(&job.account, None));
+            }
+            Some(wait) => {
+                job.step = room_step(&wait);
+                job.waiting = Some(wait);
+            }
+            None => {}
+        }
+    }
+
     /// Resumes the jobs whose reset came, in their own sessions: one each [`RESET_TICK`], so a Mac
     /// that slept through several resets doesn't start them all at once (LIMITS-8). An account
     /// that's still held, or gone, waits again, with no card (LIMITS-11, LIMITS-15).

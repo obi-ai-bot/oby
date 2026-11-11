@@ -3180,7 +3180,8 @@ impl Jobs {
             .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
         let background = new.unattended || new.routine.is_some();
         // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872);
-        // by a ChatGPT login the owner hasn't said yes to, for their yes (CHATGPT-20).
+        // by a ChatGPT login the owner hasn't said yes to, for their yes (CHATGPT-20); by limits
+        // alone, as a limit's job waits (LIMITS-18).
         let (tool, account, waiting) =
             match self.pick_for(new.agent.as_deref(), new.account.as_deref(), background) {
                 Ok((tool, account)) if background && self.waits_for_yes(tool, &account) => {
@@ -3191,6 +3192,7 @@ impl Jobs {
                 Err(refused) if !named => match self
                     .in_reserve(new.agent.as_deref(), background)
                     .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
+                    .or_else(|| self.no_room(new.agent.as_deref(), background))
                 {
                     Some(held) => held,
                     None => return Err(refused),
@@ -3591,10 +3593,7 @@ impl Jobs {
         };
         job.phase = Some(Phase::Prepare);
         job.step = format!("Getting {} ready", job.repo_name());
-        if let Some(wait) = waiting {
-            job.step = room_step(&wait);
-            job.waiting = Some(wait);
-        }
+        self.wait_as_vetted(&mut job, waiting);
         // A job starts only when nothing else moves its branch (PUBLISHING-4): checked and taken
         // under one lock (insert takes the same job again). Refused rather than put on a branch of
         // its own, so two jobs on one issue never make two pull requests for it.

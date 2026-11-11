@@ -1537,3 +1537,39 @@ fn limits_17_a_vault_secret_never_reaches_the_handoff() {
     assert!(text.contains("for the tests."), "{text}");
     assert!(!text.contains(&secret), "{text}");
 }
+
+/// LIMITS-18: a new job that names no account, with every account at its limit, is made (`201`)
+/// and waits as a limit's job waits: `queued`, with no slot, no card and its line saying what it
+/// waits for; then it starts on the first account with room, here its own once the reset came.
+#[test]
+fn limits_18_a_job_with_no_room_anywhere_is_queued_not_refused() {
+    let (folder, config, obid) = on_stub("limits-18");
+    let full = post(&obid, "LIMITED: 3600");
+    waiting_for_reset(&obid, &full);
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
+    let made = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    let waits = job_now(&obid, &id);
+    assert_eq!(waits["status"], "queued", "{waits}");
+    assert_eq!(waits["account"], "stub", "{waits}");
+    assert!(!waits["resumesAt"].is_null(), "{waits}");
+    let step = waits["step"].as_str().unwrap();
+    assert!(
+        step.starts_with(
+            "Every account is at its limit: resuming when one has room, at the latest "
+        ),
+        "{waits}"
+    );
+    assert_eq!(waits["waiting"], json!({"kind": "cap", "text": step}));
+    assert!(waits["accountLimit"].is_null(), "{waits}");
+    assert!(pending_decisions(&obid).is_empty());
+    let inbox = call(&obid, "GET", "/v1/inbox", None).body;
+    assert!(!inbox.to_string().contains(&id), "{inbox}");
+    // A named account at its limit keeps LIMITS-5's wait; this one starts once its account has room.
+    call(&obid, "POST", &format!("/v1/jobs/{full}/stop"), None);
+    let obid = its_time_comes(&folder, &config, obid, &id, None);
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["account"], "stub", "{done}");
+}
