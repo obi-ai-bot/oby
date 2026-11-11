@@ -1154,6 +1154,8 @@ mod tests {
         assert!(allows(&Method::POST, "/v1/limit-decisions/abc/answer"));
         assert!(!allows(&Method::POST, "/v1/limit-decisions/abc/def/answer"));
         assert!(!allows(&Method::DELETE, "/v1/limit-decisions/abc"));
+        // ALERTS-1's list is the Mac's, on the loopback only.
+        assert!(!allows(&Method::GET, "/v1/alerts"));
     }
 
     /// Ports GatewayTests.pairingSecretAndCodeWorkOnceAndExpire.
