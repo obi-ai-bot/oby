@@ -415,6 +415,8 @@ mod tests {
             r#"{"permissions": {"allow": ["LS"]}}"#,
             r#"{"permissions": {"additionalDirectories": ["/tmp"]}}"#,
             r#"{"sandbox": {"excludedCommands": ["git"]}}"#,
+            // A Claude Code settings source that would outrank obid's `--settings` (LANES-5).
+            r#"{"env": {"CLAUDE_CODE_MANAGED_SETTINGS_PATH": "/tmp/x.json"}}"#,
         ] {
             assert!(launch_with(set).is_err(), "{set}");
         }
