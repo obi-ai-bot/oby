@@ -394,12 +394,21 @@ fn waits_for_later(said: &str) -> bool {
 /// usage, the tool's reset or its words), or a session too long or gone. A passing error
 /// ([`agent::Failure`]: a 5xx or 429, overloaded, a dropped connection) and a CLI that ended with
 /// no result get [`CUT_WAITS`]'; an unknown error one, in its `session`. The tool's own fields
-/// decide first (RECOVERY-7): a 529 whose words hold `401` is still passing.
-fn retries(cause: Option<agent::Cause>, words: &str, session: bool, no_result: bool) -> usize {
+/// decide first (RECOVERY-7): a 529 whose words hold `401` is still passing. A login refused on a
+/// run with a copy of it (`copy`: a boxed Claude Code run) gets one: the copy can end mid-run, and
+/// the next launch refreshes it first (KEYCHAIN-10).
+fn retries(
+    cause: Option<agent::Cause>,
+    words: &str,
+    session: bool,
+    no_result: bool,
+    copy: bool,
+) -> usize {
     use agent::Cause;
     match cause {
         Some(Cause::Passing | Cause::Busy) => CUT_WAITS.len(),
-        Some(Cause::Limit | Cause::Login | Cause::TooLong | Cause::SessionGone) => 0,
+        Some(Cause::Login) => usize::from(copy),
+        Some(Cause::Limit | Cause::TooLong | Cause::SessionGone) => 0,
         _ if retrying_wont_mend(words) || codex_login_refused(words) => 0,
         _ if no_result => CUT_WAITS.len(),
         Some(Cause::Other) if session => 1,
@@ -7392,7 +7401,6 @@ impl Jobs {
                 })?;
                 match tool {
                     Tool::Claude => {
-                        keep_folder_copy(dir, &login);
                         extra.push(("CLAUDE_CONFIG_DIR", login.clone().into_os_string()))
                     }
                     Tool::Codex => {
@@ -7426,20 +7434,14 @@ impl Jobs {
                 // the person's own ~/.claude, ~/.claude.json and ~/.codex are never writable, so
                 // nothing a job runs can plant something the tool runs later outside the sandbox.
                 let login = self.login_path(&job.id);
-                let copied =
+                let names =
                     copy_login(login_home().as_deref(), &login, tool, true).map_err(|e| {
                         format!("obid can't copy {}'s login for this job: {e}", tool.name())
                     })?;
                 if tool == Tool::Codex {
                     codex_copy_ready(&login.join(".codex/auth.json"), &account.name)?;
                 }
-                if copied.from_keychain {
-                    keep_keychain_copy(
-                        &keychain_service(None),
-                        login.join(".claude/.credentials.json"),
-                    );
-                }
-                for name in copied.names {
+                for name in names {
                     let link = spec.temp.join(name);
                     let _ = std::fs::remove_file(&link);
                     #[cfg(unix)]
@@ -7830,30 +7832,16 @@ impl Jobs {
                     codex_copy_ready(&login.join("auth.json"), &account.name)?;
                     extra.push(("CODEX_HOME", login.as_os_str().to_owned()));
                 } else {
-                    // A conversation's copy is kept fresh while its turn runs; the brain's lives
-                    // one call.
-                    if confined {
-                        keep_folder_copy(shared, login);
-                    }
                     extra.push(("CLAUDE_CONFIG_DIR", login.as_os_str().to_owned()));
                 }
             }
             None => {
                 // The tool's own login, copied into a folder of its own as a job's is.
-                let copied = copy_login(login_home().as_deref(), login, tool, true)
+                let names = copy_login(login_home().as_deref(), login, tool, true)
                     .map_err(|e| format!("obid can't copy {}'s login: {e}", tool.name()))?;
                 if tool == Tool::Codex {
                     codex_copy_ready(&login.join(".codex/auth.json"), &account.name)?;
                 }
-                // A conversation's copy of the Keychain's default login is kept fresh by the
-                // keeper while its turn runs, as a job's is (#651); the brain's lives one call.
-                if confined && copied.from_keychain {
-                    keep_keychain_copy(
-                        &keychain_service(None),
-                        login.join(".claude/.credentials.json"),
-                    );
-                }
-                let names = copied.names;
                 for name in names {
                     let link = temp.join(name);
                     let _ = std::fs::remove_file(&link);
@@ -10750,7 +10738,8 @@ impl Jobs {
                         None if !chatgpt && limit_said => 0,
                         None => {
                             let words = if no_result { &ended } else { &error };
-                            retries(turn.cause(), words, session, no_result)
+                            let copy = tool == Tool::Claude && !Self::own_lane(&job, tool);
+                            retries(turn.cause(), words, session, no_result, copy)
                         }
                     };
                     let recovery = self.get(id).map(|j| j.recovery).unwrap_or_default();
@@ -15991,7 +15980,7 @@ mod tests {
     fn transient_errors_are_the_ones_trying_again_mends() {
         use super::retries;
         use crate::agent::{Cause, Failure};
-        let tries = |error: &str| retries(Some(Cause::read(error)), error, true, false);
+        let tries = |error: &str| retries(Some(Cause::read(error)), error, true, false, false);
         for error in [
             r#"API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}"#,
             "API Error: 500 Internal server error",
@@ -16024,17 +16013,42 @@ mod tests {
         for status in [401, 403] {
             let failure = Failure::with_status("it broke", Some(status));
             assert_eq!(
-                retries(Some(failure.cause), "it broke", true, false),
+                retries(Some(failure.cause), "it broke", true, false, false),
                 0,
                 "{status}"
             );
         }
-        assert_eq!(retries(Some(Cause::Login), "it broke", true, false), 0);
+        assert_eq!(
+            retries(Some(Cause::Login), "it broke", true, false, false),
+            0
+        );
         // An unknown error with no session to continue in runs nothing again.
-        assert_eq!(retries(Some(Cause::Other), "it broke", false, false), 0);
+        assert_eq!(
+            retries(Some(Cause::Other), "it broke", false, false, false),
+            0
+        );
         // A CLI that ended with no result: its stderr says a login, or it gets 3 tries.
-        assert_eq!(retries(None, "Not logged in", true, true), 0);
-        assert_eq!(retries(None, "exit 1", true, true), 3);
+        assert_eq!(retries(None, "Not logged in", true, true, false), 0);
+        assert_eq!(retries(None, "exit 1", true, true, false), 3);
+    }
+
+    /// KEYCHAIN-10: with no keeper writing a running box's login copy again, a boxed Claude Code
+    /// run whose copy ended mid-run is refused its login: it gets one more try, whose launch has
+    /// the Mac's own Claude Code refresh the login first and writes a new copy. A run on the
+    /// account's own login (the own lane), or a refusal on the try after, gets none.
+    #[test]
+    fn keychain_10_a_boxed_runs_ended_copy_gets_one_more_try() {
+        use crate::agent::{Cause, Failure};
+        let ended = Failure::with_status("OAuth token has expired", Some(401));
+        assert_eq!(retries(Some(ended.cause), "it broke", true, false, true), 1);
+        assert_eq!(
+            retries(Some(ended.cause), "it broke", true, false, false),
+            0
+        );
+        assert_eq!(
+            retries(Some(Cause::Limit), "it broke", true, false, true),
+            0
+        );
     }
 
     #[test]

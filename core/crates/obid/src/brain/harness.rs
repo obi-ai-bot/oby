@@ -214,7 +214,7 @@ const WARM_MOST: usize = 3;
 /// A conversation's Claude Code, running after its turn and waiting on its stdin for the next one,
 /// which writes to it instead of starting another (docs/fast-replies.md): no start, no MCP
 /// connection, no reading its session again. It runs in the same box, with the same login copy
-/// (kept fresh by obid's keeper while it lives, taken out when it ends) and the same MCP token,
+/// (good while it lasts, `login_copy_lasts`, taken out when it ends) and the same MCP token,
 /// which is good again only while a turn of the conversation is under way.
 struct Warm {
     conn: crate::conn::Conn,
@@ -902,9 +902,8 @@ impl Place {
         }
     }
 
-    /// Takes the copied login out once the turn's runs ended, and lets the keeper's hold on it
-    /// go at once: another account's turn writes its own copy into the same `config` folder next,
-    /// which a refresh of this one's must never overwrite (#877).
+    /// Takes the copied login out once the turn's runs ended: another account's turn writes its
+    /// own copy into the same `config` folder next (#877).
     fn forget_login(&self) {
         crate::jobs::forget_login_secrets(&self.login);
         crate::jobs::forget_login_secrets(&self.config);
@@ -3078,9 +3077,8 @@ mod tests {
         }
     }
 
-    /// A turn's login copy goes when its runs end, and so does the keeper's hold on it, at once:
-    /// the next turn, on another account maybe, writes its own copy into the same folder, which a
-    /// refresh of this account's must never overwrite (#877).
+    /// A turn's login copy goes when its runs end: the next turn, on another account maybe, writes
+    /// its own copy into the same folder (#877).
     #[test]
     fn a_turns_login_copy_is_let_go_when_it_ends() {
         let root = std::env::temp_dir().join(format!("obid-turn-copy-{}", uuid::Uuid::new_v4()));
@@ -3088,15 +3086,8 @@ mod tests {
         std::fs::create_dir_all(&place.config).unwrap();
         let copy = place.config.join(".credentials.json");
         std::fs::write(&copy, "{}").unwrap();
-        let service = format!("test-{}", uuid::Uuid::new_v4());
-        crate::jobs::keeping(&service, Some(&root.join("account")), copy.clone());
-        assert_eq!(
-            crate::jobs::kept_copies(&service),
-            std::slice::from_ref(&copy)
-        );
         place.forget_login();
         assert!(!copy.exists());
-        assert!(crate::jobs::kept_copies(&service).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -630,11 +630,9 @@ pub fn refind_own_logins(agents: &Live) {
         }
         inner.looked = Some(std::time::Instant::now());
     }
-    static KEEPER: std::sync::Once = std::sync::Once::new();
     if crate::jobs::keychain_auto() && !crate::jobs::keychain_on() && crate::jobs::keychain_wanted()
     {
         crate::jobs::use_keychain(true, true);
-        KEEPER.call_once(crate::jobs::keep_keychain_logins);
         tracing::info!("claudeKeychain on by itself: Claude Code's login is only in the Keychain");
     }
     if crate::jobs::cursor_keychain_auto()

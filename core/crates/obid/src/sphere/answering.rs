@@ -557,8 +557,7 @@ async fn run(
                 Tool::Claude,
                 crate::jobs::keychain_on(),
             )
-            .map_err(|e| format!("obid can't copy Claude Code's login: {e}"))?
-            .names;
+            .map_err(|e| format!("obid can't copy Claude Code's login: {e}"))?;
             for name in names {
                 #[cfg(unix)]
                 std::os::unix::fs::symlink(login.join(name), temp.join(name))
