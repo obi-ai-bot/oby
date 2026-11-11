@@ -771,6 +771,7 @@ mod tests {
         }
         std::fs::write(outside.join("secret"), "s").unwrap();
         std::os::unix::fs::symlink(&outside, temp.join("link")).unwrap();
+        std::os::unix::fs::symlink(&outside, cwd.join("out")).unwrap();
         std::os::unix::fs::symlink(outside.join("secret"), folder.join("plans/linked.md")).unwrap();
         let folders = vec![folder.clone()];
         let place = |tool: &str, path: &Path, plan: bool| {
@@ -799,7 +800,8 @@ mod tests {
         ] {
             assert!(!place(tool, &path, plan), "{tool} {}", path.display());
         }
-        assert!(!place("Read", Path::new("link/secret"), false));
+        // Claude Code reads it as the working folder's `out/secret`, the link's: not the temp's.
+        assert!(!place("Read", Path::new("out/secret"), false));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -888,7 +890,7 @@ mod tests {
         let jobs = own_jobs(&root);
         let conversations = jobs.config.home.join("conversations");
         std::fs::create_dir_all(&conversations).unwrap();
-        let denied = jobs.conversation_denials();
+        let denied = jobs.conversation_denials(&conversations.join("c/room"));
         for name in ["*.json", "next-id"] {
             let path = conversations.join(name);
             for tool in ["Read", "Edit"] {
