@@ -181,14 +181,12 @@ fn affected_cli_and_mcp_return_structured_verdicts() {
         let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
             .current_dir(repo)
             .args(["--affected", "HEAD"])
+            .env("HOME", repo)
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(if failed { 1 } else { 2 })); // Swift has no pilot node.
+        assert_eq!(output.status.code(), Some(if failed { 1 } else { 0 }));
         let verdict: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(
-            verdict["verdict"],
-            if failed { "failed" } else { "unjudged" }
-        );
+        assert_eq!(verdict["verdict"], if failed { "failed" } else { "passed" });
         assert!(verdict["reason"].is_string());
         if failed {
             assert_eq!(verdict["failing"], serde_json::json!(["fixture::fails"]));
@@ -198,7 +196,7 @@ fn affected_cli_and_mcp_return_structured_verdicts() {
     std::fs::write(repo.join("scripts/oby-check.sh"), "[[ $CARGO_NET_OFFLINE == true && $npm_config_offline == true && -z $OBY_CHECK_ALL && -z $OBY_CHECK_PATHS ]] || exit 1\nif [[ -n \"$OBY_CHECK_PLAN\" && $OBY_CHECK_ONLY == rust ]]; then echo 'oby-check: group rust'; fi\nexit 0\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
         .current_dir(repo)
-        .args(["--affected"])
+        .args(["--affected"]).env("HOME", repo)
         .env("OBY_CHECK_ALL", "1")
         .env("OBY_CHECK_PATHS", "core/")
         .output()
@@ -210,7 +208,7 @@ fn affected_cli_and_mcp_return_structured_verdicts() {
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
         .current_dir(repo)
-        .arg("mcp")
+        .arg("mcp").env("HOME", repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -251,7 +249,7 @@ async fn grpc_port_zero_and_spawn_configuration_reject_unauthorized_calls() {
         std::fs::create_dir_all(path.join("scripts")).unwrap();
         std::fs::write(path.join("scripts/oby-check.sh"), "touch ran\n").unwrap();
     }
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nodes"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_oby-check-blok-nodes"))
         .env("GRPC_PORT", "0")
         .env("OBY_CHECK_DIR", &repo)
         .env("OBY_CHECK_BASE", "HEAD")
@@ -455,7 +453,7 @@ fn failed_nodes_win_over_unjudged_and_the_scan_still_runs() {
         serde_json::json!(["src/example.test.ts > fails"])
     );
     assert_eq!(report["nodes"]["secret-scan"]["verdict"], "passed");
-    assert_eq!(report["nodes"]["swift"]["verdict"], "unjudged");
+    assert_eq!(report["nodes"]["swift-tests"]["verdict"], "passed");
     assert_eq!(report["verdict"], "failed");
 }
 
@@ -579,4 +577,178 @@ fn the_workflow_file_decides_order_skips_stops_and_refusals() {
         .as_str()
         .unwrap()
         .contains("switch steps aren't supported"));
+}
+
+// A committed checkout whose check is `script`, for `check` mode.
+fn checkout(script: &str) -> tempfile::TempDir {
+    let scratch = tempfile::tempdir().unwrap();
+    let repo = scratch.path();
+    std::fs::create_dir(repo.join("scripts")).unwrap();
+    std::fs::write(repo.join("scripts/oby-check.sh"), script).unwrap();
+    commit_all(repo);
+    scratch
+}
+
+fn commit_all(repo: &Path) {
+    git(repo, &["init", "--quiet"]);
+    git(repo, &["add", "."]);
+    git(
+        repo,
+        &[
+            "-c",
+            "user.name=check",
+            "-c",
+            "user.email=check@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    );
+}
+
+// `<binary> check HEAD` from `repo`, with HOME in the checkout: its exit code, stdout and stderr.
+fn check_with(binary: &Path, repo: &Path, env: &[(&str, &str)]) -> (Option<i32>, String, String) {
+    let output = Command::new(binary)
+        .current_dir(repo)
+        .args(["check", "HEAD"])
+        .env("HOME", repo)
+        .env_remove("OBY_CHECK_PATHS")
+        .env_remove("OBY_CHECK_ALL")
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    (
+        output.status.code(),
+        text(&output.stdout),
+        text(&output.stderr),
+    )
+}
+
+fn check(repo: &Path, env: &[(&str, &str)]) -> (Option<i32>, String, String) {
+    check_with(Path::new(env!("CARGO_BIN_EXE_oby-check-blok")), repo, env)
+}
+
+// What obid reads as the whole check's `couldn't judge:` (jobs/unjudged.rs): a line that starts so.
+fn judged_nothing(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.trim().starts_with("couldn't judge: "))
+}
+
+#[test]
+fn publishing_16_check_streams_each_nodes_output_and_ends_as_the_script_does() {
+    let scratch = checkout(include_str!("fixtures/check.sh"));
+    let repo = scratch.path();
+    // BLOK-2: neither the editor's saved copy nor OBY_CHECK_WORKFLOW decides the real check.
+    let saved = repo.join(".oby-flow/workflows");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::write(saved.join("oby-check.json"), "{}").unwrap();
+    let (code, out, err) = check(repo, &[("OBY_CHECK_WORKFLOW", "/nonexistent.json")]);
+    assert_eq!(code, Some(1), "{out}{err}");
+    // Live, on stderr: the failing test's name and the rust node's couldn't-judge line, named so
+    // obid doesn't take it for the whole check's (the electron node failed: that's the change's).
+    assert!(err.contains(" FAIL  src/example.test.ts > fails"), "{err}");
+    assert!(
+        err.contains("oby-check: rust: couldn't judge: tests/sandbox.rs"),
+        "{err}"
+    );
+    assert!(!judged_nothing(&out) && !judged_nothing(&err), "{out}{err}");
+    assert_eq!(
+        err.lines().last(),
+        Some("oby-check: failed: rust-affected-tests, ts-checks")
+    );
+    assert!(!repo.join(".oby-flow/pipelines/runs.jsonl").exists());
+}
+
+#[test]
+fn check_judges_a_swift_only_change_and_says_what_it_couldnt_judge() {
+    // In a job's box the script plans swift, skips what can't run there, and passes.
+    let swift = "if [[ -n $OBY_CHECK_PLAN ]]; then [[ $OBY_CHECK_ONLY == swift || $OBY_CHECK_ONLY == scan ]] && echo \"oby-check: group $OBY_CHECK_ONLY\"; exit 0; fi\necho \"oby-check: the Apple apps and swift test don't run in a job's sandbox\"\necho 'oby-check: passed'\n";
+    let scratch = checkout(swift);
+    let (code, out, err) = check(scratch.path(), &[]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(out.lines().last(), Some("oby-check: passed"));
+    assert!(err.contains("don't run in a job's sandbox"), "{err}");
+
+    // Only what couldn't run is left: the check's own line says so, as the script's does.
+    let unjudged = "if [[ -n $OBY_CHECK_PLAN ]]; then [[ $OBY_CHECK_ONLY == rust || $OBY_CHECK_ONLY == scan ]] && echo \"oby-check: group $OBY_CHECK_ONLY\"; exit 0; fi\nif [[ $OBY_CHECK_ONLY == rust ]]; then echo \"couldn't judge: tests/sandbox.rs can't run in a job's\"; exit 1; fi\n";
+    let scratch = checkout(unjudged);
+    let (code, out, err) = check(scratch.path(), &[]);
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(
+        out.lines()
+            .any(|l| l == "couldn't judge: tests/sandbox.rs can't run in a job's"),
+        "{out}"
+    );
+    assert_eq!(
+        err.lines().last(),
+        Some("oby-check: failed: rust-affected-tests")
+    );
+}
+
+#[test]
+fn f_m2_35_check_never_passes_with_nothing_scanned() {
+    // A plan with no work at all, and one whose work passed with no secret scan.
+    for script in [
+        "exit 0\n",
+        "if [[ -n $OBY_CHECK_PLAN && $OBY_CHECK_ONLY == rust ]]; then echo 'oby-check: group rust'; fi\nexit 0\n",
+    ] {
+        let scratch = checkout(script);
+        let (code, out, err) = check(scratch.path(), &[]);
+        assert_eq!(code, Some(2), "{script}: {out}{err}");
+        assert!(judged_nothing(&out), "{out}");
+        assert!(!out.contains("oby-check: passed"), "{out}");
+    }
+}
+
+#[test]
+fn publishing_18_check_plans_the_paths_obid_names_on_a_clean_checkout() {
+    // The real script, on a checkout that changed nothing: obid's base run names the job's paths.
+    let scratch = tempfile::tempdir().unwrap();
+    let repo = scratch.path();
+    std::fs::create_dir(repo.join("scripts")).unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for path in ["scripts/oby-check.sh", ".gitleaks.toml"] {
+        std::fs::copy(root.join(path), repo.join(path)).unwrap();
+    }
+    commit_all(repo);
+    std::fs::create_dir_all(repo.join("core/crates")).unwrap();
+    let (code, out, err) = check(repo, &[("OBY_CHECK_PATHS", "core/x.rs")]);
+    // The rust group ran (its line guard printed) and, with no core/ here, failed.
+    assert!(err.contains("production lines"), "{out}{err}");
+    assert_ne!(code, Some(0), "{out}{err}");
+    assert!(
+        err.lines().last().is_some_and(
+            |l| l.starts_with("oby-check: failed: ") && l.contains("rust-affected-tests")
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn check_waits_a_minute_for_a_slow_nodes_binary() {
+    use std::os::unix::fs::PermissionsExt;
+    // The tool beside a nodes binary that starts 12 seconds late (a cold Mac).
+    let bin = tempfile::tempdir().unwrap();
+    let tool = bin.path().join("oby-check-blok");
+    std::fs::copy(env!("CARGO_BIN_EXE_oby-check-blok"), &tool).unwrap();
+    let nodes = bin.path().join("oby-check-blok-nodes");
+    std::fs::write(
+        &nodes,
+        format!(
+            "#!/bin/bash\nsleep 12\nexec '{}'\n",
+            env!("CARGO_BIN_EXE_oby-check-blok-nodes")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&nodes, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let scratch = checkout(
+        "if [[ -n $OBY_CHECK_PLAN && $OBY_CHECK_ONLY == scan ]]; then echo 'oby-check: group scan'; fi\nexit 0\n",
+    );
+    let (code, out, err) = check_with(&tool, scratch.path(), &[]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(out.lines().last(), Some("oby-check: passed"));
 }

@@ -1,5 +1,7 @@
 #!/bin/bash
 set -eu
+# The tool runs the script under it, never itself again (the script execs it only without this).
+[[ "${OBY_CHECK_INNER:-}" == 1 ]] || { echo 'oby-check: OBY_CHECK_INNER is unset'; exit 3; }
 if [[ -n "${OBY_CHECK_PLAN:-}" ]]; then
     echo "oby-check: group $OBY_CHECK_ONLY"
     exit 0

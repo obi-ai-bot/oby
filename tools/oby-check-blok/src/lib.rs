@@ -1,10 +1,16 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, process::Output, time::Instant};
+use std::{
+    collections::BTreeSet,
+    process::{Output, Stdio},
+    time::Instant,
+};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 
-pub const GROUPS: [(&str, &str); 3] = [
+pub const GROUPS: [(&str, &str); 4] = [
     ("rust-affected-tests", "rust"),
+    ("swift-tests", "swift"),
     ("ts-checks", "electron"),
     ("secret-scan", "scan"),
 ];
@@ -248,8 +254,8 @@ pub fn check_command(input: &CheckInput, group: &str) -> Command {
         .arg(&input.base)
         .env_remove("OBY_CHECK_PLAN")
         .env_remove("OBY_CHECK_TOKEN")
-        .env_remove("OBY_CHECK_ALL")
-        .env_remove("OBY_CHECK_PATHS")
+        // Under this tool the script runs itself, never this tool again.
+        .env("OBY_CHECK_INNER", "1")
         .env("CARGO_NET_OFFLINE", "true")
         .env("npm_config_offline", "true")
         .env("OBY_CHECK_ONLY", group)
@@ -259,10 +265,35 @@ pub fn check_command(input: &CheckInput, group: &str) -> Command {
     command
 }
 
+/// A pipe's lines, each written to stderr as it comes, so a long node never looks silent
+/// (PUBLISHING-16), and kept for the verdict. Only the host says `couldn't judge:` for the whole
+/// check (the script's rule: never when something else failed), so a node's names its group.
+async fn relay(pipe: impl AsyncRead + Unpin, group: &str) -> String {
+    let (mut pipe, mut text, mut line) = (BufReader::new(pipe), String::new(), vec![]);
+    while pipe.read_until(b'\n', &mut line).await.is_ok_and(|n| n > 0) {
+        let said = String::from_utf8_lossy(&line);
+        let said = said.trim_end_matches('\n');
+        if said.trim_start().starts_with("couldn't judge: ") {
+            eprintln!("oby-check: {group}: {}", said.trim_start());
+        } else {
+            eprintln!("{said}");
+        }
+        text.push_str(said);
+        text.push('\n');
+        line.clear();
+    }
+    text
+}
+
 pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
     let start = Instant::now();
-    let output = match check_command(input, group).output().await {
-        Ok(output) => output,
+    let spawned = check_command(input, group)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
         Err(error) => {
             return CheckResult::unjudged(
                 format!("could not start check: {error}"),
@@ -270,7 +301,13 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
             )
         }
     };
-    let text = text_output(&output);
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+    let (out, err) = tokio::join!(
+        relay(out.expect("piped stdout"), group),
+        relay(err.expect("piped stderr"), group)
+    );
+    let status = child.wait().await.ok().and_then(|status| status.code());
+    let text = format!("{out}\n{err}");
     let failing = failing_tests(&text);
     let cache_missing = failing.is_empty()
         && [
@@ -280,10 +317,13 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
         ]
         .iter()
         .any(|message| text.contains(message));
-    let verdict = if cache_missing || text.lines().any(|l| l.starts_with("couldn't judge:")) {
+    let why = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("couldn't judge: "));
+    let verdict = if cache_missing || why.is_some() {
         Verdict::Unjudged
     } else {
-        match output.status.code() {
+        match status {
             Some(0) => Verdict::Passed,
             Some(1) => Verdict::Failed,
             _ => Verdict::Unjudged,
@@ -296,9 +336,9 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
             Verdict::Passed => "script passed",
             Verdict::Failed => "script failed",
             Verdict::Unjudged if cache_missing => "offline dependency cache is incomplete",
-            Verdict::Unjudged => {
-                "script could not judge in this environment; obid must run the full check"
-            }
+            Verdict::Unjudged => why.unwrap_or(
+                "script could not judge in this environment; obid must run the full check",
+            ),
         }
         .into(),
         seconds: start.elapsed().as_secs_f64(),

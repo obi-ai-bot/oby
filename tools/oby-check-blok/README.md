@@ -7,6 +7,28 @@ publishing and merging; this tool only records what the workflow would have said
 - `oby-check-blok <checkout> [base]`: one shadow run, appended to `runs.jsonl`.
 - `oby-check-blok --affected [base]` and `oby-check-blok mcp`: the agents' affected check (SKILL.md).
 - `oby-check-blok validate <workflow.json>`: the rules a run applies, for an editor's draft (`{"valid": …}`).
+- `oby-check-blok check [base]`: the real check, below.
+
+The nodes run in a second binary, `oby-check-blok-nodes`, found beside `oby-check-blok`.
+
+## Check mode
+
+`oby-check-blok check [base]`, run from the repository root, is a drop-in for the script's whole run,
+for the script to exec an installed copy (`cargo install --locked --path tools/oby-check-blok`, BLOK-1):
+
+- It runs only the built-in workflow, never `OBY_CHECK_WORKFLOW` or the editor's saved copy (BLOK-2), and
+  writes nothing to `runs.jsonl`.
+- `OBY_CHECK_PATHS` and `OBY_CHECK_ALL` reach the script's planning and nodes (PUBLISHING-18's base run);
+  the shadow and affected runs still plan only what changed.
+- Each node's script output streams to stderr as it runs (obid stops a check silent for 15 minutes,
+  PUBLISHING-16). A node's `couldn't judge:` line is relayed as `oby-check: <group>: couldn't judge: …`, so
+  obid reads only the check's own.
+- It ends as the script does: `oby-check: passed` and exit 0; else `oby-check: failed: <nodes>` on stderr
+  and exit 1, or, when nothing failed but something couldn't be judged, a `couldn't judge: <why>` line
+  first and exit 2. Nothing passes unless the `secret-scan` node passed (F-M2-35): a plan with no work, or
+  none for the scan, is unjudged.
+- Every script it runs gets `OBY_CHECK_INNER=1`, so the script never execs this tool again under it.
+- It waits up to 60 seconds for the nodes binary to start and answer.
 
 ## The workflow file
 
@@ -20,7 +42,7 @@ file's order, honoring BLOK's step settings:
 
 | Setting | What it does here |
 |---|---|
-| `use` | `runtime.rust:rust-affected-tests`, `runtime.rust:ts-checks` or `runtime.rust:secret-scan`, each once |
+| `use` | `runtime.rust:rust-affected-tests`, `runtime.rust:swift-tests`, `runtime.rust:ts-checks` or `runtime.rust:secret-scan`, each once |
 | `active: false` | skips the step; its group counts as not judged |
 | `stop: true` | halts the workflow after the step; later planned steps count as not judged |
 | `retry.maxAttempts` | tries again a node that couldn't judge (a transport error, a timeout), never a failure |
@@ -28,4 +50,4 @@ file's order, honoring BLOK's step settings:
 
 A planned group with no step, skipped or stopped is never a pass: the run folds to `unjudged`. A step this
 host can't run (`branch`, `switch`, `forEach`, `tryCatch`, `wait`, `loop`, `subworkflow`, a node that isn't
-one of the three) makes the whole run `unjudged`, with the reason, rather than running something else.
+one of the four) makes the whole run `unjudged`, with the reason, rather than running something else.
