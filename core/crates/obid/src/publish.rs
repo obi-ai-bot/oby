@@ -627,7 +627,15 @@ pub fn body(job: &Job, closes: bool, workflow: Option<&crate::memory::Workflow>)
             } else {
                 format!("Round {}, the agent's summary:", i + 1)
             };
-            format!("{label}\n\n{}", quoted(summary))
+            // The owner's rule: no "Generated with Claude Code" line in a pull request obid opens.
+            let summary: Vec<&str> = (summary.split('\n'))
+                .filter(|l| {
+                    !l.to_lowercase()
+                        .replace('[', "")
+                        .contains("generated with claude code")
+                })
+                .collect();
+            format!("{label}\n\n{}", quoted(&summary.join("\n")))
         })
         .collect();
     let request = job
@@ -2434,6 +2442,20 @@ mod tests {
         )));
         assert!(closes("A bug.\n"));
         assert!(!closes("Tests:\n  - [ ] it works\n"));
+    }
+
+    /// No "Generated with Claude Code" line an agent's summary ends with reaches the pull request's
+    /// description (the owner's rule).
+    #[test]
+    fn no_generated_with_claude_code_line_in_the_description() {
+        let mut job = job();
+        job.summary = "Done it.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\nGenerated with Claude Code".into();
+        let text = body(&job, false, None);
+        assert!(
+            text.starts_with("The agent's summary:\n\n> Done it.\n>\n\n"),
+            "{text}"
+        );
+        assert!(!text.to_lowercase().contains("generated with"), "{text}");
     }
 
     /// The agent's summary goes in as the Markdown it wrote, quoted under a label naming it the
