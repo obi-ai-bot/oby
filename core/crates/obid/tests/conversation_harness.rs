@@ -2882,6 +2882,42 @@ fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
     assert!(!folder.join("config/.credentials.json").exists());
 }
 
+/// LANES-12, F-M2-63: a waiting Claude Code started with other flags (another model) ends, taking
+/// its `oby-mcp.json` with it, and the new one the turn starts still has the file, with Oby's tools.
+// Own conversations are macOS-only for now (LANES-12).
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_12_a_new_claude_code_after_a_stale_one_has_its_mcp_configuration() {
+    let (_folder, obid) = obid("harness-lanes-12-stale-mcp", true);
+    let first = said(&obid, json!({"said": "SAY hi", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    // Another model, kept behind obid's back so the waiting Claude Code isn't ended by a PATCH.
+    let settings = obid.home.join("settings.json");
+    let mut kept: Value = std::fs::read(&settings)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| json!({}));
+    kept["tuning"]["stub"]["model"] = json!("claude-haiku-5-5");
+    std::fs::write(&settings, kept.to_string()).unwrap();
+    let next = said(
+        &obid,
+        json!({"said": "OBY oby_jobs {}", "conversation": conversation}),
+    );
+    let text = next.body["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("oby: ") && !text.contains("refused"),
+        "{}",
+        next.text
+    );
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert_ne!(recorded[0]["id"], recorded[1]["id"]);
+    assert!(ran_own(&obid, &recorded[1]), "{}", recorded[1]);
+    let argv = recorded[1]["argv"].as_array().unwrap();
+    let at = argv.iter().position(|a| a == "--model").unwrap();
+    assert_eq!(argv[at + 1], "claude-haiku-5-5");
+}
+
 /// LANES-12, CONVO-1: after the conversation reads something untrusted, its next turn is still in
 /// the own lane, with its own Bash, and the mark stays, so what it starts still waits for the owner.
 // Own conversations are macOS-only for now (LANES-12).

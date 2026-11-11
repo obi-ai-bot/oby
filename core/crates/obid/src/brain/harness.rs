@@ -1486,10 +1486,6 @@ async fn attempts(
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
     let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation, own)?;
-    // Codex is given the servers in its arguments instead.
-    if tool == Tool::Claude {
-        write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
-    }
     // What reaches the agent has the vault's secrets taken out; a vault that can't be read sends
     // nothing.
     // The files the owner attached, in the room, named before their words (quoted).
@@ -1710,6 +1706,10 @@ async fn attempts(
                     (Run::Cold(launch), Protocol::Cursor(options))
                 }
                 Tool::Claude => {
+                    // Written as each new Claude Code starts: a waiting one ended above took an
+                    // own session's file with it ([`Warm::end`]). Codex is given the servers in its
+                    // arguments instead.
+                    write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
                     let launch = claude_launch(shared, account, place, flags, own)
                         .map_err(Unanswered::moves)?;
                     (Run::Cold(launch), Protocol::Claude)
