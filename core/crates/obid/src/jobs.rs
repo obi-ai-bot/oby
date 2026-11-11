@@ -7384,7 +7384,12 @@ impl Jobs {
         }
         match (&account.config_dir, tool) {
             // In Claude Code's own sandbox, with the account's own folder and login: no copy.
-            _ if own => extra.extend(own_sandbox_env(account, &spec, &self.login_path(&job.id))?),
+            // The user's settings it loads (`--setting-sources user`, LANES-5) checked before it starts.
+            _ if own => {
+                let env = own_sandbox_env(account, &spec, &self.login_path(&job.id))?;
+                own_settings_allowed(&own_settings_file(account)?, &spec, &env)?;
+                extra.extend(env);
+            }
             // Never the account's own folder (#655): the job's own, a login copy and nothing else.
             (Some(dir), _) => {
                 let login = self.login_path(&job.id);
@@ -7457,7 +7462,7 @@ impl Jobs {
                 let mut argv: Vec<OsString> = vec![bin.into_os_string()];
                 argv.extend(flags);
                 if own {
-                    let settings = own_sandbox_settings(&spec, &self.login_path(&job.id))?;
+                    let settings = own_sandbox_settings(&spec, &self.login_path(&job.id), &extra)?;
                     argv.extend(["--settings".into(), settings.into()]);
                 }
                 argv
@@ -9995,8 +10000,8 @@ impl Jobs {
         // rules as the base has them, quoted (crate::review): never the rules the change itself
         // writes, which its author could steer the review with. A Claude Code job gets the rules
         // too (#612): under `--setting-sources ""`, which keeps the repository's settings out,
-        // Claude Code loads no CLAUDE.md (measured with 2.1.302). Codex and Cursor read the
-        // worktree's own rules files themselves.
+        // Claude Code loads no CLAUDE.md (measured with 2.1.302), nor under an own job's `user`
+        // (LANES-5). Codex and Cursor read the worktree's own rules files themselves.
         let reviews = job.review_of.is_some();
         let mut rules_quoted = false;
         // The change Oby's own review judges (PERMISSIONS-14), frozen in its worktree.
@@ -10420,9 +10425,6 @@ impl Jobs {
                     } else {
                         "default"
                     },
-                    "--setting-sources",
-                    "",
-                    "--strict-mcp-config",
                     // A worktree's path and git status out of the prompt's cached part, so one job
                     // reuses what another's start wrote (TASKS-15; claude 2.1.98).
                     "--exclude-dynamic-system-prompt-sections",
@@ -10432,6 +10434,17 @@ impl Jobs {
                 .iter()
                 .map(OsString::from)
                 .collect();
+                // The own lane loads the owner's user settings, skills and MCP servers, under
+                // obid's `--settings`, which outrank them (`own_sandbox_settings`), and never the
+                // repository's own `.claude/`, `.mcp.json` or `CLAUDE.md` (the owner's decision
+                // LANE-6a; `user` alone loads none of them, measured with 2.1.302); the foreign
+                // lane loads none (LANES-5).
+                let own = Self::own_lane(&job, tool);
+                let sources = if own { "user" } else { "" };
+                flags.extend(["--setting-sources", sources].map(OsString::from));
+                if !own {
+                    flags.push("--strict-mcp-config".into());
+                }
                 // On every run: a resumed one without them has no rules.
                 if let Some(rules) = standing_rules(&job) {
                     flags.extend(["--append-system-prompt".into(), rules.into()]);
@@ -15282,10 +15295,12 @@ mod tests {
     }
 
     /// What a Claude Code run in its own sandbox gets, checked without running it: git pinned to
-    /// the job's folders with no settings or credential helper of the person's; the Keychains link
-    /// made fresh, never through a link the job left; a `.claude.json` whose `env` sets what no agent
-    /// gets refused; and settings that keep its shell sandboxed for good, its reads to what the box
-    /// reads, its writes off the git pointers and the link, and code hosts out of reach.
+    /// the job's folders with no settings or credential helper of the person's; the person's own
+    /// `HOME` (the owner's hooks name `$HOME/…`), and `CLAUDE_CONFIG_DIR` only for an account with a
+    /// `configDir` (the default one reads `~/.claude.json` as the terminal does); `env.sh` written
+    /// fresh, never through a link the job left; a `.claude.json` whose `env` sets what no agent gets
+    /// refused; and settings that keep its shell sandboxed for good, its reads to what the box reads,
+    /// its writes off the git pointers and `env.sh`, and code hosts out of reach.
     #[cfg(target_os = "macos")]
     #[test]
     fn own_sandbox_env_and_settings() {
@@ -15304,16 +15319,13 @@ mod tests {
             &admin,
             &temp,
             &root.join("account"),
-            &root.join("elsewhere/Keychains"),
+            &root.join("elsewhere"),
         ] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        // A `Library` left as a link where Claude Code's HOME is: replaced, and nothing where it led
-        // is touched.
         let login = home.join("logins/job");
         std::fs::create_dir_all(&login).unwrap();
-        std::os::unix::fs::symlink(root.join("elsewhere"), login.join("Library")).unwrap();
-        // And an env.sh a command swapped for a link to a file of the person's: not written through.
+        // An env.sh a command swapped for a link to a file of the person's: not written through.
         std::fs::write(root.join("elsewhere/profile"), "theirs").unwrap();
         std::os::unix::fs::symlink(root.join("elsewhere/profile"), login.join("env.sh")).unwrap();
         let spec = super::Spec {
@@ -15354,8 +15366,18 @@ mod tests {
             get("CLAUDE_CONFIG_DIR").as_deref(),
             root.join("account").to_str()
         );
-        assert_eq!(get("HOME").as_deref(), login.to_str());
-        assert_eq!(get("CFFIXED_USER_HOME").as_deref(), login.to_str());
+        let person = super::login_home().unwrap();
+        assert_eq!(get("HOME").as_deref(), person.to_str());
+        assert_eq!(get("CFFIXED_USER_HOME").as_deref(), person.to_str());
+        // The default account: no CLAUDE_CONFIG_DIR, as in the terminal.
+        let default = crate::config::Account {
+            config_dir: None,
+            ..account.clone()
+        };
+        let plain = super::own_sandbox_env(&default, &spec, &login).unwrap();
+        for name in ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] {
+            assert!(!plain.iter().any(|(set, _)| *set == name), "{name}");
+        }
         assert_eq!(
             std::fs::read_to_string(root.join("elsewhere/profile")).unwrap(),
             "theirs"
@@ -15375,14 +15397,6 @@ mod tests {
             said.contains(&format!("export HOME='{}'", temp.display())),
             "{said}"
         );
-        let library = std::fs::symlink_metadata(login.join("Library")).unwrap();
-        assert!(library.is_dir(), "the job's link was followed");
-        assert!(root.join("elsewhere/Keychains").is_dir());
-        let person = super::login_home().unwrap();
-        assert_eq!(
-            std::fs::read_link(login.join("Library/Keychains")).unwrap(),
-            person.join("Library/Keychains")
-        );
         for (set, refused) in [
             (r#"{"env": {"GH_TOKEN": "x"}}"#, true),
             (
@@ -15400,12 +15414,28 @@ mod tests {
         }
 
         let settings: super::Value =
-            serde_json::from_str(&super::own_sandbox_settings(&spec, &login).unwrap()).unwrap();
+            serde_json::from_str(&super::own_sandbox_settings(&spec, &login, &env).unwrap())
+                .unwrap();
         let sandbox = &settings["sandbox"];
         assert_eq!(sandbox["enabled"], true);
+        assert_eq!(sandbox["filesystem"]["disabled"], false);
+        assert_eq!(sandbox["enableWeakerNestedSandbox"], false);
+        assert_eq!(sandbox["enableWeakerNetworkIsolation"], false);
+        assert_eq!(
+            settings["env"][process::CLAUDE_TMPDIR].as_str(),
+            temp.to_str()
+        );
         assert_eq!(sandbox["failIfUnavailable"], true);
         assert_eq!(sandbox["allowUnsandboxedCommands"], false);
         assert_eq!(sandbox["autoAllowBashIfSandboxed"], false);
+        // LANES-5: obid's own values pinned over any settings file the run loads.
+        for name in super::PINNED_ENV {
+            assert_eq!(
+                settings["env"][name].as_str(),
+                get(name).as_deref(),
+                "{name}"
+            );
+        }
         let list = |key: &str| -> Vec<PathBuf> {
             sandbox["filesystem"][key]
                 .as_array()
@@ -15420,7 +15450,8 @@ mod tests {
         let mut boxed = spec.clone();
         boxed.hidden.extend(crate::sandbox::shared_temps());
         let own: super::Value =
-            serde_json::from_str(&super::own_sandbox_settings(&boxed, &login).unwrap()).unwrap();
+            serde_json::from_str(&super::own_sandbox_settings(&boxed, &login, &env).unwrap())
+                .unwrap();
         let denied: Vec<PathBuf> = own["sandbox"]["filesystem"]["denyRead"]
             .as_array()
             .unwrap()
@@ -15440,9 +15471,7 @@ mod tests {
             real(&admin).join("gitdir"),
             real(&admin).join("config.worktree"),
             real(&admin).join("oby-common"),
-            real(&login).join("Library"),
             real(&login).join("env.sh"),
-            real(&login).join("Library/Keychains"),
         ];
         for pointer in &pointers {
             assert!(list("denyWrite").contains(pointer), "{}", pointer.display());
@@ -15460,6 +15489,207 @@ mod tests {
                 .unwrap()
                 .contains(&serde_json::json!("github.com"))
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-5: before an own run, the user's settings file it loads is read, and one that sets what
+    /// obid's `--settings` can't take back refuses the run, saying which file and key: commands let
+    /// out of the sandbox, a proxy of its own, Unix sockets, Mach lookups or Apple events, more
+    /// folders, a file tool's allow rule with no path or one outside the worktree (`Grep`, `Glob`
+    /// and `LS` too), an `env` key obid sets or no agent gets, a read or write opened in obid's
+    /// hidden folders. What stays inside the job's own folders, or sets nothing of that, runs.
+    #[test]
+    fn lanes_5_settings_that_undo_the_sandbox_refuse_the_run() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, account, worktree, temp) = (
+            root.join("obid"),
+            root.join("account"),
+            root.join("obid/worktrees/job"),
+            root.join("obid/tmp/job"),
+        );
+        for dir in [&account, &worktree, &temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let person = super::login_home().unwrap();
+        let spec = super::Spec {
+            worktree: worktree.clone(),
+            git_admin: None,
+            git_common: None,
+            commits: true,
+            temp: temp.clone(),
+            accounts: Vec::new(),
+            read_only: Vec::new(),
+            hidden: vec![home.clone(), account.clone(), person.clone()],
+            network: true,
+            loopback: false,
+            proxied: false,
+            frozen: Vec::new(),
+            fixed: Vec::new(),
+        };
+        let account = crate::config::Account {
+            id: "work".into(),
+            name: "Work".into(),
+            config_dir: Some(account),
+            payer: None,
+        };
+        let ours: Vec<(&'static str, OsString)> = vec![
+            ("CLAUDE_CONFIG_DIR", "/x".into()),
+            ("CLAUDE_ENV_FILE", "/x".into()),
+            (process::CLAUDE_TMPDIR, "/x".into()),
+        ];
+        let user = super::own_settings_file(&account).unwrap();
+        assert_eq!(user, root.join("account/settings.json"));
+        let obids = home.join("vault").display().to_string();
+        let (read_obids, said_obids) = (
+            format!(r#"{{"sandbox":{{"filesystem":{{"allowRead":["{obids}"]}}}}}}"#),
+            format!("{obids} in sandbox.filesystem.allowRead"),
+        );
+        let climbs = format!(
+            r#"{{"sandbox":{{"filesystem":{{"allowWrite":["{}/tmp/../vault"]}}}}}}"#,
+            home.display()
+        );
+        let refused: Vec<(&str, &str)> = vec![
+            // Ways out of the sandbox's network and the Mac's services, whatever their value.
+            (
+                r#"{"sandbox":{"network":{"allowUnixSockets":["/var/run/docker.sock"]}}}"#,
+                "sandbox.network.allowUnixSockets",
+            ),
+            (
+                r#"{"sandbox":{"network":{"allowAllUnixSockets":false}}}"#,
+                "sandbox.network.allowAllUnixSockets",
+            ),
+            (
+                r#"{"sandbox":{"network":{"allowMachLookup":["com.apple.x"]}}}"#,
+                "sandbox.network.allowMachLookup",
+            ),
+            (
+                r#"{"sandbox":{"allowAppleEvents":true}}"#,
+                "sandbox.allowAppleEvents",
+            ),
+            // obid's own, even with Claude Code's prefix.
+            (
+                r#"{"env":{"CLAUDE_CODE_TMPDIR":"/tmp/t"}}"#,
+                "CLAUDE_CODE_TMPDIR in its env",
+            ),
+            // Reads and writes past the worktree without asking, where obid's refusal never runs.
+            (
+                r#"{"permissions":{"additionalDirectories":["../.."]}}"#,
+                "permissions.additionalDirectories",
+            ),
+            (
+                r#"{"permissions":{"allow":["Read"]}}"#,
+                "Read in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["Edit()"]}}"#,
+                "Edit() in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["Grep"]}}"#,
+                "Grep in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["Glob"]}}"#,
+                "Glob in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["LS"]}}"#,
+                "LS in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["Grep(/**)"]}}"#,
+                "Grep(/**) in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["Read(~/.ssh/**)"]}}"#,
+                "Read(~/.ssh/**) in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["Write(//etc/**)"]}}"#,
+                "Write(//etc/**) in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["Read(../../vault/**)"]}}"#,
+                "Read(../../vault/**) in permissions.allow",
+            ),
+            (
+                r#"{"permissions":{"allow":["MultiEdit(/../../../**)"]}}"#,
+                "MultiEdit(/../../../**) in permissions.allow",
+            ),
+            (
+                r#"{"sandbox":{"excludedCommands":["git"]}}"#,
+                "sandbox.excludedCommands",
+            ),
+            (
+                r#"{"sandbox":{"network":{"httpProxyPort":8080}}}"#,
+                "sandbox.network.httpProxyPort",
+            ),
+            (
+                r#"{"sandbox":{"network":{"socksProxyPort":1080}}}"#,
+                "sandbox.network.socksProxyPort",
+            ),
+            (
+                r#"{"env":{"CLAUDE_ENV_FILE":"/tmp/mine"}}"#,
+                "CLAUDE_ENV_FILE in its env",
+            ),
+            (
+                r#"{"env":{"CLAUDE_CONFIG_DIR":"/tmp/c"}}"#,
+                "CLAUDE_CONFIG_DIR in its env",
+            ),
+            (
+                r#"{"env":{"GIT_SSH_COMMAND":"ssh"}}"#,
+                "GIT_SSH_COMMAND in its env",
+            ),
+            (r#"{"env":{"GIT_DIR":"/tmp/g"}}"#, "GIT_DIR in its env"),
+            (r#"{"env":{"GH_TOKEN":"x"}}"#, "GH_TOKEN in its env"),
+            (
+                r#"{"env":{"SSH_AUTH_SOCK":"/tmp/s"}}"#,
+                "SSH_AUTH_SOCK in its env",
+            ),
+            (r#"{"env":{"HOME":"/tmp"}}"#, "HOME in its env"),
+            (r#"{"env":{"PATH":"/tmp"}}"#, "PATH in its env"),
+            (&read_obids, &said_obids),
+            (
+                r#"{"sandbox":{"filesystem":{"allowWrite":["~/.ssh"]}}}"#,
+                "~/.ssh in sandbox.filesystem.allowWrite",
+            ),
+            // A folder holding one of them opens it too, and `..` doesn't hide one.
+            (
+                r#"{"sandbox":{"filesystem":{"allowRead":["//"]}}}"#,
+                "// in sandbox.filesystem.allowRead",
+            ),
+            (&climbs, "/tmp/../vault in sandbox.filesystem.allowWrite"),
+        ];
+        for (set, key) in &refused {
+            std::fs::write(&user, set).unwrap();
+            let why = super::own_settings_allowed(&user, &spec, &ours).unwrap_err();
+            assert!(
+                why.contains(&user.display().to_string()) && why.contains(key),
+                "{set}: {why}"
+            );
+        }
+        std::fs::write(&user, "{ not json").unwrap();
+        assert!(super::own_settings_allowed(&user, &spec, &ours).is_err());
+        std::fs::remove_file(&user).unwrap();
+        assert!(super::own_settings_allowed(&user, &spec, &ours).is_ok());
+        let notes = format!(
+            r#"{{"permissions":{{"allow":["Read(src/**)","Edit(./docs/*.md)","Write(/{}/notes/**)","mcp__x"]}}}}"#,
+            worktree.display()
+        );
+        let allowed = [
+            r#"{"sandbox":{"enabled":false,"excludedCommands":[]}}"#,
+            r#"{"env":{"DISABLE_TELEMETRY":"1","ANTHROPIC_MODEL":"opus"}}"#,
+            r#"{"sandbox":{"filesystem":{"allowWrite":["/tmp/cache"]}}}"#,
+            r#"{"hooks":{"Stop":[]},"permissions":{"allow":["Bash(ls)"]}}"#,
+            r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"},"permissions":{"additionalDirectories":[]}}"#,
+            &notes,
+        ];
+        for set in allowed {
+            std::fs::write(&user, set).unwrap();
+            let checked = super::own_settings_allowed(&user, &spec, &ours);
+            assert!(checked.is_ok(), "{set}: {checked:?}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -15576,7 +15806,7 @@ mod tests {
         }
         extra.push((crate::process::CLAUDE_TMPDIR, temp.clone().into_os_string()));
         let env = crate::process::sandbox_env(&crate::process::tools_path(), &temp, &extra);
-        let settings = super::own_sandbox_settings(&spec, &login).unwrap();
+        let settings = super::own_sandbox_settings(&spec, &login, &extra).unwrap();
         // Made after the settings, as another job's folder or the vault can be mid-turn.
         for later in ["tmp/later/secret", "vault/secrets.json"] {
             std::fs::create_dir_all(home.join(later).parent().unwrap()).unwrap();
@@ -15603,8 +15833,7 @@ mod tests {
             "printf 'gitdir: /tmp\\n' > .git 2>/dev/null; echo dotgit:$?".into(),
             "printf '/tmp\\n' > \"$GIT_DIR/commondir\" 2>/dev/null; echo commondir:$?".into(),
             "printf '/tmp\\n' > \"$GIT_DIR/gitdir\" 2>/dev/null; echo gitdir:$?".into(),
-            format!("ln -sfn /tmp {:?} 2>/dev/null; echo keychains-link:$?", login.join("Library/Keychains")),
-            format!("mv {:?} {:?} 2>/dev/null; echo claude-library:$?", login.join("Library"), login.join("Moved")),
+            format!("ls {:?} >/dev/null 2>&1; echo keychains-read:$?", person.join("Library/Keychains")),
             format!("ln -sfn /tmp/obid-probe-env {:?} 2>/dev/null; echo env-link:$?", login.join("env.sh")),
             "mkdir -p \"$HOME/Library/Caches/go-build\" && echo caches:ok".into(),
         ];
@@ -15704,8 +15933,7 @@ mod tests {
             ("dotgit:", "dotgit:0"),
             ("commondir:", "commondir:0"),
             ("gitdir:", "gitdir:0"),
-            ("keychains-link:", "keychains-link:0"),
-            ("claude-library:", "claude-library:0"),
+            ("keychains-read:", "keychains-read:0"),
             ("env-link:", "env-link:0"),
         ] {
             assert!(results.contains(said), "{said} didn't run: {results}");

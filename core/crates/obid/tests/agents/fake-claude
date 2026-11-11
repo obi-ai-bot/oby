@@ -86,8 +86,11 @@
 //   ARTIFACTS_MANY   writes 25 Markdown files in .obi/artifacts/ instead
 //   REPORT           writes .obi/report.json in the worktree: its arguments, environment, prompt,
 //                    the MCP config it was given (--mcp-config), the tools it was allowed
-//                    (--allowedTools), what each http MCP server answered to `tools/list`, and
-//                    the files in .obi/context/; then ends the turn with "Reported." With
+//                    (--allowedTools), what each http MCP server answered to `tools/list`, the
+//                    files in .obi/context/, and what it loaded as Claude Code would (`loaded`:
+//                    the --setting-sources it read, the settings files found, the user's skills,
+//                    every MCP server's name, and whether its sandbox is on once --settings is
+//                    laid over them); then ends the turn with "Reported." With
 //                    MCP_CALL, MCP_WRITE, MCP_API or MCP_PROBE it also calls the `oby` broker's
 //                    tools (MCP_CALL's search with its prompt as the query), and MCP_PROBE tries
 //                    the broker's token on the runner's other routes. With TETRIX_CALL it calls
@@ -160,7 +163,7 @@
 import { execFileSync } from "node:child_process";
 import { randomFillSync } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { getPriority } from "node:os";
+import { getPriority, homedir } from "node:os";
 import { createInterface } from "node:readline";
 
 // Claude Code's refresh as obid has the Mac's own run it (`-p /usage … --no-session-persistence`,
@@ -959,5 +962,36 @@ async function report(prompt) {
   }
   const context = existsSync(".obi/context") ? readdirSync(".obi/context").sort() : [];
   mkdirSync(".obi", { recursive: true });
-  writeFileSync(".obi/report.json", JSON.stringify({ argv, env: process.env, prompt, mcp, allowed, answers, toolCalls, probes, context }, null, 2));
+  const loaded = settingsLoaded(argv, mcp);
+  writeFileSync(".obi/report.json", JSON.stringify({ argv, env: process.env, prompt, mcp, allowed, answers, toolCalls, probes, context, loaded }, null, 2));
+}
+
+// What Claude Code loads: each --setting-sources file (user's in its config folder, then the
+// project's and the local one in the worktree), --settings over them all, the user's skills, and
+// the user's MCP servers (and with the project source the worktree's .mcp.json) beside
+// --mcp-config's unless --strict-mcp-config.
+function settingsLoaded(argv, mcp) {
+  const flag = (name) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
+  const read = (file) => {
+    try {
+      return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return undefined;
+    }
+  };
+  const config = process.env.CLAUDE_CONFIG_DIR ?? `${homedir()}/.claude`;
+  const files = { user: `${config}/settings.json`, project: ".claude/settings.json", local: ".claude/settings.local.json" };
+  const sources = (flag("--setting-sources") ?? "user,project,local").split(",").filter(Boolean);
+  const found = sources.filter((source) => existsSync(files[source]));
+  const given = flag("--settings");
+  const layers = [...found.map((source) => read(files[source])), given && (given.startsWith("{") ? JSON.parse(given) : read(given))];
+  const sandbox = layers.reduce((on, layer) => layer?.sandbox?.enabled ?? on, false);
+  const skills = sources.includes("user") && existsSync(`${config}/skills`) ? readdirSync(`${config}/skills`).sort() : [];
+  // The user's servers are in $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json (measured with
+  // 2.1.302); the project's .mcp.json only with the project source.
+  const state = process.env.CLAUDE_CONFIG_DIR ? `${config}/.claude.json` : `${homedir()}/.claude.json`;
+  const strict = argv.includes("--strict-mcp-config");
+  const own = strict ? {} : (read(state)?.mcpServers ?? {});
+  const repos = strict || !sources.includes("project") ? {} : (read(".mcp.json")?.mcpServers ?? {});
+  return { sources, found, skills, mcpServers: [...Object.keys(own), ...Object.keys(repos), ...Object.keys(mcp?.mcpServers ?? {})], sandbox };
 }

@@ -560,14 +560,17 @@ fn read_login_env() -> Option<Vec<(OsString, OsString)>> {
 
 /// `owners` ([`login_env`]'s) under `env`, an own run's (LANES-4): every variable `env` doesn't set,
 /// but what pushes or signs in to a code host ([`agent_withheld`]'s: Claude Code's and Anthropic's
-/// are the owner's gateway, and theirs), git's and obid's own, and the shell's own bookkeeping.
+/// are the owner's gateway, and theirs), git's and obid's own, the shell's own bookkeeping, and
+/// which Claude Code folder and Keychain item the run uses: the account's, as obid names it (none
+/// for the default account, LANES-5), so obid checks the settings the run really loads.
 pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsString)]) {
     for (name, value) in owners {
         let n = name.to_string_lossy();
         let gateway = n.starts_with("ANTHROPIC_") || n.starts_with("CLAUDE_CODE_");
         let withheld = (agent_withheld(&n) && !gateway)
             || ["GIT_", "OBY_", "OBID_"].iter().any(|p| n.starts_with(p))
-            || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n);
+            || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
+            || ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"].contains(&&*n);
         if !withheld && !env.iter().any(|(set, _)| set == name) {
             env.push((name.clone(), value.clone()));
         }
@@ -964,6 +967,32 @@ mod claude_tmpdir_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LANES-5 with LANES-4: the owner's shell can't move an own run's Claude Code to another
+    /// folder or Keychain item than obid names (none for the default account), nor change what obid
+    /// sets (`HOME`); its gateway still reaches the run.
+    #[test]
+    fn lanes_5_the_owners_shell_keeps_the_accounts_folder() {
+        let os = |text: &str| OsString::from(text);
+        let mut env = vec![(os("HOME"), os("/Users/p"))];
+        let owners = [
+            (os("CLAUDE_CONFIG_DIR"), os("/Users/p/.claude-other")),
+            (
+                os("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+                os("/Users/p/.claude-other"),
+            ),
+            (os("HOME"), os("/elsewhere")),
+            (os("ANTHROPIC_BASE_URL"), os("https://gateway.example")),
+        ];
+        with_owners(&mut env, &owners);
+        assert_eq!(
+            env,
+            vec![
+                (os("HOME"), os("/Users/p")),
+                (os("ANTHROPIC_BASE_URL"), os("https://gateway.example")),
+            ]
+        );
+    }
 
     /// LANES-2: a boxed agent's environment and an own one's alike give git no settings but the
     /// repository's and an empty credential helper, and nothing that pushes or signs in reaches an

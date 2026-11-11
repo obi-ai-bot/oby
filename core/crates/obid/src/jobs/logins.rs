@@ -190,17 +190,21 @@ pub(super) fn cursor_login_live(login: &[u8]) -> bool {
 }
 
 /// What a Claude Code run in its own sandbox (the own lane, `Jobs::own_lane`) gets over a boxed run's
-/// environment: the account's own folder and Keychain item (the default ones for an account with
-/// no `configDir`), and, as its own `HOME`, the job's `login` folder (`home/logins/<job id>`,
-/// which its commands can neither read nor write), holding only `Library/Keychains`, a link to the
-/// person's, where `security` finds that item. Its commands get the job's temporary folder as
-/// `HOME` instead, through `CLAUDE_ENV_FILE` (`env.sh` there, written fresh every turn), so what
-/// they build and cache stays the job's. git reads only the clone's settings, through the job's
-/// own git folders whatever the worktree's `.git` or `commondir` says: Claude Code runs git itself,
-/// outside its sandbox, and a setting its commands could write would run what they put there.
-/// It gets [`process::no_publish_env`], as every agent does.
-/// Refused when the account's `.claude.json` sets, in its `env` (which Claude Code applies whatever
-/// `--setting-sources` says), a variable no agent gets or one this sets.
+/// environment, as the terminal gives it (LANES-5): the person's own `HOME` (and
+/// `CFFIXED_USER_HOME`), where Claude Code finds its Keychain login and the owner's hooks find what
+/// they name (`$HOME/…`); the account's own folder as `CLAUDE_CONFIG_DIR` only for an account with
+/// a `configDir` (the default one sets none, so Claude Code reads `~/.claude.json`, its MCP
+/// servers, and its default Keychain item, as in the terminal: `CLAUDE_CONFIG_DIR=~/.claude` reads
+/// `~/.claude/.claude.json` instead). Its commands get the job's temporary folder as `HOME`
+/// through `CLAUDE_ENV_FILE` (`env.sh` in the job's `login` folder, `home/logins/<job id>`, which
+/// they can't read, written fresh every turn), so what they build and cache stays the job's, and
+/// its sandbox hides the person's home from them as before; hooks run with Claude Code's own.
+/// git reads only the clone's settings, through the job's own git folders whatever the worktree's
+/// `.git` or `commondir` says: Claude Code runs git itself, outside its sandbox, and a setting its
+/// commands could write would run what they put there. It gets [`process::no_publish_env`], as
+/// every agent does. Refused when the account's `.claude.json` sets, in its `env` (which Claude
+/// Code applies whatever `--setting-sources` says), a variable [`env_refused`] names; the user's
+/// settings file is held to the same rule ([`own_settings_allowed`]).
 pub(crate) fn own_sandbox_env(
     account: &crate::config::Account,
     spec: &Spec,
@@ -210,33 +214,35 @@ pub(crate) fn own_sandbox_env(
     let (Some(admin), Some(common)) = (&spec.git_admin, &spec.git_common) else {
         return Err("obid has no git folder for this job's Claude Code.".into());
     };
-    let folder = account
-        .config_dir
-        .clone()
-        .unwrap_or_else(|| home.join(".claude"));
-    let storage = account.config_dir.clone().unwrap_or_default();
     let mut env: Vec<(&'static str, OsString)> = vec![
-        ("HOME", login.as_os_str().to_owned()),
-        // Where CoreFoundation and `security` look too: never the job's temporary folder, which
-        // its commands write (`env.sh` gives them that one).
-        ("CFFIXED_USER_HOME", login.as_os_str().to_owned()),
+        ("HOME", home.clone().into_os_string()),
+        ("CFFIXED_USER_HOME", home.clone().into_os_string()),
         ("CLAUDE_ENV_FILE", login.join("env.sh").into_os_string()),
-        ("CLAUDE_CONFIG_DIR", folder.clone().into_os_string()),
-        ("CLAUDE_SECURESTORAGE_CONFIG_DIR", storage.into_os_string()),
+    ];
+    let state = match &account.config_dir {
+        Some(dir) => {
+            env.push(("CLAUDE_CONFIG_DIR", dir.clone().into_os_string()));
+            env.push((
+                "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+                dir.clone().into_os_string(),
+            ));
+            dir.join(".claude.json")
+        }
+        None => home.join(".claude.json"),
+    };
+    env.extend([
         ("GIT_DIR", admin.clone().into_os_string()),
         ("GIT_COMMON_DIR", common.clone().into_os_string()),
         ("GIT_WORK_TREE", spec.worktree.clone().into_os_string()),
-    ];
+        // As every Claude Code run's (`Jobs::launch`), named here so no file of the owner's sets it.
+        (process::CLAUDE_TMPDIR, spec.temp.clone().into_os_string()),
+    ]);
     // In the environment, which nothing the agent writes changes for Claude Code's own git.
     env.extend(process::no_publish_env(&spec.temp));
-    let state = std::fs::read(folder.join(".claude.json")).unwrap_or_default();
+    let state = std::fs::read(state).unwrap_or_default();
     let set = serde_json::from_slice::<Value>(&state).unwrap_or_default();
     for (name, _) in set["env"].as_object().into_iter().flatten() {
-        if process::agent_withheld(name)
-            || name.starts_with("GIT_")
-            || ["HOME", "CFFIXED_USER_HOME", "PATH"].contains(&name.as_str())
-            || env.iter().any(|(set, _)| set == name)
-        {
+        if env_refused(name, &env) {
             return Err(format!(
                 "{}'s .claude.json sets {name} in its env, which a job's agent must never get or which obid sets itself: take it out.",
                 account.name
@@ -246,8 +252,7 @@ pub(crate) fn own_sandbox_env(
     let mut made = std::fs::DirBuilder::new();
     std::os::unix::fs::DirBuilderExt::mode(made.recursive(true), 0o700);
     made.create(login)
-        .and_then(|()| link_keychains(login, &home))
-        .map_err(|e| format!("obid can't show Claude Code its Keychain: {e}"))?;
+        .map_err(|e| format!("obid can't make the job's login folder: {e}"))?;
     let temp = shell_quoted(&spec.temp.to_string_lossy());
     write_fresh(
         &login.join("env.sh"),
@@ -255,6 +260,221 @@ pub(crate) fn own_sandbox_env(
     )
     .map_err(|e| format!("obid can't give Claude Code's commands their HOME: {e}"))?;
     Ok(env)
+}
+
+/// `account`'s Claude Code folder: its `configDir`, else `~/.claude` in `home`.
+fn claude_folder(account: &crate::config::Account, home: &Path) -> PathBuf {
+    account
+        .config_dir
+        .clone()
+        .unwrap_or_else(|| home.join(".claude"))
+}
+
+/// Whether a file of the owner's (`env` in `.claude.json` or in a settings file) may not give an
+/// own run's Claude Code `name`: one no agent gets ([`process::agent_withheld`]: `GH_*` and
+/// `SSH_AUTH_SOCK` among them), a `GIT_*`, `HOME`, `PATH`, `CLAUDE_CONFIG_DIR`, or one obid sets
+/// itself (`ours`, [`own_sandbox_env`]'s).
+fn env_refused(name: &str, ours: &[(&'static str, OsString)]) -> bool {
+    process::agent_withheld(name)
+        || name.starts_with("GIT_")
+        || ["HOME", "CFFIXED_USER_HOME", "PATH", "CLAUDE_CONFIG_DIR"].contains(&name)
+        || ours.iter().any(|(set, _)| *set == name)
+}
+
+/// The settings file an own run of `account`'s Claude Code loads (LANES-5, `--setting-sources
+/// user`: never the repository's, the owner's decision LANE-6a): its folder's `settings.json`.
+pub(crate) fn own_settings_file(account: &crate::config::Account) -> Result<PathBuf, String> {
+    let home = login_home().ok_or("obid can't find the home Claude Code's login is in.")?;
+    Ok(claude_folder(account, &home).join("settings.json"))
+}
+
+/// Refused, naming the file and its key, when the user's settings `file` an own run loads
+/// ([`own_settings_file`]) sets what obid's `--settings` can't take back, since Claude Code adds a
+/// list's entries up and keeps a key obid doesn't name (LANES-5): `sandbox.excludedCommands` (run
+/// outside the sandbox), `sandbox.network.httpProxyPort` or `socksProxyPort` (a proxy of its own),
+/// `allowUnixSockets`, `allowAllUnixSockets`, `allowMachLookup` or `sandbox.allowAppleEvents`
+/// (ways out of it), `permissions.additionalDirectories`, a file tool's allow rule naming a path
+/// outside the worktree or none ([`FILE_TOOLS`]), an `env` key obid sets (`ours`:
+/// [`own_sandbox_env`]'s) or [`env_refused`] names but Claude Code's own `ANTHROPIC_*` and
+/// `CLAUDE_CODE_*`, or a `sandbox.filesystem.allowRead` or `allowWrite` path in, or holding, one of
+/// obid's hidden folders ([`Spec::hidden`]: obid's home, the person's, the accounts'). One that's
+/// there but doesn't read as JSON is refused too: obid can't tell what it sets.
+pub(crate) fn own_settings_allowed(
+    file: &Path,
+    spec: &Spec,
+    ours: &[(&'static str, OsString)],
+) -> Result<(), String> {
+    let tree = spec.worktree.clone();
+    let spec = spec.canonical();
+    let home = login_home();
+    let refused = |key: &str| {
+        format!(
+            "{} sets {key}, which would let a job's Claude Code out of what obid keeps it in: take it out, then try again.",
+            file.display()
+        )
+    };
+    let text = match std::fs::read(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("obid can't read {}: {e}", file.display())),
+    };
+    let set: Value = serde_json::from_slice(&text).map_err(|e| {
+        format!(
+            "obid can't read {} ({e}), so it can't tell what it sets.",
+            file.display()
+        )
+    })?;
+    let sandbox = &set["sandbox"];
+    let (excluded, more) = (
+        &sandbox["excludedCommands"],
+        &set["permissions"]["additionalDirectories"],
+    );
+    for (value, key) in [
+        (excluded, "sandbox.excludedCommands"),
+        (more, "permissions.additionalDirectories"),
+    ] {
+        if value.as_array().map_or(!value.is_null(), |l| !l.is_empty()) {
+            return Err(refused(key));
+        }
+    }
+    for key in [
+        "httpProxyPort",
+        "socksProxyPort",
+        "allowUnixSockets",
+        "allowAllUnixSockets",
+        "allowMachLookup",
+    ] {
+        if !sandbox["network"][key].is_null() {
+            return Err(refused(&format!("sandbox.network.{key}")));
+        }
+    }
+    if !sandbox["allowAppleEvents"].is_null() {
+        return Err(refused("sandbox.allowAppleEvents"));
+    }
+    // Claude Code's own variables (its gateway, its model) are the owner's, as in their
+    // terminal (LANES-4), but for those obid sets itself (`CLAUDE_CODE_TMPDIR`).
+    let claudes = |name: &str| name.starts_with("ANTHROPIC_") || name.starts_with("CLAUDE_CODE_");
+    for (name, _) in set["env"].as_object().into_iter().flatten() {
+        let obids = ours.iter().any(|(set, _)| set == name);
+        if obids || (env_refused(name, ours) && !claudes(name)) {
+            return Err(refused(&format!("{name} in its env")));
+        }
+    }
+    // Its relative paths are from its folder, `~/.claude` or the account's.
+    let dir = file.parent().unwrap_or(Path::new("/"));
+    // An allow rule lets the tool through without asking, so obid's refusal of a path outside
+    // the worktree (`policy::names_outside`) never runs: a file tool's rule must name a path in
+    // the worktree. A bare one (`Read`, `Grep`) names every path, so it's refused.
+    let inside = |p: &PathBuf| real_path(p).starts_with(&spec.worktree);
+    let rules = set["permissions"]["allow"].as_array().into_iter().flatten();
+    for rule in rules.filter_map(Value::as_str) {
+        let (tool, named) = match rule.split_once('(') {
+            Some((tool, rest)) => (tool.trim(), rest.strip_suffix(')')),
+            None => (rule.trim(), None),
+        };
+        if !FILE_TOOLS.contains(&tool) {
+            continue;
+        }
+        let paths = named
+            .filter(|p| !p.trim().is_empty())
+            .and_then(|p| rule_path(p.trim(), dir, &tree, home.as_deref()));
+        if !paths.as_ref().is_some_and(inside) {
+            return Err(refused(&format!("{rule} in permissions.allow")));
+        }
+    }
+    // What obid opens for the job itself stays open: the worktree, its git and temporary folders.
+    for (key, opened) in [
+        ("allowRead", spec.readable()),
+        ("allowWrite", spec.writable()),
+    ] {
+        let paths = sandbox["filesystem"][key].as_array().into_iter().flatten();
+        for path in paths.filter_map(Value::as_str) {
+            let opens = settings_path(path, dir, home.as_deref()).is_none_or(|p| {
+                let p = real_path(&p);
+                !opened.iter().any(|o| p.starts_with(o))
+                    && spec
+                        .hidden
+                        .iter()
+                        .any(|h| p.starts_with(h) || h.starts_with(&p))
+            });
+            if opens {
+                return Err(refused(&format!("{path} in sandbox.filesystem.{key}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The path a settings file's sandbox `path` names, as Claude Code reads it: `~/…` in `home`, `/…`
+/// (or the older `//…`) from the root, anything else from `dir` (the project's folder for its
+/// settings, `~/.claude` for the user's: its folder). None for a `~` with no `home`.
+fn settings_path(path: &str, dir: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(rest) = path.strip_prefix('~') {
+        return home.map(|home| home.join(rest.trim_start_matches('/')));
+    }
+    Some(match path.strip_prefix('/') {
+        Some(rest) => Path::new("/").join(rest.trim_start_matches('/')),
+        None => dir.join(path),
+    })
+}
+
+/// The tools whose permission rules name files they read or write: an allow rule for one reaches
+/// what it names without asking ([`own_settings_allowed`]).
+const FILE_TOOLS: [&str; 8] = [
+    "Read",
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
+    "Grep",
+    "Glob",
+    "LS",
+];
+
+/// The path a permission rule's `pattern` (from the user's settings in folder `dir`) names, cut at
+/// its first wildcard: `//…` from the root, `~/…` in `home`, `/…` from `dir`, anything else from
+/// the working folder, `worktree`. None for a `~` with no `home`.
+fn rule_path(pattern: &str, dir: &Path, worktree: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let literal = &pattern[..pattern.find(['*', '?', '[', '{']).unwrap_or(pattern.len())];
+    if let Some(rest) = literal.strip_prefix("//") {
+        return Some(Path::new("/").join(rest));
+    }
+    if let Some(rest) = literal.strip_prefix('~') {
+        return home.map(|home| home.join(rest.trim_start_matches('/')));
+    }
+    Some(match literal.strip_prefix('/') {
+        Some(rest) => dir.join(rest),
+        None => worktree.join(literal),
+    })
+}
+
+/// `path` with its `.` and `..` taken out, then resolved (links followed) as far as it's there,
+/// the rest joined back on.
+fn real_path(path: &Path) -> PathBuf {
+    let mut plain = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                plain.pop();
+            }
+            std::path::Component::CurDir => {}
+            part => plain.push(part),
+        }
+    }
+    let mut rest = Vec::new();
+    let mut at = plain.as_path();
+    loop {
+        if let Ok(real) = at.canonicalize() {
+            return rest.iter().rev().fold(real, |p, part| p.join(part));
+        }
+        match (at.file_name(), at.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name.to_owned());
+                at = parent;
+            }
+            _ => return plain,
+        }
+    }
 }
 
 /// `bytes` in a new file at `path` (0600), whatever was there gone first and never followed: Claude
@@ -282,38 +502,26 @@ pub(super) fn shell_quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// `at/Library/Keychains` as a link to `home`'s, where `security` finds the login Keychain through
-/// `HOME`. Never through a link found there: a `Library` that isn't a folder of its own, or
-/// anything at `Keychains`, goes first.
-pub(super) fn link_keychains(at: &Path, home: &Path) -> std::io::Result<()> {
-    let library = at.join("Library");
-    if std::fs::symlink_metadata(&library).is_ok_and(|meta| !meta.is_dir()) {
-        std::fs::remove_file(&library)?;
-    }
-    if std::fs::symlink_metadata(&library).is_err() {
-        std::fs::create_dir(&library)?;
-    }
-    let keychains = library.join("Keychains");
-    match std::fs::symlink_metadata(&keychains) {
-        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&keychains)?,
-        Ok(_) => std::fs::remove_file(&keychains)?,
-        Err(_) => {}
-    }
-    std::os::unix::fs::symlink(home.join("Library/Keychains"), &keychains)
-}
-
 /// `--settings` for a Claude Code run in its own sandbox. Its shell is always sandboxed (no
 /// backend, no command: `failIfUnavailable`; never retried outside it); it reads nothing in obid's
 /// home, the person's or the accounts' folders ([`Spec::hidden`], denied whole, so a folder made
 /// there mid-turn is denied too) but what obid's box reads ([`Spec::readable`], re-opened), writes
 /// only where the box would ([`Spec::writable`]), and never the git pointers, `oby-common` or
-/// what Claude Code keeps in `login` (its `Library` with the Keychains link, and `env.sh`, which
-/// Claude Code lets its commands write whatever the settings say: obid writes it again every turn,
-/// never through a link, [`write_fresh`], and what it sets reaches only them). Its Read and Edit tools ask before going outside the
-/// worktree, which obid refuses in this mode (`policy::names_outside`), and are denied the pointers
-/// and those outright. obid still answers each of its commands (`autoAllowBashIfSandboxed` off). A
-/// path the settings can't name stops the run.
-pub(super) fn own_sandbox_settings(spec: &Spec, login: &Path) -> Result<String, String> {
+/// `env.sh` in `login`, which Claude Code lets its commands write whatever the settings say: obid
+/// writes it again every turn, never through a link, [`write_fresh`], and what it sets reaches only
+/// them. Its Read and Edit tools ask before going outside the worktree, which obid refuses in this
+/// mode (`policy::names_outside`), and are denied the pointers and that file outright. obid still
+/// answers each of its commands (`autoAllowBashIfSandboxed` off). A path the settings can't name
+/// stops the run. They outrank the owner's user settings the run loads too (LANES-5): the sandbox
+/// stays on, its filesystem rules too (`filesystem.disabled`, a key Claude Code 2.1.302 reads),
+/// neither weaker mode, and the [`PINNED_ENV`] values are `env`'s (the run's own), whatever that
+/// file says. What it could add that this can't take back is refused before the run
+/// ([`own_settings_allowed`]).
+pub(super) fn own_sandbox_settings(
+    spec: &Spec,
+    login: &Path,
+    env: &[(&'static str, OsString)],
+) -> Result<String, String> {
     let spec = spec.canonical();
     let name = |path: &PathBuf| {
         path.to_str().map(str::to_owned).ok_or_else(|| {
@@ -325,39 +533,45 @@ pub(super) fn own_sandbox_settings(spec: &Spec, login: &Path) -> Result<String, 
     };
     let names = |paths: &[PathBuf]| paths.iter().map(name).collect::<Result<Vec<_>, _>>();
     let login = login.canonicalize().unwrap_or_else(|_| login.to_path_buf());
-    let keychains = login.join("Library/Keychains");
     let mut kept = spec.pointers();
     kept.extend(spec.git_admin.iter().map(|admin| admin.join(OWN_COMMON)));
-    kept.extend([login.join("Library"), login.join("env.sh")]);
-    kept.push(keychains.clone());
+    kept.push(login.join("env.sh"));
     // The box's own hiding of the shared temp folders isn't the own lane's: its commands read them
     // as the owner's terminal does (docs/contracts/lanes.md).
     let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
     let temps: Vec<PathBuf> = crate::sandbox::shared_temps().iter().map(real).collect();
-    let mut hidden: Vec<PathBuf> = spec
+    let hidden: Vec<PathBuf> = spec
         .hidden
         .iter()
         .filter(|p| !temps.contains(&real(p)))
         .cloned()
         .collect();
-    hidden.push(keychains.clone());
-    let mut rules = Vec::new();
-    for path in names(&kept)? {
-        rules.push(format!("Edit(/{path})"));
+    let rules: Vec<String> = names(&kept)?
+        .iter()
+        .map(|path| format!("Edit(/{path})"))
+        .collect();
+    let mut pinned = serde_json::Map::new();
+    for wanted in PINNED_ENV {
+        let value = env
+            .iter()
+            .rev()
+            .find(|(set, _)| *set == wanted)
+            .and_then(|(_, value)| value.to_str())
+            .ok_or_else(|| format!("obid has no {wanted} it can give Claude Code."))?;
+        pinned.insert(wanted.into(), value.into());
     }
-    let keychains = name(&keychains)?;
-    rules.extend([
-        format!("Edit(/{keychains}/**)"),
-        format!("Read(/{keychains}/**)"),
-    ]);
     Ok(json!({
+        "env": pinned,
         "permissions": {"deny": rules},
         "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,
             "allowUnsandboxedCommands": false,
             "autoAllowBashIfSandboxed": false,
+            "enableWeakerNestedSandbox": false,
+            "enableWeakerNetworkIsolation": false,
             "filesystem": {
+                "disabled": false,
                 "denyRead": names(&hidden)?,
                 "allowRead": names(&spec.readable())?,
                 "allowWrite": names(&spec.writable())?,
@@ -368,6 +582,21 @@ pub(super) fn own_sandbox_settings(spec: &Spec, login: &Path) -> Result<String, 
     })
     .to_string())
 }
+
+/// The variables obid's `--settings` gives an own run's Claude Code in its `env`, as obid set them
+/// in its environment, so no settings file it loads sets them otherwise (LANES-5): the empty GitHub
+/// CLI configuration and git's no-publish settings (LANES-2), git pinned to the job's own folders,
+/// Claude Code's `HOME` and its commands' (`CLAUDE_ENV_FILE`), and its temporary folder.
+pub(super) const PINNED_ENV: [&str; 8] = [
+    "GH_CONFIG_DIR",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+    "CLAUDE_ENV_FILE",
+    "HOME",
+    process::CLAUDE_TMPDIR,
+];
 
 /// The code hosts a Claude Code run in its own sandbox never reaches from its commands, whatever
 /// it's allowed: only Publish pushes and opens pull requests (AGENTS.md, "Agents can't publish").

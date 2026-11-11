@@ -5621,6 +5621,102 @@ fn lanes_10_a_foreign_job_keeps_the_box_and_its_copy() {
     assert!(!login.join(".credentials.json").exists());
 }
 
+/// LANES-5 (docs/contracts/lanes.md, the owner's decision LANE-6a): with a skill, an MCP server
+/// and `sandbox.enabled: false` in the owner's account folder, and a hook in the repository's
+/// `.claude/settings.json` and `.claude/settings.local.json` and an MCP server in its `.mcp.json`
+/// on its default branch, an own job's Claude Code loads the owner's only (`--setting-sources
+/// user`, no `--strict-mcp-config`), never the repository's, and obid's `--settings` keep its
+/// sandbox on; once marked untrusted, its next run loads none.
+#[test]
+fn lanes_5_an_own_job_loads_the_owners_settings_never_the_repositorys() {
+    let folder = Folder::new("lanes-5");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let (account, work) = (folder.0.join("home/accounts/stub"), folder.0.join("seed"));
+    let (remote_path, work_path) = (remote.to_str().unwrap(), work.to_str().unwrap());
+    git(&folder.0, &["clone", "-q", remote_path, work_path]);
+    let server = r#"{"mcpServers":{"owners-github":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
+    let off = r#"{"sandbox":{"enabled":false}}"#;
+    let hook =
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/x"}]}]}}"#;
+    let repos = r#"{"mcpServers":{"repos-server":{"type":"http","url":"http://127.0.0.1:9/"}}}"#;
+    for (file, text) in [
+        (account.join("skills/owners-skill/SKILL.md"), "# Mine\n"),
+        (account.join("settings.json"), off),
+        (account.join(".claude.json"), server),
+        (work.join(".claude/settings.json"), hook),
+        (work.join(".claude/settings.local.json"), hook),
+        (work.join(".mcp.json"), repos),
+    ] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    // Pushed to the path, not `origin`: in an agent's run its push URL is obid's invalid one.
+    for args in [
+        &["config", "user.name", "T"][..],
+        &["config", "user.email", "t@example.com"],
+        &["config", "commit.gpgsign", "false"],
+        &["add", "-f", ".claude", ".mcp.json"],
+        &["commit", "-qm", "Settings"],
+        &["push", "-q", remote_path, "HEAD:refs/heads/main"],
+    ] {
+        git(&work, args);
+    }
+    let obid = start(&folder.0, &config);
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "REPORT"});
+    let posted = post_job(&obid, task);
+    let id = posted.body["id"].as_str().unwrap();
+    assert_eq!(wait(&obid, id)["status"], "done");
+    assert_eq!(
+        loaded(&obid, id),
+        json!({"sources": ["user"], "found": ["user"], "skills": ["owners-skill"],
+               "mcpServers": ["owners-github"], "sandbox": true})
+    );
+
+    let (obid, job) = marked_untrusted(&folder.0, &config, obid, id, "REPORT");
+    assert_eq!(job["status"], "done", "{job}");
+    let loaded = loaded(&obid, job["id"].as_str().unwrap());
+    assert_eq!(loaded["sources"], json!([]), "{loaded}");
+    assert_eq!(loaded["skills"], json!([]), "{loaded}");
+    assert_eq!(loaded["mcpServers"], json!([]), "{loaded}");
+}
+
+/// The `loaded` report fake-claude wrote in job `id`'s worktree.
+fn loaded(obid: &Obid, id: &str) -> Value {
+    let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
+    let report: Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+    report["loaded"].clone()
+}
+
+/// LANES-5: an owner's settings file that sets what obid's `--settings` can't take back
+/// (`sandbox.excludedCommands`, which runs those commands outside the sandbox) stops the run
+/// before Claude Code starts, saying which file and key.
+#[test]
+fn lanes_5_a_settings_file_that_undoes_the_sandbox_stops_the_run() {
+    let folder = Folder::new("lanes-5-refused");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    let set = r#"{"sandbox":{"excludedCommands":["git"]}}"#;
+    std::fs::write(account.join("settings.json"), set).unwrap();
+    let obid = start(&folder.0, &config);
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "REPORT"});
+    let id = post_job(&obid, task).body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = wait(&obid, &id);
+    assert_ne!(job["status"], "done", "{job}");
+    let text = job.to_string();
+    assert!(
+        text.contains("settings.json sets sandbox.excludedCommands"),
+        "{job}"
+    );
+    let report = obid.home.join(format!("worktrees/{id}/.obi/report.json"));
+    assert!(!report.exists(), "Claude Code ran");
+}
+
 /// #626: routing skips an account whose login file isn't there (a login only in the macOS
 /// Keychain can't reach the job's sandbox): another account of the tool, else another tool.
 #[test]
