@@ -2614,6 +2614,8 @@ mod tests {
     #[test]
     fn pipelines_follow_the_job() {
         let mut job = job();
+        // A review runs no check (MERGING-36): a fix does.
+        job.kind = "fix".into();
         job.check = Some("node --test".into());
         let stages = |job: &Job| -> Vec<(String, String)> {
             job.pipeline()["stages"]
