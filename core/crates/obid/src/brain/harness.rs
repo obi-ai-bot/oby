@@ -1878,7 +1878,10 @@ async fn attempts(
         {
             let now = obi_protocol::time::now();
             let reset = turn.resets.or_else(|| crate::limits::reset_in(&why, now));
-            shared.jobs.mark_full(&account.id, reset, now);
+            // One model's limit moves this turn on, never fills the account (USAGE-13).
+            if !turn.scoped {
+                shared.jobs.mark_full(&account.id, reset, now);
+            }
             return Err(Unanswered::moves(format!(
                 "{} hit its usage limit ({why})",
                 account.name

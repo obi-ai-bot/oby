@@ -54,6 +54,9 @@ pub struct Usage {
     /// `seven_day` is a plan's included usage that the plan can go on past (Cursor's, USAGE-9): it
     /// is shown, and holds nothing back whatever it reads. A refusal's `full_until` still does.
     pub advisory: bool,
+    /// Claude's paid overage carries its work past a window, as its tool last said with its windows
+    /// (USAGE-12): a window at 100% then doesn't read full ([`Usage::window_full`]).
+    pub overage: bool,
 }
 
 /// A window's share now: one whose reset has passed starts again from nothing.
@@ -165,9 +168,11 @@ impl Usage {
         })
     }
 
-    /// Whether a window reads 100%, so its tool refuses work. Never an advisory figure's.
+    /// Whether a window reads 100%, so its tool refuses work. Never an advisory figure's, nor one
+    /// past which Claude's overage carries the work (USAGE-12).
     pub fn window_full(&self, now: i64) -> bool {
         !self.advisory
+            && !self.overage
             && [self.five_hour_at(now), self.seven_day_at(now)]
                 .into_iter()
                 .flatten()
@@ -272,6 +277,10 @@ impl Usages {
                 if usage.seven_day_resets.is_some() {
                     kept.seven_day_resets = usage.seven_day_resets;
                 }
+            }
+            // A report of windows says whether overage carries them; a refusal alone keeps it.
+            if usage.five_hour.is_some() || usage.seven_day.is_some() {
+                kept.overage = usage.overage;
             }
             if usage.full_until.is_some() {
                 kept.full_until = usage.full_until;
@@ -415,9 +424,7 @@ pub(crate) fn claude_overage(info: &Value) -> bool {
 }
 
 /// Whether a `rate_limit_info`'s refusal is the whole account's (USAGE-13): `rejected` for the
-/// 5-hour or weekly window, or naming none, and no overage carrying it. A scoped one (a model's
-/// week, `seven_day_opus`, `seven_day_sonnet`, `seven_day_overage_included`, or `overage`) leaves
-/// the account's other work going.
+/// 5-hour or weekly window, or naming none, and no overage carrying it.
 pub(crate) fn claude_refused(info: &Value) -> bool {
     info["status"] == "rejected"
         && !claude_overage(info)
@@ -425,6 +432,13 @@ pub(crate) fn claude_refused(info: &Value) -> bool {
             info["rateLimitType"].as_str(),
             None | Some("five_hour" | "seven_day")
         )
+}
+
+/// Whether a refusal is scoped (USAGE-13): a model's week (`seven_day_opus`, `seven_day_sonnet`,
+/// `seven_day_overage_included`) or the overage's own (`overage`). It stops the turn's model and
+/// leaves the account's other work going.
+pub(crate) fn claude_scoped(info: &Value) -> bool {
+    info["status"] == "rejected" && !claude_overage(info) && !claude_refused(info)
 }
 
 /// Claude Code's `rate_limit_event`: its `unifiedWindows` (`five_hour`, `seven_day`), each with a
@@ -447,17 +461,15 @@ pub fn claude(message: &Value) -> Usage {
     let (five_hour, five_hour_resets) = window("five_hour");
     let (seven_day, seven_day_resets) = window("seven_day");
     let windows = [(five_hour, five_hour_resets), (seven_day, seven_day_resets)];
-    let counted = if claude_overage(info) {
-        [(None, None); 2]
-    } else {
-        windows
-    };
+    let overage = claude_overage(info);
+    let counted = if overage { [(None, None); 2] } else { windows };
     Usage {
         five_hour,
         seven_day,
         five_hour_resets,
         seven_day_resets,
         full_until: full_until(counted, claude_refused(info), epoch(&info["resetsAt"])),
+        overage,
         ..Usage::default()
     }
 }
@@ -1403,6 +1415,27 @@ mod tests {
             (Some(1.0), Some(1_762_880_400))
         );
         assert_eq!(crate::limits::claude_full_until(&event), None);
+        // As kept: its 100% window doesn't read full while overage carries it, so a passing error
+        // is no limit (crate::jobs); a later report with no overage reads full again.
+        let home = Home::new("claude-overage");
+        let usages = Usages::open(&home.0);
+        let before = 1_762_870_000;
+        let (_, kept) = usages.record("claude", &usage);
+        assert!(!kept.window_full(before));
+        assert!(kept.overage);
+        let (_, kept) = usages.record(
+            "claude",
+            &Usage {
+                full_until: Some(before + 60),
+                ..Usage::default()
+            },
+        );
+        assert!(kept.overage, "a refusal alone keeps what the windows said");
+        let mut spent = event.clone();
+        spent["rate_limit_info"]["isUsingOverage"] = json!(false);
+        spent["rate_limit_info"]["overageInUse"] = json!(false);
+        let (_, kept) = usages.record("claude", &claude(&spent));
+        assert!(kept.window_full(before));
         // `overageInUse` alone says it too, while the overage still allows.
         let mut in_use = event.clone();
         in_use["rate_limit_info"]["isUsingOverage"] = json!(false);
