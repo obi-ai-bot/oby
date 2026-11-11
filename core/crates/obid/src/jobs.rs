@@ -7464,7 +7464,8 @@ impl Jobs {
                 argv.extend(flags);
                 if own {
                     let settings = own_sandbox_settings(&spec, &self.login_path(&job.id), &extra)?;
-                    argv.extend(["--settings".into(), settings.into()]);
+                    argv.extend(["--tools", OWN_JOB_TOOLS, "--settings"].map(OsString::from));
+                    argv.push(settings.into());
                 }
                 argv
             }

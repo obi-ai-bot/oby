@@ -433,16 +433,33 @@ fn settings_path(path: &str, dir: &Path, home: Option<&Path>) -> Option<PathBuf>
 /// owner's lets a call past obid's rules. A tool a later Claude Code adds and this doesn't name
 /// skips them: `lanes_14_a_skills_grant_still_asks_obid` says which.
 #[rustfmt::skip]
-pub(crate) const CLAUDE_TOOLS: [&str; 44] = [
+pub(crate) const CLAUDE_TOOLS: [&str; 48] = [
     "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
     "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep", "ListAgents",
     "Monitor", "NotebookEdit", "PushNotification", "Read", "RemoteTrigger", "ReportFindings",
     "ScheduleWakeup", "SendMessage", "Skill", "Task", "TaskCreate", "TaskGet", "TaskList",
     "TaskStop", "TaskUpdate", "ToolSearch", "WebFetch", "WebSearch", "Workflow", "Write",
+    // Its MCP servers' resources, which it lists only for a server that has some, and a helper's
+    // report back.
+    "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool", "SubagentHandback",
     // Older names, and others' it still takes.
     "Agent", "BashOutput", "KillBash", "KillShell", "LS", "LSP", "MultiEdit", "NotebookRead",
     "TaskOutput", "TodoWrite",
 ];
+
+/// Claude Code's tools that read the owner's MCP servers' resources: the owner's MCP servers'
+/// reads, as their tools are (LANE-12), so obid lets them run, and each one counts as the run
+/// having read something untrusted.
+pub(crate) const MCP_RESOURCE_TOOLS: [&str; 3] = [
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+    "ReadMcpResourceDirTool",
+];
+
+/// The built-in tools an own job's Claude Code has (`--tools`, LANES-14): 2.1.302's default ones
+/// obid knows how to answer, and its MCP servers' resources. One it adds later, or one it has but
+/// obid doesn't answer (`Monitor`, `EnterWorktree`, the `Cron*` and remote tools), isn't there.
+pub(crate) const OWN_JOB_TOOLS: &str = "AskUserQuestion,Bash,Edit,EnterPlanMode,ExitPlanMode,ListAgents,NotebookEdit,Read,Skill,Task,TaskStop,ToolSearch,WebFetch,WebSearch,Write,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
 
 /// The tools whose permission rules name files they read or write: an allow rule for one reaches
 /// what it names without asking ([`own_settings_allowed`]).
@@ -599,6 +616,9 @@ pub(super) fn own_sandbox_settings(
     Ok(json!({
         "env": pinned,
         "permissions": {"deny": rules, "ask": asked},
+        // None of the owner's hooks, a skill's included: they run outside the sandbox with the
+        // owner's rights, and one could run what the run wrote (LANES-17, the owner's LANE-6b).
+        "disableAllHooks": true,
         "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,

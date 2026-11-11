@@ -53,7 +53,7 @@ impl Jobs {
         input: &Value,
         worktree: &Path,
     ) -> Option<Answer> {
-        if Self::OWN_QUIET.contains(&name) {
+        if Self::OWN_QUIET.contains(&name) || MCP_RESOURCE_TOOLS.contains(&name) {
             return Some(Answer::Allow);
         }
         let pointer = policy::real_path(&worktree.join(".git"));
@@ -93,12 +93,13 @@ impl Jobs {
 
     /// The built-in tools of Claude Code's an own run asks obid about (its `ask` rules, LANES-14)
     /// that reach nothing past the session: finding a deferred tool, its task list, its own
-    /// background tasks, its agents' names, planning, a skill of the owner's (whose
-    /// `allowed-tools` no longer skip obid). obid lets them run at once, as Claude Code did.
+    /// background tasks, its agents' names, planning, a helper's report, a skill of the owner's
+    /// (whose `allowed-tools` no longer skip obid, and whose hooks never run: LANES-17). obid lets
+    /// them run at once, as Claude Code did.
     #[rustfmt::skip]
-    pub(crate) const OWN_QUIET: [&'static str; 10] = [
+    pub(crate) const OWN_QUIET: [&'static str; 11] = [
         "ToolSearch", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop",
-        "ListAgents", "EnterPlanMode", "Skill",
+        "ListAgents", "EnterPlanMode", "Skill", "SubagentHandback",
     ];
 
     /// Every Claude Code account's folder: each `configDir`, and the person's `~/.claude`.
@@ -743,6 +744,61 @@ mod tests {
         }
     }
 
+    /// LANES-17: an own job's Claude Code runs none of the owner's hooks (`disableAllHooks`); and
+    /// (LANES-14) it has only the built-in tools obid answers (`--tools`), its MCP servers'
+    /// resources among them, never one obid doesn't know.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_17_an_own_job_has_only_the_tools_obid_answers_and_no_hooks() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-14e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let job = Job::new(
+            "own".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        let [worktree, admin, common, temp] =
+            ["worktree", "admin", "common", "temp"].map(|d| root.join(d));
+        for dir in [&worktree, &admin, &common, &temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
+        let account = jobs.accounts(Tool::Claude).remove(0);
+        let launch = jobs
+            .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
+            .unwrap();
+        let argv: Vec<&str> = launch.argv.iter().filter_map(|a| a.to_str()).collect();
+        let at = argv.iter().position(|a| *a == "--tools").unwrap();
+        let tools: Vec<&str> = argv[at + 1].split(',').collect();
+        for tool in &tools {
+            assert!(CLAUDE_TOOLS.contains(tool), "{tool}");
+        }
+        for tool in MCP_RESOURCE_TOOLS
+            .iter()
+            .chain(&["Read", "Bash", "Skill", "Task"])
+        {
+            assert!(tools.contains(tool), "{tool}: {tools:?}");
+        }
+        for tool in [
+            "Monitor",
+            "EnterWorktree",
+            "CronCreate",
+            "RemoteTrigger",
+            "Workflow",
+        ] {
+            assert!(!tools.contains(&tool), "{tool}: {tools:?}");
+        }
+        let at = argv.iter().position(|a| *a == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(argv[at + 1]).unwrap();
+        assert_eq!(settings["disableAllHooks"], true, "{settings}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// LANES-14: of what an own run asks obid, what reaches nothing past the session runs at once;
     /// any other tool goes to the job's mode and rules, and a file outside the worktree is refused.
     #[test]
@@ -792,6 +848,8 @@ mod tests {
             .unwrap();
         let at = launch.argv.iter().position(|a| a == "--settings").unwrap();
         let settings: Value = serde_json::from_str(launch.argv[at + 1].to_str().unwrap()).unwrap();
+        // LANES-17: none of the owner's hooks, in a conversation as in a job.
+        assert_eq!(settings["disableAllHooks"], true, "{settings}");
         let asked = &settings["permissions"]["ask"];
         for tool in CLAUDE_TOOLS.iter().chain(&["mcp__*"]) {
             assert!(
@@ -903,7 +961,7 @@ mod tests {
                 $| = 1;
                 while (<STDIN>) {{
                   next unless /"id":\s*(\d+)/; my $id = $1; my $r = "{{}}";
-                  if (/"initialize"/) {{ $r = '{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"probe","version":"1"}}}}' }}
+                  if (/"initialize"/) {{ $r = '{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}},"resources":{{}}}},"serverInfo":{{"name":"probe","version":"1"}}}}' }}
                   elsif (/"tools\/list"/) {{ $r = '{{"tools":[{{"name":"echo","description":"Echoes.","inputSchema":{{"type":"object"}}}}]}}' }}
                   elsif (/"tools\/call"/) {{ open(my $f, ">", "{}"); close $f; $r = '{{"content":[{{"type":"text","text":"ok"}}]}}' }}
                   print "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$r}}\n";
@@ -925,7 +983,7 @@ mod tests {
             .copied()
             .collect();
         // What Claude Code did with `settings` and `prompt`, and the built-in tools it had.
-        let run = |settings: Value, prompt: &str| -> Vec<String> {
+        let run = |settings: Value, prompt: &str, tools: Option<&str>| -> Vec<String> {
             let mut command = std::process::Command::new("claude");
             command
                 .current_dir(&work)
@@ -943,6 +1001,7 @@ mod tests {
                     "--allowedTools",
                 ])
                 .arg(Jobs::OWN_QUIET.join(","))
+                .args(tools.map(|tools| ["--tools", tools]).into_iter().flatten())
                 .args(["--strict-mcp-config", "--mcp-config", mcp.to_str().unwrap()])
                 .args(["--settings", &settings.to_string()])
                 .stdin(std::process::Stdio::piped())
@@ -996,7 +1055,7 @@ mod tests {
                 "Invoke the probe skill with the Skill tool, then: {}",
                 write(tag)
             );
-            let tools = run(with(json!({}), asked), &skill);
+            let tools = run(with(json!({}), asked), &skill, None);
             for tool in tools.iter().filter(|t| !t.starts_with("mcp__")) {
                 assert!(
                     CLAUDE_TOOLS.contains(&tool.as_str()),
@@ -1005,7 +1064,7 @@ mod tests {
             }
             assert_eq!(outside.join(tag).exists(), !asked, "a skill's grant, {tag}");
             let hook = format!("hook-{tag}");
-            run(with(hooked.clone(), asked), &write(&hook));
+            run(with(hooked.clone(), asked), &write(&hook), None);
             assert_eq!(
                 outside.join(&hook).exists(),
                 !asked,
@@ -1015,9 +1074,40 @@ mod tests {
             run(
                 with(allowed.clone(), asked),
                 "Call the MCP tool mcp__probe__echo once. If refused, stop.",
+                None,
             );
             assert_eq!(called.exists(), !asked, "an MCP allow rule, {tag}");
         }
+        // LANES-17: neither a hook in the settings nor a skill's runs under obid's settings, which
+        // outrank the project's `disableAllHooks: false` as they do the user's; and with an own
+        // job's `--tools` the skills, the MCP tools and their resources stay.
+        let fired = [outside.join("settings-hook"), outside.join("skill-hook")];
+        let touch =
+            |at: &Path| json!([{"type": "command", "command": format!("touch {}", at.display())}]);
+        let settings = json!({"disableAllHooks": false,
+            "hooks": {"PreToolUse": [{"matcher": "Read", "hooks": touch(&fired[0])}]}});
+        std::fs::write(work.join(".claude/settings.json"), settings.to_string()).unwrap();
+        let hooked = work.join(".claude/skills/hooked");
+        std::fs::create_dir_all(&hooked).unwrap();
+        let skill_hook = format!(
+            "---\nname: hooked\ndescription: Reads a file.\nhooks:\n  PreToolUse:\n    - matcher: \"Read\"\n      hooks:\n        - type: command\n          command: \"touch {}\"\n---\nRead the file the user names.\n",
+            fired[1].display()
+        );
+        std::fs::write(hooked.join("SKILL.md"), skill_hook).unwrap();
+        std::fs::write(work.join("in.txt"), "in").unwrap();
+        let read = "Invoke the hooked skill with the Skill tool, then Read in.txt in this folder.";
+        run(json!({}), read, None);
+        assert!(
+            fired.iter().all(|f| f.exists()),
+            "no hook ran: the probe proves nothing"
+        );
+        fired.iter().for_each(|f| drop(std::fs::remove_file(f)));
+        let tools = run(json!({"disableAllHooks": true}), read, Some(OWN_JOB_TOOLS));
+        assert!(!fired.iter().any(|f| f.exists()), "a hook ran");
+        for tool in ["Skill", "mcp__probe__echo", "ReadMcpResourceTool"] {
+            assert!(tools.iter().any(|t| t == tool), "{tool}: {tools:?}");
+        }
+        assert!(!tools.iter().any(|t| t == "Monitor"), "{tools:?}");
         // The empty memory folder Claude Code makes for its working folder, in the person's own.
         let name: String = (work.canonicalize().unwrap().to_string_lossy().chars())
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })

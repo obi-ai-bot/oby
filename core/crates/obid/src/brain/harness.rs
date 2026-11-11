@@ -62,8 +62,8 @@ const MAX_TURNS: &str = "50";
 /// nothing the session runs can read its login copy and send it out; it has `oby_shell`.
 const TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite";
 /// An own Claude Code session's (LANES-12): those, its own Bash, which runs in Claude Code's own
-/// sandbox and has no login copy to read, and the owner's skills.
-const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill";
+/// sandbox and has no login copy to read, the owner's skills, and their MCP servers' resources.
+const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write,Edit,MultiEdit,NotebookEdit,Task,TodoWrite,Bash,BashOutput,KillShell,Skill,ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool";
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
 /// it ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
@@ -2495,6 +2495,9 @@ fn taints(tool: &str, input: &Value, bounds: &Bounds, repos: &Path) -> bool {
     }
     // An own session's MCP servers of the owner's (LANES-12): their answers are anyone's. Oby's own
     // tools judge what they answer, and Tetrix's taints as it answers.
+    if crate::jobs::MCP_RESOURCE_TOOLS.contains(&tool) {
+        return true;
+    }
     if tool.starts_with("mcp__")
         && !tool.starts_with("mcp__oby__")
         && !tool.starts_with("mcp__tetrix__")
@@ -2599,7 +2602,7 @@ fn rule(
     // by obid's rules, and Tetrix's taints the turn as it answers.
     if tool.starts_with("mcp__oby__")
         || tool.starts_with("mcp__tetrix__")
-        || (own && tool.starts_with("mcp__"))
+        || (own && (tool.starts_with("mcp__") || crate::jobs::MCP_RESOURCE_TOOLS.contains(&tool)))
     {
         return Answer::Allow;
     }
@@ -3728,6 +3731,17 @@ mod tests {
     fn lanes_14_an_own_sessions_tools_all_ask_obid() {
         for tool in OWN_TOOLS.split(',') {
             assert!(crate::jobs::CLAUDE_TOOLS.contains(&tool), "{tool}");
+        }
+        // Its MCP servers' resources are the owner's MCP servers' reads (LANE-12): obid lets them
+        // run in an own session, and each one taints the turn.
+        let place = Place::of(&std::env::temp_dir(), "lanes-14");
+        let bounds = place.bounds();
+        let read = json!({"server": "s", "uri": "file:///etc/hosts"});
+        for tool in crate::jobs::MCP_RESOURCE_TOOLS {
+            assert!(OWN_TOOLS.split(',').any(|t| t == tool), "{tool}");
+            let own = rule(tool, &read, &bounds, &place.repos, true, &|| {});
+            assert_eq!(own, Answer::Allow, "{tool}");
+            assert!(taints(tool, &read, &bounds, &place.repos), "{tool}");
         }
     }
 
