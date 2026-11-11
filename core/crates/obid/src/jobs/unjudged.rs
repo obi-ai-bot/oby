@@ -74,6 +74,9 @@ impl Jobs {
                     _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(CheckRun::default()),
                 }
                 idle.back(signal).await;
+                if *signal.borrow() != Signal::Run {
+                    return Ok(CheckRun::default());
+                }
                 self.update(id, |job| job.step = format!("Running {command}"));
             }
             let mut run = self.check_once(id, command, head, spec, signal).await?;
