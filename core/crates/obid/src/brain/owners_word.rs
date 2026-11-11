@@ -240,15 +240,6 @@ pub struct Write {
     pub commit: Option<String>,
 }
 
-pub const ACTIONS: [&str; 6] = [
-    "comment",
-    "approve",
-    "request_changes",
-    "close",
-    "label",
-    "create_issue",
-];
-
 impl Write {
     /// The REST call it is: method, path and body, or why it isn't one.
     pub fn request(&self) -> Result<(&'static str, String, Value), String> {
