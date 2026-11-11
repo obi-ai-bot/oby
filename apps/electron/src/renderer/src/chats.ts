@@ -179,6 +179,9 @@ export function askOby(text: string, att?: Attachments) {
   answer(id);
   return id;
 }
+// Stop, from the message box: Oby's turn under way in the conversation ends (obid's alone).
+// ponytail: the mock's scripted answers run to their end; a cancel in work() if the mock needs it
+export const stopChat = (id: string) => { if (ofObid(id)) void live.stopConversation(id); };
 // a reply in a conversation: Oby takes its next turn on it. Oby was waiting on
 // you: its question goes into the conversation, your words under it as the answer
 export function tellChat(id: string, text: string, att?: Attachments) {

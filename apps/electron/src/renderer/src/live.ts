@@ -960,6 +960,10 @@ export const talkReady = (shown: string) => !realId(shown).startsWith('new:');
 export async function pinConversation(shown: string, pinned: boolean) {
   try { const c = await api.editConversation(realId(shown), { pinned }); take({ kind: 'conversation', conversation: c }); } catch (e) { say(e); }
 }
+// Stop (CHATFIRST-33): Oby's turn event ends the working line, as any answer's does
+export async function stopConversation(shown: string) {
+  try { await api.stopConversation(realId(shown)); } catch (e) { say(e); }
+}
 export async function deleteConversation(shown: string) {
   const c = realId(shown);
   take({ kind: 'conversationGone', id: c });
