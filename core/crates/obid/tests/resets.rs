@@ -198,13 +198,13 @@ fn cut(id: &str, phase: &str, check: Option<&str>) -> Job {
     let mut job = Job::new(
         id.into(),
         "obi-e2e/fixture-app".into(),
-        "research".into(),
+        "investigate".into(), // research runs no check since PUBLISHING-28 (#2058)
         "FAIL".into(),
         "claude".into(),
         "stub".into(),
     );
     let now = obi_protocol::time::now();
-    job.branch = format!("oby/research-{id}");
+    job.branch = format!("oby/investigate-{id}");
     job.status = Status::Running;
     job.phase = serde_json::from_value(json!(phase)).unwrap();
     job.check = check.map(str::to_owned);
