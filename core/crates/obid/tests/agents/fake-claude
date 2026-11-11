@@ -58,6 +58,12 @@
 //                    settings.json and .claude.json, tries the same in <dir> (its account's own
 //                    folder) and to read <dir>'s login; says whether its config folder is <dir> and
 //                    whether its login kept a refresh token
+//   STASH AND BRANCH through its Bash as Claude Code's (its CLAUDE_ENV_FILE first, under sandbox-exec
+//                    with --settings' allowWrite and denyWrite where Seatbelt can run here), lists
+//                    the branches it sees, stashes a new file, pops it, runs `git switch -c try`,
+//                    commits on it, and then, sandboxed, tries to write the clone's hooks/pre-commit,
+//                    config, refs/heads and refs/stash and its git folder's config.worktree and
+//                    commondir; ends the turn with what worked and "sandbox=seatbelt|none" (LANES-8)
 //   DETAIL           runs `ls`, whose output holds DETAIL-ONLY-CANARY-7f3a, then ends the turn with
 //                    "Listed the files." (tests/plans_api.rs: what a call printed never reaches the brain)
 //   REACH: [<dir>, …]   tries to list each folder and to write .obid-reached in it, and ends the turn
@@ -647,6 +653,33 @@ rl.on("line", (line) => {
     const read = tries(() => readFileSync(`${plant[1]}/.credentials.json`));
     const dir = own === plant[1] ? "account" : "own";
     result(`plant: dir=${dir} refresh=${refresh} settings=${settings} state=${state} real=${real} real-state=${realState} read=${read}`);
+  } else if (prompt.includes("STASH AND BRANCH")) {
+    const at = process.argv.indexOf("--settings");
+    const fs = at < 0 ? {} : (JSON.parse(process.argv[at + 1]).sandbox?.filesystem ?? {});
+    const rule = (paths) => paths.map((p) => ` (subpath ${JSON.stringify(p)})`).join("");
+    const profile = `(version 1)(allow default)(deny file-write*)(allow file-write*${rule(fs.allowWrite ?? [])} (literal "/dev/null"))(deny file-write*${rule(fs.denyWrite ?? [])})`;
+    let boxed = false;
+    try {
+      boxed = Boolean(fs.allowWrite) && execFileSync("/usr/bin/sandbox-exec", ["-p", profile, "/usr/bin/true"]) !== null;
+    } catch {}
+    const probes = boxed
+      ? `for f in "$(git rev-parse --git-path hooks/pre-commit)" "$(git rev-parse --git-common-dir)/config" "$GIT_DIR/config.worktree" "$GIT_DIR/commondir" "$GIT_COMMON_DIR/refs/heads/planted" "$GIT_COMMON_DIR/refs/stash"; do echo x >> "$f" 2>/dev/null && echo "wrote $f"; done`
+      : "";
+    const script = `exec 2>&1; . "$CLAUDE_ENV_FILE"
+echo "branches=,$(git for-each-ref --format='%(refname:short)' refs/heads | tr '\\n' ,)"
+echo x > stashed.txt && git add stashed.txt && git stash -q && test ! -e stashed.txt && n=$(git stash list | wc -l | tr -d ' ') && git stash pop -q && test -e stashed.txt && echo "stash=ok entries=$n"
+git rm -q --cached stashed.txt; rm -f stashed.txt
+git switch -q -c try && echo switch=ok
+git -c commit.gpgsign=false commit -q --allow-empty -m "On try" && echo "commit=$(git rev-parse refs/heads/try)"
+${probes}`;
+    const argv = boxed ? ["/usr/bin/sandbox-exec", "-p", profile, "/bin/sh", "-c", script] : ["/bin/sh", "-c", script];
+    let out;
+    try {
+      out = execFileSync(argv[0], argv.slice(1)).toString();
+    } catch (e) {
+      out = e.stdout?.toString() ?? String(e);
+    }
+    result(`${out.trim().replace(/\n/g, " ")} sandbox=${boxed ? "seatbelt" : "none"}`);
   } else if (prompt.includes("THINKING")) {
     // As Claude Code streams it: the thinking block starts and stops, with no thinking text.
     emit({ type: "stream_event", session_id: session, event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } } });

@@ -65,6 +65,8 @@ mod budget;
 mod lanes;
 mod logins;
 mod moves;
+mod own_refs;
+pub(crate) use own_refs::OWN_COMMON;
 mod research;
 mod retry;
 mod review_reads;
@@ -964,6 +966,8 @@ pub struct Jobs {
     /// and the job's changed paths, NUL apart; `None` for one that passed.
     /// ponytail: in memory, so a restart forgets it and the next first failure runs the base again.
     base_runs: Mutex<HashMap<String, Option<BaseFailure>>>,
+    /// The jobs whose own run is under way (`own_refs::OwnRun`).
+    own_runs: Mutex<HashSet<String>>,
     /// Whether a first failure runs on the base at all: `OBID_BASE_CHECK=off` turns it off.
     /// ponytail: a test seam, for obid's tests whose checks fail everywhere to drive their rounds;
     /// on everywhere else.
@@ -1280,6 +1284,7 @@ impl Jobs {
             identity: Mutex::new(identity),
             checking: Mutex::new(HashMap::new()),
             base_runs: Mutex::new(HashMap::new()),
+            own_runs: Mutex::new(HashSet::new()),
             base_check: std::env::var_os("OBID_BASE_CHECK").is_none_or(|v| v != "off"),
             preparing: Mutex::new(HashMap::new()),
             review_hook: std::sync::OnceLock::new(),
@@ -6459,34 +6464,6 @@ impl Jobs {
         Ok(head)
     }
 
-    /// The git directories of the job's worktree (its own and the common one), only when they're
-    /// obid's: the clone's `.git`, and a folder directly in its `worktrees/` whose `gitdir` names
-    /// this worktree (never another job's). The worktree's `.git` is the agent's to write, and
-    /// could name any repository.
-    async fn own_git_dirs(&self, id: &str) -> Result<(PathBuf, PathBuf), String> {
-        let job = self.get(id).ok_or("the job is gone")?;
-        let worktree = self.worktree_path(id);
-        let (admin, common) = git::worktree_dirs(&worktree)
-            .await
-            .map_err(|e| e.to_string())?;
-        let ours = self.clone_for(&job).join(".git").canonicalize();
-        let this = worktree.join(".git").canonicalize();
-        match (admin.canonicalize(), common.canonicalize(), ours, this) {
-            (Ok(admin), Ok(common), Ok(ours), Ok(this))
-                if common == ours
-                    && admin.parent() == Some(ours.join("worktrees").as_path())
-                    && std::fs::read_to_string(admin.join("gitdir"))
-                        .ok()
-                        .and_then(|named| Path::new(named.trim()).canonicalize().ok())
-                        .as_ref()
-                        == Some(&this) =>
-            {
-                Ok((admin, common))
-            }
-            _ => Err(NOT_OUR_GIT.into()),
-        }
-    }
-
     /// The job's git folders where obid makes them (`clone/.git/worktrees/<id>`, beside `git
     /// worktree add home/worktrees/<id>`, and `clone/.git`), as the variables that pin a git call in
     /// its worktree there ([`git_folders`]): for calls that can't wait on [`Jobs::own_git_dirs`].
@@ -7915,6 +7892,8 @@ impl Jobs {
             && self
                 .get(id)
                 .is_some_and(|job| job.someone_elses().is_none());
+        // LANES-8: an own run's refs are its own; obid reads the clone's before and after it.
+        let own_run = self.own_turn(id, launch.own_sandbox).await?;
         let before = match records {
             true => Box::pin(self.sandboxed_git(id, &["rev-parse", "--verify", "HEAD"], None))
                 .await
@@ -7927,6 +7906,9 @@ impl Jobs {
         let turn =
             Box::pin(self.unrecorded_turn(id, tool, launch, prompt, signal, gate, limit, ran_secs))
                 .await;
+        if let Some(run) = &own_run {
+            run.settle().await?;
+        }
         if let Some(before) = before {
             Box::pin(self.record_turn(id, String::from_utf8_lossy(&before).trim(), started)).await;
         }
@@ -15171,6 +15153,8 @@ pub fn owner_review_item(
 
 #[cfg(test)]
 mod tests {
+    use super::own_refs::{own_refs, settle_own_refs};
+
     /// PUBLISHING-15
     #[test]
     fn publishing_15_a_follow_up_finds_a_moved_clone_along_its_chain() {
@@ -15422,6 +15406,8 @@ mod tests {
             real(&worktree).join(".git"),
             real(&admin).join("commondir"),
             real(&admin).join("gitdir"),
+            real(&admin).join("config.worktree"),
+            real(&admin).join("oby-common"),
             real(&login).join("Library"),
             real(&login).join("env.sh"),
             real(&login).join("Library/Keychains"),
@@ -20199,6 +20185,138 @@ mod tests {
         job.finished = Some(now - 2 * SETTLE_AFTER);
         job.worktree = Some(path.into());
         (job, worktree)
+    }
+
+    /// LANES-8, the owner's LANE-10a: across an own job's runs its branch is its own. `try`, made
+    /// and committed on in its own refs, never reaches the clone; between runs obid reads the job
+    /// through the clone's folder, its HEAD that commit; the next own run is on `try` again, unless
+    /// obid moved HEAD meanwhile (a rebase onto its base).
+    #[tokio::test]
+    async fn lanes_8_an_own_jobs_branch_stays_its_own_across_runs() {
+        let (root, clone, base, jobs) = cleanup_home("own-refs", false);
+        let (_, tree) = ended(&jobs, &clone, &base, "own00001", obi_protocol::time::now());
+        let common = clone.join(".git");
+        let admin = common.join("worktrees/own00001");
+        let head = || std::fs::read_to_string(admin.join("HEAD")).unwrap();
+        own_refs(&admin, &common, &tree).await.unwrap();
+        cleanup_git(&tree, &["switch", "-q", "-c", "try"]);
+        cleanup_git(&tree, &["commit", "-q", "--allow-empty", "-m", "On try"]);
+        let on_try = cleanup_git(&tree, &["rev-parse", "HEAD"]);
+        settle_own_refs(&admin, &common, &tree).await.unwrap();
+        let heads = cleanup_git(
+            &clone,
+            &["for-each-ref", "--format=%(refname)", "refs/heads"],
+        );
+        assert!(!heads.contains("try"), "{heads}");
+        assert_eq!(head().trim(), on_try);
+        let seen = cleanup_git(&tree, &["rev-parse", "--git-common-dir"]);
+        assert_eq!(Path::new(&seen).canonicalize().unwrap(), common);
+
+        own_refs(&admin, &common, &tree).await.unwrap();
+        assert_eq!(head(), "ref: refs/heads/try\n");
+        settle_own_refs(&admin, &common, &tree).await.unwrap();
+        std::fs::write(admin.join("HEAD"), format!("{base}\n")).unwrap();
+        own_refs(&admin, &common, &tree).await.unwrap();
+        assert_eq!(head().trim(), base);
+        settle_own_refs(&admin, &common, &tree).await.unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-8, the owner's LANE-10a: an own run cut short (obid killed, its task panicked) leaves
+    /// the worktree on its own refs, with a commit only its own objects hold on `try` and bad refs
+    /// planted among its branches, remotes and tags. obid reads none of them: the first git call of
+    /// obid's on the job sets the worktree back to the clone's refs, so keeping its commits (what
+    /// Publish anyway and a failed job's keep run) takes the commit on `try` and the clone's refs
+    /// stay whole; the next own run's remotes and tags are the clone's again.
+    #[tokio::test]
+    async fn lanes_8_a_run_cut_short_leaves_obid_no_ref_of_the_agents() {
+        let (root, clone, base, jobs) = cleanup_home("own-crash", true);
+        let (job, tree) = ended(&jobs, &clone, &base, "crash001", obi_protocol::time::now());
+        jobs.lock().jobs.insert(job.id.clone(), job.clone());
+        let common = clone.join(".git");
+        let admin = common.join("worktrees/crash001");
+        own_refs(&admin, &common, &tree).await.unwrap();
+        // The run, cut short: its commit is in its own objects only.
+        let objects = admin.join("objects");
+        std::fs::create_dir_all(&objects).unwrap();
+        let own_git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_COMMON_DIR")
+                .env("GIT_OBJECT_DIRECTORY", &objects)
+                .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", common.join("objects"))
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&tree)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        own_git(&["switch", "-q", "-c", "try"]);
+        own_git(&["commit", "-q", "--allow-empty", "-m", "On try"]);
+        let on_try = own_git(&["rev-parse", "HEAD"]);
+        assert!(!git::has_commit(&clone, &on_try).await);
+        let bad = "0123456789abcdef0123456789abcdef01234567";
+        let refs = admin.join("oby-refs");
+        std::fs::write(refs.join("heads/planted"), format!("{bad}\n")).unwrap();
+        for planted in ["remotes", "tags"] {
+            std::fs::remove_file(refs.join(planted)).ok();
+            std::fs::create_dir_all(refs.join(planted).join("origin")).unwrap();
+            std::fs::write(refs.join(planted).join("origin/main"), format!("{bad}\n")).unwrap();
+        }
+
+        assert_eq!(jobs.keep_commits("crash001").await, Ok(on_try.clone()));
+        assert_eq!(
+            std::fs::read_to_string(admin.join("commondir")).unwrap(),
+            "../..\n"
+        );
+        let branch = format!("refs/heads/{}", job.branch);
+        assert_eq!(cleanup_git(&clone, &["rev-parse", &branch]), on_try);
+        let heads = cleanup_git(&clone, &["for-each-ref", "--format=%(refname)"]);
+        assert!(
+            !heads.contains("planted") && !heads.contains("try"),
+            "{heads}"
+        );
+        cleanup_git(
+            &clone,
+            &["rev-list", "--count", "--branches", "--remotes", "--tags"],
+        );
+
+        own_refs(&admin, &common, &tree).await.unwrap();
+        for planted in ["remotes", "tags"] {
+            let at = std::fs::symlink_metadata(refs.join(planted));
+            assert!(
+                at.is_err() || at.unwrap().file_type().is_symlink(),
+                "{planted}"
+            );
+        }
+        assert_eq!(head_of(&admin), "ref: refs/heads/try\n");
+        settle_own_refs(&admin, &common, &tree).await.unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-8: HEAD left on a branch the job doesn't have never finds the clone's branch of that
+    /// name once obid reads the job through the clone's refs: it names no commit at all.
+    #[tokio::test]
+    async fn lanes_8_a_head_on_no_branch_of_the_jobs_names_nothing() {
+        let (root, clone, base, jobs) = cleanup_home("own-orphan", false);
+        let (_, tree) = ended(&jobs, &clone, &base, "orph0001", obi_protocol::time::now());
+        let common = clone.join(".git");
+        let admin = common.join("worktrees/orph0001");
+        cleanup_git(&clone, &["branch", "main-of-the-clone", &base]);
+        own_refs(&admin, &common, &tree).await.unwrap();
+        std::fs::write(admin.join("HEAD"), "ref: refs/heads/main-of-the-clone\n").unwrap();
+        settle_own_refs(&admin, &common, &tree).await.unwrap();
+        assert_eq!(head_of(&admin), "ref: refs/oby/unborn\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn head_of(admin: &Path) -> String {
+        std::fs::read_to_string(admin.join("HEAD")).unwrap()
     }
 
     /// PUBLISHING-2, RECOVERY-2: a job's own keep-commits never marks it "moved", even with a

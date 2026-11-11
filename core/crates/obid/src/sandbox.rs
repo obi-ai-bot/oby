@@ -511,12 +511,12 @@ impl Spec {
     }
 
     /// The pointers that say where the worktree's git data is, and the way back: its `.git` and
-    /// the git folder's `commondir` and `gitdir`. They stay as obid wrote them, whatever the job's
-    /// sandbox (Seatbelt's profile, bubblewrap's read-only binds, Claude Code's own `denyWrite`).
+    /// the git folder's `commondir`, `gitdir` and `config.worktree`. They stay as obid wrote them,
+    /// whatever the job's sandbox (Seatbelt, bubblewrap's read-only binds, Claude's `denyWrite`).
     pub(crate) fn pointers(&self) -> Vec<PathBuf> {
         let mut out = vec![self.worktree.join(".git")];
         if let Some(admin) = &self.git_admin {
-            out.extend(["commondir", "gitdir"].map(|file| admin.join(file)));
+            out.extend(["commondir", "gitdir", "config.worktree"].map(|file| admin.join(file)));
         }
         out
     }
