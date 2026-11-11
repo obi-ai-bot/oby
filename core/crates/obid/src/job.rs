@@ -447,6 +447,10 @@ pub struct Job {
     /// API; taken when that run starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut: Option<Phase>,
+    /// The pull request head obid's own rebase round was for, after a conflict with its base or a
+    /// branch behind it: one per head (MERGING-38). Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_pr_rebase: Option<String>,
     /// When obid picked it up again after going down while it ran, other than by a clean stop
     /// (#915): the last 30 minutes' only. Kept in its file, never in the API; emptied when the job
     /// ends.
@@ -1154,6 +1158,7 @@ impl Job {
             waiting: None,
             phase: None,
             cut: None,
+            after_pr_rebase: None,
             crash_resumes: Vec::new(),
             recovery: Recovery::default(),
             dismissed: None,

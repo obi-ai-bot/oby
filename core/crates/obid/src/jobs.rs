@@ -60,6 +60,7 @@ const ENDED_WHILE_WAITING: &str =
 const SANDBOXED_GIT_LIMIT: Duration = Duration::from_secs(600);
 /// How much of what git in a job's sandbox says on stderr obid keeps: its end.
 mod account_limits;
+mod after_pr;
 mod authors;
 mod budget;
 mod lanes;
@@ -12689,7 +12690,7 @@ impl Jobs {
 
     /// One pass: every published pull request that's open (or not read yet), unless it was read,
     /// or tried, in the last three minutes.
-    async fn read_pull_requests(&self) {
+    async fn read_pull_requests(self: &Arc<Self>) {
         let now = obi_protocol::time::now();
         let due: Vec<Job> = {
             let state = self.lock();
@@ -12804,7 +12805,7 @@ impl Jobs {
     /// about that head (a new head settles the old one). A repository Oby hasn't learned gets a
     /// "Ready to merge?" card once everything else holds.
     async fn carry(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         gh: &Path,
         pr: &crate::github::PullRequest,
@@ -13058,6 +13059,7 @@ impl Jobs {
                     outcome
                         .err()
                         .filter(|b| b.needs_you && !crate::merge::on_review_item(b))
+                        .filter(|b| !(b.rebase && self.round_after_pr(id, &head, &b.why)))
                         .map(|b| crate::merge::blocked_card(&job, &head, &b, workflow, &pr.base))
                 }
                 None => {
@@ -13088,6 +13090,9 @@ impl Jobs {
                                 // What only the owner can settle (red checks, a change request)
                                 // asks them here too.
                                 Err(blocked) if crate::merge::on_review_item(&blocked) => None,
+                                Err(b) if b.rebase && self.round_after_pr(id, &head, &b.why) => {
+                                    None
+                                }
                                 Err(blocked)
                                     if blocked.needs_you || refused.as_ref() == Some(&blocked) =>
                                 {
@@ -13102,14 +13107,6 @@ impl Jobs {
             }
         };
         self.offer_merge_card(id, link.as_deref(), card);
-    }
-
-    /// The job `id`'s card about `head` saying obid's gh is signed out ([`crate::merge::SIGNED_OUT`]).
-    fn signed_out_card(&self, id: &str, head: &str) {
-        let Some(job) = self.get(id) else { return };
-        let link = self.link.get().and_then(std::sync::Weak::upgrade);
-        let card = crate::merge::stopped_card(&job, head, crate::merge::SIGNED_OUT);
-        self.offer_merge_card(id, link.as_deref(), Some(card));
     }
 
     /// What waits on the owner about merging the job `id` now: `card`, unless they answered it
