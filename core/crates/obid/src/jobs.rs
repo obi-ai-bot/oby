@@ -3535,6 +3535,11 @@ impl Jobs {
                 "it follows up a job whose check got none of them ({why})"
             ))
         });
+        // MERGING-33a: a follow-up of a job only unsigned API words marked is marked only by them.
+        job.foreign_by_api = new.foreign.is_none()
+            && of
+                .as_ref()
+                .is_some_and(|of| of.foreign_by_api && of.someone_elses_but_api().is_none());
         job.reached = of.as_ref().and_then(Job::reached_for_follow_up);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
@@ -4235,7 +4240,7 @@ impl Jobs {
         // for the owner's secrets from now on (crate::secretspec).
         if source != Source::Owner && text != crate::brain::actions::TRY_AGAIN {
             let why = format!("words that weren't the owner's own reached it ({source:?})");
-            self.mark(id, why, false);
+            self.mark_by(id, why, false, source == Source::Api);
         }
         if let Some(Permission { id: permission, .. }) = waiting {
             let denied = self
@@ -8988,15 +8993,27 @@ impl Jobs {
     /// of the owner's secrets. The first reason is kept. A job in the owner's clone marks it too,
     /// an inherited mark included ([`git::taint`]).
     pub(crate) fn mark(&self, id: &str, why: String, reach: bool) {
+        self.mark_by(id, why, reach, false);
+    }
+
+    /// [`Jobs::mark`]; `api` when unsigned words through obid's API are what marks it
+    /// ([`Job::foreign_by_api`], MERGING-33a). Any other mark ends that exception for good.
+    fn mark_by(&self, id: &str, why: String, reach: bool, api: bool) {
         let Some(job) = self.get(id) else { return };
         if !job.apart && job.obi.is_none() {
             git::taint_now(&self.clone_for(&job), &format!("job {id}: {why}"));
+        }
+        if !reach && !api && job.foreign_by_api {
+            self.update(id, |job| job.foreign_by_api = false);
         }
         if (if reach { &job.reached } else { &job.foreign }).is_some() {
             return;
         }
         tracing::info!("job {id}: its check gets none of the owner's secrets from now on: {why}");
         self.update(id, |job| {
+            if !reach && job.foreign.is_none() {
+                job.foreign_by_api = api;
+            }
             let (foreign, reached) = (&mut job.foreign, &mut job.reached);
             (if reach { reached } else { foreign }).get_or_insert(why);
         });
@@ -9967,7 +9984,7 @@ impl Jobs {
                         format!("obid couldn't quote issue #{issue} for the agent: {e}")
                     })?;
                     self.update(id, |job| job.issue_unread = None);
-                    if job.foreign.is_none() {
+                    if job.foreign.is_none() || job.foreign_by_api {
                         Box::pin(self.authors_as_it_starts(&job, Some(&read), "as it started"))
                             .await;
                     }
@@ -9987,7 +10004,7 @@ impl Jobs {
                     self.update(id, |job| job.issue_unread = Some(unread));
                     // Its agent never saw the issue, but who wrote it is read as it starts all
                     // the same: a word of someone else's there still gives its check nothing.
-                    if job.foreign.is_none() {
+                    if job.foreign.is_none() || job.foreign_by_api {
                         Box::pin(self.authors_as_it_starts(&job, None, "as it started")).await;
                     }
                 }
@@ -10025,7 +10042,8 @@ impl Jobs {
                     Some((author, issue)) => {
                         match crate::github_work::quote("assigned", &job.repo, issue).await {
                             Ok((text, read)) => {
-                                if author.foreign.is_none() {
+                                // MERGING-33a: a stranger's word ends an API mark's exception.
+                                if author.foreign.is_none() || author.foreign_by_api {
                                     Box::pin(self.authors_as_it_starts(
                                         author,
                                         Some(&read),
@@ -17130,6 +17148,46 @@ mod tests {
             line.contains("only where .obi/inputs/base-rules.md"),
             "{line}"
         );
+    }
+
+    /// MERGING-33a: a job only unsigned words through obid's API marked still has them quoted for
+    /// its review; once a stranger's issue marks it too, none of it is (MERGING-13).
+    #[tokio::test]
+    async fn merging_33a_api_words_then_a_strangers_issue_quote_none() {
+        let (jobs, _clone, root) = jobs_with_a_clone("api-then-stranger").await;
+        let api = "words that weren't the owner's own reached it (Api)";
+        jobs.mark_by("j", api.into(), false, true);
+        jobs.update("j", |job| {
+            job.api_said = vec!["unsigned words".into()];
+            job.replies = vec![(1, "a reply".into())];
+        });
+        let asked = |job: &Job| review::asked_of(job, |id| jobs.get(id));
+        let job = jobs.get("j").unwrap();
+        assert!(job.foreign.is_some() && job.foreign_by_api);
+        assert_eq!(asked(&job).unsigned, ["unsigned words"]);
+        // A reach isn't someone else's code: the exception stays.
+        jobs.mark("j", "it reached docs.rs".into(), true);
+        assert!(jobs.get("j").unwrap().foreign_by_api);
+        jobs.mark(
+            "j",
+            "as its review started, a stranger wrote on #1".into(),
+            false,
+        );
+        let job = jobs.get("j").unwrap();
+        assert_eq!(
+            job.foreign.as_deref(),
+            Some(api),
+            "the first reason is kept"
+        );
+        let read = asked(&job);
+        assert!(
+            read.unsigned.is_empty() && read.replies.is_empty(),
+            "{read:?}"
+        );
+        let text = review::asked(&read, job.untrusted_why().as_deref());
+        assert!(!text.contains("unsigned words") && !text.contains("a reply"));
+        assert!(text.contains("that text isn't quoted here"), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// MERGING-18 (#1659): what reaches a job is the owner's own only when they said it: a

@@ -104,12 +104,13 @@ pub struct Asked {
 /// jobs whose branch it carries on, with each follow-up's own words (TASKCONV-3) unless no app of
 /// theirs signed them. Words already listed aren't listed again, so the first ask, repeated by a
 /// restart or kept for a follow-up, never comes last. Then, unless a job of it is someone else's
-/// ([`Job::someone_elses`]: another Oby's, foreign, or read text Oby didn't write, MERGING-13),
+/// ([`Job::someone_elses_but_api`]: another Oby's, foreign but by unsigned API words alone
+/// (MERGING-33a), or read text Oby didn't write, MERGING-13),
 /// the words no app of the owner's signed and the
 /// author's replies to Oby's earlier reviews (MERGING-33).
 ///
 /// [`Job::said`]: crate::job::Job::said
-/// [`Job::someone_elses`]: crate::job::Job::someone_elses
+/// [`Job::someone_elses_but_api`]: crate::job::Job::someone_elses_but_api
 pub fn asked_of(author: &crate::job::Job, get: impl Fn(&str) -> Option<crate::job::Job>) -> Asked {
     let mut chain = vec![author.clone()];
     // A chain is short; this only stops a loop.
@@ -125,7 +126,9 @@ pub fn asked_of(author: &crate::job::Job, get: impl Fn(&str) -> Option<crate::jo
         };
         chain.push(earlier);
     }
-    let quoted = chain.iter().all(|job| job.someone_elses().is_none());
+    let quoted = chain
+        .iter()
+        .all(|job| job.someone_elses_but_api().is_none());
     let first = chain.pop().expect("the chain starts with the author");
     let mut later: Vec<String> = Vec::new();
     let mut unsigned: Vec<String> = Vec::new();

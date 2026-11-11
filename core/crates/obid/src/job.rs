@@ -732,6 +732,11 @@ pub struct Job {
     /// follow-up never runs that code with the owner's values. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign: Option<String>,
+    /// Its `foreign` mark is only for words no app of the owner's signed, sent through obid's API
+    /// (MERGING-33a): its review still quotes those words. Any other mark clears it. Never in the
+    /// API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub foreign_by_api: bool,
     /// Why its own check gets none of the declared secrets though the job stays the owner's own:
     /// it reached chatgpt.com (MERGING-30). This job's only: no follow-up inherits it, and nothing
     /// a conversation reads of the job sees it. Never in the API's job.
@@ -964,6 +969,16 @@ impl Job {
         }
     }
 
+    /// [`Job::someone_elses`], but none for a job only unsigned words through obid's API marked
+    /// ([`Job::foreign_by_api`]): its review quotes those words as data (MERGING-33a).
+    pub fn someone_elses_but_api(&self) -> Option<String> {
+        if self.foreign_by_api && self.obi.is_none() && !self.untrusted {
+            None
+        } else {
+            self.someone_elses()
+        }
+    }
+
     /// Why its pull request's reviewer is told its author is untrusted, and two reviews merge it
     /// (MERGING-13, 14): someone else's code ([`Job::someone_elses`]), words no app of the
     /// owner's signed ([`Job::unsigned`]), or a memory from someone else's words
@@ -1192,6 +1207,7 @@ impl Job {
             unsigned: false,
             memory_from_others: false,
             foreign: None,
+            foreign_by_api: false,
             withheld: None,
             check_withheld: None,
             check_withheld_was: false,
