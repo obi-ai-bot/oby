@@ -295,7 +295,8 @@ pub(crate) fn own_settings_file(account: &crate::config::Account) -> Result<Path
 /// `allowUnixSockets`, `allowAllUnixSockets`, `allowMachLookup` or `sandbox.allowAppleEvents`
 /// (ways out of it), `permissions.additionalDirectories`, a file tool's allow rule naming a path
 /// outside the worktree or none ([`FILE_TOOLS`]), an `env` key obid sets (`ours`:
-/// [`own_sandbox_env`]'s) or [`env_refused`] names but Claude Code's own `ANTHROPIC_*` and
+/// [`own_sandbox_env`]'s) or names a settings source ([`process::CLAUDE_SETTINGS_SOURCES`]), or
+/// one [`env_refused`] names but Claude Code's own `ANTHROPIC_*` and
 /// `CLAUDE_CODE_*`, or a `sandbox.filesystem.allowRead` or `allowWrite` path in, or holding, one of
 /// obid's hidden folders ([`Spec::hidden`]: obid's home, the person's, the accounts'). One that's
 /// there but doesn't read as JSON is refused too: obid can't tell what it sets.
@@ -355,7 +356,9 @@ pub(crate) fn own_settings_allowed(
     // terminal (LANES-4), but for those obid sets itself (`CLAUDE_CODE_TMPDIR`).
     let claudes = |name: &str| name.starts_with("ANTHROPIC_") || name.starts_with("CLAUDE_CODE_");
     for (name, _) in set["env"].as_object().into_iter().flatten() {
-        let obids = ours.iter().any(|(set, _)| set == name);
+        // obid's own, and where Claude Code's settings come from, before Claude Code's exemption.
+        let obids = ours.iter().any(|(set, _)| set == name)
+            || process::CLAUDE_SETTINGS_SOURCES.contains(&name.as_str());
         if obids || (env_refused(name, ours) && !claudes(name)) {
             return Err(refused(&format!("{name} in its env")));
         }
@@ -2337,6 +2340,49 @@ pub fn person_homes() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LANES-5: a user settings file whose `env` names where Claude Code's settings come from
+    /// ([`process::CLAUDE_SETTINGS_SOURCES`]) or its folder stops the run, though those names carry
+    /// Claude Code's own prefix; its other `CLAUDE_CODE_*` switches don't.
+    #[test]
+    fn lanes_5_a_settings_source_in_the_users_env_refuses_the_run() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-5-env-{}", std::process::id()));
+        let worktree = root.join("worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let spec = Spec {
+            worktree,
+            git_admin: None,
+            git_common: None,
+            commits: true,
+            temp: root.join("tmp"),
+            accounts: Vec::new(),
+            read_only: Vec::new(),
+            hidden: Vec::new(),
+            network: true,
+            loopback: false,
+            proxied: false,
+            frozen: Vec::new(),
+            fixed: Vec::new(),
+        };
+        let file = root.join("settings.json");
+        for name in [
+            "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
+            "CLAUDE_CODE_REMOTE_SETTINGS_PATH",
+            "CLAUDE_CODE_MOCK_REMOTE_SETTINGS",
+            "CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION",
+            "CLAUDE_CODE_BRIDGE_CHILD_MACHINE_SETTINGS",
+            "CLAUDE_CODE_REMOTE_MCP_CONFIG",
+            "CLAUDE_CODE_SANDBOXED",
+            "CLAUDE_CONFIG_DIR",
+        ] {
+            std::fs::write(&file, json!({"env": {name: "/tmp/policy"}}).to_string()).unwrap();
+            let why = own_settings_allowed(&file, &spec, &[]).unwrap_err();
+            assert!(why.contains(&format!("{name} in its env")), "{why}");
+        }
+        std::fs::write(&file, r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#).unwrap();
+        assert!(own_settings_allowed(&file, &spec, &[]).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// KEYCHAIN-8: what a usage read takes of a login file: its access token and only that, not one
     /// that has ended, not an API key, and not through a link.
