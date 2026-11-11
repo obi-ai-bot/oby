@@ -412,11 +412,12 @@ async function sync(): Promise<boolean> {
 }
 
 // The stream, again whenever it ends (obid restarted, or not up yet): what came meanwhile is
-// compared with what was said, so nothing alerts twice
+// compared with what was said, so nothing alerts twice. `alerts=1` tells obid it's the Mac app
+// following: it opens Oby hidden only while none is (ALERTS-3)
 async function follow() {
   for (let retry = 0; ; await sleep(Math.min(30_000, 1000 * 2 ** retry++))) {
     const control = new AbortController();
-    const r = await send('GET', '/v1/events', undefined, control.signal);
+    const r = await send('GET', '/v1/events?alerts=1', undefined, control.signal);
     if (!(r instanceof Response)) continue;
     if (!r.ok || !r.body) { await r.body?.cancel().catch(() => {}); continue; }
     let synced = false;
