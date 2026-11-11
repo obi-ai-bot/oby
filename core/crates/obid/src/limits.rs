@@ -63,11 +63,14 @@ fn epoch(value: &Value) -> Option<i64> {
     (seconds > 0.0 && seconds <= LATEST).then_some(seconds as i64)
 }
 
-/// Claude Code's `rate_limit_event`: when the account resets, if it's full (refused, or a window
-/// at 100%): the latest full window's reset (it has room only once every full one resets), else
-/// the event's own.
+/// Claude Code's `rate_limit_event`: when the account resets, if it's full (refused as a whole, or
+/// a window at 100%, by crate::usage's rule, USAGE-12 and 13): the latest full window's reset (it
+/// has room only once every full one resets), else the event's own.
 pub fn claude_full_until(message: &Value) -> Option<i64> {
     let info = &message["rate_limit_info"];
+    if crate::usage::claude_overage(info) {
+        return None;
+    }
     let windows = &info["unifiedWindows"];
     let full: Vec<i64> = ["five_hour", "seven_day"]
         .iter()
@@ -77,7 +80,7 @@ pub fn claude_full_until(message: &Value) -> Option<i64> {
     if let Some(at) = full.iter().max() {
         return Some(*at);
     }
-    (info["status"] == "rejected")
+    crate::usage::claude_refused(info)
         .then(|| epoch(&info["resetsAt"]))
         .flatten()
 }
