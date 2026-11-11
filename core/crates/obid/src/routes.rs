@@ -124,6 +124,15 @@ pub async fn limit_decisions(State(shared): State<Arc<Shared>>) -> Response {
     )
 }
 
+/// `GET /v1/alerts` (ALERTS-1, loopback only): what waits on the owner now, as the phones are
+/// told it (`crate::push::listed`). `503` while the vault can't be read.
+pub async fn alerts(State(shared): State<Arc<Shared>>) -> Result<Response, ApiError> {
+    let list = crate::push::listed(&shared)
+        .await
+        .map_err(|why| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, why))?;
+    Ok(json(StatusCode::OK, Value::Array(list)))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LimitDecisionAnswer {

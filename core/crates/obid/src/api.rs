@@ -214,6 +214,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
             axum::routing::delete(crate::routes::revoke_device),
         )
         .route("/v1/notifications", post(crate::push::register))
+        .route("/v1/alerts", get(crate::routes::alerts))
         .merge(crate::connections::router())
         .merge(crate::tetrix::router())
         .merge(crate::chatgpt_relay::router())

@@ -2140,3 +2140,111 @@ fn an_event_stream_that_falls_behind_ends() {
         .count();
     assert!(heard < sent, "heard all {heard} events");
 }
+
+/// A job titled "Alerts as data" whose agent asks for each of `calls` in turn, in `ask` mode.
+fn titled_asking(obid: &Obid, calls: Value) -> String {
+    dispatch(
+        obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "mode": "ask",
+               "title": "Alerts as data", "task": format!("ASKS: {calls}")}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// `GET /v1/alerts`' entries about job `id`.
+fn alerts_of(obid: &Obid, id: &str) -> Vec<Value> {
+    let answer = call(obid, "GET", "/v1/alerts", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let all = answer.body.as_array().unwrap().clone();
+    all.into_iter().filter(|a| a["job"] == id).collect()
+}
+
+/// ALERTS-1: `GET /v1/alerts` is obid's gate as data: a job's agent waiting for an OK is one
+/// alert, in the Mac's words, keyed by its collapse id, with Allow and Deny for a command the
+/// banner shows whole; once the job ends done with nothing to decide (FYI), it's gone.
+#[test]
+fn alerts_1_get_alerts_is_the_gate_as_data() {
+    let folder = Folder::new("alerts-gate");
+    let (obid, _) = obid(&folder);
+    let id = titled_asking(&obid, json!([bash("swift test")]));
+    let waiting = waiting_for(&obid, &id, "Run swift test");
+    let permission = waiting["permission"]["id"].as_str().unwrap();
+    let listed = alerts_of(&obid, &id);
+    assert_eq!(
+        listed,
+        [
+            json!({"key": id, "what": format!("permission:{permission}"),
+                "title": "Needs your OK: Alerts as data", "body": "Run swift test",
+                "category": "permissionRule", "thread": "jobs", "job": id,
+                "item": format!("{id}-permission-{permission}"), "urgent": true,
+                "answers": ["Allow", "Deny"]})
+        ]
+    );
+    let deny = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/permission"),
+        Some(&json!({"id": permission, "decision": "deny"})),
+    );
+    assert_eq!(deny.status, 200, "{}", deny.text);
+    ended_ok(&obid, &id);
+    assert_eq!(alerts_of(&obid, &id), Vec::<Value>::new());
+}
+
+/// ALERTS-1: a vault secret in what a job's agent asks never leaves in its alert: it's taken out
+/// before the list is built, and the alert says which secret it was.
+#[test]
+fn alerts_1_a_secret_never_leaves_in_an_alert() {
+    let folder = Folder::new("alerts-secret");
+    let (obid, _) = obid(&folder);
+    let value = format!("tok/{}+Q7m2=b9cZ", std::process::id() % 1_000_000 + 100_000);
+    let id = titled_asking(&obid, json!([bash(&format!("make deploy {value}"))]));
+    within(60, &format!("{id} waits for its OK"), || {
+        job(&obid, &id)["permission"]["id"].as_str().map(|_| ())
+    });
+    // Learned while the job waits: the job's own record still holds the value.
+    let mut child = std::process::Command::new(OBID)
+        .args(["vault", "--config"])
+        .arg(folder.0.join("config.json"))
+        .args(["add", "deploy-key"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(value.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    let answer = call(&obid, "GET", "/v1/alerts", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    assert!(!answer.text.contains(&value), "{}", answer.text);
+    let listed = alerts_of(&obid, &id);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let body = listed[0]["body"].as_str().unwrap();
+    assert!(body.contains("[vault: deploy-key]"), "{body}");
+}
+
+/// ALERTS-1: a command the banner can't show whole (over 120 characters) still alerts, with no
+/// answers: it's answered in the window, where the owner reads all of it.
+#[test]
+fn alerts_1_a_long_permission_gets_no_answers() {
+    let folder = Folder::new("alerts-long");
+    let (obid, _) = obid(&folder);
+    let command = format!("swift test{}", " --filter AlertsAsData".repeat(6));
+    assert!(command.len() > 120);
+    let id = titled_asking(&obid, json!([bash(&command)]));
+    within(60, &format!("{id} waits for its OK"), || {
+        job(&obid, &id)["permission"]["id"].as_str().map(|_| ())
+    });
+    let listed = alerts_of(&obid, &id);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["title"], "Needs your OK: Alerts as data");
+    assert_eq!(listed[0]["answers"], json!([]));
+}
