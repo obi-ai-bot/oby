@@ -14,10 +14,11 @@ This repository's check (`"check": "scripts/oby-check.sh"` in obid's `config.jso
 run by `tools/oby-check-blok`, a standalone Apache-2.0 Cargo workspace outside obid (BLOK-1 to 3,
 [publishing](contracts/publishing.md), "Check workflow" and PUBLISHING-26). obid runs the script as
 it always did, in the check's box with the base's copy (PUBLISHING-6, 7); the script, run with none
-of `OBY_CHECK_INNER`, `OBY_CHECK_PLAN` and `OBY_CHECK_ONLY`, execs the `oby-check-blok` found on the
-check's `PATH` by its absolute path: `oby-check-blok check [base]` (default `origin/dev`), from the
-repository's root. With none installed, or one only on a relative path, the check fails
-(`oby-check: failed: oby-check-blok`, exit 1) and the script runs nothing of its own.
+of `OBY_CHECK_INNER`, `OBY_CHECK_PLAN` and `OBY_CHECK_ONLY`, execs the first `oby-check-blok` on the
+check's `PATH`, by its resolved path: `oby-check-blok check [base]` (default `origin/dev`), from the
+repository's root. Before it does, it and the nodes binary beside it, each resolved through its links, must be regular files of the check's user that nobody else may write, in folders nobody else may write, and outside the checked checkout and the check's `TMPDIR`, which the checked code can write. Otherwise, or with none installed or one only on a
+relative path, the check fails (`oby-check: failed: oby-check-blok (<why>)`, exit 1) and the script
+runs nothing of its own.
 
 Install it on each Mac that runs the check, from `dev`, and again whenever the tool changes:
 

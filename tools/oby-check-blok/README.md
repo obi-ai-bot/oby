@@ -47,22 +47,14 @@ Another project makes its check this workflow in four steps; obid needs no chang
    when it couldn't judge. The groups are `rust`, `electron`, `swift` and `scan` today (the nodes
    `rust-affected-tests`, `ts-checks`, `swift-tests`, `secret-scan`), whatever each runs in that
    project. Nothing passes unless `scan` planned work and passed.
-3. Put the same hand-off at the script's top, after its `cd` to the repository's root:
-
-   ```bash
-   if [[ -z "${OBY_CHECK_INNER:-}${OBY_CHECK_PLAN:-}${OBY_CHECK_ONLY:-}" ]]; then
-       blok=$(command -v oby-check-blok || true)
-       if [[ "$blok" != /* ]]; then
-           echo "oby-check: oby-check-blok isn't installed on PATH: nothing passes unchecked" >&2
-           echo 'oby-check: failed: oby-check-blok' >&2
-           exit 1
-       fi
-       exec "$blok" check "${1:-origin/dev}"
-   fi
-   ```
-
-   By its absolute path only, so a commit never brings its own; with none, the check fails rather
-   than running anything else.
+3. Put the same hand-off at the script's top, after its `cd` to the repository's root: this
+   repository's `scripts/oby-check.sh`, from `resolved()` to its `exec`. It runs the first
+   `oby-check-blok` on `PATH` only once it and the nodes binary beside it, each resolved through its
+   links, are regular files of the check's user that nobody else may write, in folders nobody else
+   may write, and outside the checked repository and `TMPDIR`; it then runs the resolved one. A
+   binary the checked code planted never judges it, and with none that passes, the check fails
+   rather than running anything else. It doesn't vet the folders above the binary's, nor a `PATH`
+   whose owner put a folder of their own before `~/.cargo/bin`.
 4. Point obid at it: `"check": "scripts/oby-check.sh"` on the repository in obid's `config.json`.
 
 ## The workflow file
