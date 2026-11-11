@@ -1220,6 +1220,8 @@ Two seconds after a job changes, the runner sends an alert push (`apns-push-type
 
 **On obid** (#452, partly ported: Firebase Cloud Messaging for the Android app, and the iPhone through Deskree's sealed relay, below; no APNs key of its own). The above is the Swift runner's.
 
+What alerts, on the Mac and the phones, and the one list both are to alert from (`GET /v1/alerts`, proposed): [alerts.md](contracts/alerts.md), ALERTS-1 to 8.
+
 ```json
 {"token": "<FCM registration token>", "platform": "fcm", "topic": "com.deskree.oby"}
 ```
