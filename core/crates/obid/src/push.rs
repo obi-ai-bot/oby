@@ -170,37 +170,26 @@ fn first_line(text: &str) -> Option<&str> {
 /// What a permission asks, whole, as the Mac's banner shows it: its title, then its detail.
 fn request(p: &crate::permissions::Permission) -> String {
     match p.detail.as_str() {
-        "" => p.title.clone(),
         detail if p.title.contains(detail) => p.title.clone(),
         detail => format!("{}\n{detail}", p.title),
     }
 }
 
-/// Whether a collapsed banner shows `text` whole, exactly as notify.ts's `fits` on its `plain`
-/// text: at most 120 characters on at most 3 lines, each line without control or format
-/// characters and with its spaces collapsed.
+/// Whether a banner shows `text` whole: notify.ts's `fits` on its `plain` text, exactly.
 fn fits(text: &str) -> bool {
     static HIDDEN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let hidden = HIDDEN
-        .get_or_init(|| regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").expect("a valid pattern"));
-    let lines: Vec<String> = text
+    let hidden = HIDDEN.get_or_init(|| {
+        regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]+").expect("a valid pattern")
+    });
+    let lines = text
         .split('\n')
-        .map(|l| {
-            hidden
-                .replace_all(l, " ")
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .filter(|l| !l.is_empty())
-        .collect();
+        .map(|l| hidden.replace_all(l, " ").trim().to_owned());
+    let lines: Vec<String> = lines.filter(|l| !l.is_empty()).collect();
     lines.join("\n").chars().count() <= 120 && lines.len() <= 3
 }
 
-/// The answers an alert's buttons give, decided here once (ALERTS-1, the Mac's `wanted`): Allow
-/// and Deny for a command or an edit (`kind` "permission") the banner shows whole, Start for one
-/// job (`kind` "start") shown whole from words that read nothing untrusted; each only when `offers`
-/// it. Anything else is answered in the window.
+/// Its buttons' answers, decided here once (ALERTS-1, the Mac's `wanted`): Allow and Deny for a
+/// `permission`, Start for a `start`, each only when the banner shows it whole and `offers` it.
 fn answers(kind: &str, shown: &str, offers: impl Fn(&str) -> bool) -> Vec<&'static str> {
     let all: &[&'static str] = match kind {
         "permission" => &["Allow", "Deny"],
@@ -385,12 +374,9 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
         };
         if let (Some(Notice::Permission), Some(permission)) = (notice(job), &job.permission) {
             let mut asks = alert(self::alert(job, Notice::Permission), true);
-            let kind = if permission.is_question() || permission.is_plan() {
-                "question"
-            } else {
-                "permission"
-            };
-            asks.answers = answers(kind, &request(permission), |_| true);
+            // The agent's question and Plan mode's plan are answered on its page.
+            let plain = !permission.is_question() && !permission.is_plan();
+            asks.answers = answers("permission", &request(permission), |_| plain);
             // The answers its inbox item offers: Approve or Keep planning; Allow, Always allow
             // or Deny; Allow or Deny. The agent's own question's options are its own: only Open.
             asks.category = if permission.is_question() {
@@ -515,33 +501,29 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
         let text = item["text"].as_str().unwrap_or_default();
         let many = offer.map(offered).filter(|n| *n > 1);
         let (obi, line) = (&item["obi"], first_line(text).unwrap_or("").to_owned());
-        let (title, body) = match many {
-            Some(n) => (format!("Oby offers {n} jobs"), line),
+        let (title, body) = match (many, obi["quoted"]["text"].as_str()) {
+            (Some(n), _) => (format!("Oby offers {n} jobs"), line),
             // What Confirm does is its title: both in the body.
-            None if item["kind"] == "confirm" => ("Confirm".into(), format!("{title}\n{text}")),
-            // Another Oby's question: who by their owner id as its card shows it (`plainId`).
-            None if obi["type"] == "question" && obi["quoted"]["text"].is_string() => {
-                let who = obi["fromOwner"].as_str().unwrap_or_default().chars();
-                let who: String = who
-                    .map(|c| match c {
-                        '\x21'..='\x7e' => c.to_string(),
-                        _ => format!("\\u{{{:x}}}", c as u32),
-                    })
-                    .collect();
-                let words = obi["quoted"]["text"].as_str().unwrap_or_default();
+            _ if item["kind"] == "confirm" => ("Confirm".into(), format!("{title}\n{text}")),
+            // Another Oby's question, who by their owner id, escaped (notify.ts's `plainId`).
+            (_, Some(words)) if obi["type"] == "question" => {
+                let who = obi["fromOwner"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .escape_default();
                 (format!("Question from {who}"), words.to_owned())
             }
-            None => (title.to_owned(), line),
+            _ => (title.to_owned(), line),
         };
-        let kind = match item["kind"].as_str().unwrap_or_default() {
-            "start" if many.is_some() || item["offer"]["untrusted"] == true => "",
-            kind => kind,
-        };
+        // Start for one job alone, from words that read nothing untrusted.
+        let alone = many.is_none() && item["offer"]["untrusted"] != true;
         let offers = |a: &str| {
-            item["options"]
-                .as_array()
-                .is_some_and(|o| o.iter().any(|o| o == a))
+            (a != "Start" || alone)
+                && item["options"]
+                    .as_array()
+                    .is_some_and(|o| o.contains(&json!(a)))
         };
+        let kind = item["kind"].as_str().unwrap_or_default();
         wanted.push((
             "open".into(),
             Alert {
@@ -1509,35 +1491,30 @@ fn looked_at(shared: &Shared) -> (Vec<Job>, Vec<Value>) {
     (shared.jobs.list(usize::MAX), inbox)
 }
 
-/// `GET /v1/alerts`' list (ALERTS-1): what the phones' look reads, the vault's secrets out
-/// ([`for_alerts`]), through the gate ([`wanted`]), each alert the secret scan stops (or can't
-/// scan) left out. Each is its alert with `key` (its collapse id), `what` (changes when what it
-/// needs does), `urgent` and `answers`. Fails when the vault can't be read.
+/// `GET /v1/alerts`' list (ALERTS-1): what the look reads, the vault's secrets out
+/// ([`for_alerts`]), through the gate ([`wanted`]); one the secret scan stops isn't listed.
 pub async fn listed(shared: &Shared) -> Result<Vec<Value>, String> {
     let (jobs, inbox) = looked_at(shared);
     let (jobs, inbox) = for_alerts(&jobs, &inbox)?;
-    let scratch = shared.config.home.join("tmp");
-    let wanted = wanted(&jobs, &inbox);
-    let scans = wanted
-        .iter()
-        .map(|(_, a)| scanned(&a.title, &a.body, &scratch));
-    let scans = futures_util::future::join_all(scans).await;
-    let list = wanted
-        .into_iter()
-        .zip(scans)
-        .filter_map(|((what, alert), scan)| {
-            let mut entry = serde_json::to_value(&alert).ok()?;
-            let fields = entry.as_object_mut()?;
-            fields.remove("collapse");
-            fields.insert("key".into(), json!(alert.collapse));
-            fields.insert("what".into(), json!(what));
-            fields.insert("urgent".into(), json!(alert.urgent));
-            fields.insert("answers".into(), json!(alert.answers));
-            scan.inspect_err(|why| tracing::warn!(alert = %alert.collapse, "not listed: {why}"))
-                .ok()
-                .map(|()| entry)
-        });
-    Ok(list.collect())
+    let mut list = Vec::new();
+    for (what, a) in wanted(&jobs, &inbox) {
+        if let Err(why) = scanned(&a.title, &a.body, &shared.config.home.join("tmp")).await {
+            tracing::warn!(alert = %a.collapse, "not listed: {why}");
+            continue;
+        }
+        let mut entry = json!({"key": a.collapse, "what": what, "title": a.title, "body": a.body,
+            "category": a.category, "thread": a.thread, "urgent": a.urgent, "answers": a.answers});
+        let ids = [
+            ("job", a.job),
+            ("conversation", a.conversation),
+            ("item", a.item),
+        ];
+        for (key, id) in ids.into_iter().filter_map(|(key, id)| Some((key, id?))) {
+            entry[key] = json!(id);
+        }
+        list.push(entry);
+    }
+    Ok(list)
 }
 
 /// Looks at the jobs and the inbox once now (a restart's news), then two seconds after each burst
