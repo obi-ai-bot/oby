@@ -63,6 +63,7 @@ mod account_limits;
 mod after_pr;
 mod authors;
 mod budget;
+mod by_github;
 mod lanes;
 pub(crate) use lanes::claude_place;
 mod logins;
@@ -13018,6 +13019,8 @@ impl Jobs {
                         }
                         Err(blocked) => Err(blocked),
                     };
+                    let seen = (pr, &merging, reviewers.as_ref());
+                    let outcome = self.by_github(gh, &job, workflow, seen, &by, outcome).await;
                     if let Ok(merged) = &outcome {
                         for sent in &merged.outgoing {
                             tracing::info!(
@@ -13141,31 +13144,6 @@ impl Jobs {
             }
         });
         going
-    }
-
-    /// What obid was sending for the job `id` when it last stopped, settled from what GitHub
-    /// says now (the pull request is open): an approval it finds there is listed; a merge (and its
-    /// branch's deletion) didn't land, and is tried again as anything is, unless a merge is under
-    /// way right now (the owner's tap), whose marks stay.
-    fn settle_sending(&self, id: &str, merging: &crate::github::Merging) {
-        let busy = crate::merge::merging_now(&self.config.home, id);
-        self.update(id, |job| {
-            if let Some(approval) = crate::merge::unmark(job, "pullRequestApproval")
-                && crate::merge::approval_seen(&approval, &merging.reviews)
-                && let Some(url) = job.published.clone()
-            {
-                job.outgoing.push(crate::publish::Outgoing::new(
-                    "pullRequestApproval",
-                    &job.repo,
-                    &url,
-                    None,
-                ));
-            }
-            if !busy {
-                crate::merge::unmark(job, "merge");
-                crate::merge::unmark(job, "branchDelete");
-            }
-        });
     }
 
     /// Each repository obid works in, with its default branch: what a workflow memory is checked
