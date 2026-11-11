@@ -77,6 +77,9 @@ pub struct Blocked {
     /// check, where it came from. With `needs_you` it asks them (a card with Merge); without, it
     /// waits by itself and says nothing ([`held`]).
     pub yours: bool,
+    /// A conflict with its base, or a branch behind it: obid's own branch gets one rebase round
+    /// per head before the card (MERGING-38).
+    pub rebase: bool,
 }
 
 /// Not now by itself, and it may still go by itself later; the owner's own Merge goes on without
@@ -86,6 +89,7 @@ fn held(why: impl Into<String>) -> Blocked {
         why: why.into(),
         needs_you: false,
         yours: true,
+        rebase: false,
     }
 }
 
@@ -214,6 +218,7 @@ fn wait(why: impl Into<String>) -> Blocked {
         why: why.into(),
         needs_you: false,
         yours: false,
+        rebase: false,
     }
 }
 
@@ -222,6 +227,7 @@ fn needs_you(why: impl Into<String>) -> Blocked {
         why: why.into(),
         needs_you: true,
         yours: false,
+        rebase: false,
     }
 }
 
@@ -231,6 +237,7 @@ fn yours(why: impl Into<String>) -> Blocked {
         why: why.into(),
         needs_you: true,
         yours: true,
+        rebase: false,
     }
 }
 
@@ -342,12 +349,20 @@ fn pushed_for(job: &Job, head: &str, seconds: i64) -> bool {
         .is_some_and(|o| obi_protocol::time::now() - o.date >= seconds)
 }
 
-/// Why it can't merge while it conflicts with `base`: Oby rebases nothing by itself here
-/// (docs/runner-api.md, "What the runner doesn't do by itself").
+/// Why it can't merge while it conflicts with `base`, once obid's own rebase round of its head
+/// didn't settle it, or on a branch obid didn't make (MERGING-3, MERGING-38).
 fn conflicts(base: &str) -> Blocked {
-    needs_you(format!(
+    rebase(format!(
         "Not merged: it conflicts with {base}. Ask Oby to rebase it onto {base}, or settle it on GitHub."
     ))
+}
+
+/// What only a rebase onto its base settles: obid's own branch gets its round first (MERGING-38).
+fn rebase(why: String) -> Blocked {
+    Blocked {
+        rebase: true,
+        ..needs_you(why)
+    }
 }
 
 /// What a merge sent.
@@ -677,11 +692,12 @@ pub fn ready_as(
                     why: whys.join("\n"),
                     needs_you: !quiet,
                     yours: true,
+                    rebase: false,
                 })
             }
         }
         Some("DIRTY") => Err(conflict()),
-        Some("BEHIND") => Err(refused(needs_you(format!(
+        Some("BEHIND") => Err(refused(rebase(format!(
             "Not merged: it's behind {base}, and GitHub merges only up-to-date pull requests into {base}. Ask Oby to rebase it onto {base}, or update it on GitHub."
         )))),
         // GitHub's own rules, the code host's: the owner reads how to change them.
@@ -1417,7 +1433,7 @@ async fn merging(
         match behind {
             Some(0) => {}
             Some(_) => {
-                return Err(needs_you(format!(
+                return Err(rebase(format!(
                     "Not merged: {} rebases onto {base} first, and it isn't on its latest commit. Ask Oby to rebase it onto {base}.",
                     name(repo),
                     base = pr.base
@@ -3914,15 +3930,15 @@ mod tests {
         assert!(!check(&job(), Some(&obis()), &none).unwrap_err().needs_you);
     }
 
-    /// A branch behind a base whose rules take only up-to-date ones asks the owner: Oby starts no
-    /// rebase round by itself.
+    /// A branch behind a base whose rules take only up-to-date ones asks the owner, once obid's own
+    /// rebase round (MERGING-38) didn't settle it: its reason says a rebase settles it.
     #[test]
     fn merging_4_a_branch_behind_its_base_asks_the_owner() {
         let behind = view(|v| v["mergeStateStatus"] = json!("BEHIND"));
         assert_eq!(
             check(&job(), Some(&obis()), &behind),
-            Err(needs_you(
-                "Not merged: it's behind dev, and GitHub merges only up-to-date pull requests into dev. Ask Oby to rebase it onto dev, or update it on GitHub."
+            Err(rebase(
+                "Not merged: it's behind dev, and GitHub merges only up-to-date pull requests into dev. Ask Oby to rebase it onto dev, or update it on GitHub.".into()
             ))
         );
     }
@@ -3944,8 +3960,8 @@ mod tests {
             )
         };
         assert_eq!(state("MERGEABLE", "HAS_HOOKS"), Ok(()));
-        let conflict = needs_you(
-            "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub.",
+        let conflict = rebase(
+            "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub.".into(),
         );
         assert_eq!(state("CONFLICTING", "DIRTY"), Err(conflict.clone()));
         assert_eq!(state("MERGEABLE", "DIRTY"), Err(conflict));
@@ -4687,8 +4703,8 @@ esac
         let blocked = gh.merge(&job(), &rebase_first).await.unwrap_err();
         assert_eq!(
             blocked,
-            needs_you(
-                "Not merged: oby rebases onto dev first, and it isn't on its latest commit. Ask Oby to rebase it onto dev."
+            rebase(
+                "Not merged: oby rebases onto dev first, and it isn't on its latest commit. Ask Oby to rebase it onto dev.".into()
             )
         );
         assert!(!gh.calls().contains("-X PUT"));
@@ -4746,8 +4762,8 @@ esac
         );
         assert_eq!(
             gh.merge(&job(), &obis()).await.unwrap_err(),
-            needs_you(
-                "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub."
+            rebase(
+                "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub.".into()
             )
         );
     }

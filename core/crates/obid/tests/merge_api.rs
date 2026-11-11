@@ -28,7 +28,9 @@ fn head() -> String {
 /// (`gh/dismissed`) and a person's approval (`gh/person`); the merge goes through. `gh/view-now.json`,
 /// when a test writes one, is what `pr view` prints instead. With `gh/signed-out` the owner's gh is
 /// signed in to nothing, as gh 2.102 says it (`{"hosts":{}}`, and `pr view` exits 4); with
-/// `gh/offline` it can't reach GitHub at all.
+/// `gh/offline` it can't reach GitHub at all. With `gh/remote`, a bare repository's path, the head
+/// is `oby/fix-7` as that repository has it now, `compare` counts the commits of `dev` it lacks,
+/// and with `gh/behind` too a `CLEAN` pull request whose branch lacks `dev`'s tip is `BEHIND`.
 fn stand_in_gh(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -81,6 +83,9 @@ fn stand_in_gh(folder: &Path) -> PathBuf {
         r#"#!/bin/sh
 dir='{state}'
 printf '%s|%s\n' "$GH_CONFIG_DIR" "$*" >> "$dir/calls"
+now=; [ -f "$dir/remote" ] && remote="$(cat "$dir/remote")" && now="$(git --git-dir="$remote" rev-parse refs/heads/oby/fix-7)"
+out() {{ if [ -n "$now" ]; then sed "s/{head}/$now/g" "$1"; else cat "$1"; fi; }}
+behind() {{ if [ -f "$dir/behind" ] && ! git --git-dir="$remote" merge-base --is-ancestor refs/heads/dev "$now"; then sed 's/"CLEAN"/"BEHIND"/'; else cat; fi; }}
 case "$*" in
   "auth status --hostname github.com --active --json hosts")
     who=octo-cat; [ -n "$GH_CONFIG_DIR" ] && who=oby-reviewer
@@ -91,15 +96,15 @@ case "$*" in
   "pr view 7 --repo {REPO} --json "*)
     [ -f "$dir/offline" ] && {{ echo 'error connecting to api.github.com' >&2; exit 1; }}
     [ -f "$dir/signed-out" ] && {{ printf 'To get started with GitHub CLI, please run:  gh auth login\n' >&2; exit 4; }}
-    if [ -f "$dir/view-now.json" ]; then cat "$dir/view-now.json";
-    elif [ -f "$dir/merged-on-github" ]; then cat "$dir/view-merged.json";
-    elif [ -f "$dir/unknown" ]; then cat "$dir/view-unknown.json";
-    else cat "$dir/view.json"; fi ;;
+    if [ -f "$dir/view-now.json" ]; then out "$dir/view-now.json" | behind;
+    elif [ -f "$dir/merged-on-github" ]; then out "$dir/view-merged.json";
+    elif [ -f "$dir/unknown" ]; then out "$dir/view-unknown.json";
+    else out "$dir/view.json" | behind; fi ;;
   "api --paginate --slurp repos/{REPO}/pulls/7/reviews?per_page=100")
     r=
-    [ -f "$dir/approved" ] && r="$(cat "$dir/approval.json")"
-    [ -f "$dir/dismissed" ] && r="$r,$(cat "$dir/dismissal.json")"
-    [ -f "$dir/person" ] && r="$r,$(cat "$dir/person.json")"
+    [ -f "$dir/approved" ] && r="$(out "$dir/approval.json")"
+    [ -f "$dir/dismissed" ] && r="$r,$(out "$dir/dismissal.json")"
+    [ -f "$dir/person" ] && r="$r,$(out "$dir/person.json")"
     echo "[[${{r#,}}]]" ;;
   "api --paginate --slurp repos/{REPO}/pulls/7/commits?per_page=100") cat "$dir/commits.json" ;;
   "api repos/{REPO} --jq .permissions.push") echo true ;;
@@ -111,9 +116,10 @@ case "$*" in
     echo '{{"message": "Branch not protected", "status": "404"}}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
   "api repos/{REPO}/pulls/7")
-    if [ -f "$dir/named" ]; then sed 's#oby/fix-7#codex/7-x#' "$dir/pull.json"; else cat "$dir/pull.json"; fi ;;
+    if [ -f "$dir/named" ]; then out "$dir/pull.json" | sed 's#oby/fix-7#codex/7-x#'; else out "$dir/pull.json"; fi ;;
   "api -X PUT repos/{REPO}/pulls/7/merge "*) touch "$dir/merged"; echo '{{"merged": true}}' ;;
-  "api repos/{REPO}/compare/"*) echo '{{"behind_by": 3}}' ;;
+  "api repos/{REPO}/compare/"*)
+    if [ -n "$now" ]; then echo "{{\"behind_by\": $(git --git-dir="$remote" rev-list --count "$now..refs/heads/dev")}}"; else echo '{{"behind_by": 3}}'; fi ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/oby/fix-7") touch "$dir/deleted"; exit 0 ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/codex/7-x") touch "$dir/deleted-named"; exit 0 ;;
   *) echo "gh: not in this test" >&2; exit 1 ;;
@@ -218,15 +224,7 @@ fn started_with_jobs(
         .unwrap();
     }
     if let Some(workflow) = workflow {
-        let dir = home.join("memory/repos/obi-e2e/fixture-app");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("m1a2b3c4d.md"),
-            format!(
-                "---\nid: m1a2b3c4d\nscope: project\nrepo: {REPO}\nkind: workflow\nsource: user\ntitle: How fixture-app merges\nfrom: You merged fixture-app#6 this way\ncreated: 2026-10-24T10:00:00Z\nupdated: 2026-10-24T10:00:00Z\nused: 0\nworkflow: {workflow}\n---\nSquash-merge into dev after Oby's reviewer account approves and GitHub's checks pass on the same commit.\n"
-            ),
-        )
-        .unwrap();
+        remember(&home, workflow);
     }
     let bin = stand_in_gh(&folder.0);
     for file in gh {
@@ -238,6 +236,19 @@ fn started_with_jobs(
         Some(&bin),
         &[("OBID_FOLLOW_SECONDS", "1")],
     )
+}
+
+/// The owner taught Oby how fixture-app merges: `workflow`.
+fn remember(home: &Path, workflow: &str) {
+    let dir = home.join("memory/repos/obi-e2e/fixture-app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("m1a2b3c4d.md"),
+        format!(
+            "---\nid: m1a2b3c4d\nscope: project\nrepo: {REPO}\nkind: workflow\nsource: user\ntitle: How fixture-app merges\nfrom: You merged fixture-app#6 this way\ncreated: 2026-10-24T10:00:00Z\nupdated: 2026-10-24T10:00:00Z\nused: 0\nworkflow: {workflow}\n---\nSquash-merge into dev after Oby's reviewer account approves and GitHub's checks pass on the same commit.\n"
+        ),
+    )
+    .unwrap();
 }
 
 fn job(obid: &Obid) -> Value {
@@ -1607,33 +1618,290 @@ fn merging_2_the_owners_merge_merges_where_the_check_doesnt_count() {
     assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
 }
 
-/// MERGING-3: a conflict under a learned workflow ends in a card saying what to do, its words on
-/// the Merged stage, and nothing is sent.
-#[test]
-fn merging_3_a_conflict_asks_the_owner() {
-    let folder = Folder::new("merge-conflict");
-    let obid = started(&folder, false, Some(OBY));
-    view_now(&folder, |v| {
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// A job obid really ran and pushed, as the follower finds it once its pull request opened: in
+/// fixture-app's bare `remote` (the stand-in gh reads its head there, `gh/remote`), `dev` made
+/// from `main`, the job done on `oby/fix-7` from `dev` with its worktree kept, its file saying it
+/// published pull request #7 (a `file://` remote opens none). Then `before` (given `remote`) and
+/// `edit` (the job's file) run, and obid starts again with `workflow` remembered and `gh`'s files.
+/// obid, the job's id, the head it pushed and `remote`.
+fn published_for_real(
+    folder: &Folder,
+    workflow: &str,
+    gh: &[&str],
+    before: impl FnOnce(&Path),
+    edit: impl FnOnce(&mut Value),
+) -> (Obid, String, String, PathBuf) {
+    let remote = fixture(&folder.0.join("fixture"));
+    git(&remote, &["branch", "dev", "main"]);
+    let config = real_config(folder, &remote);
+    let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
+    remember(&home, workflow);
+    let bin = stand_in_gh(&folder.0);
+    std::fs::write(folder.0.join("gh/remote"), remote.to_str().unwrap()).unwrap();
+    for file in gh {
+        std::fs::write(folder.0.join("gh").join(file), "").unwrap();
+    }
+    let env = [("OBID_FOLLOW_SECONDS", "1")];
+    let obid = start_with(&folder.0, &config, Some(&bin), &env);
+    let task = json!({"job": {"repo": REPO, "kind": "build", "task": "COMMIT: fix.txt",
+                              "branch": "oby/fix-7", "base": "dev", "check": null, "rounds": 1}});
+    let posted = call(&obid, "POST", "/v1/jobs", Some(&task));
+    assert_eq!(posted.status, 201, "{}", posted.text);
+    let id = posted.body["id"].as_str().unwrap().to_owned();
+    let done = ended_within(&obid, &id, 60);
+    assert_eq!(done["status"], "done", "{done}");
+    let head = git(&remote, &["rev-parse", "refs/heads/oby/fix-7"]);
+    drop(obid);
+    let file = home.join(format!("jobs/{id}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["published"] = json!(PULL);
+    edit(&mut kept);
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    before(&remote);
+    (
+        start_with(&folder.0, &config, Some(&bin), &env),
+        id,
+        head,
+        remote,
+    )
+}
+
+/// obid's configuration for [`published_for_real`]: the fake Claude Code that commits what its
+/// task says, fixture-app with no check, and a push but no pull request (a `file://` remote).
+fn real_config(folder: &Folder, remote: &Path) -> Value {
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let mut config = config(&folder.0, remote, &fake);
+    config["repos"][0]["pullRequests"] = json!(false);
+    config["repos"][0].as_object_mut().unwrap().remove("check");
+    config
+}
+
+/// `dev` in `remote` moves on by a commit of someone else's adding `file`: its new tip.
+fn move_dev(remote: &Path, file: &str) -> String {
+    let work = remote.with_file_name(format!("move-{file}"));
+    git(
+        remote.parent().unwrap(),
+        &[
+            "clone",
+            "-q",
+            "-b",
+            "dev",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(work.join(file), "theirs\n").unwrap();
+    git(&work, &["add", file]);
+    git(
+        &work,
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            &format!("Add {file}"),
+        ],
+    );
+    git(&work, &["push", "-q", "origin", "HEAD:dev"]);
+    git(&work, &["rev-parse", "HEAD"])
+}
+
+/// The job `id` once its rebase round ran and it's done again.
+fn rounded(obid: &Obid, id: &str) -> Value {
+    let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        let job = job_of(obid, id);
+        if job["round"] == 2 && job["status"] == "done" {
+            return job;
+        }
+        assert!(
+            std::time::Instant::now() < give_up_at,
+            "its rebase round never ended: {job}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// It stays at its one round after the card: no loop.
+fn no_second_round(obid: &Obid, id: &str) {
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(job_of(obid, id)["round"], 2);
+}
+
+const CONFLICT: &str =
+    "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub.";
+
+fn conflicting(folder: &Folder) {
+    view_now(folder, |v| {
         v["mergeable"] = json!("CONFLICTING");
         v["mergeStateStatus"] = json!("DIRTY");
     });
-    let why =
-        "Not merged: it conflicts with dev. Ask Oby to rebase it onto dev, or settle it on GitHub.";
+}
+
+/// MERGING-3: a conflict on obid's own branch gets one rebase round by itself first (the job runs
+/// again, on its base as it is now, and goes out again over its head). When GitHub still says it
+/// conflicts at a head that had its round, the card asks, with Dismiss, its words on the Merged
+/// stage, and nothing is merged.
+#[test]
+fn merging_3_a_conflict_gets_one_rebase_round_then_asks() {
+    let folder = Folder::new("merge-conflict");
+    let (obid, id, head, remote) = published_for_real(
+        &folder,
+        PERSON,
+        &["person"],
+        |_| conflicting(&folder),
+        |_| {},
+    );
+    let job = rounded(&obid, &id);
+    assert_eq!(
+        git(&remote, &["rev-parse", "refs/heads/oby/fix-7"]),
+        head,
+        "{job}"
+    );
     let card = within(30, "the card", || {
-        merge_cards(&obid).into_iter().find(|c| c["text"] == why)
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["text"] == CONFLICT)
     });
     assert_eq!(card["options"], json!(["Dismiss"]));
-    let waiting = job(&obid);
+    no_second_round(&obid, &id);
+    let waiting = job_of(&obid, &id);
     assert_eq!(waiting["mergeNeedsYou"], true);
-    let merged = waiting["pipeline"]["stages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["id"] == "merged")
-        .cloned()
-        .unwrap();
-    assert_eq!(merged["detail"], why);
+    assert_eq!(waiting["mergeError"], CONFLICT);
     assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// MERGING-4: a branch behind a base that takes only up-to-date ones gets its rebase round by
+/// itself: rebased onto dev as it is now and pushed again over its head, it merges with no card.
+#[test]
+fn merging_4_a_branch_behind_rebases_once_then_merges() {
+    let folder = Folder::new("merge-behind");
+    let tip = std::cell::RefCell::new(String::new());
+    let (obid, id, head, remote) = published_for_real(
+        &folder,
+        PERSON,
+        &["person", "behind"],
+        |remote| *tip.borrow_mut() = move_dev(remote, "other.txt"),
+        |_| {},
+    );
+    let merged = within(90, "the job to be merged", || {
+        let job = job_of(&obid, &id);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    assert_eq!(merged["round"], 2, "{merged}");
+    let rebased = git(&remote, &["rev-parse", "refs/heads/oby/fix-7"]);
+    assert_ne!(rebased, head);
+    git(
+        &remote,
+        &["merge-base", "--is-ancestor", &tip.borrow(), &rebased],
+    );
+    assert!(merge_cards(&obid).is_empty());
+    assert_eq!(calls(&folder.0).matches("-X PUT").count(), 1);
+}
+
+/// MERGING-38: the rebase round is only for a branch obid made, and one per head: a branch it
+/// didn't make goes straight to the card; on its own branch, the head that had its round gets the
+/// card, never a second round, and its file keeps that head.
+#[test]
+fn merging_38_one_round_per_head_only_on_obids_branch() {
+    let folder = Folder::new("merge-round-per-head");
+    let theirs = |job: &mut Value| {
+        job["branch"] = json!("fix-7");
+        job["madeBranch"] = json!(false);
+        for sent in job["outgoing"].as_array_mut().unwrap() {
+            sent["branch"] = json!("fix-7");
+        }
+    };
+    let (obid, id, head, remote) = published_for_real(
+        &folder,
+        PERSON,
+        &["person"],
+        |_| conflicting(&folder),
+        theirs,
+    );
+    within(30, "the card", || {
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["text"].as_str().is_some_and(|t| t.starts_with(CONFLICT)))
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(
+        job_of(&obid, &id)["round"],
+        1,
+        "never on a branch obid didn't make"
+    );
+    drop(obid);
+
+    // Its own branch again: one round for the head, then the card.
+    let file = folder.0.join(format!("home/jobs/{id}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["branch"] = json!("oby/fix-7");
+    for sent in kept["outgoing"].as_array_mut().unwrap() {
+        sent["branch"] = json!("oby/fix-7");
+    }
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    let config = real_config(&folder, &remote);
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&folder.0.join("bin")),
+        &[("OBID_FOLLOW_SECONDS", "1")],
+    );
+    rounded(&obid, &id);
+    within(30, "the card", || {
+        merge_cards(&obid)
+            .into_iter()
+            .find(|c| c["text"] == CONFLICT)
+    });
+    no_second_round(&obid, &id);
+    let kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(kept["afterPrRebase"], head.as_str());
+}
+
+/// MERGING-38: a learned workflow that rebases first, on a branch not on its base's latest commit,
+/// gets the same round by itself, then merges with no card.
+#[test]
+fn merging_38_a_learned_rebase_first_rebases_by_itself() {
+    let folder = Folder::new("merge-rebase-first");
+    let tip = std::cell::RefCell::new(String::new());
+    let (obid, id, head, remote) = published_for_real(
+        &folder,
+        &PERSON.replace(r#""rebaseFirst":false"#, r#""rebaseFirst":true"#),
+        &["person"],
+        |remote| *tip.borrow_mut() = move_dev(remote, "other.txt"),
+        |_| {},
+    );
+    let merged = within(90, "the job to be merged", || {
+        let job = job_of(&obid, &id);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    assert_eq!(merged["round"], 2, "{merged}");
+    let rebased = git(&remote, &["rev-parse", "refs/heads/oby/fix-7"]);
+    assert_ne!(rebased, head);
+    git(
+        &remote,
+        &["merge-base", "--is-ancestor", &tip.borrow(), &rebased],
+    );
+    assert!(merge_cards(&obid).is_empty());
 }
 
 /// MERGING-6: the owner's gh signed out (or its login expired) can't read the pull request at all:
