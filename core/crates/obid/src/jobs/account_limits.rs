@@ -541,9 +541,9 @@ impl Jobs {
     }
 
     /// `accounts` the most room first, for a move (LIMITS-15, 19) and a new job (USAGE-11): `first`
-    /// (the owner's default) while it's there, then fresh usage showing room, the fullest window it
-    /// reports emptiest, then the rest, those reporting none (an API key, a ChatGPT login) last.
-    /// Ties keep their order (the tools', then the configuration's).
+    /// (the owner's default) while it's there, then the fullest window each reports now (one reset
+    /// since reads empty, USAGE-10) emptiest, those reporting none (an API key, a ChatGPT login,
+    /// a Cursor figure) last. Ties keep their order (the tools', then the configuration's).
     pub(super) fn by_room(
         &self,
         mut accounts: Vec<(Tool, crate::config::Account)>,
@@ -552,13 +552,21 @@ impl Jobs {
         let now = obi_protocol::time::now();
         let rank = |id: &str| {
             let usage = self.usage.get(id);
-            let used = (usage.five_hour.into_iter().chain(usage.seven_day)).reduce(f64::max);
-            let fresh = self.verified_limit_room(id, now, now.saturating_sub(600));
-            (Some(id) != first, !fresh, used.unwrap_or(1.0))
+            let windows = [usage.five_hour_at(now), usage.seven_day_at(now)];
+            let used = windows
+                .into_iter()
+                .flatten()
+                .reduce(f64::max)
+                .unwrap_or(1.0);
+            // A Cursor figure is none beside another tool's; it orders Cursor's own (USAGE-9).
+            match usage.advisory {
+                true => (Some(id) != first, 1.0, used),
+                false => (Some(id) != first, used, 0.0),
+            }
         };
+        // ponytail: no NaN is ever kept, so Equal never decides.
         accounts.sort_by(|(_, a), (_, b)| {
-            let (a, b) = (rank(&a.id), rank(&b.id));
-            (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2))
+            (rank(&a.id).partial_cmp(&rank(&b.id))).unwrap_or(std::cmp::Ordering::Equal)
         });
         accounts
     }
@@ -930,6 +938,62 @@ mod tests {
         assert_eq!(picked(), "c1", "the owner's default while it has room");
         jobs.mark_full("c1", None, obi_protocol::time::now());
         assert_eq!(picked(), "c2");
+        // A 5-hour reading whose window reset since counts as empty (USAGE-10).
+        let now = obi_protocol::time::now();
+        let reset = crate::usage::Usage {
+            five_hour_resets: Some(now - 60),
+            ..read(0.92, 0.3)
+        };
+        jobs.usage.record("c2", &reset);
+        jobs.usage.record("x", &read(0.6, 0.6));
+        assert_eq!(
+            picked(),
+            "c2",
+            "its 5-hour window reset: 30% is its fullest"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// USAGE-9: a Cursor figure doesn't rank Cursor before another tool's account (Cursor stays
+    /// last on Auto); it only orders Cursor's own accounts, the emptier first.
+    #[test]
+    fn usage_9_a_cursor_figure_orders_only_cursors_own_accounts() {
+        let root = std::env::temp_dir().join(format!("obid-usage-9-{}", uuid::Uuid::new_v4()));
+        let folder = |id: &str, login: &str| {
+            let dir = root.join("accounts").join(id);
+            std::fs::create_dir_all(dir.join(login).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(login), r#"{"apiKey":"k"}"#).unwrap();
+            json!({"id": id, "name": id, "configDir": dir})
+        };
+        let cursor = if cfg!(target_os = "macos") {
+            ".cursor/auth.json"
+        } else {
+            ".config/cursor/auth.json"
+        };
+        // Claude Code's reading is 20 minutes old: not fresh, as a real Cursor figure never is.
+        let at = obi_protocol::time::now() - 1200;
+        let usage = json!({"c1": {"fiveHour": 0.3, "sevenDay": 0.3, "fiveHourObservedAt": at,
+                "sevenDayObservedAt": at},
+            "k1": {"sevenDay": 0.5, "advisory": true}, "k2": {"sevenDay": 0.1, "advisory": true}});
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::write(root.join("home/usage.json"), usage.to_string()).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [folder("c1", ".credentials.json")]},
+                           "cursor": {"bin": "/usr/bin/true", "accounts": [folder("k1", cursor), folder("k2", cursor)]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        let picked = || jobs.pick(None, None).unwrap().1.id;
+        assert_eq!(
+            picked(),
+            "c1",
+            "a 10% Cursor figure doesn't beat Claude Code at 30%"
+        );
+        jobs.mark_full("c1", None, obi_protocol::time::now());
+        assert_eq!(picked(), "k2", "the emptier Cursor account first");
         let _ = std::fs::remove_dir_all(&root);
     }
 
