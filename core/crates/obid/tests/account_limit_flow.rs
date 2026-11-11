@@ -251,6 +251,32 @@ fn limits_1_a_resume_on_an_account_that_reports_no_usage_runs_again_on_time() {
     assert_eq!(resumed["round"], 2, "{resumed}");
 }
 
+/// LIMITS-1: an account that reports one window (a plan with no 5-hour window, USAGE-10) shows
+/// room by that window alone: its approved Resume runs once a fresh read shows it, not on time.
+#[test]
+fn limits_1_a_one_window_account_resumes_once_its_window_reads_room() {
+    let folder = Folder::new("limit-resume-one-window");
+    let config = limit_config(&folder.0, "week-only", false);
+    let now = obi_protocol::time::now();
+    blocked_job(
+        &folder.0.join("home/jobs"),
+        "cccc0005",
+        "research",
+        Some(now - 120),
+    );
+    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
+    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
+    let id = decision["id"].as_str().unwrap();
+    let revision = decision["revision"].as_u64().unwrap();
+    let answered = answer(&obid, id, revision, "resume", None);
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    let resumed = within(45, "the Resume runs on its week's room", || {
+        let j = job_now(&obid, "cccc0005");
+        (j["status"] == "done").then_some(j)
+    });
+    assert_eq!(resumed["round"], 2, "{resumed}");
+}
+
 /// USAGE-1: once an approved Resume ran its job, it reads no account's usage again while no app
 /// looks: the decision no job waits on is forgotten.
 #[test]
@@ -276,6 +302,7 @@ fn usage_1_an_applied_resume_reads_no_more_usage() {
     let reads = || obid.log().matches("account stub reports no usage").count();
     std::thread::sleep(std::time::Duration::from_secs(3));
     let before = reads();
+    assert!(before > 0, "{}", obid.log());
     // Two of obid's 15-second ticks, with no app looking.
     std::thread::sleep(std::time::Duration::from_secs(32));
     assert_eq!(reads(), before, "{}", obid.log());

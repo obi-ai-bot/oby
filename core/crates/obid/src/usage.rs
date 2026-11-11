@@ -488,8 +488,9 @@ pub fn claude_ran_model(result: &Value) -> bool {
 
 /// One snapshot of Codex's limits (`RateLimitSnapshot`, from `account/rateLimits/read` or a sparse
 /// `account/rateLimits/updated`). Only Codex's own limit counts (`limitId` `codex` or none): a
-/// model's has its own id. Windows are told apart by length (300 minutes, 10080), `usedPercent`
-/// is 0...100; a `rateLimitReachedType` means Codex refuses work. `None` when it says nothing.
+/// model's has its own id. Windows are told apart by length (300 minutes, 10080, give or take the
+/// minute Codex's buckets drift by), `usedPercent` is 0...100; a `rateLimitReachedType` means
+/// Codex refuses work. `None` when it says nothing.
 pub fn codex(limits: &Value) -> Option<Usage> {
     if limits
         .get("limitId")
@@ -502,11 +503,11 @@ pub fn codex(limits: &Value) -> Option<Usage> {
     for key in ["primary", "secondary"] {
         let w = &limits[key];
         match w["windowDurationMins"].as_u64() {
-            Some(300) => {
+            Some(299..=301) => {
                 usage.five_hour = share(&w["usedPercent"], 100.0);
                 usage.five_hour_resets = epoch(&w["resetsAt"]);
             }
-            Some(10080) => {
+            Some(10079..=10081) => {
                 usage.seven_day = share(&w["usedPercent"], 100.0);
                 usage.seven_day_resets = epoch(&w["resetsAt"]);
             }
@@ -913,6 +914,13 @@ mod tests {
         );
         usages.record("a", &week(0.82, i64::MAX));
         assert!(Usages::open(&home.0).get("a").reserved(time::now()));
+    }
+
+    /// USAGE-10: Codex's buckets drift by a minute; a window 299 or 10081 minutes long still reads.
+    #[test]
+    fn usage_10_a_codex_window_a_minute_off_still_reads() {
+        let usage = codex(&json!({"primary": {"windowDurationMins": 299, "usedPercent": 20}, "secondary": {"windowDurationMins": 10081, "usedPercent": 40}})).unwrap();
+        assert_eq!((usage.five_hour, usage.seven_day), (Some(0.2), Some(0.4)));
     }
 
     #[test]

@@ -73,6 +73,17 @@ pub(super) fn start_wait(job: &mut Job, at: i64) {
     job.changed(format!("A usage limit stopped it. {}", job.step));
 }
 
+/// Whether `job` still waits on `decision`: stopped by its account's limit, neither dismissed nor
+/// handled by it yet, and in its episode, or in none yet (between the decision's record and the
+/// job's, `record_account_limit`). Acting on it needs the episode set too.
+fn waits_on(job: &Job, decision: &crate::account_limits::Decision) -> bool {
+    job.account_limit_blocked
+        && job.status == Status::Interrupted
+        && job.dismissed.is_none()
+        && !decision.applied.contains(&job.id)
+        && (job.account_limit_episode.as_ref()).is_none_or(|e| *e == decision.id)
+}
+
 /// Where a job a limit stopped goes by itself (LIMITS-15): the tool and account, where it was, and
 /// what its line says.
 pub(super) struct Failover(Tool, crate::config::Account, String, String);
@@ -141,10 +152,7 @@ impl Jobs {
                     let at = self.limit_wait_until(&job.account, job.account_limit_reset);
                     let mut waits = false;
                     self.update(id, |job| {
-                        waits = job.account_limit_blocked
-                            && job.status == Status::Interrupted
-                            && job.dismissed.is_none()
-                            && job.account_limit_episode.as_deref() == Some(&decision.id);
+                        waits = waits_on(job, decision) && job.account_limit_episode.is_some();
                         if waits {
                             let (round, rounds) = (job.round, job.rounds);
                             next_round(job);
@@ -258,10 +266,8 @@ impl Jobs {
         use crate::account_limits::Choice;
         for id in &decision.jobs {
             let Some(job) = self.get(id).filter(|job| {
-                job.account_limit_blocked
-                    && job.status == Status::Interrupted
-                    && job.dismissed.is_none()
-                    && job.account_limit_episode.as_deref() == Some(&decision.id)
+                waits_on(job, decision)
+                    && job.account_limit_episode.is_some()
                     && job.account_limit_choice != Some(decision.choice)
             }) else {
                 continue;
@@ -294,14 +300,7 @@ impl Jobs {
         // A job between its decision's record and its episode's has none yet: it still waits.
         let (live, done): (Vec<_>, Vec<_>) =
             self.limit_decisions.list().into_iter().partition(|d| {
-                (d.jobs.iter().filter(|id| !d.applied.contains(id))).any(|id| {
-                    self.get(id).is_some_and(|j| {
-                        j.account_limit_blocked
-                            && j.status == Status::Interrupted
-                            && j.dismissed.is_none()
-                            && j.account_limit_episode.as_ref().is_none_or(|e| *e == d.id)
-                    })
-                })
+                (d.jobs.iter()).any(|id| self.get(id).is_some_and(|j| waits_on(&j, d)))
             });
         if !done.is_empty()
             && let Err(error) = self.limit_decisions.prune(&done)
@@ -364,14 +363,7 @@ impl Jobs {
                 }
             }
             for id in &decision.jobs {
-                if decision.applied.contains(id) {
-                    continue;
-                }
-                let Some(job) = self.get(id) else { continue };
-                if job.dismissed.is_some()
-                    || !job.account_limit_blocked
-                    || job.status != Status::Interrupted
-                {
+                if !self.get(id).is_some_and(|job| waits_on(&job, &decision)) {
                     continue;
                 }
                 match self.apply_limit_job(&decision, id, None, None) {
@@ -472,21 +464,22 @@ impl Jobs {
     }
 
     /// Only current, provider-reported windows constitute evidence that an account has room: each
-    /// window `agent`'s tool reports, and Cursor reports its week alone (`usage::cursor`).
-    fn verified_limit_room(&self, agent: &str, account: &str, now: i64, since: i64) -> bool {
+    /// window the account reports, at least one (Cursor reports its week alone, `usage::cursor`, as
+    /// does a plan with no 5-hour window, USAGE-10), read since `since` and showing room.
+    fn verified_limit_room(&self, _agent: &str, account: &str, now: i64, since: i64) -> bool {
+        use crate::usage::{NEARLY_FULL, RESERVE};
         let usage = self.usage.get(account);
-        let fresh = |at: Option<i64>| {
-            at.is_some_and(|at| at >= since && at <= now && now.saturating_sub(at) <= 600)
-        };
-        let five_hour = usage
-            .five_hour
-            .is_some_and(|u| u < crate::usage::NEARLY_FULL);
-        (agent == Tool::Cursor.id() || (five_hour && fresh(usage.five_hour_observed_at)))
-            && usage.seven_day.is_some_and(|used| {
-                used < crate::usage::NEARLY_FULL
-                    && (used < crate::usage::RESERVE || usage.lifted_until(now).is_some())
+        let lifted = usage.lifted_until(now).is_some();
+        let room = |used: Option<f64>, at: Option<i64>, reserve: bool| {
+            used.is_none_or(|used| {
+                used < NEARLY_FULL
+                    && (!reserve || used < RESERVE || lifted)
+                    && at.is_some_and(|at| at >= since && at <= now && now - at <= 600)
             })
-            && fresh(usage.seven_day_observed_at)
+        };
+        (usage.five_hour.is_some() || usage.seven_day.is_some())
+            && room(usage.five_hour, usage.five_hour_observed_at, false)
+            && room(usage.seven_day, usage.seven_day_observed_at, true)
             && usage.full_until_at(now).is_none()
     }
 
@@ -749,11 +742,7 @@ impl Jobs {
                 return Err("The job is publishing.".into());
             }
             let job = state.jobs.get(id).ok_or("The job no longer exists.")?;
-            if job.status != Status::Interrupted
-                || job.dismissed.is_some()
-                || !job.account_limit_blocked
-                || job.account_limit_episode.as_deref() != Some(&decision.id)
-            {
+            if !waits_on(job, decision) || job.account_limit_episode.is_none() {
                 return Err("The job changed or was dismissed.".into());
             }
             if past_safety(job) {
@@ -864,11 +853,7 @@ impl Jobs {
                 continue;
             }
             let Some(job) = self.get(id) else { continue };
-            if !job.account_limit_blocked
-                || job.account_limit_episode.as_deref() != Some(&decision.id)
-                || job.dismissed.is_some()
-                || job.status != Status::Interrupted
-            {
+            if !waits_on(&job, decision) || job.account_limit_episode.is_none() {
                 let _ = self.limit_decisions.applied(&decision.id, id);
                 continue;
             }
