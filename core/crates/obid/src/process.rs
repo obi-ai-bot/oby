@@ -1109,8 +1109,34 @@ mod claude_tmpdir_tests {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// What a test started, killed when it's dropped, a failing assertion's unwinding included,
+    /// so a test that fails never leaves processes behind: `children`, and every process id
+    /// listed in `file` (one a line: what they started, detached).
+    pub(crate) struct Started {
+        pub(crate) children: Vec<std::process::Child>,
+        pub(crate) file: Option<PathBuf>,
+    }
+
+    impl Drop for Started {
+        fn drop(&mut self) {
+            let listed = self
+                .file
+                .as_ref()
+                .and_then(|f| std::fs::read_to_string(f).ok());
+            let listed = listed.unwrap_or_default();
+            for pid in listed.lines().filter_map(|l| l.trim().parse::<i32>().ok()) {
+                let _ =
+                    nix::sys::signal::kill(Pid::from_raw(pid), nix::sys::signal::Signal::SIGKILL);
+            }
+            for child in &mut self.children {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
 
     /// LANES-5 with LANES-4: the owner's shell can't move an own run's Claude Code to another
     /// folder or Keychain item than obid names (none for the default account), nor change what obid
@@ -1189,12 +1215,19 @@ mod tests {
             (temp, login)
         };
         let ((temp, login), (other, _)) = (run("this"), run("other"));
-        let sleeper = "use POSIX; setsid(); exec q(sleep), 600";
+        // Short-lived, and every one killed when the test ends however it ends.
+        let sleeper = "use POSIX; setsid(); exec q(sleep), 60";
+        let pids = root.join("pids");
+        let mut started = Started {
+            children: Vec::new(),
+            file: Some(pids.clone()),
+        };
         let boxed = |writes: &Path, program: &[&str]| {
             let profile = format!(
-                "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+                "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
                 root.display(),
-                writes.display()
+                writes.display(),
+                pids.display()
             );
             std::process::Command::new("/usr/bin/sandbox-exec")
                 .args(["-p", &profile])
@@ -1202,21 +1235,30 @@ mod tests {
                 .spawn()
                 .unwrap()
         };
-        let mut left = boxed(&temp, &["/usr/bin/perl", "-e", sleeper]);
-        let mut others = boxed(&other, &["/usr/bin/perl", "-e", sleeper]);
-        let mut persons = std::process::Command::new("/usr/bin/perl")
+        started
+            .children
+            .push(boxed(&temp, &["/usr/bin/perl", "-e", sleeper]));
+        started
+            .children
+            .push(boxed(&other, &["/usr/bin/perl", "-e", sleeper]));
+        let persons = std::process::Command::new("/usr/bin/perl")
             .args(["-e", sleeper])
-            .spawn()
-            .unwrap();
-        // One that keeps forking detached children while it's being ended.
-        let forks = format!("while :; do /usr/bin/perl -e '{sleeper}' & /bin/sleep 0.001; done");
-        let mut spawner = boxed(&temp, &["/bin/sh", "-c", &forks]);
-        std::thread::sleep(std::time::Duration::from_millis(500));
+            .spawn();
+        started.children.push(persons.unwrap());
+        // One that forks detached children, 200 at most, while it's being ended; each listed.
+        let forks = format!(
+            "i=0; while [ $i -lt 200 ]; do /usr/bin/perl -e '{sleeper}' & echo $! >> '{}'; i=$((i+1)); /bin/sleep 0.002; done",
+            pids.display()
+        );
+        started
+            .children
+            .push(boxed(&temp, &["/bin/sh", "-c", &forks]));
+        std::thread::sleep(std::time::Duration::from_millis(300));
         // What obid can't prove is the run's ends nothing: a folder that isn't there (macOS says
         // no one may write it, the person's own processes included).
         assert_eq!(end_sandboxed(&temp, &root.join("gone")), 0);
         assert_eq!(end_sandboxed(&root.join("gone"), &login), 0);
-        assert!(left.try_wait().unwrap().is_none());
+        assert!(started.children[0].try_wait().unwrap().is_none());
         assert!(end_sandboxed(&temp, &login) >= 3);
         // Nothing of the run's is left, a child forked during the sweep included.
         assert_eq!(
@@ -1225,20 +1267,15 @@ mod tests {
             "a leftover escaped the sweep"
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
-        for child in [&mut left, &mut spawner] {
-            assert!(
-                child.try_wait().unwrap().is_some(),
-                "the run's leftover still runs"
-            );
+        for at in [0, 3] {
+            let ended = started.children[at].try_wait().unwrap();
+            assert!(ended.is_some(), "the run's leftover still runs");
         }
-        for child in [&mut others, &mut persons] {
-            assert!(
-                child.try_wait().unwrap().is_none(),
-                "another's process ended"
-            );
-            let _ = child.kill();
-            let _ = child.wait();
+        for at in [1, 2] {
+            let ended = started.children[at].try_wait().unwrap();
+            assert!(ended.is_none(), "another's process ended");
         }
+        drop(started);
         let _ = std::fs::remove_dir_all(&root);
     }
 

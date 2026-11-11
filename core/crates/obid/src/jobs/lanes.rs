@@ -1239,6 +1239,11 @@ mod tests {
         let env_file = login.join("env.sh");
         std::fs::write(&env_file, "").unwrap();
         let pid_file = temp.join("pid");
+        // The leftover, killed however the test ends (crate::process::tests::Started).
+        let _started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: Some(pid_file.clone()),
+        };
         let settings = json!({"sandbox": {"enabled": true, "failIfUnavailable": true,
             "allowUnsandboxedCommands": false,
             "filesystem": {"allowWrite": [temp], "denyWrite": [login]}}});
@@ -1271,7 +1276,7 @@ mod tests {
         }
         let mut child = command.spawn().unwrap();
         let prompt = format!(
-            "Run exactly this one command with the Bash tool, not in the background, then stop: perl -e 'use POSIX; setsid(); exec q(sleep), 900' > /dev/null 2>&1 & echo $! > {}",
+            "Run exactly this one command with the Bash tool, not in the background, then stop: perl -e 'use POSIX; setsid(); exec q(sleep), 60' > /dev/null 2>&1 & echo $! > {}",
             pid_file.display()
         );
         child

@@ -637,8 +637,13 @@ mod tests {
             temp.display()
         );
         let pid_file = temp.join("pid");
+        // What the test starts, killed however it ends (crate::process::tests::Started).
+        let mut started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: Some(pid_file.clone()),
+        };
         let script = format!(
-            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e 'use POSIX; setsid(); exec q(sleep), 600' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nsleep 600\n",
+            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e 'use POSIX; setsid(); exec q(sleep), 60' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nsleep 60\n",
             pid_file.display()
         );
         let launch = crate::agent::Launch {
@@ -678,20 +683,18 @@ mod tests {
         conn.end_leftovers();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!alive(), "the leftover outlived its run");
-        let mut next = std::process::Command::new("/usr/bin/sandbox-exec")
+        let next = std::process::Command::new("/usr/bin/sandbox-exec")
             .args(["-p", &profile, "/usr/bin/perl", "-e"])
-            .arg("use POSIX; setsid(); exec q(sleep), 600")
+            .arg("use POSIX; setsid(); exec q(sleep), 60")
             .spawn()
             .unwrap();
+        started.children.push(next);
         tokio::time::sleep(Duration::from_millis(300)).await;
         drop(conn);
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            next.try_wait().unwrap().is_none(),
-            "the next session's command ended"
-        );
-        let _ = next.kill();
-        let _ = next.wait();
+        let ended = started.children[0].try_wait().unwrap();
+        assert!(ended.is_none(), "the next session's command ended");
+        drop(started);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
