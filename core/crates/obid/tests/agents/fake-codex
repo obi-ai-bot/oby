@@ -51,7 +51,10 @@
 //                    whose words hold STALL never answers
 //   anything else    "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable, or
-// obid's token, and when obid starts a thread anywhere but in a sandbox it has to ask about.
+// obid's token, and when obid starts a thread anywhere but in a sandbox it has to ask about: obid's
+// box (`danger-full-access`, every approval obid's), or an own run's (LANES-18: `-c` settings for
+// `workspace-write` with no network and `approval_policy="never"`, and a thread that sets no
+// sandbox and asks for `never`). A thread keeps the `-c` settings it was started with (`settings`).
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -132,7 +135,10 @@ async function relayed() {
 
 async function runTurn(turnId, prompt) {
   if (leaked.length) return complete(turnId, null, "failed", { message: `leaked: ${leaked.join(", ")}` });
-  if (state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
+  const own = setting("sandbox_mode") === "workspace-write" && setting("approval_policy") === "never"
+    && setting("sandbox_workspace_write.network_access") === false;
+  if (own ? state.sandbox !== undefined || state.approvalPolicy !== "never"
+    : state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy}` });
   const task = state.task;
   if (task.includes("RELAY")) {
@@ -361,6 +367,7 @@ rl.on("line", (line) => {
       }
       state.sandbox = params.sandbox;
       state.approvalPolicy = params.approvalPolicy;
+      state.settings = process.argv.slice(2).filter((_, at, argv) => argv[at - 1] === "-c");
       state.instructions = params.developerInstructions;
       save();
       return send({ id, result: { thread: { id: thread } } });

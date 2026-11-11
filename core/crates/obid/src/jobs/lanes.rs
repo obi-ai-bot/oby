@@ -27,28 +27,37 @@ impl Jobs {
     /// Oby's own review stays boxed, as `review_may_run` expects, and so does the owner's review of
     /// someone else's code (MERGING-36). Its run gets [`own_sandbox_env`] and
     /// [`own_sandbox_settings`] and no egress proxy (LANES-3, LANES-6); every other run is boxed
-    /// with a copy of its login. `claudeOwnSandbox` doesn't change it.
+    /// with a copy of its login. `claudeOwnSandbox` doesn't change it. A Codex job is own only in
+    /// Bypass (the owner's CODEX-1, "Yes, Bypass only", LANES-18), where Codex never asks to leave
+    /// its sandbox ([`own_codex_settings`]); in Ask, Accept edits, Plan or Sandbox it stays boxed.
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
-        tool == Tool::Claude
-            && job.obi.is_none()
+        let lane = match tool {
+            Tool::Claude => true,
+            Tool::Codex => Self::mode_of(job) == Mode::Bypass,
+            Tool::Cursor => false,
+        };
+        lane && job.obi.is_none()
             && !job.untrusted
             && job.review_of.is_none()
             && !(job.read_only() && job.someone_elses().is_some())
     }
 
-    /// Whether job `id`'s agent had a network obid's proxy didn't see: Claude Code ran it, now or
-    /// before a move ([`Job::moves`]), in the own lane, where no proxy marks a site it reached
-    /// `reached`. Until a command's sites do (LANES-6), its check gets no declared secrets, as a
-    /// job whose agent reached past the package registries gets none.
+    /// Whether job `id`'s agent had a network obid's proxy didn't see: Claude Code or Codex ran it,
+    /// now or before a move ([`Job::moves`]), in the own lane, where no proxy marks a site it
+    /// reached `reached`. Until a command's sites do (LANES-6), its check gets no declared secrets,
+    /// as a job whose agent reached past the package registries gets none. A Codex job on a ChatGPT
+    /// login, boxed in any mode (`Jobs::launch`), counts too: fail closed.
     pub(super) fn ran_unproxied(&self, id: &str) -> bool {
         self.get(id).is_some_and(|job| {
-            let claude = Tool::Claude.name();
-            let ran_claude = job.agent == Tool::Claude.id()
-                || job
-                    .moves
-                    .iter()
-                    .any(|m| m.from.starts_with(claude) || m.to.starts_with(claude));
-            ran_claude && Self::own_lane(&job, Tool::Claude)
+            [Tool::Claude, Tool::Codex].into_iter().any(|tool| {
+                let name = tool.name();
+                let ran = job.agent == tool.id()
+                    || job
+                        .moves
+                        .iter()
+                        .any(|m| m.from.starts_with(name) || m.to.starts_with(name));
+                ran && Self::own_lane(&job, tool)
+            })
         })
     }
 
@@ -301,6 +310,107 @@ impl Jobs {
     }
 }
 
+/// What an own run of `tool` on `account` gets over a boxed run's environment: Claude Code's
+/// ([`own_sandbox_env`], the owner's user settings checked first, LANES-5); Codex's, the account's
+/// own folder as `CODEX_HOME` (its `configDir`, else `~/.codex`), with no login copy: Codex reads
+/// and refreshes its own login, config, skills and MCP servers there (LANES-18).
+pub(super) fn own_run_env(
+    tool: Tool,
+    account: &crate::config::Account,
+    spec: &Spec,
+    login: &Path,
+) -> Result<Vec<(&'static str, OsString)>, String> {
+    if tool != Tool::Codex {
+        let env = own_sandbox_env(account, spec, login)?;
+        own_settings_allowed(&own_settings_file(account)?, spec, &env)?;
+        return Ok(env);
+    }
+    let folder = match &account.config_dir {
+        Some(dir) => dir.clone(),
+        None => login_home()
+            .ok_or("obid can't find the home Codex's login is in.")?
+            .join(".codex"),
+    };
+    Ok(vec![("CODEX_HOME", folder.into_os_string())])
+}
+
+/// The owner's login shell's environment (`env`, LANES-4) for an own run of `tool`: Claude Code's
+/// gateway (`ANTHROPIC_*`, its `CLAUDE_CODE_*` switches) is Claude Code's alone, so a Codex run gets
+/// no `CLAUDE*` or `ANTHROPIC_*` of it, as no other agent does (`process::agent_withheld`).
+pub(super) fn owners_for(tool: Tool, env: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    let claudes = |name: &OsString| {
+        let name = name.to_string_lossy();
+        name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC_")
+    };
+    env.into_iter()
+        .filter(|(name, _)| tool == Tool::Claude || !claudes(name))
+        .collect()
+}
+
+/// The permission profile [`own_codex_settings`] names.
+const CODEX_PROFILE: &str = "oby_own";
+
+/// The `-c` settings an own Codex run starts with (LANES-18, the owner's CODEX-1, "Yes, Bypass
+/// only"), which outrank the owner's `config.toml`: its commands in Codex's own sandbox,
+/// `workspace-write` with no network, writing only the worktree and its own git folder (and the
+/// job's temporary folder, its `TMPDIR`, which `workspace-write` adds), and `approval_policy`
+/// `never`. With any other policy an approved command may ask to run outside Codex's sandbox, and
+/// obid can't tell that ask from a plain one (codex-cli 0.162.1); with `never` Codex refuses it. Its
+/// permission profile reads everything but obid's home, the person's and every account's folder
+/// (its own too: a command never reads the account's `auth.json`), writes only the worktree, its
+/// git folder and its temporary folder, and
+/// keeps the git pointers and `oby-common` read-only, so nothing a command writes steers the git
+/// Codex and obid run outside the sandbox, nor the shared clone's refs, config or hooks (LANE-10a).
+/// None of the owner's hooks run (LANES-17's rule). Where two entries meet, the more specific path
+/// is the one Codex applies.
+pub(super) fn own_codex_settings(spec: &Spec) -> Result<Vec<OsString>, String> {
+    let spec = spec.canonical();
+    let name = |path: &Path| {
+        path.to_str()
+            .map(|path| json!(path).to_string())
+            .ok_or_else(|| format!("obid can't name {} to Codex's sandbox.", path.display()))
+    };
+    let mut kept = spec.pointers();
+    kept.extend(spec.git_admin.iter().map(|admin| admin.join(OWN_COMMON)));
+    // Later wins for the same path, never two entries for one (TOML refuses a key twice).
+    let mut access = std::collections::BTreeMap::new();
+    let entries = std::iter::once((PathBuf::from("/"), "read"))
+        .chain(own_hidden(&spec).into_iter().map(|p| (p, "none")))
+        .chain(spec.readable().into_iter().map(|p| (p, "read")))
+        .chain(spec.writable().into_iter().map(|p| (p, "write")))
+        .chain(kept.into_iter().map(|p| (p, "read")));
+    for (path, mode) in entries {
+        access.insert(name(&path)?, mode);
+    }
+    let filesystem: Vec<String> = access
+        .iter()
+        .map(|(p, m)| format!("{p} = \"{m}\""))
+        .collect();
+    let roots = [Some(&spec.worktree), spec.git_admin.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(|p| name(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok([
+        "sandbox_mode=\"workspace-write\"".to_owned(),
+        "approval_policy=\"never\"".into(),
+        "sandbox_workspace_write.network_access=false".into(),
+        format!(
+            "sandbox_workspace_write.writable_roots=[{}]",
+            roots.join(", ")
+        ),
+        format!("default_permissions=\"{CODEX_PROFILE}\""),
+        format!(
+            "permissions.{CODEX_PROFILE}.filesystem={{{}}}",
+            filesystem.join(", ")
+        ),
+        "features.hooks=false".into(),
+    ]
+    .into_iter()
+    .flat_map(|setting| ["-c".into(), setting.into()])
+    .collect())
+}
+
 /// Whether an own run's `tool` call, which names a path outside its working folder `cwd`, reaches
 /// only Claude Code's own places, which it read or wrote without asking before its `ask` rules
 /// (LANES-14): to read, its commands' `temp` folder (their background output, `CLAUDE_CODE_TMPDIR`)
@@ -370,7 +480,7 @@ mod tests {
 
     /// LANES-1 (docs/contracts/lanes.md): another Oby's job, one marked `untrusted` and Oby's own
     /// review are foreign; one marked only `foreign` or `reached` is the owner's, and so own.
-    /// Codex and Cursor stay boxed for now.
+    /// Cursor stays boxed for now, and Codex but in Bypass (LANES-18).
     #[test]
     fn lanes_1_whose_work_picks_the_lane() {
         let owners = Job::new(
@@ -387,7 +497,6 @@ mod tests {
             Jobs::own_lane(&job, Tool::Claude)
         };
         assert!(Jobs::own_lane(&owners, Tool::Claude));
-        assert!(!Jobs::own_lane(&owners, Tool::Codex));
         assert!(!Jobs::own_lane(&owners, Tool::Cursor));
         assert!(marked(
             |job| job.foreign = Some("someone else's issue".into())
@@ -681,13 +790,14 @@ mod tests {
             }
         }
         // No proxy saw what it reached, so its check gets no declared secrets; a boxed job's,
-        // and a Codex job's that never ran on Claude Code, are judged as before.
+        // and a boxed Codex job's that never ran on Claude Code, are judged as before.
         let mut boxed = job.clone();
         boxed.id = "boxed".into();
         boxed.untrusted = true;
         let mut codex = job.clone();
         codex.id = "codex".into();
         codex.agent = "codex".into();
+        codex.mode = Some("ask".into());
         let mut moved = codex.clone();
         moved.id = "moved".into();
         moved.moves.push(crate::job::Move {
@@ -711,6 +821,190 @@ mod tests {
         assert!(!check.proxied);
         assert!(check.loopback);
         assert!(check.accounts.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-18 (the owner's CODEX-1, "Yes, Bypass only"): the owner's Codex job leaves Oby's box
+    /// in Bypass only; in Ask, Accept edits, Plan or Sandbox, as a review, another Oby's or marked
+    /// `untrusted`, it stays boxed.
+    #[test]
+    fn lanes_18_only_an_own_bypass_codex_job_leaves_the_box() {
+        let owners = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        let lane = |mark: fn(&mut Job)| {
+            let mut job = owners.clone();
+            mark(&mut job);
+            Jobs::own_lane(&job, Tool::Codex)
+        };
+        assert!(lane(|_| {}));
+        assert!(lane(|job| job.mode = Some("bypass".into())));
+        for mode in ["ask", "acceptEdits", "plan", "sandbox"] {
+            let mut job = owners.clone();
+            job.mode = Some(mode.into());
+            assert!(!Jobs::own_lane(&job, Tool::Codex), "{mode}");
+        }
+        assert!(!lane(|job| job.kind = "review".into()));
+        assert!(!lane(|job| job.untrusted = true));
+        assert!(!lane(|job| job.review_of = Some("k".into())));
+        assert!(!lane(|job| {
+            job.obi = Some(crate::job::ObiRef {
+                correlation_id: "c".into(),
+                from: "obi-ernesto".into(),
+                from_owner: "ernesto".into(),
+                request_id: "r".into(),
+            })
+        }));
+    }
+
+    /// LANES-18: of the owner's login shell's environment, an own Codex run gets everything Claude
+    /// Code's gets but Claude Code's gateway, which is Claude Code's alone.
+    #[test]
+    fn lanes_18_an_own_codex_run_gets_none_of_claude_codes_gateway() {
+        let env: Vec<(OsString, OsString)> = [
+            ("ANTHROPIC_BASE_URL", "https://gateway.example.com"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("OPENAI_BASE_URL", "https://openai.example.com"),
+        ]
+        .map(|(n, v)| (n.into(), v.into()))
+        .into();
+        assert_eq!(owners_for(Tool::Codex, env.clone()), env[2..]);
+        assert_eq!(owners_for(Tool::Claude, env.clone()), env);
+    }
+
+    /// LANES-18: an own Bypass Codex job runs unboxed by obid, with no proxy of obid's, on its
+    /// account's own folder with no login copy, in Codex's own sandbox: `workspace-write` with no
+    /// network, `approval_policy = "never"` so no command runs outside it, writable roots the
+    /// worktree and its own git folder only, and a profile that reads none of obid's home, the
+    /// person's or an account's folder, and keeps the git pointers and `oby-common` read-only; no
+    /// hook of the owner's. Its check gets no declared secrets. The same job in Ask stays boxed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_18_an_own_bypass_codex_job_runs_in_codexs_sandbox() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lanes-18-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let session = root.join("session");
+        std::fs::write(&session, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let [account, other] = ["account", "other"].map(|d| root.join(d));
+        for dir in [&account, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"codex": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "a", "name": "A", "configDir": account},
+                                 {"id": "b", "name": "B", "configDir": other}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Sandbox::detect(&session),
+        )
+        .unwrap();
+        let job = Job::new(
+            "own".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        let [worktree, admin, common, temp] =
+            ["worktree", "admin", "common", "temp"].map(|d| root.join(d));
+        for dir in [&worktree, &admin, &common, &temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Codex);
+        let codex = jobs.accounts(Tool::Codex).remove(0);
+        let launch = jobs
+            .launch(&job, &spec, Tool::Codex, Vec::new(), &codex, None)
+            .unwrap();
+        assert!(launch.own_sandbox);
+        let argv: Vec<String> = launch
+            .argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // In a session of its own and no box of obid's: Codex itself follows the session's `--`.
+        assert_eq!(
+            argv[1..4],
+            [sandbox::SESSION, "--", "/usr/bin/true"],
+            "{argv:?}"
+        );
+        let set = |key: &str| {
+            argv.windows(2)
+                .find(|w| w[0] == "-c" && w[1].starts_with(&format!("{key}=")))
+                .map(|w| w[1][key.len() + 1..].to_owned())
+        };
+        let quoted = |p: &Path| json!(p.to_str().unwrap()).to_string();
+        assert_eq!(set("sandbox_mode").as_deref(), Some("\"workspace-write\""));
+        assert_eq!(set("approval_policy").as_deref(), Some("\"never\""));
+        assert_eq!(
+            set("sandbox_workspace_write.network_access").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            set("sandbox_workspace_write.writable_roots"),
+            Some(format!("[{}, {}]", quoted(&worktree), quoted(&admin)))
+        );
+        assert_eq!(set("features.hooks").as_deref(), Some("false"));
+        assert_eq!(set("default_permissions").as_deref(), Some("\"oby_own\""));
+        let profile = set("permissions.oby_own.filesystem").unwrap();
+        let home = jobs.config.home.canonicalize().unwrap();
+        let mut entries = vec![
+            (PathBuf::from("/"), "read"),
+            (home, "none"),
+            (account.clone(), "none"),
+            (other, "none"),
+            (worktree.clone(), "write"),
+            (admin.clone(), "write"),
+            (temp.clone(), "write"),
+            (common, "read"),
+            (worktree.join(".git"), "read"),
+            (admin.join("commondir"), "read"),
+            (admin.join("config.worktree"), "read"),
+            (admin.join(crate::jobs::OWN_COMMON), "read"),
+        ];
+        entries.extend(person_homes().into_iter().map(|p| (p, "none")));
+        for (path, mode) in entries {
+            let entry = format!("{} = \"{mode}\"", quoted(&path));
+            assert!(profile.contains(&entry), "{entry} in {profile}");
+        }
+        let env = |name: &str| {
+            launch
+                .env
+                .iter()
+                .rev()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        };
+        // The account's own folder, no login copy of obid's.
+        assert_eq!(env("CODEX_HOME"), Some(account.clone().into_os_string()));
+        assert!(!jobs.login_path("own").join("auth.json").exists());
+        for (name, value) in &launch.env {
+            if name.to_string_lossy().ends_with("_PROXY") {
+                assert_eq!(std::env::var_os(name).as_ref(), Some(value), "{name:?}");
+            }
+        }
+        // No proxy saw it, so its check gets no declared secrets; in Ask it's boxed, as before.
+        let mut asks = job.clone();
+        asks.id = "asks".into();
+        asks.mode = Some("ask".into());
+        jobs.lock().jobs.insert(asks.id.clone(), asks);
+        jobs.lock().jobs.insert(job.id.clone(), job);
+        assert!(jobs.ran_unproxied("own"));
+        assert!(!jobs.ran_unproxied("asks"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

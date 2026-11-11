@@ -66,6 +66,7 @@ mod budget;
 mod by_github;
 mod lanes;
 pub(crate) use lanes::claude_place;
+use lanes::{own_codex_settings, own_run_env, owners_for};
 mod logins;
 mod moves;
 mod own_refs;
@@ -7328,7 +7329,9 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra = spec.git_env();
         extra.extend(process::no_publish_env(&spec.temp));
-        let own = Self::own_lane(job, tool);
+        let chatgpt = tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some();
+        // A ChatGPT login stays boxed: its run reaches OpenAI only through obid's relay.
+        let own = Self::own_lane(job, tool) && !chatgpt;
         // A boxed run's only way off the Mac: obid's proxy, which lets its tool's own services
         // through and decides every other site (crate::egress, #616). An own run's network is its
         // CLI's sandbox's (LANES-6).
@@ -7348,7 +7351,7 @@ impl Jobs {
         let tetrix = self.tetrix_mcp(job);
         // On a ChatGPT login, no run holds a token: Codex goes through obid's relay, with the job's
         // broker token (crate::chatgpt_relay).
-        let relay = (tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some())
+        let relay = chatgpt
             .then(|| {
                 if let Some(why) = login_problem(tool, account, login_home().as_deref()) {
                     return Err(why);
@@ -7377,7 +7380,7 @@ impl Jobs {
         // The owner's environment under obid's (LANES-4): a shell that doesn't answer leaves the run
         // obid's allowlist, and the job says so.
         let owners = if own {
-            process::login_env()
+            process::login_env().map(|env| owners_for(tool, env))
         } else {
             Some(Vec::new())
         };
@@ -7385,13 +7388,13 @@ impl Jobs {
             self.note_change(&job.id, "Your login shell didn't answer within 10 seconds, so this run has none of its environment.".into());
         }
         match (&account.config_dir, tool) {
-            // In Claude Code's own sandbox, with the account's own folder and login: no copy.
-            // The user's settings it loads (`--setting-sources user`, LANES-5) checked before it starts.
-            _ if own => {
-                let env = own_sandbox_env(account, &spec, &self.login_path(&job.id))?;
-                own_settings_allowed(&own_settings_file(account)?, &spec, &env)?;
-                extra.extend(env);
-            }
+            // In the CLI's own sandbox, with the account's own folder and login: no copy.
+            _ if own => extra.extend(own_run_env(
+                tool,
+                account,
+                &spec,
+                &self.login_path(&job.id),
+            )?),
             // Never the account's own folder (#655): the job's own, a login copy and nothing else.
             (Some(dir), _) => {
                 let login = self.login_path(&job.id);
@@ -7493,6 +7496,9 @@ impl Jobs {
                 }
                 if let Some((base, _)) = &relay {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
+                }
+                if own {
+                    argv.splice(1..1, own_codex_settings(&spec)?);
                 }
                 argv
             }

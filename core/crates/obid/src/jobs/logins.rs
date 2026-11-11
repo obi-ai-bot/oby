@@ -695,16 +695,7 @@ pub(super) fn own_sandbox_settings(
     kept.push(login.join("env.sh"));
     // A conversation's checkouts of the repositories and its room's own settings (LANES-12).
     kept.extend(spec.frozen.iter().cloned());
-    // The box's own hiding of the shared temp folders isn't the own lane's: its commands read them
-    // as the owner's terminal does (docs/contracts/lanes.md).
-    let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
-    let temps: Vec<PathBuf> = crate::sandbox::shared_temps().iter().map(real).collect();
-    let hidden: Vec<PathBuf> = spec
-        .hidden
-        .iter()
-        .filter(|p| !temps.contains(&real(p)))
-        .cloned()
-        .collect();
+    let hidden = own_hidden(&spec);
     // A kept folder's files too (a conversation's `repos/` and `.claude/`), whatever is allowed.
     let rules: Vec<String> = names(&kept)?
         .iter()
@@ -752,6 +743,19 @@ pub(super) fn own_sandbox_settings(
         },
     })
     .to_string())
+}
+
+/// What an own run's commands never read, of a [`Spec::canonical`] `spec`: what its box hides (obid's
+/// home, the person's, every account's folder) but the shared temp folders, which they read as the
+/// owner's terminal does (docs/contracts/lanes.md).
+pub(super) fn own_hidden(spec: &Spec) -> Vec<PathBuf> {
+    let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
+    let temps: Vec<PathBuf> = crate::sandbox::shared_temps().iter().map(real).collect();
+    spec.hidden
+        .iter()
+        .filter(|p| !temps.contains(&real(p)))
+        .cloned()
+        .collect()
 }
 
 /// The variables obid's `--settings` gives an own run's Claude Code in its `env`, as obid set them

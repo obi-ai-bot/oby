@@ -569,8 +569,9 @@ fn read_login_env() -> Option<Vec<(OsString, OsString)>> {
 }
 
 /// `owners` ([`login_env`]'s) under `env`, an own run's (LANES-4): every variable `env` doesn't set,
-/// but what pushes or signs in to a code host ([`agent_withheld`]'s), git's and obid's own, the
-/// shell's own bookkeeping, and Claude Code's own but the owner's gateway ([`claude_gateway`]).
+/// but what pushes or signs in to a code host ([`agent_withheld`]'s), git's, obid's and Codex's own
+/// (`CODEX_*`), the shell's own bookkeeping, and Claude Code's own but the owner's gateway
+/// ([`claude_gateway`]).
 pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsString)]) {
     for (name, value) in owners {
         let n = name.to_string_lossy();
@@ -578,7 +579,9 @@ pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsS
             !claude_gateway(&n)
         } else {
             agent_withheld(&n)
-                || ["GIT_", "OBY_", "OBID_"].iter().any(|p| n.starts_with(p))
+                || ["GIT_", "OBY_", "OBID_", "CODEX_"]
+                    .iter()
+                    .any(|p| n.starts_with(p))
                 || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
         };
         if !withheld && !env.iter().any(|(set, _)| set == name) {

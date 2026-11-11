@@ -8,6 +8,9 @@
 //! can't run inside another, so the thread runs `danger-full-access` with `approvalPolicy`
 //! `untrusted`, and every command that isn't a known read, and every file change, comes to obid as
 //! an approval (as the Swift runner does inside bubblewrap). In Plan mode obid declines file changes.
+//! An own run (the owner's Bypass job, LANES-18) runs unboxed instead, its commands in Codex's own
+//! sandbox as its `-c` settings say (crate::jobs, `own_codex_settings`), with `approvalPolicy`
+//! `never`: Codex never runs a command outside that sandbox, and asks obid nothing.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -95,6 +98,7 @@ pub async fn run_turn(
         on_event,
         worktree: launch.cwd.clone(),
         plan: options.plan,
+        own: launch.own_sandbox,
         files: HashMap::new(),
         calls: HashMap::new(),
         no_commands: options.no_commands,
@@ -230,6 +234,8 @@ struct Run<D, E> {
     on_event: E,
     worktree: PathBuf,
     plan: bool,
+    /// An own run ([`Launch::own_sandbox`], LANES-18): Codex's sandbox, the owner's MCP servers.
+    own: bool,
     /// The files each file change writes, by item id: an approval request names only the item.
     files: HashMap<String, Vec<String>>,
     /// The MCP tools each server was called for this turn, as their items started: the approval
@@ -311,7 +317,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         }
 
         let cwd = self.worktree.to_string_lossy().into_owned();
-        let mut params = thread_params(&cwd);
+        let mut params = thread_params(&cwd, self.own);
         if let Some(instructions) = &options.instructions {
             params["developerInstructions"] = json!(instructions);
         }
@@ -647,8 +653,8 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                     .and_then(|calls| calls.iter().rfind(|(tool, _)| Some(tool.as_str()) == named));
                 let answer = match call.cloned() {
                     // Only Oby's own server: another's (ChatGPT's apps, the person's) is never
-                    // run, as before Codex asked.
-                    Some(_) if !OWN_SERVERS.contains(&server) => {
+                    // run, as before Codex asked. An own run's are the owner's (LANE-12).
+                    Some(_) if !OWN_SERVERS.contains(&server) && !self.own => {
                         Answer::Deny(format!("Only Oby's own tools run here, not {server}'s."))
                     }
                     Some((tool, arguments)) => {
@@ -759,8 +765,13 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     }
 }
 
-/// The thread's settings: obid's sandbox is the sandbox, and every approval comes to obid.
-fn thread_params(cwd: &str) -> Value {
+/// The thread's settings: obid's sandbox is the sandbox, and every approval comes to obid. An `own`
+/// run's sandbox is Codex's own, from its `-c` settings, which no thread setting overrides, and it
+/// never asks to leave it (LANES-18).
+fn thread_params(cwd: &str, own: bool) -> Value {
+    if own {
+        return json!({"cwd": cwd, "approvalPolicy": "never", "approvalsReviewer": "user"});
+    }
     json!({"cwd": cwd, "sandbox": "danger-full-access", "approvalPolicy": "untrusted",
            "approvalsReviewer": "user"})
 }
@@ -1306,6 +1317,63 @@ exec sleep 30
             took < agent::AFTER_RESULT + Duration::from_secs(2),
             "{took:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-18: an own run's thread sets no sandbox, so its `-c` settings' (Codex's own) holds, and
+    /// asks for `never`, so no command asks to run outside it; a boxed run's is obid's box, every
+    /// approval obid's, as before.
+    #[tokio::test]
+    async fn lanes_18_an_own_thread_never_asks_to_leave_codexs_sandbox() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-codex-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = root.join("codex");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+read l; echo '{"id":1,"result":{}}'
+read l
+read l; echo "$l" >> started.jsonl; echo '{"id":2,"result":{"thread":{"id":"t1"}}}'
+read l; echo '{"id":3,"result":{"turn":{"id":"u1"}}}'
+echo '{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"u1","status":"completed","items":[{"type":"agentMessage","text":"Done."}]}}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for own in [true, false] {
+            let launch = Launch {
+                own_sandbox: own,
+                group: None,
+                argv: vec![bin.clone().into_os_string()],
+                env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+                cwd: root.clone(),
+                stderr: root.join("agent.log"),
+            };
+            let (_stop, stop) = watch::channel(process::Signal::Run);
+            let turn = run_turn(
+                launch,
+                "Do it.",
+                &Options::default(),
+                Duration::from_secs(60),
+                stop,
+                |_, _| Ruling::Now(Answer::Allow),
+                |_| {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(turn.text(), "Done.");
+        }
+        let started: Vec<Value> = std::fs::read_to_string(root.join("started.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["params"].clone())
+            .collect();
+        assert_eq!(started[0]["approvalPolicy"], "never");
+        assert!(started[0].get("sandbox").is_none(), "{}", started[0]);
+        assert_eq!(started[1]["approvalPolicy"], "untrusted");
+        assert_eq!(started[1]["sandbox"], "danger-full-access");
         let _ = std::fs::remove_dir_all(&root);
     }
 
