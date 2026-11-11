@@ -70,7 +70,10 @@ impl Jobs {
                 let idle = slots::Idle::new(self, id);
                 let mut stop = signal.clone();
                 tokio::select! {
-                    () = tokio::time::sleep(wait) => {}
+                    // Waiting isn't running: the job's ceiling leaves it out ([`unwaited`]).
+                    () = tokio::time::sleep(wait) => {
+                        *lock().entry(id.to_owned()).or_default() += wait.as_secs();
+                    }
                     _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(CheckRun::default()),
                 }
                 idle.back(signal).await;
@@ -121,6 +124,35 @@ impl Jobs {
             wait = next;
         }
     }
+}
+
+/// How long each job waited, in seconds, to run a check that judged nothing again since obid
+/// started (PUBLISHING-31). Apart from the jobs' lock: the ceiling reads it inside `Jobs::update`.
+/// Not kept in the job's file: `ran_secs`, which is, leaves it out already.
+static WAITED: std::sync::Mutex<std::collections::BTreeMap<String, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn lock() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, u64>> {
+    WAITED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Jobs {
+    /// What job `id`'s ceiling (`jobCeilingHours`) counts from as a run of it starts: its
+    /// `ran_secs`, and what it waited so far, which [`unwaited`] takes back off, so only what it
+    /// waits during the run is left out (PUBLISHING-31).
+    pub(super) fn ran_before(&self, id: &str) -> Duration {
+        let ran = self.get(id).and_then(|j| j.ran_secs).unwrap_or(0);
+        Duration::from_secs(ran + lock().get(id).copied().unwrap_or(0))
+    }
+}
+
+/// What job `id`'s ceiling counts of `ran` ([`Jobs::ran_before`] and the time since), in seconds:
+/// all but what it waited to run a check that judged nothing again.
+pub(super) fn unwaited(id: &str, ran: Duration) -> u64 {
+    ran.as_secs()
+        .saturating_sub(lock().get(id).copied().unwrap_or(0))
 }
 
 /// What a check's reason says once obid stopped running it again (PUBLISHING-31).
@@ -320,5 +352,27 @@ mod tests {
             ),
             "Its check judged nothing: the check did nothing for 15 minutes. Oby runs it again in 6 minutes."
         );
+    }
+
+    /// PUBLISHING-31: a next round of a job (Try again, the owner's words to it once stopped)
+    /// forgets a wait Stop cut short: its first check runs at once and counts its tries from none.
+    #[test]
+    fn publishing_31_a_next_round_forgets_the_wait() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "t".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.status = Status::Stopped;
+        job.unjudged = Some(crate::job::Unjudged {
+            tries: 3,
+            next: Some(obi_protocol::time::now() + 4800),
+            why: "the check ran past its limit of 2 hours".into(),
+        });
+        next_round(&mut job);
+        assert_eq!(job.unjudged, None);
     }
 }

@@ -412,11 +412,13 @@ fn path_with_usual(base: &[PathBuf], home: Option<&Path>) -> OsString {
 
 /// Where the person's CLIs usually are when their `PATH` is set in `.zshrc`, which a login shell
 /// that isn't interactive never reads: `~/.local/bin` (Claude Code's installer), `~/.bun/bin`,
-/// nvm's default node (npm's `-g` installs) and `/opt/homebrew/bin`. Only those that are folders.
+/// `~/.cargo/bin` (`cargo install`'s: the check's `oby-check-blok`), nvm's default node (npm's `-g`
+/// installs) and `/opt/homebrew/bin`. Only those that are folders.
 fn usual_folders(home: &Path) -> Vec<PathBuf> {
     [
         Some(home.join(".local/bin")),
         Some(home.join(".bun/bin")),
+        Some(home.join(".cargo/bin")),
         nvm_default_bin(home),
         Some(PathBuf::from("/opt/homebrew/bin")),
     ]
@@ -731,6 +733,7 @@ mod usual_folders_tests {
         let _ = std::fs::remove_dir_all(&home);
         for dir in [
             ".local/bin",
+            ".cargo/bin",
             ".nvm/versions/node/v20.1.0/bin",
             ".nvm/versions/node/v22.3.0/bin",
             ".nvm/versions/node/v22.11.0/bin",
@@ -742,7 +745,9 @@ mod usual_folders_tests {
         std::fs::write(home.join(".nvm/alias/default"), "22\n").unwrap();
         let found = usual_folders(&home);
         assert_eq!(found[0], home.join(".local/bin"));
-        assert_eq!(found[1], home.join(".nvm/versions/node/v22.11.0/bin"));
+        // `cargo install`'s, where the check's oby-check-blok is (BLOK-1).
+        assert_eq!(found[1], home.join(".cargo/bin"));
+        assert_eq!(found[2], home.join(".nvm/versions/node/v22.11.0/bin"));
         // No ~/.bun/bin here: only folders that are there.
         assert!(!found.contains(&home.join(".bun/bin")));
         for (alias, version) in [("v22.3.0", "v22.3.0"), ("22.1", ""), ("lts/*", "v23.0.0")] {

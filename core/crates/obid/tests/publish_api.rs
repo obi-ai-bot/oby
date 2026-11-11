@@ -2425,6 +2425,63 @@ fn publishing_31_a_restart_keeps_the_wait() {
     assert_eq!(stopped.status, 200, "{}", stopped.text);
     let job = ended_within(&obid, &id, 30);
     assert_eq!(job["status"], "stopped", "{job}");
+    // The wait Stop cut short is gone: a next round of the job starts its checks afresh.
+    assert!(job["unjudged"].is_null(), "{job}");
+}
+
+/// PUBLISHING-31: the waits before a check runs again don't count toward the job's ceiling
+/// (`jobCeilingHours`): a job with 20 seconds of it left waits 30 to run its check again, the next
+/// run fails for real, and the agent gets its fix round (where it says the failure is the task's),
+/// never a ceiling stall.
+#[test]
+fn publishing_31_its_waits_dont_count_toward_the_ceiling() {
+    let folder = Folder::new("recheck-ceiling");
+    let bin = fake_gh(&folder.0);
+    let remote = fixture(&folder.0.join("fixture"));
+    // The stand-in that hears a fix round's quoted task (ON PURPOSE) as jobs_api.rs's do.
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let mut config = config(&folder.0, &remote, &fake);
+    config["jobCeilingHours"] = json!(1);
+    sign_in(&folder, "stub");
+    let id = "ce11ab31";
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "build".into(),
+        "COMMIT: a.txt, a test that fails ON PURPOSE".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.branch = format!("oby/build-{id}");
+    job.status = obid::job::Status::Queued;
+    job.rounds = Some(2);
+    job.ran_secs = Some(3600 - 20);
+    // Its first run judges nothing, the next fail for real.
+    job.check = Some(
+        "test -f \"$HOME/ran\" || { touch \"$HOME/ran\"; echo \"couldn't judge: not yet\"; }; exit 1"
+            .into(),
+    );
+    let dir = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{id}.json")),
+        serde_json::to_vec(&job).unwrap(),
+    )
+    .unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_RECHECK_MS", "30000")],
+    );
+    let job = ended_within(&obid, id, 180);
+    assert!(job["stalled"].is_null(), "{job}\n{}", obid.log());
+    assert_eq!(job["round"], 2, "{job}");
+    let last = job["summaries"].as_array().unwrap().last().unwrap().clone();
+    assert!(
+        last.as_str().unwrap().starts_with("FAILS AS ASKED"),
+        "{job}"
+    );
 }
 
 /// PUBLISHING-9, 10 and 11: a job whose check failed publishes nothing by itself, and Publish by

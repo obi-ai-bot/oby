@@ -4001,7 +4001,7 @@ impl Jobs {
             job.stopped_by = Some(by);
             job.step = String::new();
             job.waiting = None;
-            job.resumes_at = None;
+            (job.resumes_at, job.unjudged) = (None, None);
             job.finished = Some(obi_protocol::time::now());
         });
         // A review that never started: its exchange still gets its answer, and Oby's review of
@@ -10281,12 +10281,12 @@ impl Jobs {
         let mut steered = false;
         // No clock ends a job that makes progress: only the run's safety ceiling (`jobCeilingHours`).
         // It counts every run's time, restarts and tries again included (`Job::ran_secs`), kept as
-        // each turn starts and ends.
+        // each turn starts and ends; a check's waits to run again aren't (PUBLISHING-31).
         // ponytail: a turn obid's own crash cuts off isn't counted; keep it every few minutes if
         // crash loops show up.
-        let ran_before = Duration::from_secs(self.get(id).and_then(|j| j.ran_secs).unwrap_or(0));
+        let ran_before = self.ran_before(id);
         let began = std::time::Instant::now();
-        let ran = || (ran_before + began.elapsed()).as_secs();
+        let ran = || unjudged::unwaited(id, ran_before + began.elapsed());
         // Nothing outside the agent is waited on (the Mac checks went with the strip).
         let waiting: crate::conn::Waiting = Arc::new(|| false);
         // obid told the agent once to wait for what it left running (`WAIT_HERE`), and once to
@@ -14255,7 +14255,7 @@ fn next_round(job: &mut Job) {
     job.reason = None;
     job.stopped_by = None;
     job.next_step = None;
-    job.resumes_at = None;
+    (job.resumes_at, job.unjudged) = (None, None);
     job.account_limit_blocked = false;
     job.account_limit_episode = None;
     job.account_limit_nonce = None;
