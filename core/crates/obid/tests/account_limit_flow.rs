@@ -1056,8 +1056,11 @@ fn limits_14_a_wait_on_an_ended_pull_request_doesnt_run() {
             .any(|c| c["what"] == obid::jobs::LET_GO),
         "{gone}"
     );
-    let kept = job_now(&obid, "aaaa1402");
-    assert_eq!(kept["status"], "stopped", "{kept}");
+    // It's stopped, then told why (`let_go_ended`): wait for both.
+    let kept = within(30, "the unpushed wait is stopped, saying why", || {
+        let job = job_now(&obid, "aaaa1402");
+        (job["status"] == "stopped" && job["reason"].is_string()).then_some(job)
+    });
     assert!(kept["dismissed"].is_null(), "{kept}");
     assert!(kept["resumesAt"].is_null(), "{kept}");
     assert!(
@@ -1236,6 +1239,43 @@ fn limits_15_a_cursor_account_with_weekly_room_takes_the_job() {
         "{moved}"
     );
     assert!(pending_decisions(&obid).is_empty());
+}
+
+/// LIMITS-19: an account that reports no usage (an API key's) and that nothing holds takes a job
+/// at its limit; one that reports room still ranks before it.
+#[test]
+fn limits_19_a_job_moves_to_an_account_that_reports_no_usage() {
+    for reported in [false, true] {
+        let folder = Folder::new(&format!("limits-19-{reported}"));
+        let mut config = limit_config(&folder.0, "fake-claude", true);
+        std::fs::remove_file(folder.0.join("home/usage.json")).unwrap();
+        if reported {
+            let dir = folder.0.join("home/accounts/codex2");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("auth.json"),
+                json!({"OPENAI_API_KEY": "fake-codex"}).to_string(),
+            )
+            .unwrap();
+            let accounts = config["agents"]["codex"]["accounts"]
+                .as_array_mut()
+                .unwrap();
+            accounts.push(json!({"id": "codex2", "name": "Second", "configDir": dir}));
+            let now = obi_protocol::time::now();
+            let usage = json!({"codex2": {"fiveHour": 0.5, "sevenDay": 0.5, "fiveHourObservedAt": now,
+                "sevenDayObservedAt": now, "fiveHourResets": now + 3600, "sevenDayResets": now + 86400}});
+            std::fs::write(folder.0.join("home/usage.json"), usage.to_string()).unwrap();
+        }
+        let obid = start(&folder.0, &config, None);
+        let id = post_unnamed(&obid, "LIMITED WEEK: 86400");
+        let moved = within(90, "Codex takes the job over", || {
+            let job = job_now(&obid, &id);
+            (job["agent"] == "codex").then_some(job)
+        });
+        let to = if reported { "codex2" } else { "codex" };
+        assert_eq!(moved["account"], to, "{moved}");
+        assert!(pending_decisions(&obid).is_empty());
+    }
 }
 
 /// LIMITS-15: `accountFailover` off keeps the job on its account, waiting.

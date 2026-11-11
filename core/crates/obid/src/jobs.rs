@@ -2956,9 +2956,8 @@ impl Jobs {
     }
 
     /// The tool and account a job runs on: the tool named (`claude`, `codex`, `cursor`; `auto` or
-    /// none for any), and the account named (by id or name), or the first signed-in account
-    /// of the tools in order (Claude Code, then Codex, then Cursor), else the first account. With
-    /// none named, the account new tasks go to (`defaultAccount`, #1573) is tried first.
+    /// none for any), and the account named (by id or name), else the signed-in one with the most
+    /// room ([`Jobs::by_room`], USAGE-11; `defaultAccount` first, #1573), else the first account.
     fn pick(
         &self,
         agent: Option<&str>,
@@ -3005,7 +3004,6 @@ impl Jobs {
         let named = named
             .map(str::trim)
             .filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("auto"));
-        // The owner's default goes first; signed out or without room, it's passed over as any is.
         let preferred = named
             .is_none()
             .then(|| crate::settings::load(&self.config.home).default_account)
@@ -3014,10 +3012,9 @@ impl Jobs {
         if let Some(id) = &preferred {
             tools.sort_by_key(|t| !self.accounts(*t).iter().any(|a| &a.id == id));
         }
-        let home = login_home();
-        let now = obi_protocol::time::now();
+        let (home, now) = (login_home(), obi_protocol::time::now());
         let mut first = None;
-        let mut held = Vec::new();
+        let (mut held, mut ready) = (Vec::new(), Vec::new());
         let mut not_yet = None;
         for tool in &tools {
             let mut accounts = self.accounts(*tool);
@@ -3048,7 +3045,7 @@ impl Jobs {
                         } else if let Some(why) = self.usage.get(&account.id).held(now) {
                             held.push(format!("{} {why}", account.name));
                         } else {
-                            return Ok((*tool, account));
+                            ready.push((*tool, account));
                         }
                     }
                 }
@@ -3061,6 +3058,9 @@ impl Jobs {
                     }
                 }
             }
+        }
+        if let Some(found) = self.by_room(ready, preferred.as_deref()).into_iter().next() {
+            return Ok(found);
         }
         if !held.is_empty() {
             return Err(Refused(format!(
@@ -18419,6 +18419,8 @@ mod tests {
             ("c2".into(), some("claude-haiku-5-5"), some("high"))
         );
         default(None);
+        // USAGE-11: as much room as c2's, so the tie keeps routing's own order.
+        jobs.usage.record("c1", &room);
         assert_eq!(
             made(None, false),
             ("c1".into(), None, None),
