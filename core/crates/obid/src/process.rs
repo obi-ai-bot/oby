@@ -560,9 +560,10 @@ fn read_login_env() -> Option<Vec<(OsString, OsString)>> {
 
 /// `owners` ([`login_env`]'s) under `env`, an own run's (LANES-4): every variable `env` doesn't set,
 /// but what pushes or signs in to a code host ([`agent_withheld`]'s: Claude Code's and Anthropic's
-/// are the owner's gateway, and theirs), git's and obid's own, the shell's own bookkeeping, and
-/// which Claude Code folder and Keychain item the run uses: the account's, as obid names it (none
-/// for the default account, LANES-5), so obid checks the settings the run really loads.
+/// are the owner's gateway, and theirs), git's and obid's own, the shell's own bookkeeping,
+/// which Claude Code folder and Keychain item the run uses (the account's, as obid names it: none
+/// for the default account, LANES-5), so obid checks the settings the run really loads, and
+/// [`CLAUDE_SETTINGS_SOURCES`], which would outrank or replace obid's `--settings`.
 pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsString)]) {
     for (name, value) in owners {
         let n = name.to_string_lossy();
@@ -570,12 +571,29 @@ pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsS
         let withheld = (agent_withheld(&n) && !gateway)
             || ["GIT_", "OBY_", "OBID_"].iter().any(|p| n.starts_with(p))
             || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
-            || ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"].contains(&&*n);
+            || ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"].contains(&&*n)
+            || CLAUDE_SETTINGS_SOURCES.contains(&&*n);
         if !withheld && !env.iter().any(|(set, _)| set == name) {
             env.push((name.clone(), value.clone()));
         }
     }
 }
+
+/// Claude Code's own variables (2.1.302) that name where its settings, policy or MCP servers come
+/// from, or say it's already sandboxed: a managed-settings folder and a remote-settings file in
+/// place of the fetched ones (both outrank `--settings`), a mock of those, turning the admin env
+/// union off, a bridge child's machine settings, a delivered MCP config that replaces
+/// `--mcp-config`'s servers, and `CLAUDE_CODE_SANDBOXED`. The owner's shell never gives them to an
+/// own run ([`with_owners`]), so obid's `--settings` hold (LANES-5).
+pub const CLAUDE_SETTINGS_SOURCES: [&str; 7] = [
+    "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
+    "CLAUDE_CODE_REMOTE_SETTINGS_PATH",
+    "CLAUDE_CODE_MOCK_REMOTE_SETTINGS",
+    "CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION",
+    "CLAUDE_CODE_BRIDGE_CHILD_MACHINE_SETTINGS",
+    "CLAUDE_CODE_REMOTE_MCP_CONFIG",
+    "CLAUDE_CODE_SANDBOXED",
+];
 
 /// `bin` as a path: itself when it names one, else found on [`tools_path`].
 pub fn resolve_bin(bin: &str) -> Option<PathBuf> {
@@ -992,6 +1010,31 @@ mod tests {
                 (os("ANTHROPIC_BASE_URL"), os("https://gateway.example")),
             ]
         );
+    }
+
+    /// LANES-5 with LANES-4: the owner's shell can't give an own run's Claude Code a settings or
+    /// policy source that outranks obid's `--settings` (a managed-settings folder, a remote-settings
+    /// file, …), so a `sandbox.enabled: false` there can't turn its sandbox off; the owner's own
+    /// `CLAUDE_CODE_*` switches still reach it.
+    #[test]
+    fn lanes_5_the_owners_shell_gives_no_settings_source() {
+        let os = |text: &str| OsString::from(text);
+        let mut env = Vec::new();
+        let mut owners: Vec<(OsString, OsString)> = [
+            "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
+            "CLAUDE_CODE_REMOTE_SETTINGS_PATH",
+            "CLAUDE_CODE_MOCK_REMOTE_SETTINGS",
+            "CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION",
+            "CLAUDE_CODE_BRIDGE_CHILD_MACHINE_SETTINGS",
+            "CLAUDE_CODE_REMOTE_MCP_CONFIG",
+            "CLAUDE_CODE_SANDBOXED",
+        ]
+        .iter()
+        .map(|name| (os(name), os("/tmp/policy")))
+        .collect();
+        owners.push((os("CLAUDE_CODE_USE_BEDROCK"), os("1")));
+        with_owners(&mut env, &owners);
+        assert_eq!(env, vec![(os("CLAUDE_CODE_USE_BEDROCK"), os("1"))]);
     }
 
     /// LANES-2: a boxed agent's environment and an own one's alike give git no settings but the
