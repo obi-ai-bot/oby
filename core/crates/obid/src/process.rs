@@ -224,12 +224,13 @@ pub fn sandbox_env(
         env.retain(|(set, _)| set.as_os_str() != OsStr::new(name));
         env.push(((*name).into(), value.clone()));
     }
-    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS and NO_CLAUDE_MDS are
-    // the only CLAUDE_CODE_* let in.
+    // obid's own CLAUDE_CODE_TMPDIR (a Claude Code run's, below), TODO_TOOLS, NO_CLAUDE_MDS and
+    // NO_AUTO_MEMORY are the only CLAUDE_CODE_* let in.
     env.retain(|(name, _)| {
         name == CLAUDE_TMPDIR
             || name == CLAUDE_TODO_TOOLS
             || name == NO_CLAUDE_MDS
+            || name == NO_AUTO_MEMORY
             || !is_forbidden(&name.to_string_lossy())
     });
     env
@@ -262,6 +263,10 @@ pub fn build_env(jobs: usize) -> Vec<(&'static str, OsString)> {
 /// What Oby's review of published work adds to a Claude Code run's `extra`: no CLAUDE.md of the
 /// change it reads is loaded as instructions (crate::review quotes the base's rules instead).
 pub const NO_CLAUDE_MDS: &str = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
+
+/// What an own conversation's Claude Code adds (LANES-12): its auto-memory off, as `--restricted`
+/// keeps it in a boxed one, so what a turn read never lands in the account's memory.
+pub const NO_AUTO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 
 /// What a Claude Code launch adds to [`sandbox_env`]'s `extra`: Claude Code makes its Bash folder in
 /// /tmp/claude-<uid> unless told, which the sandbox doesn't let a job write (a field test,

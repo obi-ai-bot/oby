@@ -211,8 +211,15 @@ pub(crate) fn own_sandbox_env(
     login: &Path,
 ) -> Result<Vec<(&'static str, OsString)>, String> {
     let home = login_home().ok_or("obid can't find the home Claude Code's login is in.")?;
-    let (Some(admin), Some(common)) = (&spec.git_admin, &spec.git_common) else {
-        return Err("obid has no git folder for this job's Claude Code.".into());
+    // A conversation's room has no git folder (LANES-12); a job always has both.
+    let git = match (&spec.git_admin, &spec.git_common) {
+        (Some(admin), Some(common)) => vec![
+            ("GIT_DIR", admin.clone().into_os_string()),
+            ("GIT_COMMON_DIR", common.clone().into_os_string()),
+            ("GIT_WORK_TREE", spec.worktree.clone().into_os_string()),
+        ],
+        (None, None) => Vec::new(),
+        _ => return Err("obid has no git folder for this job's Claude Code.".into()),
     };
     let mut env: Vec<(&'static str, OsString)> = vec![
         ("HOME", home.clone().into_os_string()),
@@ -230,13 +237,9 @@ pub(crate) fn own_sandbox_env(
         }
         None => home.join(".claude.json"),
     };
-    env.extend([
-        ("GIT_DIR", admin.clone().into_os_string()),
-        ("GIT_COMMON_DIR", common.clone().into_os_string()),
-        ("GIT_WORK_TREE", spec.worktree.clone().into_os_string()),
-        // As every Claude Code run's (`Jobs::launch`), named here so no file of the owner's sets it.
-        (process::CLAUDE_TMPDIR, spec.temp.clone().into_os_string()),
-    ]);
+    env.extend(git);
+    // As every Claude Code run's (`Jobs::launch`), named here so no file of the owner's sets it.
+    env.push((process::CLAUDE_TMPDIR, spec.temp.clone().into_os_string()));
     // In the environment, which nothing the agent writes changes for Claude Code's own git.
     env.extend(process::no_publish_env(&spec.temp));
     let state = std::fs::read(state).unwrap_or_default();
@@ -540,6 +543,8 @@ pub(super) fn own_sandbox_settings(
     let mut kept = spec.pointers();
     kept.extend(spec.git_admin.iter().map(|admin| admin.join(OWN_COMMON)));
     kept.push(login.join("env.sh"));
+    // A conversation's checkouts of the repositories and its room's own settings (LANES-12).
+    kept.extend(spec.frozen.iter().cloned());
     // The box's own hiding of the shared temp folders isn't the own lane's: its commands read them
     // as the owner's terminal does (docs/contracts/lanes.md).
     let real = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
@@ -550,12 +555,17 @@ pub(super) fn own_sandbox_settings(
         .filter(|p| !temps.contains(&real(p)))
         .cloned()
         .collect();
+    // A kept folder's files too (a conversation's `repos/` and `.claude/`), whatever is allowed.
     let rules: Vec<String> = names(&kept)?
         .iter()
-        .map(|path| format!("Edit(/{path})"))
+        .flat_map(|path| [format!("Edit(/{path})"), format!("Edit(/{path}/**)")])
         .collect();
     let mut pinned = serde_json::Map::new();
-    for wanted in PINNED_ENV {
+    // A conversation's room has no git folder to pin (`GIT_*` from a settings file is refused).
+    let gitless = spec.git_admin.is_none();
+    let unpinned =
+        |wanted: &str| gitless && ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"].contains(&wanted);
+    for wanted in PINNED_ENV.into_iter().filter(|w| !unpinned(w)) {
         let value = env
             .iter()
             .rev()
@@ -2257,14 +2267,25 @@ pub(crate) fn forget_login_secrets(login: &Path) {
 /// running in the background by an earlier turn, say) could swap it before the run starts. A
 /// boxed run's stays in its temporary folder, inside its box, as before.
 pub(super) fn mcp_config_path(own: bool, temp: &Path, login: &Path) -> Result<PathBuf, String> {
+    mcp_path(own, temp, login, MCP_CONFIG_FILE)
+}
+
+/// [`mcp_config_path`]'s rule for a file `name`d as its caller's: a job's, or a conversation's
+/// `oby-mcp.json` (crate::brain::harness, LANES-12), whose `login` is its conversation's.
+pub(crate) fn mcp_path(
+    own: bool,
+    temp: &Path,
+    login: &Path,
+    name: &str,
+) -> Result<PathBuf, String> {
     if !own {
-        return Ok(temp.join(MCP_CONFIG_FILE));
+        return Ok(temp.join(name));
     }
     let mut made = std::fs::DirBuilder::new();
     std::os::unix::fs::DirBuilderExt::mode(made.recursive(true), 0o700);
     made.create(login)
-        .map_err(|e| format!("obid can't make the job's login folder: {e}"))?;
-    Ok(login.join(MCP_CONFIG_FILE))
+        .map_err(|e| format!("obid can't make the run's login folder: {e}"))?;
+    Ok(login.join(name))
 }
 
 /// What a new session hears first when it takes over a job from `was` ("Codex · Work"), which
