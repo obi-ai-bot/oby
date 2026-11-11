@@ -15432,7 +15432,8 @@ mod tests {
                 .map(|path| PathBuf::from(path.as_str().unwrap()))
                 .collect()
         };
-        let real = |path: &PathBuf| path.canonicalize().unwrap();
+        // As own_sandbox_settings resolves them: a box that can't resolve the path keeps it as is.
+        let real = |path: &PathBuf| path.canonicalize().unwrap_or_else(|_| path.clone());
         assert!(list("denyRead").contains(&real(&home)));
         // The box hides the shared temp folders; the own lane reads them as a terminal does.
         let mut boxed = spec.clone();
