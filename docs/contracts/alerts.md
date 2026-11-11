@@ -40,7 +40,7 @@ Only what waits on the owner to decide or act, one alert per thing, said again o
 - a routine that paused itself (ALERTS-5);
 - the Mac only: the answer to a question the owner asked another Oby (its card said "I'll ping you"); and, as FYI the gate keeps out, Oby's answer in a conversation while the window is away.
 
-**Never**, by the owner's decisions: a job moving or waiting at a limit (LIMITS-15, ALERTS-6), a merge waiting for a second review or for GitHub (MERGING-34, 35; ALERTS-7), a job held only by an account's weekly reserve (its line says it waits; ALERTS-HOLD), progress, a result with nothing to decide, anything while the window is in front (ALERTS-8).
+**Never**, by the owner's decisions: a job moving or waiting at a limit (LIMITS-15, ALERTS-6), a merge waiting for a second review or for GitHub (MERGING-34, 35; ALERTS-7), a job held only by an account's weekly reserve (its line says it waits; ALERTS-HOLD), a check that judged nothing, while obid runs it again or once it stopped trying with Publish kept on the job's page (`unjudged`, [publishing.md](publishing.md) PUBLISHING-31, the owner's ASK-LESS rule of 2026-11-11; **implemented** in both gates), progress, a result with nothing to decide, anything while the window is in front (ALERTS-8).
 
 ### States and transitions
 
