@@ -659,6 +659,74 @@ pub fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {
     }
 }
 
+/// Ends what an own run's commands left running (LANES-16): every process of this user's in a
+/// Seatbelt sandbox that may write `writes` (the run's commands' temp folder) but not `witness` (a
+/// file of the run's that obid denies them, `env.sh`), as Claude Code's own sandbox for that run
+/// is, one that left the run's process group with `setsid` too: no process leaves its sandbox.
+/// Both must exist: macOS answers no for a path that doesn't. The person's own processes,
+/// unsandboxed or sandboxed otherwise, and other runs' never match. Returns how many it ended.
+// ponytail: a process ended between the check and the kill may lend its id to a new one, which
+// would be ended with it; the window is a few microseconds.
+#[cfg(target_os = "macos")]
+pub fn end_sandboxed(writes: &Path, witness: &Path) -> usize {
+    use libproc::processes::{ProcFilter, pids_by_type};
+    let uid = nix::unistd::getuid().as_raw();
+    let me = std::process::id();
+    let pids = pids_by_type(ProcFilter::ByUID { uid }).unwrap_or_default();
+    let theirs =
+        |pid: u32| may_write(pid, writes) == Some(true) && may_write(pid, witness) == Some(false);
+    let ended = pids
+        .into_iter()
+        .filter(|&pid| pid > 1 && pid != me && theirs(pid));
+    let kill = |pid: u32| {
+        nix::sys::signal::kill(Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGKILL)
+    };
+    ended.filter(|&pid| kill(pid).is_ok()).count()
+}
+
+/// Whether process `pid`'s Seatbelt sandbox lets it write `path`, as macOS's `sandbox_check`
+/// answers (an unsandboxed process may write anything); none when it can't tell. The one call of
+/// obid's that needs `unsafe` (the owner's decision UNSAFE-1): no safe binding has it.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn may_write(pid: u32, path: &Path) -> Option<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    unsafe extern "C" {
+        fn sandbox_check(
+            pid: libc::pid_t,
+            op: *const libc::c_char,
+            kind: libc::c_int,
+            ...
+        ) -> libc::c_int;
+    }
+    // SANDBOX_FILTER_PATH, and SANDBOX_CHECK_NO_REPORT: no denial is logged.
+    const PATH_NO_REPORT: libc::c_int = 1 | 0x4000_0000;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    // SAFETY: both strings are NUL-terminated and outlive the call; the path is the one variadic
+    // argument a path filter reads.
+    let answer = unsafe {
+        sandbox_check(
+            pid,
+            c"file-write-data".as_ptr(),
+            PATH_NO_REPORT,
+            path.as_ptr(),
+        )
+    };
+    match answer {
+        0 => Some(true),
+        1 => Some(false),
+        _ => None,
+    }
+}
+
+/// [`end_sandboxed`]: only macOS runs an own run's commands in a sandbox obid can ask about
+/// (Linux's own lane, and what an obid that crashed left, are later work: docs/contracts/lanes.md).
+#[cfg(not(target_os = "macos"))]
+pub fn end_sandboxed(_writes: &Path, _witness: &Path) -> usize {
+    0
+}
+
 /// SIGTERM to the group now, SIGKILL `grace` later: everything it started ends.
 pub async fn end_group(pgid: u32, grace: Duration) {
     signal_group(pgid, nix::sys::signal::Signal::SIGTERM);
@@ -1066,6 +1134,66 @@ mod tests {
                 (os("ANTHROPIC_MODEL"), os("us.anthropic.claude")),
             ]
         );
+    }
+
+    /// LANES-16 (docs/contracts/lanes.md): what an own run's commands left running ends with the
+    /// run: a process in a Seatbelt sandbox that may write only the run's temporary folder, even
+    /// one that left its group with `setsid`, is killed; the person's own unsandboxed process and
+    /// another run's sandboxed one aren't.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_16_an_own_runs_leftovers_end_with_it() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-16-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        // Each run's temporary folder, and its `env.sh`, which its commands may not write.
+        let run = |name: &str| {
+            let [temp, login] = ["temp", "login"].map(|d| root.join(name).join(d));
+            std::fs::create_dir_all(&temp).unwrap();
+            std::fs::create_dir_all(&login).unwrap();
+            std::fs::write(login.join("env.sh"), "").unwrap();
+            (temp, login.join("env.sh"))
+        };
+        let ((temp, env), (other, _)) = (run("this"), run("other"));
+        let detached = [
+            "/usr/bin/perl",
+            "-e",
+            "use POSIX; setsid(); exec q(sleep), 600",
+        ];
+        let boxed = |writes: &Path| {
+            let profile = format!(
+                "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+                root.display(),
+                writes.display()
+            );
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", &profile])
+                .args(detached)
+                .spawn()
+                .unwrap()
+        };
+        let mut left = boxed(&temp);
+        let mut others = boxed(&other);
+        let mut persons = std::process::Command::new(detached[0])
+            .args(&detached[1..])
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(end_sandboxed(&temp, &env), 1);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            left.try_wait().unwrap().is_some(),
+            "the run's leftover still runs"
+        );
+        for child in [&mut others, &mut persons] {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "another's process ended"
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// LANES-2: a boxed agent's environment and an own one's alike give git no settings but the

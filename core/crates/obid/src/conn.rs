@@ -109,6 +109,9 @@ pub struct RpcError {
 pub struct Conn {
     child: Child,
     pgid: u32,
+    /// An own run's commands' temp folder and `env.sh`, what its leftovers are found by when it
+    /// ends ([`process::end_sandboxed`], LANES-16).
+    leftovers: Option<(PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,
@@ -209,9 +212,17 @@ impl Conn {
             .ok_or_else(|| std::io::Error::other("no stdout"))?;
         let stopped = *stop.borrow() != process::Signal::Run;
         let limit = limit.into();
+        let set = |name: &str| {
+            let value = launch.env.iter().rev().find(|(set, _)| set == name);
+            value.map(|(_, value)| PathBuf::from(value))
+        };
+        let leftovers = launch
+            .own_sandbox
+            .then(|| Some((set(process::CLAUDE_TMPDIR)?, set("CLAUDE_ENV_FILE")?)));
         Ok(Conn {
             child,
             pgid,
+            leftovers: leftovers.flatten(),
             stdin,
             lines: BufReader::new(stdout),
             copying,
@@ -503,10 +514,15 @@ impl Conn {
 }
 
 /// A turn dropped without [`Conn::finish`] (its job's task panicked, #914) leaves nothing running:
-/// its whole group goes, as finish's end does, not only the agent `kill_on_drop` ends.
+/// its whole group goes, as finish's end does, not only the agent `kill_on_drop` ends; and, for an
+/// own run, whatever its commands started that left the group (LANES-16): a job's at its turn's
+/// end, a conversation's when its waiting session ends.
 impl Drop for Conn {
     fn drop(&mut self) {
         process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+        if let Some((temp, env)) = &self.leftovers {
+            process::end_sandboxed(temp, env);
+        }
     }
 }
 
@@ -589,6 +605,58 @@ mod tests {
         let (_stop, stop) = watch::channel(process::Signal::Run);
         let mut conn = Conn::spawn(&launch, limit, stop, false).await.unwrap();
         assert_eq!(conn.next().await.unwrap(), json!({"a": "b", "c": 1}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LANES-16: an own run's process that left its group with `setsid` ends when its Conn does
+    /// (a job's turn's end, a conversation's waiting session's, a stop or a drop).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lanes_16_an_own_runs_leftover_ends_with_its_conn() {
+        let dir = std::env::temp_dir().join(format!("obid-lanes-16c-{}", uuid::Uuid::new_v4()));
+        let [temp, login] = ["temp", "login"].map(|d| dir.join(d));
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::create_dir_all(&login).unwrap();
+        let (temp, login) = (temp.canonicalize().unwrap(), login.canonicalize().unwrap());
+        let env_file = login.join("env.sh");
+        std::fs::write(&env_file, "").unwrap();
+        let profile = format!(
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            login.display(),
+            temp.display()
+        );
+        let pid_file = temp.join("pid");
+        let script = format!(
+            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e 'use POSIX; setsid(); exec q(sleep), 600' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nsleep 600\n",
+            pid_file.display()
+        );
+        let launch = crate::agent::Launch {
+            argv: ["/bin/sh".into(), "-c".into(), script.into()].into(),
+            env: vec![
+                ("PATH".into(), "/bin:/usr/bin".into()),
+                (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), env_file.into()),
+            ],
+            cwd: dir.clone(),
+            stderr: dir.join("stderr"),
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let mut conn = Conn::spawn(&launch, Duration::from_secs(30), stop, false)
+            .await
+            .unwrap();
+        assert_eq!(conn.next().await.unwrap(), json!({}));
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let alive = || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+        assert!(alive());
+        drop(conn);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!alive(), "the leftover outlived its run");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
