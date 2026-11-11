@@ -732,6 +732,11 @@ pub struct Job {
     /// follow-up never runs that code with the owner's values. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign: Option<String>,
+    /// Its `foreign` mark is only for words no app of the owner's signed, sent through obid's API
+    /// (MERGING-33a): its review still quotes those words. Any other mark clears it. Never in the
+    /// API's job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub foreign_by_api: bool,
     /// Why its own check gets none of the declared secrets though the job stays the owner's own:
     /// it reached chatgpt.com (MERGING-30). This job's only: no follow-up inherits it, and nothing
     /// a conversation reads of the job sees it. Never in the API's job.
@@ -964,6 +969,38 @@ impl Job {
         }
     }
 
+    /// [`Job::someone_elses`], but none for a job only unsigned words through obid's API marked
+    /// ([`Job::foreign_by_api`]): its review quotes those words as data (MERGING-33a).
+    pub fn someone_elses_but_api(&self) -> Option<String> {
+        if self.foreign_by_api && self.obi.is_none() && !self.untrusted {
+            None
+        } else {
+            self.someone_elses()
+        }
+    }
+
+    /// Notes a mark `why` ([`Job::foreign`], or with `reach` [`Job::reached`]) unless one is
+    /// there: the first reason is kept. `api` when unsigned words through obid's API are what
+    /// marks it: they alone keep [`Job::foreign_by_api`], and any other mark ends it for good
+    /// (MERGING-33a). Decided under the one lock that writes it. Answers whether it's the first.
+    pub(crate) fn note_mark(&mut self, why: String, reach: bool, api: bool) -> bool {
+        if !reach {
+            self.foreign_by_api = if self.foreign.is_none() {
+                api
+            } else {
+                self.foreign_by_api && api
+            };
+        }
+        let mark = if reach {
+            &mut self.reached
+        } else {
+            &mut self.foreign
+        };
+        let first = mark.is_none();
+        mark.get_or_insert(why);
+        first
+    }
+
     /// Why its pull request's reviewer is told its author is untrusted, and two reviews merge it
     /// (MERGING-13, 14): someone else's code ([`Job::someone_elses`]), words no app of the
     /// owner's signed ([`Job::unsigned`]), or a memory from someone else's words
@@ -1192,6 +1229,7 @@ impl Job {
             unsigned: false,
             memory_from_others: false,
             foreign: None,
+            foreign_by_api: false,
             withheld: None,
             check_withheld: None,
             check_withheld_was: false,
@@ -2276,6 +2314,29 @@ mod tests {
             request_id: "r".into(),
         });
         assert!(!review.check_keeps_loopback());
+    }
+
+    /// MERGING-33a: API words keep the exception only while no other mark came, in either order;
+    /// a reach leaves it as it was.
+    #[test]
+    fn merging_33a_any_other_mark_ends_the_api_exception_in_either_order() {
+        let api = || "words that weren't the owner's own reached it (Api)".to_owned();
+        let stranger = || "a stranger wrote on #1".to_owned();
+        let mut only = job();
+        assert!(only.note_mark(api(), false, true));
+        assert!(!only.note_mark(api(), false, true));
+        assert!(only.note_mark("it reached docs.rs".into(), true, false));
+        assert!(only.foreign_by_api && only.someone_elses_but_api().is_none());
+        let mut api_first = job();
+        api_first.note_mark(api(), false, true);
+        assert!(!api_first.note_mark(stranger(), false, false));
+        let mut stranger_first = job();
+        stranger_first.note_mark(stranger(), false, false);
+        assert!(!stranger_first.note_mark(api(), false, true));
+        for (job, kept) in [(api_first, api()), (stranger_first, stranger())] {
+            assert_eq!(job.foreign, Some(kept), "the first reason is kept");
+            assert!(!job.foreign_by_api && job.someone_elses_but_api().is_some());
+        }
     }
 
     /// Only an owner's job gets the secrets its repository declares for its check: never another
