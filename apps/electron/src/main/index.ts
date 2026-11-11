@@ -201,10 +201,14 @@ app.whenReady().then(() => {
   notifying(trusted, () => win, front);
   // Oby's own updates (updates.ts), told to About while the window is there
   updating(trusted, () => win);
-  createWindow();
+  // obid opened Oby hidden for an alert (ALERTS-3): no window, only the banner; a Dock click later
+  // opens it, but not this launch's own activate
+  const background = process.argv.includes('--background');
+  const launched = Date.now();
+  if (!background) createWindow();
   // an Obysphere's invite link (sphere.ts), joined on the owner's click
   sphering(trusted, front);
-  app.on('activate', () => { if (!win) createWindow(); });
+  app.on('activate', () => { if (!win && !(background && Date.now() - launched < 5000)) createWindow(); });
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

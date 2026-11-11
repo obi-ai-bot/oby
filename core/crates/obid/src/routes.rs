@@ -560,11 +560,16 @@ pub async fn wait(
 }
 
 /// `GET /v1/events`: every change as it happens, and a `: ping` comment every 15 seconds. A paired
-/// device following it has Oby open: Oby's messages aren't pushed meanwhile (crate::push).
+/// device following it has Oby open: Oby's messages aren't pushed meanwhile (crate::push). The Mac
+/// app's main process follows it with `?alerts=1` on loopback: while it does, and for a minute
+/// after, obid doesn't open it (ALERTS-3).
 pub async fn events(
     State(shared): State<Arc<Shared>>,
     device: Option<axum::Extension<crate::gateway::PairedDevice>>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let mac = (device.is_none() && query.get("alerts").is_some_and(|v| v == "1"))
+        .then(|| shared.push.mac_followed());
     let following = device.map(|_| shared.push.followed());
     // An app opened: the accounts' usage, if stale, is asked of their tools (crate::jobs).
     shared.jobs.want_usage();
@@ -579,7 +584,7 @@ pub async fn events(
         .take_until(stopping(shared.stopping.clone()))
         // Kept as long as the stream is.
         .inspect(move |_| {
-            let _ = &following;
+            let _ = (&following, &mac);
         });
     Sse::new(stream).keep_alive(
         KeepAlive::new()

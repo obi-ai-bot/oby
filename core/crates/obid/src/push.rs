@@ -85,6 +85,9 @@ const UNAUTHORIZED: u32 = 3;
 /// Oby's message within this long of the owner's own words in its conversation answers them while
 /// they're there: it isn't pushed (a turn takes at most 110 seconds).
 const ANSWERING: Duration = Duration::from_secs(120);
+/// The Mac app's stream that dropped this long ago, or obid's start, may still be reconnecting: it
+/// isn't woken meanwhile (ALERTS-3; the app tries again within 30 seconds).
+const RECONNECT: Duration = Duration::from_secs(60);
 /// The iPhone's sealed alerts: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305.
 type SealKem = hpke::kem::X25519HkdfSha256;
 type SealKdf = hpke::kdf::HkdfSha256;
@@ -902,6 +905,11 @@ pub struct Push {
     talk: Mutex<Talk>,
     /// The event streams paired devices follow now: a phone with Oby open.
     following: Arc<AtomicUsize>,
+    /// The Mac app's own streams open now (`GET /v1/events?alerts=1` on loopback), and when the
+    /// last one dropped: obid's start counts as one (ALERTS-3).
+    mac: Arc<Mutex<(usize, Instant)>>,
+    /// What waited on the owner already this run: only a new need wakes the Mac app (ALERTS-3).
+    woken: Mutex<HashSet<(String, String)>>,
     /// The control plane's origin obid pushes through (`pushRelay`).
     relay: String,
     /// The relay's `401`s in a row, by push id.
@@ -932,6 +940,49 @@ impl Drop for Following {
     }
 }
 
+/// The Mac app following the events while it's kept ([`Push::mac_followed`]).
+pub struct MacFollowing(Arc<Mutex<(usize, Instant)>>);
+
+impl Drop for MacFollowing {
+    fn drop(&mut self) {
+        let mut mac = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *mac = (mac.0.saturating_sub(1), Instant::now());
+    }
+}
+
+/// The needs in `wanted` not woken yet this run (ALERTS-3), each its thing and what it needs (as
+/// [`told`] says it again).
+pub fn to_wake(
+    wanted: &[(String, Alert)],
+    woken: &HashSet<(String, String)>,
+) -> Vec<(String, String)> {
+    wanted
+        .iter()
+        .map(|(what, alert)| (alert.collapse.clone(), what.clone()))
+        .filter(|need| !woken.contains(need))
+        .collect()
+}
+
+/// Opens the Mac app hidden, with no window (`open -g -j`, WAKE-1), so its banner shows what waits
+/// (ALERTS-3): only on macOS, for an obid inside the app ([`crate::app::bundle`]). A failure is
+/// logged; the phones still alert.
+async fn wake() {
+    let Some(app) = crate::app::bundle().filter(|_| cfg!(target_os = "macos")) else {
+        return;
+    };
+    let opened = tokio::process::Command::new("/usr/bin/open")
+        .args(["-g", "-j", "-a"])
+        .arg(&app)
+        .args(["--args", "--background"])
+        .status()
+        .await;
+    match opened {
+        Ok(status) if status.success() => tracing::info!("opened Oby hidden: something waits"),
+        Ok(status) => tracing::warn!("couldn't open Oby hidden: open {status}"),
+        Err(e) => tracing::warn!("couldn't open Oby hidden: {e}"),
+    }
+}
+
 impl Push {
     /// The pushes kept in `home/push`, through the control plane at `relay` (an origin).
     pub fn open(home: &Path, relay: &str) -> Push {
@@ -954,6 +1005,8 @@ impl Push {
             told: Mutex::new(read("said.json").and_then(|b| serde_json::from_slice(&b).ok())),
             talk: Mutex::new(Talk::default()),
             following: Arc::new(AtomicUsize::new(0)),
+            mac: Arc::new(Mutex::new((0, Instant::now()))),
+            woken: Mutex::new(HashSet::new()),
             relay: relay.to_owned(),
             unauthorized: Mutex::new(HashMap::new()),
             folder,
@@ -1052,6 +1105,24 @@ impl Push {
     pub fn followed(&self) -> Following {
         self.following.fetch_add(1, Ordering::Relaxed);
         Following(self.following.clone())
+    }
+
+    /// The Mac app follows the events until the answer is dropped, and may reconnect for
+    /// [`RECONNECT`] after: it isn't woken meanwhile (ALERTS-3).
+    pub fn mac_followed(&self) -> MacFollowing {
+        self.mac.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
+        MacFollowing(self.mac.clone())
+    }
+
+    /// Whether `wanted` ([`wanted`]'s) wakes the Mac app at `now`: a need not woken yet this run,
+    /// with no Mac app following, nor one dropped (or obid started) within [`RECONNECT`]. Each
+    /// need counts once, woken or not: one that came while the app followed is no news later.
+    pub fn wakes(&self, wanted: &[(String, Alert)], now: Instant) -> bool {
+        let mut woken = self.woken.lock().unwrap_or_else(|e| e.into_inner());
+        let new = to_wake(wanted, &woken);
+        woken.extend(new.iter().cloned());
+        let (following, left) = *self.mac.lock().unwrap_or_else(|e| e.into_inner());
+        !new.is_empty() && following == 0 && now.duration_since(left) >= RECONNECT
     }
 
     /// Hears one of obid's events: whether the jobs, the inbox or a conversation changed, so the
@@ -1531,6 +1602,10 @@ pub fn spawn(shared: Arc<Shared>) {
             let paired = shared.gateway.paired(std::time::SystemTime::now());
             let (jobs, inbox) = looked_at(&shared);
             shared.push.look(&jobs, &inbox, &paired, &scratch).await;
+            // Something new waits on the owner, and no Mac app follows: Oby opens hidden.
+            if shared.push.wakes(&wanted(&jobs, &inbox), Instant::now()) {
+                wake().await;
+            }
             loop {
                 tokio::select! {
                     got = events.recv() => match got {
@@ -1734,6 +1809,61 @@ mod tests {
         assert!(said[0].1.urgent);
         let refused = wanted(std::slice::from_ref(&job), &[]);
         assert_eq!(refused[0].1.title, "Not merged: Android push");
+    }
+
+    /// A job that failed: it waits on the owner.
+    fn failed(id: &str) -> Job {
+        let mut job = job(id);
+        job.status = Status::Failed;
+        job.finished = Some(1_800_000_000);
+        job
+    }
+
+    /// ALERTS-3: with no Mac app following, something new that waits on the owner wakes it once;
+    /// the same need again, or FYI, wakes nothing.
+    #[test]
+    fn alerts_3_a_new_need_with_no_mac_following_wakes_once() {
+        let home = std::env::temp_dir().join(format!("obid-push-wake-{}", std::process::id()));
+        let push = Push::open(&home, RELAY);
+        let later = Instant::now() + RECONNECT;
+        let mut done = job("d1");
+        done.status = Status::Done;
+        assert!(
+            !push.wakes(&wanted(std::slice::from_ref(&done), &[]), later),
+            "FYI"
+        );
+        let jobs = [done, failed("f1")];
+        assert!(push.wakes(&wanted(&jobs, &[]), later));
+        assert!(
+            !push.wakes(&wanted(&jobs, &[]), later),
+            "the same need again"
+        );
+        let mut asks = job("p1");
+        asks.permission = Some(permission());
+        assert!(push.wakes(&wanted(&[failed("f1"), asks], &[]), later));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// ALERTS-3: a Mac app following, or one that may be reconnecting (it dropped, or obid just
+    /// started, within a minute), isn't woken; a phone following is no Mac app.
+    #[test]
+    fn alerts_3_a_following_or_reconnecting_mac_app_is_not_woken() {
+        let home = std::env::temp_dir().join(format!("obid-push-awake-{}", std::process::id()));
+        let push = Push::open(&home, RELAY);
+        let wakes = |id: &str, at: Instant| push.wakes(&wanted(&[failed(id)], &[]), at);
+        assert!(!wakes("f1", Instant::now()), "obid just started");
+        let mac = push.mac_followed();
+        assert!(!wakes("f2", Instant::now() + RECONNECT), "following");
+        drop(mac);
+        let left = Instant::now();
+        assert!(!wakes("f3", left + RECONNECT / 2), "reconnecting");
+        let _phone = push.followed();
+        assert!(wakes("f4", left + RECONNECT));
+        assert!(
+            !wakes("f1", left + RECONNECT),
+            "came while it followed: no news"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     fn permission() -> crate::permissions::Permission {
