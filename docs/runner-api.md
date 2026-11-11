@@ -8,31 +8,62 @@ This document is the contract between the runner and its clients. Change it in t
 
 The Rust daemon `obid` (`core/`) serves this same API, so the apps run against it unchanged, plus the endpoints in [obid only](#obid-only) at the end; the Swift runner is frozen and never implements those. **`obid` merges by its own rules** ([obid only](#obid-only), "merging", #853, #854): a pull request its job opened, approved and checked, the way the repository's workflow says, or on the owner's tap where it hasn't learned one. Everything below where the Swift runner merges a pull request (the Mac check's "Passed" merge, its conflict rounds and its recovery's retries, its `merge` inbox item) is the Swift runner's only. [obid only](#obid-only), "What obid leaves out", says what obid answers in those places instead.
 
-## Check workflow (shadow)
+## Check workflow
 
-Agents call the standalone stdio MCP server `oby-check-blok mcp` through its sole tool, `oby_check_affected` (optional string `base`, default `origin/dev`), or run `oby-check-blok --affected [base]` from the repository root instead of running the whole script in their box. Both use the same sequential nodes and script-owned affected planning, force offline Cargo/npm dependency use, and preserve the script's nested-sandbox skips. The JSON contains `verdict` (`passed`, `failed`, `unjudged`), `failing` test names, `reason`, and per-node results; the CLI prints one JSON line to stdout and one human summary to stderr, exiting 0/1/2. MCP returns that JSON as text content. This is a tool for third-party agents, not an obid agent loop: obid runs the full check after the turn. It adds no publishing, approval, merge or secret capability. Agent instructions live in `tools/oby-check-blok/SKILL.md`.
+This repository's check (`"check": "scripts/oby-check.sh"` in obid's `config.json`) is a BLOK workflow
+run by `tools/oby-check-blok`, a standalone Apache-2.0 Cargo workspace outside obid (BLOK-1 to 3,
+[publishing](contracts/publishing.md), "Check workflow" and PUBLISHING-26). obid runs the script as
+it always did, in the check's box with the base's copy (PUBLISHING-6, 7); the script, run with none
+of `OBY_CHECK_INNER`, `OBY_CHECK_PLAN` and `OBY_CHECK_ONLY`, execs the `oby-check-blok` found on the
+check's `PATH` by its absolute path: `oby-check-blok check [base]` (default `origin/dev`), from the
+repository's root. With none installed, or one only on a relative path, the check fails
+(`oby-check: failed: oby-check-blok`, exit 1) and the script runs nothing of its own.
 
-`tools/oby-check-blok` is a standalone Apache-2.0 Cargo workspace outside obid.
-Build both binaries with `cargo build --manifest-path tools/oby-check-blok/Cargo.toml --bins`,
-then run `tools/oby-check-blok/target/debug/oby-check-blok <checkout> [base]` (default `origin/dev`)
-beside the normal check. It decides nothing about publishing or merging.
-The pinned BLOK Rust SDK serves three typed nodes on loopback with `GRPC_PORT=0`;
-the host reads the OS-selected port from its startup log:
-`rust-affected-tests`, `ts-checks`, and `secret-scan`. They run sequentially to limit memory.
-Planning stays in `scripts/oby-check.sh`: `OBY_CHECK_PLAN=1` with
-`OBY_CHECK_ONLY=rust|electron|swift|scan` selects its groups; unset, the script behaves as before.
-Plans emit `oby-check: group <group>` once per group with work, which is the host's only
-selection signal. The host fixes `OBY_CHECK_DIR`, `OBY_CHECK_BASE` and a random
-`OBY_CHECK_TOKEN` at spawn. Every node request's inputs must carry that token;
-conflicting request checkout/base values are refused without running a script.
-Changes under `tools/oby-check-blok/` select its fmt, clippy and tests in the Rust group,
-using its own manifest and a target directory under the check cache.
-The nodes execute the selected script groups and report verdict, failing names, reason and seconds.
-Swift work is reported unjudged in this three-node pilot. Any failed node wins over unjudged,
-then passed; process or transport failures are unjudged. Exit codes are 0, 1 and 2 respectively.
-Each completed invocation prints and appends a JSON record to `~/.oby-flow/pipelines/runs.jsonl`
-with commit, base, workflow `oby-check`, nodes, folded verdict and start time.
-Raw check output is not stored there. See PUBLISHING-26 in [publishing](contracts/publishing.md).
+Install it on each Mac that runs the check, from `dev`, and again whenever the tool changes:
+
+```
+cargo install --locked --path tools/oby-check-blok
+```
+
+That puts `oby-check-blok` and `oby-check-blok-nodes` side by side in `~/.cargo/bin`, which must be
+on the login shell's `PATH` (obid's check reads it there, read-only in its box). A pull request
+that changes the tool is checked by the installed one until it's merged and installed again.
+
+`check` runs only the built-in workflow (`tools/oby-check-blok/workflows/oby-check.json`), never
+`OBY_CHECK_WORKFLOW` or the pipelines editor's saved copy, and writes no journal. Planning stays in
+`scripts/oby-check.sh`: `OBY_CHECK_PLAN=1` with `OBY_CHECK_ONLY=rust|electron|swift|scan` selects
+its groups, and a plan says `oby-check: group <group>` once per group with work, the host's only
+selection signal. Then four typed nodes, `rust-affected-tests`, `swift-tests`, `ts-checks` and
+`secret-scan`, run the planned groups one at a time (to limit memory), each through the script with
+`OBY_CHECK_ONLY` and `OBY_CHECK_INNER=1`; `OBY_CHECK_PATHS` and `OBY_CHECK_ALL` reach them. Each
+node's output streams to stderr as it runs; a node's `couldn't judge:` line comes as `oby-check:
+<group>: couldn't judge: …`. The run ends `oby-check: passed` (exit 0), `oby-check: failed: <nodes>`
+on stderr (exit 1), or, with nothing failed and something not judged, a `couldn't judge: <why>` line
+(exit 2). A failed node wins over one not judged, then passed; a node that couldn't start or answer
+is not judged; nothing passes unless `secret-scan` passed.
+
+The host speaks BLOK's gRPC (the pinned BLOK Rust SDK's `NodeRuntime`) to `oby-check-blok-nodes`,
+found beside it, over that child's stdin and stdout: no port and no socket, so it runs in a box
+with no network at all, another Oby's job's included. It waits up to 60 seconds for their first
+answer. The host fixes `OBY_CHECK_DIR`, `OBY_CHECK_BASE` and a random `OBY_CHECK_TOKEN` when it
+starts them; every node request's inputs must carry that token, and a request naming another
+checkout or base is refused without running a script.
+
+The same tool keeps its other runs, which decide nothing about publishing or merging:
+`oby-check-blok <checkout> [base]` runs a shadow of the check (with `OBY_CHECK_WORKFLOW`, else the
+pipelines editor's `~/.oby-flow/workflows/oby-check.json`, else the built-in file) and prints and
+appends a JSON record to `~/.oby-flow/pipelines/runs.jsonl` (commit, base, workflow `oby-check`,
+nodes, folded verdict, start time; no raw output). Agents call the stdio MCP server
+`oby-check-blok mcp` through its sole tool, `oby_check_affected` (optional string `base`, default
+`origin/dev`), or run `oby-check-blok --affected [base]` from the repository root, instead of the
+whole script in their box: both plan only what changed, force offline Cargo/npm dependency use, and
+keep the script's nested-sandbox skips. Their JSON has `verdict` (`passed`, `failed`, `unjudged`),
+`failing` test names, `reason` and per-node results; the CLI prints one JSON line to stdout and one
+summary to stderr, exiting 0/1/2, and MCP returns that JSON as text. It's a tool for third-party
+agents, not an obid agent loop, and adds no publishing, approval, merge or secret capability; its
+instructions are `tools/oby-check-blok/SKILL.md`. Changes under `tools/oby-check-blok/` select its
+fmt, clippy and tests in the Rust group, with its own manifest and a target directory under the
+check cache. Another project adopts it as the tool's README says ("Adopt it").
 
 ## Reaching it
 

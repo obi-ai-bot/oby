@@ -21,6 +21,7 @@ The business behavior contract for what a job's publish pushes, what its check r
 - **Where it runs (PUBLISHING-6).** In the job's own checkout of that commit, which obid makes out of its clone's objects (`git worktree add --detach`, about half a second for this repository), apart from everything the job's sandbox can write: nothing the job's agent left in its worktree is there, untracked or ignored (a `.env`, `node_modules`, a build folder), and what the check writes or commits stays there, so it never reaches the job's branch. The job's next check uses the same checkout, reset to its commit, with everything the last check left removed, ignored files and any `.gitignore` it wrote included, but for the folders the repository keeps for its checks' builds (`checkKeep` on its entry in `config.json`, none by default; `core/target` here), so a job's second check doesn't build from nothing. What's left: a kept folder can carry what an earlier check's code (the agent's) wrote there. It's never another job's (cargo could run another checkout's binary), and it goes when the job's worker ends, or when obid starts again. A check that gets the owner's secrets has a checkout of its own, gone after it. obid's git on the agent's commit reads none of the person's own git settings (no `filter.lfs`, no `url.*.insteadOf`), so a `.gitattributes` or `.lfsconfig` the agent wrote reaches no host. The check's home is the job's, with the caches its agent filled (cargo's registry, npm's), since the check has no network; one that gets the owner's secrets has a home of its own. A repository with a setup (`repos[].setup`) has it run in the checkout once the base's scripts are in it and before the check (PUBLISHING-24), with the job's egress door for that step only, so what the check needs installed (`node_modules`) is there though the check itself has no network; never before a check that gets the owner's secrets, nor on Linux. The commit is the one obid read as HEAD when the check started, the one it records as checked. The base its files come from is the job's base when that's the repository's default branch or the branch its remembered workflow merges into (`dev` here), else the branch its remembered workflow merges into, else the default branch: never a branch obid pushed (`oby/…`) or any other branch, which another task could have written. As its remote has it when the check starts (fetched then, when it isn't the job's own base, which was); when obid can't read it, nothing counts as checked (PUBLISHING-8). From that branch's head come:
   - **the check's scripts:** for each simple command (split at `&&`, `||`, `|`, `;`, `(` and `)`), past `NAME=value` words and `env`, `timeout`, `nice`, `time`, `exec` or `command` with their options: its program when that's a path (`scripts/oby-check.sh`, `./check.sh`), or what it hands an interpreter (`sh`, `bash`, `zsh`, `dash`, `python3`, `python`, `node`, `ruby`, `perl`, `deno run`): the first word that isn't an option or an option's argument (`bash -o pipefail s.sh` runs `s.sh`), a command string's first included (`sh -c 'scripts/x.sh'`); none after `-m` or `-e`. It counts when it's a path inside the repository (`./` taken off; never one with `..`, `.git`, `$`, a glob or `~`, or that starts with `/`) naming a file in the commit or on the base. The base's copy replaces the commit's; one the commit deleted is put back. This is the same reading of the command that tells which files are the check's own at merge (`crate::merge::check_files`, MERGING-15). What a command reads without naming it (`make check`'s Makefile, `npm test`'s `package.json`) is the commit's, a known limit: the check's output starts with `obid: no script found in this check, so the commit's own files run`.
   - **`.gitleaks.toml`:** the base's copy, or none when the base has none. A repository's first `.gitleaks.toml` isn't in the check until it's merged, so a check that names it (this repository's runs `gitleaks --config .gitleaks.toml`) fails until then.
+  - This repository's check script hands its run to the `oby-check-blok` installed on the Mac, by its absolute path, so the program that judges a commit is never the commit's (PUBLISHING-26).
   - The base's copies are read-only while the check runs, and so are the folders they're in, which can't be renamed or removed (a shell reads its script as it goes: rewritten under it, it would run what the rewrite says). What's left, and always is: the code under test can empty its own tests.
 - **The base has no copy of a check's script (PUBLISHING-8).** A script the commit has and the base doesn't (a new repository, or a check added by this very task), or a checkout obid can't make: nothing runs, nothing counts as checked, and the job ends done with nothing published by itself and why in its `reason`. The commit it ended with is kept for Publish by hand, the owner's click.
 - **A job ends done.** obid takes its commits into its clone and moves its branch there; the commit its check passed on is the job's checked head (`checkedHead`, kept with the job, not in the API), its head for a job with no check. Another round (a decision round, the round told to commit) records it again when it ends done. A check that ran with work uncommitted gets the one round Oby tells it to commit; still uncommitted then, or HEAD moved by the check, the job ends done with nothing published and why (PUBLISHING-5).
@@ -56,34 +57,59 @@ These words show an internal job id (`job 3125ab36`) and a branch name, as obid'
 
 `GET` and `POST /v1/jobs/{id}/publish`, `POST /v1/jobs`, and `publishError` on the job, as docs/runner-api.md has them. Nothing new in the API: `checkedHead` stays in the job's file.
 
-### Check workflow pilot (shadow)
+### Check workflow
 
-Implemented by `tools/oby-check-blok`, outside obid: the owner can compare the script's verdict
-with a BLOK workflow without changing what publishes or merges. The shell owns the plan and
-group selection (`OBY_CHECK_ONLY`); three typed nodes wrap its Rust, Electron and scan groups,
-one at a time. Swift work is unjudged in this pilot. The fold gives failed precedence over
-unjudged, then passed. A runtime failure is unjudged, recorded with the run; the script stays
-the authoritative check. The local JSONL journal stores commit, base, workflow, start time,
-node verdicts, timings and failing names, without raw scanner output. A later invocation
-can retry a failed or unjudged run. No endpoint or obid state is added.
+This repository's check is a BLOK workflow, run by `tools/oby-check-blok`, outside obid (the owner's
+decisions of 2026-11-11: BLOK-1 "Yes, install it", BLOK-2 "Built-in only", BLOK-3 "Rework BLOK's
+transport"). Nothing changes in obid: its configuration still names `scripts/oby-check.sh`, and
+PUBLISHING-6 and 7 still run the base's copy of it on the commit alone. That copy, run with none of
+`OBY_CHECK_INNER`, `OBY_CHECK_PLAN` and `OBY_CHECK_ONLY`, hands the run to the `oby-check-blok`
+installed on the Mac, found on the check's `PATH` (obid's own, with the person's `~/.cargo/bin`
+read-only in the box) and run by its absolute path, `exec <path> check [base]`. It's never one built
+from the commit under check, and never one found by a relative path, which a commit could carry.
+Without it the check fails, `oby-check: failed: oby-check-blok`, exit 1, as without gitleaks: the
+script never runs its own check instead. The tool is installed from `dev` with
+`cargo install --locked --path tools/oby-check-blok`, again whenever the tool changes.
 
-The host reads only `oby-check: group <group>` plan lines. Nodes use the checkout and base
-fixed in their spawn environment and require the host's random per-spawn token in every
-request; missing or incorrect tokens and conflicting checkout/base fields run nothing.
-Nodes bind port zero and report the OS-selected port through blok-rs's startup log;
-the host reads that address without reserving or releasing a port. Changes under the pilot select its
-own formatting, clippy and tests in the Rust group.
+The tool runs only its built-in workflow (`tools/oby-check-blok/workflows/oby-check.json`), never
+`OBY_CHECK_WORKFLOW` or the pipelines editor's saved copy. The shell still owns the plan: each of
+its groups is asked with `OBY_CHECK_PLAN=1` and `OBY_CHECK_ONLY=<group>` and planned when it says
+`oby-check: group <group>`; then each planned group's node runs the script with `OBY_CHECK_ONLY`
+and `OBY_CHECK_INNER=1` set, so the script never hands it back. `OBY_CHECK_PATHS` and
+`OBY_CHECK_ALL` reach both (PUBLISHING-18). Four typed nodes, one at a time: `rust-affected-tests`,
+`swift-tests`, `ts-checks` and `secret-scan`. Each node's script output streams to stderr as it
+comes (PUBLISHING-16), its own `couldn't judge:` line relayed as `oby-check: <group>: couldn't
+judge: …`, so obid reads only the check's own. It ends as the script did: `oby-check: passed`,
+exit 0; `oby-check: failed: <nodes>` on stderr, exit 1; or, with nothing failed and something not
+judged, `couldn't judge: <why>` and exit 2 (PUBLISHING-22). A failed node wins over one not judged,
+then passed; a node that couldn't start or answer is not judged. Nothing passes unless the secret
+scan passed: a plan with no work, or none for the scan, is not judged.
+
+The tool speaks BLOK's gRPC to its nodes, a second binary beside it (`oby-check-blok-nodes`), over
+that child's stdin and stdout: no port and no socket, so it runs in every check box, another
+Oby's job's too, which has no loopback and no Unix socket. It waits up to 60 seconds for their
+first answer. The nodes use the checkout and base fixed when they start and require the host's
+random per-start token in every request; a missing or wrong token, or another checkout or base,
+runs nothing. The shadow runs (`oby-check-blok <checkout> [base]`, journaled in
+`~/.oby-flow/pipelines/runs.jsonl` for the pipelines viewer) and the agents' affected check stay
+as they were. Changes under `tools/oby-check-blok/` select its own formatting, clippy and tests in
+the Rust group.
 
 ## Acceptance scenarios
 
-- **PUBLISHING-26:** In a scratch repository whose real `scripts/oby-check.sh` passes, the
-  shadow workflow runs the planned nodes, reports the same verdict and exit status, and
-  appends exactly the JSON record it prints to its local journal. Fold tests cover failed
-  and unjudged precedence; parser tests cover Cargo, Vitest and gitleaks names.
-  (`tools/oby-check-blok/tests/workflow.rs::publishing_26_the_workflows_verdict_matches_the_scripts`.)
-  `grpc_port_zero_and_spawn_configuration_reject_unauthorized_calls` verifies the spawned
-  server reports a nonzero port and runs neither checkout for missing/wrong tokens or
-  conflicting folders/bases; an authenticated call runs only the spawn checkout.
+- **PUBLISHING-26:** The check is the installed `oby-check-blok`'s ([Check workflow](#check-workflow)).
+  Run by itself, `scripts/oby-check.sh` hands the run to the one on `PATH`, by its absolute path, from
+  the repository's root, with its base (`origin/dev` when none), and its exit status is the check's;
+  under `OBY_CHECK_INNER`, `OBY_CHECK_PLAN` or `OBY_CHECK_ONLY` it runs itself; with none installed,
+  or one only on a relative path, it fails naming `oby-check-blok`, running nothing of its own
+  (`scripts/oby-check-test.sh`, its last cases). In a scratch repository whose real
+  `scripts/oby-check.sh` passes, the workflow runs the planned nodes and reports the script's
+  verdict and exit status (`tools/oby-check-blok/tests/workflow.rs::publishing_26_the_workflows_verdict_matches_the_scripts`);
+  in a box with no network at all, loopback and Unix sockets included, a check still passes and
+  fails as the script does (`blok_3_check_runs_in_a_box_with_no_network_at_all`); over the nodes'
+  pipes, a missing or wrong token, or another checkout or base, runs nothing, and an authenticated
+  call runs only the checkout they started with (`grpc_over_the_nodes_pipes_rejects_unauthorized_calls`).
+  Fold tests cover failed and unjudged precedence; parser tests cover Cargo, Vitest and gitleaks names.
 
 - **PUBLISHING-1:** A job ends done with its check passed and its publish fails. Published by hand, the commit its check passed on goes out. (`publishing_1_2_only_the_commit_its_check_passed_on_goes_out`)
 - **PUBLISHING-2:** Its branch in obid's clone moved since (a commit its check never ran on): Publish by hand is `409` with `Not published: <branch> moved since this job's check passed on it…`, and nothing reaches the remote (by default; PUBLISHING-9). (`publishing_1_2_only_the_commit_its_check_passed_on_goes_out`) A job's own move of its branch never marks it so: its next check records the commit it passes on, and a checked commit an earlier pass left (a restart cut its check, RECOVERY-2) doesn't end it unpublished (`jobs::tests::publishing_2_a_jobs_own_branch_move_is_never_branch_moved`).
@@ -91,7 +117,7 @@ own formatting, clippy and tests in the Rust group.
 - **PUBLISHING-4:** "Fix issue 34" while a job already works on `oby/fix-34`, or a job naming that branch in any letter case: by default `422` naming the job at work. Issue 35 starts; once the first job stopped, issue 34 starts again on `oby/fix-34`, and then the first takes no Try again (`422` naming it). (`publishing_4_two_jobs_on_one_issue_never_share_a_branch`, runner_api.rs.) Nor does the owner's account-limit choice resume or move a job while another works on `oby/Fix-34` (`publishing_4_an_ended_job_runs_again_only_off_a_busy_branch`, obid's lib tests), nor does Oby's review asking for changes start a round: `reviewError` names the other job (`publishing_4_a_reviews_changes_wait_off_a_busy_branch`, publish_api.rs).
 - **PUBLISHING-5:** A published job's next check runs with a file it never commits: it's told once to commit, then ends done with `reason` saying so, nothing pushed, and Publish `409` with the same words (by default; PUBLISHING-9). A check that commits while it runs commits in its own checkout (PUBLISHING-6): what goes out is the commit it checked, without the check's. (`publishing_5_a_check_that_didnt_check_the_commits_publishes_nothing`.) A commit that lands on the job's worktree from elsewhere while its check runs: done, `reason` `Not published: its commits changed while its check ran…`, nothing pushed (`publishing_5_a_commit_made_while_the_check_runs_isnt_checked`). A check that writes `report.xml` writes it in its own checkout, so the job's worktree never has it: its new commit publishes without the report and without a round telling it to commit (`publishing_5_what_a_check_leaves_isnt_uncommitted_work`).
 - **PUBLISHING-6:** A job based on `oby/a`, whose `check.sh` passes, is checked with `main`'s, which fails (`publishing_6_a_check_never_comes_from_a_branch_obid_pushed`). The base has a `.gitleaks.toml` and ignores `.env`. A task commits its own `.gitleaks.toml`: its check reads the base's, passes, and the task's goes out. A task that leaves a `.env` its check needs (ignored, so not uncommitted work) fails its check: the checkout has none, as the commit going out has none. (`publishing_6_the_check_runs_on_the_commit_alone_with_the_bases_files`; which words are scripts: `publishing_6_a_checks_scripts_are_its_programs_paths`, obid's lib tests, crate::merge.)
-- **PUBLISHING-7:** The base's `check.sh` fails. A task rewrites it to `exit 0`: its check still runs the base's, which fails, and nothing goes out (`publishing_7_a_check_rewritten_to_pass_still_runs_the_bases`). A check that empties its own script while it runs, renames a folder it's in, or rewrites `.gitleaks.toml` is refused each time, and still fails (`publishing_7_a_running_check_cant_rewrite_the_bases_script`). A task that changes its check script for good is checked by the base's until it's merged; its pull request also falls under MERGING-15 (#1646). 
+- **PUBLISHING-7:** The base's `check.sh` fails. A task rewrites it to `exit 0`: its check still runs the base's, which fails, and nothing goes out (`publishing_7_a_check_rewritten_to_pass_still_runs_the_bases`). A check that empties its own script while it runs, renames a folder it's in, or rewrites `.gitleaks.toml` is refused each time, and still fails (`publishing_7_a_running_check_cant_rewrite_the_bases_script`). A task that changes its check script for good is checked by the base's until it's merged; its pull request also falls under MERGING-15 (#1646). Here the base's script hands the run to the `oby-check-blok` installed on the Mac (PUBLISHING-26), which a task's commit can't replace: a task that changes the tool is checked by the installed one until it's merged and installed again. 
 - **PUBLISHING-8:** The base has no `check.sh`, and the task adds one its check runs (`sh check.sh`): the job ends done with no check run, `reason` `Not published: its check runs check.sh as main has it, and main has no check.sh, so nothing counts as checked. Read its change, then Publish it by hand.`, nothing pushed; Publish by hand pushes it. (`publishing_8_a_check_the_base_doesnt_have_counts_for_nothing`)
 - **PUBLISHING-9:** Where PUBLISHING-2, 3, 5 or 8 refuse Publish by hand, or a job ended without its check passing, the owner's word goes through: `anyway` on their signed Publish (`GET /v1/jobs/{id}/publish?anyway=true` answers the sentence and `head`, the commit it sends: the worktree's head for a job that didn't end done, else its branch's in obid's clone) pushes exactly that commit, its sentence ending ` Its check didn't pass on <commit>, or didn't run: it goes out anyway.`, and opens the pull request; a job that didn't end done takes its worktree's commits into obid's clone first. A branch that moved since is refused (`Not published: <branch> is at <commit> now, not <commit>, the commit you approved.`). A follow-up carrying the branch doesn't hold it, and the sentence says so: ` A follow-up, <title>, carries this branch: publishing this puts it at <commit>, and the follow-up loses its own publish.` The pull request is reviewed and merged as any other. What still stops it is the secret scan (AGENTS.md; the owner hasn't decided otherwise) and GitHub's own rules. Proposed, not built: the job's card offering it with the refusal's words, and the pull request's description saying which check didn't pass on that commit. (`publishing_9_10_11_the_owners_publish_goes_where_they_say`)
 - **PUBLISHING-10:** The owner's signed Publish takes `to` (any branch, the default branch included; onto its base it lands with no pull request) and `force`: `GET …?force=true` answers `over`, the commit on that branch now (empty for none), which the sentence names (` It replaces <commit> on <branch> (force-push).`) and the push replaces with `--force-with-lease` on exactly that commit; moved since, nothing goes out. Each choice is in obid's sentence, so the signature covers it, and a body that asks for other choices than the signed sentence is refused. Over a branch someone else moved, without `force`, it's refused as before. By itself obid pushes only a branch it made (`oby/`, or a new one the owner named: PUBLISHING-13), never main or the default branch, and force-pushes only over its own last push. (`publishing_9_10_11_the_owners_publish_goes_where_they_say`; `publish::tests::publishing_10_the_owners_publish_takes_any_branch_and_says_so`)
