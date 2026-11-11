@@ -113,7 +113,7 @@ impl Failover {
 impl Jobs {
     /// Where job `id`, stopped by its account's limit, moves by itself, if anywhere (LIMITS-15):
     /// with `accountFailover` on, to the account with the most room of any tool, unless the owner
-    /// named its account. A ChatGPT login shows no room, so only the owner's click puts work there.
+    /// named its account. Only the owner's click puts work on a ChatGPT login (CHATGPT-25).
     pub(super) async fn failover_for(&self, id: &str) -> Option<Failover> {
         let job = (self.get(id)).filter(|j| !j.named && self.account_failover())?;
         let (was, from) = crate::accounts::find(&self.config.agents.get(), &job.account)?;
@@ -340,7 +340,7 @@ impl Jobs {
             }
             self.want_usage();
             let since = decision.reset_at.unwrap_or(decision.created_at);
-            if !self.verified_limit_room(&decision.agent, &decision.account, now, since) {
+            if !self.verified_limit_room(&decision.account, now, since) {
                 // #1645: an account with no fresh reading (Cursor and API keys never report, a
                 // read can fail) resumes on time instead of waiting forever, unless what obid last
                 // read of it still holds it (a week at its reserve). A wait says why.
@@ -456,17 +456,10 @@ impl Jobs {
         }
     }
 
-    /// A ChatGPT login reports no usage (docs/contracts/chatgpt-sign-in.md), so it can never show
-    /// room: it's offered while nothing obid knows holds it, and it moves only on the owner's click.
-    fn chatgpt_has_room(&self, account: &crate::config::Account, now: i64) -> bool {
-        crate::chatgpt::marker_of(account).is_some()
-            && self.usage.get(&account.id).full_until_at(now).is_none()
-    }
-
     /// Only current, provider-reported windows constitute evidence that an account has room: each
     /// window the account reports, at least one (Cursor reports its week alone, `usage::cursor`, as
     /// does a plan with no 5-hour window, USAGE-10), read since `since` and showing room.
-    fn verified_limit_room(&self, _agent: &str, account: &str, now: i64, since: i64) -> bool {
+    fn verified_limit_room(&self, account: &str, now: i64, since: i64) -> bool {
         use crate::usage::{NEARLY_FULL, RESERVE};
         let usage = self.usage.get(account);
         let lifted = usage.lifted_until(now).is_some();
@@ -500,8 +493,9 @@ impl Jobs {
     }
 
     /// Where `jobs`, stopped on `agent`'s account `from`, may move: a signed-in account of any
-    /// tool with room, the most room first (LIMITS-15), never one in its own sandbox, so work in
-    /// Oby's box stays in it.
+    /// tool that nothing obid knows holds (LIMITS-19: one that reports no usage too), the most room
+    /// first ([`Jobs::by_room`], LIMITS-15), never one in its own sandbox, so work in Oby's box
+    /// stays in it.
     async fn destinations(
         &self,
         agent: &str,
@@ -533,12 +527,7 @@ impl Jobs {
                     || self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())
                     || (background && !self.takes_background(&account))
-                    || !(self.verified_limit_room(
-                        tool.id(),
-                        &account.id,
-                        now,
-                        now.saturating_sub(600),
-                    ) || self.chatgpt_has_room(&account, now))
+                    || self.usage.get(&account.id).held(now).is_some()
                 {
                     continue;
                 }
@@ -548,15 +537,38 @@ impl Jobs {
                 result.push((tool, account));
             }
         }
-        // The fullest window it reports; one that reports none (a ChatGPT login) last.
-        let used = |id: &str| {
+        self.by_room(result, None)
+    }
+
+    /// `accounts` the most room first, for a move (LIMITS-15, 19) and a new job (USAGE-11): `first`
+    /// (the owner's default) while it's there, then the fullest window each reports now (one reset
+    /// since reads empty, USAGE-10) emptiest, those reporting none (an API key, a ChatGPT login,
+    /// a Cursor figure) last. Ties keep their order (the tools', then the configuration's).
+    pub(super) fn by_room(
+        &self,
+        mut accounts: Vec<(Tool, crate::config::Account)>,
+        first: Option<&str>,
+    ) -> Vec<(Tool, crate::config::Account)> {
+        let now = obi_protocol::time::now();
+        let rank = |id: &str| {
             let usage = self.usage.get(id);
-            (usage.five_hour.into_iter().chain(usage.seven_day))
+            let windows = [usage.five_hour_at(now), usage.seven_day_at(now)];
+            let used = windows
+                .into_iter()
+                .flatten()
                 .reduce(f64::max)
-                .unwrap_or(1.0)
+                .unwrap_or(1.0);
+            // A Cursor figure is none beside another tool's; it orders Cursor's own (USAGE-9).
+            match usage.advisory {
+                true => (Some(id) != first, 1.0, used),
+                false => (Some(id) != first, used, 0.0),
+            }
         };
-        result.sort_by(|(_, a), (_, b)| used(&a.id).total_cmp(&used(&b.id)));
-        result
+        // ponytail: no NaN is ever kept, so Equal never decides.
+        accounts.sort_by(|(_, a), (_, b)| {
+            (rank(&a.id).partial_cmp(&rank(&b.id))).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        accounts
     }
 
     pub async fn limit_decisions(self: &Arc<Self>) -> Vec<Value> {
@@ -884,6 +896,106 @@ impl Jobs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// USAGE-11: a new job on Auto takes the signed-in account with the most room, of any tool, as
+    /// a move does (`Jobs::by_room`): fresh room first, one that reports none last; the owner's
+    /// default goes first while it has room.
+    #[test]
+    fn usage_11_a_new_job_takes_the_account_with_the_most_room() {
+        let root = std::env::temp_dir().join(format!("obid-usage-11-{}", uuid::Uuid::new_v4()));
+        let folder = |id: &str, login: &str| {
+            let dir = root.join("accounts").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(login), "{}").unwrap();
+            json!({"id": id, "name": id, "configDir": dir})
+        };
+        let (c1, c2) = (
+            folder("c1", ".credentials.json"),
+            folder("c2", ".credentials.json"),
+        );
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [c1, c2]},
+                           "codex": {"bin": "/usr/bin/true", "accounts": [folder("x", "auth.json")]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        let picked = || jobs.pick(None, None).unwrap().1.id;
+        let read = |five, week| crate::usage::Usage {
+            five_hour: Some(five),
+            seven_day: Some(week),
+            ..Default::default()
+        };
+        jobs.usage.record("c2", &read(0.5, 0.3));
+        jobs.usage.record("x", &read(0.1, 0.2));
+        assert_eq!(picked(), "x", "the emptiest fullest window, of any tool");
+        jobs.usage.record("x", &read(0.1, 0.6));
+        assert_eq!(picked(), "c2", "c1 reports nothing: it comes last");
+        crate::settings::update(&jobs.config.home, |s| s.default_account = Some("c1".into()))
+            .unwrap();
+        assert_eq!(picked(), "c1", "the owner's default while it has room");
+        jobs.mark_full("c1", None, obi_protocol::time::now());
+        assert_eq!(picked(), "c2");
+        // A 5-hour reading whose window reset since counts as empty (USAGE-10).
+        let now = obi_protocol::time::now();
+        let reset = crate::usage::Usage {
+            five_hour_resets: Some(now - 60),
+            ..read(0.92, 0.3)
+        };
+        jobs.usage.record("c2", &reset);
+        jobs.usage.record("x", &read(0.6, 0.6));
+        assert_eq!(
+            picked(),
+            "c2",
+            "its 5-hour window reset: 30% is its fullest"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// USAGE-9: a Cursor figure doesn't rank Cursor before another tool's account (Cursor stays
+    /// last on Auto); it only orders Cursor's own accounts, the emptier first.
+    #[test]
+    fn usage_9_a_cursor_figure_orders_only_cursors_own_accounts() {
+        let root = std::env::temp_dir().join(format!("obid-usage-9-{}", uuid::Uuid::new_v4()));
+        let folder = |id: &str, login: &str| {
+            let dir = root.join("accounts").join(id);
+            std::fs::create_dir_all(dir.join(login).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(login), r#"{"apiKey":"k"}"#).unwrap();
+            json!({"id": id, "name": id, "configDir": dir})
+        };
+        let cursor = if cfg!(target_os = "macos") {
+            ".cursor/auth.json"
+        } else {
+            ".config/cursor/auth.json"
+        };
+        // Claude Code's reading is 20 minutes old: not fresh, as a real Cursor figure never is.
+        let at = obi_protocol::time::now() - 1200;
+        let usage = json!({"c1": {"fiveHour": 0.3, "sevenDay": 0.3, "fiveHourObservedAt": at,
+                "sevenDayObservedAt": at},
+            "k1": {"sevenDay": 0.5, "advisory": true}, "k2": {"sevenDay": 0.1, "advisory": true}});
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::write(root.join("home/usage.json"), usage.to_string()).unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true", "accounts": [folder("c1", ".credentials.json")]},
+                           "cursor": {"bin": "/usr/bin/true", "accounts": [folder("k1", cursor), folder("k2", cursor)]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(config, crate::events::Events::new(), Err("none".into())).unwrap();
+        let picked = || jobs.pick(None, None).unwrap().1.id;
+        assert_eq!(
+            picked(),
+            "c1",
+            "a 10% Cursor figure doesn't beat Claude Code at 30%"
+        );
+        jobs.mark_full("c1", None, obi_protocol::time::now());
+        assert_eq!(picked(), "k2", "the emptier Cursor account first");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// LIMITS-5: the job's line says the local time it resumes.
     #[test]
