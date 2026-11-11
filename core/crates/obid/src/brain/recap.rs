@@ -5,6 +5,7 @@
 //! one attempt, the quick model, never Codex) writes it from a fact list obid builds itself; the
 //! facts are quoted inside a nonce fence and go through the vault first. The recap goes out as a
 //! `recap` event and leads the conversation's next answer; it's never a turn the user wrote.
+//! Only an owner who asked for updates gets it ([`returned`]): one whose check-ins are on.
 //!
 //! Check-ins (#1116, docs/runner-api.md, "obid only: check-ins"): when the owner turned them on in
 //! a conversation (`oby_check_in`, kept in `settings.json`), Oby posts there by itself, as its own
@@ -21,7 +22,7 @@ use serde_json::json;
 
 use crate::api::Shared;
 use crate::job::{Job, Status};
-use crate::settings::CheckIn;
+use crate::settings::{CheckIn, Settings};
 use crate::sphere::inbox::Item;
 
 use super::actions::Talk;
@@ -579,11 +580,22 @@ fn place(shared: &Shared, check_in: &CheckIn) -> Option<String> {
     Some(new)
 }
 
-/// The owner tapped (an inbox answer, done or later): when they were away, the recap is written
-/// in the background, sent as an event and kept for the conversation's next answer.
+/// The owner sent a message or tapped at `now` ([`Presence::seen`]): when they were away and asked
+/// for updates, the time their recap covers from. Asked means their check-ins are on: Oby sends no
+/// update nobody asked for (the owner's decision of 2026-11-10).
+/// ponytail: check-ins are the one way to ask; a setting of its own if someone wants the recap
+/// without them.
+pub fn returned(presence: &Presence, settings: &Settings, now: i64) -> Option<i64> {
+    presence.seen(now).filter(|_| settings.check_in.is_some())
+}
+
+/// The owner tapped (an inbox answer, done or later): when they were away and asked for updates,
+/// the recap is written in the background, sent as an event and kept for the conversation's next
+/// answer.
 pub fn tapped(shared: &Arc<Shared>) {
     let now = obi_protocol::time::now();
-    if let Some(since) = shared.presence.seen(now) {
+    let settings = crate::settings::load(&shared.config.home);
+    if let Some(since) = returned(&shared.presence, &settings, now) {
         keep(shared.clone(), since, now);
     }
 }
@@ -780,6 +792,23 @@ mod tests {
         assert_eq!(presence.seen(T0 + 71 * MIN), Some(T0 + 40 * MIN));
         // Only the first request after the absence gets one.
         assert_eq!(presence.seen(T0 + 72 * MIN), None);
+    }
+
+    #[test]
+    fn back_after_a_while_only_an_owner_who_asked_for_updates_gets_a_recap() {
+        let (presence, quiet) = (Presence::default(), Settings::default());
+        assert_eq!(returned(&presence, &quiet, T0), None);
+        assert_eq!(returned(&presence, &quiet, T0 + 31 * MIN), None);
+        // They were seen all the same: check-ins turned on later count from there.
+        let asked = Settings {
+            check_in: Some(weekdays_at_9(T0)),
+            ..Settings::default()
+        };
+        assert_eq!(returned(&presence, &asked, T0 + 40 * MIN), None);
+        assert_eq!(
+            returned(&presence, &asked, T0 + 71 * MIN),
+            Some(T0 + 40 * MIN)
+        );
     }
 
     #[test]

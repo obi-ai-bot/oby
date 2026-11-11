@@ -16,7 +16,7 @@ import Formatted from './Formatted';
 import Said from './Said';
 import { AGENTS, convoTitle, threadOf, type Message } from './mock';
 import { markSeen, tell, useTasks, type Task } from './tasks';
-import { obys, ofObid, tellChat, useChats, type Chat } from './chats';
+import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
 import { WELCOME, typedFirst } from './onboarding';
@@ -270,6 +270,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
         conversation={talk?.id}
         talk={talk && !talk.local && (!onObid || talkReady(talk.id)) ? talk : undefined}
         draft={task ? draftBox.task(task.id) : talk ? draftBox.conversation(talk.id) : draftBox.peer(convo!.id)}
+        onStop={talk && typing && ofObid(talk.id) && talkReady(talk.id) ? () => stopChat(talk.id) : undefined}
       />
       {pane && <AgentPane key={pane} id={pane} onClose={() => setPane(null)} onDetails={onOpenTask} onFollowUp={setPane} />}
     </div>

@@ -959,58 +959,6 @@ pub fn github_item(work: &crate::github_work::Item, known: bool, now: i64) -> It
     }
 }
 
-/// The `limit` item on a job its account's usage limit stopped while no other account of `tool`
-/// had room (#871): when the first of them, `first` (its reset and name), has room again, if its
-/// tool said. Try again carries the job on now; Dismiss lets it go.
-pub fn limit_item(
-    job: &crate::job::Job,
-    tool: crate::agent::Tool,
-    first: Option<(i64, String)>,
-    stays: bool,
-    now: i64,
-) -> Item {
-    let tool = tool.name();
-    let text = match first {
-        // Failover off, or an account the owner named: it waits for its own account.
-        Some((at, name)) if stays => format!(
-            "Every {tool} account is full. This task stays on {name}, which has room again at {}: Oby carries it on by itself then.",
-            time::format(at)
-        ),
-        Some((at, name)) => format!(
-            "Every {tool} account is full. The first with room again is {name}, at {}: Oby carries this task on by itself then.",
-            time::format(at)
-        ),
-        None => format!(
-            "Every {tool} account is full, and none said when it resets. Try again once one has room."
-        ),
-    };
-    Item {
-        id: format!("{}-limit-{now}", job.id),
-        kind: "limit".into(),
-        job: job.id.clone(),
-        title: job.short_title(),
-        text,
-        options: vec![crate::job::TRY_AGAIN.into(), DISMISS.into()],
-        details: Some(vec![
-            "Carries the task on now, in its own session, on the first account with room.".into(),
-            "Lets the task go: Oby doesn't carry it on by itself. Its branch stays.".into(),
-        ]),
-        recommended: None,
-        created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
-        arrived: Some(arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
-    }
-}
-
 /// Whether `item` is a [`crash_item`]: obid's own bug's, the owner's to answer (#914).
 pub fn is_crash_item(item: &Item) -> bool {
     item.kind == "failed" && item.id.contains("-crash-")

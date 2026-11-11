@@ -1412,6 +1412,37 @@ pub async fn mode(
     Ok(json(StatusCode::OK, job.to_json()))
 }
 
+/// `POST /v1/jobs/{id}/move` (LIMITS-16): `{"agent", "account", "model", "why"}`, each a string or
+/// null, not all of the first three. Returns the job; `422` with why when it can't move.
+pub async fn move_job(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    if shared.jobs.get(&id).is_none() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
+    }
+    let shape = "The body is {\"agent\", \"account\", \"model\", \"why\"}, each a string or null, why up to 500 characters.";
+    let mut to: crate::jobs::Moving = serde_json::from_slice(&body)
+        .ok()
+        .filter(|to: &crate::jobs::Moving| to.why.as_ref().is_none_or(|w| w.chars().count() <= 500))
+        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape))?;
+    to.why = to.why.filter(|why| !why.trim().is_empty());
+    let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
+    if to.why.is_some() && !typed {
+        let why = "words no app of the owner's signed reached it";
+        shared.jobs.unvet(&id, why);
+    }
+    let source = [crate::jobs::Source::Api, crate::jobs::Source::Owner][usize::from(typed)];
+    match shared.jobs.move_to(&id, to, source).await {
+        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
+        Some(Err(refused)) => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
+    }
+}
+
 /// `GET /v1/settings/permissions`: the mode new jobs get.
 pub async fn permission_settings(State(shared): State<Arc<Shared>>) -> Response {
     json(

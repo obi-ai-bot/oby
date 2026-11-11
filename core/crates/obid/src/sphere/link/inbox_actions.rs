@@ -542,13 +542,13 @@ impl Link {
                     );
                 }
                 if text("agent").is_some() || text("account").is_some() {
-                    match self.jobs.change(
-                        target,
-                        text("agent"),
-                        text("account"),
-                        "on your Confirm",
-                        crate::jobs::Source::Confirmed,
-                    ) {
+                    let to = crate::jobs::Moving {
+                        agent: text("agent").map(str::to_owned),
+                        account: text("account").map(str::to_owned),
+                        ..Default::default()
+                    };
+                    let by = "on your Confirm";
+                    match (self.jobs).change(target, &to, by, crate::jobs::Source::Confirmed) {
                         Some(Ok(_)) => {}
                         Some(Err(refused)) => return Err(api(StatusCode::CONFLICT, refused.0)),
                         None => return Err(api(StatusCode::CONFLICT, "That job is gone.")),

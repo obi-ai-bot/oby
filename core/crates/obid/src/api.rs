@@ -185,6 +185,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/jobs/{id}/messages", post(crate::routes::message))
         .route("/v1/jobs/{id}/permission", post(crate::routes::permission))
         .route("/v1/jobs/{id}/mode", post(crate::routes::mode))
+        .route("/v1/jobs/{id}/move", post(crate::routes::move_job))
         .route(
             "/v1/settings/permissions",
             get(crate::routes::permission_settings).put(crate::routes::set_permission_settings),
@@ -793,6 +794,7 @@ pub struct CleanupJson {
     pub last_run: Option<String>,
     /// Settled jobs' worktrees the last pass kept, and why (crate::jobs, `clean_worktrees`).
     pub kept: Vec<crate::jobs::KeptWorktree>,
+    pub freed: Option<crate::jobs::Freed>,
 }
 
 /// `status.cleanup`, and the `cleanup` event: nothing until the worktrees are measured.
@@ -803,6 +805,7 @@ pub fn cleanup_json(cleanup: &Cleanup) -> Option<CleanupJson> {
         // The cleanup pass's, which status adds (crate::jobs, `cleaned`).
         last_run: None,
         kept: Vec::new(),
+        freed: None,
     })
 }
 
@@ -985,6 +988,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
         cleanup: cleanup_json(&shared.cleanup).map(|json| CleanupJson {
             last_run: cleaned.last_run.map(obi_protocol::time::format),
             kept: cleaned.kept,
+            freed: cleaned.freed,
             ..json
         }),
         claude_keychain: KeychainJson {
@@ -1022,6 +1026,14 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
 /// it doesn't exist. Symbolic links are counted as themselves, never followed.
 pub fn disk_usage(path: &Path) -> u64 {
     disk_usage_unless(path, &AtomicBool::new(false))
+}
+
+/// The bytes free for obid on the disk that holds `path`; plenty when it can't tell.
+#[allow(clippy::unnecessary_cast)] // statvfs's types differ by platform.
+pub fn disk_free(path: &Path) -> u64 {
+    nix::sys::statvfs::statvfs(path).map_or(u64::MAX, |s| {
+        (s.blocks_available() as u64).saturating_mul(s.fragment_size() as u64)
+    })
 }
 
 /// [`disk_usage`], stopping early once `cancelled` is set.

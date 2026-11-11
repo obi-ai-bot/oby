@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, ChevronLeft, File, FolderGit2, FolderOpen, Gauge, Laptop, ListChecks, Plus, Search, Settings, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronLeft, File, FolderGit2, FolderOpen, Gauge, Laptop, ListChecks, Plus, Search, Settings, Square, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
 import { AGENTS, OBYS, PLACES, SHARED_WITH_ME, type Attachments } from './mock';
 
@@ -65,7 +65,10 @@ export const stackedAt = (was: boolean, height: number, text: string) => was || 
 // there's something to send), as does Enter; Shift+Enter starts a new line.
 // Words typed and not sent stay (drafts.ts): back in the box, the cursor at
 // their end, when it shows again, after a relaunch too.
-export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say }: {
+// Send is Stop while Oby answers and there's nothing to send (CHATFIRST-33)
+export const stopShows = (answering: boolean, filled: boolean, attached: number) => answering && !filled && !attached;
+
+export default function Composer({ placeholder, prompts = false, note, label, onSend, home = false, hidden = false, autoFocus = !home, className = '', style, repos: withRepos = false, conversation, talk, draft, say, onStop }: {
   placeholder?: string;
   prompts?: boolean;  // no placeholder of its own: one of Oby's prompts, changing now and then (prompts.ts)
   note?: React.ReactNode;  // a line just over the box (Home's Settings tip), coming and going with it
@@ -81,6 +84,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
   conversation?: string;
   talk?: Chat | true;  // who Oby talks through, by send: this conversation's, or (true, Home's) a new one's
   draft?: string;    // the box its unsent words are kept as (drafts.ts, box); none: not kept
+  onStop?: () => void;  // Oby is answering here: with nothing to send, send is Stop (CHATFIRST-33)
   hidden?: boolean;
   autoFocus?: boolean;  // focused on opening (a conversation's is; Home's and a task page's aren't)
   className?: string;  // a page's own spacing around it
@@ -108,6 +112,7 @@ export default function Composer({ placeholder, prompts = false, note, label, on
     wasOpen.current = open;
   }, [view]);
   const [attached, setAttached] = useState<Attached[]>([]);
+  const stopping = stopShows(!!onStop, filled, attached.length);
   // its files going up: a second send waits
   const sending = useRef(false);
   const { repos, last } = useRepos(conversation);
@@ -403,14 +408,22 @@ export default function Composer({ placeholder, prompts = false, note, label, on
               something to send, send takes its place. Talking comes back later, with Voice in
               Settings › General (only with ?everything): till then send is there all along, dim till
               there's something to send */}
-          {everything && !wordsOnly && <button type="button" className={`composer-button composer-voice${filled || attached.length ? ' is-away' : ''}`} aria-label="Talk to Oby" aria-hidden={filled || attached.length > 0 || undefined} tabIndex={filled || attached.length ? -1 : 0}>
+          {everything && !wordsOnly && !stopping && <button type="button" className={`composer-button composer-voice${filled || attached.length ? ' is-away' : ''}`} aria-label="Talk to Oby" aria-hidden={filled || attached.length > 0 || undefined} tabIndex={filled || attached.length ? -1 : 0}>
             <svg width="18" height="16" viewBox="0 0 20 18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
               <path d="M2 7v4M6 4v10M10 1v16M14 4v10M18 7v4" />
             </svg>
           </button>}
-          <button type="submit" className={`composer-button composer-send${everything && !wordsOnly ? '' : ' is-always'}${filled || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!filled && !attached.length} aria-hidden={(everything && !wordsOnly && !filled && !attached.length) || undefined}>
-            <ArrowUp size={18} strokeWidth={1.8} />
-          </button>
+          {/* Oby answering, and nothing to send: Stop where send is (the owner's ask of 2026-11-10);
+              words typed meanwhile are sent as ever, and wait their turn */}
+          {stopping ? (
+            <button type="button" className="composer-button composer-send is-always is-ready" aria-label="Stop" onMouseDown={(e) => e.preventDefault()} onClick={onStop}>
+              <Square size={13} strokeWidth={1.8} fill="currentColor" />
+            </button>
+          ) : (
+            <button type="submit" className={`composer-button composer-send${everything && !wordsOnly ? '' : ' is-always'}${filled || attached.length ? ' is-ready' : ''}`} aria-label="Send" disabled={!filled && !attached.length} aria-hidden={(everything && !wordsOnly && !filled && !attached.length) || undefined}>
+              <ArrowUp size={18} strokeWidth={1.8} />
+            </button>
+          )}
         </div>
       </div>
     </form>

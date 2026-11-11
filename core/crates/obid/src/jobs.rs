@@ -64,6 +64,7 @@ mod authors;
 mod budget;
 mod lanes;
 mod logins;
+mod moves;
 mod research;
 mod retry;
 mod secrets;
@@ -72,6 +73,7 @@ mod slots;
 mod unjudged;
 pub use logins::person_homes;
 pub(crate) use logins::*;
+pub use moves::Moving;
 use unjudged::unchecked;
 const SANDBOXED_GIT_STDERR_MAX: usize = 64 * 1024;
 /// How long reading a round's diff stat may take, and how much it may print (#736): a round goes
@@ -908,6 +910,8 @@ pub struct Cleaned {
     pub last_run: Option<i64>,
     /// The settled jobs whose worktree it kept, and why.
     pub kept: Vec<KeptWorktree>,
+    /// What the last pass that freed builds freed, and why.
+    pub freed: Option<Freed>,
 }
 
 /// A settled job's worktree the cleanup pass kept: what's in it exists nowhere else.
@@ -915,6 +919,24 @@ pub struct Cleaned {
 pub struct KeptWorktree {
     pub job: String,
     pub why: String,
+}
+
+/// The bytes of builds a cleanup pass freed, and why: jobs ended, or the disk was low (CLEANUP-2).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Freed {
+    pub bytes: u64,
+    pub why: String,
+}
+
+const GB: u64 = 1_000_000_000;
+
+/// The bytes a disk with `free` bytes free lacks (CLEANUP-2): under 20 GB free, obid frees every
+/// idle job's builds until 30 GB are.
+pub fn disk_wanted(free: u64) -> u64 {
+    match free {
+        0..20_000_000_000 => 30 * GB - free,
+        _ => 0,
+    }
 }
 
 /// Every job obid has, and the workers running them.
@@ -1847,10 +1869,10 @@ impl Jobs {
     /// The cleanup pass (docs/runner-api.md, `cleanup`): removes the worktree of every settled job
     /// ([`settled_in`]) whose worktree holds nothing that exists nowhere else
     /// ([`Jobs::worktree_holds_work`]), through obid's clone, and keeps the rest in `status.cleanup.kept`.
-    /// `cleared` is when Clear done was last pressed. A job done with ([`done_with`]) that keeps
-    /// its worktree a while yet loses its build outputs now ([`Jobs::free_build_outputs`]).
-    /// Answers how many worktrees it removed or freed space in.
-    pub async fn clean_worktrees(&self, now: i64, cleared: Option<i64>) -> usize {
+    /// `cleared` is when Clear done was last pressed, `wanted` the bytes the disk lacks
+    /// ([`disk_wanted`]). A job that ended ([`at_rest`]) loses its builds now
+    /// ([`Jobs::free_build_outputs`]). Answers how many worktrees it removed or freed space in.
+    pub async fn clean_worktrees(&self, now: i64, cleared: Option<i64>, wanted: u64) -> usize {
         let settled: Vec<Job> = {
             let state = self.lock();
             state
@@ -1896,27 +1918,33 @@ impl Jobs {
             self.update(&job.id, |j| j.worktree = None);
             removed += 1;
         }
-        let built: Vec<(String, String)> = {
+        // Every job that ended frees its builds once (CLEANUP-1); on a disk low on space, every
+        // job not queued or running again, oldest first, until there's enough (CLEANUP-2).
+        let mut built: Vec<(i64, String, String)> = {
             let state = self.lock();
             state
                 .jobs
                 .values()
-                .filter(|job| done_with(&state, job) && job.builds_left())
+                .filter(|job| at_rest(&state, job) && (wanted > 0 || job.builds_left()))
                 .filter(|job| self.worktree_path(&job.id).exists())
-                .map(|job| (job.id.clone(), job.repo.clone()))
+                .map(|job| (job.finished.unwrap_or(0), job.id.clone(), job.repo.clone()))
                 .collect()
         };
-        for (id, repo) in built {
+        built.sort();
+        let mut freed = 0;
+        for (_, id, repo) in built {
             if self.shutting_down.load(Ordering::Relaxed) {
                 break;
             }
             let preparing = self.preparing(&repo);
             let _preparing = preparing.lock().await;
-            let done = {
+            let left = {
                 let state = self.lock();
-                state.jobs.get(&id).is_some_and(|j| done_with(&state, j))
+                let job = state.jobs.get(&id).filter(|j| at_rest(&state, j));
+                job.map(Job::builds_left)
             };
-            if !done || !self.worktree_path(&id).exists() {
+            if left.is_none_or(|left| !left && freed >= wanted) || !self.worktree_path(&id).exists()
+            {
                 continue;
             }
             // Tried once per end, freed or not: a worktree git can't answer for stays as it is.
@@ -1931,14 +1959,21 @@ impl Jobs {
                 tracing::info!("job {id}: its build outputs went, {bytes} bytes");
                 removed += 1;
             }
-            self.update(&id, |j| {
-                j.build_freed = Some(crate::job::BuildFreed { bytes, at: now })
-            });
+            freed += bytes;
+            if bytes > 0 || left == Some(true) {
+                let freed = Some(crate::job::BuildFreed { bytes, at: now });
+                self.update(&id, |j| j.build_freed = freed);
+            }
         }
-        *self.cleaned.lock().unwrap_or_else(|e| e.into_inner()) = Cleaned {
-            last_run: Some(now),
-            kept,
-        };
+        let mut cleaned = self.cleaned.lock().unwrap_or_else(|e| e.into_inner());
+        (cleaned.last_run, cleaned.kept) = (Some(now), kept);
+        if freed > 0 {
+            let why = match wanted {
+                0 => "Jobs ended.".into(),
+                _ => format!("The disk had {} GB free.", (30 * GB - wanted) / GB),
+            };
+            cleaned.freed = Some(Freed { bytes: freed, why });
+        }
         removed
     }
 
@@ -2007,9 +2042,10 @@ impl Jobs {
     }
 
     /// Deletes the build outputs in a job's worktree ([`build_outputs`]: a build makes them again)
-    /// and answers how many bytes that freed. Only folders git ignores: never the job's work, which
-    /// is its commits. git lists them and `rm` takes them in the job's sandbox, so a link the agent
-    /// left leads nowhere outside its worktree.
+    /// and its HOME's caches (those of its own folders it takes: CLEANUP-1), and answers how many
+    /// bytes that freed. Only folders git ignores: never the job's work, which is its commits, nor
+    /// its login copies. git lists them and `rm` takes them in the job's sandbox, so a link the
+    /// agent left leads nowhere outside its worktree.
     async fn free_build_outputs(&self, id: &str) -> Result<u64, String> {
         let ignored = [
             "ls-files",
@@ -2020,8 +2056,15 @@ impl Jobs {
             "-z",
         ];
         let listed = self.sandboxed_git(id, &ignored, None).await?;
-        let worktree = self.worktree_path(id);
-        let outputs = build_outputs(&worktree, &String::from_utf8_lossy(&listed));
+        let (worktree, home) = (self.worktree_path(id), self.temp_path(id));
+        let mut outputs = build_outputs(&worktree, &String::from_utf8_lossy(&listed));
+        let entries = std::fs::read_dir(&home).into_iter().flatten().flatten();
+        let listed: String = (entries.map(|e| format!("{}/\0", e.file_name().display()))).collect();
+        outputs.extend(
+            build_outputs(&home, &listed)
+                .into_iter()
+                .map(|dir| home.join(dir)),
+        );
         if outputs.is_empty() {
             return Ok(0);
         }
@@ -2051,9 +2094,11 @@ impl Jobs {
     }
 
     /// Waits until a job may have settled (it ended, was dismissed or archived, or Clear done was
-    /// pressed), or `most` passed.
-    pub async fn wait_to_clean(&self, most: Duration) {
-        let _ = tokio::time::timeout(most, self.cleaning.notified()).await;
+    /// pressed), or `most` passed: answers whether one may have.
+    pub async fn wait_to_clean(&self, most: Duration) -> bool {
+        tokio::time::timeout(most, self.cleaning.notified())
+            .await
+            .is_ok()
     }
 
     /// Wakes the cleanup pass: Clear done may have settled jobs.
@@ -3354,7 +3399,7 @@ impl Jobs {
                         &offered,
                         &from,
                         Carried {
-                            because: "couldn't go on with its account",
+                            because: "which couldn't go on there",
                             why: "It needs your OK to go on there".into(),
                             by: format!("as {from} needs your OK for work I run by myself"),
                         },
@@ -6048,98 +6093,6 @@ impl Jobs {
         Some(Ok(branch_stays))
     }
 
-    /// Moves a job that ended to another tool or account (each "auto" or left out to keep or pick
-    /// as a new job's), adding the move and `by` to it: its next round starts a new session there.
-    pub fn change(
-        &self,
-        id: &str,
-        agent: Option<&str>,
-        account: Option<&str>,
-        by: &str,
-        source: Source,
-    ) -> Option<Result<Job, Refused>> {
-        let job = self.get(id)?;
-        if job.account_limit_blocked && !source.approves_limit() {
-            return Some(Err(Refused(
-                "Changing an account-limit job waits for the owner's signed choice.".into(),
-            )));
-        }
-        if job.status.is_active() {
-            return Some(Err(Refused(
-                "It's still running: stop it first, then change it and continue it.".into(),
-            )));
-        }
-        if job.obi.is_some() || job.read_only() {
-            return Some(Err(Refused(
-                "A review picks its own tool and account: it can't be moved.".into(),
-            )));
-        }
-        if agent.is_none() && account.is_none() {
-            return Some(Err(Refused("Say which tool or account.".into())));
-        }
-        let agent = agent.or(Some(job.agent.as_str()));
-        let background = job.background();
-        let (tool, chosen) = match self.pick_for(agent, account, background) {
-            Ok(picked) if background && self.waits_for_yes(picked.0, &picked.1) => {
-                return Some(Err(Refused(format!(
-                    "I need {}.",
-                    consent_words(&picked.1.name)
-                ))));
-            }
-            Ok(picked) => picked,
-            Err(refused) => return Some(Err(refused)),
-        };
-        if tool.id() == job.agent && chosen.id == job.account {
-            return Some(Err(Refused(format!(
-                "It's on {} · {} already.",
-                tool.name(),
-                chosen.name
-            ))));
-        }
-        let place = |agent: &str, account: &str| {
-            let tool = Tool::from_id(agent).map_or(agent.to_owned(), |t| t.name().to_owned());
-            let account = self
-                .accounts(Tool::from_id(agent).unwrap_or(Tool::Claude))
-                .into_iter()
-                .find(|a| a.id == account)
-                .map_or(account.to_owned(), |a| a.name);
-            format!("{tool} · {account}")
-        };
-        let from = place(&job.agent, &job.account);
-        let to = format!("{} · {}", tool.name(), chosen.name);
-        let named =
-            account.is_some_and(|a| !a.trim().is_empty() && !a.eq_ignore_ascii_case("auto"));
-        let mut blocked = false;
-        let tuning = crate::settings::load(&self.config.home).tuning;
-        let offered = self.model_lists.to_check(tool, &chosen.id);
-        let changed = self.update(id, |job| {
-            if job.account_limit_blocked && !source.approves_limit() {
-                blocked = true;
-                return;
-            }
-            job.account = chosen.id.clone();
-            job.named = named;
-            // A new session on the new choice; another tool runs its own model.
-            job.session = None;
-            on_tool(job, tool);
-            tune(job, &tuning, &offered);
-            job.moves.push(crate::job::Move {
-                from: from.clone(),
-                to: to.clone(),
-                why: None,
-                date: obi_protocol::time::now(),
-            });
-            job.changed(format!("Moved from {from} to {to} {by}"));
-        })?;
-        Some(if blocked {
-            Err(Refused(
-                "Changing an account-limit job waits for the owner's signed choice.".into(),
-            ))
-        } else {
-            Ok(changed)
-        })
-    }
-
     /// Continues a job that failed, was stopped or was cut off in its own session, as Try again
     /// does, with `words` after Try again's (`oby_continue_job`), adding `by` to its changes.
     /// `foreign`: why `words` aren't on obid's allowlist (crate::secretspec), which marks the job
@@ -6212,7 +6165,8 @@ impl Jobs {
 
     /// [`Jobs::owner_said`] for words `text` from `source`: the owner's part of them when they
     /// are the owner's own (signed, Confirmed, or a conversation's turn, whose added text is
-    /// fenced after it), never obid's Try again.
+    /// fenced after it), never obid's Try again; those through obid's API token in
+    /// [`Job::api_said`].
     fn heard_from_owner(&self, id: &str, text: &str, source: Source) {
         if !matches!(source, Source::Event) {
             self.update(id, |job| job.owner_spoke = true);
@@ -6223,6 +6177,15 @@ impl Jobs {
         ) && !text.starts_with(crate::brain::actions::TRY_AGAIN)
         {
             self.owner_said(id, crate::sphere::inbox::owners_part(text).to_owned());
+        }
+        // Words through obid's API token, kept apart for Oby's review (MERGING-33).
+        if source == Source::Api && !text.starts_with(crate::brain::actions::TRY_AGAIN) {
+            let words = crate::sphere::inbox::owners_part(text).to_owned();
+            self.update(id, |job| {
+                if !words.is_empty() && job.api_said.last() != Some(&words) {
+                    job.api_said.push(words);
+                }
+            });
         }
     }
 
@@ -7211,24 +7174,30 @@ impl Jobs {
                     self.update(id, |job| job.review_result = review.clone());
                     self.review_ended(id, false).await;
                 }
-                // A five-hour limit's job waits for its reset by itself (LIMITS-5).
+                // A limit's job moves to an account with room by itself; with none, it waits for
+                // one, asking no one (LIMITS-15).
+                let failover = match &end {
+                    End::AccountLimit { .. } => self.failover_for(id).await,
+                    _ => None,
+                };
                 let resume_at = match &end {
-                    End::AccountLimit { reset, .. } => self.limit_resume_at(id, *reset),
+                    End::AccountLimit { reset, .. } if failover.is_none() => {
+                        Some(self.limit_wait_until(&job.account, *reset))
+                    }
                     _ => None,
                 };
                 self.update(id, |job| {
+                    if let Some(failover) = failover.as_ref().filter(|_| job.status.is_active()) {
+                        return failover.apply(job, self);
+                    }
                     if let Some(at) = resume_at {
                         account_limits::start_wait(job, at);
                         return;
                     }
                     let (reason, next, resumes) = match &end {
-                        End::AccountLimit { reason, reset } => {
-                            job.account_limit_blocked = true;
-                            job.account_limit_episode = None;
-                            job.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
-                            job.account_limit_reset = *reset;
-                            job.account_limit_choice = None;
-                            (reason.clone(), Some(crate::job::TRY_AGAIN), None)
+                        // It moved or waits (LIMITS-15), or Stop came as it ended (LIMITS-6).
+                        End::AccountLimit { reason, .. } => {
+                            return tracing::info!("job {id}: {reason}");
                         }
                         End::Failed(why) => (why.clone(), Some(crate::job::TRY_AGAIN), None),
                         End::NeedsYou {
@@ -7244,11 +7213,13 @@ impl Jobs {
                             None,
                         ),
                     };
-                    // Needing the owner, with a session to pick up or at the cap: the agent's summary
-                    // stays (`summaries` has every round's), and why it stopped is said apart. Else
-                    // failed, its summary why; with a session, a failure keeps Try again (RECOVERY-14).
+                    // Needing the owner, with a session to pick up, at the cap or with its handoff
+                    // to write (LIMITS-17): the agent's summary stays (`summaries` has every round's),
+                    // and why it stopped is said apart. Else failed, its summary why; with a
+                    // session, a failure keeps Try again (RECOVERY-14).
                     let owners_failed = matches!(end, End::Failed(_)) && job.obi.is_none();
                     let needs_you = matches!(end, End::AccountLimit { .. })
+                        || moves::hands_over(job)
                         || (matches!(end, End::NeedsYou { .. })
                             && (job.session.is_some() || job.recovery.spent()))
                         || (owners_failed && job.session.is_some());
@@ -7274,9 +7245,6 @@ impl Jobs {
                         job.review_result = review;
                     }
                 });
-                if matches!(end, End::AccountLimit { .. }) && resume_at.is_none() {
-                    self.record_account_limit(id);
-                }
                 // The `stalled` event (docs/runner-api.md): the job stays on its own card.
                 if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
                     self.events.send("stalled", job.to_json());
@@ -10083,14 +10051,19 @@ impl Jobs {
                 // Whether the author is untrusted, and why: never what it read (MERGING-13).
                 let author = job.review_of.as_deref().and_then(|of| self.get(of));
                 let untrusted = author.as_ref().and_then(Job::untrusted_why);
-                // What the owner asked, and every word they sent it after (#1659, TASKCONV-3).
-                let (task, request, later) = match &author {
-                    Some(author) => asked_of(author, |id| self.get(id)),
-                    None => (job.task.clone(), job.request.clone(), Vec::new()),
+                // What the owner asked, and every word they sent it after (#1659, TASKCONV-3,
+                // MERGING-33).
+                let asked = match &author {
+                    Some(author) => review::asked_of(author, |id| self.get(id)),
+                    None => review::Asked {
+                        task: job.task.clone(),
+                        request: job.request.clone(),
+                        ..review::Asked::default()
+                    },
                 };
                 quoted.push((
                     review::ASKED_FILE,
-                    review::asked(&task, &request, &later, untrusted.as_deref())
+                    review::asked(&asked, untrusted.as_deref())
                         + &review::reached_note(author.as_ref().and_then(|a| a.reached.as_deref())),
                 ));
                 // The security paths its head changes against its base, from the commit it reads
@@ -10230,7 +10203,7 @@ impl Jobs {
             }
         }
 
-        let words = self.take_heard(id);
+        let words = self.heard_handing_over(id, &worktree).await?;
         // A restart cut it short while it ran its check or published ("After any restart"): it
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
         // teammates for one). Words the owner sent meanwhile are its next turn instead.
@@ -11820,6 +11793,10 @@ impl Jobs {
         // The review first: cut off between the two, it still runs, and its verdict still lands.
         self.insert(review);
         self.update(id, |job| {
+            // Its summary of the round it worked on the last review is its reply (MERGING-33).
+            if let Some((_, reply)) = job.replies.last_mut().filter(|(_, r)| r.is_empty()) {
+                *reply = crate::secrets::known().redact(&job.summary);
+            }
             job.reviewing = Some(review_id.clone());
             job.review_error = None;
             job.no_reviewer = None;
@@ -11880,6 +11857,7 @@ impl Jobs {
         }
         self.update(id, |job| {
             job.heard.push(review::round_prompt(review.round));
+            job.replies.push((review.round, String::new()));
             next_round(job);
             job.step = "Working on Oby's review".into();
         });
@@ -12148,6 +12126,7 @@ impl Jobs {
             job.review = Some(verdict);
             if matches!(quoted, Some(Ok(()))) && job.status == Status::Done {
                 job.heard.push(review::round_prompt(round));
+                job.replies.push((round, String::new()));
                 next_round(job);
                 job.step = "Working on Oby's review".into();
             }
@@ -14437,15 +14416,11 @@ fn settled_in(state: &State, job: &Job, now: i64, cleared: Option<i64>) -> bool 
     done_with(state, job) && (put_away || now - finished >= SETTLE_AFTER)
 }
 
-/// Whether `job` is done with, as far as obid's records tell: it ended and needs nothing, no
-/// worker or publish holds it, its pull request isn't open, and no follow-up still at work carries
-/// its branch on. Nothing waits on its worktree's builds any more ([`Jobs::free_build_outputs`]).
+/// Whether `job` is done with, as far as obid's records tell: it ended ([`at_rest`]) and needs
+/// nothing, its pull request isn't open, and no follow-up still at work carries its branch on.
 fn done_with(state: &State, job: &Job) -> bool {
-    job.finished.is_some()
-        && !job.status.is_active()
+    at_rest(state, job)
         && !job.needs_you()
-        && !state.workers.contains_key(&job.id)
-        && !state.publishing.contains(&job.id)
         && !pull_request_open(job)
         && !state.jobs.values().any(|j| {
             j.follow_up_of.as_deref() == Some(job.id.as_str())
@@ -14454,10 +14429,19 @@ fn done_with(state: &State, job: &Job) -> bool {
         })
 }
 
+/// Whether `job` ended (done, failed, stopped or interrupted) and no worker or publish holds it.
+fn at_rest(state: &State, job: &Job) -> bool {
+    job.finished.is_some()
+        && !job.status.is_active()
+        && !state.workers.contains_key(&job.id)
+        && !state.publishing.contains(&job.id)
+}
+
 /// The build outputs among the folders git ignores in `worktree` (`ls-files --directory -z`, each
 /// ending with `/`): a cache by its `CACHEDIR.TAG` (the Cache Directory Tagging convention, which
 /// Cargo's `target/` follows: a regular file that begins with its signature), Xcode's
-/// `DerivedData`, and a `node_modules`'s `.cache`. A `node_modules`'s packages stay, and so does a
+/// `DerivedData`, cargo's and npm's caches (`.cargo`, `.npm`: CLEANUP-1, the owner's word of
+/// 2026-11-10), and a `node_modules`'s `.cache`. A `node_modules`'s packages stay, and so does a
 /// Python virtual environment (its `pyvenv.cfg`), which uv tags as a cache too: a check runs
 /// without the network to install them again. Never in `.obi/`, and only where every folder on the
 /// way, the last one too, is a real one, not a link.
@@ -14476,7 +14460,7 @@ fn build_outputs(worktree: &Path, listed: &str) -> Vec<PathBuf> {
         .map(PathBuf::from)
         .filter(|dir| !dir.starts_with(".obi") && real(dir))
         .filter_map(|dir| match dir.file_name().and_then(|n| n.to_str()) {
-            Some("DerivedData") => Some(dir),
+            Some("DerivedData" | ".cargo" | ".npm") => Some(dir),
             Some("node_modules") => Some(dir.join(".cache")).filter(|cache| real(cache)),
             _ => {
                 let at = worktree.join(&dir);
@@ -14649,44 +14633,6 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         earlier: Some(crate::secrets::known().redact(&did.join("\n"))),
         ..NewJob::default()
     }
-}
-
-/// What its owner asked `author` (the first job's `task` and `request`) and every word of
-/// theirs after, oldest first (#1659): what they said to it ([`Job::said`]) and to the earlier
-/// jobs whose branch it carries on, with each follow-up's own words (TASKCONV-3) unless no app of
-/// theirs signed them. Words already listed aren't listed again, so the first ask, repeated by a
-/// restart or kept for a follow-up, never comes last.
-fn asked_of(author: &Job, get: impl Fn(&str) -> Option<Job>) -> (String, String, Vec<String>) {
-    let mut chain = vec![author.clone()];
-    // A chain is short; this only stops a loop.
-    for _ in 0..64 {
-        let last = chain.last().expect("the chain starts with the author");
-        let Some(earlier) = last
-            .start_from
-            .as_ref()
-            .and(last.follow_up_of.as_deref())
-            .and_then(&get)
-        else {
-            break;
-        };
-        chain.push(earlier);
-    }
-    let first = chain.pop().expect("the chain starts with the author");
-    let mut later: Vec<String> = Vec::new();
-    // ponytail: an owner repeating earlier words keeps them where they first came.
-    let mut add = |words: &str| {
-        if !words.is_empty() && words != first.request && !later.iter().any(|w| w == words) {
-            later.push(words.to_owned());
-        }
-    };
-    first.said.iter().for_each(|w| add(w));
-    for job in chain.iter().rev() {
-        if !job.unsigned {
-            add(crate::sphere::inbox::owners_part(&job.request));
-        }
-        job.said.iter().for_each(|w| add(w));
-    }
-    (first.task, first.request, later)
 }
 
 /// Whether Oby's own `review` may run `call` with nobody watching (PERMISSIONS-14, the owner's
@@ -16602,7 +16548,11 @@ mod tests {
                 .continue_job("j", None, "by Oby", source, None)
                 .unwrap();
             assert!(continued.is_err());
-            let changed = jobs.change("j", None, Some("a"), "by Oby", source).unwrap();
+            let to = Moving {
+                account: Some("a".into()),
+                ..Moving::default()
+            };
+            let changed = jobs.change("j", &to, "by Oby", source).unwrap();
             assert!(changed.is_err());
             let job = jobs.get("j").unwrap();
             assert_eq!(job.current_round(), 1);
@@ -17132,7 +17082,8 @@ mod tests {
 
     /// MERGING-18 (#1659): Oby's review hears what the owner first asked, then their own words to
     /// the task and to the follow-ups that carry its branch on (TASKCONV-3), oldest first: never
-    /// an event turn's, Oby's fenced addition or unsigned words, and never an old ask last. An
+    /// an event turn's, Oby's fenced addition or unsigned words (those apart, MERGING-33), and
+    /// never an old ask last. An
     /// earlier job whose work the follow-up didn't start from isn't part of it.
     #[test]
     fn merging_18_a_review_is_told_every_word_sent_to_its_task() {
@@ -17172,20 +17123,23 @@ mod tests {
         let jobs = [before, first, next, restart, unsigned.clone()];
         let get = |id: &str| jobs.iter().find(|j| j.id == id).cloned();
         assert_eq!(
-            asked_of(&unsigned, get),
-            (
-                "Append the line to docs".into(),
-                "Add the line".into(),
-                vec![
+            review::asked_of(&unsigned, get),
+            review::Asked {
+                task: "Append the line to docs".into(),
+                request: "Add the line".into(),
+                later: vec![
                     "end it with a period".to_owned(),
                     "keep it short".into(),
                     "and bold".into(),
                     "Its agent asked: Which file?\nThe user answered: docs/oby-drive.md".into(),
-                ]
-            )
+                ],
+                // MERGING-33: apart, after the signed ones.
+                unsigned: vec!["UNSIGNED words".into()],
+                replies: Vec::new(),
+            }
         );
         assert_eq!(
-            asked_of(&jobs[1], get).2,
+            review::asked_of(&jobs[1], get).later,
             ["end it with a period", "keep it short"]
         );
         // Nor is it told the author's Tetrix rules: no session to save, no commit to stamp.
@@ -17223,6 +17177,8 @@ mod tests {
             job.said,
             ["also test it", "after a web read", "as confirmed"]
         );
+        // MERGING-33: the words through obid's API token are kept apart for the review.
+        assert_eq!(job.api_said, ["unsigned words"]);
         assert_eq!(job.notes.unwrap_or_default().len(), 6);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -17939,7 +17895,8 @@ mod tests {
         assert!(
             ran.heard
                 .first()
-                .is_some_and(|h| h.contains("couldn't go on with its account")),
+                .is_some_and(|h| h.contains("which couldn't go on there")
+                    && h.contains(".obi/inputs/handoff.md")),
             "{:?}",
             ran.heard
         );
@@ -17979,8 +17936,13 @@ mod tests {
     async fn chatgpt_20_a_change_onto_the_login_is_refused() {
         let jobs = jobs_on_a_plan(true, &["dev"]);
         jobs.insert(a_routines(on("j", "fix", "codex", "dev", Status::Stopped)));
+        let to = Moving {
+            agent: Some("codex".into()),
+            account: Some("plan".into()),
+            ..Moving::default()
+        };
         let refused = jobs
-            .change("j", Some("codex"), Some("plan"), "by Oby", Source::Event)
+            .change("j", &to, "by Oby", Source::Event)
             .unwrap()
             .unwrap_err();
         assert!(refused.0.contains("work I run by myself"), "{}", refused.0);
@@ -17988,7 +17950,7 @@ mod tests {
         // The owner's own job moves there as it did.
         jobs.insert(on("mine", "fix", "codex", "dev", Status::Stopped));
         let moved = jobs
-            .change("mine", Some("codex"), Some("plan"), "by Oby", Source::Event)
+            .change("mine", &to, "by Oby", Source::Event)
             .unwrap()
             .unwrap();
         assert_eq!(moved.account, "plan");
@@ -18195,7 +18157,11 @@ mod tests {
             .id;
         jobs.stop(&queued, STOPPED_BY_API);
         let moved = |account: &str| {
-            jobs.change(&queued, None, Some(account), "by test", Source::Owner)
+            let to = Moving {
+                account: Some(account.into()),
+                ..Moving::default()
+            };
+            jobs.change(&queued, &to, "by test", Source::Owner)
                 .unwrap()
                 .unwrap();
             on(&queued)
@@ -18210,7 +18176,11 @@ mod tests {
             moved("c2"),
             ("c2".into(), some("claude-haiku-5-5"), some("max"))
         );
-        jobs.change(&queued, Some("codex"), None, "by test", Source::Owner)
+        let to = Moving {
+            agent: Some("codex".into()),
+            ..Moving::default()
+        };
+        jobs.change(&queued, &to, "by test", Source::Owner)
             .unwrap()
             .unwrap();
         assert_eq!(on(&queued), ("x".into(), None, None));
@@ -19626,7 +19596,7 @@ mod tests {
             payer: None,
         };
         let why = jobs
-            .apply_limit_job(&decision, "aaaa0002", Some((Tool::Claude, elsewhere)))
+            .apply_limit_job(&decision, "aaaa0002", Some((Tool::Claude, elsewhere)), None)
             .unwrap_err();
         assert!(why.contains("(job aaaa0003) is working on"), "{why}");
         let limited = jobs.get("aaaa0002").unwrap();
@@ -20361,7 +20331,7 @@ mod tests {
             jobs.lock().jobs.insert(job.id.clone(), job);
         }
 
-        assert_eq!(jobs.clean_worktrees(now, None).await, 6);
+        assert_eq!(jobs.clean_worktrees(now, None, 0).await, 6);
         for gone in [&settled, &pushed, &empty, &dismissed, &archived, &review] {
             assert!(!gone.exists(), "{} stayed", gone.display());
         }
@@ -20399,7 +20369,7 @@ mod tests {
         );
 
         // Clear done puts the young job away; nothing else changes.
-        assert_eq!(jobs.clean_worktrees(now, Some(now)).await, 1);
+        assert_eq!(jobs.clean_worktrees(now, Some(now), 0).await, 1);
         assert!(!young.exists());
         for stays in [
             &dirty, &unpushed, &running, &open, &failed, &parent, &no_git,
@@ -20741,31 +20711,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tree);
     }
 
-    /// A job done with that keeps its worktree a while yet (it ended an hour ago) loses its build
-    /// outputs on the next pass, git and `rm` in its sandbox, and says what that freed; the rest
-    /// of its worktree stays. One whose pull request is open keeps them, and the next pass doesn't
-    /// look at the first again.
+    /// What a job's agent and check leave in its HOME: a check's cargo target (tagged), cargo's
+    /// and npm's caches, beside its login copies and a note of its own.
+    fn cache_in(home: &Path) {
+        for dir in [
+            "check-target/debug",
+            ".cargo/registry",
+            ".npm/_cacache",
+            ".claude",
+            "notes",
+        ] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let tag = "Signature: 8a477f597d28d172789f06886806bc55\n";
+        std::fs::write(home.join("check-target/CACHEDIR.TAG"), tag).unwrap();
+        std::fs::write(home.join("check-target/debug/obid"), vec![1u8; 64 * 1024]).unwrap();
+        std::fs::write(home.join(".claude.json"), "{}").unwrap();
+        std::fs::write(home.join("notes/todo.md"), "mine").unwrap();
+    }
+
+    /// Whether `home` lost its caches ([`cache_in`]) and kept its login copies and the rest.
+    fn caches_gone(home: &Path) -> bool {
+        let gone = ["check-target", ".cargo", ".npm"]
+            .iter()
+            .all(|d| !home.join(d).exists());
+        gone && [".claude", ".claude.json", "notes/todo.md"]
+            .iter()
+            .all(|f| home.join(f).exists())
+    }
+
+    /// CLEANUP-1 (docs/contracts/cleanup.md): a job that ended, done or failed, its pull request
+    /// open or not, loses its worktree's build outputs on the next pass, git and `rm` in its
+    /// sandbox, and its HOME's caches, and says what that freed; the rest of both stays. A job
+    /// still running keeps them, and the next pass doesn't look at the first again.
     #[tokio::test]
-    async fn a_job_done_with_loses_its_build_outputs() {
+    async fn cleanup_1_a_job_that_ends_frees_its_builds() {
         let (root, clone, base, jobs) = cleanup_home("builds", true);
         let now = obi_protocol::time::now();
         let (mut done, tree) = ended(&jobs, &clone, &base, "built", now);
         done.finished = Some(now - 60 * 60);
         let (mut open, open_tree) = ended(&jobs, &clone, &base, "open", now);
-        open.finished = Some(now - 60 * 60);
+        open.status = Status::Failed;
         open.published = Some("https://github.com/o/r/pull/1".into());
-        for (job, tree) in [(done, &tree), (open, &open_tree)] {
+        let (mut running, running_tree) = ended(&jobs, &clone, &base, "running", now);
+        (running.status, running.finished) = (Status::Running, None);
+        for (job, tree) in [(done, &tree), (open, &open_tree), (running, &running_tree)] {
             build_in(tree);
+            cache_in(&jobs.temp_path(&job.id));
             jobs.lock().jobs.insert(job.id.clone(), job);
         }
 
-        assert_eq!(jobs.clean_worktrees(now, None).await, 1);
+        assert_eq!(jobs.clean_worktrees(now, None, 0).await, 2);
         let freed = jobs.get("built").unwrap().build_freed.unwrap();
-        assert!(freed.bytes >= 64 * 1024, "{freed:?}");
+        assert!(freed.bytes >= 128 * 1024, "{freed:?}");
         assert_eq!(freed.at, now);
         for gone in ["target", "DerivedData", "node_modules/.cache"] {
             assert!(!tree.join(gone).exists(), "{gone} stayed");
+            assert!(!open_tree.join(gone).exists(), "{gone} stayed");
         }
+        assert!(caches_gone(&jobs.temp_path("built")) && caches_gone(&jobs.temp_path("open")));
+        let said = jobs.cleaned().freed.unwrap();
+        assert!(
+            said.bytes > freed.bytes && said.why == "Jobs ended.",
+            "{said:?}"
+        );
         for stays in [
             ".git",
             ".gitignore",
@@ -20783,11 +20792,53 @@ mod tests {
         }
         let outside = tree.with_extension("outside");
         assert!(outside.join("kept/file").exists() && outside.join("CACHEDIR.TAG").exists());
-        assert!(open_tree.join("target/debug/app").exists());
-        assert_eq!(jobs.get("open").unwrap().build_freed, None);
+        assert!(running_tree.join("target/debug/app").exists());
+        assert!(
+            jobs.temp_path("running")
+                .join("check-target/CACHEDIR.TAG")
+                .exists()
+        );
+        assert_eq!(jobs.get("running").unwrap().build_freed, None);
 
-        assert_eq!(jobs.clean_worktrees(now + 1, None).await, 0);
+        assert_eq!(jobs.clean_worktrees(now + 1, None, 0).await, 0);
         assert_eq!(jobs.get("built").unwrap().build_freed.unwrap().at, now);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// CLEANUP-2: on a disk low on space, a pass frees the caches of jobs whose builds already
+    /// went once (a check built again since), oldest first, until it freed what the disk lacks,
+    /// and says why; a queued job keeps them. 20 GB free or more, it frees nothing more.
+    #[tokio::test]
+    async fn cleanup_2_a_low_disk_frees_every_idle_jobs_builds_oldest_first() {
+        let (root, clone, base, jobs) = cleanup_home("low-disk", true);
+        let now = obi_protocol::time::now();
+        for (id, age) in [("old", 300), ("mid", 200), ("new", 100), ("queued", 400)] {
+            let (mut job, _) = ended(&jobs, &clone, &base, id, now);
+            job.finished = Some(now - age);
+            job.build_freed = Some(crate::job::BuildFreed { bytes: 1, at: now });
+            if id == "queued" {
+                job.status = Status::Queued;
+            }
+            cache_in(&jobs.temp_path(id));
+            jobs.lock().jobs.insert(job.id.clone(), job);
+        }
+        assert_eq!(disk_wanted(20 * GB), 0);
+        assert_eq!(disk_wanted(12 * GB), 18 * GB);
+
+        assert_eq!(jobs.clean_worktrees(now, None, 0).await, 0);
+        assert!(!caches_gone(&jobs.temp_path("old")));
+        assert_eq!(jobs.clean_worktrees(now, None, 1).await, 1);
+        assert!(caches_gone(&jobs.temp_path("old")) && !caches_gone(&jobs.temp_path("mid")));
+        let said = jobs.cleaned().freed.unwrap();
+        assert!(said.bytes >= 64 * 1024, "{said:?}");
+        assert_eq!(said.why, "The disk had 29 GB free.");
+        assert_eq!(jobs.clean_worktrees(now, None, 18 * GB).await, 2);
+        assert!(caches_gone(&jobs.temp_path("mid")) && caches_gone(&jobs.temp_path("new")));
+        assert!(!caches_gone(&jobs.temp_path("queued")));
+        assert_eq!(
+            jobs.cleaned().freed.unwrap().why,
+            "The disk had 12 GB free."
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -20799,7 +20850,7 @@ mod tests {
         let now = obi_protocol::time::now();
         let (job, worktree) = ended(&jobs, &clone, &base, "boxless", now);
         jobs.lock().jobs.insert(job.id.clone(), job);
-        assert_eq!(jobs.clean_worktrees(now, None).await, 0);
+        assert_eq!(jobs.clean_worktrees(now, None, 0).await, 0);
         assert!(worktree.join(".git").exists());
         let kept = jobs.cleaned().kept;
         assert_eq!(kept.len(), 1);
@@ -20817,7 +20868,7 @@ mod tests {
         // Its `.git` names a git directory that isn't there.
         std::fs::write(worktree.join(".git"), "gitdir: /nonexistent/obid/git\n").unwrap();
         jobs.lock().jobs.insert(job.id.clone(), job);
-        assert_eq!(jobs.clean_worktrees(now, None).await, 0);
+        assert_eq!(jobs.clean_worktrees(now, None, 0).await, 0);
         assert!(worktree.join(".git").exists());
         assert_eq!(jobs.cleaned().kept.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
@@ -20856,7 +20907,7 @@ mod tests {
             jobs.lock().jobs.insert(job.id.clone(), job);
         }
 
-        assert_eq!(jobs.clean_worktrees(now, None).await, 0);
+        assert_eq!(jobs.clean_worktrees(now, None, 0).await, 0);
         assert!(pointed_tree.join(".git").exists() && linked_tree.join(".git").exists());
         assert!(sibling_tree.join(".git").exists());
         assert!(!elsewhere.join("info").exists());

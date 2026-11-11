@@ -3038,6 +3038,12 @@ fn changes_requested_are_the_next_round_and_the_new_head_is_reviewed_again() {
         assert_eq!(review["account"], "stub");
         assert_ne!(review["session"], Value::Null);
     }
+    // MERGING-33: its own summary of the round is kept as its reply to review 1, for the next.
+    let file = std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap();
+    let kept = serde_json::from_slice::<Value>(&file).unwrap();
+    assert_eq!(kept["replies"][0][0], 1, "{kept}");
+    assert_ne!(kept["replies"][0][1], "", "{kept}");
+    assert_eq!(job.get("replies"), None);
     // The review reached the agent only as the quoted file; the round's words name it.
     let worktree = Path::new(job["worktree"].as_str().unwrap());
     let quoted = std::fs::read_to_string(worktree.join(".obi/inputs/review-1.md")).unwrap();
@@ -3697,7 +3703,12 @@ fn merging_19_a_review_finds_the_pushed_head_in_a_clone_made_again() {
         ),
         "{asked}"
     );
-    assert!(!asked.contains("UNSIGNED"), "{asked}");
+    // MERGING-33: the unsigned ones come after, under their own heading.
+    let (signed, api) = asked
+        .split_once("Words sent to it through obid's API (no app of the owner's signed them), oldest first:\n")
+        .expect(&asked);
+    assert!(!signed.contains("UNSIGNED"), "{asked}");
+    assert!(api.contains("1. UNSIGNED words\n"), "{asked}");
 }
 
 /// PUBLISHING-15: words to a task whose clone is marked start a follow-up whose own start makes that

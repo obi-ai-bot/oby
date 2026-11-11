@@ -100,14 +100,15 @@ fn turns(obid: &Obid) -> Vec<Value> {
 
 /// What the stand-in recorded as the jobs' agent, in each job's own config folder.
 fn job_turns(obid: &Obid) -> Vec<Value> {
-    // In each job's own config folder (#655: never the account's), in the order they came.
-    let mut turns: Vec<Value> = std::fs::read_dir(obid.home.join("logins"))
-        .map(|dir| {
-            dir.flatten()
-                .flat_map(|e| recorded(&e.path().join("turns.jsonl")))
-                .collect()
-        })
-        .unwrap_or_default();
+    // In the order they came. The owner's own job runs on its account's own folder (LANES-1,
+    // LANES-3); a boxed one (another Oby's, an untrusted one) in its own config folder, never the
+    // account's (#655).
+    let mut turns: Vec<Value> = ["accounts", "logins"]
+        .iter()
+        .filter_map(|kept| std::fs::read_dir(obid.home.join(kept)).ok())
+        .flat_map(|dir| dir.flatten())
+        .flat_map(|e| recorded(&e.path().join("turns.jsonl")))
+        .collect();
     turns.sort_by_key(|t| t["at"].as_u64());
     turns
 }
@@ -2123,7 +2124,9 @@ fn taskconv_20_a_new_session_of_a_clean_conversation_stays_the_owners_word() {
 
 /// MERGING-32: a job of the owner's own whose agent reached past the package registries (a docs
 /// host) ends; its summary, its title in the list of jobs and its end in the next turn are still
-/// the owner's words: the next job the conversation starts isn't untrusted.
+/// the owner's words: the next job the conversation starts isn't untrusted. It runs in the own
+/// lane (LANES-1), where no proxy of obid's marks it `reached` until LANES-6 does: that a job so
+/// marked is still the owner's words is `job::tests::only_an_owners_job_gets_declared_secrets`.
 #[cfg(target_os = "macos")]
 #[test]
 fn merging_32_reading_your_own_jobs_summary_marks_nothing() {
@@ -2146,12 +2149,7 @@ fn merging_32_reading_your_own_jobs_summary_marks_nothing() {
     let id = first.body["conversation"].as_str().unwrap().to_owned();
     let job = first.body["jobs"][0]["id"].as_str().unwrap().to_owned();
     let done = ended(&obid, &job);
-    assert!(
-        done["reached"]
-            .as_str()
-            .is_some_and(|why| why.contains("docs.example.test")),
-        "{done}"
-    );
+    assert_eq!(done["context"], "Reached.", "{done}");
     within(30, "the job's report", || {
         let thread = call(&obid, "GET", &format!("/v1/conversation?id={id}"), None);
         thread.text.contains("\"ended\":true").then_some(())
