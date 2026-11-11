@@ -185,6 +185,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/v1/jobs/{id}/messages", post(crate::routes::message))
         .route("/v1/jobs/{id}/permission", post(crate::routes::permission))
         .route("/v1/jobs/{id}/mode", post(crate::routes::mode))
+        .route("/v1/jobs/{id}/move", post(crate::routes::move_job))
         .route(
             "/v1/settings/permissions",
             get(crate::routes::permission_settings).put(crate::routes::set_permission_settings),

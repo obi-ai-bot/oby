@@ -64,6 +64,7 @@ mod authors;
 mod budget;
 mod lanes;
 mod logins;
+mod moves;
 mod research;
 mod retry;
 mod secrets;
@@ -72,6 +73,7 @@ mod slots;
 mod unjudged;
 pub use logins::person_homes;
 pub(crate) use logins::*;
+pub use moves::Moving;
 use unjudged::unchecked;
 const SANDBOXED_GIT_STDERR_MAX: usize = 64 * 1024;
 /// How long reading a round's diff stat may take, and how much it may print (#736): a round goes
@@ -3397,7 +3399,7 @@ impl Jobs {
                         &offered,
                         &from,
                         Carried {
-                            because: "couldn't go on with its account",
+                            because: "which couldn't go on there",
                             why: "It needs your OK to go on there".into(),
                             by: format!("as {from} needs your OK for work I run by myself"),
                         },
@@ -6091,98 +6093,6 @@ impl Jobs {
         Some(Ok(branch_stays))
     }
 
-    /// Moves a job that ended to another tool or account (each "auto" or left out to keep or pick
-    /// as a new job's), adding the move and `by` to it: its next round starts a new session there.
-    pub fn change(
-        &self,
-        id: &str,
-        agent: Option<&str>,
-        account: Option<&str>,
-        by: &str,
-        source: Source,
-    ) -> Option<Result<Job, Refused>> {
-        let job = self.get(id)?;
-        if job.account_limit_blocked && !source.approves_limit() {
-            return Some(Err(Refused(
-                "Changing an account-limit job waits for the owner's signed choice.".into(),
-            )));
-        }
-        if job.status.is_active() {
-            return Some(Err(Refused(
-                "It's still running: stop it first, then change it and continue it.".into(),
-            )));
-        }
-        if job.obi.is_some() || job.read_only() {
-            return Some(Err(Refused(
-                "A review picks its own tool and account: it can't be moved.".into(),
-            )));
-        }
-        if agent.is_none() && account.is_none() {
-            return Some(Err(Refused("Say which tool or account.".into())));
-        }
-        let agent = agent.or(Some(job.agent.as_str()));
-        let background = job.background();
-        let (tool, chosen) = match self.pick_for(agent, account, background) {
-            Ok(picked) if background && self.waits_for_yes(picked.0, &picked.1) => {
-                return Some(Err(Refused(format!(
-                    "I need {}.",
-                    consent_words(&picked.1.name)
-                ))));
-            }
-            Ok(picked) => picked,
-            Err(refused) => return Some(Err(refused)),
-        };
-        if tool.id() == job.agent && chosen.id == job.account {
-            return Some(Err(Refused(format!(
-                "It's on {} · {} already.",
-                tool.name(),
-                chosen.name
-            ))));
-        }
-        let place = |agent: &str, account: &str| {
-            let tool = Tool::from_id(agent).map_or(agent.to_owned(), |t| t.name().to_owned());
-            let account = self
-                .accounts(Tool::from_id(agent).unwrap_or(Tool::Claude))
-                .into_iter()
-                .find(|a| a.id == account)
-                .map_or(account.to_owned(), |a| a.name);
-            format!("{tool} · {account}")
-        };
-        let from = place(&job.agent, &job.account);
-        let to = format!("{} · {}", tool.name(), chosen.name);
-        let named =
-            account.is_some_and(|a| !a.trim().is_empty() && !a.eq_ignore_ascii_case("auto"));
-        let mut blocked = false;
-        let tuning = crate::settings::load(&self.config.home).tuning;
-        let offered = self.model_lists.to_check(tool, &chosen.id);
-        let changed = self.update(id, |job| {
-            if job.account_limit_blocked && !source.approves_limit() {
-                blocked = true;
-                return;
-            }
-            job.account = chosen.id.clone();
-            job.named = named;
-            // A new session on the new choice; another tool runs its own model.
-            job.session = None;
-            on_tool(job, tool);
-            tune(job, &tuning, &offered);
-            job.moves.push(crate::job::Move {
-                from: from.clone(),
-                to: to.clone(),
-                why: None,
-                date: obi_protocol::time::now(),
-            });
-            job.changed(format!("Moved from {from} to {to} {by}"));
-        })?;
-        Some(if blocked {
-            Err(Refused(
-                "Changing an account-limit job waits for the owner's signed choice.".into(),
-            ))
-        } else {
-            Ok(changed)
-        })
-    }
-
     /// Continues a job that failed, was stopped or was cut off in its own session, as Try again
     /// does, with `words` after Try again's (`oby_continue_job`), adding `by` to its changes.
     /// `foreign`: why `words` aren't on obid's allowlist (crate::secretspec), which marks the job
@@ -7264,24 +7174,30 @@ impl Jobs {
                     self.update(id, |job| job.review_result = review.clone());
                     self.review_ended(id, false).await;
                 }
-                // A five-hour limit's job waits for its reset by itself (LIMITS-5).
+                // A limit's job moves to an account with room by itself; with none, it waits for
+                // one, asking no one (LIMITS-15).
+                let failover = match &end {
+                    End::AccountLimit { .. } => self.failover_for(id).await,
+                    _ => None,
+                };
                 let resume_at = match &end {
-                    End::AccountLimit { reset, .. } => self.limit_resume_at(id, *reset),
+                    End::AccountLimit { reset, .. } if failover.is_none() => {
+                        Some(self.limit_wait_until(&job.account, *reset))
+                    }
                     _ => None,
                 };
                 self.update(id, |job| {
+                    if let Some(failover) = failover.as_ref().filter(|_| job.status.is_active()) {
+                        return failover.apply(job, self);
+                    }
                     if let Some(at) = resume_at {
                         account_limits::start_wait(job, at);
                         return;
                     }
                     let (reason, next, resumes) = match &end {
-                        End::AccountLimit { reason, reset } => {
-                            job.account_limit_blocked = true;
-                            job.account_limit_episode = None;
-                            job.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
-                            job.account_limit_reset = *reset;
-                            job.account_limit_choice = None;
-                            (reason.clone(), Some(crate::job::TRY_AGAIN), None)
+                        // It moved or waits (LIMITS-15), or Stop came as it ended (LIMITS-6).
+                        End::AccountLimit { reason, .. } => {
+                            return tracing::info!("job {id}: {reason}");
                         }
                         End::Failed(why) => (why.clone(), Some(crate::job::TRY_AGAIN), None),
                         End::NeedsYou {
@@ -7297,11 +7213,13 @@ impl Jobs {
                             None,
                         ),
                     };
-                    // Needing the owner, with a session to pick up or at the cap: the agent's summary
-                    // stays (`summaries` has every round's), and why it stopped is said apart. Else
-                    // failed, its summary why; with a session, a failure keeps Try again (RECOVERY-14).
+                    // Needing the owner, with a session to pick up, at the cap or with its handoff
+                    // to write (LIMITS-17): the agent's summary stays (`summaries` has every round's),
+                    // and why it stopped is said apart. Else failed, its summary why; with a
+                    // session, a failure keeps Try again (RECOVERY-14).
                     let owners_failed = matches!(end, End::Failed(_)) && job.obi.is_none();
                     let needs_you = matches!(end, End::AccountLimit { .. })
+                        || moves::hands_over(job)
                         || (matches!(end, End::NeedsYou { .. })
                             && (job.session.is_some() || job.recovery.spent()))
                         || (owners_failed && job.session.is_some());
@@ -7327,9 +7245,6 @@ impl Jobs {
                         job.review_result = review;
                     }
                 });
-                if matches!(end, End::AccountLimit { .. }) && resume_at.is_none() {
-                    self.record_account_limit(id);
-                }
                 // The `stalled` event (docs/runner-api.md): the job stays on its own card.
                 if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
                     self.events.send("stalled", job.to_json());
@@ -10288,7 +10203,7 @@ impl Jobs {
             }
         }
 
-        let words = self.take_heard(id);
+        let words = self.heard_handing_over(id, &worktree).await?;
         // A restart cut it short while it ran its check or published ("After any restart"): it
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
         // teammates for one). Words the owner sent meanwhile are its next turn instead.
@@ -16633,7 +16548,11 @@ mod tests {
                 .continue_job("j", None, "by Oby", source, None)
                 .unwrap();
             assert!(continued.is_err());
-            let changed = jobs.change("j", None, Some("a"), "by Oby", source).unwrap();
+            let to = Moving {
+                account: Some("a".into()),
+                ..Moving::default()
+            };
+            let changed = jobs.change("j", &to, "by Oby", source).unwrap();
             assert!(changed.is_err());
             let job = jobs.get("j").unwrap();
             assert_eq!(job.current_round(), 1);
@@ -17976,7 +17895,8 @@ mod tests {
         assert!(
             ran.heard
                 .first()
-                .is_some_and(|h| h.contains("couldn't go on with its account")),
+                .is_some_and(|h| h.contains("which couldn't go on there")
+                    && h.contains(".obi/inputs/handoff.md")),
             "{:?}",
             ran.heard
         );
@@ -18016,8 +17936,13 @@ mod tests {
     async fn chatgpt_20_a_change_onto_the_login_is_refused() {
         let jobs = jobs_on_a_plan(true, &["dev"]);
         jobs.insert(a_routines(on("j", "fix", "codex", "dev", Status::Stopped)));
+        let to = Moving {
+            agent: Some("codex".into()),
+            account: Some("plan".into()),
+            ..Moving::default()
+        };
         let refused = jobs
-            .change("j", Some("codex"), Some("plan"), "by Oby", Source::Event)
+            .change("j", &to, "by Oby", Source::Event)
             .unwrap()
             .unwrap_err();
         assert!(refused.0.contains("work I run by myself"), "{}", refused.0);
@@ -18025,7 +17950,7 @@ mod tests {
         // The owner's own job moves there as it did.
         jobs.insert(on("mine", "fix", "codex", "dev", Status::Stopped));
         let moved = jobs
-            .change("mine", Some("codex"), Some("plan"), "by Oby", Source::Event)
+            .change("mine", &to, "by Oby", Source::Event)
             .unwrap()
             .unwrap();
         assert_eq!(moved.account, "plan");
@@ -18232,7 +18157,11 @@ mod tests {
             .id;
         jobs.stop(&queued, STOPPED_BY_API);
         let moved = |account: &str| {
-            jobs.change(&queued, None, Some(account), "by test", Source::Owner)
+            let to = Moving {
+                account: Some(account.into()),
+                ..Moving::default()
+            };
+            jobs.change(&queued, &to, "by test", Source::Owner)
                 .unwrap()
                 .unwrap();
             on(&queued)
@@ -18247,7 +18176,11 @@ mod tests {
             moved("c2"),
             ("c2".into(), some("claude-haiku-5-5"), some("max"))
         );
-        jobs.change(&queued, Some("codex"), None, "by test", Source::Owner)
+        let to = Moving {
+            agent: Some("codex".into()),
+            ..Moving::default()
+        };
+        jobs.change(&queued, &to, "by test", Source::Owner)
             .unwrap()
             .unwrap();
         assert_eq!(on(&queued), ("x".into(), None, None));
@@ -19663,7 +19596,7 @@ mod tests {
             payer: None,
         };
         let why = jobs
-            .apply_limit_job(&decision, "aaaa0002", Some((Tool::Claude, elsewhere)))
+            .apply_limit_job(&decision, "aaaa0002", Some((Tool::Claude, elsewhere)), None)
             .unwrap_err();
         assert!(why.contains("(job aaaa0003) is working on"), "{why}");
         let limited = jobs.get("aaaa0002").unwrap();

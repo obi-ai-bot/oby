@@ -1042,13 +1042,15 @@ fn change_job(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<St
         done.push(format!("{name} is in {} mode now.", mode.title()));
     }
     if moving {
-        match shared.jobs.change(
-            &id,
-            agent.as_deref(),
-            account.as_deref(),
-            BY_OBY,
-            crate::jobs::Source::Event,
-        ) {
+        let to = crate::jobs::Moving {
+            agent,
+            account,
+            ..Default::default()
+        };
+        match shared
+            .jobs
+            .change(&id, &to, BY_OBY, crate::jobs::Source::Event)
+        {
             Some(Ok(job)) => done.push(format!(
                 "Moved {name} to {}: continue it to start there.",
                 job.moves.last().map_or("", |m| m.to.as_str())

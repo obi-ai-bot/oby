@@ -876,6 +876,9 @@ pub struct Move {
     pub to: String,
     pub why: Option<String>,
     pub date: i64,
+    /// Its new session reads a handoff, `.obi/inputs/handoff.md` (LIMITS-17).
+    #[serde(default)]
+    pub handoff: bool,
 }
 
 /// One artifact a job published: the entry of `.obi/artifacts/` it came from, so the job's next
@@ -1663,7 +1666,7 @@ impl Job {
             "appleCheck": mac_check_json(self.apple_check.clone(), "apple"),
             "appleRan": mac_check_json(self.apple_ran.clone(), "apple"),
             "tetrix": self.tetrix.as_ref().map(crate::tetrix::Use::to_json),
-            "moves": self.moves.iter().map(|m| json!({"from": m.from, "to": m.to, "why": m.why, "date": obi_protocol::time::format(m.date)})).collect::<Vec<_>>(),
+            "moves": self.moves.iter().map(|m| json!({"from": m.from, "to": m.to, "why": m.why, "date": obi_protocol::time::format(m.date), "handoff": m.handoff})).collect::<Vec<_>>(),
             "archived": date(self.archived),
             "changes": self.changes.iter().map(|c| json!({"what": c.what, "date": obi_protocol::time::format(c.date)})).collect::<Vec<_>>(),
             "xcodeCloud": null,

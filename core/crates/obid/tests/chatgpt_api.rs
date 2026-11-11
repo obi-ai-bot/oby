@@ -723,6 +723,18 @@ fn ended(world: &World, id: &str) -> Value {
     })
 }
 
+/// Waits until job `id` waits at its account's limit, with no card (LIMITS-15).
+fn waits_at_limit(world: &World, id: &str) -> Value {
+    let waits = within(180, "the job waits at its limit", || {
+        let job = call(&world.obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
+    });
+    assert!(waits["accountLimit"].is_null(), "{waits}");
+    let decisions = call(&world.obid, "GET", "/v1/limit-decisions", None).body;
+    assert_eq!(decisions, json!([]), "no card (LIMITS-15)");
+    waits
+}
+
 fn posts(world: &World) -> usize {
     world
         .openai
@@ -912,11 +924,11 @@ fn chatgpt_12_a_job_outlives_its_token_with_no_retry_spent() {
     assert_eq!(account(&world.obid, &id).unwrap()["signedIn"], true);
 }
 
-/// CHATGPT-13: a usage limit, before the stream begins or after: the #1563 question with no reset
-/// time, the account marked as held, and the inferred hour never its `resetAt`, a second job's
-/// neither. Nothing else goes to OpenAI meanwhile, whatever Codex tries.
+/// CHATGPT-13: a usage limit, before the stream begins or after: the job waits with no card
+/// (LIMITS-15), the account marked as held, a second job's too. Nothing else goes to OpenAI
+/// meanwhile, whatever Codex tries.
 #[test]
-fn chatgpt_13_a_usage_limit_is_the_question_with_no_reset_time() {
+fn chatgpt_13_a_usage_limit_waits_with_no_card() {
     let world = world("chatgpt-13");
     let id = new_account(&world.obid);
     signed_in(&world, &id);
@@ -926,34 +938,10 @@ fn chatgpt_13_a_usage_limit_is_the_question_with_no_reset_time() {
         .openai
         .with(|s| s.responses.push_back(Reply::Json(429, body.clone())));
     let first = job(&world, &id, "RELAY");
-    let stopped = ended(&world, &first);
-    assert_eq!(stopped["status"], "interrupted", "{stopped}");
-    assert!(
-        stopped["reason"]
-            .as_str()
-            .unwrap()
-            .contains("Usage limit reached"),
-        "{stopped}"
-    );
+    waits_at_limit(&world, &first);
     assert_eq!(posts(&world), 1, "Codex doesn't try a 429 again");
 
-    let decision = within(20, "the question", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .iter()
-            .find(|d| {
-                d["jobs"]
-                    .as_array()
-                    .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == first.as_str()))
-            })
-            .cloned()
-    });
-    assert!(decision["resetAt"].is_null(), "{decision}");
-    let options = decision["options"].as_array().unwrap();
-    assert!(options.iter().any(|o| o["kind"] == "resume"), "{decision}");
-
-    // The hold obid inferred stays obid's: the row says it's held, and no card says when.
+    // The hold obid inferred stays obid's: the row says it's held.
     let held = account(&world.obid, &id).unwrap();
     assert!(!held["fullUntil"].is_null(), "{held}");
 
@@ -967,29 +955,12 @@ fn chatgpt_13_a_usage_limit_is_the_question_with_no_reset_time() {
         )))
     });
     let before = posts(&world);
-    let stopped = ended(&world, &job(&world, &second, "RELAY"));
-    assert_eq!(stopped["status"], "interrupted", "{stopped}");
-    assert!(
-        stopped["reason"]
-            .as_str()
-            .unwrap()
-            .contains("Usage limit reached"),
-        "{stopped}"
-    );
+    waits_at_limit(&world, &job(&world, &second, "RELAY"));
     assert_eq!(
         posts(&world),
         before + 1,
         "what Codex tried after it stayed here"
     );
-    within(20, "its question too", || {
-        let all = call(&world.obid, "GET", "/v1/limit-decisions", None).body;
-        let all = all.as_array()?;
-        (all.len() >= 2).then(|| {
-            for decision in all {
-                assert!(decision["resetAt"].is_null(), "{decision}");
-            }
-        })
-    });
 }
 
 /// CHATGPT-14: a 503 keeps the credentials and backs off; a 403 not-eligible goes to OpenAI once and
@@ -1207,10 +1178,10 @@ fn chatgpt_17_obid_keeps_that_the_welcome_was_shown() {
     );
 }
 
-/// The owner's decision of 2026-11-02: ChatGPT accounts are offered at a limit, though they report
-/// no usage. Offered, never moved to without the owner's click.
+/// LIMITS-15: a ChatGPT login reports no usage, so it never shows room: a job at its limit doesn't
+/// move onto one by itself, it waits, and moves there only on the owner's click.
 #[test]
-fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itself() {
+fn chatgpt_13_nothing_moves_onto_a_chatgpt_account_by_itself() {
     let folder = Folder::new("chatgpt-13-offer");
     let openai = OpenAi::start();
     let config = configured(&folder.0);
@@ -1236,31 +1207,17 @@ fn chatgpt_13_a_chatgpt_account_is_offered_at_a_limit_and_nothing_moves_by_itsel
     };
     let id = new_account(&world.obid);
     signed_in(&world, &id);
-    // (a week's limit: a five-hour one waits for its reset, with no question: LIMITS-5)
+    // No account named, so Oby may move it (LIMITS-15).
     let posted = call_typed(
         &world.obid,
         "POST",
         "/v1/jobs",
         &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
-        "task": "LIMITED WEEK: 86400", "agent": "claude", "account": "stub"}}),
+        "task": "LIMITED WEEK: 86400", "agent": "claude"}}),
     );
     assert_eq!(posted.status, 201, "{}", posted.text);
     let job = posted.body["id"].as_str().unwrap().to_owned();
-    let decision = within(30, "the question offers the ChatGPT account", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .iter()
-            .find(|d| {
-                d["options"]
-                    .as_array()
-                    .is_some_and(|o| o.iter().any(|o| o["account"] == id.as_str()))
-            })
-            .cloned()
-    });
-    assert_eq!(decision["jobs"][0]["id"], job.as_str());
-    let stays = call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
-    assert_eq!(stays["status"], "interrupted", "{stays}");
+    let stays = waits_at_limit(&world, &job);
     assert_eq!(
         stays["account"], "stub",
         "it moves only on the owner's click"
@@ -1625,40 +1582,19 @@ fn chatgpt_24_the_token_alone_cant_give_consent() {
     assert_eq!(codex.status, 422, "{}", codex.text);
 }
 
-/// CHATGPT-25: a move past a limit doesn't put a routine's job on a login with no yes, and is offered
-/// once there is one. The owner's own job is offered it as before (CHATGPT-13).
+/// CHATGPT-25: a routine's job past a limit doesn't move onto a ChatGPT login by itself, with or
+/// without its yes (it shows no room, LIMITS-15): it waits, with no card.
 #[test]
-fn chatgpt_25_a_move_passes_over_it_until_consent() {
+fn chatgpt_25_a_limit_never_moves_a_routines_job_onto_the_login() {
     let world = world_with_claude("chatgpt-25");
     let id = new_account(&world.obid);
     signed_in(&world, &id);
+    assert_eq!(allow(&world, &id).status, 200);
     let limited = routine(&world, "Limited", "LIMITED WEEK: 86400", "claude", "stub");
     let job = run_routine(&world, &limited);
-    let decision = within(30, "the question", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .iter()
-            .find(|d| d["jobs"][0]["id"] == job.as_str())
-            .cloned()
-    });
-    let offers = |d: &Value| {
-        d["options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|o| o["account"] == id.as_str())
-    };
-    assert!(!offers(&decision), "{decision}");
-    assert_eq!(allow(&world, &id).status, 200);
-    within(10, "it's offered now", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .iter()
-            .find(|d| d["jobs"][0]["id"] == job.as_str() && offers(d))
-            .cloned()
-    });
+    let waits = waits_at_limit(&world, &job);
+    assert_eq!(waits["account"], "stub", "{waits}");
+    assert_eq!(posts(&world), 0);
 }
 
 /// CHATGPT-26: an account from before there was a question starts with no yes, and nothing that ran
@@ -2136,8 +2072,7 @@ fn chatgpt_13_a_limit_in_a_plain_error_event_stops_the_run() {
             "",
         )
         .unwrap();
-        let stopped = ended(&world, &job);
-        assert_eq!(stopped["status"], "interrupted", "{stopped}");
+        waits_at_limit(&world, &job);
     }
 }
 
@@ -2154,8 +2089,7 @@ fn chatgpt_13_a_success_through_the_relay_lifts_the_hour_obid_inferred() {
     world
         .openai
         .with(|s| s.responses.push_back(Reply::Json(429, body)));
-    let stopped = ended(&world, &job(&world, &id, "RELAY"));
-    assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    waits_at_limit(&world, &job(&world, &id, "RELAY"));
     assert!(!account(&world.obid, &id).unwrap()["fullUntil"].is_null());
     // A job that was under way still gets through.
     let (status, _, _) = post_as_codex(&base, &broker);
@@ -2462,10 +2396,10 @@ fn chatgpt_talk_a_conversation_on_chatgpt_stays_when_another_account_comes() {
     assert_eq!(posts(&world), before + 1, "still on ChatGPT");
 }
 
-/// CHATGPT-13: a job on a ChatGPT login never waits for a reset by itself (LIMITS-5): OpenAI's limit
-/// names no time. Not even with a time from when the account was on a `codex login`: it asks.
+/// CHATGPT-13: a job a ChatGPT login's limit stopped, with no other account with room, waits by
+/// itself with no card (LIMITS-15), and nothing goes to OpenAI while the login is held.
 #[test]
-fn chatgpt_13_a_job_never_waits_for_a_reset_by_itself() {
+fn chatgpt_13_a_job_waits_with_no_card() {
     let folder = Folder::new("chatgpt-13-no-wait");
     let openai = OpenAi::start();
     let mut config = configured(&folder.0);
@@ -2497,17 +2431,13 @@ fn chatgpt_13_a_job_never_waits_for_a_reset_by_itself() {
     };
     signed_in(&world, "device");
     let job = job(&world, "device", "RELAY");
-    let stopped = ended(&world, &job);
-    assert_eq!(stopped["status"], "interrupted", "{stopped}");
-    assert!(stopped["resumesAt"].is_null(), "{stopped}");
-    let decision = within(20, "the question", || {
-        call(&world.obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()?
-            .first()
-            .cloned()
+    let waits = within(60, "the job waits", || {
+        let found = call(&world.obid, "GET", &format!("/v1/jobs/{job}"), None).body;
+        (found["status"] == "queued" && !found["resumesAt"].is_null()).then_some(found)
     });
-    assert!(decision["resetAt"].is_null(), "{decision}");
+    assert!(waits["accountLimit"].is_null(), "{waits}");
+    let decisions = call(&world.obid, "GET", "/v1/limit-decisions", None).body;
+    assert_eq!(decisions, json!([]), "no card (LIMITS-15)");
     assert_eq!(posts(&world), 0, "held, so nothing went to OpenAI");
 }
 
