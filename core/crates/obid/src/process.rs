@@ -559,20 +559,54 @@ fn read_login_env() -> Option<Vec<(OsString, OsString)>> {
 }
 
 /// `owners` ([`login_env`]'s) under `env`, an own run's (LANES-4): every variable `env` doesn't set,
-/// but what pushes or signs in to a code host ([`agent_withheld`]'s: Claude Code's and Anthropic's
-/// are the owner's gateway, and theirs), git's and obid's own, and the shell's own bookkeeping.
+/// but what pushes or signs in to a code host ([`agent_withheld`]'s), git's and obid's own, the
+/// shell's own bookkeeping, and Claude Code's own but the owner's gateway ([`claude_gateway`]).
 pub fn with_owners(env: &mut Vec<(OsString, OsString)>, owners: &[(OsString, OsString)]) {
     for (name, value) in owners {
         let n = name.to_string_lossy();
-        let gateway = n.starts_with("ANTHROPIC_") || n.starts_with("CLAUDE_CODE_");
-        let withheld = (agent_withheld(&n) && !gateway)
-            || ["GIT_", "OBY_", "OBID_"].iter().any(|p| n.starts_with(p))
-            || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n);
+        let withheld = if n.starts_with("CLAUDE") || n.starts_with("ANTHROPIC_") {
+            !claude_gateway(&n)
+        } else {
+            agent_withheld(&n)
+                || ["GIT_", "OBY_", "OBID_"].iter().any(|p| n.starts_with(p))
+                || ["PWD", "OLDPWD", "SHLVL", "_"].contains(&&*n)
+        };
         if !withheld && !env.iter().any(|(set, _)| set == name) {
             env.push((name.clone(), value.clone()));
         }
     }
 }
+
+/// Whether an own run takes `name` from the owner (their login shell, their user settings' `env`)
+/// as Claude Code's (the owner's decision LANES-4a, "Allow-list"): any `ANTHROPIC_*` (its gateway,
+/// its key, its models), or one of [`CLAUDE_GATEWAY`]. No other `CLAUDE*` name: they name its
+/// folders, settings and policy sources, permissions, extra directories, its sandbox and its
+/// session, any of which could outrank obid's `--settings` or widen the run (LANES-5).
+pub fn claude_gateway(name: &str) -> bool {
+    name.starts_with("ANTHROPIC_") || CLAUDE_GATEWAY.contains(&name)
+}
+
+/// The `CLAUDE_CODE_*` switches an own run takes from the owner (LANES-4a): which provider Claude
+/// Code calls (2.1.302's Bedrock, Vertex, Foundry, Anthropic on AWS or Google Cloud, Mantle), how
+/// it signs in there, and its models and output size. Nothing that names a path, a settings
+/// source, permissions, directories, the sandbox, hooks, MCP or a session.
+pub const CLAUDE_GATEWAY: [&str; 15] = [
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+    "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
+    "CLAUDE_CODE_SKIP_ANTHROPIC_GOOGLE_CLOUD_AUTH",
+    "CLAUDE_CODE_SKIP_MANTLE_AUTH",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_EFFORT_LEVEL",
+];
 
 /// `bin` as a path: itself when it names one, else found on [`tools_path`].
 pub fn resolve_bin(bin: &str) -> Option<PathBuf> {
@@ -964,6 +998,65 @@ mod claude_tmpdir_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LANES-5 with LANES-4: the owner's shell can't move an own run's Claude Code to another
+    /// folder or Keychain item than obid names (none for the default account), nor change what obid
+    /// sets (`HOME`); its gateway still reaches the run.
+    #[test]
+    fn lanes_5_the_owners_shell_keeps_the_accounts_folder() {
+        let os = |text: &str| OsString::from(text);
+        let mut env = vec![(os("HOME"), os("/Users/p"))];
+        let owners = [
+            (os("CLAUDE_CONFIG_DIR"), os("/Users/p/.claude-other")),
+            (
+                os("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+                os("/Users/p/.claude-other"),
+            ),
+            (os("HOME"), os("/elsewhere")),
+            (os("ANTHROPIC_BASE_URL"), os("https://gateway.example")),
+        ];
+        with_owners(&mut env, &owners);
+        assert_eq!(
+            env,
+            vec![
+                (os("HOME"), os("/Users/p")),
+                (os("ANTHROPIC_BASE_URL"), os("https://gateway.example")),
+            ]
+        );
+    }
+
+    /// LANES-5 with LANES-4a ("Allow-list"): of Claude Code's own variables, the owner's shell gives
+    /// an own run only `ANTHROPIC_*` and the gateway switches ([`CLAUDE_GATEWAY`]); a settings or
+    /// policy source that outranks obid's `--settings`, extra session folders and allow rules, and
+    /// any other `CLAUDE*` name never reach it.
+    #[test]
+    fn lanes_5_the_owners_shell_gives_no_settings_source() {
+        let os = |text: &str| OsString::from(text);
+        let mut env = Vec::new();
+        let mut owners: Vec<(OsString, OsString)> = [
+            "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
+            "CLAUDE_CODE_REMOTE_SETTINGS_PATH",
+            "CLAUDE_CODE_SANDBOXED",
+            "CLAUDE_RELAUNCH_SESSION_ADD_DIRS",
+            "CLAUDE_BG_SESSION_PERMISSION_RULES",
+            "CLAUDE_CODE_SESSION_KIND",
+            "CLAUDE_FOO",
+            "CLAUDECODE",
+        ]
+        .iter()
+        .map(|name| (os(name), os("/tmp/policy")))
+        .collect();
+        owners.push((os("CLAUDE_CODE_USE_BEDROCK"), os("1")));
+        owners.push((os("ANTHROPIC_MODEL"), os("us.anthropic.claude")));
+        with_owners(&mut env, &owners);
+        assert_eq!(
+            env,
+            vec![
+                (os("CLAUDE_CODE_USE_BEDROCK"), os("1")),
+                (os("ANTHROPIC_MODEL"), os("us.anthropic.claude")),
+            ]
+        );
+    }
 
     /// LANES-2: a boxed agent's environment and an own one's alike give git no settings but the
     /// repository's and an empty credential helper, and nothing that pushes or signs in reaches an
