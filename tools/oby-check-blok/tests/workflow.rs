@@ -196,7 +196,8 @@ fn affected_cli_and_mcp_return_structured_verdicts() {
     std::fs::write(repo.join("scripts/oby-check.sh"), "[[ $CARGO_NET_OFFLINE == true && $npm_config_offline == true && -z $OBY_CHECK_ALL && -z $OBY_CHECK_PATHS ]] || exit 1\nif [[ -n \"$OBY_CHECK_PLAN\" && $OBY_CHECK_ONLY == rust ]]; then echo 'oby-check: group rust'; fi\nexit 0\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
         .current_dir(repo)
-        .args(["--affected"]).env("HOME", repo)
+        .args(["--affected"])
+        .env("HOME", repo)
         .env("OBY_CHECK_ALL", "1")
         .env("OBY_CHECK_PATHS", "core/")
         .output()
@@ -208,7 +209,8 @@ fn affected_cli_and_mcp_return_structured_verdicts() {
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
         .current_dir(repo)
-        .arg("mcp").env("HOME", repo)
+        .arg("mcp")
+        .env("HOME", repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
