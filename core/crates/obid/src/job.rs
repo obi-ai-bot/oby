@@ -1894,7 +1894,7 @@ impl Job {
         if self.kind == "research" {
             stages.push(json!({"id": "check", "title": "Check", "state": "skipped",
                 "detail": "A research job changes no code"}));
-        } else if let Some(check) = self.check.as_deref().filter(|c| !c.trim().is_empty()) {
+        } else if let Some(check) = self.repository_check().filter(|c| !c.trim().is_empty()) {
             stages.push(
                 json!({"id": "check", "title": "Check", "state": "upcoming", "detail": check}),
             );
@@ -2617,6 +2617,8 @@ mod tests {
     #[test]
     fn pipelines_follow_the_job() {
         let mut job = job();
+        // A review runs no check (MERGING-36): a fix does.
+        job.kind = "fix".into();
         job.check = Some("node --test".into());
         let stages = |job: &Job| -> Vec<(String, String)> {
             job.pipeline()["stages"]

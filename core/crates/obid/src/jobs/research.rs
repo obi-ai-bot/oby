@@ -4,8 +4,12 @@ use crate::job::{Job, Status};
 use serde_json::{Value, json};
 
 impl Job {
+    /// The check obid runs on its work: none for research, nor for the owner's review, which only
+    /// reads and leaves the check's permit to the work it reviews (MERGING-36).
     pub(crate) fn repository_check(&self) -> Option<&String> {
-        self.check.as_ref().filter(|_| self.kind != "research")
+        self.check
+            .as_ref()
+            .filter(|_| self.kind != "research" && !self.read_only())
     }
 
     pub(crate) fn has_report(&self) -> bool {

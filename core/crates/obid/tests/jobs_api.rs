@@ -3397,6 +3397,222 @@ fn permissions_3_a_review_reads_without_asking_and_a_write_still_asks() {
     }
 }
 
+/// Pull request #90's head on `remote`: main's own commit, so nothing of someone else's marks
+/// obid's clone (and makes it again) when a job fetches it.
+fn pull_request_90(remote: &Path) {
+    git(
+        remote,
+        &["update-ref", "refs/pull/90/head", "refs/heads/main"],
+    );
+}
+
+/// MERGING-36: a review the owner dispatched with a pull request runs no check, so it takes no
+/// check permit (it ends while another job's check holds it), and has no Check stage; it runs
+/// its reads without asking (`grep`, `git diff`, `sed -n '1,9p'`), and is told obid runs the
+/// check, not the review.
+#[test]
+fn merging_36_a_review_runs_no_check_and_reads_without_asking() {
+    let folder = Folder::new("review-no-check");
+    let remote = fixture(&folder.0.join("fixture"));
+    pull_request_90(&remote);
+    let mut config = config(&folder.0, &remote);
+    config["repos"][0]["check"] = json!("sleep 60; exit 1");
+    let obid = start(&folder.0, &config);
+    let holder = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: code.txt"}),
+    );
+    let holder_id = holder.body["id"].as_str().unwrap();
+    until(&obid, holder_id, |job| {
+        job["step"] == "Running sleep 60; exit 1"
+    });
+    let bash = |command: &str| json!({"tool": "Bash", "input": {"command": command}});
+    let reads = [
+        bash("grep -n greet src/greet.js | sort; sed -n '1,9p' src/greet.js"),
+        bash("git diff origin/main...HEAD"),
+    ];
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 90,
+               "task": format!("KEEP PROMPTS ASKS: {}", Value::Array(reads.to_vec()))}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = settled(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}");
+    assert_eq!(job["summary"], "answers: allow, allow", "{job}");
+    assert!(job["checks"].is_null(), "{job}");
+    assert!(
+        !job["pipeline"]["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|stage| stage["id"] == "check"),
+        "{job}"
+    );
+    let holding = request(&obid, "GET", &format!("/v1/jobs/{holder_id}"), None);
+    assert_eq!(holding.body["status"], "running", "{}", holding.text);
+    request(&obid, "POST", &format!("/v1/jobs/{holder_id}/stop"), None);
+    let worktree = Path::new(job["worktree"].as_str().unwrap());
+    let prompts = std::fs::read_to_string(worktree.join(".obi/prompts.log")).unwrap();
+    assert!(
+        prompts.contains("Don't run `sleep 60; exit 1` or the repository's tests: obid runs its check on the work itself, not this review."),
+        "{prompts}"
+    );
+    assert!(!prompts.contains("Run it yourself first"), "{prompts}");
+}
+
+/// MERGING-37: a review the owner dispatched reads its pull request's head as it is now: once
+/// the pull request moved on, a second review of it fetches the new head and pins it, though the
+/// clone still has the branch the first review left at the old one.
+#[test]
+fn merging_37_a_review_reads_the_pull_requests_current_head() {
+    let folder = Folder::new("review-current-head");
+    let remote = fixture(&folder.0.join("fixture"));
+    pull_request_90(&remote);
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let review = |task: &str| {
+        let id = post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 90, "task": task}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        wait(&obid, &id)
+    };
+    let first = review("SEES: moved.txt");
+    assert_eq!(first["summary"], "sees moved.txt: false", "{first}");
+    // The pull request moves on: a commit on main that is its head too.
+    authors_commit(&folder.0, &remote, "refs/heads/main");
+    pull_request_90(&remote);
+    let head = git(&remote, &["rev-parse", "refs/pull/90/head"]);
+    let second = review("SEES: moved.txt");
+    assert_eq!(second["branch"], first["branch"], "{second}");
+    assert_eq!(second["summary"], "sees moved.txt: true", "{second}");
+    assert_eq!(second["startCommit"], head.as_str(), "{second}");
+}
+
+/// A commit someone made outside obid (`moved.txt`, on main), put at `at` on `remote`.
+fn authors_commit(folder: &Path, remote: &Path, at: &str) {
+    let author = folder.join("author");
+    git(
+        folder,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            author.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(author.join("moved.txt"), "moved\n").unwrap();
+    git(&author, &["add", "moved.txt"]);
+    git(
+        &author,
+        &[
+            "-c",
+            "user.name=Author",
+            "-c",
+            "user.email=author@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "Move on",
+        ],
+    );
+    // Fetched rather than pushed: a job's agent, which may run this, can't push.
+    git(
+        remote,
+        &[
+            "fetch",
+            "-q",
+            author.to_str().unwrap(),
+            &format!("HEAD:{at}"),
+        ],
+    );
+}
+
+/// MERGING-36: a review the owner dispatched on a pull request whose head has a commit obid
+/// didn't record reads someone else's code: it stays in Oby's box (no `--settings` for Claude
+/// Code's own sandbox), and a local command asks, as any job's would.
+#[test]
+fn merging_36_a_review_of_someone_elses_commits_asks_for_its_reads() {
+    let folder = Folder::new("review-theirs");
+    let remote = fixture(&folder.0.join("fixture"));
+    authors_commit(&folder.0, &remote, "refs/pull/91/head");
+    let (config, _account) = recording_config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let command = "python3 -c 'print(1)'";
+    let read = json!([{"tool": "Bash", "input": {"command": command}}]);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 91,
+               "task": format!("ASKS: {read}")}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = until(&obid, &id, |j| {
+        j["permission"].is_object() || !matches!(j["status"].as_str(), Some("queued" | "running"))
+    });
+    assert_eq!(job["permission"]["detail"], command, "{job}");
+    // Only the fix boxes it: in the own lane `python3 -c` would ask all the same.
+    let (args, _) = last_launch(&folder.0);
+    assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
+}
+
+/// MERGING-36: a review the owner dispatched (signed, so obid asks GitHub who wrote the pull
+/// request) on a pull request a member of the owner's organization wrote is someone else's code
+/// (`foreign`, not only `reached` as a fix on it would be: ISSUETASK-5), so it runs in Oby's box.
+#[test]
+fn merging_36_a_review_of_a_members_pull_request_is_someone_elses_code() {
+    let folder = Folder::new("review-member");
+    let remote = fixture(&folder.0.join("fixture"));
+    pull_request_90(&remote);
+    let (config, _account) = recording_config(&folder.0, &remote);
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let obid = start_with(&folder.0, &config, Some(&agents));
+    // The stand-in gh (tests/agents/gh): the owner is wellington of obi-e2e, and sangam, a
+    // member, wrote the pull request.
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("user"), "wellington\n").unwrap();
+    std::fs::write(gh.join("orgs"), "obi-e2e\n").unwrap();
+    let none = json!({"pageInfo": {"hasNextPage": false}, "nodes": []});
+    let pr = json!({"author": {"login": "sangam"}, "authorAssociation": "MEMBER", "body": "A line",
+                    "userContentEdits": none, "timelineItems": none, "comments": none, "reviews": none});
+    let who = json!({"data": {"viewer": {"login": "wellington"}, "repository": {"issueOrPullRequest": pr}}});
+    std::fs::write(gh.join("who.json"), who.to_string()).unwrap();
+    let started = typed(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 90,
+                        "task": "SEES: moved.txt"}}),
+    );
+    assert_eq!(started.status, 201, "{}", started.text);
+    let id = started.body["id"].as_str().unwrap();
+    let job = wait(&obid, id);
+    assert_eq!(job["status"], "done", "{job}");
+    let file: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    assert!(
+        file["foreign"]
+            .as_str()
+            .is_some_and(|why| why.contains("pull request #90") && why.contains("members")),
+        "{file}"
+    );
+    let (args, _) = last_launch(&folder.0);
+    assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
+}
+
 /// A control request of a kind obid doesn't know (a newer Claude Code's) gets an error, never
 /// silence, which would hang the job; the agent's next request is answered as usual (#1095).
 #[test]

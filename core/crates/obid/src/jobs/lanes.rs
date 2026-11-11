@@ -7,11 +7,16 @@ impl Jobs {
     /// Whether `job`'s `tool` run is in the own lane (LANES-1): every Claude Code job of the
     /// owner's, unless another Oby asked for it ([`Job::obi`]) or it's marked untrusted
     /// ([`Job::untrusted`]); the other marks don't move it (the owner's decision of 2026-11-09).
-    /// Oby's own review stays boxed, as `review_may_run` expects. Its run gets [`own_sandbox_env`]
-    /// and [`own_sandbox_settings`] and no egress proxy (LANES-3, LANES-6); every other run is
-    /// boxed with a copy of its login. `claudeOwnSandbox` doesn't change it.
+    /// Oby's own review stays boxed, as `review_may_run` expects, and so does the owner's review of
+    /// someone else's code (MERGING-36). Its run gets [`own_sandbox_env`] and
+    /// [`own_sandbox_settings`] and no egress proxy (LANES-3, LANES-6); every other run is boxed
+    /// with a copy of its login. `claudeOwnSandbox` doesn't change it.
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
-        tool == Tool::Claude && job.obi.is_none() && !job.untrusted && job.review_of.is_none()
+        tool == Tool::Claude
+            && job.obi.is_none()
+            && !job.untrusted
+            && job.review_of.is_none()
+            && !(job.read_only() && job.someone_elses().is_some())
     }
 
     /// Whether job `id`'s agent had a network obid's proxy didn't see: Claude Code ran it, now or
@@ -82,6 +87,12 @@ mod tests {
                 from_owner: "ernesto".into(),
                 request_id: "r".into(),
             })
+        }));
+        // MERGING-36: the owner's review is own until its code is someone else's.
+        assert!(marked(|job| job.kind = "review".into()));
+        assert!(!marked(|job| {
+            job.kind = "review".into();
+            job.foreign = Some("someone else's pull request".into());
         }));
     }
 

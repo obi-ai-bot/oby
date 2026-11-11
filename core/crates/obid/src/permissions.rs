@@ -2687,8 +2687,9 @@ fn git_config_reads(args: &[String]) -> bool {
 /// shell runs as a read (crate::brain::shell::reads_only), one of git's [`GIT_READS`] from the
 /// worktree's top (where git finds the job's own git folder, never one the agent could have made)
 /// with no option that writes a file or runs a program, `sed -n` printing lines, or `if`'s own
-/// words around them; and nothing is written to a file. Best-effort; what passes still runs boxed.
-fn only_reads(command: &str, bounds: &Bounds) -> bool {
+/// words around them; and nothing is written to a file. Best-effort; what passes still runs in a
+/// sandbox.
+pub(crate) fn only_reads(command: &str, bounds: &Bounds) -> bool {
     static LINES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let lines =
         LINES.get_or_init(|| regex::Regex::new(r"^([0-9]+|\$)(,([0-9]+|\$))?p$").expect("a regex"));

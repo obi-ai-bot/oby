@@ -42,9 +42,15 @@ impl Jobs {
             self.mark(&job.id, why, false);
             return;
         };
-        // Never asked again: a comment deleted in between would clear a job it reached.
+        // Never asked again: a comment deleted in between would clear a job it reached. The
+        // owner's review of a pull request anyone else wrote in reads someone else's code
+        // (MERGING-36), a member's too.
         if let Some((why, members)) = self.others_wrote(&gh, job, shown).await {
-            self.mark(&job.id, format!("{when}, {why}"), members);
+            self.mark(
+                &job.id,
+                format!("{when}, {why}"),
+                members && !job.read_only(),
+            );
         }
     }
 }
