@@ -248,9 +248,12 @@ struct Warm {
 }
 
 impl Warm {
-    /// Its login copy goes now, and it ends (its stdin closed, it exits) in the background.
-    fn end(self) {
+    /// Its login copy goes now, and so does what its commands left running (LANES-16), before a
+    /// next session starts on the same folders; it ends (its stdin closed, it exits) in the
+    /// background.
+    fn end(mut self) {
         self.place.forget_login();
+        self.conn.end_leftovers();
         tokio::spawn(self.conn.finish());
     }
 }

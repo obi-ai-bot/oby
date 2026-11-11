@@ -109,8 +109,8 @@ pub struct RpcError {
 pub struct Conn {
     child: Child,
     pgid: u32,
-    /// An own run's commands' temp folder and `env.sh`, what its leftovers are found by when it
-    /// ends ([`process::end_sandboxed`], LANES-16).
+    /// An own run's commands' temp folder and its `login` folder (`env.sh`'s), what its
+    /// leftovers are found by when it ends ([`process::end_sandboxed`], LANES-16).
     leftovers: Option<(PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
     lines: BufReader<ChildStdout>,
@@ -216,9 +216,10 @@ impl Conn {
             let value = launch.env.iter().rev().find(|(set, _)| set == name);
             value.map(|(_, value)| PathBuf::from(value))
         };
-        let leftovers = launch
-            .own_sandbox
-            .then(|| Some((set(process::CLAUDE_TMPDIR)?, set("CLAUDE_ENV_FILE")?)));
+        let leftovers = launch.own_sandbox.then(|| {
+            let login = set("CLAUDE_ENV_FILE")?.parent()?.to_path_buf();
+            Some((set(process::CLAUDE_TMPDIR)?, login))
+        });
         Ok(Conn {
             child,
             pgid,
@@ -520,8 +521,17 @@ impl Conn {
 impl Drop for Conn {
     fn drop(&mut self) {
         process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
-        if let Some((temp, env)) = &self.leftovers {
-            process::end_sandboxed(temp, env);
+        self.end_leftovers();
+    }
+}
+
+impl Conn {
+    /// Ends now what an own run's commands left running (LANES-16), and never again for this run:
+    /// a conversation's waiting session does so as it ends, before the next session on the same
+    /// folders starts, whose commands its later drop must not reach.
+    pub fn end_leftovers(&mut self) {
+        if let Some((temp, login)) = self.leftovers.take() {
+            process::end_sandboxed(&temp, &login);
         }
     }
 }
@@ -609,7 +619,8 @@ mod tests {
     }
 
     /// LANES-16: an own run's process that left its group with `setsid` ends when its Conn does
-    /// (a job's turn's end, a conversation's waiting session's, a stop or a drop).
+    /// (a job's turn's end, a conversation's waiting session's, a stop or a drop), once: what the
+    /// next session on the same folders runs after that isn't touched.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn lanes_16_an_own_runs_leftover_ends_with_its_conn() {
@@ -652,11 +663,35 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        let alive = || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+        // Running: there, and not a zombie its parent (the agent, still running) hasn't reaped.
+        let alive = || {
+            let ps = std::process::Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout);
+            !stat.trim().is_empty() && !stat.trim().starts_with('Z')
+        };
         assert!(alive());
-        drop(conn);
+        // A waiting conversation's session ends its leftovers as it ends (`Warm::end`), before
+        // the next session on the same folders starts; its drop later spares that one's commands.
+        conn.end_leftovers();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!alive(), "the leftover outlived its run");
+        let mut next = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &profile, "/usr/bin/perl", "-e"])
+            .arg("use POSIX; setsid(); exec q(sleep), 600")
+            .spawn()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(conn);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            next.try_wait().unwrap().is_none(),
+            "the next session's command ended"
+        );
+        let _ = next.kill();
+        let _ = next.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

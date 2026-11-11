@@ -659,30 +659,65 @@ pub fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {
     }
 }
 
-/// Ends what an own run's commands left running (LANES-16): every process of this user's in a
-/// Seatbelt sandbox that may write `writes` (the run's commands' temp folder) but not `witness` (a
-/// file of the run's that obid denies them, `env.sh`), as Claude Code's own sandbox for that run
-/// is, one that left the run's process group with `setsid` too: no process leaves its sandbox.
-/// Both must exist: macOS answers no for a path that doesn't. The person's own processes,
-/// unsandboxed or sandboxed otherwise, and other runs' never match. Returns how many it ended.
+/// Ends what an own run's commands left running (LANES-16): every process of this user's whose
+/// Seatbelt sandbox may write `writes` (the run's commands' temp folder) but may not write a file
+/// obid makes fresh in `denied` (the run's `login` folder, which its commands never write), as
+/// Claude Code's own sandbox for that run is (measured with 2.1.302), one that left the run's
+/// process group with `setsid` too: no process leaves its sandbox. The person's own processes
+/// may write that file, so they never match, nor do other runs' sandboxes, which may not write this
+/// temp folder. Nothing is ended unless obid itself, unsandboxed, is told it may write both (macOS
+/// answers no for a path that isn't there, so a missing one would match everyone). It sweeps again
+/// until a sweep finds none (at most [`SWEEPS`]), so what one forks while it's ended goes too.
+/// Returns how many it ended.
 // ponytail: a process ended between the check and the kill may lend its id to a new one, which
-// would be ended with it; the window is a few microseconds.
+// would be ended with it; macOS hands out ids in turn, so that needs the ids to wrap meanwhile.
 #[cfg(target_os = "macos")]
-pub fn end_sandboxed(writes: &Path, witness: &Path) -> usize {
+pub fn end_sandboxed(writes: &Path, denied: &Path) -> usize {
     use libproc::processes::{ProcFilter, pids_by_type};
-    let uid = nix::unistd::getuid().as_raw();
+    use std::os::unix::fs::OpenOptionsExt;
+    let canary = denied.join(".oby-reap");
+    let _ = std::fs::remove_file(&canary);
+    let made = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&canary);
     let me = std::process::id();
-    let pids = pids_by_type(ProcFilter::ByUID { uid }).unwrap_or_default();
+    let ours = |path: &Path| may_write(me, path) == Some(true);
+    if made.is_err()
+        || !std::fs::metadata(writes).is_ok_and(|m| m.is_dir())
+        || !ours(writes)
+        || !ours(&canary)
+    {
+        return 0;
+    }
+    let uid = nix::unistd::getuid().as_raw();
     let theirs =
-        |pid: u32| may_write(pid, writes) == Some(true) && may_write(pid, witness) == Some(false);
-    let ended = pids
-        .into_iter()
-        .filter(|&pid| pid > 1 && pid != me && theirs(pid));
+        |pid: u32| may_write(pid, writes) == Some(true) && may_write(pid, &canary) == Some(false);
     let kill = |pid: u32| {
         nix::sys::signal::kill(Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGKILL)
     };
-    ended.filter(|&pid| kill(pid).is_ok()).count()
+    let mut ended = 0;
+    for _ in 0..SWEEPS {
+        let pids = pids_by_type(ProcFilter::ByUID { uid }).unwrap_or_default();
+        // `pid > 1`: never 0 (`kill` would reach obid's own group) nor launchd.
+        let found = pids
+            .into_iter()
+            .filter(|&pid| pid > 1 && pid != me && theirs(pid));
+        let now = found.filter(|&pid| kill(pid).is_ok()).count();
+        if now == 0 {
+            break;
+        }
+        ended += now;
+    }
+    let _ = std::fs::remove_file(&canary);
+    ended
 }
+
+/// How many times [`end_sandboxed`] sweeps at most.
+#[cfg(target_os = "macos")]
+const SWEEPS: usize = 10;
 
 /// Whether process `pid`'s Seatbelt sandbox lets it write `path`, as macOS's `sandbox_check`
 /// answers (an unsandboxed process may write anything); none when it can't tell. The one call of
@@ -723,7 +758,7 @@ fn may_write(pid: u32, path: &Path) -> Option<bool> {
 /// [`end_sandboxed`]: only macOS runs an own run's commands in a sandbox obid can ask about
 /// (Linux's own lane, and what an obid that crashed left, are later work: docs/contracts/lanes.md).
 #[cfg(not(target_os = "macos"))]
-pub fn end_sandboxed(_writes: &Path, _witness: &Path) -> usize {
+pub fn end_sandboxed(_writes: &Path, _denied: &Path) -> usize {
     0
 }
 
@@ -1146,21 +1181,16 @@ mod tests {
         let root = std::env::temp_dir().join(format!("obid-lanes-16-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        // Each run's temporary folder, and its `env.sh`, which its commands may not write.
+        // Each run's temporary folder, and its `login` folder, which its commands may not write.
         let run = |name: &str| {
             let [temp, login] = ["temp", "login"].map(|d| root.join(name).join(d));
             std::fs::create_dir_all(&temp).unwrap();
             std::fs::create_dir_all(&login).unwrap();
-            std::fs::write(login.join("env.sh"), "").unwrap();
-            (temp, login.join("env.sh"))
+            (temp, login)
         };
-        let ((temp, env), (other, _)) = (run("this"), run("other"));
-        let detached = [
-            "/usr/bin/perl",
-            "-e",
-            "use POSIX; setsid(); exec q(sleep), 600",
-        ];
-        let boxed = |writes: &Path| {
+        let ((temp, login), (other, _)) = (run("this"), run("other"));
+        let sleeper = "use POSIX; setsid(); exec q(sleep), 600";
+        let boxed = |writes: &Path, program: &[&str]| {
             let profile = format!(
                 "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
                 root.display(),
@@ -1168,23 +1198,39 @@ mod tests {
             );
             std::process::Command::new("/usr/bin/sandbox-exec")
                 .args(["-p", &profile])
-                .args(detached)
+                .args(program)
                 .spawn()
                 .unwrap()
         };
-        let mut left = boxed(&temp);
-        let mut others = boxed(&other);
-        let mut persons = std::process::Command::new(detached[0])
-            .args(&detached[1..])
+        let mut left = boxed(&temp, &["/usr/bin/perl", "-e", sleeper]);
+        let mut others = boxed(&other, &["/usr/bin/perl", "-e", sleeper]);
+        let mut persons = std::process::Command::new("/usr/bin/perl")
+            .args(["-e", sleeper])
             .spawn()
             .unwrap();
+        // One that keeps forking detached children while it's being ended.
+        let forks = format!("while :; do /usr/bin/perl -e '{sleeper}' & /bin/sleep 0.001; done");
+        let mut spawner = boxed(&temp, &["/bin/sh", "-c", &forks]);
         std::thread::sleep(std::time::Duration::from_millis(500));
-        assert_eq!(end_sandboxed(&temp, &env), 1);
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        assert!(
-            left.try_wait().unwrap().is_some(),
-            "the run's leftover still runs"
+        // What obid can't prove is the run's ends nothing: a folder that isn't there (macOS says
+        // no one may write it, the person's own processes included).
+        assert_eq!(end_sandboxed(&temp, &root.join("gone")), 0);
+        assert_eq!(end_sandboxed(&root.join("gone"), &login), 0);
+        assert!(left.try_wait().unwrap().is_none());
+        assert!(end_sandboxed(&temp, &login) >= 3);
+        // Nothing of the run's is left, a child forked during the sweep included.
+        assert_eq!(
+            end_sandboxed(&temp, &login),
+            0,
+            "a leftover escaped the sweep"
         );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        for child in [&mut left, &mut spawner] {
+            assert!(
+                child.try_wait().unwrap().is_some(),
+                "the run's leftover still runs"
+            );
+        }
         for child in [&mut others, &mut persons] {
             assert!(
                 child.try_wait().unwrap().is_none(),
@@ -1194,6 +1240,38 @@ mod tests {
             let _ = child.wait();
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// UNSAFE-1 (the owner's decision of 2026-11-11): `process::may_write` is obid's one function
+    /// allowed `unsafe`; no other file of the core's allows, expects or warns of it.
+    #[test]
+    fn unsafe_1_only_may_write_is_unsafe() {
+        let lint = ["unsafe", "_code"].concat();
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut found = Vec::new();
+        let mut folders = vec![crates.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let lines = text
+                        .lines()
+                        .filter(|l| l.contains(&lint) && l.contains('('));
+                    found.extend(lines.map(|l| format!("{}: {}", path.display(), l.trim())));
+                }
+            }
+        }
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert!(found[0].contains("process.rs: #[allow("), "{found:#?}");
+        let workspace =
+            std::fs::read_to_string(crates.parent().unwrap().join("Cargo.toml")).unwrap();
+        assert!(
+            workspace.contains(&format!("{lint} = \"deny\"")),
+            "the workspace's lint"
+        );
     }
 
     /// LANES-2: a boxed agent's environment and an own one's alike give git no settings but the

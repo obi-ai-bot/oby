@@ -1221,6 +1221,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LANES-16, measured on this Mac's real Claude Code: a command in its own sandbox, with an own
+    /// run's temporary folder and `env.sh`, leaves a `setsid` process; obid's sweep finds and ends
+    /// it, so Claude Code's real sandbox matches what `end_sandboxed` looks for. Nothing of the
+    /// login is read or printed. `cargo test -p obid --lib lanes_16_a_real -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "runs the real Claude Code on this Mac's own login"]
+    fn lanes_16_a_real_leftover_ends_with_its_run() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("obid-lanes-16r-{}", uuid::Uuid::new_v4()));
+        let [work, temp, login] = ["work", "temp", "login"].map(|d| root.join(d));
+        for dir in [&work, &temp, &login] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let [work, temp, login] = [work, temp, login].map(|d| d.canonicalize().unwrap());
+        let env_file = login.join("env.sh");
+        std::fs::write(&env_file, "").unwrap();
+        let pid_file = temp.join("pid");
+        let settings = json!({"sandbox": {"enabled": true, "failIfUnavailable": true,
+            "allowUnsandboxedCommands": false,
+            "filesystem": {"allowWrite": [temp], "denyWrite": [login]}}});
+        let mut command = std::process::Command::new("claude");
+        command
+            .current_dir(&work)
+            .args(["-p", "--no-session-persistence", "--setting-sources", ""])
+            .args([
+                "--strict-mcp-config",
+                "--permission-mode",
+                "default",
+                "--model",
+                "sonnet",
+            ])
+            .args([
+                "--allowedTools",
+                "Bash",
+                "--settings",
+                &settings.to_string(),
+            ])
+            .args(["--tools", "Bash"])
+            .env(crate::process::CLAUDE_TMPDIR, &temp)
+            .env("CLAUDE_ENV_FILE", &env_file)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        for (name, _) in std::env::vars() {
+            if name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC_") {
+                command.env_remove(name);
+            }
+        }
+        let mut child = command.spawn().unwrap();
+        let prompt = format!(
+            "Run exactly this one command with the Bash tool, not in the background, then stop: perl -e 'use POSIX; setsid(); exec q(sleep), 900' > /dev/null 2>&1 & echo $! > {}",
+            pid_file.display()
+        );
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(prompt.as_bytes())
+            .unwrap();
+        child.wait().unwrap();
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let alive = || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+        assert!(alive(), "no leftover: the probe proves nothing");
+        assert!(crate::process::end_sandboxed(&temp, &login) >= 1);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !alive(),
+            "Claude Code's own sandbox doesn't match obid's sweep"
+        );
+        let name: String = (work.to_string_lossy().chars())
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let projects = login_home().unwrap().join(".claude/projects");
+        let _ = std::fs::remove_dir_all(projects.join(name));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// LANES-15: an own conversation's file tools never read or change the stored threads,
     /// every conversation's (`conversations/<id>.json`), nor the next one's id.
     #[test]
