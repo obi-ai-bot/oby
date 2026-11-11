@@ -108,7 +108,8 @@ fn after_restart(name: &str, known_reset: bool, choice: Option<&str>, disconnect
         let ids: Vec<&str> = (kept.as_array().unwrap().iter())
             .map(|d| d["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, [id], "{kept}");
+        // The answered one alone, or none once it's forgotten (USAGE-1).
+        assert!(ids.iter().all(|i| *i == id), "{kept}");
         return;
     }
     if choice != Some("resume") {
@@ -248,6 +249,36 @@ fn limits_1_a_resume_on_an_account_that_reports_no_usage_runs_again_on_time() {
         (j["status"] == "done").then_some(j)
     });
     assert_eq!(resumed["round"], 2, "{resumed}");
+}
+
+/// USAGE-1: once an approved Resume ran its job, it reads no account's usage again while no app
+/// looks: the decision no job waits on is forgotten.
+#[test]
+fn usage_1_an_applied_resume_reads_no_more_usage() {
+    let folder = Folder::new("limit-resume-reads");
+    let config = limit_config(&folder.0, "silent", false);
+    let now = obi_protocol::time::now();
+    let jobs = folder.0.join("home/jobs");
+    blocked_job(&jobs, "cccc0002", "research", Some(now - 31 * 60));
+    let env = [
+        ("OBID_USAGE_READS", "on"),
+        ("OBID_USAGE_EVERY_SECONDS", "1"),
+    ];
+    let obid = start_with(&folder.0, &config, None, &env);
+    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
+    let id = decision["id"].as_str().unwrap();
+    let revision = decision["revision"].as_u64().unwrap();
+    let answered = answer(&obid, id, revision, "resume", None);
+    assert_eq!(answered.status, 200, "{}", answered.text);
+    within(45, "the Resume runs", || {
+        (job_now(&obid, "cccc0002")["status"] == "done").then_some(())
+    });
+    let reads = || obid.log().matches("account stub reports no usage").count();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let before = reads();
+    // Two of obid's 15-second ticks, with no app looking.
+    std::thread::sleep(std::time::Duration::from_secs(32));
+    assert_eq!(reads(), before, "{}", obid.log());
 }
 
 /// LIMITS-1: before those 30 minutes, or while the week obid last read is at its reserve, it

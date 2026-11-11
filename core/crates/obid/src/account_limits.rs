@@ -190,6 +190,19 @@ impl Decisions {
         })
     }
 
+    /// Forgets `done`, the decisions no job waits on any more, in one write: each only as it was
+    /// read, so one a job joined since (its revision moved) is kept.
+    pub fn prune(&self, done: &[Decision]) -> Result<(), String> {
+        self.edit(|state| {
+            state.retain(|d| {
+                !done
+                    .iter()
+                    .any(|o| o.id == d.id && o.revision == d.revision)
+            });
+            Ok(())
+        })
+    }
+
     pub fn applied(&self, id: &str, job: &str) -> Result<(), String> {
         self.edit(|state| {
             let d = state
@@ -239,6 +252,23 @@ mod tests {
         let restored = Decisions::open(&home).unwrap();
         assert_eq!(restored.list()[0].choice, Choice::Resume);
         assert_eq!(restored.list()[0].jobs.len(), 2);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// USAGE-1: a decision no job waits on is forgotten, for good; one a job joined since is kept.
+    #[test]
+    fn prune_keeps_a_decision_a_job_still_waits_on() {
+        let home = std::env::temp_dir().join(format!("oby-limit-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&home).unwrap();
+        let decisions = Decisions::open(&home).unwrap();
+        let done = decisions.record("claude", "a", None, "one", "1").unwrap();
+        let other = decisions.record("codex", "b", None, "two", "2").unwrap();
+        let joined = decisions.record("codex", "b", None, "three", "3").unwrap();
+        decisions.prune(&[done, other]).unwrap();
+        drop(decisions);
+        let kept = Decisions::open(&home).unwrap().list();
+        assert_eq!(kept.len(), 1);
+        assert_eq!((&kept[0].id, &kept[0].jobs), (&joined.id, &joined.jobs));
         std::fs::remove_dir_all(home).unwrap();
     }
 
