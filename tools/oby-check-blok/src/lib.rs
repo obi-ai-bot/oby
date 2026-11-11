@@ -1,3 +1,4 @@
+use blok::grpc_server::proto::node_runtime_client::NodeRuntimeClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -386,6 +387,27 @@ impl CheckNode {
         }
         run_group(&self.2, self.1).await
     }
+}
+
+/// A client of the nodes child over its stdin and stdout (spawned piped), which carry nothing
+/// else: no port nor socket, so a check runs in a box with no network at all, another Oby's job's
+/// too (BLOK-3). One connection: should it break, the next dial fails, as the child is gone.
+pub async fn pipes_client(
+    child: &mut tokio::process::Child,
+) -> anyhow::Result<NodeRuntimeClient<tonic::transport::Channel>> {
+    use anyhow::Context;
+    let pipes = tokio::io::join(
+        child.stdout.take().context("nodes stdout missing")?,
+        child.stdin.take().context("nodes stdin missing")?,
+    );
+    let mut pipes = Some(hyper_util::rt::TokioIo::new(pipes));
+    let channel = tonic::transport::Endpoint::from_static("http://oby-check-blok-nodes")
+        .connect_with_connector(tower::service_fn(move |_| {
+            let pipes = pipes.take();
+            async move { pipes.ok_or_else(|| std::io::Error::other("the nodes' pipes are gone")) }
+        }))
+        .await?;
+    Ok(NodeRuntimeClient::new(channel))
 }
 
 #[cfg(test)]

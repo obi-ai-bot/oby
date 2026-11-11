@@ -9,7 +9,9 @@ publishing and merging; this tool only records what the workflow would have said
 - `oby-check-blok validate <workflow.json>`: the rules a run applies, for an editor's draft (`{"valid": …}`).
 - `oby-check-blok check [base]`: the real check, below.
 
-The nodes run in a second binary, `oby-check-blok-nodes`, found beside `oby-check-blok`.
+The nodes run in a second binary, `oby-check-blok-nodes`, found beside `oby-check-blok`, which speaks
+BLOK's gRPC to it over the child's stdin and stdout: no port or socket, so a run works in a box with no
+network at all, loopback and Unix sockets included (another Oby's job's check, BLOK-3).
 
 ## Check mode
 
