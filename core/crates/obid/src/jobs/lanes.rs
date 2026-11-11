@@ -61,6 +61,9 @@ impl Jobs {
         // The room's own settings, MCP servers and instructions, read-only to its Bash and tools.
         let real_room = room.canonicalize().unwrap_or_else(|_| room.to_path_buf());
         frozen.extend(Self::ROOM_CONFIG.map(|name| real_room.join(name)));
+        // Its `login` folder, where obid writes `env.sh` and the MCP configuration Claude Code
+        // starts servers from outside any box (crate::brain::harness): never its commands' to write.
+        frozen.push(login.to_path_buf());
         let sandbox = self
             .sandbox
             .as_ref()
@@ -128,8 +131,9 @@ impl Jobs {
     /// own conversation's file tools never reach, whatever the owner's settings or a skill allow
     /// (a deny beats every allow; obid answers only what Claude Code asks, `rule`): everything in
     /// obid's home but its conversations (the vault, its keys and token, the logins and accounts,
-    /// made later too); in every conversation's folder, its login, config, session, log and its
-    /// commands' `HOME`'s Claude Code login copy (its room stays, as other rooms do); and each
+    /// made later too); in every conversation's folder, this one's too, its `login` (the MCP
+    /// configuration with the turn's tokens, `env.sh`), its commands' `HOME`, config, session and
+    /// log (its room stays, as other rooms do: Bash reads its own `HOME`); and each
     /// Claude Code account's settings, state, login and hooks, so no turn plants a hook.
     fn conversation_denials(&self) -> Vec<String> {
         let home = &self.config.home;
@@ -144,17 +148,10 @@ impl Jobs {
             .collect();
         places.extend(["vault", "keys", "api-token", "accounts", "logins"].map(|n| home.join(n)));
         let each = home.join("conversations/*");
-        places.extend(
-            [
-                "login",
-                "config",
-                "session.json",
-                "agent.log",
-                "home/.claude",
-                "home/.claude.json",
-            ]
-            .map(|n| each.join(n)),
-        );
+        // `home` and `login` whole: a running turn's Oby and Tetrix tokens (`oby-mcp.json`), its
+        // `env.sh`, a boxed one's login copy.
+        places
+            .extend(["login", "home", "config", "session.json", "agent.log"].map(|n| each.join(n)));
         let mut folders: Vec<PathBuf> = self
             .accounts(Tool::Claude)
             .into_iter()
@@ -332,6 +329,21 @@ mod tests {
             assert!(listed(deny, &format!("Edit(/{path}/**)")), "{path}: {deny}");
         }
         assert!(listed(&fs["allowWrite"], room.to_str().unwrap()), "{fs}");
+        // Its `login` folder, with the MCP configuration Claude Code starts servers from outside
+        // any box: no command of its writes there, nor its Edit and Write tools.
+        let config = login.join("oby-mcp.json");
+        assert!(listed(&fs["denyWrite"], login.to_str().unwrap()), "{fs}");
+        assert!(
+            listed(deny, &format!("Edit(/{}/**)", login.display())),
+            "{deny}"
+        );
+        let writable = fs["allowWrite"].as_array().unwrap().iter();
+        assert!(
+            !writable
+                .filter_map(Value::as_str)
+                .any(|w| config.starts_with(w)),
+            "{fs}"
+        );
         // obid's home stays hidden from its commands: the vault, logins, other conversations.
         assert!(listed(&fs["denyRead"], home.to_str().unwrap()), "{fs}");
         assert!(!listed(&fs["allowRead"], home.to_str().unwrap()), "{fs}");
@@ -377,7 +389,10 @@ mod tests {
             format!("Read(/{home}/logins/**)"),
             format!("Read(/{home}/conversations/*/login/**)"),
             format!("Read(/{home}/conversations/*/session.json)"),
-            format!("Read(/{home}/conversations/*/home/.claude/**)"),
+            // Every conversation's commands' HOME and login, with a running turn's tokens.
+            format!("Read(/{home}/conversations/*/home/**)"),
+            format!("Edit(/{home}/conversations/*/home/**)"),
+            format!("Edit(/{home}/conversations/*/login/**)"),
             format!("Edit(/{account}/settings*.json)"),
             format!("Edit(/{account}/.claude.json)"),
             format!("Edit(/{account}/hooks/**)"),

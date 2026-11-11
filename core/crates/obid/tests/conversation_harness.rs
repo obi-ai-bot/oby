@@ -420,7 +420,7 @@ fn a_new_conversation_finds_its_claude_code_started() {
 
     // Its token connects and lists the tools, and calls none; another token is refused.
     let config: Value = serde_json::from_slice(
-        &std::fs::read(conversations.join(format!("{next}/home/oby-mcp.json"))).unwrap(),
+        &std::fs::read(conversations.join(format!("{next}/login/oby-mcp.json"))).unwrap(),
     )
     .unwrap();
     let token = config["mcpServers"]["oby"]["headers"]["Authorization"]

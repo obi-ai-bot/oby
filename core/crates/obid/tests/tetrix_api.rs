@@ -1351,7 +1351,7 @@ fn a_conversation_asks_tetrix_for_reads_with_its_turns_token() {
     let tetrix_of = |conversation: &str| -> (String, String) {
         let file = obid
             .home
-            .join(format!("conversations/{conversation}/home/oby-mcp.json"));
+            .join(format!("conversations/{conversation}/login/oby-mcp.json"));
         let mcp: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
         let server = &mcp["mcpServers"]["tetrix"];
         let url = server["url"].as_str().unwrap();

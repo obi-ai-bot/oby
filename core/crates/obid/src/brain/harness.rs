@@ -524,7 +524,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     }
     place.scrub();
     let token = new_token();
-    let (mcp, url, tetrix) = mcp_config(shared, &place, id);
+    let (mcp, url, tetrix) = mcp_config(shared, &place, id, own);
     write_mcp(&mcp, &url, tetrix.as_deref(), &token)?;
     let mut flags = claude_flags(shared, &account.id, tetrix.is_some(), own);
     let key = flags_key(&flags);
@@ -696,13 +696,14 @@ fn claude_launch(
     )
 }
 
-/// Where a conversation's MCP configuration is (a file in its `HOME`), the URL of Oby's tools
-/// for it, and of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix):
-/// the one place a turn asks, so its server and its orientation always agree.
+/// Where a conversation's MCP configuration is ([`mcp_file`]), the URL of Oby's tools for it, and
+/// of obid's Tetrix server for it while Oby is signed in to Tetrix (crate::tetrix): the one place a
+/// turn asks, so its server and its orientation always agree.
 fn mcp_config(
     shared: &Shared,
     place: &Place,
     conversation: &str,
+    own: bool,
 ) -> (PathBuf, String, Option<String>) {
     let api = shared.connections.api_url();
     let tetrix = shared
@@ -710,16 +711,35 @@ fn mcp_config(
         .usable()
         .then(|| format!("{api}/v1/agent/tetrix/conversation-{conversation}"));
     (
-        place.temp.join(MCP_FILE),
+        mcp_file(place, own),
         format!("{api}/v1/agent/mcp/conversation-{conversation}"),
         tetrix,
     )
+}
+
+/// The file a conversation's MCP configuration is in. An own session's is in its `login` folder,
+/// beside `env.sh`, which its commands can neither read nor write (Claude Code's sandbox denies
+/// it, `Jobs::conversation_own_launch`): Claude Code starts its servers outside any box, so nothing
+/// a turn ran, a process left behind included, may swap the file. A boxed session's is in its
+/// `HOME`, inside obid's box, as before.
+fn mcp_file(place: &Place, own: bool) -> PathBuf {
+    match own {
+        true => place.login.join(MCP_FILE),
+        false => place.temp.join(MCP_FILE),
+    }
 }
 
 /// Writes the MCP configuration that gives the agent Oby's tools, and Tetrix when it's given,
 /// with `token`. The agent writes in its HOME: never through a link it left there (O_NOFOLLOW,
 /// O_EXCL).
 fn write_mcp(mcp: &Path, url: &str, tetrix: Option<&str>, token: &str) -> Result<(), String> {
+    // An own session's `login` folder, made here first: obid's alone, never through a link.
+    if let Some(folder) = mcp.parent() {
+        crate::jobs::not_a_link(folder)?;
+        crate::store::make_private_dir(folder).map_err(|e| {
+            format!("the session's MCP configuration's folder couldn't be made: {e}")
+        })?;
+    }
     let server = |url: &str| {
         json!({"type": "http", "url": url,
                "headers": {"Authorization": format!("Bearer {token}")}})
@@ -1467,7 +1487,7 @@ async fn attempts(
     let own = own_lane(shared, tool, &control.conversation);
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
-    let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation);
+    let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation, own);
     // Codex is given the servers in its arguments instead.
     if tool == Tool::Claude {
         write_mcp(&mcp, &url, tetrix.as_deref(), token)?;
@@ -3727,6 +3747,12 @@ mod tests {
         assert!(ORIENTATION.contains(oby_shell!()));
         let own = ORIENTATION.replacen(oby_shell!(), OWN_SHELL, 1);
         assert!(own.contains(OWN_SHELL) && !own.contains("Run commands with oby_shell"));
+        // An own session's MCP configuration is in its `login` folder, which its commands can't
+        // write (`Jobs::conversation_own_launch`), never in their `HOME` or the room.
+        let mcp = mcp_file(&place, true);
+        assert!(mcp.starts_with(&place.login), "{}", mcp.display());
+        assert!(!mcp.starts_with(&place.temp) && !mcp.starts_with(&place.room));
+        assert_eq!(mcp_file(&place, false), place.temp.join(MCP_FILE));
         let _ = std::fs::remove_dir_all(&home);
     }
 
