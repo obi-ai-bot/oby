@@ -505,7 +505,18 @@ impl Routines {
         kept.insert(routine.id.clone(), routine.clone());
         drop(kept);
         self.save(&routine);
+        if routine.enabled {
+            self.settle_paused(id);
+        }
         Some(Ok(routine))
+    }
+
+    /// Settles the routine's paused card (ALERTS-5), with no routine locked: the inbox has its own.
+    fn settle_paused(&self, id: &str) {
+        if let Some(shared) = self.shared.get().and_then(std::sync::Weak::upgrade) {
+            let card = format!("{}{id}", crate::sphere::inbox::ROUTINE_PAUSED);
+            shared.link.settle(&card);
+        }
     }
 
     /// What `change` would make of the routine `id`, checked, not kept.
@@ -583,6 +594,7 @@ impl Routines {
         }
         self.events
             .send("routine", json!({"id": id, "deleted": true}));
+        self.settle_paused(id);
         true
     }
 
@@ -873,7 +885,8 @@ fn ended(shared: &Shared, id: &str) {
     pause_if_failing(shared, &routine);
 }
 
-/// After [`PAUSE_AFTER`] failures in a row, the routine is paused and its conversation told.
+/// After [`PAUSE_AFTER`] failures in a row, the routine is paused, its card raised (ALERTS-5) and its
+/// conversation told.
 fn pause_if_failing(shared: &Shared, routine: &Routine) {
     if !routine.enabled || routine.failures_in_a_row < PAUSE_AFTER {
         return;
@@ -898,6 +911,14 @@ fn pause_if_failing(shared: &Shared, routine: &Routine) {
             );
         }
     }
+    // In place of the card a pause before left, settled: it's raised again.
+    let card = crate::sphere::inbox::routine_paused_item(
+        &routine.id,
+        &routine.name,
+        PAUSE_AFTER,
+        obi_protocol::time::now(),
+    );
+    shared.link.add_confirm(card);
 }
 
 /// Run now: a run for `now`, paused or not, that leaves its next time as it was.

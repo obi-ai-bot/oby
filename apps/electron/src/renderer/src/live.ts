@@ -346,7 +346,7 @@ const checkOf = (item?: InboxItem) =>
 // stays where it's shown in full (an Obi-to-Obi request must show all it quotes before it's
 // answered). Only what needs the owner (as obid sorts it: needs_you, pending with it),
 // not put off, and not while its answer is on its way.
-const ON_HOME = new Set(['github', 'confirm', 'start', 'failed', 'failure']);
+const ON_HOME = new Set(['github', 'confirm', 'start', 'failed', 'failure', 'routine']);
 // On Home, obid's words under the headline, unless they are the headline (a failure's)
 export const homeAsk = (i: InboxItem): Ask => {
   const ask = itemAsk(i);

@@ -1010,6 +1010,41 @@ pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
     }
 }
 
+/// A paused routine's card's id, before the routine's own (ALERTS-5): one per routine.
+pub const ROUTINE_PAUSED: &str = "routine-paused-";
+/// On a paused routine's card: resumes it, as `PATCH /v1/routines/{id}` `{"enabled": true}` does.
+pub const TURN_BACK_ON: &str = "Turn back on";
+
+/// The `routine` card of a routine that paused itself after `failures` failed runs in a row
+/// (ALERTS-5; proposed words, Sangam's to change). Turn back on resumes it; Dismiss leaves it paused.
+pub fn routine_paused_item(routine: &str, name: &str, failures: u32, now: i64) -> Item {
+    Item {
+        id: format!("{ROUTINE_PAUSED}{routine}"),
+        kind: "routine".into(),
+        job: String::new(),
+        title: "Routine paused".into(),
+        text: format!("{name} failed {failures} times in a row, so it's paused."),
+        options: vec![TURN_BACK_ON.into(), DISMISS.into()],
+        details: Some(vec![
+            "Turns it back on: it runs at its next time.".into(),
+            "Leaves it paused.".into(),
+        ]),
+        recommended: None,
+        created: now,
+        done: None,
+        later: None,
+        answer: None,
+        obi: None,
+        plugin: None,
+        arrived: Some(arrival()),
+        answered_by: None,
+        confirm: None,
+        start: None,
+        github: None,
+        watch: None,
+    }
+}
+
 /// Whether `item` is a [`review_item`]: Oby's review that no reviewer could give, the owner's.
 pub fn is_review_item(item: &Item) -> bool {
     item.kind == "failed" && item.id.contains("-review-")

@@ -182,6 +182,9 @@ fn a_routine_due_while_obid_was_off_runs_once_when_it_starts() {
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     };
+    // The check is done once the ghost's card is raised, its last step (ALERTS-5): every turn
+    // below was said.
+    card(&obid, "routine-paused-dead0001");
     let runs = routine["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 2, "{routine}");
     // Newest first: the catch-up for the latest time, then the missed ones before it.
@@ -248,6 +251,128 @@ fn a_routine_due_while_obid_was_off_runs_once_when_it_starts() {
     std::thread::sleep(std::time::Duration::from_secs(1));
     let after = call(&obid, "GET", "/v1/routines/c0ffee01", None).body;
     assert_eq!(after["runs"].as_array().unwrap().len(), 2, "{after}");
+}
+
+// ALERTS-5 (docs/contracts/alerts.md): a routine that paused itself raises a card, Turn back on
+// and Dismiss. Each routine below is due as obid starts, on an account that's gone, its third
+// failure in a row: it pauses at the first check.
+
+/// obid, with a routine for each of `ids` that pauses itself at its first check.
+fn failing_routines(folder: &Folder, ids: &[&str]) -> Obid {
+    let now = obi_protocol::time::now();
+    let dir = folder.0.join("home/routines");
+    std::fs::create_dir_all(&dir).unwrap();
+    for id in ids {
+        let saved = json!({"id": id, "name": format!("Check {id}"), "repo": "obi-e2e/fixture-app",
+            "kind": "investigate", "task": "Say what the README covers.", "agent": "auto",
+            "account": "ghost", "mode": null, "check": null, "rounds": 1,
+            "schedule": {"every": "daily", "at": "00:00"}, "zone": "UTC", "enabled": true,
+            "created": now - 10 * 86_400, "createdBy": "mac", "conversation": null,
+            "lastFire": now - now.rem_euclid(86_400) - 86_400, "failuresInARow": 2, "runs": []});
+        std::fs::write(dir.join(format!("{id}.json")), saved.to_string()).unwrap();
+    }
+    obid(folder)
+}
+
+/// The inbox's item `id`, open or done, once it's there.
+fn card(obid: &Obid, id: &str) -> Value {
+    let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        for state in ["", "?state=done"] {
+            let items = call(obid, "GET", &format!("/v1/inbox{state}"), None).body;
+            if let Some(item) = items.as_array().unwrap().iter().find(|i| i["id"] == id) {
+                return item.clone();
+            }
+        }
+        assert!(
+            std::time::Instant::now() < give_up_at,
+            "no {id}: {}",
+            obid.log()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+fn answer(obid: &Obid, id: &str, answer: &str) -> Answer {
+    let path = format!("/v1/inbox/{id}/answer");
+    call(obid, "POST", &path, Some(&json!({"answer": answer})))
+}
+
+#[test]
+fn alerts_5_a_paused_routine_raises_a_card() {
+    let folder = Folder::new("alerts-5-card");
+    let obid = failing_routines(&folder, &["dead0001"]);
+    // One the owner paused raises nothing.
+    let made = call(&obid, "POST", "/v1/routines", Some(&routine("Owner's")));
+    let owners = made.body["id"].as_str().unwrap().to_owned();
+    let paused = json!({"enabled": false});
+    call(
+        &obid,
+        "PATCH",
+        &format!("/v1/routines/{owners}"),
+        Some(&paused),
+    );
+
+    let item = card(&obid, "routine-paused-dead0001");
+    assert_eq!(item["kind"], "routine", "{item}");
+    assert_eq!(item["state"], "open", "{item}");
+    assert_eq!(item["triage"], "needs_you", "{item}");
+    assert_eq!(item["title"], "Routine paused");
+    assert_eq!(
+        item["text"],
+        "Check dead0001 failed 3 times in a row, so it's paused."
+    );
+    assert_eq!(item["options"], json!(["Turn back on", "Dismiss"]));
+    let inbox = call(&obid, "GET", "/v1/inbox", None).body;
+    let cards = inbox.as_array().unwrap().iter();
+    assert_eq!(
+        cards.filter(|i| i["kind"] == "routine").count(),
+        1,
+        "{inbox}"
+    );
+
+    // Dismiss settles it, and the routine stays paused.
+    let dismissed = answer(&obid, "routine-paused-dead0001", "Dismiss");
+    assert_eq!(dismissed.status, 200, "{}", dismissed.text);
+    assert_eq!(dismissed.body["state"], "done");
+    let routine = call(&obid, "GET", "/v1/routines/dead0001", None).body;
+    assert_eq!(routine["enabled"], false, "{routine}");
+}
+
+#[test]
+fn alerts_5_turn_back_on_resumes_it_and_settles_the_card() {
+    let folder = Folder::new("alerts-5-on");
+    let obid = failing_routines(&folder, &["dead0001", "dead0002", "dead0003"]);
+    for id in ["dead0001", "dead0002", "dead0003"] {
+        let item = card(&obid, &format!("routine-paused-{id}"));
+        assert_eq!(item["state"], "open", "{item}");
+    }
+    // What it can't run is refused, and its card stays open.
+    let refused = answer(&obid, "routine-paused-dead0001", "Turn back on");
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert!(refused.text.contains("ghost"), "{}", refused.text);
+    assert_eq!(card(&obid, "routine-paused-dead0001")["state"], "open");
+    // The owner gives it an account it has: Turn back on resumes it, as PATCH does.
+    let account = json!({"account": "auto"});
+    call(&obid, "PATCH", "/v1/routines/dead0001", Some(&account));
+    let on = answer(&obid, "routine-paused-dead0001", "Turn back on");
+    assert_eq!(on.status, 200, "{}", on.text);
+    assert_eq!(on.body["state"], "done");
+    assert_eq!(on.body["answer"], "Turn back on");
+    let routine = call(&obid, "GET", "/v1/routines/dead0001", None).body;
+    assert_eq!(routine["enabled"], true, "{routine}");
+    assert_eq!(routine["failuresInARow"], 0, "{routine}");
+    assert!(routine["nextRun"].is_string(), "{routine}");
+
+    // Turned back on anywhere else, or deleted, its card settles too.
+    let resumed = json!({"account": "auto", "enabled": true});
+    call(&obid, "PATCH", "/v1/routines/dead0002", Some(&resumed));
+    call(&obid, "DELETE", "/v1/routines/dead0003", None);
+    for id in ["routine-paused-dead0002", "routine-paused-dead0003"] {
+        let item = card(&obid, id);
+        assert_eq!(item["state"], "done", "{item}");
+        assert_eq!(item["answer"], Value::Null, "{item}");
+    }
 }
 
 // Check-ins (#1116, docs/runner-api.md, "obid only: check-ins"): turned on, asked about and off
