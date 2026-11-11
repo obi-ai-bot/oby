@@ -352,13 +352,8 @@ pub async fn serve(
         None => config.claude_keychain.unwrap_or(false),
     };
     jobs::use_keychain(keychain, config.claude_keychain.is_none());
-    if keychain {
-        if config.claude_keychain.is_none() {
-            tracing::info!(
-                "claudeKeychain on by itself: Claude Code's login is only in the Keychain"
-            );
-        }
-        jobs::keep_keychain_logins();
+    if keychain && config.claude_keychain.is_none() {
+        tracing::info!("claudeKeychain on by itself: Claude Code's login is only in the Keychain");
     }
     // cursorKeychain the same way: left out, on by itself on macOS when Cursor's own login is only
     // in the Keychain, where cursor-agent keeps it by default.

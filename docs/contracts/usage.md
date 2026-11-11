@@ -27,7 +27,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 ### Scenarios
 
 - **USAGE-1:** When an app looks (`GET /v1/status`, its `GET /v1/events` stream opening, the Usage panel opening), obid reads each signed-in account not read in the last 10 minutes, one after another in the background, and the figures come in an `accounts` event. The panel shows the session's share and reset time, and "This week N% · resets <day>". While no app looks, nothing is read. A running job's own reports come between reads.
-- **USAGE-2:** A Claude Code login in the Keychain (`claudeKeychain`: the default login, or an account with a folder of its own) that has ended or ends within 5 minutes is refreshed before the read by the Mac's own Claude Code, unboxed, with its own `/usage`. That asks no model (Claude Code 2.1.302: `num_turns` 0, `total_cost_usd` 0, no `modelUsage`). Then the boxed read runs with a fresh copy. The keeper keeps that login fresh for the next hour, as after any boxed run, with the same free `/usage`. Jobs' refreshes use it too.
+- **USAGE-2:** A Claude Code login in the Keychain (`claudeKeychain`: the default login, or an account with a folder of its own) that has ended or ends within 5 minutes is refreshed before the read by the Mac's own Claude Code, unboxed, with its own `/usage`. That asks no model (Claude Code 2.1.302: `num_turns` 0, `total_cost_usd` 0, no `modelUsage`). Then the boxed read runs with a fresh copy. Every boxed run's refresh before it starts uses the same free `/usage` (docs/contracts/keychain.md, KEYCHAIN-10).
 - **USAGE-3:** No read asks a model. A Claude Code whose `/usage` asked one (an older one without its own) isn't asked again until obid restarts.
 - **USAGE-4:** A read that failed (offline, a refused login) or answered no figures (an API key's account) is tried again after 10 minutes. The panel keeps what it showed: the last figures, or "No use reported yet".
 - **USAGE-5:** A Claude Code account with a `configDir` the configuration names has its Keychain login refreshed like one obid added (USAGE-2): no box ever gets an account's own folder (#655), so nothing waits on it. A login obid doesn't refresh (a login file) within 10 minutes of its end isn't read with. It shows "No use reported yet" (or its last figures) until the person runs `claude` on that account.
@@ -42,7 +42,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 - Claude Code: one `claude -p /usage` per account per 10 minutes while an app looks. With an ended login, one more unboxed `claude -p /usage` refreshes it first. Neither asks a model: $0, nothing from the 5-hour or weekly limits.
 - Codex: one `account/rateLimits/read` on an app-server with no thread: $0.
 - Cursor: two `POST`s per account per 10 minutes while an app looks, the same reads Cursor's own app and CLI make: $0.
-- The keeper's refresh used to be `claude -p ok` on Haiku: one small model turn per refresh (about one per access token's life, some 8 hours, while the login was in use). It's now `/usage`: $0.
+- The refresh used to be `claude -p ok` on Haiku: one small model turn per refresh (about one per access token's life, some 8 hours, while the login was in use). It's now `/usage`: $0, and it runs only right before a boxed run that needs it (KEYCHAIN-10).
 
 ## Invariants
 
