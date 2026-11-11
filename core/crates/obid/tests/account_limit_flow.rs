@@ -90,7 +90,8 @@ fn owner_moves_a_limit_stopped_job_to_a_connected_account_of_another_tool() {
     assert_eq!(moved["model"], "gpt-6-astra");
     assert_eq!(moved["effort"], "low");
     assert_eq!(moved["moves"].as_array().unwrap().len(), 1);
-    let threads = home.join("logins").join(&id).join("threads");
+    // An owner's job: Codex keeps its thread in the account's own folder (LANES-7).
+    let threads = codex.join("threads");
     let text = std::fs::read_dir(&threads)
         .unwrap()
         .flatten()

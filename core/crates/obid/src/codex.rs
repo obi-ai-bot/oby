@@ -8,6 +8,8 @@
 //! can't run inside another, so the thread runs `danger-full-access` with `approvalPolicy`
 //! `untrusted`, and every command that isn't a known read, and every file change, comes to obid as
 //! an approval (as the Swift runner does inside bubblewrap). In Plan mode obid declines file changes.
+//! An owner's own job runs outside obid's box, in Codex's own `workspace-write` with no network
+//! (docs/contracts/lanes.md, LANES-7), its approvals still obid's.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -88,11 +90,13 @@ pub async fn run_turn(
     decide: impl Fn(&str, &Value) -> Ruling,
     on_event: impl FnMut(Event),
 ) -> std::io::Result<Turn> {
+    learn_own_login(&launch);
     let conn = Conn::spawn(&launch, limit, stop, false).await?;
     let mut run = Run {
         conn,
         decide,
         on_event,
+        own: launch.own_sandbox,
         worktree: launch.cwd.clone(),
         plan: options.plan,
         files: HashMap::new(),
@@ -158,7 +162,20 @@ pub async fn run_turn(
     } else {
         run.conn.finish().await
     };
+    learn_own_login(&launch);
     Ok(turn)
+}
+
+/// The login an own run's commands can read in its `CODEX_HOME` (LANES-7): its tokens learned as
+/// secrets obid knows, before the turn and again after it (Codex may have refreshed them), so the
+/// secret scan refuses a change that holds one, in any form, and no log shows one.
+fn learn_own_login(launch: &Launch) {
+    let home = launch.env.iter().find(|(name, _)| name == "CODEX_HOME");
+    if let Some((_, home)) = home.filter(|_| launch.own_sandbox)
+        && let Ok(bytes) = std::fs::read(Path::new(home).join("auth.json"))
+    {
+        crate::jobs::learn_codex_tokens(&bytes, &home.to_string_lossy());
+    }
 }
 
 /// What `account/rateLimits/read` says of the account, from a server started for that alone: no
@@ -228,6 +245,8 @@ struct Run<D, E> {
     conn: Conn,
     decide: D,
     on_event: E,
+    /// In the own lane, in Codex's own sandbox ([`thread_params`]).
+    own: bool,
     worktree: PathBuf,
     plan: bool,
     /// The files each file change writes, by item id: an approval request names only the item.
@@ -311,7 +330,7 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
         }
 
         let cwd = self.worktree.to_string_lossy().into_owned();
-        let mut params = thread_params(&cwd);
+        let mut params = thread_params(&cwd, self.own);
         if let Some(instructions) = &options.instructions {
             params["developerInstructions"] = json!(instructions);
         }
@@ -594,7 +613,14 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     /// refused, so it never waits on obid.
     async fn answer(&mut self, id: Value, request: &Value) {
         let params = &request["params"];
+        // Its sandbox stopped a command, and Codex asks to run it outside (`command failed; retry
+        // without sandbox?`): never in the own lane, whose network stays off (LANES-7).
+        let outside = self.own && params["reason"].as_str().unwrap_or("").contains("sandbox");
         let calls: Vec<(String, Value)> = match request["method"].as_str() {
+            Some("item/commandExecution/requestApproval") if outside => {
+                let why = "Codex's sandbox holds this job's commands, with no network: obid runs none outside it.";
+                return self.decline(&id, params, why.into()).await;
+            }
             Some("item/commandExecution/requestApproval") => match command_of(&params["command"]) {
                 Some(command) => vec![("Bash".into(), json!({"command": unwrap_shell(&command)}))],
                 None => {
@@ -759,10 +785,12 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
     }
 }
 
-/// The thread's settings: obid's sandbox is the sandbox, and every approval comes to obid.
-fn thread_params(cwd: &str) -> Value {
-    json!({"cwd": cwd, "sandbox": "danger-full-access", "approvalPolicy": "untrusted",
-           "approvalsReviewer": "user"})
+/// The thread's settings: obid's sandbox is the sandbox, or in the own lane Codex's own
+/// `workspace-write`, with what its `-c` settings say (`Jobs::own_codex`, LANES-7); every approval
+/// comes to obid either way.
+fn thread_params(cwd: &str, own: bool) -> Value {
+    json!({"cwd": cwd, "sandbox": if own { "workspace-write" } else { "danger-full-access" },
+           "approvalPolicy": "untrusted", "approvalsReviewer": "user"})
 }
 
 /// A text input item.

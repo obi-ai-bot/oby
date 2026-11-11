@@ -1792,7 +1792,7 @@ pub(super) fn jwt_ends(token: &str) -> Option<u64> {
 
 /// The tokens in Codex's login (`auth.json`: its ChatGPT access, refresh and id tokens, and an API
 /// key), learned as secrets obid knows, so whatever repeats them (an agent, a log) is redacted.
-pub(super) fn learn_codex_tokens(bytes: &[u8], account: &str) {
+pub(crate) fn learn_codex_tokens(bytes: &[u8], account: &str) {
     let Ok(login) = serde_json::from_slice::<serde_json::Value>(bytes) else {
         return;
     };

@@ -86,6 +86,15 @@ fn summary(job: &Value) -> &str {
     job["summary"].as_str().unwrap_or("")
 }
 
+/// What the Codex stand-in kept of an own job's thread, in its account's own folder (LANES-7).
+fn thread(folder: &Folder, job: &Value) -> Value {
+    let file = folder.0.join(format!(
+        "home/accounts/codex-work/threads/{}.json",
+        job["session"].as_str().unwrap()
+    ));
+    serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap()
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         // Not a committing job's objects, when this runs in its sandbox (sandbox::Spec::git_env).
@@ -135,24 +144,14 @@ fn agents_6_codex_runs_on_its_accounts_model_and_effort() {
     let id = dispatch(&obid, json!({"agent": "codex", "task": "ENV"}));
     let job = ended(&obid, &id);
     assert_eq!(job["status"], "done", "{job}");
-    let thread = job["session"].as_str().unwrap();
-    let kept: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            obid.home
-                .join("logins")
-                .join(&id)
-                .join(format!("threads/{thread}.json")),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let kept = thread(&folder, &job);
     assert_eq!(kept["model"], "gpt-6-astra");
     assert_eq!(kept["effort"], "low");
 }
 
-/// A Codex job: the thread starts in obid's sandbox with every approval coming to obid, its file
-/// change and its commit are approved, its commit counts, and its words are the summary. Its
-/// CODEX_HOME is a folder of the job's own (#655), never the account's: a box never writes it.
+/// A Codex job: the thread starts in its own sandbox (an owner's job, LANES-7) with every approval
+/// coming to obid, its file change and its commit are approved, its commit counts, and its words
+/// are the summary.
 #[test]
 fn codex_commits_with_obids_approval() {
     let folder = Folder::new("codex-commits");
@@ -167,39 +166,14 @@ fn codex_commits_with_obids_approval() {
     assert_eq!(job["account"], "work");
     assert_eq!(job["commits"], 1);
     assert_eq!(summary(&job), "Added hello.txt.");
-    let thread = job["session"].as_str().unwrap();
-    let kept: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            obid.home
-                .join("logins")
-                .join(&id)
-                .join(format!("threads/{thread}.json")),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(kept["sandbox"], "danger-full-access");
+    let kept = thread(&folder, &job);
+    assert_eq!(kept["sandbox"], "workspace-write");
     assert_eq!(kept["approvalPolicy"], "untrusted");
     assert_eq!(kept["model"], "gpt-6-sol");
     let worktree = obid.home.join("worktrees").join(&id);
     assert_eq!(
         git(&worktree, &["log", "-1", "--format=%s"]),
         "Add hello.txt"
-    );
-
-    let id = dispatch(&obid, json!({"agent": "codex", "task": "ENV"}));
-    let job = ended(&obid, &id);
-    assert_eq!(job["status"], "done", "{job}");
-    let home = obid.home.join("logins").join(&id);
-    assert!(
-        summary(&job).contains(&format!("CODEX_HOME={}", home.display())),
-        "{job}"
-    );
-    // The account's folder got nothing of the jobs'.
-    let account = folder.0.join("home/accounts/codex-work");
-    assert!(
-        !account.join("threads").exists(),
-        "a job wrote the account's folder"
     );
 
     let status = call(&obid, "GET", "/v1/status", None).body;
@@ -210,6 +184,103 @@ fn codex_commits_with_obids_approval() {
         .map(|a| (a["id"].as_str().unwrap(), a["agent"].as_str().unwrap()))
         .collect();
     assert_eq!(accounts, [("work", "codex"), ("cursor", "cursor")]);
+}
+
+/// A Codex login in the account's own folder with a refresh token, built at runtime so a secret scan
+/// doesn't take the test's value for a credential: the refresh token, and the file's text.
+fn codex_login(folder: &Folder) -> (String, String) {
+    use base64::Engine as _;
+    let ends = obi_protocol::time::now() + 10 * 86_400;
+    let claims =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{ends}}}"#));
+    let refresh = format!("rt_{}", uuid::Uuid::new_v4().simple());
+    let access = format!("h.{claims}.s");
+    let login = json!({"tokens": {"access_token": access, "refresh_token": refresh,
+                                  "account_id": "acct"}});
+    let login = login.to_string();
+    let account = folder.0.join("home/accounts/codex-work");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join("auth.json"), &login).unwrap();
+    (refresh, login)
+}
+
+/// LANES-7 (docs/contracts/lanes.md): an own Codex job runs Codex unboxed on its account's own
+/// folder as `CODEX_HOME`, its login there as it was, refresh token and all, with no copy; its
+/// thread is in `workspace-write` with no network and the job's folders writable. Its commands
+/// commit and write /private/tmp, not outside its folders or over the worktree's `.git`; even in
+/// Bypass, obid never lets Codex run one outside its sandbox.
+#[test]
+fn lanes_7_an_own_codex_job_runs_in_its_own_sandbox_on_its_own_login() {
+    let folder = Folder::new("lanes-7");
+    let obid = obid(&folder, false);
+    let (_, login) = codex_login(&folder);
+    let set = call_signed(
+        &obid,
+        "PUT",
+        "/v1/settings/permissions",
+        Some(&json!({"mode": "bypass"})),
+    );
+    assert_eq!(set.status, 200, "{}", set.text);
+    let id = dispatch(
+        &obid,
+        json!({"agent": "codex", "kind": "build", "task": "CONFINED", "check": "test -f confined.txt"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(
+        summary(&job),
+        "commit=ok tmp=ok outside=EPERM pointer=EPERM curl=no network retry=decline",
+        "{job}"
+    );
+    assert_eq!(job["commits"], 1, "{job}");
+    let kept = thread(&folder, &job);
+    assert_eq!(kept["sandbox"], "workspace-write");
+    assert_eq!(kept["approvalPolicy"], "untrusted");
+    let real = |path: PathBuf| path.canonicalize().unwrap();
+    let worktree = real(obid.home.join("worktrees").join(&id));
+    let admin = real(git(&worktree, &["rev-parse", "--absolute-git-dir"]).into());
+    let common = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+    let common = real(git(&worktree, &common).into());
+    let (objects, refs) = (common.join("objects"), common.join("refs"));
+    let roots = json!([worktree, admin, objects, refs, "/private/tmp"]);
+    assert_eq!(kept["roots"], roots, "{kept}");
+    let account = folder.0.join("home/accounts/codex-work");
+    let kept = std::fs::read_to_string(account.join("auth.json")).unwrap();
+    assert_eq!(kept, login);
+    let copy = obid.home.join("logins").join(&id).join("auth.json");
+    assert!(!copy.exists());
+
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "ENV"}));
+    let job = ended(&obid, &id);
+    assert!(
+        summary(&job).contains(&format!("CODEX_HOME={}\n", account.display())),
+        "{job}"
+    );
+}
+
+/// LANES-7 (docs/contracts/lanes.md): an own Codex job's commands can read its login's refresh
+/// token, so a change that holds it isn't published: the secret scan knows the account's tokens.
+#[test]
+fn lanes_7_a_change_holding_the_logins_refresh_token_isnt_published() {
+    let folder = Folder::new("lanes-7-leak");
+    let (obid, remote) = obid_and_remote(&folder, false);
+    let (refresh, _) = codex_login(&folder);
+    let id = dispatch(
+        &obid,
+        json!({"agent": "codex", "kind": "build", "task": "LEAK LOGIN"}),
+    );
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "interrupted", "{job}\n{}", obid.log());
+    let reason = job["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("Not published: possible secret in login.txt:1"),
+        "{job}"
+    );
+    assert!(!job.to_string().contains(&refresh), "{job}");
+    assert!(!obid.log().contains(&refresh));
+    assert_eq!(job["published"], Value::Null);
+    let pushed = git(&remote, &["branch", "--list", &format!("*{id}*")]);
+    assert_eq!(pushed, "", "{pushed}");
 }
 
 /// A Codex job's transcript (#381) has the same entries a Claude Code job's has: each item's start
@@ -877,8 +948,8 @@ fn cursor_signed_out_failures_and_stop() {
     assert!(stopped_beating(&obid, &sleep), "Cursor outlived its stop");
 }
 
-/// Codex runs `danger-full-access` and Cursor edits without asking: obid's job sandbox is what
-/// keeps either from writing outside the worktree.
+/// A write Codex doesn't ask about, and Cursor's edits, which never ask: Codex's own sandbox (an
+/// owner's job, LANES-7) and obid's job sandbox (Cursor's) keep them inside the worktree.
 #[test]
 fn the_sandbox_holds_what_the_tools_dont_ask_about() {
     let folder = Folder::new("adapters-escape");
@@ -1230,7 +1301,7 @@ fn codex_and_cursor_ask_the_owner_in_ask_mode() {
 
 /// What a Codex job asks the owner, by mode (2026-10-27: the owner, on Bypass, was asked for each
 /// read of Codex's reviews). Settings' Bypass (`PUT /v1/settings/permissions`) reaches new jobs:
-/// the thread keeps obid's full access with every approval coming to obid, which answers the file
+/// the thread keeps its own sandbox with every approval coming to obid, which answers the file
 /// change, the commit and the network without the owner. A review, in Plan, runs Codex's
 /// read-only commands without the owner. In Sandbox, git's local reads and tests go through, and
 /// the network waits for the owner.
@@ -1281,18 +1352,8 @@ fn codex_asks_the_owner_only_what_its_mode_keeps() {
         [("Edit", "allowed"), ("Bash", "allowed")],
         "{job}"
     );
-    let thread = job["session"].as_str().unwrap();
-    let kept: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            obid.home
-                .join("logins")
-                .join(&bypass)
-                .join(format!("threads/{thread}.json")),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(kept["sandbox"], "danger-full-access");
+    let kept = thread(&folder, &job);
+    assert_eq!(kept["sandbox"], "workspace-write");
     assert_eq!(kept["approvalPolicy"], "untrusted");
     for id in [&fetch, &review, &local] {
         let job = ended(&obid, id);

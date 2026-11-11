@@ -5,6 +5,10 @@
 // does comes from the thread's first prompt (the job's task):
 //   COMMIT: <file>   asks to write the file (a file change), writes it, asks to commit, commits
 //   SNEAK: <file>    writes the file and commits it without asking (Plan mode or not)
+//   CONFINED         in workspace-write: commits, writes /private/tmp, then outside its folders and
+//                    the worktree's .git, and says how each went, whether it has a network, and
+//                    what obid answered when it asked to run its curl outside its sandbox
+//   LEAK LOGIN       commits its login's refresh token (CODEX_HOME's auth.json) in login.txt
 //   ASK: <command>   asks to run the command and says what obid answered, and what it heard after;
 //                    every answer goes to .obi/answers.log, one per line
 //   obid's word that it paused it  (a call of its waited for the owner past parkAfter, and its
@@ -51,11 +55,13 @@
 //                    whose words hold STALL never answers
 //   anything else    "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable, or
-// obid's token, and when obid starts a thread anywhere but in a sandbox it has to ask about.
+// obid's token, and when obid starts a thread anywhere but in a sandbox it has to ask about: obid's
+// (danger-full-access) or its own with no network (workspace-write, whose writes it holds as Codex's
+// sandbox does).
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 
@@ -130,9 +136,37 @@ async function relayed() {
   return { failed: last };
 }
 
+// Codex's own `workspace-write` (an owner's own job, LANES-7), as its sandbox holds a command: it
+// writes only under the writable roots its `-c` settings name, its working folder and TMPDIR, never
+// a `.git` there; it reaches no network unless they say so.
+const roots = () => setting("sandbox_workspace_write.writable_roots");
+const confined = () => state.sandbox === "workspace-write";
+const real = (path) => join(realpathSync(dirname(path)), basename(path));
+function writable(path) {
+  if (!confined()) return true;
+  path = real(resolve(path));
+  const under = (root) => path === root || path.startsWith(`${root}/`);
+  return [...roots(), process.cwd(), realpathSync(process.env.TMPDIR)]
+    .some((root) => under(root) && !under(join(root, ".git")));
+}
+function write(path, text) {
+  if (!writable(path)) throw Object.assign(new Error(`EPERM: ${path}`), { code: "EPERM" });
+  writeFileSync(path, text);
+}
+// A commit, where git writes: the worktree's own git folder and its objects' folder.
+function commitFile(file, message) {
+  const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+  const held = [git("rev-parse", "--absolute-git-dir"), git("rev-parse", "--git-path", "objects")]
+    .find((dir) => !writable(join(resolve(dir), "x")));
+  if (held) throw Object.assign(new Error(`EPERM: ${held}`), { code: "EPERM" });
+  execFileSync("git", ["add", file]);
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", message]);
+}
+
 async function runTurn(turnId, prompt) {
   if (leaked.length) return complete(turnId, null, "failed", { message: `leaked: ${leaked.join(", ")}` });
-  if (state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
+  const own = confined() && setting("sandbox_workspace_write.network_access") === false && Array.isArray(roots());
+  if ((state.sandbox !== "danger-full-access" && !own) || state.approvalPolicy !== "untrusted")
     return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy}` });
   const task = state.task;
   if (task.includes("RELAY")) {
@@ -163,10 +197,35 @@ async function runTurn(turnId, prompt) {
   const sneak = task.match(/SNEAK: (\S+)/);
   if (sneak) {
     // Codex runs danger-full-access: what it doesn't ask about, obid hears of only afterwards.
-    writeFileSync(resolve(sneak[1]), "hello\n");
-    execFileSync("git", ["add", sneak[1]]);
-    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${sneak[1]}`]);
+    write(resolve(sneak[1]), "hello\n");
+    commitFile(sneak[1], `Add ${sneak[1]}`);
     return complete(turnId, `Added ${sneak[1]}.`);
+  }
+  // LANES-7: in its own sandbox, it commits, writes /private/tmp, and neither writes outside its
+  // folders nor reaches the network.
+  if (task.includes("CONFINED")) {
+    const tried = (what) => { try { what(); return "ok"; } catch (error) { return error.code ?? error.message; } };
+    const said = [
+      `commit=${tried(() => { write(resolve("confined.txt"), "hello\n"); commitFile("confined.txt", "Add confined.txt"); })}`,
+      // Only as the sandbox would rule: the tests may run in a box that holds /private/tmp.
+      `tmp=${writable(`/private/tmp/fake-codex-${randomUUID()}`) ? "ok" : "EPERM"}`,
+      `outside=${tried(() => write(resolve("../outside.txt"), "escaped\n"))}`,
+      `pointer=${tried(() => write(resolve(".git"), "gitdir: /elsewhere\n"))}`,
+      `curl=${setting("sandbox_workspace_write.network_access") === false ? "no network" : "reached"}`,
+    ];
+    // Its sandbox stopped the command: Codex asks to run it outside.
+    const retry = await ask("item/commandExecution/requestApproval", { threadId: thread, turnId, itemId: "c2",
+      command: "curl -s https://example.com", reason: "command failed; retry without sandbox?" });
+    said.push(`retry=${retry.decision}`);
+    return complete(turnId, said.join(" "));
+  }
+  // LANES-7: the login its commands can read, its refresh token committed as it is.
+  if (task.includes("LEAK LOGIN")) {
+    if (existsSync("login.txt")) return complete(turnId, "Left it.");
+    const login = JSON.parse(readFileSync(join(home, "auth.json"), "utf8"));
+    write(resolve("login.txt"), `${login.tokens.refresh_token}\n`);
+    commitFile("login.txt", "Add login.txt");
+    return complete(turnId, "Added login.txt.");
   }
   if (commit) {
     const file = resolve(commit[1]);
@@ -174,13 +233,12 @@ async function runTurn(turnId, prompt) {
     send({ method: "item/started", params: { threadId: thread, turnId, item: change } });
     const edit = await ask("item/fileChange/requestApproval", { threadId: thread, turnId, itemId: change.id });
     if (edit.decision !== "accept") return complete(turnId, `edit: ${edit.decision}`);
-    writeFileSync(file, "hello\n");
+    write(file, "hello\n");
     const run = "/bin/zsh -lc 'git add -A && git commit -q -m add'";
     send({ method: "item/started", params: { threadId: thread, turnId, item: item("commandExecution", { command: run, commandActions: [] }) } });
     const commitAnswer = await ask("item/commandExecution/requestApproval", { threadId: thread, turnId, itemId: "c1", command: run });
     if (commitAnswer.decision !== "accept") return complete(turnId, `commit: ${commitAnswer.decision}`);
-    execFileSync("git", ["add", commit[1]]);
-    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", `Add ${commit[1]}`]);
+    commitFile(commit[1], `Add ${commit[1]}`);
     return complete(turnId, `Added ${commit[1]}.`);
   }
   if (command) {
@@ -242,9 +300,10 @@ async function runTurn(turnId, prompt) {
     return;
   }
   if (task.includes("ESCAPE")) {
-    // Codex runs danger-full-access: a write it doesn't ask about is held by obid's sandbox alone.
+    // A write it doesn't ask about: held by obid's sandbox under danger-full-access, by its own in
+    // workspace-write.
     try {
-      writeFileSync(resolve("../escaped.txt"), "escaped\n");
+      write(resolve("../escaped.txt"), "escaped\n");
       return complete(turnId, "escape: written");
     } catch (error) {
       return complete(turnId, `escape: ${error.code}`);
@@ -361,6 +420,7 @@ rl.on("line", (line) => {
       }
       state.sandbox = params.sandbox;
       state.approvalPolicy = params.approvalPolicy;
+      state.roots = roots();
       state.instructions = params.developerInstructions;
       save();
       return send({ id, result: { thread: { id: thread } } });

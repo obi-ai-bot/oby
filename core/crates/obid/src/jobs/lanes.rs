@@ -4,14 +4,62 @@
 use super::*;
 
 impl Jobs {
-    /// Whether `job`'s `tool` run is in the own lane (LANES-1): every Claude Code job of the
-    /// owner's, unless another Oby asked for it ([`Job::obi`]) or it's marked untrusted
+    /// Whether `job`'s `tool` run is in the own lane (LANES-1): every Claude Code and Codex job of
+    /// the owner's, unless another Oby asked for it ([`Job::obi`]) or it's marked untrusted
     /// ([`Job::untrusted`]); the other marks don't move it (the owner's decision of 2026-11-09).
-    /// Oby's own review stays boxed, as `review_may_run` expects. Its run gets [`own_sandbox_env`]
-    /// and [`own_sandbox_settings`] and no egress proxy (LANES-3, LANES-6); every other run is
-    /// boxed with a copy of its login. `claudeOwnSandbox` doesn't change it.
+    /// Oby's own review stays boxed, as `review_may_run` expects, and so does a Codex account obid
+    /// signed in to ChatGPT (`Jobs::launch`: no run gets its tokens). A Claude Code run gets
+    /// [`own_sandbox_env`] and [`own_sandbox_settings`], a Codex one [`Jobs::own_codex`], and
+    /// neither an egress proxy (LANES-3, LANES-6, LANES-7); every other run is boxed with a copy
+    /// of its login. `claudeOwnSandbox` doesn't change it.
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
-        tool == Tool::Claude && job.obi.is_none() && !job.untrusted && job.review_of.is_none()
+        tool != Tool::Cursor && job.obi.is_none() && !job.untrusted && job.review_of.is_none()
+    }
+
+    /// What an own Codex run gets in `env` (LANES-7): the account's own folder as its `CODEX_HOME`
+    /// (`~/.codex` for an account with no `configDir`), its login there as it is, which Codex
+    /// refreshes: no copy, no refresh token taken out. git is pinned to the job's own git folders,
+    /// as an own Claude Code run's is ([`own_sandbox_env`]), whatever a command writes in the
+    /// worktree's. Returns the `-c` settings of its sandbox (the thread asks for `workspace-write`,
+    /// crate::codex): no network, whatever the account's `config.toml` says, since a command can
+    /// read the login's refresh token there; writable, besides the worktree and its `TMPDIR`, only
+    /// the git folders a commit writes (the worktree's own, the clone's objects and refs) and
+    /// `/private/tmp`.
+    pub(super) fn own_codex(
+        account: &crate::config::Account,
+        spec: &Spec,
+        env: &mut Vec<(&'static str, OsString)>,
+    ) -> Result<Vec<OsString>, String> {
+        let home = account.config_dir.clone();
+        let home = home
+            .or_else(|| login_home().map(|home| home.join(".codex")))
+            .ok_or("obid can't find Codex's own folder.")?;
+        let real = spec.canonical();
+        let (Some(admin), Some(common)) = (real.git_admin, real.git_common) else {
+            return Err("obid has no git folder for this job's Codex.".into());
+        };
+        let roots = [
+            &real.worktree,
+            &admin,
+            &common.join("objects"),
+            &common.join("refs"),
+            Path::new("/private/tmp"),
+        ];
+        let roots: Option<Vec<&str>> = roots.iter().map(|root| root.to_str()).collect();
+        let roots = roots.ok_or("obid can't name this job's folders to Codex's sandbox.")?;
+        let settings = [
+            format!("sandbox_workspace_write.writable_roots={}", json!(roots)),
+            "sandbox_workspace_write.network_access=false".into(),
+        ];
+        let settings = settings.into_iter().flat_map(|s| ["-c".into(), s.into()]);
+        let settings = settings.collect();
+        env.extend([
+            ("CODEX_HOME", home.into_os_string()),
+            ("GIT_DIR", admin.into_os_string()),
+            ("GIT_COMMON_DIR", common.into_os_string()),
+            ("GIT_WORK_TREE", real.worktree.into_os_string()),
+        ]);
+        Ok(settings)
     }
 
     /// Whether job `id`'s agent had a network obid's proxy didn't see: Claude Code ran it, now or
@@ -48,7 +96,7 @@ mod tests {
 
     /// LANES-1 (docs/contracts/lanes.md): another Oby's job, one marked `untrusted` and Oby's own
     /// review are foreign; one marked only `foreign` or `reached` is the owner's, and so own.
-    /// Codex and Cursor stay boxed for now.
+    /// Codex's is own too (LANES-7); Cursor stays boxed.
     #[test]
     fn lanes_1_whose_work_picks_the_lane() {
         let owners = Job::new(
@@ -65,7 +113,7 @@ mod tests {
             Jobs::own_lane(&job, Tool::Claude)
         };
         assert!(Jobs::own_lane(&owners, Tool::Claude));
-        assert!(!Jobs::own_lane(&owners, Tool::Codex));
+        assert!(Jobs::own_lane(&owners, Tool::Codex));
         assert!(!Jobs::own_lane(&owners, Tool::Cursor));
         assert!(marked(
             |job| job.foreign = Some("someone else's issue".into())

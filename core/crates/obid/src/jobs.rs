@@ -7384,7 +7384,8 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra = spec.git_env();
         extra.extend(process::no_publish_env(&spec.temp));
-        let own = Self::own_lane(job, tool);
+        let chatgpt = tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some();
+        let own = Self::own_lane(job, tool) && !chatgpt;
         // A boxed run's only way off the Mac: obid's proxy, which lets its tool's own services
         // through and decides every other site (crate::egress, #616). An own run's network is its
         // CLI's sandbox's (LANES-6).
@@ -7404,7 +7405,7 @@ impl Jobs {
         let tetrix = self.tetrix_mcp(job);
         // On a ChatGPT login, no run holds a token: Codex goes through obid's relay, with the job's
         // broker token (crate::chatgpt_relay).
-        let relay = (tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some())
+        let relay = chatgpt
             .then(|| {
                 if let Some(why) = login_problem(tool, account, login_home().as_deref()) {
                     return Err(why);
@@ -7430,7 +7431,10 @@ impl Jobs {
             chatgpt.runs.begin(&job.id);
         }
         self.update(&job.id, |job| job.own_lane = own);
+        let mut own_codex = Vec::new();
         match (&account.config_dir, tool) {
+            // In Codex's own sandbox, with the account's own folder and login: no copy.
+            (_, Tool::Codex) if own => own_codex = Self::own_codex(account, &spec, &mut extra)?,
             // In Claude Code's own sandbox, with the account's own folder and login: no copy.
             _ if own => extra.extend(own_sandbox_env(account, &spec, &self.login_path(&job.id))?),
             // Never the account's own folder (#655): the job's own, a login copy and nothing else.
@@ -7527,6 +7531,7 @@ impl Jobs {
                 // github.com, which the egress proxy would ask the owner about (#616), and a job's
                 // `CODEX_HOME` has no plug-in in it anyway.
                 argv.splice(1..1, ["-c".into(), "features.plugins=false".into()]);
+                argv.splice(1..1, own_codex);
                 // Codex itself needs it (its MCP servers, the relay); its commands don't, and real
                 // Codex hands them all of its environment, this included (measured 2026-11-03).
                 if extra.iter().any(|(name, _)| *name == "OBY_MCP_TOKEN") {
