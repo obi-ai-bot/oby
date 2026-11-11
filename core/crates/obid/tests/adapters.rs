@@ -77,9 +77,7 @@ fn dispatch(obid: &Obid, job: Value) -> String {
 }
 
 fn ended(obid: &Obid, id: &str) -> Value {
-    let answer = call(obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
-    assert_eq!(answer.status, 200, "{}", answer.text);
-    answer.body
+    ended_within(obid, id, 240)
 }
 
 fn summary(job: &Value) -> &str {
@@ -1629,14 +1627,20 @@ fn recovery_7_codex_says_how_its_turn_ended() {
     assert!(job["accountLimit"].is_null(), "{job}");
 }
 
-/// RECOVERY-7: a usage limit only Codex's field says holds the job on it.
+/// RECOVERY-7: a usage limit only Codex's field says is a limit: with no other account that has
+/// room, the job waits by itself for one (LIMITS-15), with no card.
 #[test]
 fn recovery_7_codex_says_its_limit_in_its_field() {
     let folder = Folder::new("recovery-7-codex-limit");
     let (obid, _) = obid_with(&folder, false, json!({"stallAfter": 2}));
     let id = dispatch(&obid, json!({"agent": "codex", "task": "PLAN USED UP"}));
-    let job = ended(&obid, &id);
-    assert!(!job["accountLimit"].is_null(), "{job}");
+    let job = within(60, "the job to wait for an account with room", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
+    });
+    let step = job["step"].as_str().unwrap_or_default();
+    assert!(step.starts_with("Every account is at its limit"), "{job}");
+    assert!(job["accountLimit"].is_null(), "no card: {job}");
 }
 
 /// RECOVERY-8: Codex's full context window goes on in a new thread.

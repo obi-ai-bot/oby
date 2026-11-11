@@ -678,6 +678,38 @@ pub fn within<T>(seconds: u64, what: &str, mut probe: impl FnMut() -> Option<T>)
     }
 }
 
+/// The job once it has ended (`GET /v1/jobs/{id}/wait`), failing the test with the job as it is
+/// when it hasn't within `seconds`: `/wait` alone never gives up, and a job can wait by itself for
+/// days (an account's limit, LIMITS-15).
+pub fn ended_within(obid: &Obid, id: &str, seconds: u64) -> Value {
+    struct Port(u16, PathBuf);
+    impl Listens for Port {
+        fn port(&self) -> u16 {
+            self.0
+        }
+        fn home(&self) -> &Path {
+            &self.1
+        }
+    }
+    let port = Port(obid.port, obid.home.clone());
+    let target = format!("/v1/jobs/{id}/wait");
+    let (sender, ended) = std::sync::mpsc::channel();
+    // ponytail: a waiter left behind ends when the test's obid is killed and closes its socket.
+    std::thread::spawn(move || {
+        let _ = sender.send(request_to(&port, TOKEN, "GET", &target, None, &[]));
+    });
+    match ended.recv_timeout(Duration::from_secs(seconds)) {
+        Ok(answer) => {
+            assert_eq!(answer.status, 200, "{}", answer.text);
+            answer.body
+        }
+        Err(_) => {
+            let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).text;
+            panic!("job {id} didn't end within {seconds} seconds: {job}")
+        }
+    }
+}
+
 /// Follows `GET /v1/events`: every event, `(name, data)`, as it comes.
 pub fn follow_events(obid: &Obid) -> std::sync::mpsc::Receiver<(String, Value)> {
     let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();

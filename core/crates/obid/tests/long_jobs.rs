@@ -53,9 +53,23 @@ fn post_kind(obid: &Obid, kind: &str, task: &str) -> String {
 }
 
 fn wait(obid: &Obid, id: &str) -> Value {
-    let answer = call(obid, "GET", &format!("/v1/jobs/{id}/wait"), None);
-    assert_eq!(answer.status, 200, "{}", answer.text);
-    answer.body
+    ended_within(obid, id, 240)
+}
+
+/// Job `id` once it waits by itself for an account with room (LIMITS-15): `queued`, its line
+/// saying so, and no card. A limit isn't a retry: nothing the run was sent is sent again.
+fn waiting_for_room(obid: &Obid, id: &str) -> Value {
+    let job = within(60, "the job to wait for an account with room", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
+    });
+    let step = job["step"].as_str().unwrap_or_default();
+    assert!(
+        step.starts_with("Every account is at its limit: resuming when one has room"),
+        "{job}"
+    );
+    assert!(job["accountLimit"].is_null(), "no card: {job}");
+    job
 }
 
 /// Streaming words for 4 quiet windows, a job keeps running and ends done; one that only writes
@@ -435,8 +449,9 @@ fn recovery_1_a_good_turn_gives_the_tries_back() {
     assert_eq!(told.len(), 2 * continued, "{told:?}");
 }
 
-/// RECOVERY-1: a login isn't tried again, and a usage limit goes to its own decision (#1563),
-/// whatever cut the turn.
+/// RECOVERY-1: a login isn't tried again, and a usage limit goes to its own path, whatever cut the
+/// turn: with no other account that has room, the job waits by itself (LIMITS-15), its turn not
+/// sent again.
 #[test]
 fn recovery_1_a_login_or_a_limit_is_not_retried() {
     let (_folder, obid) = obid("recovery-1-login");
@@ -450,10 +465,8 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     assert_eq!(prompts(&job).len(), 1, "{job}");
 
     let id = post_job(&obid, "LIMITED WEEK: 86400 KEEP PROMPTS");
-    let job = wait(&obid, &id);
-    assert_eq!(job["status"], "interrupted", "{job}");
+    let job = waiting_for_room(&obid, &id);
     assert_eq!(prompts(&job).len(), 1, "{job}");
-    assert!(!job["accountLimit"].is_null(), "{job}");
 
     // A passing error on an account its usage says is full is its limit's, not a retry's.
     let (_folder, obid) = obid_with("recovery-1-full", json!({}), &[]);
@@ -461,9 +474,8 @@ fn recovery_1_a_login_or_a_limit_is_not_retried() {
     let usage = json!({"status": "allowed_warning", "unifiedWindows": {
         "seven_day": {"utilization": 1.0, "resetsAt": reset}}});
     let id = post_job(&obid, &format!("USAGE: {usage} TRANSIENT KEEP PROMPTS"));
-    let job = wait(&obid, &id);
+    let job = waiting_for_room(&obid, &id);
     assert_eq!(prompts(&job).len(), 1, "{job}");
-    assert!(!job["accountLimit"].is_null(), "{job}");
 }
 
 /// RECOVERY-7: how a turn ended is read from the tool's fields: a 429 whose words name no status
@@ -1552,19 +1564,13 @@ fn recovery_14_a_first_launch_the_network_failed_starts_again() {
     );
 }
 
-/// RECOVERY-14: one that dies so on an account whose window is full is that limit's (#1563), not
-/// the network's: it isn't launched again.
+/// RECOVERY-14: one that dies so on an account whose window is full is that limit's, not the
+/// network's: it isn't launched again, it waits for an account with room (LIMITS-15).
 #[test]
 fn recovery_14_a_first_launch_on_a_full_account_isnt_tried_again() {
     let (_folder, obid) = obid_with("recovery-14-launch-full", json!({}), &[]);
     let id = post_job(&obid, "OFFLINE ONCE LIMITED");
-    let job = within(120, "the limit to stop it", || {
-        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        job["changes"]
-            .to_string()
-            .contains("five-hour limit")
-            .then_some(job)
-    });
+    let job = waiting_for_room(&obid, &id);
     assert!(
         !obid.log().contains("stopped before it started"),
         "{job}\n{}",
