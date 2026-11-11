@@ -1164,11 +1164,13 @@ mod tests {
             json!({"hooks": hook}),
             "hooks",
         );
-        refused(
-            &remote,
-            json!({"allowManagedHooksOnly": true}),
-            "allowManagedHooksOnly",
-        );
+        refused(&remote, json!({"hooks": hook}), "hooks");
+        // A drop-in that's a link to a file, as Claude Code reads it.
+        let linked = root.join("linked.json");
+        std::fs::write(&linked, json!({"hooks": hook}).to_string()).unwrap();
+        std::os::unix::fs::symlink(&linked, drop_ins.join("30.json")).unwrap();
+        assert!(allowed().unwrap_err().contains("30.json"));
+        std::fs::remove_file(drop_ins.join("30.json")).unwrap();
         // MANAGED-1: a plugin managed settings turn on (its hooks still run), a policy helper.
         let plugins = json!({"enabledPlugins": {"off@org": false, "team-policy@org": true}});
         refused(&file, plugins, "enabledPlugins");
@@ -1182,9 +1184,11 @@ mod tests {
             json!({"policyHelpers": []}),
             "policyHelpers",
         );
-        // Only what runs hooks: a variable named like one, a plugin left off, and a folder named
-        // `*.json` in the drop-ins, which Claude Code skips, don't stop it.
-        let env = json!({"env": {"WEBHOOK_URL": "u"}, "enabledPlugins": {"hookify@org": false}});
+        // Only what runs hooks: a variable named like one, a plugin left off, `allowManagedHooksOnly`
+        // (it turns no hook on) and a folder named `*.json` in the drop-ins, which Claude Code
+        // skips, don't stop it.
+        let env = json!({"env": {"WEBHOOK_URL": "u"}, "enabledPlugins": {"hookify@org": false},
+            "allowManagedHooksOnly": true});
         std::fs::write(&file, env.to_string()).unwrap();
         std::fs::create_dir_all(drop_ins.join("folder.json")).unwrap();
         assert_eq!(allowed(), Ok(()));
