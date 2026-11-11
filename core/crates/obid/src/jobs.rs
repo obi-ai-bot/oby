@@ -10865,9 +10865,9 @@ impl Jobs {
                         // limit names no time, and an hour obid inferred never reaches the card.
                         .or_else(|| limited.then(|| usage.full_until_at(now)).flatten())
                         .filter(|_| !chatgpt);
-                    // The account is full whatever the tool said, so nothing else is routed there
-                    // until it resets; and while another of the tool has room, the job goes on there.
-                    if limited {
+                    // The account is full whatever the tool said (not for one model's, USAGE-13), so
+                    // nothing else goes there till it resets; while another has room, the job does.
+                    if limited && !turn.scoped {
                         self.mark_full(&account.id, reset, now);
                     }
                     if limited && job.obi.is_none() {

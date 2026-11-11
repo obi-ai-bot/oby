@@ -85,6 +85,15 @@ pub fn claude_full_until(message: &Value) -> Option<i64> {
         .flatten()
 }
 
+/// Claude Code's `rate_limit_event` refusing one model's or the overage's own limit (USAGE-13):
+/// when that limit resets, if it named it. The account isn't full.
+pub fn claude_scoped_until(message: &Value) -> Option<i64> {
+    let info = &message["rate_limit_info"];
+    crate::usage::claude_scoped(info)
+        .then(|| epoch(&info["resetsAt"]))
+        .flatten()
+}
+
 /// Codex's `account/rateLimits/updated` (its `rateLimits`): when its own limit resets, if a window
 /// is at 100%: the latest full window's reset.
 pub fn codex_full_until(limits: &Value) -> Option<i64> {

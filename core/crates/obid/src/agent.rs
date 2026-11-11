@@ -174,6 +174,9 @@ pub struct Turn {
     /// When the account resets, in seconds since the epoch, if the tool said this turn it's full
     /// (crate::limits).
     pub resets: Option<i64>,
+    /// The limit this turn hit is one model's or the overage's own, never the whole account's
+    /// (USAGE-13): the job waits or moves past it, and the account isn't marked full.
+    pub scoped: bool,
     /// The last words the agent wrote this turn: its `result` carries none when its last message
     /// was a tool call (#764).
     pub last_words: String,
@@ -729,6 +732,12 @@ pub async fn turn_on(
             Some("rate_limit_event") => {
                 if let Some(at) = crate::limits::claude_full_until(&message) {
                     turn.resets = Some(at);
+                    turn.scoped = false;
+                } else if crate::usage::claude_scoped(&message["rate_limit_info"])
+                    && (turn.resets.is_none() || turn.scoped)
+                {
+                    turn.resets = crate::limits::claude_scoped_until(&message);
+                    turn.scoped = true;
                 }
             }
             Some("result") => {
