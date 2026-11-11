@@ -239,11 +239,8 @@ fn affected_cli_and_mcp_return_structured_verdicts() {
 }
 
 #[tokio::test]
-async fn grpc_port_zero_and_spawn_configuration_reject_unauthorized_calls() {
-    use blok::grpc_server::proto::{
-        node_runtime_client::NodeRuntimeClient, ExecuteRequest, NodeRef,
-    };
-    use tokio::io::{AsyncBufReadExt, BufReader};
+async fn grpc_over_the_nodes_pipes_rejects_unauthorized_calls() {
+    use blok::grpc_server::proto::{ExecuteRequest, NodeRef};
     let scratch = tempfile::tempdir().unwrap();
     let repo = scratch.path().join("repo");
     let foreign = scratch.path().join("foreign");
@@ -252,32 +249,16 @@ async fn grpc_port_zero_and_spawn_configuration_reject_unauthorized_calls() {
         std::fs::write(path.join("scripts/oby-check.sh"), "touch ran\n").unwrap();
     }
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_oby-check-blok-nodes"))
-        .env("GRPC_PORT", "0")
         .env("OBY_CHECK_DIR", &repo)
         .env("OBY_CHECK_BASE", "HEAD")
         .env("OBY_CHECK_TOKEN", "private-token")
         .env_remove("BLOK_BLOB_DIR")
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    let line = tokio::time::timeout(std::time::Duration::from_secs(10), lines.next_line())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let address = line
-        .split_once("listening on ")
-        .unwrap()
-        .1
-        .split_whitespace()
-        .next()
-        .unwrap();
-    assert_ne!(address, "127.0.0.1:0");
-    let mut client = NodeRuntimeClient::connect(format!("http://{address}"))
-        .await
-        .unwrap();
+    let mut client = oby_check_blok::pipes_client(&mut child).await.unwrap();
     for inputs in [
         serde_json::json!({}),
         serde_json::json!({"token": "wrong"}),
@@ -728,6 +709,52 @@ fn publishing_18_check_plans_the_paths_obid_names_on_a_clean_checkout() {
         ),
         "{err}"
     );
+}
+
+#[test]
+fn blok_3_check_runs_in_a_box_with_no_network_at_all() {
+    // Another Oby's job's check box: no loopback and no Unix socket (obid's Seatbelt profile
+    // denies `network*`). Where this test already runs in a box, Seatbelt can't make another.
+    let sandbox = Path::new("/usr/bin/sandbox-exec");
+    let deny = "(version 1)(allow default)(deny network*)";
+    if !sandbox.exists()
+        || !Command::new(sandbox)
+            .args(["-p", deny, "/usr/bin/true"])
+            .status()
+            .is_ok_and(|s| s.success())
+    {
+        return;
+    }
+    let scan = "if [[ -n $OBY_CHECK_PLAN ]]; then [[ $OBY_CHECK_ONLY == scan ]] && echo 'oby-check: group scan'; exit 0; fi\n[[ $(cat verdict) == pass ]]\n";
+    for (verdict, code, last) in [
+        ("pass", 0, "oby-check: passed"),
+        ("fail", 1, "oby-check: failed: secret-scan"),
+    ] {
+        // A pass ends stdout, a failure stderr, as the script's do.
+        let scratch = checkout(scan);
+        std::fs::write(scratch.path().join("verdict"), verdict).unwrap();
+        let output = Command::new(sandbox)
+            .current_dir(scratch.path())
+            .args([
+                "-p",
+                deny,
+                env!("CARGO_BIN_EXE_oby-check-blok"),
+                "check",
+                "HEAD",
+            ])
+            .env("HOME", scratch.path())
+            .env_remove("OBY_CHECK_PATHS")
+            .env_remove("OBY_CHECK_ALL")
+            .output()
+            .unwrap();
+        let (out, err) = (
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(output.status.code(), Some(code), "{out}{err}");
+        let said = if code == 0 { &out } else { &err };
+        assert_eq!(said.lines().last(), Some(last), "{out}{err}");
+    }
 }
 
 #[test]

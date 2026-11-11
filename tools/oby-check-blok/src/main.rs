@@ -106,12 +106,12 @@ async fn workflow(
     let mut nodes_child = Command::new(&binary);
     scope(&mut nodes_child);
     let mut child = nodes_child
-        .env("GRPC_PORT", "0")
         .env("OBY_CHECK_DIR", &input.checkout)
         .env("OBY_CHECK_BASE", &input.base)
         .env("OBY_CHECK_TOKEN", &token)
         .env_remove("BLOK_BLOB_DIR")
-        .stdin(Stdio::null())
+        // gRPC over these two pipes, never a port (BLOK-3).
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // The real check shows each node's script as it runs (PUBLISHING-16); the others print
         // only their verdict.
@@ -123,44 +123,22 @@ async fn workflow(
         .kill_on_drop(true)
         .spawn()
         .context("start sibling oby-check-blok-nodes binary (build both binaries first)")?;
-    // blok-rs logs the actual local address after binding, including with port 0.
-    let mut stdout = BufReader::new(child.stdout.take().context("nodes stdout missing")?).lines();
-    let port = tokio::time::timeout(STARTUP, async {
-        while let Some(line) = stdout.next_line().await? {
-            if let Some(rest) = line
-                .split_once("listening on 127.0.0.1:")
-                .map(|(_, rest)| rest)
-            {
-                let port: u16 = rest
-                    .split_whitespace()
-                    .next()
-                    .context("missing bound port")?
-                    .parse()?;
-                anyhow::ensure!(port != 0, "nodes reported port zero");
-                return Ok::<_, anyhow::Error>(port);
+    let mut client = oby_check_blok::pipes_client(&mut child).await?;
+    // Its first answer waits for it to start (a cold Mac is slow); one that broke the pipes, its
+    // exit.
+    tokio::time::timeout(STARTUP, async {
+        loop {
+            if client.health(HealthRequest::default()).await.is_ok() {
+                return Ok(());
             }
+            if let Some(status) = child.try_wait()? {
+                bail!("nodes exited before ready: {status}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        bail!("nodes exited before reporting its bound port")
     })
     .await
-    .context("nodes did not report its bound port")??;
-    let endpoint = format!("http://127.0.0.1:{port}");
-    let start = Instant::now();
-    let mut client = loop {
-        if let Some(status) = child.try_wait()? {
-            bail!("nodes exited before ready: {status}");
-        }
-        if let Ok(mut client) = NodeRuntimeClient::connect(endpoint.clone()).await {
-            if client.health(HealthRequest::default()).await.is_ok() && child.try_wait()?.is_none()
-            {
-                break client;
-            }
-        }
-        if start.elapsed() > STARTUP {
-            bail!("nodes did not become ready");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+    .context("nodes did not become ready")??;
     let result = async {
         // A group the script planned but no step runs can't be called judged.
         for name in &needed {
