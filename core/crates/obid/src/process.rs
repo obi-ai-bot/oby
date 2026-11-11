@@ -1245,15 +1245,16 @@ pub(crate) mod tests {
             .args(["-e", sleeper])
             .spawn();
         started.children.push(persons.unwrap());
-        // One that forks detached children, 200 at most, while it's being ended; each listed.
+        // One that forks detached children, 400 at most, while it's being ended; each listed.
         let forks = format!(
-            "i=0; while [ $i -lt 200 ]; do /usr/bin/perl -e '{sleeper}' & echo $! >> '{}'; i=$((i+1)); /bin/sleep 0.002; done",
+            "i=0; while [ $i -lt 400 ]; do /usr/bin/perl -e '{sleeper}' & echo $! >> '{}'; i=$((i+1)); /bin/sleep 0.001; done",
             pids.display()
         );
         started
             .children
             .push(boxed(&temp, &["/bin/sh", "-c", &forks]));
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Mid-way through its forking.
+        std::thread::sleep(std::time::Duration::from_millis(150));
         // What obid can't prove is the run's ends nothing: a folder that isn't there (macOS says
         // no one may write it, the person's own processes included).
         assert_eq!(end_sandboxed(&temp, &root.join("gone")), 0);
