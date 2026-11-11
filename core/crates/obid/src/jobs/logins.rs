@@ -446,12 +446,19 @@ pub(super) fn managed_hooks_allowed(
     let drop_ins = folder.join("managed-settings.d");
     let mut docs = vec![folder.join("managed-settings.json"), remote.to_path_buf()];
     match std::fs::read_dir(&drop_ins) {
-        Ok(entries) => docs.extend(entries.flatten().map(|e| e.path()).filter(|p| {
-            p.extension().is_some_and(|e| e == "json")
-                && !p
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-        })),
+        // As Claude Code: a file or a link named `*.json`, not starting with a dot.
+        Ok(entries) => docs.extend(
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file() || t.is_symlink()))
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension().is_some_and(|e| e == "json")
+                        && !p
+                            .file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+                }),
+        ),
         Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {}
         Err(e) => return Err(cant(&drop_ins, &e)),
     }
@@ -484,7 +491,7 @@ pub(super) fn managed_hooks_allowed(
         let set: Value = serde_json::from_slice(&text).map_err(|e| cant(&doc, &e))?;
         if let Some(key) = hook_key(&set) {
             return Err(format!(
-                "Claude Code's managed settings in {} set {key}, which would run hooks in an own run outside its sandbox, and they outrank obid's settings: an own run never runs hooks, so it doesn't start. Ask whoever manages this Mac to take it out.",
+                "Claude Code's managed settings in {} set {key}, which would run hooks or programs of the organization's in an own run outside its sandbox, and they outrank obid's settings: an own run never runs hooks, so it doesn't start. Ask whoever manages this Mac to take it out.",
                 doc.display()
             ));
         }
@@ -492,18 +499,22 @@ pub(super) fn managed_hooks_allowed(
     Ok(())
 }
 
-/// The first key in `value`, at any depth, that names hooks (`hooks`, `allowManagedHooksOnly`,
-/// a hook setting a later Claude Code adds), but a `disableAllHooks` that's `true`.
-fn hook_key(value: &Value) -> Option<String> {
-    value.as_object()?.iter().find_map(|(key, value)| {
-        let hooks = key.to_ascii_lowercase().contains("hook")
-            && !(key == "disableAllHooks" && value == &Value::Bool(true));
-        if hooks {
-            Some(key.clone())
-        } else {
-            hook_key(value)
+/// The managed setting in `set` that would run hooks past obid's `disableAllHooks: true` (the
+/// owner's MANAGED-1): `hooks`, `disableAllHooks: false`, `allowManagedHooksOnly`, a plugin it
+/// turns on (`enabledPlugins`: a managed plugin's hooks still run), or a policy helper, a program
+/// whose answer is more managed settings (`policyHelper`, `policyHelpers`).
+fn hook_key(set: &Value) -> Option<String> {
+    let on = |key: &str| match &set[key] {
+        Value::Null => false,
+        Value::Bool(on) => *on != (key == "disableAllHooks"),
+        Value::Object(plugins) if key == "enabledPlugins" => {
+            plugins.values().any(|on| on != &Value::Bool(false))
         }
-    })
+        _ => true,
+    };
+    #[rustfmt::skip]
+    let keys = ["hooks", "disableAllHooks", "allowManagedHooksOnly", "enabledPlugins", "policyHelper", "policyHelpers"];
+    keys.into_iter().find(|key| on(key)).map(str::to_owned)
 }
 
 /// The path a settings file's sandbox `path` names, as Claude Code reads it: `~/…` in `home`, `/…`

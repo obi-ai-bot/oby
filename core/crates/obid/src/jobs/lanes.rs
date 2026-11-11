@@ -1169,6 +1169,26 @@ mod tests {
             json!({"allowManagedHooksOnly": true}),
             "allowManagedHooksOnly",
         );
+        // MANAGED-1: a plugin managed settings turn on (its hooks still run), a policy helper.
+        let plugins = json!({"enabledPlugins": {"off@org": false, "team-policy@org": true}});
+        refused(&file, plugins, "enabledPlugins");
+        refused(
+            &file,
+            json!({"policyHelper": {"path": "/usr/local/bin/p"}}),
+            "policyHelper",
+        );
+        refused(
+            &drop_ins.join("20.json"),
+            json!({"policyHelpers": []}),
+            "policyHelpers",
+        );
+        // Only what runs hooks: a variable named like one, a plugin left off, and a folder named
+        // `*.json` in the drop-ins, which Claude Code skips, don't stop it.
+        let env = json!({"env": {"WEBHOOK_URL": "u"}, "enabledPlugins": {"hookify@org": false}});
+        std::fs::write(&file, env.to_string()).unwrap();
+        std::fs::create_dir_all(drop_ins.join("folder.json")).unwrap();
+        assert_eq!(allowed(), Ok(()));
+        std::fs::remove_file(&file).unwrap();
         // One that isn't JSON, or can't be read, stops it too.
         std::fs::write(&file, "{not json").unwrap();
         assert!(allowed().is_err());
