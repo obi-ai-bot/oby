@@ -225,9 +225,22 @@ let show!: () => BrowserWindow;
 // what the window's page shows ({}: Home), as it says ('showing'); null: something else
 let showing: Place | null = null;
 let locked = false;
-// what was said for each thing (null until the first look: what's there then isn't news), and
-// the alerts on screen, kept so their clicks still come and they stay in Notification Center
+// what was said for each thing, kept across launches in the app's own folder (ALERTS-2): what
+// waited while Oby was closed alerts once when it opens, and a restart repeats nothing. null:
+// nothing kept yet (the first launch with this), so the first look's is the baseline, not news.
+// And the alerts on screen, kept so their clicks still come and they stay in Notification Center
 let said: Map<string, { what: string; needs: boolean }> | null = null;
+const SAID = () => join(app.getPath('userData'), 'alerts-said.json');
+let kept = '';
+// What the last launch said: a file that can't be read or parsed is an empty map (what waits
+// alerts), never a throw and never a reason to stay quiet
+function keptSaid(): typeof said {
+  try { kept = readFileSync(SAID(), 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; }
+  try {
+    return new Map(Object.entries(JSON.parse(kept) as Record<string, { what?: unknown; needs?: unknown } | null>)
+      .filter((e): e is [string, { what: string; needs: boolean }] => typeof e[1]?.what === 'string' && typeof e[1].needs === 'boolean'));
+  } catch { return new Map(); }
+}
 const shown = new Map<string, { n: Notification; place: Place }>();
 // when an alert that needs the owner last came in each conversation: Oby's words beside it
 // ("It waits for your Start") say the same, so they don't alert within a minute
@@ -288,10 +301,10 @@ let ready = false;
 function look() {
   if (!ready) return;
   const want = wanted();
+  // nothing kept: what's there isn't news, and the badge still counts it
   if (!said) {
     said = new Map([...want].map(([key, a]) => [key, { what: a.what, needs: a.needs }]));
     answers.clear();
-    return;
   }
   const next = new Map<string, { what: string; needs: boolean }>();
   for (const [key, a] of want) {
@@ -308,6 +321,10 @@ function look() {
   }
   for (const [key, s] of said) if (s.needs && !next.has(key)) withdraw(key);
   said = next;
+  const text = JSON.stringify(Object.fromEntries(said));
+  if (text !== kept) {
+    try { writeOwn(SAID(), text, constants.O_TRUNC); kept = text; } catch (e) { console.error(`Oby: couldn’t keep what alerts said: ${e}`); }
+  }
   // How many things wait on the owner, on the Dock's icon, whether or not macOS lets alerts through
   app.dock?.setBadge(waiting(want));
   for (const [c, p] of pings) {
@@ -453,6 +470,7 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
   current = window;
   show = bringUp;
   on = settings().notifications !== false;
+  said = keptSaid();
   powerMonitor.on('lock-screen', () => { locked = true; });
   powerMonitor.on('unlock-screen', () => { locked = false; });
   ipcMain.on('showing', (e, p: unknown) => {
