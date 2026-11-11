@@ -576,6 +576,13 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
 /// A conversation's deleted (`DELETE /v1/conversations/{id}`, or the oldest forgotten past the
 /// most kept): its waiting Claude Code ends. Started once, by obid's start.
 pub fn end_warm_with_conversations(shared: Arc<Shared>) {
+    // Before its folders are swept and go, on every path that deletes one (LANES-16).
+    let weak = Arc::downgrade(&shared);
+    shared.conversations.end_sessions_with(move |id| {
+        if let Some(shared) = weak.upgrade() {
+            shared.harness.end_warm(id);
+        }
+    });
     let mut events = shared.events.subscribe();
     tokio::spawn(async move {
         loop {
@@ -3761,8 +3768,10 @@ mod tests {
         };
         let sleeper = "use POSIX; setsid(); exec q(sleep), 60";
         // Its "Claude Code": a command of its left a `setsid` process, then it waits.
+        let cli_file = temp.join("cli");
         let script = format!(
-            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e '{sleeper}' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nsleep 60\n",
+            "echo $$ > '{}'\n/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e '{sleeper}' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nexec sleep 60\n",
+            cli_file.display(),
             pid_file.display()
         );
         let launch = crate::agent::Launch {
@@ -3800,10 +3809,25 @@ mod tests {
             place: place.clone(),
             since: Instant::now(),
         };
+        let cli: i32 = std::fs::read_to_string(&cli_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         warm.end();
         // Ended by the time it returned: its parent, killed with it, left no zombie to reap.
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!alive(pid), "the leftover outlived its session");
+        // And its Claude Code itself, which could otherwise start another command.
+        let ps = std::process::Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", &cli.to_string()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&ps.stdout);
+        assert!(
+            stat.trim().is_empty() || stat.trim().starts_with('Z'),
+            "its Claude Code still runs"
+        );
         let next = std::process::Command::new("/usr/bin/sandbox-exec")
             .args(["-p", &profile, "/usr/bin/perl", "-e", sleeper])
             .spawn()

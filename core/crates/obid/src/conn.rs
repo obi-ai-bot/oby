@@ -541,13 +541,19 @@ impl Conn {
 
     /// An own run's agent, and all its group, end now, then what its commands left running
     /// (LANES-16): a conversation's waiting session, before a next session starts on the same
-    /// folders. Nothing of the agent's can start another command after it. A boxed run's agent
-    /// isn't touched: it ends by itself ([`Conn::finish`]).
+    /// folders. Nothing of the agent's can start another command after it, and its drop sweeps
+    /// nothing, even when this sweep couldn't finish (it's logged). A boxed run's agent isn't
+    /// touched: it ends by itself ([`Conn::finish`]).
     pub fn end_own_now(&mut self) {
-        if self.leftovers.is_some() {
-            process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
-            let _ = self.child.start_kill();
-            self.end_leftovers();
+        // Taken whatever the sweep finds: the drop, later, may run while a next session works on
+        // the same folders, and must never sweep them.
+        let Some((temp, room, login)) = self.leftovers.take() else {
+            return;
+        };
+        process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+        let _ = self.child.start_kill();
+        if let Err(why) = process::end_sandboxed(&temp, &room, &login) {
+            tracing::warn!("an ended session's leftovers may still run: {why}");
         }
     }
 }
@@ -662,7 +668,7 @@ mod tests {
             file: Some(pid_file.clone()),
         };
         let script = format!(
-            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e 'use POSIX; setsid(); exec q(sleep), 60' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nsleep 60\n",
+            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e 'use POSIX; setsid(); exec q(sleep), 60' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nexec sleep 60\n",
             pid_file.display()
         );
         let launch = crate::agent::Launch {
@@ -724,6 +730,71 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         let ended = started.children[0].try_wait().unwrap();
         assert!(ended.is_none(), "the next session's command ended");
+        drop(started);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LANES-16: a waiting session ended (`end_own_now`) with a sweep that couldn't finish never
+    /// sweeps again when it drops, after a next session started on the same folders: that one's
+    /// command survives.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lanes_16_an_ended_session_never_sweeps_the_next_ones_folders() {
+        let dir = std::env::temp_dir().join(format!("obid-lanes-16e-{}", uuid::Uuid::new_v4()));
+        let [temp, room, login] = ["temp", "room", "login"].map(|d| dir.join(d));
+        for folder in [&temp, &room, &login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let [temp, room, login] = [temp, room, login].map(|d| d.canonicalize().unwrap());
+        std::fs::write(login.join("env.sh"), "").unwrap();
+        let profile = format!(
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            dir.canonicalize().unwrap().display(),
+            temp.display(),
+            room.display()
+        );
+        let mut started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: None,
+        };
+        let launch = crate::agent::Launch {
+            argv: ["/bin/sh", "-c", "echo '{}'; exec sleep 60"]
+                .map(Into::into)
+                .into(),
+            env: vec![
+                ("PATH".into(), "/bin:/usr/bin".into()),
+                (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
+            ],
+            cwd: room.clone(),
+            stderr: dir.join("stderr"),
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let mut conn = Conn::spawn(&launch, Duration::from_secs(30), stop, false)
+            .await
+            .unwrap();
+        assert_eq!(conn.next().await.unwrap(), json!({}));
+        // Its sweep can't finish (its `login` folder away for the moment).
+        std::fs::rename(&login, dir.join("away")).unwrap();
+        conn.end_own_now();
+        std::fs::rename(dir.join("away"), &login).unwrap();
+        // The next session's command, on the same folders, then the old session's drop.
+        let next = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &profile, "/usr/bin/perl", "-e"])
+            .arg("use POSIX; setsid(); exec q(sleep), 60")
+            .spawn()
+            .unwrap();
+        started.children.push(next);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(conn);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let ended = started.children[0].try_wait().unwrap();
+        assert!(
+            ended.is_none(),
+            "the old session's drop ended the next one's command"
+        );
         drop(started);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -767,7 +767,8 @@ pub(crate) fn sweep(
             .filter(|&pid| pid > 1 && pid != me && theirs(pid));
         let found: Vec<u32> = found.collect();
         if found.is_empty() {
-            return Ok(ended);
+            // The run's folders gone while it listed would match nothing too.
+            return if proven() { Ok(ended) } else { unproven() };
         }
         let mut stopped = Vec::new();
         // What it stopped was proven the run's when stopped: it's killed even when a later proof
@@ -1378,9 +1379,16 @@ pub(crate) mod tests {
         let failed = || Err("no listing".to_string());
         assert!(sweep(&failed, &theirs, &|| true, &signal).is_err());
         assert!(signalled.borrow().is_empty());
-        // A proof that doesn't hold to begin with signals nothing, even when nothing would match.
+        // A proof that doesn't hold to begin with signals nothing, even when nothing would match;
+        // nor does one lost while it listed (the run's folders deleted meanwhile).
         let none = || Ok(Vec::new());
         assert!(sweep(&none, &theirs, &|| false, &signal).is_err());
+        let checks = Cell::new(0);
+        let then_lost = || {
+            checks.set(checks.get() + 1);
+            checks.get() == 1
+        };
+        assert!(sweep(&none, &theirs, &then_lost, &signal).is_err());
         assert!(signalled.borrow().is_empty());
         // The proof holds at the start and for the first process only: that one's stopped and
         // killed, the next isn't.
@@ -1417,6 +1425,39 @@ pub(crate) mod tests {
     #[test]
     fn unsafe_1_only_may_write_is_unsafe() {
         let lint = ["unsafe", "_code"].concat();
+        // An attribute, without its whitespace, that lets the lint through: an `allow`, `expect`
+        // or `warn` of it anywhere in it, under a `cfg_attr` too.
+        let names_lint = |attribute: &str| {
+            let levels = ["allow(", "expect(", "warn("];
+            attribute.contains(&lint)
+                && levels.iter().any(|level| {
+                    attribute.match_indices(level).any(|(at, _)| {
+                        let inside = &attribute[at + level.len()..];
+                        let end = inside.find(')').unwrap_or(inside.len());
+                        inside[..end].split(',').any(|name| name == lint)
+                    })
+                })
+        };
+        let squeeze = |text: &str| {
+            text.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+        for (attribute, lets) in [
+            (
+                format!("cfg_attr(target_os = \"macos\", allow({lint}))"),
+                true,
+            ),
+            (
+                format!("allow(\n    clippy::too_many_arguments,\n    {lint}\n)"),
+                true,
+            ),
+            (format!("expect({lint})"), true),
+            (format!("deny({lint})"), false),
+            ("allow(dead_code)".to_string(), false),
+        ] {
+            assert_eq!(names_lint(&squeeze(&attribute)), lets, "{attribute}");
+        }
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let mut found = Vec::new();
         let mut folders = vec![crates.to_path_buf()];
@@ -1454,10 +1495,7 @@ pub(crate) mod tests {
                         let Some(end) = end else { continue };
                         let attribute: String =
                             body[..end].chars().filter(|c| !c.is_whitespace()).collect();
-                        let levels = ["allow(", "expect(", "warn("];
-                        if attribute.contains(&lint)
-                            && levels.iter().any(|l| attribute.starts_with(l))
-                        {
+                        if names_lint(&attribute) {
                             let after = &body[end + 1..];
                             found.push((path.clone(), attribute, after.trim_start().to_owned()));
                         }
