@@ -5,31 +5,51 @@ use super::*;
 
 impl Jobs {
     /// Whether review `job` may run `call` without asking, as this machine boxes it: Oby's own
-    /// ([`review_may_run`]), or one the owner dispatched, whose reads run as Oby's own do
-    /// (MERGING-36): in Claude Code's own sandbox or a box that holds its egress, never on someone
-    /// else's code. What it would still ask keeps its card.
+    /// ([`review_may_run`]), or one the owner dispatched ([`hand_review_may_run`]). What it would
+    /// still ask keeps its card.
     pub(super) fn review_runs(&self, job: &Job, call: &Call, bounds: &permissions::Bounds) -> bool {
-        let own = self
+        let boxed = self
             .job_account(job)
-            .ok()
-            .map(|(tool, _)| Self::own_lane(job, tool));
+            .is_ok_and(|(tool, _)| !Self::own_lane(job, tool));
         match job.review_of.as_deref() {
             Some(of) => review_may_run(
                 job,
                 self.get(of).as_ref(),
                 self.confines_egress(),
-                own == Some(false),
+                boxed,
                 call,
                 bounds,
             ),
-            None => {
-                job.read_only()
-                    && job.someone_elses().is_none()
-                    && (own == Some(true) || self.confines_egress())
-                    && reads_in_box(call, bounds)
-            }
+            None => hand_review_may_run(job, boxed && self.confines_egress(), call, bounds),
         }
     }
+}
+
+/// Whether a review the owner dispatched (MERGING-36) may run `call` without asking, never on
+/// someone else's code ([`Job::someone_elses`]: a pull request with commits obid didn't record, or
+/// one someone else wrote in). In Oby's box with its egress through obid's proxy (`proxied`), what
+/// Oby's own review runs ([`reads_in_box`]); anywhere else (Claude Code's own sandbox, with no
+/// proxy), only what provably only reads ([`permissions::only_reads`]): a test or a script there
+/// would run with the network.
+fn hand_review_may_run(
+    review: &Job,
+    proxied: bool,
+    call: &Call,
+    bounds: &permissions::Bounds,
+) -> bool {
+    review.read_only()
+        && review.review_of.is_none()
+        && review.someone_elses().is_none()
+        && if proxied {
+            reads_in_box(call, bounds)
+        } else {
+            call.tool == "Bash"
+                && permissions::reach(call, bounds).is_none()
+                && call
+                    .command
+                    .as_deref()
+                    .is_some_and(|command| permissions::only_reads(command, bounds))
+        }
 }
 
 /// Whether Oby's own `review` may run `call` with nobody watching (PERMISSIONS-14, the owner's
@@ -72,4 +92,75 @@ fn reads_in_box(call: &Call, bounds: &permissions::Bounds) -> bool {
             .command
             .as_deref()
             .is_some_and(|command| !permissions::writes(command))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runs(review: &Job, proxied: bool, command: &str) -> bool {
+        hand_review_may_run(
+            review,
+            proxied,
+            &Call::new("Bash", &json!({ "command": command })),
+            &permissions::Bounds::of(Path::new("/tmp/obid-hand-review")),
+        )
+    }
+
+    fn hand_review() -> Job {
+        Job::new(
+            "r".into(),
+            "o/r".into(),
+            "review".into(),
+            "Review it".into(),
+            "claude".into(),
+            "a".into(),
+        )
+    }
+
+    /// MERGING-36: outside a box that holds its egress (Claude Code's own sandbox), a hand review
+    /// runs unasked only what provably only reads: a script, a test or the network still asks,
+    /// though PERMISSIONS-14's test (nothing obid reads as writing) would let it through.
+    #[test]
+    fn merging_36_a_hand_review_runs_only_reads_outside_a_proxied_box() {
+        let review = hand_review();
+        for read in [
+            "grep -n greet src/greet.js",
+            "git diff origin/dev...HEAD",
+            "cat src/greet.js",
+            "sed -n 's/greet/hi/p' src/greet.js",
+            "awk 'NR < 3' src/greet.js | sort",
+        ] {
+            assert!(runs(&review, false, read), "{read}");
+            assert!(runs(&review, true, read), "{read}");
+        }
+        for asks in [
+            "python3 -c 'print(1)'",
+            "node -e 'require(\"fs\").writeFileSync(\"x\", \"\")'",
+            "sed -n '1w copy.js' src/greet.js",
+            "sed 's/a/b/w copy.js' src/greet.js",
+            "sed -n '1e touch x' src/greet.js",
+            "awk 'BEGIN{system(\"touch x\")}'",
+            "awk '{print | \"sh\"}' src/greet.js",
+            "awk 'BEGIN{while ((getline l < \"/etc/hosts\") > 0) print l}'",
+            "npm test",
+            "make",
+            "curl https://example.com",
+        ] {
+            assert!(!runs(&review, false, asks), "{asks}");
+        }
+        // In Oby's box, with egress through obid's proxy, a local command runs (PERMISSIONS-14).
+        assert!(runs(&review, true, "npm test"));
+        assert!(!runs(&review, true, "curl https://example.com"));
+    }
+
+    /// MERGING-36: a hand review of someone else's code asks for every read, in either lane.
+    #[test]
+    fn merging_36_a_hand_review_of_someone_elses_code_asks() {
+        let mut review = hand_review();
+        review.foreign = Some("pull request #9's head has commits obid didn't record".into());
+        for proxied in [false, true] {
+            assert!(!runs(&review, proxied, "cat src/greet.js"));
+        }
+    }
 }

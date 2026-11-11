@@ -3495,9 +3495,20 @@ fn merging_37_a_review_reads_the_pull_requests_current_head() {
     let first = review("SEES: moved.txt");
     assert_eq!(first["summary"], "sees moved.txt: false", "{first}");
     // The pull request moves on: a commit on main that is its head too.
-    let author = folder.0.join("author");
+    authors_commit(&folder.0, &remote, "refs/heads/main");
+    pull_request_90(&remote);
+    let head = git(&remote, &["rev-parse", "refs/pull/90/head"]);
+    let second = review("SEES: moved.txt");
+    assert_eq!(second["branch"], first["branch"], "{second}");
+    assert_eq!(second["summary"], "sees moved.txt: true", "{second}");
+    assert_eq!(second["startCommit"], head.as_str(), "{second}");
+}
+
+/// A commit someone made outside obid (`moved.txt`, on main), put at `at` on `remote`.
+fn authors_commit(folder: &Path, remote: &Path, at: &str) {
+    let author = folder.join("author");
     git(
-        &folder.0,
+        folder,
         &[
             "clone",
             "-q",
@@ -3524,20 +3535,43 @@ fn merging_37_a_review_reads_the_pull_requests_current_head() {
     );
     // Fetched rather than pushed: a job's agent, which may run this, can't push.
     git(
-        &remote,
+        remote,
         &[
             "fetch",
             "-q",
             author.to_str().unwrap(),
-            "HEAD:refs/heads/main",
+            &format!("HEAD:{at}"),
         ],
     );
-    pull_request_90(&remote);
-    let head = git(&remote, &["rev-parse", "refs/pull/90/head"]);
-    let second = review("SEES: moved.txt");
-    assert_eq!(second["branch"], first["branch"], "{second}");
-    assert_eq!(second["summary"], "sees moved.txt: true", "{second}");
-    assert_eq!(second["startCommit"], head.as_str(), "{second}");
+}
+
+/// MERGING-36: a review the owner dispatched on a pull request whose head has a commit obid
+/// didn't record reads someone else's code: it stays in Oby's box (no `--settings` for Claude
+/// Code's own sandbox), and a local command asks, as any job's would.
+#[test]
+fn merging_36_a_review_of_someone_elses_commits_asks_for_its_reads() {
+    let folder = Folder::new("review-theirs");
+    let remote = fixture(&folder.0.join("fixture"));
+    authors_commit(&folder.0, &remote, "refs/pull/91/head");
+    let (config, _account) = recording_config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let command = "python3 -c 'print(1)'";
+    let read = json!([{"tool": "Bash", "input": {"command": command}}]);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "review", "pr": 91,
+               "task": format!("ASKS: {read}")}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let job = until(&obid, &id, |j| {
+        j["permission"].is_object() || !matches!(j["status"].as_str(), Some("queued" | "running"))
+    });
+    assert_eq!(job["permission"]["detail"], command, "{job}");
+    let (args, _) = last_launch(&folder.0);
+    assert!(!args.iter().any(|a| a == "--settings"), "{args:?}");
 }
 
 /// A control request of a kind obid doesn't know (a newer Claude Code's) gets an error, never

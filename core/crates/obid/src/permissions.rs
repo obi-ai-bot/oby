@@ -2686,12 +2686,10 @@ fn git_config_reads(args: &[String]) -> bool {
 /// through its shell (`cat`, `rg`, `git diff`). Each simple command is a program the conversation's
 /// shell runs as a read (crate::brain::shell::reads_only), one of git's [`GIT_READS`] from the
 /// worktree's top (where git finds the job's own git folder, never one the agent could have made)
-/// with no option that writes a file or runs a program, `sed -n` printing lines, or `if`'s own
-/// words around them; and nothing is written to a file. Best-effort; what passes still runs boxed.
-fn only_reads(command: &str, bounds: &Bounds) -> bool {
-    static LINES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let lines =
-        LINES.get_or_init(|| regex::Regex::new(r"^([0-9]+|\$)(,([0-9]+|\$))?p$").expect("a regex"));
+/// with no option that writes a file or runs a program, a `sed` or `awk` script that only prints
+/// ([`sed_only_prints`], [`awk_only_prints`]), or `if`'s own words around them; and nothing is
+/// written to a file. Best-effort; what passes still runs in a sandbox.
+pub(crate) fn only_reads(command: &str, bounds: &Bounds) -> bool {
     use crate::brain::shell::{reads_only, system_program, takes_read_options, writes_a_file};
     let Some(commands) = simple_commands(command).filter(|c| !c.is_empty()) else {
         return false;
@@ -2720,17 +2718,56 @@ fn only_reads(command: &str, bounds: &Bounds) -> bool {
                         && system_program("git")
                 }
                 // With no file it reads a pipe: `nl -ba notes.md | sed -n '1,9p'`.
-                Some("sed") => {
-                    words.len() > 2
-                        && words[1] == "-n"
-                        && lines.is_match(&words[2])
-                        && words[3..].iter().all(|w| !w.starts_with('-'))
-                        && system_program("sed")
-                }
+                Some("sed") => sed_only_prints(&words[1..]) && system_program("sed"),
+                Some("awk") => awk_only_prints(&words[1..]) && system_program("awk"),
                 Some(program) if bounds.ships(program) => takes_read_options(&words),
                 _ => reads_only(&words),
             }
         })
+}
+
+/// Whether `sed` given `args` only prints what it reads ([`only_reads`]): `-n`, `-E` or `-r`, then
+/// one script of `;`-separated commands, each an optional address (a line, `$` or a `/pattern/`,
+/// or a range of two) and `p`, `d`, `=` or `s/…/…/` with only `g`, `p`, `i`, `I` or a number, then
+/// files. Never `w`, `W`, `r`, `R` or `e`, which write, read another file or run a program, nor
+/// `-i`, `-f` or any other option.
+fn sed_only_prints(args: &[String]) -> bool {
+    static SCRIPT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        let part = r"(?:[^/\\\n]|\\[^\n])*";
+        let at = format!(r"(?:[0-9]+|\$|/{part}/)");
+        let command = format!(r"(?:{at}(?:,{at})?)?(?:[pd=]|s/{part}/{part}/[gpiI0-9]*)");
+        regex::Regex::new(&format!(r"^{command}(?:;{command})*;?$")).expect("a regex")
+    });
+    let mut words = args
+        .iter()
+        .skip_while(|w| matches!(w.as_str(), "-n" | "-E" | "-r"));
+    words.next().is_some_and(|script| SCRIPT.is_match(script)) && words.all(|w| !w.starts_with('-'))
+}
+
+/// What in an `awk` program runs a program, reads past its files or the environment, or calls a
+/// function by its name in a variable (gawk's `@f()`): [`awk_only_prints`] refuses it.
+const AWK_REFUSES: [&str; 6] = ["system", "getline", "ENVIRON", "ARGV", "ARGC", "@"];
+
+/// Whether `awk` given `args` only prints what it reads ([`only_reads`]): `-F` and its separator,
+/// then one program with nothing of [`AWK_REFUSES`], no `>` (a redirect to a file; a comparison
+/// with it asks too) and no `|` but `||` (a pipe to or from a program), then files. Never `-f`,
+/// `-v` or any other option.
+fn awk_only_prints(args: &[String]) -> bool {
+    let mut words = args.iter();
+    let program = loop {
+        match words.next().map(String::as_str) {
+            Some("-F") => {
+                words.next();
+            }
+            Some(separator) if separator.starts_with("-F") => {}
+            Some(word) if !word.starts_with('-') => break word,
+            _ => return false,
+        }
+    };
+    !AWK_REFUSES.iter().any(|w| program.contains(w))
+        && !program.contains('>')
+        && !program.replace("||", "").contains('|')
+        && words.all(|w| !w.starts_with('-'))
 }
 
 /// Programs that write, move or remove files, or run another program past where obid reads

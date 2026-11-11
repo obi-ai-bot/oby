@@ -9060,7 +9060,7 @@ impl Jobs {
     /// job: unless it's the repository's default branch, a branch GitHub says is reviewed
     /// ([`crate::secretspec::protected_base`]), or every commit it adds to the default branch is
     /// one obid recorded a job of the owner's making, the clone holds someone else's commits from
-    /// now on ([`git::taint`]), named `what`.
+    /// now on ([`git::taint`]), named `what`. Whether it does.
     async fn taint_unless_ours(
         &self,
         clone: &Path,
@@ -9068,10 +9068,10 @@ impl Jobs {
         fetched: &str,
         branch: Option<&str>,
         what: &str,
-    ) {
+    ) -> bool {
         let default = format!("refs/remotes/origin/{}", repo.default_branch);
         if fetched == default {
-            return;
+            return false;
         }
         // A branch GitHub says is reviewed holds nothing that got in unreviewed. (The default
         // branch itself must be one for any check to get values: `code_refuses_secrets`.)
@@ -9081,7 +9081,7 @@ impl Jobs {
                 .await
                 .is_ok()
         {
-            return;
+            return false;
         }
         let range = format!("{default}..{fetched}");
         let theirs = match git::git(clone, &["rev-list", "--max-count=1001", &range]).await {
@@ -9095,6 +9095,7 @@ impl Jobs {
         if theirs {
             git::taint(clone, what).await;
         }
+        theirs
     }
 
     /// Whether obid wrote pull request `number` of `repo`'s description only for jobs that are the
@@ -9780,7 +9781,7 @@ impl Jobs {
             ))
             .await;
             if let Some(pr) = job.pr {
-                Box::pin(self.taint_unless_ours(
+                let theirs = Box::pin(self.taint_unless_ours(
                     &clone,
                     &repo,
                     &format!("refs/remotes/origin/pr/{pr}"),
@@ -9788,6 +9789,13 @@ impl Jobs {
                     &format!("pull request #{pr}'s head"),
                 ))
                 .await;
+                // The owner's review of commits obid didn't record reads someone else's code: it
+                // asks for its reads and stays in Oby's box (MERGING-36).
+                if theirs && job.read_only() && job.review_of.is_none() {
+                    let why = format!("pull request #{pr}'s head has commits obid didn't record");
+                    self.mark(id, why, false);
+                    job = self.get(id).ok_or("the job is gone")?;
+                }
             }
             // Oby's review of published work reads the very commit obid pushed, whatever its branch
             // has since.
