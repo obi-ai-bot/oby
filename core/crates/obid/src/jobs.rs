@@ -10501,7 +10501,7 @@ impl Jobs {
                     );
                 }
                 if (broker.is_some() || tetrix.is_some()) && tool == Tool::Claude {
-                    let file = spec.temp.join(MCP_CONFIG_FILE);
+                    let file = mcp_config_path(own, &spec.temp, &self.login_path(id))?;
                     let mut config = json!({"mcpServers": {}});
                     if let Some((url, token)) = broker.as_ref().filter(|_| tool == Tool::Claude) {
                         config["mcpServers"]["oby"] = json!({"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}});

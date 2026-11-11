@@ -295,9 +295,9 @@ pub(crate) fn own_settings_file(account: &crate::config::Account) -> Result<Path
 /// `allowUnixSockets`, `allowAllUnixSockets`, `allowMachLookup` or `sandbox.allowAppleEvents`
 /// (ways out of it), `permissions.additionalDirectories`, a file tool's allow rule naming a path
 /// outside the worktree or none ([`FILE_TOOLS`]), an `env` key obid sets (`ours`:
-/// [`own_sandbox_env`]'s) or names a settings source ([`process::CLAUDE_SETTINGS_SOURCES`]), or
-/// one [`env_refused`] names but Claude Code's own `ANTHROPIC_*` and
-/// `CLAUDE_CODE_*`, or a `sandbox.filesystem.allowRead` or `allowWrite` path in, or holding, one of
+/// [`own_sandbox_env`]'s), a `CLAUDE*` one that isn't Claude Code's gateway's
+/// ([`process::claude_gateway`], the owner's "Allow-list", LANES-4a), or one [`env_refused`] names
+/// (but `ANTHROPIC_*`), or a `sandbox.filesystem.allowRead` or `allowWrite` path in, or holding, one of
 /// obid's hidden folders ([`Spec::hidden`]: obid's home, the person's, the accounts'). One that's
 /// there but doesn't read as JSON is refused too: obid can't tell what it sets.
 pub(crate) fn own_settings_allowed(
@@ -352,14 +352,15 @@ pub(crate) fn own_settings_allowed(
     if !sandbox["allowAppleEvents"].is_null() {
         return Err(refused("sandbox.allowAppleEvents"));
     }
-    // Claude Code's own variables (its gateway, its model) are the owner's, as in their
-    // terminal (LANES-4), but for those obid sets itself (`CLAUDE_CODE_TMPDIR`).
-    let claudes = |name: &str| name.starts_with("ANTHROPIC_") || name.starts_with("CLAUDE_CODE_");
+    // Of Claude Code's own variables only its gateway's are the owner's (LANES-4a); none obid sets.
     for (name, _) in set["env"].as_object().into_iter().flatten() {
-        // obid's own, and where Claude Code's settings come from, before Claude Code's exemption.
-        let obids = ours.iter().any(|(set, _)| set == name)
-            || process::CLAUDE_SETTINGS_SOURCES.contains(&name.as_str());
-        if obids || (env_refused(name, ours) && !claudes(name)) {
+        let claudes = name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC_");
+        let obids = ours.iter().any(|(set, _)| set == name);
+        let refused_here = match claudes {
+            true => !process::claude_gateway(name),
+            false => env_refused(name, ours),
+        };
+        if obids || refused_here {
             return Err(refused(&format!("{name} in its env")));
         }
     }
@@ -2242,9 +2243,28 @@ pub(crate) fn forget_login_secrets(login: &Path) {
         // A copy of the tool's own login ([`copy_login`]).
         ".claude/.credentials.json",
         ".codex/auth.json",
+        // An own run's MCP config, with its tokens ([`mcp_config_path`]).
+        MCP_CONFIG_FILE,
     ] {
         remove_inside(login, name);
     }
+}
+
+/// Where a run's MCP config (obid's `--mcp-config`, with the job's broker and Tetrix tokens) is
+/// written. An own run's Claude Code, unboxed by obid, starts every server it names outside any
+/// sandbox, so it goes in the job's `login` folder (`home/logins/<job id>`, made 0700), which its
+/// commands can neither read nor write: never its temporary folder, where a command (one left
+/// running in the background by an earlier turn, say) could swap it before the run starts. A
+/// boxed run's stays in its temporary folder, inside its box, as before.
+pub(super) fn mcp_config_path(own: bool, temp: &Path, login: &Path) -> Result<PathBuf, String> {
+    if !own {
+        return Ok(temp.join(MCP_CONFIG_FILE));
+    }
+    let mut made = std::fs::DirBuilder::new();
+    std::os::unix::fs::DirBuilderExt::mode(made.recursive(true), 0o700);
+    made.create(login)
+        .map_err(|e| format!("obid can't make the job's login folder: {e}"))?;
+    Ok(login.join(MCP_CONFIG_FILE))
 }
 
 /// What a new session hears first when it takes over a job from `was` ("Codex · Work"), which
@@ -2341,9 +2361,63 @@ pub fn person_homes() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    /// LANES-5: a user settings file whose `env` names where Claude Code's settings come from
-    /// ([`process::CLAUDE_SETTINGS_SOURCES`]) or its folder stops the run, though those names carry
-    /// Claude Code's own prefix; its other `CLAUDE_CODE_*` switches don't.
+    /// LANES-5: an own run's MCP config (with the job's tokens; Claude Code starts what it names
+    /// outside any sandbox) is in no folder its commands may write, so nothing it left running can
+    /// swap it before the next run; it goes with the run's other secrets. A boxed run's stays in its
+    /// temporary folder, inside its box.
+    #[test]
+    fn lanes_5_an_own_runs_mcp_config_isnt_writable_by_its_commands() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-5-mcp-{}", std::process::id()));
+        let home = root.join("home");
+        let (worktree, admin, temp, login) = (
+            home.join("worktrees/job"),
+            home.join("clones/r/.git/worktrees/job"),
+            home.join("tmp/job"),
+            home.join("logins/job"),
+        );
+        for dir in [&worktree, &admin, &temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let spec = Spec {
+            worktree,
+            git_admin: Some(admin),
+            git_common: Some(home.join("clones/r/.git")),
+            commits: true,
+            temp: temp.clone(),
+            accounts: Vec::new(),
+            read_only: Vec::new(),
+            hidden: vec![home.clone()],
+            network: true,
+            loopback: false,
+            proxied: false,
+            frozen: Vec::new(),
+            fixed: Vec::new(),
+        };
+        let file = mcp_config_path(true, &temp, &login).unwrap();
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let at = real(file.parent().unwrap()).join(file.file_name().unwrap());
+        for writable in spec.canonical().writable() {
+            assert!(
+                !at.starts_with(&writable),
+                "{} in {}",
+                at.display(),
+                writable.display()
+            );
+        }
+        std::fs::write(&file, "{}").unwrap();
+        forget_login_secrets(&login);
+        assert!(!file.exists());
+        assert_eq!(
+            mcp_config_path(false, &temp, &login).unwrap(),
+            temp.join(MCP_CONFIG_FILE)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-5 with LANES-4a ("Allow-list"): a user settings file whose `env` sets a `CLAUDE*` name
+    /// that isn't Claude Code's gateway's (a settings source, its folder, extra session folders or
+    /// allow rules, any other) stops the run, naming it; `ANTHROPIC_*` and the gateway switches
+    /// ([`process::CLAUDE_GATEWAY`]) don't.
     #[test]
     fn lanes_5_a_settings_source_in_the_users_env_refuses_the_run() {
         let root = std::env::temp_dir().join(format!("obid-lanes-5-env-{}", std::process::id()));
@@ -2374,12 +2448,17 @@ mod tests {
             "CLAUDE_CODE_REMOTE_MCP_CONFIG",
             "CLAUDE_CODE_SANDBOXED",
             "CLAUDE_CONFIG_DIR",
+            "CLAUDE_RELAUNCH_SESSION_ADD_DIRS",
+            "CLAUDE_BG_SESSION_PERMISSION_RULES",
+            "CLAUDE_CODE_SESSION_KIND",
+            "CLAUDE_FOO",
         ] {
             std::fs::write(&file, json!({"env": {name: "/tmp/policy"}}).to_string()).unwrap();
             let why = own_settings_allowed(&file, &spec, &[]).unwrap_err();
             assert!(why.contains(&format!("{name} in its env")), "{why}");
         }
-        std::fs::write(&file, r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#).unwrap();
+        let gateway = r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1","ANTHROPIC_MODEL":"m"}}"#;
+        std::fs::write(&file, gateway).unwrap();
         assert!(own_settings_allowed(&file, &spec, &[]).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
