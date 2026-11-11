@@ -23,6 +23,16 @@ fn post_job(obid: &Obid, task: &str) -> String {
     answer.body["id"].as_str().unwrap().to_owned()
 }
 
+/// Job `id` once its agent's turn has run to its result ("Nothing to do.") or it waits for an
+/// account with room: what these tests tell apart, before its repository's check, which a busy Mac
+/// can take minutes to run.
+fn turn_ran_or_waits(obid: &Obid, id: &str, seconds: u64) -> Value {
+    within(seconds, "the job's turn runs, or it waits for room", || {
+        let job = call(obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["summary"] == "Nothing to do." || !job["resumesAt"].is_null()).then_some(job)
+    })
+}
+
 /// The one account, `stub`, as `GET /v1/status` shows it.
 fn account(obid: &Obid) -> Value {
     call(obid, "GET", "/v1/status", None).body["accounts"][0].clone()
@@ -39,8 +49,11 @@ fn usage_12_overage_in_use_isnt_full_a_passing_error_is_tried_again() {
         "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": now + 3600},
             "seven_day": {"utilization": 0.62, "resetsAt": now + 86_400}}, "overageEnabled": true});
     let id = post_job(&obid, &format!("USAGE: {usage} TRANSIENT KEEP PROMPTS"));
-    let job = ended_within(&obid, &id, 240);
-    assert_eq!(job["status"], "done", "{job}");
+    // Tried again after its first wait (a minute), in its session, on its own account.
+    let job = turn_ran_or_waits(&obid, &id, 600);
+    assert!(job["resumesAt"].is_null(), "{job}");
+    assert_eq!(job["summary"], "Nothing to do.", "{job}");
+    assert_eq!(job["account"], "stub", "{job}");
     let log = Path::new(job["worktree"].as_str().unwrap()).join(".obi/prompts.log");
     let told = std::fs::read_to_string(log).unwrap();
     assert_eq!(told.matches("<<<end of prompt>>>").count(), 2, "{told}");
@@ -61,14 +74,16 @@ fn usage_13_a_scoped_limit_doesnt_fill_the_account_the_next_job_runs() {
         "unifiedWindows": {"five_hour": {"utilization": 0.31, "resetsAt": now + 3600},
             "seven_day": {"utilization": 0.58, "resetsAt": now + 86_400}}, "overageEnabled": false});
     let id = post_job(&obid, &format!("USAGE: {usage} LIMITED NO EVENT"));
-    let job = ended_within(&obid, &id, 120);
+    let job = ended_within(&obid, &id, 600);
     assert_eq!(job["status"], "interrupted", "{job}");
     assert_eq!(job["nextStep"], "Try again", "{job}");
     assert!(job["resumesAt"].is_null(), "{job}");
     let account = account(&obid);
     assert_eq!(account["sevenDay"], 0.58, "{account}");
     assert!(account["fullUntil"].is_null(), "{account}");
+    // The next job's turn runs on the account, rather than waiting for room.
     let next = post_job(&obid, "Look around");
-    let job = ended_within(&obid, &next, 120);
-    assert_eq!(job["status"], "done", "{job}");
+    let job = turn_ran_or_waits(&obid, &next, 600);
+    assert!(job["resumesAt"].is_null(), "{job}");
+    assert_eq!(job["summary"], "Nothing to do.", "{job}");
 }
