@@ -451,6 +451,10 @@ pub struct Job {
     /// branch behind it: one per head (MERGING-38). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_pr_rebase: Option<String>,
+    /// obid's rounds by itself after its pull request's checks failed on GitHub: one per job
+    /// (MERGING-39). Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub checks_rounds: u32,
     /// When obid picked it up again after going down while it ran, other than by a clean stop
     /// (#915): the last 30 minutes' only. Kept in its file, never in the API; emptied when the job
     /// ends.
@@ -1159,6 +1163,7 @@ impl Job {
             phase: None,
             cut: None,
             after_pr_rebase: None,
+            checks_rounds: 0,
             crash_resumes: Vec::new(),
             recovery: Recovery::default(),
             dismissed: None,

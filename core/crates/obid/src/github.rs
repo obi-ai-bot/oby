@@ -644,6 +644,9 @@ pub struct Merging {
     /// Its head's checks on GitHub, summed up: `SUCCESS` (every one passed, was neutral or was
     /// skipped), `PENDING`, `FAILURE`, or `NONE` (it has none); none when GitHub didn't say.
     pub checks: Option<&'static str>,
+    /// The names of its head's checks that failed, as their workflows name them: someone's words,
+    /// only ever quoted to an agent ([`failed_logs`]).
+    pub failed: Vec<String>,
     /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN`; none when GitHub didn't say.
     pub mergeable: Option<String>,
     /// GitHub's `mergeStateStatus`: `CLEAN`, `HAS_HOOKS`, `BEHIND`, `BLOCKED`, `DIRTY`, `DRAFT`,
@@ -671,11 +674,16 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
             .filter(|v| known.contains(v))
             .map(str::to_owned)
     };
+    let checks = value["statusCheckRollup"].as_array().map(Vec::as_slice);
     Some(Merging {
-        checks: value["statusCheckRollup"]
-            .as_array()
-            .map(Vec::as_slice)
-            .map(rollup),
+        checks: checks.map(rollup),
+        failed: checks
+            .unwrap_or_default()
+            .iter()
+            .filter(|c| rollup(std::slice::from_ref(*c)) == "FAILURE")
+            .filter_map(|c| c["name"].as_str().or(c["context"].as_str()))
+            .map(str::to_owned)
+            .collect(),
         mergeable: word("mergeable", &["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
         merge_state: word(
             "mergeStateStatus",
@@ -698,6 +706,61 @@ pub fn decode_merging(text: &str) -> Option<Merging> {
         required_approvals: None,
         rules_refused: None,
     })
+}
+
+/// What GitHub logged of the runs that failed at `head` in `repo` (`gh run list --commit … --status
+/// failure`, then `gh run view --log-failed`): the last [`LOG_LINES`] lines of each of the first
+/// [`LOGGED_RUNS`]; when none can be read, only the names of the checks that `failed`. Someone's
+/// words and a run's output: an agent gets it only with the secrets taken out, quoted
+/// (crate::jobs::after_pr, MERGING-39).
+pub async fn failed_logs(gh: &Path, repo: &str, head: &str, failed: &[String]) -> String {
+    const LOGGED_RUNS: usize = 3;
+    const LOG_LINES: usize = 300;
+    let args = [
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--commit",
+        head,
+        "--status",
+        "failure",
+        "--json",
+        "databaseId",
+    ];
+    let listed = run(gh, &args).await.unwrap_or_default();
+    let runs: Vec<Value> = serde_json::from_str(&listed).unwrap_or_default();
+    let mut logs = vec![];
+    for id in runs
+        .iter()
+        .filter_map(|r| r["databaseId"].as_u64())
+        .take(LOGGED_RUNS)
+    {
+        let id = id.to_string();
+        let args = ["run", "view", &id, "--repo", repo, "--log-failed"];
+        let Ok(log) = run_bounded(gh, &args, 16 << 20, Duration::from_secs(60)).await else {
+            continue;
+        };
+        let lines: Vec<&str> = log.lines().collect();
+        let last = &lines[lines.len().saturating_sub(LOG_LINES)..];
+        if !last.is_empty() {
+            logs.push(format!(
+                "Failed run {id}, its last lines:\n{}",
+                last.join("\n")
+            ));
+        }
+    }
+    if logs.is_empty() {
+        return format!(
+            "No log of the failed runs could be read. The checks that failed: {}.",
+            if failed.is_empty() {
+                "GitHub didn't name them".into()
+            } else {
+                failed.join(", ")
+            }
+        );
+    }
+    logs.join("\n\n")
 }
 
 /// A head's check runs and statuses (`statusCheckRollup`), summed up: any failed is `FAILURE`,
@@ -1189,5 +1252,48 @@ mod tests {
         );
         assert_eq!(said(""), "no reason given");
         assert_eq!(said(&"x".repeat(400)).chars().count(), 300);
+    }
+
+    /// MERGING-39: the failed checks' names come with the rollup; their logs are the last 300 lines
+    /// of each of the first 3 failed runs, one whose log can't be read left out; with none, the
+    /// names alone.
+    #[tokio::test]
+    async fn failed_logs_keep_each_runs_last_lines_else_the_names() {
+        use std::os::unix::fs::PermissionsExt;
+        let rollup = json!({"statusCheckRollup": [
+            {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"context": "ci/lint", "state": "ERROR"},
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]});
+        let failed = decode_merging(&rollup.to_string()).unwrap().failed;
+        assert_eq!(failed, ["test", "ci/lint"]);
+        let dir = std::env::temp_dir().join(format!("obid-failed-logs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let head = "a".repeat(40);
+        let script = format!(
+            "#!/bin/sh\ncase \"$*\" in\n  \"run list --repo o/r --commit {head} --status failure --json databaseId\") cat '{}/runs.json' ;;\n  \"run view \"*\" --repo o/r --log-failed\") [ \"$3\" = 2 ] && exit 1; seq 1 400 ;;\n  *) exit 1 ;;\nesac\n",
+            dir.display()
+        );
+        let gh = dir.join("gh");
+        std::fs::write(&gh, script).unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runs = |ids: &str| std::fs::write(dir.join("runs.json"), ids).unwrap();
+        runs(r#"[{"databaseId": 1}, {"databaseId": 2}, {"databaseId": 3}, {"databaseId": 4}]"#);
+        let logs = failed_logs(&gh, "o/r", &head, &failed).await;
+        assert!(
+            logs.starts_with("Failed run 1, its last lines:\n101\n"),
+            "{logs}"
+        );
+        assert!(
+            logs.contains("\n400\n\nFailed run 3, its last lines:\n101\n"),
+            "{logs}"
+        );
+        assert!(!logs.contains("\n100\n") && !logs.contains("run 2") && !logs.contains("run 4"));
+        runs("[]");
+        assert_eq!(
+            failed_logs(&gh, "o/r", &head, &failed).await,
+            "No log of the failed runs could be read. The checks that failed: test, ci/lint."
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
