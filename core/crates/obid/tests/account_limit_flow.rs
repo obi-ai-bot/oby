@@ -1566,7 +1566,7 @@ fn limits_18_a_job_with_no_room_anywhere_is_queued_not_refused() {
     assert!(pending_decisions(&obid).is_empty());
     let inbox = call(&obid, "GET", "/v1/inbox", None).body;
     assert!(!inbox.to_string().contains(&id), "{inbox}");
-    // A named account at its limit keeps LIMITS-5's wait; this one starts once its account has room.
+    // Its account's reset comes: it starts there, in its first run.
     call(&obid, "POST", &format!("/v1/jobs/{full}/stop"), None);
     let obid = its_time_comes(&folder, &config, obid, &id, None);
     let done = ended(&obid, &id);
