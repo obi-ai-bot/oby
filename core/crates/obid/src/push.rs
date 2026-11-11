@@ -500,9 +500,10 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
         let conversation = item["conversation"].as_str().map(str::to_owned);
         let text = item["text"].as_str().unwrap_or_default();
         let many = offer.map(offered).filter(|n| *n > 1);
-        let (obi, line) = (&item["obi"], first_line(text).unwrap_or("").to_owned());
+        // Its whole text, as the Mac's: Allow or Start never answers lines the banner hid.
+        let (obi, whole) = (&item["obi"], text.to_owned());
         let (title, body) = match (many, obi["quoted"]["text"].as_str()) {
-            (Some(n), _) => (format!("Oby offers {n} jobs"), line),
+            (Some(n), _) => (format!("Oby offers {n} jobs"), whole),
             // What Confirm does is its title: both in the body.
             _ if item["kind"] == "confirm" => ("Confirm".into(), format!("{title}\n{text}")),
             // Another Oby's question, who by their owner id, escaped (notify.ts's `plainId`).
@@ -513,7 +514,7 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
                     .escape_default();
                 (format!("Question from {who}"), words.to_owned())
             }
-            _ => (title.to_owned(), line),
+            _ => (title.to_owned(), whole),
         };
         // Start for one job alone, from words that read nothing untrusted.
         let alone = many.is_none() && item["offer"]["untrusted"] != true;
@@ -2490,6 +2491,8 @@ mod tests {
         // its item offers them; a Start item offering no Start gets none.
         assert!(by_id("planning").answers.is_empty());
         assert_eq!(by_id("shell-conv-1-p8").answers, ["Allow", "Deny"]);
+        assert_eq!(by_id("shell-conv-1-p8").body, "First line. Second.");
+        assert_eq!(by_id("start-1").body, "First line. Second.");
         assert!(by_id(&digest).answers.is_empty() && by_id("start-1").answers.is_empty());
         assert_eq!(by_id("confirm-1").title, "Confirm");
         assert_eq!(
@@ -2505,7 +2508,7 @@ mod tests {
         assert_eq!(shell.item.as_deref(), Some(long.as_str()));
         assert_eq!(shell.conversation.as_deref(), Some("conv-1"));
         assert_eq!(shell.thread, "conv-1");
-        assert_eq!(shell.body, "First line.");
+        assert_eq!(shell.body, "First line. Second.");
         assert_eq!(by_id("listen-1").thread, "inbox");
 
         // What was said isn't said again; a gone urgent alert is settled in place, a gone result

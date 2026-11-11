@@ -1286,10 +1286,10 @@ What alerts, on the Mac and the phones, and the one list both alert from ([`GET 
 | What | `category` | Urgent | Title | Body |
 |---|---|---|---|---|
 | A job's agent waits for the owner's OK (`permission`) | `permission`; `permissionRule` when it offers Always allow (`always`); `plan` for a plan to approve; `job` for the agent's question | yes | `Needs your OK: <title>`, `Question: <title>` for the agent's question | the permission's title, then its detail when the title doesn't hold it |
-| A conversation's shell command waits for Allow (an inbox `permission` item with no job) | `permission`; `permissionRule` when its `options` hold `Always allow` | yes | the item's `title` | the first line of its `text` |
+| A conversation's shell command waits for Allow (an inbox `permission` item with no job) | `permission`; `permissionRule` when its `options` hold `Always allow` | yes | the item's `title` | its `text`, whole |
 | Oby planned something only the owner's Confirm carries out (a `confirm` item) | `confirm` | yes | `Confirm` | the item's `title`, then its `text` |
-| Work waits for the owner's Start (a `start` item; one turn's offers, `offer`, are one alert) | `start` | yes | the item's `title`, or `Oby offers <n> jobs` for an offer of several | the first line of its (first item's) `text` |
-| An inbox item sorted `"triage": "needs_you"` | `inbox` | yes | the item's `title`; for another Oby's question (`obi.type` `question`), `Question from <obi.fromOwner>` (anything but printable ASCII as `\u{…}`) | the first line of its `text`; for that question, `obi.quoted.text` |
+| Work waits for the owner's Start (a `start` item; one turn's offers, `offer`, are one alert) | `start` | yes | the item's `title`, or `Oby offers <n> jobs` for an offer of several | its (first item's) `text`, whole |
+| An inbox item sorted `"triage": "needs_you"` | `inbox` | yes | the item's `title`; for another Oby's question (`obi.type` `question`), `Question from <obi.fromOwner>` (anything but printable ASCII as `\u{…}`) | its `text`, whole; for that question, `obi.quoted.text` |
 | A job the owner started ends done with commits it couldn't publish by itself | `ready` | no | `Ready to publish: <title>`, `Couldn't publish: <title>` with a `publishError` | `publishError`, else the summary's first line |
 | … `failed` or `interrupted` (not at a limit) | `job` | no | `Failed: <title>`, `Needs you: <title>` | the `reason`, else the summary's first line |
 | A job's merge waits on the owner (`mergeNeedsYou`, ALERTS-7) | `job` | yes | its open `merge` card's title before `: ` (`Ready to merge`, else `Not merged`), then `: <title>` | `mergeError`'s first line, else `Not merged` |
