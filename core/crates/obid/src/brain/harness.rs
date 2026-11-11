@@ -2641,6 +2641,7 @@ fn step_text(name: &str, input: &Value) -> String {
         Some("oby_ask") => "Asking another Oby".into(),
         Some("oby_asks") => "Reading what other Obys said".into(),
         Some("oby_conversations") => "Going over past conversations".into(),
+        Some("oby_delete_conversations") => "Asking to delete conversations".into(),
         Some("oby_room_read") => "Reading the Obysphere's room".into(),
         Some("oby_room_post") => "Posting in the Obysphere's room".into(),
         Some("oby_routines") => "Looking at the routines".into(),
