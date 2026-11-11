@@ -63,6 +63,7 @@ mod account_limits;
 mod authors;
 mod budget;
 mod lanes;
+pub(crate) use lanes::claude_place;
 mod logins;
 mod moves;
 mod own_refs;
@@ -7950,28 +7951,18 @@ impl Jobs {
         let worktree = launch.cwd.clone();
         let job = self.get(id).ok_or("the job is gone")?;
         let jobs = self;
-        // In Claude Code's own sandbox its tools run unboxed: never a path outside the worktree,
-        // nor the worktree's `.git`, which obid's later git calls would otherwise follow.
+        // In Claude Code's own sandbox its tools run unboxed (LANES-14, `own_reach`).
         let own = launch.own_sandbox;
-        let pointer = policy::real_path(&worktree.join(".git"));
         // obid's fixed rules first, in every mode; then, for the owner's own jobs, the job's mode
         // and the repository's saved rules, which may ask the owner. A review another Obi asked
         // for only reads, and never asks.
         let decide = |name: &str, input: &Value| -> Ruling {
-            let names_pointer = ["file_path", "notebook_path"]
-                .iter()
-                .filter_map(|key| input.get(*key).and_then(Value::as_str))
-                .any(|path| policy::real_path(&worktree.join(path)) == pointer);
-            let outside = (own && names_pointer)
-                .then(|| Answer::Deny("obid keeps the worktree's .git as it made it.".into()));
-            let outside = outside.or_else(|| {
-                (own && policy::names_outside(name, input, &worktree)).then(|| {
-                    Answer::Deny(format!(
-                        "Stay inside this job's worktree ({}).",
-                        worktree.display()
-                    ))
-                })
-            });
+            let outside = own
+                .then(|| jobs.own_reach(id, name, input, &worktree))
+                .flatten();
+            if let Some(Answer::Allow) = outside {
+                return Ruling::Now(Answer::Allow);
+            }
             match outside.unwrap_or_else(|| {
                 // The job's mode as it is now: the owner may change it mid-turn (BYPASS-8). Its
                 // background helpers are waited for as its background commands are

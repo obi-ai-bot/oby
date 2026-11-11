@@ -266,7 +266,7 @@ pub(crate) fn own_sandbox_env(
 }
 
 /// `account`'s Claude Code folder: its `configDir`, else `~/.claude` in `home`.
-fn claude_folder(account: &crate::config::Account, home: &Path) -> PathBuf {
+pub(super) fn claude_folder(account: &crate::config::Account, home: &Path) -> PathBuf {
     account
         .config_dir
         .clone()
@@ -425,9 +425,14 @@ fn settings_path(path: &str, dir: &Path, home: Option<&Path>) -> Option<PathBuf>
     })
 }
 
+/// What an own run's Claude Code asks obid about before every call besides [`FILE_TOOLS`] (LANES-14):
+/// an ask rule beats a skill's `allowed-tools`, an allow rule and a hook's `allow` (measured with
+/// 2.1.302; `mcp__*` names every MCP tool), so none of the owner's lets a call past obid's rules.
+pub(super) const ASKED: [&str; 4] = ["Bash", "WebFetch", "WebSearch", "mcp__*"];
+
 /// The tools whose permission rules name files they read or write: an allow rule for one reaches
 /// what it names without asking ([`own_settings_allowed`]).
-const FILE_TOOLS: [&str; 8] = [
+pub(super) const FILE_TOOLS: [&str; 8] = [
     "Read",
     "Edit",
     "Write",
@@ -516,9 +521,10 @@ pub(super) fn shell_quoted(text: &str) -> String {
 /// only where the box would ([`Spec::writable`]), and never the git pointers, `oby-common` or
 /// `env.sh` in `login`, which Claude Code lets its commands write whatever the settings say: obid
 /// writes it again every turn, never through a link, [`write_fresh`], and what it sets reaches only
-/// them. Its Read and Edit tools ask before going outside the worktree, which obid refuses in this
-/// mode (`policy::names_outside`), and are denied the pointers and that file outright. obid still
-/// answers each of its commands (`autoAllowBashIfSandboxed` off). A path the settings can't name
+/// them. Every call of its file tools, its shell, the web and any MCP tool asks obid ([`ASKED`]),
+/// which refuses a path outside the worktree in this mode (crate::jobs, `own_reach`); its Edit is
+/// denied the pointers and that file outright. obid answers each of its commands too
+/// (`autoAllowBashIfSandboxed` off). A path the settings can't name
 /// stops the run. They outrank the owner's user settings the run loads too (LANES-5): the sandbox
 /// stays on, its filesystem rules too (`filesystem.disabled`, a key Claude Code 2.1.302 reads),
 /// neither weaker mode, and the [`PINNED_ENV`] values are `env`'s (the run's own), whatever that
@@ -576,7 +582,7 @@ pub(super) fn own_sandbox_settings(
     }
     Ok(json!({
         "env": pinned,
-        "permissions": {"deny": rules},
+        "permissions": {"deny": rules, "ask": FILE_TOOLS.iter().chain(&ASKED).collect::<Vec<_>>()},
         "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,

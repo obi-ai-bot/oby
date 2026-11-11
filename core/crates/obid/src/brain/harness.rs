@@ -2332,7 +2332,16 @@ async fn one(
             | Event::Tokens(_) => {}
         }
     };
+    // An own session asks obid about every call (LANES-14): Claude Code's own places outside the
+    // room, which it read without asking before, are its own to read (`HOME` is in `bounds`).
+    let folders = match own {
+        true => shared.jobs.claude_folders(),
+        false => Vec::new(),
+    };
     let decide = |tool: &str, input: &Value| {
+        if own && crate::jobs::claude_place(tool, input, &place.room, None, &folders, false) {
+            return Ruling::Now(Answer::Allow);
+        }
         Ruling::Now(rule(tool, input, &bounds, &place.repos, own, &|| {
             session.taint()
         }))
