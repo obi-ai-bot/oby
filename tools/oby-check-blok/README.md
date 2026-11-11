@@ -48,13 +48,13 @@ Another project makes its check this workflow in four steps; obid needs no chang
    `rust-affected-tests`, `ts-checks`, `swift-tests`, `secret-scan`), whatever each runs in that
    project. Nothing passes unless `scan` planned work and passed.
 3. Put the same hand-off at the script's top, after its `cd` to the repository's root: this
-   repository's `scripts/oby-check.sh`, from `resolved()` to its `exec`. It runs the first
-   `oby-check-blok` on `PATH` only once it and the nodes binary beside it, each resolved through its
-   links, are regular files of the check's user that nobody else may write, in folders nobody else
-   may write, and outside the checked repository and `TMPDIR`; it then runs the resolved one. A
-   binary the checked code planted never judges it, and with none that passes, the check fails
-   rather than running anything else. It doesn't vet the folders above the binary's, nor a `PATH`
-   whose owner put a folder of their own before `~/.cargo/bin`.
+   repository's `scripts/oby-check.sh`, from `resolved()` to its `exec`. It resolves the first
+   `oby-check-blok` on `PATH` once and runs that path only when it and the nodes binary beside it are
+   regular files of the check's user or root that no other user may write, with no access list, in a
+   folder of the check's user or root likewise, outside the checked repository and `TMPDIR`, with no
+   newline in any of those paths. A binary the checked code planted never judges it, and with none
+   that passes, the check fails rather than running anything else. It doesn't check the folders above
+   the binary's folder, nor a folder the owner deliberately put first on `PATH`.
 4. Point obid at it: `"check": "scripts/oby-check.sh"` on the repository in obid's `config.json`.
 
 ## The workflow file

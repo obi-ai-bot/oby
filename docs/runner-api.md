@@ -16,7 +16,7 @@ run by `tools/oby-check-blok`, a standalone Apache-2.0 Cargo workspace outside o
 it always did, in the check's box with the base's copy (PUBLISHING-6, 7); the script, run with none
 of `OBY_CHECK_INNER`, `OBY_CHECK_PLAN` and `OBY_CHECK_ONLY`, execs the first `oby-check-blok` on the
 check's `PATH`, by its resolved path: `oby-check-blok check [base]` (default `origin/dev`), from the
-repository's root. Before it does, it and the nodes binary beside it, each resolved through its links, must be regular files of the check's user that nobody else may write, in folders nobody else may write, and outside the checked checkout and the check's `TMPDIR`, which the checked code can write. Otherwise, or with none installed or one only on a
+repository's root. Before it does, it is resolved through its links once, and that path is the one vetted and run: it and the nodes binary beside it (resolved too) must be regular files of the check's user or root that no other user may write, with no access list, in a folder of the check's user or root that no other user may write, with no access list either, and outside the checked checkout and the check's `TMPDIR`, which the checked code can write; a path, or one of those folders, with a newline in it is refused. What it doesn't check: the folders above the binary's folder (a home whose `~/.cargo` others may write could swap its `bin`), and a folder the owner deliberately put first on `PATH`, which the check trusts as theirs. Otherwise, or with none installed or one only on a
 relative path, the check fails (`oby-check: failed: oby-check-blok (<why>)`, exit 1) and the script
 runs nothing of its own.
 
