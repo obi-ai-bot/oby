@@ -425,19 +425,34 @@ fn settings_path(path: &str, dir: &Path, home: Option<&Path>) -> Option<PathBuf>
     })
 }
 
-/// What an own run's Claude Code asks obid about before every call besides [`FILE_TOOLS`] (LANES-14):
-/// an ask rule beats a skill's `allowed-tools`, an allow rule and a hook's `allow` (measured with
-/// 2.1.302; `mcp__*` names every MCP tool), so none of the owner's lets a call past obid's rules.
-pub(super) const ASKED: [&str; 4] = ["Bash", "WebFetch", "WebSearch", "mcp__*"];
+/// Every built-in tool of Claude Code's: 2.1.302's (its `init` event's `tools`, with `--tools`
+/// naming each it can turn on), then names it took before or takes as another's (`Agent` for
+/// `Task`, `KillShell` for `TaskStop`). An own run asks obid before every call of each, and of
+/// every MCP tool ([`own_sandbox_settings`]'s `ask`, LANES-14): an ask rule beats a skill's
+/// `allowed-tools`, an allow rule and a hook's `allow` (measured with 2.1.302), so nothing of the
+/// owner's lets a call past obid's rules. A tool a later Claude Code adds and this doesn't name
+/// skips them: `lanes_14_a_skills_grant_still_asks_obid` says which.
+#[rustfmt::skip]
+pub(crate) const CLAUDE_TOOLS: [&str; 44] = [
+    "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+    "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep", "ListAgents",
+    "Monitor", "NotebookEdit", "PushNotification", "Read", "RemoteTrigger", "ReportFindings",
+    "ScheduleWakeup", "SendMessage", "Skill", "Task", "TaskCreate", "TaskGet", "TaskList",
+    "TaskStop", "TaskUpdate", "ToolSearch", "WebFetch", "WebSearch", "Workflow", "Write",
+    // Older names, and others' it still takes.
+    "Agent", "BashOutput", "KillBash", "KillShell", "LS", "LSP", "MultiEdit", "NotebookRead",
+    "TaskOutput", "TodoWrite",
+];
 
 /// The tools whose permission rules name files they read or write: an allow rule for one reaches
 /// what it names without asking ([`own_settings_allowed`]).
-pub(super) const FILE_TOOLS: [&str; 8] = [
+pub(super) const FILE_TOOLS: [&str; 9] = [
     "Read",
     "Edit",
     "Write",
     "MultiEdit",
     "NotebookEdit",
+    "NotebookRead",
     "Grep",
     "Glob",
     "LS",
@@ -521,7 +536,7 @@ pub(super) fn shell_quoted(text: &str) -> String {
 /// only where the box would ([`Spec::writable`]), and never the git pointers, `oby-common` or
 /// `env.sh` in `login`, which Claude Code lets its commands write whatever the settings say: obid
 /// writes it again every turn, never through a link, [`write_fresh`], and what it sets reaches only
-/// them. Every call of its file tools, its shell, the web and any MCP tool asks obid ([`ASKED`]),
+/// them. Every call of a built-in tool or an MCP tool asks obid ([`CLAUDE_TOOLS`]),
 /// which refuses a path outside the worktree in this mode (crate::jobs, `own_reach`); its Edit is
 /// denied the pointers and that file outright. obid answers each of its commands too
 /// (`autoAllowBashIfSandboxed` off). A path the settings can't name
@@ -580,7 +595,7 @@ pub(super) fn own_sandbox_settings(
             .ok_or_else(|| format!("obid has no {wanted} it can give Claude Code."))?;
         pinned.insert(wanted.into(), value.into());
     }
-    let asked: Vec<&str> = FILE_TOOLS.iter().chain(&ASKED).copied().collect();
+    let asked: Vec<&str> = CLAUDE_TOOLS.iter().chain(&["mcp__*"]).copied().collect();
     Ok(json!({
         "env": pinned,
         "permissions": {"deny": rules, "ask": asked},

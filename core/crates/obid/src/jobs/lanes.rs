@@ -53,6 +53,9 @@ impl Jobs {
         input: &Value,
         worktree: &Path,
     ) -> Option<Answer> {
+        if Self::OWN_QUIET.contains(&name) {
+            return Some(Answer::Allow);
+        }
         let pointer = policy::real_path(&worktree.join(".git"));
         let names_pointer = ["file_path", "notebook_path"]
             .iter()
@@ -87,6 +90,16 @@ impl Jobs {
             },
         )
     }
+
+    /// The built-in tools of Claude Code's an own run asks obid about (its `ask` rules, LANES-14)
+    /// that reach nothing past the session: finding a deferred tool, its task list, its own
+    /// background tasks, its agents' names, planning, a skill of the owner's (whose
+    /// `allowed-tools` no longer skip obid). obid lets them run at once, as Claude Code did.
+    #[rustfmt::skip]
+    pub(crate) const OWN_QUIET: [&'static str; 10] = [
+        "ToolSearch", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop",
+        "ListAgents", "EnterPlanMode", "Skill",
+    ];
 
     /// Every Claude Code account's folder: each `configDir`, and the person's `~/.claude`.
     pub(crate) fn claude_folders(&self) -> Vec<PathBuf> {
@@ -280,7 +293,8 @@ impl Jobs {
 /// only Claude Code's own places, which it read or wrote without asking before its `ask` rules
 /// (LANES-14): to read, its commands' `temp` folder (their background output, `CLAUDE_CODE_TMPDIR`)
 /// and `projects/<cwd as Claude Code names it>` in an account's `folders` (long outputs it saved,
-/// its memory); in `plan` mode, to write, a plan in an account's `plans/`, never through a link.
+/// its memory); in `plan` mode, to write, a plan in an account's `plans/`, never through a link,
+/// nor one of a file's other names (a hard link).
 /// Only absolute paths: a relative one is the working folder's, which a link there may lead out of.
 pub(crate) fn claude_place(
     tool: &str,
@@ -328,7 +342,9 @@ pub(crate) fn claude_place(
             .map(Path::new)
             .is_some_and(|file| {
                 file.extension().is_some_and(|e| e == "md")
-                    && std::fs::symlink_metadata(file).map_or(true, |m| m.is_file())
+                    && std::fs::symlink_metadata(file).map_or(true, |m| {
+                        m.is_file() && std::os::unix::fs::MetadataExt::nlink(&m) == 1
+                    })
                     && file
                         .parent()
                         .and_then(real)
@@ -705,9 +721,51 @@ mod tests {
         Jobs::open(config, events, Sandbox::detect(&session)).unwrap()
     }
 
+    /// Claude Code 2.1.302's built-in tools, as its stream-json `init` event lists them with
+    /// `--tools` naming every tool it might have (`lanes_14_a_skills_grant_still_asks_obid` reads
+    /// a later Claude Code's list itself).
+    #[rustfmt::skip]
+    const INIT_TOOLS: [&str; 34] = [
+        "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+        "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep",
+        "ListAgents", "Monitor", "NotebookEdit", "PushNotification", "Read", "RemoteTrigger",
+        "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "Task", "TaskCreate",
+        "TaskGet", "TaskList", "TaskStop", "TaskUpdate", "ToolSearch", "WebFetch", "WebSearch",
+        "Workflow", "Write",
+    ];
+
+    /// LANES-14: every built-in tool of Claude Code's is one an own run asks obid about, and so is
+    /// every tool obid's lists name (the file tools' rules, the harmless ones it lets run).
+    #[test]
+    fn lanes_14_every_built_in_tool_asks_obid() {
+        for tool in INIT_TOOLS.iter().chain(&FILE_TOOLS).chain(&Jobs::OWN_QUIET) {
+            assert!(CLAUDE_TOOLS.contains(tool), "{tool}");
+        }
+    }
+
+    /// LANES-14: of what an own run asks obid, what reaches nothing past the session runs at once;
+    /// any other tool goes to the job's mode and rules, and a file outside the worktree is refused.
+    #[test]
+    fn lanes_14_an_own_runs_harmless_tools_run_at_once() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-14d-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let jobs = own_jobs(&root);
+        let worktree = root.join("worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let reach = |tool: &str, input: Value| jobs.own_reach("j", tool, &input, &worktree);
+        for tool in ["Skill", "ToolSearch", "TaskStop", "TodoWrite"] {
+            assert_eq!(reach(tool, json!({})), Some(Answer::Allow), "{tool}");
+        }
+        assert_eq!(reach("Monitor", json!({"command": "ls"})), None);
+        let secret = json!({"file_path": root.join("home/vault/secrets.json")});
+        assert!(matches!(reach("Read", secret), Some(Answer::Deny(_))));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// LANES-14 (docs/contracts/lanes.md): an own run's Claude Code asks obid before every call of
-    /// its file tools, its shell, the web and any MCP tool, whatever the owner's skills, settings
-    /// or hooks allow: its `--settings` name them all as `ask` rules, which beat those.
+    /// a built-in or MCP tool, whatever the owner's skills, settings or hooks allow: its
+    /// `--settings` name them all as `ask` rules, which beat those.
     #[cfg(target_os = "macos")]
     #[test]
     fn lanes_14_every_call_of_an_own_run_asks_obid() {
@@ -735,10 +793,7 @@ mod tests {
         let at = launch.argv.iter().position(|a| a == "--settings").unwrap();
         let settings: Value = serde_json::from_str(launch.argv[at + 1].to_str().unwrap()).unwrap();
         let asked = &settings["permissions"]["ask"];
-        for tool in FILE_TOOLS
-            .iter()
-            .chain(&["Bash", "WebFetch", "WebSearch", "mcp__*"])
-        {
+        for tool in CLAUDE_TOOLS.iter().chain(&["mcp__*"]) {
             assert!(
                 asked
                     .as_array()
@@ -773,6 +828,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, temp.join("link")).unwrap();
         std::os::unix::fs::symlink(&outside, cwd.join("out")).unwrap();
         std::os::unix::fs::symlink(outside.join("secret"), folder.join("plans/linked.md")).unwrap();
+        std::fs::hard_link(outside.join("secret"), folder.join("plans/also.md")).unwrap();
         let folders = vec![folder.clone()];
         let place = |tool: &str, path: &Path, plan: bool| {
             let key = if tool == "Grep" { "path" } else { "file_path" };
@@ -795,6 +851,7 @@ mod tests {
             ("Edit", temp.join("x"), false),
             ("Write", folder.join("plans/a-plan.md"), false),
             ("Write", folder.join("plans/linked.md"), true),
+            ("Write", folder.join("plans/also.md"), true),
             ("Write", folder.join("plans/a.json"), true),
             ("Write", folder.join("plans/../settings.md"), true),
         ] {
@@ -806,14 +863,17 @@ mod tests {
     }
 
     /// LANES-14, measured on this Mac's real Claude Code: a skill whose `allowed-tools` grants
-    /// Write lets it write outside its working folder without asking, unless obid's `ask` rules
-    /// are there; then it asks, and with no one to answer (`-p`) it doesn't. Nothing of the login
-    /// is read or printed. `cargo test -p obid --lib lanes_14_a_skill -- --ignored`.
+    /// Write, a hook that answers `allow`, and an allow rule for an MCP tool each let a call through
+    /// without asking, unless obid's `ask` rules are there; then it asks, and with no one to answer
+    /// (`-p`) nothing happens. Every built-in tool its `init` event lists is one obid's rules name
+    /// (`NotebookRead` is no tool of 2.1.302's). Nothing of the login is read or printed.
+    /// `cargo test -p obid --lib lanes_14_a_skill -- --ignored`.
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "runs the real Claude Code on this Mac's own login"]
     fn lanes_14_a_skills_grant_still_asks_obid() {
-        use std::io::Write;
+        use std::io::{BufRead, Write};
+        use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("obid-lanes-14c-{}", uuid::Uuid::new_v4()));
         let [work, outside] = ["work", "outside"].map(|d| root.join(d));
         let skill = work.join(".claude/skills/probe");
@@ -824,9 +884,48 @@ mod tests {
             "---\nname: probe\ndescription: Writes any file the user names.\nallowed-tools: Edit, Write, Read\n---\nWrite the file the user names with the Write tool.\n",
         )
         .unwrap();
-        let ask: Vec<&str> = FILE_TOOLS.iter().chain(&ASKED).copied().collect();
-        let written = |name: &str, settings: Option<Value>| {
-            let target = outside.join(name);
+        // A hook that allows every call, and an MCP server whose one tool leaves a file when called.
+        let script = |name: &str, text: String| {
+            let path = root.join(name);
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let hook = script(
+            "allow.sh",
+            "#!/bin/sh\necho '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'\n".into(),
+        );
+        let called = outside.join("mcp-called");
+        let server = script(
+            "mcp.pl",
+            format!(
+                r#"#!/usr/bin/perl
+$| = 1;
+while (<STDIN>) {{
+  next unless /"id":\s*(\d+)/; my $id = $1; my $r = "{{}}";
+  if (/"initialize"/) {{ $r = '{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"probe","version":"1"}}}}' }}
+  elsif (/"tools\/list"/) {{ $r = '{{"tools":[{{"name":"echo","description":"Echoes.","inputSchema":{{"type":"object"}}}}]}}' }}
+  elsif (/"tools\/call"/) {{ open(my $f, ">", "{}"); close $f; $r = '{{"content":[{{"type":"text","text":"ok"}}]}}' }}
+  print "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$r}}\n";
+}}
+"#,
+                called.display()
+            ),
+        );
+        let mcp = root.join("mcp.json");
+        let servers = json!({"mcpServers": {"probe": {"command": server}}});
+        std::fs::write(&mcp, servers.to_string()).unwrap();
+        // obid lets its harmless tools run at once (`OWN_QUIET`); with no one to answer here,
+        // `--allowedTools` stands in for that answer, and they're left out of the `ask` rules.
+        let quiet = |t: &&&str| !Jobs::OWN_QUIET.contains(t);
+        let ask: Vec<&str> = CLAUDE_TOOLS
+            .iter()
+            .filter(quiet)
+            .chain(&["mcp__*"])
+            .copied()
+            .collect();
+        // What Claude Code did with `settings` and `prompt`, and the built-in tools it had.
+        let run = |settings: Value, prompt: &str| -> Vec<String> {
             let mut command = std::process::Command::new("claude");
             command
                 .current_dir(&work)
@@ -836,47 +935,89 @@ mod tests {
                     "--setting-sources",
                     "project",
                 ])
-                .args(["--permission-mode", "default"])
+                .args(["--permission-mode", "default", "--model", "sonnet"])
                 .args([
-                    "--model",
-                    "sonnet",
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
                     "--allowedTools",
-                    "Skill",
-                    "--tools",
-                    "Read,Edit,Write,Skill",
                 ])
+                .arg(Jobs::OWN_QUIET.join(","))
+                .args(["--strict-mcp-config", "--mcp-config", mcp.to_str().unwrap()])
+                .args(["--settings", &settings.to_string()])
                 .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null());
-            if let Some(settings) = settings {
-                command.args(["--settings", &settings.to_string()]);
-            }
+                .stdout(std::process::Stdio::piped());
             for (name, _) in std::env::vars() {
                 if name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC_") {
                     command.env_remove(name);
                 }
             }
             let mut child = command.spawn().unwrap();
-            let prompt = format!(
-                "Invoke the probe skill with the Skill tool, then use the Write tool to create {} containing the word x. If refused, stop.",
-                target.display()
-            );
             child
                 .stdin
                 .take()
                 .unwrap()
                 .write_all(prompt.as_bytes())
                 .unwrap();
+            let mut tools = Vec::new();
+            for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines() {
+                let line: Value = serde_json::from_str(&line.unwrap()).unwrap_or_default();
+                if line["subtype"] == "init" {
+                    let names = line["tools"].as_array().cloned().unwrap_or_default();
+                    tools = names
+                        .iter()
+                        .filter_map(|t| t.as_str().map(str::to_owned))
+                        .collect();
+                }
+            }
             child.wait().unwrap();
-            target.exists()
+            tools
         };
-        assert!(
-            written("granted", None),
-            "the skill's grant asked anyway: the probe proves nothing"
-        );
-        assert!(!written(
-            "asked",
-            Some(json!({"permissions": {"ask": ask}}))
-        ));
+        let with = |settings: Value, asked: bool| match asked {
+            true => {
+                let mut settings = settings;
+                settings["permissions"]["ask"] = json!(ask);
+                settings
+            }
+            false => settings,
+        };
+        let write = |name: &str| {
+            format!(
+                "Use the Write tool to create {} containing the word x. If refused, stop.",
+                outside.join(name).display()
+            )
+        };
+        let hooked = json!({"hooks": {"PreToolUse": [{"matcher": "Write",
+            "hooks": [{"type": "command", "command": hook}]}]}});
+        let allowed = json!({"permissions": {"allow": ["mcp__probe__echo"]}});
+        for asked in [false, true] {
+            let tag = if asked { "asked" } else { "granted" };
+            let skill = format!(
+                "Invoke the probe skill with the Skill tool, then: {}",
+                write(tag)
+            );
+            let tools = run(with(json!({}), asked), &skill);
+            for tool in tools.iter().filter(|t| !t.starts_with("mcp__")) {
+                assert!(
+                    CLAUDE_TOOLS.contains(&tool.as_str()),
+                    "{tool} skips obid's rules"
+                );
+            }
+            assert_eq!(outside.join(tag).exists(), !asked, "a skill's grant, {tag}");
+            let hook = format!("hook-{tag}");
+            run(with(hooked.clone(), asked), &write(&hook));
+            assert_eq!(
+                outside.join(&hook).exists(),
+                !asked,
+                "a hook's allow, {tag}"
+            );
+            let _ = std::fs::remove_file(&called);
+            run(
+                with(allowed.clone(), asked),
+                "Call the MCP tool mcp__probe__echo once. If refused, stop.",
+            );
+            assert_eq!(called.exists(), !asked, "an MCP allow rule, {tag}");
+        }
         // The empty memory folder Claude Code makes for its working folder, in the person's own.
         let name: String = (work.canonicalize().unwrap().to_string_lossy().chars())
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })

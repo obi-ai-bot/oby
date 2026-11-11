@@ -2332,14 +2332,18 @@ async fn one(
             | Event::Tokens(_) => {}
         }
     };
-    // An own session asks obid about every call (LANES-14): Claude Code's own places outside the
-    // room, which it read without asking before, are its own to read (`HOME` is in `bounds`).
+    // An own session asks obid about every call (LANES-14): what reaches nothing past the session
+    // runs at once, and Claude Code's own places outside the room, which it read without asking
+    // before, are its own to read (`HOME` is in `bounds`).
     let folders = match own {
         true => shared.jobs.claude_folders(),
         false => Vec::new(),
     };
     let decide = |tool: &str, input: &Value| {
-        if own && crate::jobs::claude_place(tool, input, &place.room, None, &folders, false) {
+        let quiet = crate::jobs::Jobs::OWN_QUIET.contains(&tool);
+        if own
+            && (quiet || crate::jobs::claude_place(tool, input, &place.room, None, &folders, false))
+        {
             return Ruling::Now(Answer::Allow);
         }
         Ruling::Now(rule(tool, input, &bounds, &place.repos, own, &|| {
@@ -3717,6 +3721,14 @@ mod tests {
         assert!(!own_conversation(true, Tool::Claude, true));
         assert!(!own_conversation(true, Tool::Codex, false));
         assert!(!own_conversation(true, Tool::Cursor, false));
+    }
+
+    /// LANES-14: every tool an own session has is one obid's `ask` rules name, so it asks obid.
+    #[test]
+    fn lanes_14_an_own_sessions_tools_all_ask_obid() {
+        for tool in OWN_TOOLS.split(',') {
+            assert!(crate::jobs::CLAUDE_TOOLS.contains(&tool), "{tool}");
+        }
     }
 
     /// LANES-12 (docs/contracts/lanes.md): an own session runs its own Bash in its room by the same
