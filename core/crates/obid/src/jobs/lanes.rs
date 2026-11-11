@@ -900,14 +900,14 @@ mod tests {
             "mcp.pl",
             format!(
                 r#"#!/usr/bin/perl
-$| = 1;
-while (<STDIN>) {{
-  next unless /"id":\s*(\d+)/; my $id = $1; my $r = "{{}}";
-  if (/"initialize"/) {{ $r = '{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"probe","version":"1"}}}}' }}
-  elsif (/"tools\/list"/) {{ $r = '{{"tools":[{{"name":"echo","description":"Echoes.","inputSchema":{{"type":"object"}}}}]}}' }}
-  elsif (/"tools\/call"/) {{ open(my $f, ">", "{}"); close $f; $r = '{{"content":[{{"type":"text","text":"ok"}}]}}' }}
-  print "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$r}}\n";
-}}
+                $| = 1;
+                while (<STDIN>) {{
+                  next unless /"id":\s*(\d+)/; my $id = $1; my $r = "{{}}";
+                  if (/"initialize"/) {{ $r = '{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"probe","version":"1"}}}}' }}
+                  elsif (/"tools\/list"/) {{ $r = '{{"tools":[{{"name":"echo","description":"Echoes.","inputSchema":{{"type":"object"}}}}]}}' }}
+                  elsif (/"tools\/call"/) {{ open(my $f, ">", "{}"); close $f; $r = '{{"content":[{{"type":"text","text":"ok"}}]}}' }}
+                  print "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$r}}\n";
+                }}
 "#,
                 called.display()
             ),
