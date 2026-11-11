@@ -2253,8 +2253,9 @@ pub(crate) fn forget_login_secrets(login: &Path) {
         // A copy of the tool's own login ([`copy_login`]).
         ".claude/.credentials.json",
         ".codex/auth.json",
-        // An own run's MCP config, with its tokens ([`mcp_config_path`]).
+        // An own run's MCP config, with its tokens ([`mcp_path`]): a job's or a conversation's.
         MCP_CONFIG_FILE,
+        CONVERSATION_MCP_FILE,
     ] {
         remove_inside(login, name);
     }
@@ -2270,8 +2271,12 @@ pub(super) fn mcp_config_path(own: bool, temp: &Path, login: &Path) -> Result<Pa
     mcp_path(own, temp, login, MCP_CONFIG_FILE)
 }
 
-/// [`mcp_config_path`]'s rule for a file `name`d as its caller's: a job's, or a conversation's
-/// `oby-mcp.json` (crate::brain::harness, LANES-12), whose `login` is its conversation's.
+/// The file a conversation's MCP configuration is in (crate::brain::harness, LANES-12): in its
+/// `login` folder for an own session, which [`forget_login_secrets`] empties after every turn.
+pub(crate) const CONVERSATION_MCP_FILE: &str = "oby-mcp.json";
+
+/// [`mcp_config_path`]'s rule for a file `name`d as its caller's: a job's ([`MCP_CONFIG_FILE`]),
+/// or a conversation's ([`CONVERSATION_MCP_FILE`]), whose `login` is its conversation's.
 pub(crate) fn mcp_path(
     own: bool,
     temp: &Path,

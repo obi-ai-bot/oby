@@ -67,8 +67,8 @@ const OWN_TOOLS: &str = "Read,Grep,Glob,LS,NotebookRead,WebSearch,WebFetch,Write
 /// How long a call of Oby's tools waits for obid's reader to reach the line where the agent wrote
 /// it ([`Session::heard`]).
 pub const READ_WAIT: Duration = Duration::from_secs(5);
-/// The file in the session's `HOME` that gives it Oby's MCP server.
-const MCP_FILE: &str = "oby-mcp.json";
+/// The file that gives the session Oby's MCP server ([`mcp_file`]).
+use crate::jobs::CONVERSATION_MCP_FILE as MCP_FILE;
 /// Why a turn couldn't answer when its session failed twice.
 pub const FAILED_TWICE: &str = "its agent session failed twice";
 /// How a turn that got no answer starts.
@@ -3762,6 +3762,19 @@ mod tests {
         assert!(mcp.starts_with(&place.login), "{}", mcp.display());
         assert!(!mcp.starts_with(&place.temp) && !mcp.starts_with(&place.room));
         assert_eq!(mcp_file(&place, false).unwrap(), place.temp.join(MCP_FILE));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// LANES-12: an own session's MCP configuration, with its turn's tokens, goes once the turn's
+    /// runs ended, as a boxed session's login copy does (F-M2-63).
+    #[test]
+    fn an_own_sessions_mcp_configuration_goes_after_its_turn() {
+        let home = std::env::temp_dir().join(format!("obid-mcp-gone-{}", uuid::Uuid::new_v4()));
+        let place = Place::of(&home, "c1");
+        let mcp = mcp_file(&place, true).unwrap();
+        std::fs::write(&mcp, r#"{"token": "t"}"#).unwrap();
+        place.forget_login();
+        assert!(!mcp.exists(), "{}", mcp.display());
         let _ = std::fs::remove_dir_all(&home);
     }
 

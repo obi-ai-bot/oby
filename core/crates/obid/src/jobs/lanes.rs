@@ -105,7 +105,7 @@ impl Jobs {
         let mut settings: Value = serde_json::from_str(&settings)
             .map_err(|e| format!("obid can't make Claude Code's settings: {e}"))?;
         if let Some(deny) = settings["permissions"]["deny"].as_array_mut() {
-            deny.extend(self.conversation_denials().into_iter().map(Value::from));
+            deny.extend(self.conversation_denials(room).into_iter().map(Value::from));
         }
         let settings = settings.to_string();
         let argv: Vec<OsString> = std::iter::once(bin.into_os_string())
@@ -132,10 +132,12 @@ impl Jobs {
     /// (a deny beats every allow; obid answers only what Claude Code asks, `rule`): everything in
     /// obid's home but its conversations (the vault, its keys and token, the logins and accounts,
     /// made later too); in every conversation's folder, this one's too, its `login` (the MCP
-    /// configuration with the turn's tokens, `env.sh`), its commands' `HOME`, config, session and
-    /// log (its room stays, as other rooms do: Bash reads its own `HOME`); and each
-    /// Claude Code account's settings, state, login and hooks, so no turn plants a hook.
-    fn conversation_denials(&self) -> Vec<String> {
+    /// configuration with the turn's tokens, `env.sh`), config, session and log; every other
+    /// conversation's commands' `HOME` (its room stays, as other rooms do), never the one of the
+    /// conversation whose room is `room`, where Claude Code keeps its background commands' output
+    /// (`CLAUDE_CODE_TMPDIR`) and its Bash reads anyway; and each Claude Code account's settings,
+    /// state, login and hooks, so no turn plants a hook.
+    fn conversation_denials(&self, room: &Path) -> Vec<String> {
         let home = &self.config.home;
         let real_home = home.canonicalize().unwrap_or_else(|_| home.clone());
         let mut places: Vec<PathBuf> = std::fs::read_dir(home)
@@ -147,11 +149,26 @@ impl Jobs {
             .map(|name| home.join(name))
             .collect();
         places.extend(["vault", "keys", "api-token", "accounts", "logins"].map(|n| home.join(n)));
-        let each = home.join("conversations/*");
-        // `home` and `login` whole: a running turn's Oby and Tetrix tokens (`oby-mcp.json`), its
-        // `env.sh`, a boxed one's login copy.
-        places
-            .extend(["login", "home", "config", "session.json", "agent.log"].map(|n| each.join(n)));
+        let conversations = home.join("conversations");
+        let each = conversations.join("*");
+        // `login` whole: a running turn's Oby and Tetrix tokens (`oby-mcp.json`), its `env.sh`, a
+        // boxed one's login copy.
+        places.extend(["login", "config", "session.json", "agent.log"].map(|n| each.join(n)));
+        // Every other conversation's `HOME` whole, by name: a deny rule can't leave one folder out
+        // of a pattern. One made after this launch has its tokens and login state denied by name
+        // (a boxed session's MCP configuration is in its `HOME`).
+        let this = room.parent().and_then(Path::file_name);
+        places.extend(
+            std::fs::read_dir(&conversations)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| Some(entry.file_name().as_os_str()) != this)
+                .map(|entry| entry.path().join("home")),
+        );
+        places.extend(
+            [CONVERSATION_MCP_FILE, ".claude", ".claude.json"].map(|n| each.join("home").join(n)),
+        );
         let mut folders: Vec<PathBuf> = self
             .accounts(Tool::Claude)
             .into_iter()
@@ -287,9 +304,11 @@ mod tests {
         .unwrap();
         let home = jobs.config.home.canonicalize().unwrap();
         let place = home.join("conversations/c");
-        let [room, temp, login] = ["room", "temp", "login"].map(|d| place.join(d));
+        // As crate::brain::harness's `Place`: `home` is its commands' HOME and CLAUDE_CODE_TMPDIR.
+        let [room, temp, login] = ["room", "home", "login"].map(|d| place.join(d));
         let repos = room.join("repos");
-        for dir in [&repos, &temp] {
+        let other = home.join("conversations/other/home");
+        for dir in [&repos, &temp, &other] {
             std::fs::create_dir_all(dir).unwrap();
         }
         let claude = jobs.accounts(Tool::Claude).remove(0);
@@ -389,25 +408,48 @@ mod tests {
             format!("Read(/{home}/logins/**)"),
             format!("Read(/{home}/conversations/*/login/**)"),
             format!("Read(/{home}/conversations/*/session.json)"),
-            // Every conversation's commands' HOME and login, with a running turn's tokens.
-            format!("Read(/{home}/conversations/*/home/**)"),
-            format!("Edit(/{home}/conversations/*/home/**)"),
+            // Every conversation's login, every other one's commands' HOME whole, and the tokens
+            // and login state in the HOME of one made after this launch.
             format!("Edit(/{home}/conversations/*/login/**)"),
+            format!("Read(/{}/**)", other.display()),
+            format!("Edit(/{}/**)", other.display()),
+            format!("Read(/{home}/conversations/*/home/oby-mcp.json)"),
+            format!("Read(/{home}/conversations/*/home/.claude/**)"),
+            format!("Read(/{home}/conversations/*/home/.claude.json)"),
             format!("Edit(/{account}/settings*.json)"),
             format!("Edit(/{account}/.claude.json)"),
             format!("Edit(/{account}/hooks/**)"),
         ] {
             assert!(listed(deny, &rule), "{rule}: {deny}");
         }
-        let room_text = room.display().to_string();
-        assert!(
-            !deny.as_array().unwrap().iter().any(|rule| {
-                let rule = rule.as_str().unwrap();
-                let path = rule[rule.find('/').unwrap() + 1..].trim_end_matches(')');
-                room_text.starts_with(path.trim_end_matches("/**"))
-            }),
-            "{deny}"
-        );
+        // Its room, and its own HOME, where Claude Code keeps its background commands' output
+        // (`CLAUDE_CODE_TMPDIR`), which its Read reads (F-M2-62): no rule covers them.
+        fn covers(pattern: &[&str], path: &[&str]) -> bool {
+            match (pattern.split_first(), path.split_first()) {
+                (Some((&"**", _)), _) | (None, None) => true,
+                (Some((want, pattern)), Some((have, path))) => {
+                    let one = match want.split_once('*') {
+                        Some((a, b)) => have.starts_with(a) && have.ends_with(b),
+                        None => want == have,
+                    };
+                    one && covers(pattern, path)
+                }
+                _ => false,
+            }
+        }
+        let output = temp.join("claude-501/-room/tasks/t.output");
+        for kept in [room.join("notes.md"), output] {
+            let kept = kept.to_str().unwrap();
+            let kept: Vec<&str> = kept.split('/').collect();
+            assert!(
+                !deny.as_array().unwrap().iter().any(|rule| {
+                    let rule = rule.as_str().unwrap();
+                    let path = rule[rule.find('/').unwrap() + 1..].trim_end_matches(')');
+                    covers(&path.split('/').collect::<Vec<_>>(), &kept)
+                }),
+                "{kept:?}: {deny}"
+            );
+        }
         // The owner's user settings may not let a file tool past the room without asking.
         let launch_with = |set: &str| {
             std::fs::write(&user_settings, set).unwrap();
