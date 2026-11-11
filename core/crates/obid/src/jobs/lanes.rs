@@ -976,7 +976,19 @@ mod tests {
             (admin.join("config.worktree"), "read"),
             (admin.join(crate::jobs::OWN_COMMON), "read"),
         ];
-        entries.extend(person_homes().into_iter().map(|p| (p, "none")));
+        // The person's home but where it's a shared temporary folder, which an own run's commands
+        // read as the terminal does (a check's `HOME` can be its `TMPDIR`).
+        let real = |p: PathBuf| p.canonicalize().unwrap_or(p);
+        let temps: Vec<PathBuf> = crate::sandbox::shared_temps()
+            .into_iter()
+            .map(real)
+            .collect();
+        entries.extend(
+            person_homes()
+                .into_iter()
+                .filter(|p| !temps.contains(&real(p.clone())))
+                .map(|p| (p, "none")),
+        );
         for (path, mode) in entries {
             let entry = format!("{} = \"{mode}\"", quoted(&path));
             assert!(profile.contains(&entry), "{entry} in {profile}");

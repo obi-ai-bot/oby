@@ -15420,8 +15420,10 @@ mod tests {
             .iter()
             .map(|path| PathBuf::from(path.as_str().unwrap()))
             .collect();
+        // As named where it can't be followed (a check's box hides `/Users/Shared`).
         for temp in crate::sandbox::shared_temps() {
-            assert!(!denied.contains(&real(&temp)), "{}", temp.display());
+            let temp = temp.canonicalize().unwrap_or(temp);
+            assert!(!denied.contains(&temp), "{}", temp.display());
         }
         assert!(list("denyRead").contains(&real(&root.join("account"))));
         assert!(list("allowRead").contains(&real(&worktree)));
