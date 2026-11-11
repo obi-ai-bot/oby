@@ -46,7 +46,41 @@ fn obid_env(
     env: &[(&str, &str)],
     more: Value,
 ) -> (Folder, Obid) {
+    obid_kept(name, signed_in, conversation, env, more, None)
+}
+
+/// [`obid`], with the conversation other Obys' questions go to (ASK-16) kept before it starts:
+/// the one whose Claude Code stays in Oby's box (LANES-12). Its id.
+fn obid_with_obys_conversation(name: &str) -> (Folder, Obid, String) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let thread = json!({"id": id, "title": "Questions from other Obys", "pinned": false,
+        "created": "2026-11-10T00:00:00Z", "sequence": 1, "turns": [], "foreign": null,
+        "readUntrusted": true, "fromObys": true});
+    let (folder, obid) = obid_kept(
+        name,
+        true,
+        json!({"agent": "claude"}),
+        &[],
+        json!({}),
+        Some((&id, thread)),
+    );
+    (folder, obid, id)
+}
+
+fn obid_kept(
+    name: &str,
+    signed_in: bool,
+    conversation: Value,
+    env: &[(&str, &str)],
+    more: Value,
+    kept: Option<(&str, Value)>,
+) -> (Folder, Obid) {
     let folder = Folder::new(name);
+    if let Some((id, thread)) = kept {
+        let dir = folder.0.join("home/conversations");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), thread.to_string()).unwrap();
+    }
     let remote = fixture(&folder.0.join("fixture"));
     let mut config = config(&folder.0, &remote, &harness());
     config["conversation"] = conversation;
@@ -86,7 +120,7 @@ fn said(obid: &Obid, body: Value) -> Answer {
 }
 
 /// What the stand-in recorded of each conversation turn, oldest first (each conversation's
-/// session has a config folder of its own).
+/// session records in a config folder of its own).
 fn turns(obid: &Obid) -> Vec<Value> {
     let mut all: Vec<Value> = std::fs::read_dir(obid.home.join("conversations"))
         .into_iter()
@@ -197,23 +231,21 @@ fn a_turn_streams_its_words_and_ends_in_a_turn() {
         "--output-format",
         "--include-partial-messages",
         "--permission-prompt-tool",
-        "--strict-mcp-config",
-        "--restricted",
         "--tools",
         "--mcp-config",
     ] {
         assert!(argv.contains(&flag), "{flag}: {argv:?}");
     }
     assert!(!argv.contains(&"--resume"), "{argv:?}");
-    // The built-in tools name no Bash or other code-runner (N2).
+    // The owner's conversation is in the own lane, with its own Bash but no other code-runner
+    // (LANES-12); a boxed one's tools name none (the_room_cannot_write_outside_itself).
+    assert!(ran_own(&obid, &recorded[0]), "{argv:?}");
     let tools = argv[argv.iter().position(|a| *a == "--tools").unwrap() + 1];
     assert!(
         tools.contains("Read") && tools.contains("WebFetch"),
         "{tools}"
     );
-    for runner in ["Bash", "PowerShell", "BashOutput"] {
-        assert!(!tools.split(',').any(|t| t == runner), "{runner}: {tools}");
-    }
+    assert!(!tools.split(',').any(|t| t == "PowerShell"), "{tools}");
     let room = obid
         .home
         .join(format!("conversations/{conversation}/room"))
@@ -1688,7 +1720,8 @@ fn a_routine_said_in_chat_waits_for_the_owners_confirm() {
 /// refuses what leaves the room and lets the web through, never asking the owner.
 #[test]
 fn the_room_cannot_write_outside_itself() {
-    let (_folder, obid) = obid("harness-room", true);
+    // Oby's box holds a conversation whose Claude Code isn't in the own lane: another Oby's.
+    let (_folder, obid, obys) = obid_with_obys_conversation("harness-room");
     // What other processes leave in /tmp, the test's own folder (under /var/folders) and the
     // account's shared folder are none of the room's business.
     let tmp = if cfg!(target_os = "macos") {
@@ -1700,10 +1733,11 @@ fn the_room_cannot_write_outside_itself() {
     std::fs::write(&probe, "someone else's").unwrap();
     let answer = said(
         &obid,
-        json!({"said": format!("ESCAPE {}", probe.display()), "new": true}),
+        json!({"said": format!("ESCAPE {}", probe.display()), "conversation": obys}),
     );
     let _ = std::fs::remove_file(&probe);
     let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+    assert_eq!(conversation, obys, "{}", answer.text);
     assert_eq!(
         answer.body["text"],
         "escape: parent=no home=no repos=no account=no config=no login=no folder=no tmp=no inside=ok readRepo=ok",
@@ -1721,6 +1755,18 @@ fn the_room_cannot_write_outside_itself() {
         recorded[0]["config"].as_str().map(PathBuf::from),
         Some(folder.join("config"))
     );
+    // Boxed: none of the owner's settings or MCP servers, and no code-runner of its own (N2).
+    let argv: Vec<&str> = recorded[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(argv.contains(&"--strict-mcp-config"), "{argv:?}");
+    let tools = argv[argv.iter().position(|a| *a == "--tools").unwrap() + 1];
+    for runner in ["Bash", "PowerShell", "BashOutput"] {
+        assert!(!tools.split(',').any(|t| t == runner), "{runner}: {tools}");
+    }
     assert!(!folder.join("config/.credentials.json").exists());
     assert!(
         folder
@@ -2775,6 +2821,86 @@ fn the_taint_lasts_across_resumed_turns() {
     assert_eq!(
         recorded[0]["id"], recorded[1]["id"],
         "the later turn went to the waiting Claude Code, and the taint with it"
+    );
+    started_untrusted(&obid, &answer);
+}
+
+/// Whether `turn` ran in the own lane (LANES-12): on the account's own folder, with the owner's
+/// settings and MCP servers, Claude Code's own Bash and its sandbox's settings.
+fn ran_own(obid: &Obid, turn: &Value) -> bool {
+    let argv: Vec<&str> = turn["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let after = |flag: &str| argv.iter().position(|a| *a == flag).map(|i| argv[i + 1]);
+    turn["config"].as_str().map(PathBuf::from) == Some(obid.home.join("accounts/stub"))
+        && after("--setting-sources") == Some("user")
+        && !argv.contains(&"--restricted")
+        && !argv.contains(&"--strict-mcp-config")
+        && after("--tools").is_some_and(|tools| tools.split(',').any(|t| t == "Bash"))
+        && after("--settings").is_some_and(|s| s.contains("failIfUnavailable"))
+}
+
+/// LANES-12 (docs/contracts/lanes.md): the owner's conversation runs on its account's own folder
+/// and login with the owner's settings and MCP servers, and `git status` runs through Claude Code's
+/// own Bash in its room, not `oby_shell`.
+#[test]
+fn lanes_12_git_status_runs_through_claude_codes_own_bash_in_the_room() {
+    let (_folder, obid) = obid("harness-lanes-12-bash", true);
+    let answer = said(&obid, json!({"said": "BASH git status", "new": true}));
+    let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+    let text = answer.body["text"].as_str().unwrap_or_default();
+    assert!(
+        text.starts_with("bash: ran ") && text.ends_with(&format!("{conversation}/room")),
+        "{}",
+        answer.text
+    );
+    let recorded = turns(&obid);
+    assert!(ran_own(&obid, &recorded[0]), "{}", recorded[0]);
+    // No login copy: the session ran on the account's own.
+    let folder = obid.home.join(format!("conversations/{conversation}"));
+    assert!(!folder.join("config/.credentials.json").exists());
+}
+
+/// LANES-12, CONVO-1: after the conversation reads something untrusted, its next turn is still in
+/// the own lane, with its own Bash, and the mark stays, so what it starts still waits for the owner.
+#[test]
+fn lanes_12_after_an_untrusted_read_the_turn_stays_own_and_the_mark_stays() {
+    let (_folder, obid) = obid("harness-lanes-12-taint", true);
+    let first = said(&obid, json!({"said": "READREPO SAY looked", "new": true}));
+    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+    let answer = said(
+        &obid,
+        json!({"said": "BASH git status", "conversation": conversation}),
+    );
+    assert!(
+        answer.body["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("bash: ran ")),
+        "{}",
+        answer.text
+    );
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert!(
+        recorded.iter().all(|turn| ran_own(&obid, turn)),
+        "{recorded:?}"
+    );
+    let kept: Value = serde_json::from_slice(
+        &std::fs::read(
+            obid.home
+                .join(format!("conversations/{conversation}/session.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept["web"], true, "the mark stays: {kept}");
+    let dispatch = r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#;
+    let answer = said(
+        &obid,
+        json!({"said": dispatch, "conversation": conversation}),
     );
     started_untrusted(&obid, &answer);
 }
