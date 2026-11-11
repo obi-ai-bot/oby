@@ -54,9 +54,10 @@ pub struct Usage {
     /// `seven_day` is a plan's included usage that the plan can go on past (Cursor's, USAGE-9): it
     /// is shown, and holds nothing back whatever it reads. A refusal's `full_until` still does.
     pub advisory: bool,
-    /// Claude's paid overage carries its work past a window, as its tool last said with its windows
-    /// (USAGE-12): a window at 100% then doesn't read full ([`Usage::window_full`]).
-    pub overage: bool,
+    /// Whether Claude's paid overage carries its work past a window, as its last `rate_limit_event`
+    /// said (USAGE-12): a window at 100% then doesn't read full ([`Usage::window_full`]). `None` in a
+    /// report that says nothing of it (`/usage`, Codex's, a refusal), which keeps what was said.
+    pub overage: Option<bool>,
 }
 
 /// A window's share now: one whose reset has passed starts again from nothing.
@@ -172,7 +173,7 @@ impl Usage {
     /// past which Claude's overage carries the work (USAGE-12).
     pub fn window_full(&self, now: i64) -> bool {
         !self.advisory
-            && !self.overage
+            && self.overage != Some(true)
             && [self.five_hour_at(now), self.seven_day_at(now)]
                 .into_iter()
                 .flatten()
@@ -278,14 +279,14 @@ impl Usages {
                     kept.seven_day_resets = usage.seven_day_resets;
                 }
             }
-            // A report of windows says whether overage carries them; a refusal alone keeps it.
-            if usage.five_hour.is_some() || usage.seven_day.is_some() {
+            // Only a report that says whether overage carries it changes that (not `/usage`).
+            if usage.overage.is_some() {
                 kept.overage = usage.overage;
             }
             if usage.full_until.is_some() {
                 kept.full_until = usage.full_until;
                 kept.full_until_inferred = usage.full_until_inferred;
-            } else if kept.overage && (usage.five_hour.is_some() || usage.seven_day.is_some()) {
+            } else if usage.overage == Some(true) {
                 // USAGE-12: overage carries its work now, so no earlier hold stands.
                 kept.full_until = None;
                 kept.full_until_inferred = false;
@@ -473,7 +474,7 @@ pub fn claude(message: &Value) -> Usage {
         five_hour_resets,
         seven_day_resets,
         full_until: full_until(counted, claude_refused(info), epoch(&info["resetsAt"])),
-        overage,
+        overage: Some(overage),
         ..Usage::default()
     }
 }
@@ -1426,7 +1427,15 @@ mod tests {
         let before = 1_762_870_000;
         let (_, kept) = usages.record("claude", &usage);
         assert!(!kept.window_full(before));
-        assert!(kept.overage);
+        assert_eq!(kept.overage, Some(true));
+        // Claude Code's own `/usage` at 100% says nothing of overage: it keeps what was said.
+        let report = json!({"usage_report": {"rate_limits": {"limits": [{"kind": "session",
+            "percent": 100, "resets_at": time::format(1_762_880_400)}]}}});
+        let read = claude_report(&report).unwrap();
+        assert_eq!(read.overage, None);
+        let (_, kept) = usages.record("claude", &read);
+        assert_eq!(kept.five_hour, Some(1.0));
+        assert!(!kept.window_full(before));
         let (_, kept) = usages.record(
             "claude",
             &Usage {
@@ -1434,7 +1443,7 @@ mod tests {
                 ..Usage::default()
             },
         );
-        assert!(kept.overage, "a refusal alone keeps what the windows said");
+        assert_eq!(kept.overage, Some(true), "a refusal alone keeps it too");
         let mut spent = event.clone();
         spent["rate_limit_info"]["isUsingOverage"] = json!(false);
         spent["rate_limit_info"]["overageInUse"] = json!(false);
