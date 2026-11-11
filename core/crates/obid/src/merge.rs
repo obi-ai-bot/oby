@@ -1226,13 +1226,17 @@ fn asked_for_changes(pr: &PullRequest, merging: &Merging) -> bool {
 /// Why only the owner can settle the job's own pull request now: a review asks for changes, or
 /// its checks failed on GitHub. Nothing of Oby's answers either any more, so they ask the owner
 /// whatever the workflow, learned or not (a pull request into main, which merges only on their word,
-/// included), and before a teammate's Oby is asked to review a red head.
+/// included), and before a teammate's Oby is asked to review a red head. Red checks alone
+/// ([`RED_CHECKS`]) get obid's one round by itself first, where it may have one (MERGING-39).
 pub fn owner_must_settle(pr: &PullRequest, merging: &Merging) -> Option<&'static str> {
     if asked_for_changes(pr, merging) {
         return Some("Not merged yet: a review asks for changes.");
     }
-    (merging.checks == Some("FAILURE")).then_some("Not merged yet: its checks failed on GitHub.")
+    (merging.checks == Some("FAILURE")).then_some(RED_CHECKS)
 }
+
+/// [`owner_must_settle`]'s words for a head whose checks failed on GitHub.
+pub const RED_CHECKS: &str = "Not merged yet: its checks failed on GitHub.";
 
 /// The rules about the pull request itself, before anyone's review or any check: a workflow that
 /// names its base (main, master or trunk only on the owner's word: [`ready`]), the job's own open

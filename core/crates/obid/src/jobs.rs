@@ -12954,10 +12954,10 @@ impl Jobs {
             .as_deref()
             .and_then(|review| self.get(review))
             .is_some_and(|review| review.status.is_active());
-        let card = if at_work {
-            // Oby's own review is at work on it: it's no one's to merge yet, and "nobody has
-            // approved" would say something untrue of that review (MERGING-26). One stopped, at
-            // its account's limit say, stays named until the owner decides: the card shows then.
+        let card = if at_work || self.red_round(id, gh, &head, &stop, &merging).await {
+            // Oby's own review is at work on it (MERGING-26), or its agent on its red checks
+            // (MERGING-39): it's no one's to merge yet, and "nobody has approved" would be untrue.
+            // One stopped, at its account's limit say, stays named until the owner decides.
             None
         } else if let Some(why) = stop {
             // A change request, red checks and a reviewer account signed out are holds the
