@@ -9003,20 +9003,19 @@ impl Jobs {
         if !job.apart && job.obi.is_none() {
             git::taint_now(&self.clone_for(&job), &format!("job {id}: {why}"));
         }
-        if !reach && !api && job.foreign_by_api {
-            self.update(id, |job| job.foreign_by_api = false);
-        }
-        if (if reach { &job.reached } else { &job.foreign }).is_some() {
+        // Nothing to change, from a read that can only be older: a mark is never taken back.
+        if (if reach { &job.reached } else { &job.foreign }).is_some()
+            && (reach || !job.foreign_by_api || api)
+        {
             return;
         }
-        tracing::info!("job {id}: its check gets none of the owner's secrets from now on: {why}");
-        self.update(id, |job| {
-            if !reach && job.foreign.is_none() {
-                job.foreign_by_api = api;
-            }
-            let (foreign, reached) = (&mut job.foreign, &mut job.reached);
-            (if reach { reached } else { foreign }).get_or_insert(why);
-        });
+        let mut first = false;
+        self.update(id, |job| first = job.note_mark(why.clone(), reach, api));
+        if first {
+            tracing::info!(
+                "job {id}: its check gets none of the owner's secrets from now on: {why}"
+            );
+        }
     }
 
     /// Every commit obid recorded any job making, of the jobs whose checks would get values.
