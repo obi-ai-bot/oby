@@ -450,50 +450,79 @@ said=$(OBY_CHECK_PATHS=README.md OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1
 }
 
 # The check is the installed oby-check-blok's (BLOK-1, PUBLISHING-26): a run with none of
-# OBY_CHECK_INNER, OBY_CHECK_PLAN and OBY_CHECK_ONLY hands itself to the one on PATH, by its absolute
-# path, from the repository's root, with its base. A stand-in says how it was called.
+# OBY_CHECK_INNER, OBY_CHECK_PLAN and OBY_CHECK_ONLY hands itself to the one on PATH, resolved and
+# vetted, from the repository's root, with its base. A stand-in says how it was called; its nodes
+# binary beside it. Their runs get a TMPDIR of their own: the stand-ins are in this test's, which
+# the script refuses, as it refuses a job's.
 blok=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-blok.XXXXXX")
 trap 'rm -rf "$repo" "$fake" "$blok"' EXIT
-printf '#!/bin/bash\necho "blok stand-in: $0 $* from $PWD"\nexit 7\n' >"$blok/oby-check-blok"
-chmod +x "$blok/oby-check-blok"
+stand_in() { # folder: a stand-in tool and nodes binary there, as an install leaves them
+    mkdir -p "$1"
+    chmod 755 "$1"
+    printf '#!/bin/bash\necho "blok stand-in: $0 $* from $PWD"\nexit 7\n' >"$1/oby-check-blok"
+    printf '#!/bin/bash\n' >"$1/oby-check-blok-nodes"
+    chmod 755 "$1/oby-check-blok" "$1/oby-check-blok-nodes"
+}
+stand_in "$blok/bin"
+installed=$(cd "$blok/bin" && pwd -P)
 # PATH with no oby-check-blok on it, the installed one included.
 bare=$(tr ':' '\n' <<<"$PATH" | while IFS= read -r dir; do
     [[ -z "$dir" || -e "$dir/oby-check-blok" ]] || printf '%s:' "$dir"
 done)
 bare=${bare%:}
-handed() { (cd scripts && env -u OBY_CHECK_INNER -u OBY_CHECK_PLAN -u OBY_CHECK_ONLY OBY_CHECK_PATHS=README.md "$@" 2>&1); }
-said=$(handed PATH="$blok:$bare" ./oby-check.sh HEAD) && status=0 || status=$?
-[[ $status == 7 && "$said" == "blok stand-in: $blok/oby-check-blok check HEAD from $(pwd)" ]] || {
+handed() { (cd scripts && env -u OBY_CHECK_INNER -u OBY_CHECK_PLAN -u OBY_CHECK_ONLY OBY_CHECK_PATHS=README.md TMPDIR="$repo/.tmp" "$@" 2>&1); }
+said=$(handed PATH="$blok/bin:$bare" ./oby-check.sh HEAD) && status=0 || status=$?
+[[ $status == 7 && "$said" == "blok stand-in: $installed/oby-check-blok check HEAD from $(pwd)" ]] || {
     echo "oby-check-test: a run didn't hand itself to oby-check-blok, its status kept ($status): $said" >&2
     exit 1
 }
-said=$(handed PATH="$blok:$bare" ./oby-check.sh) || true
-grep -qxF "blok stand-in: $blok/oby-check-blok check origin/dev from $(pwd)" <<<"$said" || {
+said=$(handed PATH="$blok/bin:$bare" ./oby-check.sh) || true
+grep -qxF "blok stand-in: $installed/oby-check-blok check origin/dev from $(pwd)" <<<"$said" || {
     echo "oby-check-test: with no base, oby-check-blok wasn't given origin/dev: $said" >&2
     exit 1
 }
 # Under oby-check-blok (OBY_CHECK_INNER), and planning or running one group, the script runs itself.
 for set in OBY_CHECK_INNER=1 OBY_CHECK_PLAN=1 OBY_CHECK_ONLY=scan; do
-    said=$(handed PATH="$blok:$bare" "$set" ./oby-check.sh HEAD) || true
+    said=$(handed PATH="$blok/bin:$bare" "$set" ./oby-check.sh HEAD) || true
     ! grep -q 'blok stand-in' <<<"$said" && grep -q '^==> \|oby-check: gitleaks' <<<"$said" || {
         echo "oby-check-test: with $set, the script didn't run itself: $said" >&2
         exit 1
     }
 done
-# None installed, or only by a relative path a commit could carry: nothing passes, and the script
-# never runs its own check instead.
-mkdir -p rel
-cp "$blok/oby-check-blok" rel/
-for path in "$bare" "rel:$bare"; do
-    if said=$(handed PATH="$path" ./oby-check.sh HEAD); then
-        echo "oby-check-test: with no oby-check-blok installed ($path), the check passed: $said" >&2
+# None installed, or one the checked code could have put there: nothing passes, and the script
+# never runs its own check instead. Each case: what it is, then PATH, then TMPDIR for the run.
+stand_in rel
+stand_in "$blok/writable"
+chmod g+w "$blok/writable/oby-check-blok"
+stand_in "$blok/open"
+chmod o+w "$blok/open"
+stand_in "$blok/nodes"
+chmod g+w "$blok/nodes/oby-check-blok-nodes"
+stand_in "$blok/no-nodes"
+rm "$blok/no-nodes/oby-check-blok-nodes"
+mkdir -p "$blok/linked"
+chmod 755 "$blok/linked"
+ln -s "$(pwd)/rel/oby-check-blok" "$blok/linked/oby-check-blok"
+ln -s "$(pwd)/rel/oby-check-blok-nodes" "$blok/linked/oby-check-blok-nodes"
+while IFS='|' read -r what path tmp; do
+    if said=$(handed PATH="$path" TMPDIR="$tmp" ./oby-check.sh HEAD); then
+        echo "oby-check-test: with $what, the check passed: $said" >&2
         exit 1
     fi
-    grep -qxF 'oby-check: failed: oby-check-blok' <<<"$said" && ! grep -q 'blok stand-in\|^==> ' <<<"$said" || {
-        echo "oby-check-test: with no oby-check-blok installed ($path), it didn't fail naming it: $said" >&2
+    grep -q '^oby-check: failed: oby-check-blok' <<<"$said" && ! grep -q 'blok stand-in\|^==> ' <<<"$said" || {
+        echo "oby-check-test: with $what, it didn't fail naming oby-check-blok: $said" >&2
         exit 1
     }
-done
+done <<CASES
+none installed|$bare|$repo/.tmp
+one only on a relative path|rel:$bare|$repo/.tmp
+a link into the checked repository|$blok/linked:$bare|$repo/.tmp
+one in TMPDIR|$blok/bin:$bare|$blok
+one its group may write|$blok/writable:$bare|$repo/.tmp
+one in a folder others may write|$blok/open:$bare|$repo/.tmp
+a nodes binary its group may write|$blok/nodes:$bare|$repo/.tmp
+no nodes binary beside it|$blok/no-nodes:$bare|$repo/.tmp
+CASES
 rm -r rel
 
 echo 'oby-check-test: passed'

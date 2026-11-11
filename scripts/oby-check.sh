@@ -54,16 +54,48 @@ cd "$(dirname "$0")/.."
 
 # The check is the installed oby-check-blok's (BLOK-1, docs/contracts/publishing.md, PUBLISHING-26):
 # its built-in workflow (BLOK-2) runs this script's groups, each with OBY_CHECK_INNER and
-# OBY_CHECK_ONLY set, so it never comes back here. Only the copy on this Mac's PATH, by its absolute
-# path (it starts the nodes binary beside it), never one a commit carries; without it nothing
-# passes, as without gitleaks. OBY_CHECK_PLAN and OBY_CHECK_ONLY stay this script's own.
+# OBY_CHECK_ONLY set, so it never comes back here. OBY_CHECK_PLAN and OBY_CHECK_ONLY stay this
+# script's own. The one on PATH runs only once it and the nodes binary beside it, each resolved
+# through its links, are regular files of this user's that nobody else may write, in folders nobody
+# else may write, and outside the checked repository and TMPDIR, which a job's code can write: so a
+# binary planted earlier on PATH, or a link into what the job wrote, never judges. Else nothing
+# passes, as without gitleaks: this script never runs its own check instead.
+# ponytail: the folders above the binary's aren't vetted; a home whose ~/.cargo others may write
+# could swap its bin.
+resolved() { # a path through its links
+    /bin/realpath "$1" 2>/dev/null || /usr/bin/realpath "$1" 2>/dev/null ||
+        /usr/bin/perl -MCwd -e '$p = Cwd::abs_path($ARGV[0]); defined $p && -e $p or exit 1; print $p' "$1"
+}
+refused() { # a binary: why it isn't one the Mac installed, or nothing
+    local real at mode unsafe
+    real=$(resolved "$1") || { echo "$1 isn't there"; return; }
+    [[ -f "$real" ]] || { echo "$real isn't a regular file"; return; }
+    [[ -O "$real" ]] || { echo "$real isn't this user's"; return; }
+    for at in "$real" "$(dirname "$real")"; do
+        mode=$(ls -ld "$at")
+        # Group or others may write it, or an access list may let them.
+        [[ "${mode:5:1}${mode:8:1}${mode:10:1}" != *[w+]* ]] || { echo "others may write $at"; return; }
+    done
+    for unsafe in "$PWD" "${TMPDIR:-}"; do
+        [[ -n "$unsafe" ]] && unsafe=$(resolved "$unsafe") || continue
+        [[ "$real" != "$unsafe"/* ]] || { echo "$real is inside $unsafe, which the checked code can write"; return; }
+    done
+}
 if [[ -z "${OBY_CHECK_INNER:-}${OBY_CHECK_PLAN:-}${OBY_CHECK_ONLY:-}" ]]; then
     blok=$(command -v oby-check-blok || true)
     if [[ "$blok" != /* ]]; then
-        echo "oby-check: oby-check-blok isn't installed on PATH (cargo install --locked --path tools/oby-check-blok): nothing passes unchecked" >&2
-        echo 'oby-check: failed: oby-check-blok' >&2
+        why="it isn't installed on PATH (cargo install --locked --path tools/oby-check-blok)"
+    else
+        why=$(refused "$blok")
+        blok=$(resolved "$blok") || true
+        [[ -n "$why" ]] || why=$(refused "$(dirname "$blok")/oby-check-blok-nodes")
+    fi
+    if [[ -n "$why" ]]; then
+        echo "oby-check: oby-check-blok can't judge this: nothing passes unchecked" >&2
+        echo "oby-check: failed: oby-check-blok ($why)" >&2
         exit 1
     fi
+    # Resolved, so the nodes binary it starts beside itself is the one vetted here.
     exec "$blok" check "${1:-origin/dev}"
 fi
 
