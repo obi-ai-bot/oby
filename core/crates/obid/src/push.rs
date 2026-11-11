@@ -196,7 +196,8 @@ fn answers(kind: &str, shown: &str, offers: impl Fn(&str) -> bool) -> Vec<&'stat
         "start" => &["Start"],
         _ => &[],
     };
-    let whole = fits(shown);
+    // `fits` counts invisible characters as one space; the body's cut counts each one.
+    let whole = fits(shown) && clipped(shown, BODY + 1).chars().count() <= BODY;
     all.iter().copied().filter(|a| whole && offers(a)).collect()
 }
 
@@ -1735,6 +1736,9 @@ mod tests {
         )));
         assert_eq!(answers("start", "Build it", |a| a == "Start"), ["Start"]);
         assert!(answers("confirm", "Delete it", |_| true).is_empty());
+        // Fits, but zero-width padding would cut its body: no answers.
+        let padded = format!("Build{}it", "\u{200b}".repeat(200));
+        assert!(fits(&padded) && answers("start", &padded, |_| true).is_empty());
     }
 
     #[test]
