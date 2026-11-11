@@ -306,7 +306,7 @@ pub(super) fn link_keychains(at: &Path, home: &Path) -> std::io::Result<()> {
 /// backend, no command: `failIfUnavailable`; never retried outside it); it reads nothing in obid's
 /// home, the person's or the accounts' folders ([`Spec::hidden`], denied whole, so a folder made
 /// there mid-turn is denied too) but what obid's box reads ([`Spec::readable`], re-opened), writes
-/// only where the box would ([`Spec::writable`]), and never the git pointers ([`Spec::pointers`]) or
+/// only where the box would ([`Spec::writable`]), and never the git pointers, `oby-common` or
 /// what Claude Code keeps in `login` (its `Library` with the Keychains link, and `env.sh`, which
 /// Claude Code lets its commands write whatever the settings say: obid writes it again every turn,
 /// never through a link, [`write_fresh`], and what it sets reaches only them). Its Read and Edit tools ask before going outside the
@@ -327,6 +327,7 @@ pub(super) fn own_sandbox_settings(spec: &Spec, login: &Path) -> Result<String, 
     let login = login.canonicalize().unwrap_or_else(|_| login.to_path_buf());
     let keychains = login.join("Library/Keychains");
     let mut kept = spec.pointers();
+    kept.extend(spec.git_admin.iter().map(|admin| admin.join(OWN_COMMON)));
     kept.extend([login.join("Library"), login.join("env.sh")]);
     kept.push(keychains.clone());
     // The box's own hiding of the shared temp folders isn't the own lane's: its commands read them

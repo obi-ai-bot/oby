@@ -5371,6 +5371,157 @@ fn lanes_1_the_owners_job_runs_in_its_own_lane_and_another_obys_stays_boxed() {
     assert!(!env.iter().any(|name| name == "CLAUDE_ENV_FILE"), "{env:?}");
 }
 
+/// LANES-8 (docs/contracts/lanes.md, the owner's LANE-10a): an own job's commands stash, pop, make
+/// a branch and commit on it, and all of it stays in its worktree's own git folder: it never sees
+/// the owner's stash, the clone's `refs/heads` and `refs/stash` are unchanged, with no `try`, and
+/// another job sees neither its branch nor its stash. obid's view of the job is the clone's again
+/// after the run, its HEAD the commit on `try`. Where Seatbelt can run (not inside another sandbox)
+/// the fake runs them under the settings' writes, as Claude Code's sandbox does, and its writes to
+/// the clone's hooks, config, `refs/heads` and `refs/stash` and to its git folder's
+/// `config.worktree` and `commondir` fail; the settings keep them out of its writes everywhere.
+#[test]
+fn lanes_8_an_own_jobs_branches_and_stash_stay_in_its_worktree() {
+    let folder = Folder::new("lanes-8");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (config, _) = recording_config(&folder.0, &remote);
+    let obid = start(&folder.0, &config);
+    let job = |task: &str| {
+        let id = post_job(
+            &obid,
+            json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": task}),
+        )
+        .body["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (wait(&obid, &id), id)
+    };
+    assert_eq!(job("Look around.").0["status"], "done");
+    // The owner's own stash in the clone.
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let head = git(&clone, &["rev-parse", "HEAD"]);
+    git(
+        &clone,
+        &[
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            "owner's",
+            "refs/stash",
+            &head,
+        ],
+    );
+    let kept = |file: &str| std::fs::read(clone.join(".git").join(file)).unwrap();
+    let (stash, log, config) = (kept("refs/stash"), kept("logs/refs/stash"), kept("config"));
+    let heads = || {
+        git(
+            &clone,
+            &["for-each-ref", "--format=%(refname)", "refs/heads"],
+        )
+        .lines()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>()
+    };
+    // What the clone's branches are after a job: as before, with obid's own branch for the job.
+    let mut branches = heads();
+    let mut with = |job: &Value| {
+        branches.insert(format!("refs/heads/{}", job["branch"].as_str().unwrap()));
+        branches.clone()
+    };
+
+    let (done, id) = job("STASH AND BRANCH");
+    assert_eq!(done["status"], "done", "{done}");
+    let said = done["summary"].as_str().unwrap().to_owned();
+    assert!(said.contains("stash=ok entries=1"), "{said}");
+    assert!(said.contains("switch=ok"), "{said}");
+    let on_try = said
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("commit="))
+        .unwrap_or_else(|| panic!("{said}"))
+        .to_owned();
+    assert!(!said.contains("wrote"), "{said}");
+    // The denied writes were tried under Seatbelt wherever it can run here.
+    let seatbelt = Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+        .status()
+        .is_ok_and(|status| status.success());
+    let ran = if seatbelt { "seatbelt" } else { "none" };
+    assert!(said.contains(&format!("sandbox={ran}")), "{said}");
+    if !seatbelt {
+        eprintln!(
+            "LANES-8: Seatbelt can't run here (inside another sandbox, or not a Mac), so the writes it would deny weren't tried; the settings that deny them are still checked below"
+        );
+    }
+    // The clone's refs are obid's alone: no `try`, its stash the owner's, and every branch there
+    // still a commit the clone has.
+    assert_eq!(kept("refs/stash"), stash);
+    assert_eq!(kept("logs/refs/stash"), log);
+    assert_eq!(kept("config"), config);
+    assert_eq!(heads(), with(&done));
+    assert!(
+        !heads().iter().any(|head| head.contains("try")),
+        "{:?}",
+        heads()
+    );
+    assert!(!clone.join(".git/refs/heads/try").exists());
+    git(&clone, &["rev-list", "--count", "--branches", "--remotes"]);
+    let (common, admin) = (
+        clone.join(".git").canonicalize().unwrap(),
+        clone
+            .join(".git/worktrees")
+            .join(&id)
+            .canonicalize()
+            .unwrap(),
+    );
+    assert!(!common.join("hooks/pre-commit").exists());
+    assert!(!admin.join("config.worktree").exists());
+    // `try` is the job's, in its own git folder; obid reads the job through the clone's folder
+    // again, its HEAD detached at the commit on `try`.
+    let own_try = std::fs::read_to_string(admin.join("oby-refs/heads/try")).unwrap();
+    assert_eq!(own_try.trim(), on_try);
+    let commondir = std::fs::read_to_string(admin.join("commondir")).unwrap();
+    assert_eq!(admin.join(commondir.trim()).canonicalize().unwrap(), common);
+    let head = std::fs::read_to_string(admin.join("HEAD")).unwrap();
+    assert_eq!(head.trim(), on_try);
+    let (args, _) = last_launch(&folder.0);
+    let at = args.iter().position(|a| a == "--settings").unwrap();
+    let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
+    let has = |key: &str, path: PathBuf| {
+        settings["sandbox"]["filesystem"][key]
+            .as_array()
+            .unwrap()
+            .contains(&json!(path))
+    };
+    for closed in [
+        common.clone(),
+        common.join("refs"),
+        common.join("refs/heads"),
+        common.join("hooks"),
+        common.join("config"),
+    ] {
+        assert!(!has("allowWrite", closed.clone()), "{}", closed.display());
+    }
+    for kept in ["commondir", "config.worktree", "oby-common"] {
+        assert!(has("denyWrite", admin.join(kept)), "{kept}");
+    }
+
+    // Another job sees neither: no `try` among its branches, so it makes its own, and only its own
+    // stash.
+    let (other, _) = job("STASH AND BRANCH");
+    assert_eq!(other["status"], "done", "{other}");
+    let said = other["summary"].as_str().unwrap();
+    let seen = said
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("branches="))
+        .unwrap_or_else(|| panic!("{said}"));
+    assert!(!seen.contains(",try,"), "{said}");
+    assert!(said.contains("stash=ok entries=1"), "{said}");
+    assert!(said.contains("switch=ok"), "{said}");
+    assert!(!said.contains("wrote"), "{said}");
+    assert_eq!(heads(), with(&other));
+    assert_eq!(kept("refs/stash"), stash);
+}
+
 /// LANES-10 (docs/contracts/lanes.md): a foreign job runs as every job did before the lanes: in
 /// Oby's box with a copy of its login and no refresh token, with `--setting-sources ""` and
 /// `--strict-mcp-config`, none of the own lane's settings, and its account's own folder out of
