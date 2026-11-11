@@ -144,9 +144,14 @@ pub async fn plan(
         (None, false) => Target::Latest,
     };
     let turns = validate_turns(req.turns)?;
-    // The owner's message: after more than 30 minutes away, the answer starts with a recap (#594).
+    // The owner's message: after more than 30 minutes away, the answer starts with a recap (#594),
+    // for an owner who asked for updates.
     let now = obi_protocol::time::now();
-    let back = shared.presence.seen(now);
+    let back = recap::returned(
+        &shared.presence,
+        &crate::settings::load(&shared.config.home),
+        now,
+    );
     // A bare "never mind", "stop" or "cancel" never reaches the brain: it stops the turn under
     // way, after the action it's doing, and is answered with nothing (no job stops on a word).
     if req.answer.is_none() && turn::cancels(words) {
