@@ -7252,8 +7252,7 @@ impl Jobs {
         commits: bool,
         tool: Tool,
     ) -> Spec {
-        let mut hidden = vec![self.config.home.clone()];
-        hidden.extend(person_homes());
+        let mut hidden = sandbox::job_hidden(&self.config.home, person_homes());
         hidden.extend(self.config.agents.hidden_folders(&self.config.home));
         let mut read_only = sandbox::tool_roots(
             &process::tools_path(),
@@ -7557,7 +7556,7 @@ impl Jobs {
             return file_login_ready(&account);
         }
         match self.agent_bin(Tool::Claude) {
-            Some(bin) => keychain_ready(bin, &account).await,
+            Some(bin) => keychain_ready(bin, &account, &self.config.home).await,
             None => Ok(()),
         }
     }
@@ -15401,6 +15400,20 @@ mod tests {
         };
         let real = |path: &PathBuf| path.canonicalize().unwrap();
         assert!(list("denyRead").contains(&real(&home)));
+        // The box hides the shared temp folders; the own lane reads them as a terminal does.
+        let mut boxed = spec.clone();
+        boxed.hidden.extend(crate::sandbox::shared_temps());
+        let own: super::Value =
+            serde_json::from_str(&super::own_sandbox_settings(&boxed, &login).unwrap()).unwrap();
+        let denied: Vec<PathBuf> = own["sandbox"]["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|path| PathBuf::from(path.as_str().unwrap()))
+            .collect();
+        for temp in crate::sandbox::shared_temps() {
+            assert!(!denied.contains(&real(&temp)), "{}", temp.display());
+        }
         assert!(list("denyRead").contains(&real(&root.join("account"))));
         assert!(list("allowRead").contains(&real(&worktree)));
         assert!(list("allowWrite").contains(&real(&worktree)));

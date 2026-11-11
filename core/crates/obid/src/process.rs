@@ -143,6 +143,12 @@ pub(crate) fn ps_path() -> PathBuf {
     PathBuf::from("/bin/ps")
 }
 
+/// Where [`own_ps_folder`] keeps the copy in `temp`, made or not: a box that hides `temp` still
+/// reads it (`crate::sandbox`).
+pub(crate) fn own_ps_dir(temp: &Path) -> PathBuf {
+    temp.join(format!("oby-tools-{}", nix::unistd::getuid()))
+}
+
 /// The folder of [`with_own_ps`]'s copy, in the person's own temporary folder: no box writes
 /// there and every box reads it, so no job can swap it, and nothing is written in a job's folders.
 /// Only a private folder of theirs on an absolute path is first on anyone's `PATH` (a `TMPDIR` of
@@ -153,7 +159,7 @@ fn own_ps_folder(temp: &Path) -> Option<PathBuf> {
     // One at a time: two threads' copies under one name would rename a half-signed one into place.
     static MAKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let uid = nix::unistd::getuid();
-    let dir = temp.join(format!("oby-tools-{uid}"));
+    let dir = own_ps_dir(temp);
     if !dir.is_absolute() {
         return None;
     }

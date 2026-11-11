@@ -12,6 +12,8 @@
 //! - **Reads, from obid's home and the person's home**: the worktree, the clone's git common
 //!   directory (read-only), the job's own folders, and the tools it runs. Nothing else: not the
 //!   database, `keys/`, `api-token`, other clones or other worktrees.
+//!   On macOS the box also hides `/private/tmp`, `/Users/Shared` and the user's Darwin
+//!   temporary folder, restoring only the job's own paths inside them.
 //! - **Network**: none for the check, but, for the owner's own jobs, loopback ([`Spec::loopback`]):
 //!   the servers its tests start on 127.0.0.1. An agent has its own network namespace, with
 //!   slirp4netns so it still reaches its model's API, and the host's abstract Unix sockets are not
@@ -552,6 +554,27 @@ pub const SYSTEM_READS_LINUX: [&str; 10] = [
     "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/nix",
 ];
 
+/// Private roots hidden from a job, with its own paths restored by the profile.
+pub fn job_hidden(home: &Path, homes: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut hidden = vec![home.to_path_buf()];
+    hidden.extend(homes);
+    hidden.extend(shared_temps());
+    hidden
+}
+
+/// The folders every program on the Mac shares, which Oby's box hides (on Linux its `/tmp` is
+/// already its own): never the own lane's, which reads them as the owner's terminal does.
+pub fn shared_temps() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return vec![
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/Users/Shared"),
+        std::env::temp_dir(),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
 /// What a confined process reads of the system on macOS: the system's own folders, the
 /// dynamic linker's caches, the system's settings, the time zones, the shell `/bin/sh` picks,
 /// devices.
@@ -764,9 +787,23 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
             profile.push_str(&format!(" (subpath {})", sbpl_string(hidden)));
         }
         profile.push_str(")\n");
-        let readable = spec.readable();
+        let mut readable = spec.readable();
+        // What a box uses in the shared temporary folders a job's box hides ([`job_hidden`]): the
+        // `ps` first on its `PATH` (`process::sandbox_env`), which it reads but never writes, and
+        // Claude Code's own folder in `/tmp`, by itself, as the confined form above reads it.
+        let temp = std::env::temp_dir();
+        let ps = crate::process::own_ps_dir(&temp.canonicalize().unwrap_or(temp));
+        if spec.hidden.iter().any(|h| ps.starts_with(h)) {
+            readable.push(ps);
+        }
+        let claude = PathBuf::from(format!("/private/tmp/claude-{}", nix::unistd::getuid()));
+        let claude = spec
+            .hidden
+            .iter()
+            .any(|h| claude.starts_with(h))
+            .then_some(claude);
         let mut ancestors: Vec<PathBuf> = Vec::new();
-        for path in &readable {
+        for path in readable.iter().chain(&claude) {
             for ancestor in path.ancestors().skip(1) {
                 if spec.hidden.iter().any(|h| ancestor.starts_with(h))
                     && !ancestors.iter().any(|a| a == ancestor)
@@ -785,6 +822,9 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
         profile.push_str("(allow file-read*");
         for path in &readable {
             profile.push_str(&format!(" (subpath {})", sbpl_string(path)));
+        }
+        if let Some(path) = &claude {
+            profile.push_str(&format!(" (literal {})", sbpl_string(path)));
         }
         profile.push_str(")\n");
     }
@@ -1553,6 +1593,15 @@ mod tests {
         assert!(profile.contains("(deny file-read* (subpath \"/h\") (subpath \"/Users/w\"))"));
         assert!(profile.contains("(literal \"/h/worktrees\")"));
         assert!(!profile.contains("(subpath \"/h/clones/o/n/.git/objects\")"));
+        assert!(!profile.contains("/private/tmp/claude-"), "{profile}");
+        // A job's box hides `/tmp`, but for Claude Code's own folder there, by itself.
+        let claude = format!("/private/tmp/claude-{}", nix::unistd::getuid());
+        let jobs = seatbelt_profile(&Spec {
+            hidden: vec!["/h".into(), "/private/tmp".into()],
+            ..spec.clone()
+        });
+        assert!(jobs.contains(&format!("(literal \"{claude}\"))")), "{jobs}");
+        assert!(!jobs.contains(&format!("(subpath \"{claude}\")")), "{jobs}");
         assert!(profile.contains("(deny network*)\n"));
         assert!(profile.contains("(deny signal)\n(allow signal (target same-sandbox))\n"));
         for rule in [
