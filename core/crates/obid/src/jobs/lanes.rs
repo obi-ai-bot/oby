@@ -877,6 +877,12 @@ mod tests {
             "asked",
             Some(json!({"permissions": {"ask": ask}}))
         ));
+        // The empty memory folder Claude Code makes for its working folder, in the person's own.
+        let name: String = (work.canonicalize().unwrap().to_string_lossy().chars())
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let projects = login_home().unwrap().join(".claude/projects");
+        let _ = std::fs::remove_dir_all(projects.join(name));
         let _ = std::fs::remove_dir_all(&root);
     }
 
