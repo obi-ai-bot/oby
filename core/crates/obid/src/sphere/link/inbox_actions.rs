@@ -131,7 +131,8 @@ impl Link {
 
     /// Something Oby's brain planned that persists or widens trust waits in the inbox for the
     /// owner's own `Confirm` (#546): the brain never carries it out itself. A conversation's shell
-    /// keeps its `permission` items here too.
+    /// keeps its `permission` items here too, and a paused routine its card (ALERTS-5): each put in
+    /// place of one with its id.
     pub fn add_confirm(&self, item: Item) -> Item {
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);
@@ -1600,6 +1601,51 @@ impl Link {
                 self.lock().inbox.insert(item.id.clone(), item.clone());
                 self.save_item(&item);
                 return Err(api(StatusCode::CONFLICT, refused));
+            }
+            // A paused routine's card (ALERTS-5): Turn back on resumes it as `PATCH
+            // /v1/routines/{id}` `{"enabled": true}` does (no signature, as there), Dismiss leaves
+            // it paused. Claimed under the lock like a limit's, and open again when it's refused.
+            if item.kind == "routine" {
+                let mut item = item;
+                match &given {
+                    Given::Later(at) => item.later = Some(*at),
+                    Given::Done => item.done = Some(now),
+                    Given::Answer(a) if item.options.contains(a) => {
+                        item.answer = Some(a.clone());
+                        item.done = Some(now);
+                    }
+                    Given::Answer(_) => {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("The answer is {}.", item.options.join(" or ")),
+                        ));
+                    }
+                }
+                state.inbox.insert(item.id.clone(), item.clone());
+                drop(state);
+                self.save_item(&item);
+                if item.answer.as_deref() != Some(inbox::TURN_BACK_ON) {
+                    return Ok(item.to_json());
+                }
+                let routine = item.id.trim_start_matches(inbox::ROUTINE_PAUSED);
+                let on = crate::routines::Change {
+                    enabled: Some(true),
+                    ..Default::default()
+                };
+                let refused = match self
+                    .jobs
+                    .routines()
+                    .map(|r| r.change(&self.jobs, routine, on, now))
+                {
+                    Some(Some(Ok(_))) => return Ok(item.to_json()),
+                    Some(Some(Err(why))) => why,
+                    _ => return Err(api(StatusCode::CONFLICT, "That routine is gone.")),
+                };
+                item.answer = None;
+                item.done = None;
+                self.lock().inbox.insert(item.id.clone(), item.clone());
+                self.save_item(&item);
+                return Err(api(StatusCode::UNPROCESSABLE_ENTITY, refused));
             }
             // Oby's own question about a job event (the retired event orchestrator's escalation):
             // the owner's answer, or Done, settles it, and nothing else is carried out (#710). It
