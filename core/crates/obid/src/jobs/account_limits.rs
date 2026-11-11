@@ -290,7 +290,26 @@ impl Jobs {
     pub(super) async fn run_approved_limit_decisions(self: &Arc<Self>) {
         let now = obi_protocol::time::now();
         self.fail_over_waits().await;
-        for decision in self.limit_decisions.list() {
+        // A decision none of its jobs waits on any more is forgotten: it reads no usage (USAGE-1).
+        // A job between its decision's record and its episode's has none yet: it still waits.
+        let (live, done): (Vec<_>, Vec<_>) =
+            self.limit_decisions.list().into_iter().partition(|d| {
+                (d.jobs.iter().filter(|id| !d.applied.contains(id))).any(|id| {
+                    self.get(id).is_some_and(|j| {
+                        j.account_limit_blocked
+                            && j.status == Status::Interrupted
+                            && j.dismissed.is_none()
+                            && j.account_limit_episode.as_ref().is_none_or(|e| *e == d.id)
+                    })
+                })
+            });
+        if !done.is_empty()
+            && let Err(error) = self.limit_decisions.prune(&done)
+        {
+            tracing::error!("can't forget finished account-limit decisions: {error}");
+        }
+        (self.usage_reads().limit_refreshed).retain(|id| live.iter().any(|d| &d.id == id));
+        for decision in live {
             self.sync_limit_answer(&decision);
             if decision.choice == crate::account_limits::Choice::Pending {
                 self.settle(&decision).await;

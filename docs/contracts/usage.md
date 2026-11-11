@@ -54,7 +54,7 @@ The business behavior contract for the Usage panel by the message box and Settin
 
 | Scenario | Test |
 |---|---|
-| USAGE-1 | `accounts_api::usage_1_an_apps_look_reads_each_accounts_usage`, `apps/electron/src/renderer/src/test/usage.test.ts` (`USAGE-1:`) |
+| USAGE-1 | `accounts_api::usage_1_an_apps_look_reads_each_accounts_usage`, `account_limit_flow::usage_1_an_applied_resume_reads_no_more_usage`, `account_limits::tests::prune_keeps_a_decision_a_job_still_waits_on`, `apps/electron/src/renderer/src/test/usage.test.ts` (`USAGE-1:`) |
 | USAGE-2 | `accounts_api::usage_2_an_ended_keychain_login_is_refreshed_free_then_read`, `accounts_api::an_added_claude_accounts_login_is_kept_fresh`, `jobs::logins::tests::the_macs_claude_code_refreshes_a_login_near_its_end` |
 | USAGE-3, USAGE-4, USAGE-5 | `accounts_api::usage_3_4_5_usage_reads_retry_but_never_after_a_model_ran` |
 | USAGE-5 | `accounts_api::usage_5_a_named_folder_login_is_refreshed_like_an_added_one` |
