@@ -2267,14 +2267,25 @@ pub(crate) fn forget_login_secrets(login: &Path) {
 /// running in the background by an earlier turn, say) could swap it before the run starts. A
 /// boxed run's stays in its temporary folder, inside its box, as before.
 pub(super) fn mcp_config_path(own: bool, temp: &Path, login: &Path) -> Result<PathBuf, String> {
+    mcp_path(own, temp, login, MCP_CONFIG_FILE)
+}
+
+/// [`mcp_config_path`]'s rule for a file `name`d as its caller's: a job's, or a conversation's
+/// `oby-mcp.json` (crate::brain::harness, LANES-12), whose `login` is its conversation's.
+pub(crate) fn mcp_path(
+    own: bool,
+    temp: &Path,
+    login: &Path,
+    name: &str,
+) -> Result<PathBuf, String> {
     if !own {
-        return Ok(temp.join(MCP_CONFIG_FILE));
+        return Ok(temp.join(name));
     }
     let mut made = std::fs::DirBuilder::new();
     std::os::unix::fs::DirBuilderExt::mode(made.recursive(true), 0o700);
     made.create(login)
-        .map_err(|e| format!("obid can't make the job's login folder: {e}"))?;
-    Ok(login.join(MCP_CONFIG_FILE))
+        .map_err(|e| format!("obid can't make the run's login folder: {e}"))?;
+    Ok(login.join(name))
 }
 
 /// What a new session hears first when it takes over a job from `was` ("Codex · Work"), which
