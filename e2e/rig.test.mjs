@@ -226,7 +226,7 @@ test("rig_18_another_checkouts_rig_isnt_stopped_from_here_unless_forced", async 
   const { top, dir, proc, run } = aScratchMac(t);
   const you = await recorded(proc(join(dir, "you/x")));
   state(dir, { running: { you }, ready: true, checkout: top });
-  for (const command of ["stop", "reset", "job", "policy", "dana", "app", "ask"]) {
+  for (const command of ["stop", "reset", "job", "review", "policy", "dana", "app", "ask"]) {
     const out = run(command, "x");
     assert.equal(out.status, 1, command);
     assert.match(out.stderr, /The rig is up from/, command);

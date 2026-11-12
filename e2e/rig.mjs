@@ -7,6 +7,7 @@
 //   node e2e/rig.mjs start [--stand-in | --real]   everything up, joined, the rule written, Dana's job running
 //   node e2e/rig.mjs status                        what's up, in a few lines
 //   node e2e/rig.mjs ask "What are you working on?"  you ask Dana's Oby; prints what came back
+//   node e2e/rig.mjs review [--hold]               Dana's Oby asks yours for a review; you Accept, unless --hold
 //   node e2e/rig.mjs app                           the Electron dev app, on you
 //   node e2e/rig.mjs job [task]                    one more job for Dana
 //   node e2e/rig.mjs job --personal [task]         one outside what Dana shares (PEER-15)
@@ -46,7 +47,11 @@ const REPO = "obi-e2e/fixture-app";
 // A repository of its owner's that Dana's yes leaves out (PEER-15): the same remote is enough.
 const PERSONAL = "obi-e2e/personal-taxes";
 const LONG_TASK = "Add one small test file a minute, 30 times, committing each: tests/step-01.test.js, then tests/step-02.test.js and so on, with `sleep 60` between them. Each file holds one passing node:test. Nothing else.";
-const RULES = [["alex", "dana"], ["dana", "alex"]].map(([from_owner, to_owner]) => ({ id: `${from_owner}-asks-${to_owner}`, from_owner, to_owner, actions: ["question"], repos: ["*"] }));
+const RULES = [["alex", "dana"], ["dana", "alex"]].map(([from_owner, to_owner]) => ({ id: `${from_owner}-asks-${to_owner}`, from_owner, to_owner, actions: ["question", "review_request"], repos: ["*"] }));
+// What Dana's Oby asks yours to review: the fixture's feature/average head, its canary in the text
+// the stub agent checks never reaches a prompt (e2e/stub-agent/stub-agent).
+const REVIEW_REQUEST = join(ROOT, "e2e/fixtures/messages/review_request.example.json");
+const REVIEW_SECONDS = 1800;
 
 // This comes first, before anything is read, made or started.
 const refused = rigRefusal(RIG);
@@ -185,6 +190,23 @@ async function deviceOf(who, state) {
   save(state);
 }
 
+// X-Oby-Words for one request's exact body, as the app's main signs the owner's words (main/words.ts).
+function wordsOf(state, who, method, path, body) {
+  const signedAt = new Date().toISOString();
+  const digest = createHash("sha256").update(body).digest("hex");
+  const { id, key } = state.devices[who];
+  const signature = sign("sha256", Buffer.from(`oby-words\n${method}\n${path}\n${digest}\n${signedAt}`), createPrivateKey(key)).toString("base64");
+  return `${id} ${signedAt} ${signature}`;
+}
+
+// The owner's tap on an open `confirm` item's Confirm, as the app's main signs it (main/device.ts).
+function confirm(state, who, item) {
+  const { id: device, key } = state.devices[who];
+  const signedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const signature = sign("sha256", Buffer.from(`oby-confirm\n${item.id}\n${item.title}\n${signedAt}`), createPrivateKey(key)).toString("base64");
+  return api(who).call("POST", `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: "Confirm", approval: { device, action: item.title, signedAt, signature } });
+}
+
 // Dana's ticks and click on Confirm on the card that lists a job's step and report line
 // (docs/contracts/peer-thread.md, PEER-38), once, so that what Dana's Oby answers is real progress in
 // the rig's repository and Dana's inbox stays empty.
@@ -194,11 +216,7 @@ async function danaSaysYes(state) {
   if (opened.status >= 300) fail(`Dana's card: ${opened.status} ${opened.text}`);
   const offered = await api("dana").call("POST", "/v1/obid/sharing/offer", { repos: [REPO] });
   if (offered.status >= 300) fail(`Dana's card: ${offered.status} ${offered.text}`);
-  const { id: item, title } = JSON.parse(offered.text);
-  const { id: device, key } = state.devices.dana;
-  const signedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-  const signature = sign("sha256", Buffer.from(`oby-confirm\n${item}\n${title}\n${signedAt}`), createPrivateKey(key)).toString("base64");
-  const yes = await api("dana").call("POST", `/v1/inbox/${encodeURIComponent(item)}/answer`, { answer: "Confirm", approval: { device, action: title, signedAt, signature } });
+  const yes = await confirm(state, "dana", JSON.parse(offered.text));
   if (yes.status >= 300) fail(`Dana's yes: ${yes.status} ${yes.text}`);
   state.danaSaidYes = true;
   save(state);
@@ -399,7 +417,7 @@ async function start(flags) {
       save(state);
     }
     await danaSaysYes(state);
-    say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other.");
+    say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other questions and for reviews.");
     say(`Dana's sharing: ${JSON.stringify((await api("dana").get("/v1/obid/sharing")).rules?.map((r) => ({ for: r.for, repos: r.repos, tells: r.tells, starter: r.starter })))}`);
     await keepDanaWorking(state);
     state.ready = true;
@@ -463,12 +481,8 @@ async function ask(words) {
   const exchanges = () => get("/v1/obid/sphere/exchanges?limit=50");
   const before = await exchanges();
   const body = JSON.stringify({ said: `OBY oby_ask ${JSON.stringify({ to: "dana", question: words })}`, new: true });
-  const signedAt = new Date().toISOString();
-  const digest = createHash("sha256").update(body).digest("hex");
-  const { id, key } = state.devices.you;
-  const signature = sign("sha256", Buffer.from(`oby-words\nPOST\n/v1/plans\n${digest}\n${signedAt}`), createPrivateKey(key)).toString("base64");
   const res = await fetch(`http://127.0.0.1:${PEOPLE.you.port}/v1/plans`, { method: "POST", body, signal: AbortSignal.timeout(120_000),
-    headers: { authorization: `Bearer ${readFileSync(join(homeOf("you"), "api-token"), "utf8").trim()}`, "content-type": "application/json", "x-oby-words": `${id} ${signedAt} ${signature}` } });
+    headers: { authorization: `Bearer ${readFileSync(join(homeOf("you"), "api-token"), "utf8").trim()}`, "content-type": "application/json", "x-oby-words": wordsOf(state, "you", "POST", "/v1/plans", body) } });
   const reply = await res.json();
   if (!res.ok) fail(`Asking: ${res.status} ${JSON.stringify(reply)}`);
   say(`You asked. Your stand-in said: ${reply.text}`);
@@ -485,6 +499,52 @@ async function ask(words) {
     const inbox = await api("dana").get("/v1/inbox");
     say(`--- Dana's inbox: ${inbox.length ? JSON.stringify(inbox.map((i) => [i.kind, i.title])) : "empty"}`);
   }
+}
+
+// Dana's Oby asks yours to review the fixture's change. Your Accept goes as the app's does on your
+// click, unless --hold leaves it to you in the app; your stand-in is then the stub agent
+// (e2e/rig-agent). Exits 1 unless Dana's Oby is told approved.
+async function review(flags) {
+  for (const flag of flags) if (flag !== "--hold") fail(`What's ${flag}? node e2e/rig.mjs review [--hold]`);
+  const hold = flags.includes("--hold");
+  const state = load();
+  if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
+  if (!alive(state, "dana")) fail("Dana isn't up: node e2e/rig.mjs start");
+  const { body } = JSON.parse(readFileSync(REVIEW_REQUEST, "utf8"));
+  const head = spawnSync("git", ["-C", join(RIG, "fixture/remote.git"), "rev-parse", `refs/heads/${body.head_branch}`], { encoding: "utf8", env: plain() }).stdout?.trim();
+  if (head !== body.head_sha) fail(`The fixture's ${body.head_branch} is ${head || "missing"}, not ${body.head_sha}: node e2e/rig.mjs reset, then start.`);
+  const { obiId } = await api("you").get("/v1/obid/sphere");
+  const sent = await api("dana").call("POST", "/v1/obid/sphere/requests", { to: obiId, type: "review_request", body, expiresIn: REVIEW_SECONDS });
+  if (sent.status !== 202) fail(`Dana's request: ${sent.status} ${sent.text}`);
+  const { correlationId } = JSON.parse(sent.text);
+  say(`Dana's Oby asked yours to review ${body.repo} at ${body.head_sha.slice(0, 7)}: exchange ${correlationId}`);
+  const item = await until("the request in your inbox", async () => (await api("you").get("/v1/inbox")).find((i) => i.kind === "obiRequest" && i.obi?.correlationId === correlationId));
+  say(`Your inbox: "${item.title}" (${item.id})`);
+  if (hold) say("Held: answer it in the dev app (node e2e/rig.mjs app, opened before: this command holds the rig until the exchange ends).");
+  else await accept(state, item);
+  const ended = await until("Dana's exchange ending", async () => {
+    const seen = await api("dana").get(`/v1/obid/sphere/exchanges/${encodeURIComponent(correlationId)}`);
+    return !["sent", "accepted"].includes(seen.state) && seen;
+  }, hold ? REVIEW_SECONDS : 300);
+  const result = ended.messages.findLast((m) => m.envelope?.type === "result")?.envelope.body;
+  const outcome = result?.outcome ?? ended.state;
+  say(`--- Dana's exchange: ${ended.state}, ${JSON.stringify(ended.messages.map((m) => m.envelope?.type))}`);
+  say(`Outcome: ${outcome}${result?.summary ? `. ${result.summary}` : ""}`);
+  for (const f of result?.findings ?? []) say(`  ${f.severity} ${f.file}:${f.line} ${f.title}`);
+  if (outcome !== "approved") fail(`Dana's review came back ${outcome}, not approved.`);
+}
+
+// Accept with your words signed. When obid wants your tap on a Confirm card in its place, the
+// rig's device confirms that, as the app's main does.
+async function accept(state, item) {
+  const path = `/v1/inbox/${encodeURIComponent(item.id)}/answer`, body = { answer: "Accept" };
+  const r = await api("you").call("POST", path, body, { "x-oby-words": wordsOf(state, "you", "POST", path, JSON.stringify(body)) });
+  if (r.status !== 403) return r.status < 300 ? say("You said Accept.") : fail(`Your Accept: ${r.status} ${r.text}`);
+  const card = (await api("you").get("/v1/inbox")).find((i) => i.id === item.id && i.kind === "confirm" && i.state !== "done");
+  if (!card) fail(`Your Accept: ${r.status} ${r.text}`);
+  const yes = await confirm(state, "you", card);
+  if (yes.status >= 300) fail(`Your Confirm of "${card.title}": ${yes.status} ${yes.text}`);
+  say(`You said Accept, and confirmed "${card.title}".`);
 }
 
 async function job(words) {
@@ -605,7 +665,7 @@ function fromThisCheckout(force) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-const CHANGES = new Set(["start", "stop", "reset", "job", "policy", "dana", "app"]);
+const CHANGES = new Set(["start", "stop", "reset", "job", "review", "policy", "dana", "app"]);
 try {
   requireNodeVersion(process.versions.node);
   if (command === "start") {
@@ -625,11 +685,12 @@ try {
   else if (command === "status") await status();
   else if (command === "ask") await ask(args.join(" "));
   else if (command === "job") await job(args.join(" "));
+  else if (command === "review") await review(args);
   else if (command === "policy") await policy(args[0]);
   else if (command === "dana") await dana(args[0]);
   else if (command === "app") await app();
   else if (command === "reset") await reset();
-  else fail("node e2e/rig.mjs start | status | ask <words> | app | job [task] | policy on|off | dana stop|start | stop | reset");
+  else fail("node e2e/rig.mjs start | status | ask <words> | review [--hold] | app | job [task] | policy on|off | dana stop|start | stop | reset");
 } catch (e) {
   console.error(`The rig: ${e.message}`);
   process.exit(1);
