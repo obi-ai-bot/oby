@@ -1446,11 +1446,13 @@ pub(crate) mod tests {
         let swapper = {
             let (swapping, tag, target) = (swapping.clone(), tag.clone(), temp.join("x"));
             std::thread::spawn(move || {
+                // Renamed over it, so a tag is always there: a link, then a plain file again.
+                let (link, file) = (tag.with_extension("link"), tag.with_extension("file"));
                 while swapping.load(std::sync::atomic::Ordering::Relaxed) {
-                    let _ = std::fs::remove_file(&tag);
-                    let _ = std::os::unix::fs::symlink(&target, &tag);
-                    let _ = std::fs::remove_file(&tag);
-                    let _ = std::fs::write(&tag, "");
+                    let _ = std::os::unix::fs::symlink(&target, &link);
+                    let _ = std::fs::rename(&link, &tag);
+                    let _ = std::fs::write(&file, "");
+                    let _ = std::fs::rename(&file, &tag);
                 }
             })
         };
