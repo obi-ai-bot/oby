@@ -1628,6 +1628,33 @@ fn limits_20_owner_typed_work_runs_past_the_reserve() {
     );
 }
 
+/// LIMITS-20: the owner's job on an account at its five-hour limit and past 80% of its week waits
+/// for the five-hour reset, not the week's; a conversation still talks through it at 85%.
+#[test]
+fn limits_20_owner_work_waits_for_five_hours_and_talks_in_the_reserve() {
+    let folder = Folder::new("limits-20-five");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let usage = folder.0.join("home/usage.json");
+    std::fs::write(&usage, stub_in_reserve().0.to_string()).unwrap();
+    let mut obid = start(&folder.0, &config, None);
+    let status = call(&obid, "GET", "/v1/status", None);
+    assert_eq!(status.body["talkNext"], "stub", "{}", status.text);
+    obid.stop();
+    let (mut held, five) = (stub_in_reserve().0, obi_protocol::time::now() + 300);
+    held["stub"]["fiveHour"] = json!(1.0);
+    held["stub"]["fiveHourResets"] = json!(five);
+    held["codex"] = json!({"fullUntil": five + 3600});
+    std::fs::write(&usage, held.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let typed = post_typed(&obid, "Look around", false);
+    let waits = waiting_for_reset(&obid, typed.body["id"].as_str().unwrap());
+    let at = obi_protocol::time::format(five + 90);
+    assert_eq!(
+        (&waits["account"], &waits["resumesAt"]),
+        (&json!("stub"), &json!(at))
+    );
+}
+
 /// LIMITS-20: routines keep the reserve's wait: a routine's run on Auto waits for room, with Use
 /// anyway (#872), and work nobody watches whose five-hour limit reset waits again for its week.
 #[test]

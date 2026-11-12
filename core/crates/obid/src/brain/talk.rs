@@ -82,10 +82,11 @@ pub(super) fn accounts(
         .into_iter()
         .map(|tool| (tool, shared.jobs.thinking_accounts(tool)))
         .collect();
-    let on = on.filter(|on| shared.jobs.has_room(on));
+    // A turn is watched: a weekly reserve doesn't hold it (LIMITS-20).
+    let on = on.filter(|on| shared.jobs.has_room(on, false));
     keep_apart(
         order(chosen, on, lists, shared.jobs.account_failover(), |id| {
-            shared.jobs.has_room(id)
+            shared.jobs.has_room(id, false)
         }),
         &apart,
     )

@@ -305,6 +305,27 @@ async fn the_check_has_no_network() {
     assert!(listener.accept().is_err(), "the check reached the listener");
 }
 
+/// LIMITS-20: another Oby's review is work nobody watches: it keeps the owner's weekly reserve.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_obys_review_keeps_the_weekly_reserve() {
+    let folder = Folder::new("reserve");
+    let config = config(&folder.0, Path::new("/nowhere"), None);
+    let (home, now) = (config.home.clone(), obi_protocol::time::now());
+    obid::prepare_home(&config).unwrap();
+    let login = json!({"claudeAiOauth": {"accessToken": "t", "expiresAt": (now + 86_400) * 1000}});
+    std::fs::create_dir_all(home.join("accounts/stub")).unwrap();
+    std::fs::write(
+        home.join("accounts/stub/.credentials.json"),
+        login.to_string(),
+    )
+    .unwrap();
+    let usage = json!({"stub": {"sevenDay": 0.85, "sevenDayResets": now + 86_400}});
+    std::fs::write(home.join("usage.json"), usage.to_string()).unwrap();
+    let jobs = Jobs::open(config, Events::new(), Err("unused".into())).unwrap();
+    let refused = jobs.start_obi_review(request()).unwrap_err();
+    assert!(refused.0.contains("weekly reserve"), "{}", refused.0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn without_the_sandbox_nothing_runs() {
     let folder = Folder::new("nosandbox");

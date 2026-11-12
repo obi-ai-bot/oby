@@ -94,8 +94,10 @@ impl Failover {
         let Failover(tool, account, from, line) = self;
         let tuning = crate::settings::load(&jobs.config.home).tuning;
         let offered = jobs.model_lists.to_check(*tool, &account.id);
-        // One that never ran hands nothing over: it starts there, as a wait for room does.
-        if job.session.is_none() {
+        // A waiting one that never ran (no session, move or round's report) hands nothing over: it
+        // starts there, as a wait for room does.
+        let ran = job.moves.len() + job.summaries.as_ref().map_or(0, Vec::len);
+        if job.status == Status::Queued && job.session.is_none() && ran == 0 {
             (job.account, job.resumes_at, job.waiting) = (account.id.clone(), None, None);
             on_tool(job, *tool);
             tune(job, &tuning, &offered);
@@ -158,7 +160,11 @@ impl Jobs {
                 Some(failover) => self.apply_limit_job(decision, id, None, Some(&failover)),
                 None => {
                     let Some(job) = self.get(id) else { continue };
-                    let at = self.limit_wait_until(&job.account, job.account_limit_reset);
+                    let at = self.limit_wait_until(
+                        &job.account,
+                        job.account_limit_reset,
+                        job.background(),
+                    );
                     let mut waits = false;
                     self.update(id, |job| {
                         waits = waits_on(job, decision) && job.account_limit_episode.is_some();
@@ -200,11 +206,12 @@ impl Jobs {
     }
 
     /// When a job `account`'s limit stopped resumes there at the latest: 90 seconds after the reset
-    /// its tool said (LIMITS-5), else the one obid knows, else in an hour.
-    pub(super) fn limit_wait_until(&self, account: &str, reset: Option<i64>) -> i64 {
+    /// its tool said (LIMITS-5), else the one obid knows for `background` work (LIMITS-20), else in
+    /// an hour.
+    pub(super) fn limit_wait_until(&self, account: &str, reset: Option<i64>, bg: bool) -> i64 {
         let now = obi_protocol::time::now();
         let at = (reset.filter(|at| *at > now))
-            .or_else(|| self.usage.get(account).free_at(now))
+            .or_else(|| self.usage.get(account).free_at(now, bg))
             .unwrap_or(now + UNKNOWN_RESET);
         at.max(now) + RESUME_AFTER_RESET
     }
@@ -233,9 +240,9 @@ impl Jobs {
                 !self.being_changed(&a.id)
                     && signed_in(*tool, a, home.as_deref())
                     && (!background || self.takes_background(a))
-                    && self.usage.get(&a.id).held(now).is_some()
+                    && self.usage.get(&a.id).held_for(now, background).is_some()
             })
-            .min_by_key(|(_, a)| self.limit_wait_until(&a.id, None))?;
+            .min_by_key(|(_, a)| self.limit_wait_until(&a.id, None, background))?;
         let wait = Waiting {
             kind: "cap".into(),
             text: String::new(),
@@ -251,7 +258,10 @@ impl Jobs {
     pub(super) fn wait_as_vetted(&self, job: &mut Job, waiting: Option<Waiting>) {
         match waiting {
             Some(wait) if wait.kind == "cap" => {
-                wait_for_reset(job, self.limit_wait_until(&job.account, None));
+                wait_for_reset(
+                    job,
+                    self.limit_wait_until(&job.account, None, job.background()),
+                );
             }
             Some(wait) => {
                 job.step = room_step(&wait);
@@ -293,7 +303,7 @@ impl Jobs {
             if gone || usage.held_for(now, job.background()).is_some() {
                 let at = match gone {
                     true => now + UNKNOWN_RESET,
-                    false => self.limit_wait_until(&job.account, None),
+                    false => self.limit_wait_until(&job.account, None, job.background()),
                 };
                 self.update(&id, |job| {
                     if waits(job) {

@@ -2830,8 +2830,8 @@ impl Jobs {
 
     /// The accounts of `tool` Oby thinks with (the brain and conversations), best
     /// first (#874): signed in, not being signed in or removed, and not marked full; those with
-    /// room first, in the tool's order, then those held only by their weekly reserve (a turn is
-    /// small, like a review), then the rest, the least of their 5-hour window used first.
+    /// room first (a weekly reserve holds no turn, LIMITS-20), in the tool's order, then the rest,
+    /// the least of their 5-hour window used first.
     pub fn thinking_accounts(&self, tool: Tool) -> Vec<crate::config::Account> {
         let home = login_home();
         let now = obi_protocol::time::now();
@@ -2845,11 +2845,10 @@ impl Jobs {
                 usage.full_until_at(now).is_none().then_some(())?;
                 let five = usage.five_hour_at(now).unwrap_or(0.0);
                 let week = usage.seven_day_at(now).unwrap_or(0.0);
-                Some(match usage.held(now) {
+                Some(match usage.held_for(now, false) {
                     // Cursor's figure holds nothing: it only puts the emptier first (USAGE-9).
                     None if usage.advisory => (0, week, at, account),
                     None => (0, 0.0, at, account),
-                    Some(_) if five.max(week) < crate::usage::NEARLY_FULL => (1, 0.0, at, account),
                     Some(_) => (2, five, at, account),
                 })
             })
@@ -2861,11 +2860,11 @@ impl Jobs {
             .collect()
     }
 
-    /// Whether `account` takes automatic work now ([`crate::usage::Usage::held`] says nothing).
-    pub fn has_room(&self, account: &str) -> bool {
+    /// Whether `account` takes `background` work now ([`crate::usage::Usage::held_for`]).
+    pub fn has_room(&self, account: &str, background: bool) -> bool {
         self.usage
             .get(account)
-            .held(obi_protocol::time::now())
+            .held_for(obi_protocol::time::now(), background)
             .is_none()
     }
 
@@ -3357,7 +3356,7 @@ impl Jobs {
                         .into_iter()
                         .find(|a| {
                             &a.id == id
-                                && self.has_room(id)
+                                && self.has_room(id, background)
                                 && (!background || self.takes_background(a))
                         })
                         .map(|a| (tool, a))
@@ -3646,7 +3645,7 @@ impl Jobs {
             )));
         }
         // Claude Code's: the review's answer is its structured output (`--json-schema`).
-        let (_, account) = self.pick(Some(Tool::Claude.id()), None)?;
+        let (_, account) = self.pick_for(Some(Tool::Claude.id()), None, true)?;
         let id = self.new_id();
         let repo_name = body
             .repo
@@ -7160,7 +7159,7 @@ impl Jobs {
                 };
                 let resume_at = match &end {
                     End::AccountLimit { reset, .. } if failover.is_none() => {
-                        Some(self.limit_wait_until(&job.account, *reset))
+                        Some(self.limit_wait_until(&job.account, *reset, job.background()))
                     }
                     _ => None,
                 };
@@ -11738,7 +11737,7 @@ impl Jobs {
                 let usage = self.usage.get(&account.id);
                 if let Some(why) = usage.held(now) {
                     held.push(format!("{} {why}", account.name));
-                    let at = usage.free_at(now);
+                    let at = usage.free_at(now, true);
                     match full.iter_mut().find(|(t, _)| *t == tool.name()) {
                         Some((_, free)) => *free = [*free, at].into_iter().flatten().min(),
                         None => full.push((tool.name(), at)),
@@ -18683,7 +18682,7 @@ mod tests {
         assert_eq!(usage.seven_day_resets, Some(4_000_000_000));
         assert_eq!(usage.full_until, None);
         assert!(!usage.reserved(obi_protocol::time::now()));
-        assert!(jobs.has_room("own"));
+        assert!(jobs.has_room("own", true));
         // A secret obid knows from here on: no log line can carry it.
         assert!(!crate::secrets::known().redact(TOKEN).contains(TOKEN));
 
@@ -18691,7 +18690,7 @@ mod tests {
         *answering.lock().unwrap() = body(401, "ANSWER-WORDS");
         let usage = read().await;
         assert_eq!((usage.seven_day, usage.full_until), (None, None));
-        assert!(jobs.has_room("own"));
+        assert!(jobs.has_room("own", true));
 
         // The figure comes back, then a signed-out account gives none and asks nothing.
         *answering.lock().unwrap() = body(200, r#"{"planUsage":{"totalPercentUsed":10}}"#);
@@ -18923,8 +18922,8 @@ mod tests {
         }
     }
 
-    /// The accounts Oby thinks with, best first (#874): those with room, then those held only by
-    /// their weekly reserve, then the rest, the least of their 5-hour window first; never one
+    /// The accounts Oby thinks with, best first (#874): those with room (a weekly reserve holds
+    /// none, LIMITS-20), then the rest, the least of their 5-hour window first; never one
     /// marked full or signed out. A job whose account filled goes on on the first with room whose
     /// login can run now (#871): never one whose token has ended.
     #[tokio::test]
@@ -18973,7 +18972,7 @@ mod tests {
             .into_iter()
             .map(|a| a.id)
             .collect();
-        assert_eq!(order, ["ended", "room", "reserved", "busy"]);
+        assert_eq!(order, ["reserved", "ended", "room", "busy"]);
         assert_eq!(
             jobs.room_for(Tool::Claude, "full")
                 .await
