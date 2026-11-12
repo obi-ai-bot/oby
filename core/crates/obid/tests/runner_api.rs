@@ -248,7 +248,8 @@ fn jobs_have_iso_dates_and_every_key() {
         }
         assert!(is_iso_second(body["created"].as_str().unwrap()), "{body}");
         assert_eq!(body["title"], "Job progress screen");
-        assert_eq!(body["report"], false);
+        // A research job has its report once it ended done, its summary saved (PUBLISHING-28).
+        assert_eq!(body["report"], body["status"] == "done", "{body}");
         assert_eq!(body["cloudNeedsYou"], false);
         assert_eq!(body["mergeNeedsYou"], false);
         assert_eq!(body["reviewNeedsYou"], false);
