@@ -7042,11 +7042,11 @@ impl Jobs {
             Err(e) => Err(End::Failed(format!(
                 "obid couldn't make the job's folders: {e}"
             ))),
-            Ok(()) if job.obi.is_some() => {
-                self.run_obi_review(id, &signal).await.map_err(End::Failed)
-            }
+            Ok(()) if job.obi.is_some() => Box::pin(self.run_obi_review(id, &signal))
+                .await
+                .map_err(End::Failed),
             Ok(()) => {
-                let outcome = self.run_owner_job(id, &signal).await;
+                let outcome = Box::pin(self.run_owner_job(id, &signal)).await;
                 // Waiting for the owner's answer isn't an end either: kept as a shutdown keeps it.
                 let paused =
                     *signal.borrow() == Signal::Shutdown || matches!(outcome, Err(End::Asked(_)));
@@ -10205,7 +10205,7 @@ impl Jobs {
             }
         }
 
-        let words = self.heard_handing_over(id, &worktree).await?;
+        let words = Box::pin(self.heard_handing_over(id, &worktree)).await?;
         // A restart cut it short while it ran its check or published ("After any restart"): it
         // picks up there (below), and builds no prompt it won't send (nor asks Tetrix or the
         // teammates for one). Words the owner sent meanwhile are its next turn instead.
@@ -10329,7 +10329,7 @@ impl Jobs {
             let job = self.get(id).ok_or("the job is gone")?;
             // On its base as it is now, as any check is: a conflict is its agent's round.
             let onto = match job.repository_check() {
-                Some(_) => self.onto_base(id, &start_commit).await,
+                Some(_) => Box::pin(self.onto_base(id, &start_commit)).await,
                 None => Onto::Same,
             };
             match (job.repository_check().cloned(), onto) {
@@ -10370,9 +10370,8 @@ impl Jobs {
                     });
                     stages.begin("check");
                     let before = self.before_check(id).await;
-                    let run = self
-                        .check(id, &command, &before.head, &spec, signal)
-                        .await?;
+                    let run =
+                        Box::pin(self.check(id, &command, &before.head, &spec, signal)).await?;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
@@ -10562,8 +10561,10 @@ impl Jobs {
                     .config
                     .job_ceiling
                     .saturating_sub(Duration::from_secs(ran()));
+                // Boxed in here: seven stalls' futures by value made a debug build's frame of this
+                // function 300 KB bigger, past tokio's 2 MiB worker stack with what runs under it.
                 let stall = |why| {
-                    self.stall(
+                    Box::pin(self.stall(
                         id,
                         why,
                         tool,
@@ -10573,7 +10574,7 @@ impl Jobs {
                         broker.as_ref(),
                         signal,
                         &mcp_rules,
-                    )
+                    ))
                 };
                 if left.is_zero() {
                     return Err(stall(Stall::Ceiling).await);
@@ -10964,7 +10965,7 @@ impl Jobs {
                 let more_rounds = round < job.max_rounds();
                 // What it's checked on, and publishes, is on its base as it is now.
                 if job.repository_check().is_some() {
-                    match self.onto_base(id, &start_commit).await {
+                    match Box::pin(self.onto_base(id, &start_commit)).await {
                         Onto::Same => {}
                         Onto::Rebased(base) => start_commit = base,
                         Onto::Conflict(files) if !rebase_round => {
@@ -10989,7 +10990,8 @@ impl Jobs {
                     });
                     stages.begin("check");
                     let before = self.before_check(id).await;
-                    let run = self.check(id, command, &before.head, &spec, signal).await?;
+                    let run =
+                        Box::pin(self.check(id, command, &before.head, &spec, signal)).await?;
                     if *signal.borrow() != Signal::Run {
                         return Ok(());
                     }
@@ -11062,7 +11064,7 @@ impl Jobs {
 
             // With no check to run on it, it's put on its base as it is now before it publishes.
             if let Some(job) = self.get(id).filter(|j| j.check.is_none()) {
-                match self.onto_base(id, &start_commit).await {
+                match Box::pin(self.onto_base(id, &start_commit)).await {
                     Onto::Same => {}
                     Onto::Rebased(base) => start_commit = base,
                     Onto::Conflict(files) if !rebase_round => {
@@ -11083,7 +11085,7 @@ impl Jobs {
             stages.begin("artifacts");
             self.publish_artifacts(id).await;
             stages.begin("keep commits");
-            let head = self.keep_commits(id).await?;
+            let head = Box::pin(self.keep_commits(id)).await?;
             // What its check passed on (PUBLISHING-1, PUBLISHING-5): all that publishing will push,
             // by itself or by hand, while its branch is still there. One with no check: its head.
             let verified = match (
