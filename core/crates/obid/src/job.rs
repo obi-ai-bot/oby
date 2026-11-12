@@ -833,12 +833,23 @@ pub struct Job {
     /// went: a restart in between reads GitHub to settle each. Never in the API's job.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sending: Vec<Sending>,
+    /// GitHub's auto-merge obid armed on its pull request (MERGING-41): `autoMerge`, the head it's
+    /// pinned to and who had it merged. A push with write access doesn't cancel it on GitHub, so
+    /// obid turns it off itself (`autoMergeOff`) once that head stops passing every hold, the
+    /// pull request's head moves or the job stops being carried, and arms it again only on a head
+    /// that passes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_merge: Option<Sending>,
+    /// The head GitHub refused auto-merge for, and GitHub's words (MERGING-41): not asked again at
+    /// that head. Never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_merge_refused: Option<(String, String)>,
 }
 
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sending {
-    /// `pullRequestApproval`, `merge` or `branchDelete`.
+    /// `pullRequestApproval`, `merge`, `branchDelete`, or `autoMerge` (`Job::auto_merge`).
     pub action: String,
     /// The head it's about.
     pub head: String,
@@ -1272,6 +1283,8 @@ impl Job {
             merge_needs_you: false,
             merged_by: None,
             sending: Vec::new(),
+            auto_merge: None,
+            auto_merge_refused: None,
         }
     }
 
@@ -1782,6 +1795,10 @@ impl Job {
             value["mergedBy"] = json!({"by": merged.by, "memory": merged.memory,
                                        "at": obi_protocol::time::format(merged.at)});
         }
+        if let Some(auto) = &self.auto_merge {
+            value["autoMerge"] = json!({"head": auto.head,
+                "at": auto.by.as_ref().map(|b| obi_protocol::time::format(b.at))});
+        }
         if let Some(why) = &self.no_reviewer {
             value["noReviewer"] = json!(why);
         }
@@ -2080,11 +2097,15 @@ impl Job {
                 .as_ref()
                 .and_then(|pr| pr.review_decision.as_deref());
             let oby = self.current_review();
-            // The Merged stage while it's open: why the merge waits for the owner, else GitHub.
+            // The Merged stage while it's open: why the merge waits for the owner, else GitHub's
+            // auto-merge obid armed on its head (MERGING-41), else GitHub.
+            let pr_head = self.pull_request.as_ref().and_then(|pr| pr.head.as_deref());
+            let armed = (self.auto_merge.as_ref()).filter(|a| pr_head == Some(a.head.as_str()));
             let merge_line = self
                 .merge_error
                 .as_deref()
                 .filter(|_| self.merge_needs_you)
+                .or(armed.map(|_| crate::merge::GITHUB_MERGES))
                 .unwrap_or(crate::publish::MERGE_ON_GITHUB);
             // Merged by a workflow the owner taught Oby: it says so (#854).
             let as_you_like = self

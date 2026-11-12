@@ -63,6 +63,7 @@ mod account_limits;
 mod after_pr;
 mod authors;
 mod budget;
+mod by_github;
 mod lanes;
 pub(crate) use lanes::claude_place;
 mod logins;
@@ -890,6 +891,8 @@ struct State {
     /// When obid last tried to read each published pull request, and which one: an unavailable
     /// GitHub isn't asked again on every pass.
     followed: HashMap<String, (String, i64)>,
+    /// The jobs whose follower pass left GitHub's auto-merge armed (jobs/by_github.rs).
+    handed: std::collections::HashSet<String>,
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
@@ -1281,6 +1284,7 @@ impl Jobs {
                 asked: HashMap::new(),
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
+                handed: std::collections::HashSet::new(),
                 changing: std::collections::HashSet::new(),
                 idle: std::collections::HashSet::new(),
                 returning: std::collections::HashSet::new(),
@@ -12759,7 +12763,7 @@ impl Jobs {
                     });
                 }
             } else if let (Some(gh), Some((pull_request, merging))) = (&gh, carried) {
-                self.carry(&job.id, gh, &pull_request, merging).await;
+                self.follow(&job.id, gh, &pull_request, merging).await;
             } else if let Some(gh) = gh.as_deref().filter(|_| unread)
                 && let Some(head) = self
                     .get(&job.id)
@@ -13018,6 +13022,8 @@ impl Jobs {
                         }
                         Err(blocked) => Err(blocked),
                     };
+                    let seen = (pr, &merging, reviewers.as_ref());
+                    let outcome = self.by_github(gh, &job, workflow, seen, &by, outcome).await;
                     if let Ok(merged) = &outcome {
                         for sent in &merged.outgoing {
                             tracing::info!(
@@ -13141,31 +13147,6 @@ impl Jobs {
             }
         });
         going
-    }
-
-    /// What obid was sending for the job `id` when it last stopped, settled from what GitHub
-    /// says now (the pull request is open): an approval it finds there is listed; a merge (and its
-    /// branch's deletion) didn't land, and is tried again as anything is, unless a merge is under
-    /// way right now (the owner's tap), whose marks stay.
-    fn settle_sending(&self, id: &str, merging: &crate::github::Merging) {
-        let busy = crate::merge::merging_now(&self.config.home, id);
-        self.update(id, |job| {
-            if let Some(approval) = crate::merge::unmark(job, "pullRequestApproval")
-                && crate::merge::approval_seen(&approval, &merging.reviews)
-                && let Some(url) = job.published.clone()
-            {
-                job.outgoing.push(crate::publish::Outgoing::new(
-                    "pullRequestApproval",
-                    &job.repo,
-                    &url,
-                    None,
-                ));
-            }
-            if !busy {
-                crate::merge::unmark(job, "merge");
-                crate::merge::unmark(job, "branchDelete");
-            }
-        });
     }
 
     /// Each repository obid works in, with its default branch: what a workflow memory is checked
@@ -13729,6 +13710,9 @@ impl crate::publish::Hooks for PublishHooks {
             outgoing.branch.as_deref().unwrap_or(""),
             outgoing.id
         );
+        if outgoing.action == "push" {
+            self.jobs.pushed(&outgoing);
+        }
         if matches!(outgoing.action.as_str(), "pullRequest" | "pullRequestEdit") {
             self.jobs
                 .note_described(&outgoing.repo, &outgoing.id, &self.id);

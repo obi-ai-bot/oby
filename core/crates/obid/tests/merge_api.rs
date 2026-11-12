@@ -33,6 +33,10 @@ fn head() -> String {
 /// and with `gh/behind` too a `CLEAN` pull request whose branch lacks `dev`'s tip is `BEHIND`.
 /// The runs that failed on a commit are `gh/runs.json` (none without it), and run `<id>`'s failed
 /// log is `gh/log-<id>` (unreadable without it).
+/// With `gh/running` its checks are still running, which leaves it `BLOCKED` (required checks), and
+/// with `gh/optional` `UNSTABLE` (only optional ones);
+/// `pr merge --auto` turns GitHub's auto-merge on (`gh/armed`; refused with `gh/no-auto`) and
+/// `--disable-auto` off. With `gh/queue` its base takes it only through a merge queue.
 fn stand_in_gh(folder: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = folder.join("bin");
@@ -88,6 +92,8 @@ printf '%s|%s\n' "$GH_CONFIG_DIR" "$*" >> "$dir/calls"
 now=; [ -f "$dir/remote" ] && remote="$(cat "$dir/remote")" && now="$(git --git-dir="$remote" rev-parse refs/heads/oby/fix-7)"
 out() {{ if [ -n "$now" ]; then sed "s/{head}/$now/g" "$1"; else cat "$1"; fi; }}
 behind() {{ if [ -f "$dir/behind" ] && ! git --git-dir="$remote" merge-base --is-ancestor refs/heads/dev "$now"; then sed 's/"CLEAN"/"BEHIND"/'; else cat; fi; }}
+running() {{ if [ -f "$dir/running" ]; then sed -e 's/"COMPLETED"/"IN_PROGRESS"/' -e 's/"conclusion":"SUCCESS"/"conclusion":""/' -e 's/"CLEAN"/"BLOCKED"/';
+  elif [ -f "$dir/optional" ]; then sed -e 's/"COMPLETED"/"IN_PROGRESS"/' -e 's/"conclusion":"SUCCESS"/"conclusion":""/' -e 's/"CLEAN"/"UNSTABLE"/'; else cat; fi; }}
 case "$*" in
   "auth status --hostname github.com --active --json hosts")
     who=octo-cat; [ -n "$GH_CONFIG_DIR" ] && who=oby-reviewer
@@ -98,10 +104,10 @@ case "$*" in
   "pr view 7 --repo {REPO} --json "*)
     [ -f "$dir/offline" ] && {{ echo 'error connecting to api.github.com' >&2; exit 1; }}
     [ -f "$dir/signed-out" ] && {{ printf 'To get started with GitHub CLI, please run:  gh auth login\n' >&2; exit 4; }}
-    if [ -f "$dir/view-now.json" ]; then out "$dir/view-now.json" | behind;
+    if [ -f "$dir/view-now.json" ]; then out "$dir/view-now.json" | behind | running;
     elif [ -f "$dir/merged-on-github" ]; then out "$dir/view-merged.json";
     elif [ -f "$dir/unknown" ]; then out "$dir/view-unknown.json";
-    else out "$dir/view.json" | behind; fi ;;
+    else out "$dir/view.json" | behind | running; fi ;;
   "api --paginate --slurp repos/{REPO}/pulls/7/reviews?per_page=100")
     r=
     [ -f "$dir/approved" ] && r="$(out "$dir/approval.json")"
@@ -119,7 +125,13 @@ case "$*" in
   "api -X POST repos/{REPO}/pulls/7/reviews "*) touch "$dir/approved"; echo '{{"id": 1}}' ;;
   "api repos/{REPO}/pulls/7")
     if [ -f "$dir/named" ]; then out "$dir/pull.json" | sed 's#oby/fix-7#codex/7-x#'; else out "$dir/pull.json"; fi ;;
-  "api -X PUT repos/{REPO}/pulls/7/merge "*) touch "$dir/merged"; echo '{{"merged": true}}' ;;
+  "api -X PUT repos/{REPO}/pulls/7/merge "*)
+    [ -f "$dir/queue" ] && {{ echo 'gh: Changes must be made through the merge queue (HTTP 405)' >&2; exit 1; }}
+    touch "$dir/merged"; echo '{{"merged": true}}' ;;
+  "pr merge 7 --repo {REPO} --auto "*)
+    [ -f "$dir/no-auto" ] && {{ echo 'GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)' >&2; exit 1; }}
+    touch "$dir/armed" ;;
+  "pr merge 7 --repo {REPO} --disable-auto") rm -f "$dir/armed" ;;
   "api repos/{REPO}/compare/"*)
     if [ -n "$now" ]; then echo "{{\"behind_by\": $(git --git-dir="$remote" rev-list --count "$now..refs/heads/dev")}}"; else echo '{{"behind_by": 3}}'; fi ;;
   "api -X DELETE repos/{REPO}/git/refs/heads/oby/fix-7") touch "$dir/deleted"; exit 0 ;;
@@ -1651,6 +1663,18 @@ fn published_for_real(
     before: impl FnOnce(&Path),
     edit: impl FnOnce(&mut Value),
 ) -> (Obid, String, String, PathBuf) {
+    published_read_every(folder, workflow, gh, before, edit, "1")
+}
+
+/// [`published_for_real`], its pull request read every `seconds`.
+fn published_read_every(
+    folder: &Folder,
+    workflow: &str,
+    gh: &[&str],
+    before: impl FnOnce(&Path),
+    edit: impl FnOnce(&mut Value),
+    seconds: &str,
+) -> (Obid, String, String, PathBuf) {
     let remote = fixture(&folder.0.join("fixture"));
     git(&remote, &["branch", "dev", "main"]);
     let config = real_config(folder, &remote);
@@ -1661,7 +1685,7 @@ fn published_for_real(
     for file in gh {
         std::fs::write(folder.0.join("gh").join(file), "").unwrap();
     }
-    let env = [("OBID_FOLLOW_SECONDS", "1")];
+    let env = [("OBID_FOLLOW_SECONDS", seconds)];
     let obid = start_with(&folder.0, &config, Some(&bin), &env);
     let task = json!({"job": {"repo": REPO, "kind": "build", "task": "COMMIT: fix.txt",
                               "branch": "oby/fix-7", "base": "dev", "check": null, "rounds": 1}});
@@ -2130,6 +2154,355 @@ fn merging_39_a_secret_in_the_log_never_reaches_the_agent() {
         assert!(!text.contains(TOKEN), "{what} holds obid's token: {text}");
     }
     assert!(quoted.contains("redacted"), "{quoted}");
+}
+
+/// The `gh pr merge --auto` calls obid made: GitHub's auto-merge turned on (MERGING-41).
+fn auto_merges(folder: &Folder) -> Vec<String> {
+    calls(&folder.0)
+        .lines()
+        .filter(|l| l.contains("|pr merge ") && l.contains(" --auto "))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// How often obid turned GitHub's auto-merge off (MERGING-41).
+fn disarms(folder: &Folder) -> usize {
+    calls(&folder.0)
+        .matches(&format!("|pr merge 7 --repo {REPO} --disable-auto"))
+        .count()
+}
+
+/// The job's Merged stage.
+fn merged_stage(job: &Value) -> Value {
+    job["pipeline"]["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "merged")
+        .cloned()
+        .unwrap()
+}
+
+/// The `gh pr merge` call that hands fixture-app #7 to GitHub's auto-merge at `head`, as a learned
+/// squash workflow writes it: pinned to that head, Oby's own title, the message in a file.
+fn arms_at(head: &str) -> String {
+    format!(
+        "pr merge 7 --repo {REPO} --auto --match-head-commit {head} --squash --subject Fix the thing (#7) --body-file "
+    )
+}
+
+/// MERGING-41: GitHub's required checks still running on a pull request a learned workflow would
+/// merge, everything of Oby's holding: obid hands it to GitHub's auto-merge, pinned to its head
+/// with the workflow's method, once. No card; the Merged stage says GitHub merges it, and the job
+/// keeps what it armed. When GitHub merged it, it was the workflow's merge, and the branch goes.
+#[test]
+fn merging_41_github_holds_it_so_obid_arms_auto_merge_pinned_to_the_head() {
+    let folder = Folder::new("merge-auto");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["running"]);
+    let armed = within(30, "the job handed to GitHub", || {
+        let job = job(&obid);
+        (job["autoMerge"]["head"] == head()).then_some(job)
+    });
+    let sent = auto_merges(&folder);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains(&arms_at(&head())), "{}", sent[0]);
+    assert_eq!(
+        merged_stage(&armed)["detail"],
+        "GitHub will merge it when its checks pass"
+    );
+    assert_eq!(armed["mergeNeedsYou"], false);
+    assert!(armed["mergeError"].is_null());
+    assert!(
+        armed["outgoing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["action"] == "autoMerge"),
+        "{armed}"
+    );
+    // Once for its head, however often it's read.
+    within(30, "a few more reads", || {
+        (calls(&folder.0).matches("pr view 7").count() >= 5).then_some(())
+    });
+    assert_eq!(auto_merges(&folder).len(), 1);
+    assert!(merge_cards(&obid).is_empty());
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    // Its checks passed and GitHub merged it: the workflow's merge, and its branch deleted.
+    std::fs::write(folder.0.join("gh/merged-on-github"), "").unwrap();
+    let merged = within(30, "the job merged", || {
+        let job = job(&obid);
+        (job["mergedBy"]["by"] == "memory").then_some(job)
+    });
+    assert_eq!(merged["mergedBy"]["memory"], "m1a2b3c4d");
+    assert_eq!(
+        merged_stage(&merged)["detail"],
+        "Merged into dev, as you like"
+    );
+    within(30, "its branch deleted", || {
+        folder.0.join("gh/deleted").exists().then_some(())
+    });
+    assert!(!calls(&folder.0).contains("-X PUT"));
+}
+
+/// MERGING-41 and 7: what Oby wouldn't merge by itself isn't handed to GitHub either: a repository
+/// it hasn't learned, and a pull request into main under a workflow learned into main, wait as
+/// before with their checks running. The same pull request into dev, learned, is handed over.
+#[test]
+fn merging_41_never_on_main_master_or_trunk_nor_unlearned() {
+    let folder = Folder::new("merge-auto-guarded");
+    let mut into_main = published();
+    into_main.base = Some("main".into());
+    let obid = started_with(&folder, false, None, into_main, &["running"]);
+    view_now(&folder, |v| v["baseRefName"] = json!("main"));
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    let after = reads() + 3;
+    within(30, "a few reads, unlearned", || {
+        (reads() >= after).then_some(())
+    });
+    assert!(auto_merges(&folder).is_empty());
+    remember(
+        &folder.0.join("home"),
+        &OBY.replace(r#""base":"dev""#, r#""base":"main""#),
+    );
+    let after = reads() + 3;
+    within(30, "a few reads, learned into main", || {
+        (reads() >= after).then_some(())
+    });
+    assert!(auto_merges(&folder).is_empty());
+    assert!(!calls(&folder.0).contains("-X PUT"));
+    drop(obid);
+
+    // Into dev, learned: GitHub's to merge once its checks pass.
+    let folder = Folder::new("merge-auto-dev");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["running"]);
+    within(30, "the job handed to GitHub", || {
+        (job(&obid)["autoMerge"]["head"] == head()).then_some(())
+    });
+    assert_eq!(auto_merges(&folder).len(), 1);
+}
+
+/// MERGING-41: a push with write access doesn't cancel GitHub's auto-merge, so a head obid didn't
+/// arm it for turns it off, once (`autoMergeOff`). obid arms it again only once its own review
+/// approved that head, pinned to the new one.
+#[test]
+fn merging_41_a_new_head_is_armed_again_after_obids_review() {
+    let folder = Folder::new("merge-auto-new-head");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["running"]);
+    within(30, "the job handed to GitHub", || {
+        (job(&obid)["autoMerge"]["head"] == head()).then_some(())
+    });
+    drop(obid);
+
+    // obid pushed a new head; Oby's review of it hasn't approved it yet.
+    let new = "b".repeat(40);
+    let file = folder.0.join(format!("home/jobs/{ID}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut push = kept["outgoing"][0].clone();
+    push["id"] = json!(new);
+    kept["outgoing"].as_array_mut().unwrap().push(push);
+    kept["commits"] = json!(2);
+    kept["pushed"] = json!(2);
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    view_now(&folder, |v| v["headRefOid"] = json!(new));
+    let pull = folder.0.join("gh/pull.json");
+    let moved = std::fs::read_to_string(&pull)
+        .unwrap()
+        .replace(&head(), &new);
+    std::fs::write(&pull, moved).unwrap();
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+    let bin = folder.0.join("bin");
+    let env = [("OBID_FOLLOW_SECONDS", "1")];
+    let obid = start_with(&folder.0, &config, Some(&bin), &env);
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    let after = reads() + 3;
+    within(30, "a few reads of the new head", || {
+        (reads() >= after).then_some(())
+    });
+    assert_eq!(auto_merges(&folder).len(), 1, "not before its review");
+    assert_eq!(
+        disarms(&folder),
+        1,
+        "turned off once, for the head it was on"
+    );
+    assert!(!folder.0.join("gh/armed").exists());
+    let waiting = job(&obid);
+    assert!(waiting["autoMerge"].is_null(), "{waiting}");
+    let off = waiting["outgoing"].as_array().unwrap();
+    assert_eq!(
+        off.iter().filter(|o| o["action"] == "autoMergeOff").count(),
+        1
+    );
+    assert_ne!(
+        merged_stage(&waiting)["detail"],
+        "GitHub will merge it when its checks pass"
+    );
+    drop(obid);
+
+    // Oby's review approved the new head: armed again, on it.
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    kept["review"]["commit"] = json!(new);
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    let obid = start_with(&folder.0, &config, Some(&bin), &env);
+    within(30, "the new head handed to GitHub", || {
+        (job(&obid)["autoMerge"]["head"] == new.as_str()).then_some(())
+    });
+    let sent = auto_merges(&folder);
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent[1].contains(&arms_at(&new)), "{}", sent[1]);
+    assert_eq!(disarms(&folder), 1);
+}
+
+/// MERGING-41: obid's own push of another head to an armed branch (here a follow-up's) turns
+/// GitHub's auto-merge off right after it, with no read of the pull request in between: GitHub
+/// keeps it on for a push with write access.
+#[test]
+fn merging_41_obids_own_push_turns_it_off_at_once() {
+    let folder = Folder::new("merge-auto-push");
+    let (obid, id, head, remote) = published_read_every(
+        &folder,
+        PERSON,
+        &["person", "running"],
+        |_| {},
+        |_| {},
+        "3600",
+    );
+    // Its one read arms it: nothing of Oby's holds it.
+    within(30, "the job handed to GitHub", || {
+        (job_of(&obid, &id)["autoMerge"]["head"] == head.as_str()).then_some(())
+    });
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(disarms(&folder), 0);
+    let reads = calls(&folder.0).matches("pr view 7").count();
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "COMMIT: more.txt"})),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    within(60, "the follow-up's push", || {
+        (git(&remote, &["rev-parse", "refs/heads/oby/fix-7"]) != head).then_some(())
+    });
+    let off = within(30, "auto-merge off", || {
+        let job = job_of(&obid, &id);
+        job["autoMerge"].is_null().then_some(job)
+    });
+    assert_eq!(disarms(&folder), 1);
+    let sent = off["outgoing"].as_array().unwrap();
+    assert!(sent.iter().any(|o| o["action"] == "autoMergeOff"), "{off}");
+    assert_eq!(calls(&folder.0).matches("pr view 7").count(), reads);
+}
+
+/// MERGING-41: only optional checks running (`UNSTABLE`) isn't GitHub's alone to hold: gh's
+/// `--auto` would merge it at once, so obid waits for its checks as before, then merges it.
+#[test]
+fn merging_41_optional_checks_running_are_waited_for() {
+    let folder = Folder::new("merge-auto-unstable");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["optional"]);
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    let after = reads() + 3;
+    within(30, "a few reads", || (reads() >= after).then_some(()));
+    assert!(auto_merges(&folder).is_empty());
+    assert!(job(&obid)["autoMerge"].is_null());
+    std::fs::remove_file(folder.0.join("gh/optional")).unwrap();
+    within(30, "the job merged by obid", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    assert!(auto_merges(&folder).is_empty());
+}
+
+/// MERGING-41: a hold of Oby's that appears once it's armed (here its checks went red) turns
+/// GitHub's auto-merge off, once, and the card it held back shows.
+#[test]
+fn merging_41_a_hold_after_arming_turns_it_off() {
+    let folder = Folder::new("merge-auto-hold");
+    let obid = started_with(&folder, false, Some(OBY), published(), &["running"]);
+    within(30, "the job handed to GitHub", || {
+        (job(&obid)["autoMerge"]["head"] == head()).then_some(())
+    });
+    red(&folder, None);
+    std::fs::remove_file(folder.0.join("gh/running")).unwrap();
+    red_card(&obid);
+    let held = within(30, "auto-merge off", || {
+        let job = job(&obid);
+        job["autoMerge"].is_null().then_some(job)
+    });
+    assert_eq!(disarms(&folder), 1);
+    assert!(!folder.0.join("gh/armed").exists());
+    assert!(
+        held["outgoing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["action"] == "autoMergeOff"),
+        "{held}"
+    );
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    let after = reads() + 3;
+    within(30, "a few more reads", || (reads() >= after).then_some(()));
+    assert_eq!(disarms(&folder), 1, "once");
+    assert_eq!(auto_merges(&folder).len(), 1);
+}
+
+/// MERGING-41: GitHub refusing its auto-merge is asked once per head. Required checks running, it
+/// gets the card it had before (GitHub's rules still block it), once, and obid merges it once they
+/// pass; a base that takes it only through a merge queue asks the owner, with one card.
+#[test]
+fn merging_41_a_refused_auto_merge_is_asked_once_per_head() {
+    let folder = Folder::new("merge-auto-refused");
+    let obid = started_with(
+        &folder,
+        false,
+        Some(OBY),
+        published(),
+        &["running", "no-auto"],
+    );
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    within(30, "the auto-merge asked for", || {
+        (!auto_merges(&folder).is_empty()).then_some(())
+    });
+    let after = reads() + 3;
+    within(30, "a few more reads", || (reads() >= after).then_some(()));
+    assert_eq!(auto_merges(&folder).len(), 1, "once for its head");
+    assert!(job(&obid)["autoMerge"].is_null());
+    let cards = merge_cards(&obid);
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    let text = cards[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Not merged: GitHub's rules for dev still block it"),
+        "{text}"
+    );
+    std::fs::remove_file(folder.0.join("gh/running")).unwrap();
+    within(30, "the job merged by obid", || {
+        (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
+    });
+    drop(obid);
+
+    let folder = Folder::new("merge-auto-queue-refused");
+    let obid = started_with(
+        &folder,
+        false,
+        Some(OBY),
+        published(),
+        &["queue", "no-auto"],
+    );
+    let card = within(30, "the card", || {
+        open_merge_cards(&obid).into_iter().next()
+    });
+    let text = card["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Not merged: GitHub didn't take it for its auto-merge (GraphQL: Auto merge is not allowed"),
+        "{text}"
+    );
+    let reads = || calls(&folder.0).matches("pr view 7").count();
+    let after = reads() + 3;
+    within(30, "a few more reads", || (reads() >= after).then_some(()));
+    assert_eq!(auto_merges(&folder).len(), 1, "once for its head");
+    let cards = merge_cards(&obid);
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert!(cards[0]["done"].is_null());
+    assert_eq!(job(&obid)["mergeNeedsYou"], true);
 }
 
 /// MERGING-6: the owner's gh signed out (or its login expired) can't read the pull request at all:
