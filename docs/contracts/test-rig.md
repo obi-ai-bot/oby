@@ -36,6 +36,7 @@ Then `node e2e/rig.mjs stop` and `start`. The account is one Dana's obid added, 
 | `start --real` | Dana on the real Claude Code with or without a login. Without one it starts no job, and every question waits on Dana. |
 | `status` | What's up, the checkout, obid and Sphere commit it runs, with each obid's `OBID_HOME` and `OBID_PORT`. |
 | `ask <words>` | You ask Dana's Oby; prints your conversation, the exchange's state and Dana's inbox. Comes back after a word comes back, at most 2 minutes and a half. |
+| `review [--hold]` | Dana's Oby asks yours for a review (`POST /v1/obid/sphere/requests`, `review_request`) with the body of `e2e/fixtures/messages/review_request.example.json`: the fixture's `feature/average` head, its canary in the text. Waits for the `obiRequest` item in your inbox and answers Accept as the app does on your click, your words signed by the rig's device, which also signs the Confirm when obid asks for your tap; your stand-in then runs `e2e/stub-agent/stub-agent` (make e2e's reviewer). Then waits for Dana's exchange to end, prints its outcome and findings, and exits 1 unless it's approved. `--hold` answers nothing: you answer in the dev app, opened with `app` first, since `review` holds the rig's lock while it waits. |
 | `app` | Builds and opens the Electron dev app on you, with an app folder of its own (`you/electron-data`) and Home, not the first run. |
 | `job [task]` | One more job for Dana. On stand-ins the task is `tests/agents/fake-claude`'s words (`SLEEP`, `COMMIT: a.txt`). |
 | `policy on\|off` | The Sphere's rule written, or none. |
@@ -69,7 +70,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 
 ## Interfaces and dependencies
 
-- **Reused:** the app's own joining (`apps/electron/src/shared/sphere.ts`), `e2e/lib/fixture.mjs`, `e2e/lib/processes.mjs`, the stand-ins in `core/crates/obid/tests/agents`. Nothing in obid's API changed.
+- **Reused:** the app's own joining (`apps/electron/src/shared/sphere.ts`), `e2e/lib/fixture.mjs`, `e2e/lib/processes.mjs`, the stand-ins in `core/crates/obid/tests/agents`, make e2e's reviewer (`e2e/stub-agent/stub-agent`) and its request (`e2e/fixtures/messages/review_request.example.json`). Nothing in obid's API changed.
 - **The Sphere's rules** the rig found, at obi-sphere 586a694: a policy can name only owners who have joined, so the rule is written after both join; an invitation lasts at most 30 days.
 - **You joined with the rig's owner key, not the dev app's.** The app logs `Your Oby joined rig with a key this app doesn't have` and shows nothing (only a packaged app tells the owner). The rig keeps the card and the delegation until a membership is 30 days old; it signs only at `start`.
 - **Later tasks** drive it the way `apps/electron/scripts/drive-lib.mjs` does: `rig.json` in the folder holds the Sphere's port, the running processes and the device keys; each obid's port and home are in `status`. PEER scenarios go in `apps/electron/scripts/human-drive.scenarios.mjs` as the screens they need land (PEER-1 needs SPH-4).
@@ -100,6 +101,7 @@ The folder is `~/Library/Application Support/oby-rig`, or `OBY_RIG_DIR`: an empt
 - **RIG-22** While it's all up and Dana's job has ended, `start` starts another, and says it's running.
 - **RIG-23** A wrong `OBID_BIN`: `start` says what's wrong, exit 1, with nothing left up.
 - **RIG-24** `job --personal`, in a repository of Dana's that Dana's yes leaves out, and ask: the answer has "Billing retries" and nothing of "File my taxes" (the plan's PEER-15).
+- **RIG-25** `review`: Dana's Oby asks yours to review the fixture's `feature/average` head, an `obiRequest` comes into your inbox, your signed Accept starts the review on the stub agent, and Dana's exchange ends `done` with the outcome `approved` and the two findings of `e2e/fixtures/messages/result.example.json`; exit 0. `review --hold` leaves the item for your answer in the dev app. The Sphere's rule allows `question` and `review_request`: a rig started before it holds the old rule (`question` only), so Dana's request is refused by the Sphere until `reset` and `start` write the new one. Run on the rig for the whole of it; what `review` does on its side is tested against stand-ins of the two obids' APIs (`e2e/lib/rig-review.mjs`): the rule, the request it sends, your Accept signed as the app's, the Confirm signed when obid asks for it, `--hold` answering nothing, failing unless approved, and the stand-in running the stub reviewer (`rig_25_*` in `e2e/rig.test.mjs`).
 
 ### Test it when it's done
 

@@ -7,6 +7,7 @@
 //   node e2e/rig.mjs start [--stand-in | --real]   everything up, joined, the rule written, Dana's job running
 //   node e2e/rig.mjs status                        what's up, in a few lines
 //   node e2e/rig.mjs ask "What are you working on?"  you ask Dana's Oby; prints what came back
+//   node e2e/rig.mjs review [--hold]               Dana's Oby asks yours for a review; you Accept, unless --hold
 //   node e2e/rig.mjs app                           the Electron dev app, on you
 //   node e2e/rig.mjs job [task]                    one more job for Dana
 //   node e2e/rig.mjs job --personal [task]         one outside what Dana shares (PEER-15)
@@ -23,7 +24,7 @@
 // are always on stand-ins: asking runs no model of yours.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
@@ -34,6 +35,7 @@ import { buildFixture } from "./lib/fixture.mjs";
 import { requireNodeVersion } from "./lib/node-version.mjs";
 import { stopGroups } from "./lib/processes.mjs";
 import { aLink, rigRefusal } from "./lib/rig-guard.mjs";
+import { confirmOf, review as reviewOf, reviewBody, RULES, wordsOf } from "./lib/rig-review.mjs";
 import { family, newExchange, orphans, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -46,7 +48,6 @@ const REPO = "obi-e2e/fixture-app";
 // A repository of its owner's that Dana's yes leaves out (PEER-15): the same remote is enough.
 const PERSONAL = "obi-e2e/personal-taxes";
 const LONG_TASK = "Add one small test file a minute, 30 times, committing each: tests/step-01.test.js, then tests/step-02.test.js and so on, with `sleep 60` between them. Each file holds one passing node:test. Nothing else.";
-const RULES = [["alex", "dana"], ["dana", "alex"]].map(([from_owner, to_owner]) => ({ id: `${from_owner}-asks-${to_owner}`, from_owner, to_owner, actions: ["question"], repos: ["*"] }));
 
 // This comes first, before anything is read, made or started.
 const refused = rigRefusal(RIG);
@@ -194,11 +195,8 @@ async function danaSaysYes(state) {
   if (opened.status >= 300) fail(`Dana's card: ${opened.status} ${opened.text}`);
   const offered = await api("dana").call("POST", "/v1/obid/sharing/offer", { repos: [REPO] });
   if (offered.status >= 300) fail(`Dana's card: ${offered.status} ${offered.text}`);
-  const { id: item, title } = JSON.parse(offered.text);
-  const { id: device, key } = state.devices.dana;
-  const signedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-  const signature = sign("sha256", Buffer.from(`oby-confirm\n${item}\n${title}\n${signedAt}`), createPrivateKey(key)).toString("base64");
-  const yes = await api("dana").call("POST", `/v1/inbox/${encodeURIComponent(item)}/answer`, { answer: "Confirm", approval: { device, action: title, signedAt, signature } });
+  const item = JSON.parse(offered.text);
+  const yes = await api("dana").call("POST", `/v1/inbox/${encodeURIComponent(item.id)}/answer`, confirmOf(state.devices.dana, item));
   if (yes.status >= 300) fail(`Dana's yes: ${yes.status} ${yes.text}`);
   state.danaSaidYes = true;
   save(state);
@@ -399,7 +397,7 @@ async function start(flags) {
       save(state);
     }
     await danaSaysYes(state);
-    say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other.");
+    say("Joined: alex (you) and dana, by a private link. The Sphere's rule lets them ask each other questions and for reviews.");
     say(`Dana's sharing: ${JSON.stringify((await api("dana").get("/v1/obid/sharing")).rules?.map((r) => ({ for: r.for, repos: r.repos, tells: r.tells, starter: r.starter })))}`);
     await keepDanaWorking(state);
     state.ready = true;
@@ -463,12 +461,8 @@ async function ask(words) {
   const exchanges = () => get("/v1/obid/sphere/exchanges?limit=50");
   const before = await exchanges();
   const body = JSON.stringify({ said: `OBY oby_ask ${JSON.stringify({ to: "dana", question: words })}`, new: true });
-  const signedAt = new Date().toISOString();
-  const digest = createHash("sha256").update(body).digest("hex");
-  const { id, key } = state.devices.you;
-  const signature = sign("sha256", Buffer.from(`oby-words\nPOST\n/v1/plans\n${digest}\n${signedAt}`), createPrivateKey(key)).toString("base64");
   const res = await fetch(`http://127.0.0.1:${PEOPLE.you.port}/v1/plans`, { method: "POST", body, signal: AbortSignal.timeout(120_000),
-    headers: { authorization: `Bearer ${readFileSync(join(homeOf("you"), "api-token"), "utf8").trim()}`, "content-type": "application/json", "x-oby-words": `${id} ${signedAt} ${signature}` } });
+    headers: { authorization: `Bearer ${readFileSync(join(homeOf("you"), "api-token"), "utf8").trim()}`, "content-type": "application/json", "x-oby-words": wordsOf(state.devices.you, "POST", "/v1/plans", body) } });
   const reply = await res.json();
   if (!res.ok) fail(`Asking: ${res.status} ${JSON.stringify(reply)}`);
   say(`You asked. Your stand-in said: ${reply.text}`);
@@ -485,6 +479,19 @@ async function ask(words) {
     const inbox = await api("dana").get("/v1/inbox");
     say(`--- Dana's inbox: ${inbox.length ? JSON.stringify(inbox.map((i) => [i.kind, i.title])) : "empty"}`);
   }
+}
+
+// Dana's Oby asks yours to review the fixture's change (e2e/lib/rig-review.mjs); your stand-in is
+// then the stub agent (e2e/rig-agent). Exits 1 unless Dana's Oby is told approved.
+async function review(flags) {
+  for (const flag of flags) if (flag !== "--hold") fail(`What's ${flag}? node e2e/rig.mjs review [--hold]`);
+  const state = load();
+  if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
+  if (!alive(state, "dana")) fail("Dana isn't up: node e2e/rig.mjs start");
+  const body = reviewBody();
+  const head = spawnSync("git", ["-C", join(RIG, "fixture/remote.git"), "rev-parse", `refs/heads/${body.head_branch}`], { encoding: "utf8", env: plain() }).stdout?.trim();
+  if (head !== body.head_sha) fail(`The fixture's ${body.head_branch} is ${head || "missing"}, not ${body.head_sha}: node e2e/rig.mjs reset, then start.`);
+  await reviewOf({ you: api("you"), dana: api("dana"), device: state.devices.you, body, hold: flags.includes("--hold"), until, say });
 }
 
 async function job(words) {
@@ -605,7 +612,7 @@ function fromThisCheckout(force) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-const CHANGES = new Set(["start", "stop", "reset", "job", "policy", "dana", "app"]);
+const CHANGES = new Set(["start", "stop", "reset", "job", "review", "policy", "dana", "app"]);
 try {
   requireNodeVersion(process.versions.node);
   if (command === "start") {
@@ -625,11 +632,12 @@ try {
   else if (command === "status") await status();
   else if (command === "ask") await ask(args.join(" "));
   else if (command === "job") await job(args.join(" "));
+  else if (command === "review") await review(args);
   else if (command === "policy") await policy(args[0]);
   else if (command === "dana") await dana(args[0]);
   else if (command === "app") await app();
   else if (command === "reset") await reset();
-  else fail("node e2e/rig.mjs start | status | ask <words> | app | job [task] | policy on|off | dana stop|start | stop | reset");
+  else fail("node e2e/rig.mjs start | status | ask <words> | review [--hold] | app | job [task] | policy on|off | dana stop|start | stop | reset");
 } catch (e) {
   console.error(`The rig: ${e.message}`);
   process.exit(1);

@@ -1,6 +1,9 @@
 #!/bin/sh
 # Claude Code's stand-in on the rig's obids (e2e/rig.mjs): the run that answers another Oby's
-# question has its question.json in its folder; every other run is as fake-harness-jobs says.
+# question has its question.json in its folder; the review another Oby asked for has its request
+# quoted in .obi/inputs/obi-request.json, and make e2e's reviewer approves it; every other run is
+# as fake-harness-jobs says.
 agents="$(dirname "$0")/../core/crates/obid/tests/agents"
 [ -f question.json ] && exec "$agents/fake-answerer" "$@"
+[ -f .obi/inputs/obi-request.json ] && exec "$(dirname "$0")/stub-agent/stub-agent" "$@"
 exec "$agents/fake-harness-jobs" "$@"
