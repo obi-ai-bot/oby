@@ -2,6 +2,7 @@
 // scratch folders with a stand-in HOME, never near the real one. Run: node --test e2e/rig.test.mjs
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash, createPublicKey, generateKeyPairSync, verify } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +10,8 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { FIXTURE } from "./lib/fixture.mjs";
+import { review, reviewBody, REVIEW_SECONDS, RULES } from "./lib/rig-review.mjs";
 import { family, newExchange, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const rig = join(dirname(fileURLToPath(import.meta.url)), "rig.mjs");
@@ -312,4 +315,97 @@ test("rig_6_ask_finds_only_the_exchange_this_question_made", () => {
   const again = exchange("b", "May I?");
   assert.equal(newExchange([earlier], [again, earlier], "May I?"), again);
   assert.equal(newExchange([], [exchange("c", "Other words")], "May I?"), undefined);
+});
+
+// ---- review (RIG-25), against stand-ins of the two obids' APIs
+
+const REQUEST = { id: "i1", kind: "obiRequest", title: "Review request from dana", state: "open", obi: { correlationId: "x1" } };
+const RESULT = JSON.parse(readFileSync(join(dirname(rig), "fixtures/messages/result.example.json"), "utf8")).body;
+const ended = (body, state = "done") => ({ state, messages: [
+  { direction: "sent", envelope: { type: "review_request" } }, { direction: "received", envelope: { type: "accept" } },
+  ...(body ? [{ direction: "received", envelope: { type: "result", body } }] : [])] });
+
+// Dana's obid takes the request and tells its exchange as `ends`; yours lists the request, or `card`
+// once you've answered, and answers each POST as `answers` says.
+function twoObids({ ends = ended(RESULT), answers = [{ status: 200, text: "{}" }], card } = {}) {
+  const calls = [];
+  const answered = () => calls.some((c) => c.who === "you");
+  const you = {
+    get: async (path) => (path === "/v1/obid/sphere" ? { obiId: "obi-alex" } : path === "/v1/inbox" ? [answered() && card ? card : REQUEST] : assert.fail(`GET ${path} on you`)),
+    call: async (method, path, body, headers = {}) => { calls.push({ who: "you", method, path, body, headers }); return answers.shift(); },
+  };
+  const dana = {
+    get: async (path) => { assert.equal(path, "/v1/obid/sphere/exchanges/x1"); return ends; },
+    call: async (method, path, body) => { calls.push({ who: "dana", method, path, body }); return { status: 202, text: JSON.stringify({ correlationId: "x1", state: "sent" }) }; },
+  };
+  return { you, dana, calls };
+}
+function aDevice() {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  return { id: "d1", key: privateKey.export({ type: "pkcs8", format: "pem" }), publicKey };
+}
+const quick = async (what, probe) => { for (let i = 0; i < 5; i++) { const got = await probe(); if (got) return got; } throw new Error(`${what}: nothing`); };
+const reviewing = (obids, device, hold = false, lines = []) => review({ ...obids, device, body: reviewBody(), hold, until: quick, say: (line) => lines.push(line) });
+
+test("rig_25_the_spheres_rule_lets_alex_and_dana_ask_each_other_for_reviews", () => {
+  for (const [from, to] of [["alex", "dana"], ["dana", "alex"]]) {
+    const rule = RULES.find((r) => r.from_owner === from && r.to_owner === to);
+    assert.deepEqual(rule?.actions, ["question", "review_request"], `${from} to ${to}`);
+  }
+});
+
+test("rig_25_review_sends_the_fixtures_request_and_accepts_with_your_words_signed", async () => {
+  const obids = twoObids(), device = aDevice(), lines = [];
+  assert.equal(await reviewing(obids, device, false, lines), "approved");
+  const [request, answer, ...more] = obids.calls;
+  assert.deepEqual(more, []);
+  assert.deepEqual({ who: request.who, method: request.method, path: request.path }, { who: "dana", method: "POST", path: "/v1/obid/sphere/requests" });
+  assert.deepEqual(request.body, { to: "obi-alex", type: "review_request", body: reviewBody(), expiresIn: REVIEW_SECONDS });
+  assert.equal(request.body.body.head_branch, "feature/average");
+  assert.equal(request.body.body.head_sha, FIXTURE.headSha, "the head buildFixture puts in fixture/remote.git");
+  assert.match(request.body.body.summary, /OBI-E2E-DATA-CANARY/, "the canary the stub agent checks");
+  assert.deepEqual({ who: answer.who, method: answer.method, path: answer.path, body: answer.body }, { who: "you", method: "POST", path: "/v1/inbox/i1/answer", body: { answer: "Accept" } });
+  const [id, signedAt, signature] = answer.headers["x-oby-words"].split(" ");
+  assert.equal(id, "d1");
+  const digest = createHash("sha256").update(JSON.stringify(answer.body)).digest("hex");
+  assert.ok(verify("sha256", Buffer.from(`oby-words\nPOST\n/v1/inbox/i1/answer\n${digest}\n${signedAt}`), device.publicKey, Buffer.from(signature, "base64")), "signed as the app signs the owner's words");
+  assert.ok(lines.includes("Outcome: approved. " + RESULT.summary), lines.join("\n"));
+  for (const f of RESULT.findings) assert.ok(lines.some((l) => l.includes(f.title)), f.title);
+});
+
+test("rig_25_review_hold_answers_nothing", async () => {
+  const obids = twoObids();
+  assert.equal(await reviewing(obids, aDevice(), true), "approved");
+  assert.deepEqual(obids.calls.map((c) => c.who), ["dana"], "only Dana's request: your answer is yours, in the app");
+});
+
+test("rig_25_a_confirm_obid_asks_for_is_signed_by_the_rigs_device", async () => {
+  const card = { id: "i1", kind: "confirm", title: "Approve dana's pull request on GitHub, as you", state: "open" };
+  const obids = twoObids({ card, answers: [{ status: 403, text: '{"error": "Only your tap can confirm this"}' }, { status: 200, text: "{}" }] });
+  const device = aDevice();
+  assert.equal(await reviewing(obids, device), "approved");
+  const confirmed = obids.calls[2];
+  assert.equal(confirmed.path, "/v1/inbox/i1/answer");
+  const { answer, approval } = confirmed.body;
+  assert.equal(answer, "Confirm");
+  assert.equal(approval.device, "d1");
+  assert.equal(approval.action, card.title);
+  assert.ok(verify("sha256", Buffer.from(`oby-confirm\ni1\n${card.title}\n${approval.signedAt}`), device.publicKey, Buffer.from(approval.signature, "base64")), "signed as the app signs a Confirm");
+});
+
+test("rig_25_review_fails_unless_approved", async () => {
+  const device = aDevice();
+  await assert.rejects(reviewing(twoObids({ ends: ended({ ...RESULT, outcome: "changes_requested" }) }), device), /came back changes_requested, not approved/);
+  await assert.rejects(reviewing(twoObids({ ends: ended(null, "declined") }), device), /came back declined, not approved/);
+  await assert.rejects(reviewing(twoObids({ answers: [{ status: 409, text: "gone" }] }), device), /Your Accept: 409 gone/);
+});
+
+test("rig_25_the_stand_in_reviews_with_make_e2es_reviewer", (t) => {
+  const worktree = mkdtempSync(join(tmpdir(), "oby-rig-review-"));
+  t.after(() => rmSync(worktree, { recursive: true, force: true }));
+  mkdirSync(join(worktree, ".obi/inputs"), { recursive: true });
+  writeFileSync(join(worktree, ".obi/inputs/obi-request.json"), "{}");
+  const out = spawnSync(join(dirname(rig), "rig-agent"), ["--version"], { cwd: worktree, encoding: "utf8", input: "", timeout: 10_000 });
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /stub-agent/);
 });

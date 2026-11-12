@@ -24,7 +24,7 @@
 // are always on stand-ins: asking runs no model of yours.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
@@ -35,6 +35,7 @@ import { buildFixture } from "./lib/fixture.mjs";
 import { requireNodeVersion } from "./lib/node-version.mjs";
 import { stopGroups } from "./lib/processes.mjs";
 import { aLink, rigRefusal } from "./lib/rig-guard.mjs";
+import { confirmOf, review as reviewOf, reviewBody, RULES, wordsOf } from "./lib/rig-review.mjs";
 import { family, newExchange, orphans, ours, record, stillUp, table } from "./lib/rig-state.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,11 +48,6 @@ const REPO = "obi-e2e/fixture-app";
 // A repository of its owner's that Dana's yes leaves out (PEER-15): the same remote is enough.
 const PERSONAL = "obi-e2e/personal-taxes";
 const LONG_TASK = "Add one small test file a minute, 30 times, committing each: tests/step-01.test.js, then tests/step-02.test.js and so on, with `sleep 60` between them. Each file holds one passing node:test. Nothing else.";
-const RULES = [["alex", "dana"], ["dana", "alex"]].map(([from_owner, to_owner]) => ({ id: `${from_owner}-asks-${to_owner}`, from_owner, to_owner, actions: ["question", "review_request"], repos: ["*"] }));
-// What Dana's Oby asks yours to review: the fixture's feature/average head, its canary in the text
-// the stub agent checks never reaches a prompt (e2e/stub-agent/stub-agent).
-const REVIEW_REQUEST = join(ROOT, "e2e/fixtures/messages/review_request.example.json");
-const REVIEW_SECONDS = 1800;
 
 // This comes first, before anything is read, made or started.
 const refused = rigRefusal(RIG);
@@ -190,23 +186,6 @@ async function deviceOf(who, state) {
   save(state);
 }
 
-// X-Oby-Words for one request's exact body, as the app's main signs the owner's words (main/words.ts).
-function wordsOf(state, who, method, path, body) {
-  const signedAt = new Date().toISOString();
-  const digest = createHash("sha256").update(body).digest("hex");
-  const { id, key } = state.devices[who];
-  const signature = sign("sha256", Buffer.from(`oby-words\n${method}\n${path}\n${digest}\n${signedAt}`), createPrivateKey(key)).toString("base64");
-  return `${id} ${signedAt} ${signature}`;
-}
-
-// The owner's tap on an open `confirm` item's Confirm, as the app's main signs it (main/device.ts).
-function confirm(state, who, item) {
-  const { id: device, key } = state.devices[who];
-  const signedAt = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-  const signature = sign("sha256", Buffer.from(`oby-confirm\n${item.id}\n${item.title}\n${signedAt}`), createPrivateKey(key)).toString("base64");
-  return api(who).call("POST", `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: "Confirm", approval: { device, action: item.title, signedAt, signature } });
-}
-
 // Dana's ticks and click on Confirm on the card that lists a job's step and report line
 // (docs/contracts/peer-thread.md, PEER-38), once, so that what Dana's Oby answers is real progress in
 // the rig's repository and Dana's inbox stays empty.
@@ -216,7 +195,8 @@ async function danaSaysYes(state) {
   if (opened.status >= 300) fail(`Dana's card: ${opened.status} ${opened.text}`);
   const offered = await api("dana").call("POST", "/v1/obid/sharing/offer", { repos: [REPO] });
   if (offered.status >= 300) fail(`Dana's card: ${offered.status} ${offered.text}`);
-  const yes = await confirm(state, "dana", JSON.parse(offered.text));
+  const item = JSON.parse(offered.text);
+  const yes = await api("dana").call("POST", `/v1/inbox/${encodeURIComponent(item.id)}/answer`, confirmOf(state.devices.dana, item));
   if (yes.status >= 300) fail(`Dana's yes: ${yes.status} ${yes.text}`);
   state.danaSaidYes = true;
   save(state);
@@ -482,7 +462,7 @@ async function ask(words) {
   const before = await exchanges();
   const body = JSON.stringify({ said: `OBY oby_ask ${JSON.stringify({ to: "dana", question: words })}`, new: true });
   const res = await fetch(`http://127.0.0.1:${PEOPLE.you.port}/v1/plans`, { method: "POST", body, signal: AbortSignal.timeout(120_000),
-    headers: { authorization: `Bearer ${readFileSync(join(homeOf("you"), "api-token"), "utf8").trim()}`, "content-type": "application/json", "x-oby-words": wordsOf(state, "you", "POST", "/v1/plans", body) } });
+    headers: { authorization: `Bearer ${readFileSync(join(homeOf("you"), "api-token"), "utf8").trim()}`, "content-type": "application/json", "x-oby-words": wordsOf(state.devices.you, "POST", "/v1/plans", body) } });
   const reply = await res.json();
   if (!res.ok) fail(`Asking: ${res.status} ${JSON.stringify(reply)}`);
   say(`You asked. Your stand-in said: ${reply.text}`);
@@ -501,50 +481,17 @@ async function ask(words) {
   }
 }
 
-// Dana's Oby asks yours to review the fixture's change. Your Accept goes as the app's does on your
-// click, unless --hold leaves it to you in the app; your stand-in is then the stub agent
-// (e2e/rig-agent). Exits 1 unless Dana's Oby is told approved.
+// Dana's Oby asks yours to review the fixture's change (e2e/lib/rig-review.mjs); your stand-in is
+// then the stub agent (e2e/rig-agent). Exits 1 unless Dana's Oby is told approved.
 async function review(flags) {
   for (const flag of flags) if (flag !== "--hold") fail(`What's ${flag}? node e2e/rig.mjs review [--hold]`);
-  const hold = flags.includes("--hold");
   const state = load();
   if (!alive(state, "you")) fail("You aren't up: node e2e/rig.mjs start");
   if (!alive(state, "dana")) fail("Dana isn't up: node e2e/rig.mjs start");
-  const { body } = JSON.parse(readFileSync(REVIEW_REQUEST, "utf8"));
+  const body = reviewBody();
   const head = spawnSync("git", ["-C", join(RIG, "fixture/remote.git"), "rev-parse", `refs/heads/${body.head_branch}`], { encoding: "utf8", env: plain() }).stdout?.trim();
   if (head !== body.head_sha) fail(`The fixture's ${body.head_branch} is ${head || "missing"}, not ${body.head_sha}: node e2e/rig.mjs reset, then start.`);
-  const { obiId } = await api("you").get("/v1/obid/sphere");
-  const sent = await api("dana").call("POST", "/v1/obid/sphere/requests", { to: obiId, type: "review_request", body, expiresIn: REVIEW_SECONDS });
-  if (sent.status !== 202) fail(`Dana's request: ${sent.status} ${sent.text}`);
-  const { correlationId } = JSON.parse(sent.text);
-  say(`Dana's Oby asked yours to review ${body.repo} at ${body.head_sha.slice(0, 7)}: exchange ${correlationId}`);
-  const item = await until("the request in your inbox", async () => (await api("you").get("/v1/inbox")).find((i) => i.kind === "obiRequest" && i.obi?.correlationId === correlationId));
-  say(`Your inbox: "${item.title}" (${item.id})`);
-  if (hold) say("Held: answer it in the dev app (node e2e/rig.mjs app, opened before: this command holds the rig until the exchange ends).");
-  else await accept(state, item);
-  const ended = await until("Dana's exchange ending", async () => {
-    const seen = await api("dana").get(`/v1/obid/sphere/exchanges/${encodeURIComponent(correlationId)}`);
-    return !["sent", "accepted"].includes(seen.state) && seen;
-  }, hold ? REVIEW_SECONDS : 300);
-  const result = ended.messages.findLast((m) => m.envelope?.type === "result")?.envelope.body;
-  const outcome = result?.outcome ?? ended.state;
-  say(`--- Dana's exchange: ${ended.state}, ${JSON.stringify(ended.messages.map((m) => m.envelope?.type))}`);
-  say(`Outcome: ${outcome}${result?.summary ? `. ${result.summary}` : ""}`);
-  for (const f of result?.findings ?? []) say(`  ${f.severity} ${f.file}:${f.line} ${f.title}`);
-  if (outcome !== "approved") fail(`Dana's review came back ${outcome}, not approved.`);
-}
-
-// Accept with your words signed. When obid wants your tap on a Confirm card in its place, the
-// rig's device confirms that, as the app's main does.
-async function accept(state, item) {
-  const path = `/v1/inbox/${encodeURIComponent(item.id)}/answer`, body = { answer: "Accept" };
-  const r = await api("you").call("POST", path, body, { "x-oby-words": wordsOf(state, "you", "POST", path, JSON.stringify(body)) });
-  if (r.status !== 403) return r.status < 300 ? say("You said Accept.") : fail(`Your Accept: ${r.status} ${r.text}`);
-  const card = (await api("you").get("/v1/inbox")).find((i) => i.id === item.id && i.kind === "confirm" && i.state !== "done");
-  if (!card) fail(`Your Accept: ${r.status} ${r.text}`);
-  const yes = await confirm(state, "you", card);
-  if (yes.status >= 300) fail(`Your Confirm of "${card.title}": ${yes.status} ${yes.text}`);
-  say(`You said Accept, and confirmed "${card.title}".`);
+  await reviewOf({ you: api("you"), dana: api("dana"), device: state.devices.you, body, hold: flags.includes("--hold"), until, say });
 }
 
 async function job(words) {
