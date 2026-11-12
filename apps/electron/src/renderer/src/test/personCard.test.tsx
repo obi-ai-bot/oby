@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { renderToStaticMarkup } from 'react-dom/server';
 import { wordsOf } from '../../../shared/words';
 import type { InboxItem } from '../obid';
+import { fresh, launch, mac, served } from './macAlerts';
 
 // The person's side of a member's thread (docs/contracts/peer-thread.md, PEER-30 to PEER-36), as it
 // really renders on Home's stack and in the thread, on an obid that answers from here. Clicks are the
@@ -123,13 +124,25 @@ describe('the card', () => {
   });
 
   it('peer_30_the_mac_alert_says_who_and_their_words_as_plain_text', async () => {
-    vi.doMock('electron', () => ({ app: { getPath: () => '', isPackaged: false }, BrowserWindow: {}, Notification: {}, ipcMain: {}, powerMonitor: {}, shell: {} }));
-    const { wanted } = await import('../../../main/notify');
-    const alert = wanted([item('n', { title: 'Question from dіma', obi: { type: 'question', fromOwner: 'dіma', quoted: { text: 'Which‮ one?\n\nThis?' } } })]).get('item:n');
-    expect(alert).toMatchObject({ needs: true, title: 'Question from d\\u{456}ma', body: 'Which one?\nThis?', buttons: [] });
+    // the Mac's alerts as drawn from what obid serves (main/notify.ts, ALERTS-1): one launch to keep
+    // a baseline, then one with obid's alerts for these items
+    fresh();
+    await launch();
+    mac.inbox = [
+      item('n', { title: 'Question from dіma', obi: { type: 'question', fromOwner: 'dіma', quoted: { text: 'Which‮ one?\n\nThis?' } } }),
+      item('r', { title: 'Review request from alex', text: 'Have a look.', obi: { type: 'review_request', fromOwner: 'alex', quoted: { text: 'x' } } }),
+      item('f', { triage: 'fyi' }),
+    ];
+    mac.served = [
+      served('n', { title: 'Question from d\\u{456}ma', body: 'Which‮ one? This?', item: 'n', answers: ['Decline'] }),
+      served('r', { title: 'Review request from alex', body: 'Have a look.', item: 'r' }),
+    ];
+    await launch();
+    // who by their owner id, and their words as plain text, as the card shows them; answered on its card
+    expect(mac.posted[0]).toMatchObject({ title: 'Question from d\\u{456}ma', body: 'Which one?\nThis?', actions: [] });
     // obid's words on anything else, and nothing for an item obid sorted as not needing them
-    expect(wanted([item('r', { title: 'Review request from alex', text: 'Have a look.', obi: { type: 'review_request', fromOwner: 'alex', quoted: { text: 'x' } } })]).get('item:r')).toMatchObject({ title: 'Review request from alex', body: 'Have a look.' });
-    expect(wanted([item('f', { triage: 'fyi' })]).size).toBe(0);
+    expect(mac.posted[1]).toMatchObject({ title: 'Review request from alex', body: 'Have a look.' });
+    expect(mac.posted).toHaveLength(2);
   });
 });
 

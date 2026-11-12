@@ -1,58 +1,51 @@
 import { app, ipcMain, Notification, powerMonitor, shell, type BrowserWindow } from 'electron';
-import { constants, readFileSync } from 'node:fs';
+import { closeSync, constants, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { obid, send, type Answer, type Trusted } from './obid';
 import { answerLimit, notificationWords, writeOwn } from './device';
-import { mergeAlert, parseEvent, plainId, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Turn } from '../shared/obid-wire';
+import { parseEvent, plainId, sseReader, type Conversation, type Event, type InboxItem, type LimitDecision, type Turn } from '../shared/obid-wire';
 
-// Oby's alerts on this Mac, as the Swift app posted them (apps/mac/app/Alerts.swift and
-// RunnerFeed.swift), by the owner's rule of 2026-10-28 (`notifies`, the one gate): nothing while
-// the window is in front, on any page; away from it, only what waits on the owner to decide or
-// act (an agent's ask, a Confirm, a Start, a question, a job that failed or couldn't publish), and
-// the answer to a question they asked another Oby, which its card promises (`pingOf`); never
-// progress, a result with nothing to decide, or Oby's own words. What alerts is what obid
-// pushes to the phones (core/crates/obid/src/push.rs, `wanted` and its `notifies`), so the Mac and
-// the iPhone agree; the words are the Swift app's. One alert per thing, replaced when what it
-// needs changes, gone once it's settled anywhere; nothing that was there when Oby opened.
+// Oby's alerts on this Mac (docs/contracts/alerts.md). What waits on the owner is obid's one list,
+// `GET /v1/alerts` (ALERTS-1: core/crates/obid/src/push.rs, `wanted`), the same the phones are
+// told, in the same words; the Mac shows what it serves and decides nothing about what alerts. It
+// keeps the owner's rule of 2026-10-28 (`notifies`): nothing while the window is in front, on any
+// page (ALERTS-8). And what only the Mac says: the answer to a question the owner asked another
+// Oby, which its card promises (`pingOf`), and Oby's answer in a conversation, FYI the gate keeps
+// in. One alert per thing (obid's `key`), replaced when what it needs (`what`) changes, gone once
+// it's settled anywhere; nothing that was there when Oby first opened with this.
 // Main follows obid's event stream for them by itself, from launch until Oby quits, with the
-// window closed too (the page's own stream ends with the window). A ping every 15 seconds is all
-// it hears while nothing happens.
+// window closed too (the page's own stream ends with the window), and reads the list again after
+// each burst. A ping every 15 seconds is all it hears while nothing happens.
 
 // Where an alert's click opens the window: a job's page, else a conversation, else Home
 type Place = { job?: string; conversation?: string };
 // A button: obid's answer, as the same tap in the window gives it
 type Button = { text: string; does: () => Promise<Answer> };
 type Alert = {
-  // what it says (sent again only when this changes), and whether it needs the owner to decide or
-  // act (the gate's one question, `notifies`): it goes once that's settled, and alerts once the
-  // window leaves the front if it came while the window was there; FYI (`needs` false) is kept
-  // for the window and never alerts
-  what: string;
+  // whether it needs the owner to decide or act (the gate's one question, `notifies`): what obid
+  // serves does; Oby's answer (`needs` false) is FYI, which the gate keeps in
   needs: boolean;
   title: string;
   subtitle?: string;
   body: string;
   place: Place;
-  // its stack in Notification Center: one per job, else per conversation
+  // its stack in Notification Center: obid's thread (a conversation, else jobs or the inbox)
   thread: string;
   buttons: Button[];
 };
 
-// "Job", with the keys only alerts read
-type ObidJob = Job & {
-  obi?: unknown;
-  reason?: string | null;
-  publishError?: string | null;
-  pushed?: number | null;
-  pullRequest?: { state: string } | null;
-  reviewNeedsYou?: boolean;
-  reviewError?: string | null;
-  mergeNeedsYou?: boolean;
-  mergeError?: string | null;
-  // obid runs a check that judged nothing again; kept once it stopped trying (PUBLISHING-31)
-  unjudged?: { tries: number; next: string | null } | null;
-  outgoing?: { action: string; branch?: string | null; id: string }[];
-  permission: (NonNullable<Job['permission']> & { question?: unknown }) | null;
+// One alert of `GET /v1/alerts` (docs/runner-api.md)
+type Served = {
+  key: string; what: string; title: string; body: string; category: string; thread: string;
+  job?: string; conversation?: string; item?: string; answers: string[];
+};
+const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+const servedOf = (v: unknown): Served | null => {
+  const a = v && typeof v === 'object' ? v as Record<string, unknown> : {};
+  const [key, what, title, body, category, thread] = [a.key, a.what, a.title, a.body, a.category, a.thread].map(str);
+  if (!key || what === undefined || title === undefined || body === undefined || !category || !Array.isArray(a.answers)) return null;
+  return { key, what, title, body, category, thread: thread ?? 'oby', job: str(a.job), conversation: str(a.conversation), item: str(a.item),
+    answers: a.answers.filter((w): w is string => typeof w === 'string') };
 };
 
 // --- words: obid's text is data, shown as plain text
@@ -62,40 +55,39 @@ type ObidJob = Job & {
 const plain = (text: string) => text.split('\n')
   .map((l) => l.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
 const cut = (text: string, most: number) => { const c = [...text]; return c.length <= most ? text : `${c.slice(0, most - 1).join('')}…`; };
-const firstLine = (text?: string | null) => (text ? plain(text).split('\n')[0] : '') || undefined;
-// Whether a collapsed banner shows all of it, where its buttons are pressed: nothing is allowed or
-// started that the owner couldn't read. ponytail: 3 lines of about 40 characters, from the Swift
-// app's measure of the banner (Alerts.fits); measure it again if macOS draws it differently.
-const fits = (text: string) => [...text].length <= 120 && text.split('\n').length <= 3;
 
-// --- what alerts (push.rs, wanted)
+// --- what alerts: obid's list, drawn
 
-const jobs = new Map<string, ObidJob>();
+// obid's list as last read; null: not read yet, or obid couldn't serve it (nothing changes then)
+let served: Served[] | null = null;
+let servedRequest = 0;
+const readServed = async () => json<unknown[]>(await obid('GET', '/v1/alerts'))?.map(servedOf).filter((a): a is Served => !!a) ?? null;
+// The list again, then a look; an older read that answers last changes nothing
+async function refresh() {
+  const request = ++servedRequest;
+  const list = await readServed();
+  if (request !== servedRequest || !list) return;
+  served = list;
+  look();
+}
 const inbox = new Map<string, InboxItem>();
+// The limit decisions, for a `limitDecision` alert's choices; obid's list is read again only when
+// they change, so the 15 seconds' poll reads nothing more while nothing happens
 const limits = new Map<string, LimitDecision>();
 let limitsRequest = 0;
 async function refreshLimits() {
   const request = ++limitsRequest;
   const active = json<LimitDecision[]>(await obid('GET', '/v1/limit-decisions'));
   if (request !== limitsRequest || !active) return;
+  const before = JSON.stringify([...limits.values()]);
   limits.clear();
   for (const d of active) limits.set(d.id, d);
-  later();
+  if (JSON.stringify(active) !== before) later();
 }
 const titles = new Map<string, string>();
 // Oby's last answer heard in each conversation, and the ones to alert at the next look
 const lastAnswer = new Map<string, Turn>();
 const answers = new Map<string, string>();
-
-const unpublished = (j: ObidJob) => {
-  const commits = j.commits ?? 0;
-  const on = j.published ? j.pushed ?? commits : j.publishError ? 0 : j.pushed ?? 0;
-  return Math.max(0, commits - on);
-};
-// Done with commits its open pull request hasn't got: obid couldn't publish it (job.rs, can_publish)
-const canPublish = (j: ObidJob) => j.status === 'done' && j.kind !== 'research' && j.kind !== 'review' && j.base != null
-  && unpublished(j) > 0 && !j.dismissed && (!j.pullRequest || j.pullRequest.state === 'OPEN');
-const pushedHead = (j: ObidJob) => j.outgoing?.filter((o) => o.action === 'push' && o.branch === j.branch).at(-1)?.id ?? '';
 
 const call = (path: string, body: unknown) => () => obid('POST', path, body);
 // Another Oby's question: who by their owner id as its card shows it, and their words as plain text,
@@ -110,99 +102,40 @@ export const waiting = (want: Map<string, { needs: boolean }>) => {
   return n ? String(n) : '';
 };
 
-export function wanted(items: Iterable<InboxItem> = inbox.values()): Map<string, Alert> {
-  const want = new Map<string, Alert>();
-  // Jobs whose review alerts as the job: their review item is the same news (RECOVERY-15).
-  const reviewed = new Set<string>();
-  for (const j of jobs.values()) {
-    // another Obi's, or let go: nothing
-    if (j.obi || j.dismissed) continue;
-    const place = { job: j.id, conversation: j.conversation ?? undefined };
-    const say = (what: string, needs: boolean, title: string, body: string, buttons: Button[] = []) =>
-      want.set(`job:${j.id}`, { what, needs, title: `${title}: ${j.title}`, body, place, thread: `job-${j.id}`, buttons });
-    const p = j.permission;
-    if (p && j.status !== 'stopped') {
-      const shown = plain(p.detail && !p.title.includes(p.detail) ? `${p.title}\n${p.detail}` : p.title);
-      // Allow and Deny for a command or an edit shown whole; the agent's question and Plan mode's
-      // plan are answered on its page
-      const decide = (decision: 'allow' | 'deny') => {
-        const path = `/v1/jobs/${id(j.id)}/permission`, body = { id: p.id, decision };
-        return () => notificationWords('POST', path, body);
-      };
-      const buttons = !p.question && p.tool !== 'ExitPlanMode' && fits(shown) ? [{ text: 'Allow', does: decide('allow') }, { text: 'Deny', does: decide('deny') }] : [];
-      say(`permission:${p.id}`, true, p.question ? 'Question' : 'Needs your OK', shown, buttons);
-      continue;
-    }
-    // Oby's review left it to the owner, once per head; its review item is the same news (RECOVERY-15)
-    if (j.status === 'done' && !canPublish(j) && j.reviewNeedsYou) {
-      reviewed.add(j.id);
-      if (j.reviewError) say(`review:${pushedHead(j)}`, true, 'Couldn’t review', plain(j.reviewError));
-      else say(`review:${pushedHead(j)}`, true, 'Changes requested', 'Oby’s review still asks for changes. Take it from here.');
-      continue;
-    }
-    // Oby's merge waits on the owner: titled as its card is ("Ready to merge", "Not merged")
-    if (j.status === 'done' && !canPublish(j) && j.mergeNeedsYou) {
-      const alert = mergeAlert(inbox.values(), j.id, pushedHead(j));
-      say(alert.key, true, alert.title, firstLine(j.mergeError) ?? 'Not merged');
-      continue;
-    }
-    // how it ended, once per end
-    const end = (how: string) => `${how}:${j.finished ?? j.created}`;
-    const why = (otherwise: string) => firstLine(j.reason) ?? firstLine(j.summary) ?? otherwise;
-    // (Publish kept after 24 hours of checks that judged nothing asks nothing: PUBLISHING-31)
-    if (canPublish(j) && !j.unjudged) say(end('ready'), true, j.publishError ? 'Couldn’t publish' : 'Ready to publish', firstLine(j.publishError) ?? firstLine(j.summary) ?? 'Done');
-    else if (j.status === 'failed') say(end('failed'), true, 'Failed', why('Failed'));
-    else if (j.status === 'interrupted' && !j.accountLimit && ![...limits.values()].some((d) => d.jobs.some((job) => job.id === j.id))) say(end('interrupted'), true, 'Needs you', why('Interrupted'));
-    else if (j.status === 'done') { const done = j.nothingDone ? 'Nothing done' : 'Done'; say(end('done'), false, done, firstLine(j.summary) ?? done); }
-  }
-  for (const d of limits.values()) {
-    // The count and "all" on every action describe the scope in the collapsed banner.
-    // answerLimit re-reads the decision and signs its revision, so a changed set of jobs
-    // cannot be accepted by a click on an older notification.
-    const body = `${d.jobs.length} ${d.jobs.length === 1 ? 'task is' : 'tasks are'} waiting on ${plain(d.agent)}'s limit.`;
-    const buttons = d.options.map((o): Button => ({
+// The buttons of one alert: obid's `answers`, each answered where the window answers that thing
+// (its inbox item: a job's permission is one too), Allow and Deny signed as the window's are. A
+// Confirm has none, whatever comes: it takes this Mac's signature on the owner's click in the
+// window (device.ts), where what it carries out shows in full. A limit decision keeps its own
+// choices, answered through answerLimit, which re-reads the decision and signs its revision, so a
+// changed set of jobs can't be accepted by a click on an older alert.
+function buttonsOf(a: Served): Button[] {
+  if (a.category === 'confirm') return [];
+  if (a.category === 'limitDecision') {
+    const d = limits.get(a.item ?? a.key);
+    // the count and "all" on every action describe the scope in the collapsed banner
+    return d ? d.options.map((o): Button => ({
       text: o.kind === 'move' ? `Move all to ${plain(o.name)} · ${plain(o.agent)}` : o.kind === 'resume' ? 'Resume all when available' : 'Keep all stopped',
       does: () => answerLimit(d.id, d.revision, o.kind, o.kind === 'move' ? o.account : undefined),
-    }));
-    want.set(`limit:${d.id}`, { what: String(d.revision), needs: true, title: 'Usage limit', body, place: {}, thread: 'oby', buttons });
+    })) : [];
   }
-  // From the open inbox: a Confirm, a Start, Allow for the conversation's shell command, and what
-  // obid sorts as needing the owner. A job's permission alerts as its job; what one turn offered
-  // (oby_offer) is one alert, however many jobs.
-  const open = [...items].filter((i) => i.state === 'open');
-  const offered = new Set<string>();
-  for (const i of open) {
-    const offer = i.offer?.id;
-    if (offer && offered.has(offer)) continue;
-    if (offer) offered.add(offer);
-    const job = i.job || undefined;
-    if (i.kind === 'limit' && job && [...limits.values()].some((d) => d.jobs.some((j) => j.id === job))) continue;
-    if (i.kind === 'permission' && job) continue;
-    if (i.kind === 'failed' && i.id.includes('-review-') && job && reviewed.has(job)) continue;
-    if (!['permission', 'confirm', 'start'].includes(i.kind) && i.triage !== 'needs_you') continue;
-    const conversation = i.conversation ?? undefined;
-    const many = offer ? open.filter((x) => x.offer?.id === offer).length : 1;
-    const text = plain(i.text);
-    const answer = (words: string) => {
-      const path = `/v1/inbox/${id(i.id)}/answer`, body = { answer: words };
-      return { text: words, does: words === 'Allow' || words === 'Deny' ? () => notificationWords('POST', path, body) : call(path, body) };
-    };
-    let title = many > 1 ? `Oby offers ${many} jobs` : i.title, body = text, buttons: Button[] = [];
-    if (i.kind === 'permission' && fits(text)) buttons = ['Allow', 'Deny'].filter((o) => i.options.includes(o)).map(answer);
-    // Start for one job the banner shows whole, from words that read nothing untrusted
-    if (i.kind === 'start' && many === 1 && fits(text) && !i.offer?.untrusted && i.options.includes('Start')) buttons = [answer('Start')];
-    // What Confirm does is its title: both in the body. Never answered from here: Confirm takes
-    // this Mac's signature on the owner's click in the window (device.ts), where what it carries
-    // out shows in full.
-    if (i.kind === 'confirm') { title = 'Confirm'; body = plain(`${i.title}\n${i.text}`); }
-    const question = questionOf(i);
-    if (question) ({ title, body } = question);
-    want.set(offer ? `offer:${offer}` : `item:${i.id}`, {
-      what: 'open', needs: true, title, body, place: { job, conversation }, buttons,
-      thread: job ? `job-${job}` : conversation ? `conversation-${conversation}` : 'oby',
-    });
-  }
-  return want;
+  if (!a.item) return [];
+  const path = `/v1/inbox/${id(a.item)}/answer`;
+  return a.answers.map((words) => {
+    const body = { answer: words };
+    return { text: words, does: words === 'Allow' || words === 'Deny' ? () => notificationWords('POST', path, body) : call(path, body) };
+  });
+}
+
+// One alert of obid's as the Mac draws it: obid's words as plain text, another Oby's question as
+// its card shows it (`questionOf`, answered on its card), and a click that opens its job or
+// conversation
+function drawn(a: Served): Alert {
+  const item = a.item ? inbox.get(a.item) : undefined;
+  const question = item ? questionOf(item) : null;
+  return {
+    needs: true, title: question?.title ?? plain(a.title), body: question?.body ?? plain(a.body),
+    place: { job: a.job, conversation: a.conversation }, thread: a.thread, buttons: question ? [] : buttonsOf(a),
+  };
 }
 
 // A refused alert still gets the owner's attention: the Dock's icon bounces until they look.
@@ -215,8 +148,8 @@ export function refused(why: string, dock: { bounce?: (kind: 'critical') => unkn
 
 // The one gate every alert passes (the owner's rule of 2026-10-28): nothing while the window is
 // in front (what's there is on screen, the rest a click away), and away from it only what waits
-// on the owner to decide or act. What each alert needs is decided where it's built (`wanted`, and
-// Oby's answers in `look`); change what alerts here, in one place.
+// on the owner to decide or act. What needs the owner is obid's list (ALERTS-1), where what
+// alerts changes; Oby's answers are FYI (`look`).
 export const notifies = (needs: boolean, focused: boolean): boolean => !focused && needs;
 
 // --- on screen
@@ -228,20 +161,25 @@ let show!: () => BrowserWindow;
 // what the window's page shows ({}: Home), as it says ('showing'); null: something else
 let showing: Place | null = null;
 let locked = false;
-// what was said for each thing, kept across launches in the app's own folder (ALERTS-2): what
-// waited while Oby was closed alerts once when it opens, and a restart repeats nothing. null:
-// nothing kept yet (the first launch with this), so the first look's is the baseline, not news.
+// what was said for each of obid's keys (its `what`), kept across launches in the app's own folder
+// (ALERTS-2): what waited while Oby was closed alerts once when it opens, and a restart repeats
+// nothing. null: nothing kept yet (the first launch with this), so the first look's is the
+// baseline, not news. `-v2`: the keys became obid's, so what the Mac said under its own keys
+// isn't news again.
 // And the alerts on screen, kept so their clicks still come and they stay in Notification Center
-let said: Map<string, { what: string; needs: boolean }> | null = null;
-const SAID = () => join(app.getPath('userData'), 'alerts-said.json');
+let said: Map<string, string> | null = null;
+const SAID = () => join(app.getPath('userData'), 'alerts-said-v2.json');
 let kept = '';
-// What the last launch said: a file that can't be read or parsed is an empty map (what waits
-// alerts), never a throw and never a reason to stay quiet
+// What the last launch said, read without following a link: a file that can't be read or parsed
+// (a link among them) is an empty map (what waits alerts), never a throw and never a reason to
+// stay quiet
 function keptSaid(): typeof said {
-  try { kept = readFileSync(SAID(), 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; }
   try {
-    return new Map(Object.entries(JSON.parse(kept) as Record<string, { what?: unknown; needs?: unknown } | null>)
-      .filter((e): e is [string, { what: string; needs: boolean }] => typeof e[1]?.what === 'string' && typeof e[1].needs === 'boolean'));
+    const fd = openSync(SAID(), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try { kept = readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
+  } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; }
+  try {
+    return new Map(Object.entries(JSON.parse(kept) as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string'));
   } catch { return new Map(); }
 }
 const shown = new Map<string, { n: Notification; place: Place }>();
@@ -298,47 +236,43 @@ function post(key: string, a: Alert) {
   n.show();
 }
 
-// What each thing needs now against what was said: the alerts that are new or say something
-// else, and the ones whose thing is settled go
+// What obid serves now against what was said: the alerts that are new or say something else, and
+// the ones whose thing is settled go
 let ready = false;
 function look() {
-  if (!ready) return;
-  const want = wanted();
+  if (!ready || !served) return;
+  const want = new Map(served.map((a) => [a.key, a]));
   // nothing kept: what's there isn't news, and the badge still counts it
   if (!said) {
-    said = new Map([...want].map(([key, a]) => [key, { what: a.what, needs: a.needs }]));
+    said = new Map([...want].map(([key, a]) => [key, a.what]));
     answers.clear();
   }
-  const next = new Map<string, { what: string; needs: boolean }>();
+  const next = new Map<string, string>();
   for (const [key, a] of want) {
-    const before = said.get(key);
-    // published, reviewed or merged elsewhere: done, and that alert only goes
-    if (!a.needs && /^(ready|review|merge):/.test(before?.what ?? '')) withdraw(key);
-    else if (before?.what !== a.what) {
-      if (notifies(a.needs, focused())) post(key, a);
-      // the window in front: nothing now, and what needs the owner alerts once it leaves
-      // (windowLeft); what needs nothing is told by the window and never alerts
-      else if (a.needs) continue;
+    if (said.get(key) !== a.what) {
+      // the window in front: nothing now, and it alerts once the window leaves (windowLeft)
+      if (!notifies(true, focused())) continue;
+      post(key, drawn(a));
     }
-    next.set(key, { what: a.what, needs: a.needs });
+    next.set(key, a.what);
   }
-  for (const [key, s] of said) if (s.needs && !next.has(key)) withdraw(key);
+  for (const key of said.keys()) if (!next.has(key)) withdraw(key);
   said = next;
   const text = JSON.stringify(Object.fromEntries(said));
   if (text !== kept) {
     try { writeOwn(SAID(), text, constants.O_TRUNC); kept = text; } catch (e) { console.error(`Oby: couldn’t keep what alerts said: ${e}`); }
   }
   // How many things wait on the owner, on the Dock's icon, whether or not macOS lets alerts through
-  app.dock?.setBadge(waiting(want));
+  app.dock?.setBadge(waiting(new Map([...want.keys()].map((key) => [key, { needs: true }]))));
   for (const [c, p] of pings) {
-    if (notifies(true, focused())) post(`ask:${p.id}`, { what: '', needs: true, title: p.title, subtitle: titles.get(c), body: plain(p.body), place: { conversation: c }, thread: `conversation-${c}`, buttons: [] });
+    if (notifies(true, focused())) post(`ask:${p.id}`, { needs: true, title: p.title, subtitle: titles.get(c), body: plain(p.body), place: { conversation: c }, thread: c, buttons: [] });
   }
   pings.clear();
-  // Oby's answer asks nothing (its asks come as inbox items, above): FYI, which the gate keeps in
+  // Oby's answer asks nothing (its asks come as inbox items, in obid's list): FYI, which the gate keeps in
   for (const [c, text] of answers) {
     const place = { conversation: c };
     if (!notifies(false, focused()) || (askedAt.get(c) ?? 0) > Date.now() - 60_000) continue;
-    post(`turn:${c}`, { what: '', needs: false, title: 'Oby answered', subtitle: titles.get(c), body: plain(text), place, thread: `conversation-${c}`, buttons: [] });
+    post(`turn:${c}`, { needs: false, title: 'Oby answered', subtitle: titles.get(c), body: plain(text), place, thread: c, buttons: [] });
   }
   answers.clear();
 }
@@ -352,9 +286,10 @@ export const pingOf = (t: Pick<Turn, 'asks' | 'text'>) => {
 };
 const pings = new Map<string, { id: string; title: string; body: string }>();
 
-// A burst of changes (a job's steps, its end and publish) settles first, as obid's push waits
+// A burst of changes (a job's steps, its end and publish) settles first, as obid's push waits;
+// then obid's list is read again
 let timer: ReturnType<typeof setTimeout> | undefined;
-const later = () => { timer ??= setTimeout(() => { timer = undefined; look(); }, 2000); };
+const later = () => { timer ??= setTimeout(() => { timer = undefined; void refresh(); }, 2000); };
 
 // A turn of any conversation: the owner's words, from any app, settle Oby's answer there; Oby's
 // answer alerts when it's news (a turn comes again when a job it started changes), recent, and
@@ -375,16 +310,15 @@ function heard(t: Turn) {
 }
 
 function take(e: Event) {
-  if (e.kind === 'job') jobs.set(e.job.id, e.job as ObidJob);
-  else if (e.kind === 'jobGone') jobs.delete(e.id);
-  else if (e.kind === 'inbox' && e.item.state === 'done') inbox.delete(e.item.id);
+  if (e.kind === 'inbox' && e.item.state === 'done') inbox.delete(e.item.id);
   else if (e.kind === 'inbox') inbox.set(e.item.id, e.item);
   else if (e.kind === 'turn') heard(e.turn);
   else if (e.kind === 'conversation') return void titles.set(e.conversation.id, e.conversation.title);
   else if (e.kind === 'conversationGone') {
     titles.delete(e.id); lastAnswer.delete(e.id); answers.delete(e.id); askedAt.delete(e.id);
     return void withdraw(`turn:${e.id}`);
-  } else return;
+  // a job changed: obid's list says what it needs now
+  } else if (e.kind !== 'job' && e.kind !== 'jobGone') return;
   later();
 }
 
@@ -394,14 +328,15 @@ const FOLLOWED = new Set(['job', 'inbox', 'turn', 'conversation']);
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const json = <T>(a: Answer): T | null => { try { return a.status === 200 ? JSON.parse(a.text) as T : null; } catch { return null; } };
 
-// What obid has now: the jobs, the inbox and the conversations' titles
+// What obid has now: what waits on the owner, the inbox, the limit decisions and the
+// conversations' titles. A list obid couldn't serve (its vault unreadable) changes nothing until
+// the next look reads it.
 async function sync(): Promise<boolean> {
-  const limitVersion = ++limitsRequest;
-  const [js, items, cs, decisions] = await Promise.all(['/v1/jobs', '/v1/inbox', '/v1/conversations?limit=200', '/v1/limit-decisions'].map((p) => obid('GET', p)));
-  const listed = json<ObidJob[]>(js), open = json<InboxItem[]>(items);
-  if (!listed || !open) return false;
-  jobs.clear();
-  for (const j of listed) jobs.set(j.id, j);
+  const limitVersion = ++limitsRequest, servedVersion = ++servedRequest;
+  const [list, [items, cs, decisions]] = await Promise.all([readServed(), Promise.all(['/v1/inbox', '/v1/conversations?limit=200', '/v1/limit-decisions'].map((p) => obid('GET', p)))]);
+  const open = json<InboxItem[]>(items);
+  if (!open) return false;
+  if (list && servedVersion === servedRequest) served = list;
   inbox.clear();
   for (const i of open) if (i.state !== 'done') inbox.set(i.id, i);
   const active = json<LimitDecision[]>(decisions);
