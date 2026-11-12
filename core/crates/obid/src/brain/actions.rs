@@ -1034,21 +1034,8 @@ fn owners_call(item: &Item, words: &str, job: Option<&Job>, owner: bool) -> Owne
                 "it touches secrets: it waits for your click on its card, in your inbox.".into(),
             )
         }
-        // A bare no to a job's or a conversation's shell permission is Oby's to say.
+        // A bare no to a job's permission is Oby's to say.
         "permission" if bare_no => Owners::No,
-        // A conversation's shell command that touches secrets runs only on the owner's click, even
-        // on their word; any other, on their answer.
-        "permission"
-            if super::shell::is_item(item)
-                && item
-                    .text
-                    .starts_with(crate::permissions::Reach::Secrets.why()) =>
-        {
-            Owners::Waits(
-                "it touches secrets: it waits for your click on its card, in your inbox.".into(),
-            )
-        }
-        "permission" if super::shell::is_item(item) => theirs(),
         "permission" if owner => Owners::No,
         // Always saves the permission's rule, which can be broader than this one command: the
         // title says the rule.
@@ -1392,29 +1379,6 @@ mod tests {
         }
     }
 
-    /// A conversation's shell command that touches secrets waits for the owner's click, even on
-    /// their word.
-    #[test]
-    fn a_shell_command_that_touches_secrets_keeps_its_click() {
-        let mut shell = item(
-            "permission",
-            "shell-5b0e2c4d-1111-2222-3333-444455556666-pa1b2c3",
-            "Run cat ~/.ssh/id_rsa",
-            &["Allow", "Deny"],
-        );
-        shell.text = format!(
-            "{}\n\ncat ~/.ssh/id_rsa",
-            crate::permissions::Reach::Secrets.why()
-        );
-        for owner in [false, true] {
-            assert!(matches!(
-                owners_call(&shell, "Allow", None, owner),
-                Owners::Waits(_)
-            ));
-        }
-        assert_eq!(owners_call(&shell, "Deny", None, true), Owners::No);
-    }
-
     /// TASKCONV-9: a Confirm stays on its card unless the owner's own word confirms it.
     #[test]
     fn owners_call_leaves_a_confirm_item_on_its_card() {
@@ -1561,30 +1525,6 @@ mod tests {
         assert_eq!(owners_call(&request, "Decline", None, false), Owners::No);
         let start = item("start", "start-1", "Fix", &["Start", "Cancel"]);
         assert_eq!(owners_call(&start, "Cancel", None, false), Owners::No);
-    }
-
-    /// A conversation's shell command runs only on the owner's own answer: their word, or their
-    /// Confirm; a bare no is Oby's.
-    #[test]
-    fn owners_call_lets_a_shell_command_run_only_on_the_owners_answer() {
-        let shell = item(
-            "permission",
-            "shell-5b0e2c4d-1111-2222-3333-444455556666-pa1b2c3",
-            "Run brew install gh",
-            &["Allow", "Deny"],
-        );
-        for words in ["Allow", "yes", "Always allow", "Deny, but use pip instead"] {
-            assert!(
-                matches!(owners_call(&shell, words, None, false), Owners::Confirm(..)),
-                "{words}"
-            );
-            assert_eq!(
-                owners_call(&shell, words, None, true),
-                Owners::No,
-                "{words}"
-            );
-        }
-        assert_eq!(owners_call(&shell, "Deny", None, false), Owners::No);
     }
 
     /// #586: a secret is let through only by the owner's click, even on their word; a no still

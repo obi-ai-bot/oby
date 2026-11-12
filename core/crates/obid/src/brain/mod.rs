@@ -26,7 +26,6 @@ pub mod plan;
 pub mod read;
 pub mod recap;
 pub mod room;
-pub mod shell;
 pub mod talk;
 pub mod tools;
 pub mod turn;

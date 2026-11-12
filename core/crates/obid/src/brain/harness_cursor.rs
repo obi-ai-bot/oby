@@ -13,7 +13,7 @@
 //!   Those services do search the web for it (crate::acp, `search`), so one that's been talked into
 //!   it can carry what it read out in a search, and obid can't gate that (the contract's known
 //!   limits). Where the box can't hold it to the proxy, it doesn't talk (macOS's Seatbelt does);
-//! - its commands ask, and obid's rule refuses them all (`oby_shell` is how a conversation runs one).
+//! - its commands ask, and obid's rule refuses them all: a boxed conversation runs none (CONVO-2).
 
 use serde_json::{Value, json};
 
@@ -28,7 +28,7 @@ pub const DOOR: &str = "conversation-";
 pub(super) const MARK: &str = "it talked on Cursor, whose own reads obid can't see";
 
 /// What the orientation adds on Cursor, in the first prompt of its session: ACP has no system prompt.
-const ON_CURSOR: &str = "\n\nYou run on Cursor here. Your own shell is refused: run commands with oby_shell. You reach only Cursor's own services, not the web: say so when that stops you. Oby can't see what your own tools read, so this conversation counts as having read something untrusted: what the owner asks through Oby's tools may become a Confirm card they answer with one click.";
+const ON_CURSOR: &str = "\n\nYou run on Cursor here. Your own shell is refused: you run no commands. You reach only Cursor's own services, not the web: say so when that stops you. Oby can't see what your own tools read, so this conversation counts as having read something untrusted: what the owner asks through Oby's tools may become a Confirm card they answer with one click.";
 
 /// The first prompt of a Cursor session: what its session has no other way of being told, then
 /// `first`.

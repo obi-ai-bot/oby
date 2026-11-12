@@ -111,8 +111,7 @@ exec "$@"
 /// it and the guest still reaches the host (10.0.2.2) and the rest of the network.
 const NET_LAUNCH: &str = r#"
 ready=$1
-loopback=$2
-shift 2
+shift
 rm -f "$ready" "$ready.log"
 # An explicit stdin redirect: a background command otherwise gets /dev/null, and the
 # program inside the sandbox would see its stdin close. bash would also hand the
@@ -141,10 +140,7 @@ if [ -z "$child" ]; then
   wait "$bpid" 2>/dev/null
   exit 1
 fi
-# A conversation's shell command never reaches this machine's own services (obid's API).
-host_loopback=
-if [ "$loopback" = no ]; then host_loopback=--disable-host-loopback; fi
-slirp4netns --configure --mtu=65520 $host_loopback --userns-path="/proc/$child/ns/user" "$child" tap0 >"$ready.log" 2>&1 &
+slirp4netns --configure --mtu=65520 --userns-path="/proc/$child/ns/user" "$child" tap0 >"$ready.log" 2>&1 &
 slirp=$!
 i=0
 while [ "$i" -lt 50 ]; do
@@ -330,7 +326,7 @@ impl Sandbox {
     /// a session of its own, whose process group's id is the started process's id, so signalling
     /// that group reaches everything it starts.
     pub fn wrap(&self, spec: &Spec, argv: &[OsString]) -> Vec<OsString> {
-        self.wrap_reading(spec, argv, false, true)
+        self.wrap_reading(spec, argv, false)
     }
 
     /// [`Sandbox::wrap`], for a process that reads nothing of the machine's but the system's
@@ -339,24 +335,10 @@ impl Sandbox {
     /// `/mnt`, `/srv`), whether or not it is hidden. On macOS every path's metadata stays
     /// readable (paths resolve), never its contents.
     pub fn wrap_reading_only_its_own(&self, spec: &Spec, argv: &[OsString]) -> Vec<OsString> {
-        self.wrap_reading(spec, argv, true, true)
+        self.wrap_reading(spec, argv, true)
     }
 
-    /// [`Sandbox::wrap_reading_only_its_own`], for a conversation's shell command: given the
-    /// network, it still never reaches this machine's own loopback, where obid's API and its MCP
-    /// endpoints listen (Seatbelt denies `localhost`; slirp4netns runs with
-    /// `--disable-host-loopback`).
-    pub fn wrap_command(&self, spec: &Spec, argv: &[OsString]) -> Vec<OsString> {
-        self.wrap_reading(spec, argv, true, false)
-    }
-
-    fn wrap_reading(
-        &self,
-        spec: &Spec,
-        argv: &[OsString],
-        confined: bool,
-        loopback: bool,
-    ) -> Vec<OsString> {
+    fn wrap_reading(&self, spec: &Spec, argv: &[OsString], confined: bool) -> Vec<OsString> {
         let spec = spec.canonical();
         let mut out: Vec<OsString> = vec![self.session.clone().into(), SESSION.into(), "--".into()];
         match &self.tool {
@@ -383,7 +365,6 @@ impl Sandbox {
                         NET_LAUNCH.into(),
                         "net-launch".into(),
                         ready.into(),
-                        if loopback { "yes" } else { "no" }.into(),
                     ]);
                     out.extend(bwrap_argv);
                 } else {
@@ -393,7 +374,7 @@ impl Sandbox {
             Tool::Seatbelt(sandbox_exec) => {
                 out.push(sandbox_exec.clone().into());
                 out.push("-p".into());
-                out.push(seatbelt_profile_reading(&spec, confined, loopback).into());
+                out.push(seatbelt_profile_reading(&spec, confined).into());
                 // The watcher is the session leader. When the job's program exits, or obid
                 // signals the group, it kills every process in the sandbox, including one
                 // that called setsid and left the group. kill -1 is safe only because the
@@ -732,13 +713,13 @@ fn bubblewrap_args_reading(
 /// another process run or write something for it; no network for the check.
 #[cfg(test)]
 fn seatbelt_profile(spec: &Spec) -> String {
-    seatbelt_profile_reading(spec, false, true)
+    seatbelt_profile_reading(spec, false)
 }
 
 /// [`seatbelt_profile`]; `confined`, it reads no file's contents but the system's
 /// ([`SYSTEM_READS_MACOS`]) and the spec's own, before the hidden folders' rules (which still
 /// apply on top).
-fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> String {
+fn seatbelt_profile_reading(spec: &Spec, confined: bool) -> String {
     let mut profile =
         String::from("(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*");
     for path in spec.writable() {
@@ -895,8 +876,6 @@ fn seatbelt_profile_reading(spec: &Spec, confined: bool, loopback: bool) -> Stri
         // inbound rules hold only at the listen, so a server on 0.0.0.0 can't be refused without a
         // test's own on 127.0.0.1 (#1471's review; docs/runner-api.md, the egress proxy).
         profile.push_str("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))\n");
-    } else if !loopback {
-        profile.push_str("(deny network-outbound (remote ip \"localhost:*\"))\n");
     }
     // A process signals only others in this sandbox. The watcher's `kill -1` then reaches a
     // descendant that called setsid, and nothing of the person's outside the sandbox.
@@ -1652,7 +1631,7 @@ mod tests {
         };
         let plain = seatbelt_profile(&spec);
         assert!(!plain.contains("(deny file-read*)\n"), "{plain}");
-        let profile = seatbelt_profile_reading(&spec, true, true);
+        let profile = seatbelt_profile_reading(&spec, true);
         let deny_all = profile
             .find("(deny file-read*)\n(allow file-read-metadata)\n")
             .unwrap();
@@ -1866,7 +1845,7 @@ mod tests {
             proxied: true,
             ..Spec::default()
         };
-        let profile = seatbelt_profile_reading(&spec, false, true);
+        let profile = seatbelt_profile_reading(&spec, false);
         let deny = profile
             .find("(deny network-outbound (remote ip \"*:*\"))\n(allow network-outbound (remote ip \"localhost:*\"))")
             .expect("only loopback");
@@ -1876,43 +1855,8 @@ mod tests {
             proxied: false,
             ..spec
         };
-        let profile = seatbelt_profile_reading(&open, false, true);
+        let profile = seatbelt_profile_reading(&open, false);
         assert!(profile.contains("mDNSResponder"));
         assert!(!profile.contains("(remote ip \"*:*\")"));
-    }
-
-    /// A conversation's shell command with the network never reaches this machine's loopback,
-    /// where obid listens: Seatbelt denies localhost, slirp4netns runs without the host's loopback.
-    /// An agent's box keeps it (its MCP server is there) (#774's review, 4).
-    #[test]
-    fn a_shell_command_never_reaches_this_machines_loopback() {
-        let spec = Spec {
-            worktree: "/w".into(),
-            temp: "/t".into(),
-            network: true,
-            ..Spec::default()
-        };
-        let deny = "(deny network-outbound (remote ip \"localhost:*\"))";
-        assert!(seatbelt_profile_reading(&spec, true, false).contains(deny));
-        assert!(!seatbelt_profile_reading(&spec, true, true).contains(deny));
-        let offline = Spec {
-            network: false,
-            ..spec.clone()
-        };
-        assert!(seatbelt_profile_reading(&offline, true, false).contains("(deny network*)"));
-        let bwrap = Sandbox {
-            tool: Tool::Bubblewrap("/usr/bin/bwrap".into()),
-            session: "/obid".into(),
-        };
-        let given = |argv: Vec<OsString>| {
-            let at = argv.iter().position(|a| a == "net-launch").unwrap();
-            argv[at + 2].clone()
-        };
-        assert_eq!(given(bwrap.wrap_command(&spec, &["true".into()])), "no");
-        assert_eq!(
-            given(bwrap.wrap_reading_only_its_own(&spec, &["true".into()])),
-            "yes"
-        );
-        assert!(NET_LAUNCH.contains("--disable-host-loopback"));
     }
 }

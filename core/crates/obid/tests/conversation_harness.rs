@@ -830,7 +830,7 @@ fn oby_dispatch_starts_a_job_whose_card_is_on_the_turn() {
     let conversation = tools.body["conversation"].as_str().unwrap().to_owned();
     assert_eq!(
         tools.body["text"],
-        "tools: oby_jobs,oby_job,oby_dispatch,oby_offer,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_merge,oby_github_write,oby_settings,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_room_read,oby_room_post,oby_conversations,oby_delete_conversations,oby_members,oby_ask,oby_asks,oby_artifact,oby_read,oby_search,oby_list,oby_shell,oby_shell_output,oby_shell_stop",
+        "tools: oby_jobs,oby_job,oby_dispatch,oby_offer,oby_tell_job,oby_stop_job,oby_continue_job,oby_archive_job,oby_delete_job,oby_change_job,oby_tasks,oby_inbox,oby_github,oby_answer,oby_merge,oby_github_write,oby_settings,oby_routines,oby_routine,oby_change_routine,oby_check_in,oby_room_read,oby_room_post,oby_conversations,oby_delete_conversations,oby_members,oby_ask,oby_asks,oby_artifact,oby_read,oby_search,oby_list",
         "{}",
         tools.text
     );
@@ -2861,7 +2861,7 @@ fn ran_own(obid: &Obid, turn: &Value) -> bool {
 
 /// LANES-12 (docs/contracts/lanes.md): the owner's conversation runs on its account's own folder
 /// and login with the owner's settings and MCP servers, and `git status` runs through Claude Code's
-/// own Bash in its room, not `oby_shell`.
+/// own Bash in its room.
 // Own conversations are macOS-only for now (LANES-12).
 #[cfg(target_os = "macos")]
 #[test]
