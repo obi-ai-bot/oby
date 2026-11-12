@@ -7,14 +7,77 @@ use super::*;
 use crate::merge::{Blocked, Merged, Reviewers};
 
 impl Jobs {
+    /// One follower pass over the job `id`'s open pull request ([`Jobs::carry`]): GitHub's
+    /// auto-merge obid armed that the pass didn't keep armed (a hold of Oby's, a new head, a job
+    /// no longer carried) is turned off (MERGING-41), and the card or wait it held back applies.
+    pub(super) async fn follow(
+        self: &Arc<Self>,
+        id: &str,
+        gh: &Path,
+        pr: &crate::github::PullRequest,
+        merging: crate::github::Merging,
+    ) {
+        self.lock().handed.remove(id);
+        self.carry(id, gh, pr, merging).await;
+        let kept = self.lock().handed.remove(id);
+        if !kept {
+            self.disarm(gh, id).await;
+        }
+    }
+
+    /// A push obid just made (`sent`): GitHub's auto-merge armed at another head of that branch is
+    /// turned off at once (MERGING-41), since GitHub cancels it only for a push by someone without
+    /// write access, and obid pushes with the owner's.
+    pub(super) fn pushed(self: &Arc<Self>, sent: &crate::publish::Outgoing) {
+        let armed: Vec<String> = (self.lock().jobs.values())
+            .filter(|j| {
+                j.repo == sent.repo && j.auto_merge.as_ref().is_some_and(|a| a.head != sent.id)
+            })
+            .filter(|j| (j.outgoing.iter()).any(|o| o.action == "push" && o.branch == sent.branch))
+            .map(|j| j.id.clone())
+            .collect();
+        let Some(gh) = crate::github::gh().filter(|_| !armed.is_empty()) else {
+            return;
+        };
+        for id in armed {
+            let (jobs, gh) = (self.clone(), gh.clone());
+            tokio::spawn(async move { jobs.disarm(&gh, &id).await });
+        }
+    }
+
+    /// Turns off GitHub's auto-merge obid armed on the job `id`'s open pull request, once, listed
+    /// in `outgoing` (`autoMergeOff`).
+    async fn disarm(&self, gh: &Path, id: &str) {
+        let Some(job) = self.get(id).filter(|j| {
+            j.auto_merge.is_some() && j.pull_request.as_ref().is_none_or(|pr| pr.is_open())
+        }) else {
+            return;
+        };
+        let head = job.auto_merge.as_ref().map(|a| a.head.clone());
+        match crate::merge::disarm(gh, &job).await {
+            Ok(sent) => {
+                tracing::info!("job {id}: sent {} {} {}", sent.action, sent.repo, sent.id);
+                self.update(id, |job| {
+                    if job.auto_merge.as_ref().map(|a| &a.head) == head.as_ref() {
+                        job.auto_merge = None;
+                    }
+                    job.outgoing.push(sent);
+                });
+            }
+            // ponytail: tried again on the next pass until GitHub takes it.
+            Err(why) => tracing::warn!("job {id}: GitHub's auto-merge stays on for now: {why}"),
+        }
+    }
+
     /// The merge `outcome` of the job's pull request under its learned `workflow` (`seen`: the pull
     /// request, what a merge needs, Oby's reviewer accounts), handed to GitHub's auto-merge when
-    /// GitHub alone holds it: its checks still running ([`crate::merge::by_github`]), or a base it
-    /// takes only through its merge queue ([`crate::merge::MERGE_QUEUE`]). Once per head, pinned to
-    /// it (`Job::auto_merge`): armed, it waits with no card, its Merged stage saying GitHub merges
-    /// it. A new head cancels it on GitHub; it's armed again once Oby's own review approved that
-    /// head and every other rule holds. Never main, master or trunk, never unlearned (MERGING-7).
-    /// Not armed (GitHub refused it), it waits as before; a merge queue's refusal asks the owner.
+    /// GitHub alone holds it: its required checks still running ([`crate::merge::by_github`]), or a
+    /// base it takes only through its merge queue ([`crate::merge::MERGE_QUEUE`]). Once per head,
+    /// pinned to it (`Job::auto_merge`): armed, it waits with no card, its Merged stage saying
+    /// GitHub merges it, and the pass keeps it armed ([`Jobs::follow`]). Never main, master or
+    /// trunk, never unlearned (MERGING-7). Refused by GitHub, once per head
+    /// (`Job::auto_merge_refused`): it gets the card it had before, and a merge queue's refusal asks
+    /// the owner.
     pub(super) async fn by_github(
         self: &Arc<Self>,
         gh: &Path,
@@ -38,28 +101,45 @@ impl Jobs {
         {
             return outcome;
         }
+        let id = job.id.as_str();
         if job.auto_merge.as_ref().is_some_and(|a| a.head == head) {
+            self.lock().handed.insert(id.to_owned());
             return Err(crate::merge::handed());
         }
-        let id = job.id.as_str();
+        if let Some((at, why)) = &job.auto_merge_refused
+            && at == head
+        {
+            return if queue {
+                Err(crate::merge::needs_you(why.clone()))
+            } else {
+                outcome
+            };
+        }
         let go = |action: &str| self.about_to_send(id, head, action, Some(by.clone()), None);
         let home = self.config.home.clone();
         let armed = crate::merge::arm(gh, &home, job, workflow, reviewers, &go).await;
         self.update(id, |job| {
             crate::merge::unmark(job, "merge");
-            if let Ok(sent) = &armed {
-                job.outgoing.extend(sent.outgoing.iter().cloned());
-                job.auto_merge = Some(crate::job::Sending {
-                    action: "autoMerge".into(),
-                    head: head.into(),
-                    by: Some(by.clone()),
-                    login: None,
-                });
+            match &armed {
+                Ok(sent) => {
+                    job.outgoing.extend(sent.outgoing.iter().cloned());
+                    job.auto_merge = Some(crate::job::Sending {
+                        action: "autoMerge".into(),
+                        head: head.into(),
+                        by: Some(by.clone()),
+                        login: None,
+                    });
+                }
+                Err(refused) if refused.why.starts_with(crate::merge::AUTO_REFUSED) => {
+                    job.auto_merge_refused = Some((head.into(), refused.why.clone()));
+                }
+                Err(_) => {}
             }
         });
         match armed {
             Ok(_) => {
                 tracing::info!("job {id}: GitHub merges {head} once its checks pass");
+                self.lock().handed.insert(id.to_owned());
                 Err(crate::merge::handed())
             }
             Err(blocked) if queue => Err(blocked),

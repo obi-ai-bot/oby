@@ -891,6 +891,8 @@ struct State {
     /// When obid last tried to read each published pull request, and which one: an unavailable
     /// GitHub isn't asked again on every pass.
     followed: HashMap<String, (String, i64)>,
+    /// The jobs whose follower pass left GitHub's auto-merge armed (jobs/by_github.rs).
+    handed: std::collections::HashSet<String>,
     /// The accounts being signed in or removed (crate::accounts): no job is dispatched to them or
     /// starts on them meanwhile ([`Jobs::begin_change`]).
     changing: std::collections::HashSet<String>,
@@ -1282,6 +1284,7 @@ impl Jobs {
                 asked: HashMap::new(),
                 publishing: std::collections::HashSet::new(),
                 followed: HashMap::new(),
+                handed: std::collections::HashSet::new(),
                 changing: std::collections::HashSet::new(),
                 idle: std::collections::HashSet::new(),
                 returning: std::collections::HashSet::new(),
@@ -12760,7 +12763,7 @@ impl Jobs {
                     });
                 }
             } else if let (Some(gh), Some((pull_request, merging))) = (&gh, carried) {
-                self.carry(&job.id, gh, &pull_request, merging).await;
+                self.follow(&job.id, gh, &pull_request, merging).await;
             } else if let Some(gh) = gh.as_deref().filter(|_| unread)
                 && let Some(head) = self
                     .get(&job.id)
@@ -13707,6 +13710,9 @@ impl crate::publish::Hooks for PublishHooks {
             outgoing.branch.as_deref().unwrap_or(""),
             outgoing.id
         );
+        if outgoing.action == "push" {
+            self.jobs.pushed(&outgoing);
+        }
         if matches!(outgoing.action.as_str(), "pullRequest" | "pullRequestEdit") {
             self.jobs
                 .note_described(&outgoing.repo, &outgoing.id, &self.id);

@@ -224,7 +224,7 @@ fn wait(why: impl Into<String>) -> Blocked {
     }
 }
 
-fn needs_you(why: impl Into<String>) -> Blocked {
+pub fn needs_you(why: impl Into<String>) -> Blocked {
     Blocked {
         why: why.into(),
         needs_you: true,
@@ -304,6 +304,9 @@ pub const GITHUB_MERGES: &str = "GitHub will merge it when its checks pass";
 /// which GitHub's auto-merge joins (MERGING-41).
 pub const MERGE_QUEUE: &str = "Not merged yet: GitHub merges it only through its merge queue.";
 
+/// GitHub refused to turn its auto-merge on (MERGING-41): followed by its words.
+pub const AUTO_REFUSED: &str = "Not merged: GitHub didn't take it for its auto-merge";
+
 /// Handed to GitHub's auto-merge: it waits with no card (MERGING-41).
 pub fn handed() -> Blocked {
     wait(GITHUB_MERGES)
@@ -312,9 +315,10 @@ pub fn handed() -> Blocked {
 /// What GitHub alone still holds of the job's pull request under the learned `workflow`, as the
 /// view its merge goes by once GitHub lets go; none when anything else holds it (MERGING-41). Its
 /// checks still running, within the hour after obid pushed its head (MERGING-5 asks after that),
-/// are taken as passed, with the merge state they leave (`BLOCKED` by required checks, `UNSTABLE`);
+/// with GitHub saying `BLOCKED` (required checks pending, or a merge queue), are taken as passed;
 /// then every rule of [`ready`] holds, its base isn't main, master or trunk (MERGING-7), and only a
-/// learned workflow is ever handed over.
+/// learned workflow is ever handed over. `UNSTABLE` (only optional checks running) isn't: gh's
+/// `--auto` merges it at once, so obid waits for its checks as before.
 pub fn by_github(
     job: &Job,
     workflow: &Workflow,
@@ -323,16 +327,16 @@ pub fn by_github(
     reviewers: Option<&Reviewers>,
 ) -> Option<Merging> {
     let head = pr.head.as_deref()?;
-    let mut settled = merging.clone();
-    if !matches!(merging.checks, None | Some("SUCCESS" | "FAILURE" | "NONE")) {
-        if pushed_for(job, head, CHECKS_WAIT) {
-            return None;
-        }
-        settled.checks = Some("SUCCESS");
-        if matches!(settled.merge_state.as_deref(), Some("BLOCKED" | "UNSTABLE")) {
-            settled.merge_state = Some("CLEAN".into());
-        }
+    let running = !matches!(merging.checks, None | Some("SUCCESS" | "FAILURE" | "NONE"));
+    if !running
+        || merging.merge_state.as_deref() != Some("BLOCKED")
+        || pushed_for(job, head, CHECKS_WAIT)
+    {
+        return None;
     }
+    let mut settled = merging.clone();
+    settled.checks = Some("SUCCESS");
+    settled.merge_state = Some("CLEAN".into());
     (!protected(&pr.base) && ready(job, Some(workflow), pr, &settled, reviewers).is_ok())
         .then_some(settled)
 }
@@ -1384,9 +1388,9 @@ pub async fn merge(
 
 /// Hands the job's pull request to GitHub's auto-merge by `workflow` (MERGING-41): as [`merge`]
 /// checks it, with GitHub's checks still running taken as passed ([`by_github`]), then `gh pr merge
-/// --auto --match-head-commit <head>` with the workflow's method, so GitHub merges exactly that head
-/// once its checks pass (a new head cancels it), through its merge queue where it has one. What
-/// went out: `autoMerge`.
+/// --auto --match-head-commit <head>` with the workflow's method, so GitHub merges that head once
+/// its checks pass, through its merge queue where it has one. A push with write access doesn't
+/// cancel it on GitHub: obid turns it off itself ([`disarm`]). What went out: `autoMerge`.
 pub async fn arm(
     gh: &Path,
     home: &Path,
@@ -1396,6 +1400,21 @@ pub async fn arm(
     go: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<Merged, Blocked> {
     claimed(gh, home, job, workflow, reviewers, How::Auto, go).await
+}
+
+/// Turns off GitHub's auto-merge obid armed on the job's pull request (MERGING-41): `gh pr merge
+/// <n> --disable-auto`, once a head no longer passes every hold. What went out: `autoMergeOff`.
+pub async fn disarm(gh: &Path, job: &Job) -> Result<Outgoing, String> {
+    let url = job.published.as_deref().unwrap_or_default();
+    let n = github::pull_request_number(url, &job.repo)
+        .ok_or("it isn't one of its repository's pull requests")?
+        .to_string();
+    github::run(
+        gh,
+        &["pr", "merge", &n, "--repo", &job.repo, "--disable-auto"],
+    )
+    .await?;
+    Ok(Outgoing::new("autoMergeOff", &job.repo, url, None))
 }
 
 /// How a merge goes: now (by itself, or on the owner's own Merge and what it lifts), or handed to
@@ -1474,9 +1493,9 @@ async fn merging(
         .await
         .map_err(unread)?;
     let mut merging = merging.map_err(unread)?;
-    if auto {
-        merging = by_github(job, workflow, &pr, &merging, Some(reviewers))
-            .ok_or_else(|| wait("Not merged yet: it isn't GitHub's alone to hold any more."))?;
+    // Checks GitHub alone holds count as passed; a merge queue's base is read as it is.
+    if auto && let Some(settled) = by_github(job, workflow, &pr, &merging, Some(reviewers)) {
+        merging = settled;
     }
     on_owners_word(
         lift.is_some(),
@@ -1624,9 +1643,7 @@ async fn merging(
                 method: workflow.method,
                 outgoing: vec![Outgoing::new("autoMerge", repo, url, Some(&pr.base))],
             }),
-            Err(said) => Err(needs_you(format!(
-                "Not merged: GitHub didn't take it for its auto-merge ({said})."
-            ))),
+            Err(said) => Err(needs_you(format!("{AUTO_REFUSED} ({said})."))),
         };
     }
     // What GitHub is sent goes in a 0600 file, never in an argument.
@@ -4082,8 +4099,9 @@ mod tests {
     }
 
     /// MERGING-41: what GitHub alone holds under a learned workflow (its checks still running,
-    /// `BLOCKED` by required ones) is handed to GitHub's auto-merge; nothing else is: red checks,
-    /// a head nobody approved, checks running an hour on (MERGING-5), main, master or trunk.
+    /// `BLOCKED` by required ones) is handed to GitHub's auto-merge; nothing else is: only optional
+    /// checks running (`UNSTABLE`, which gh's `--auto` merges at once), red checks, a head nobody
+    /// approved, checks running an hour on (MERGING-5), main, master or trunk.
     #[test]
     fn merging_41_only_what_github_alone_holds_is_handed_over() {
         let running = |state: &str| {
@@ -4098,10 +4116,11 @@ mod tests {
             let (pr, merging) = read(text, &approved());
             by_github(job, workflow, &pr, &merging, Some(&signed_in()))
         };
-        for state in ["BLOCKED", "UNSTABLE"] {
-            let settled = handed(&job(), &obis(), &running(state)).unwrap();
-            assert_eq!(settled.checks, Some("SUCCESS"));
-            assert_eq!(settled.merge_state.as_deref(), Some("CLEAN"));
+        let settled = handed(&job(), &obis(), &running("BLOCKED")).unwrap();
+        assert_eq!(settled.checks, Some("SUCCESS"));
+        assert_eq!(settled.merge_state.as_deref(), Some("CLEAN"));
+        for state in ["UNSTABLE", "CLEAN", "HAS_HOOKS"] {
+            assert_eq!(handed(&job(), &obis(), &running(state)), None, "{state}");
         }
         let red = view(|v| v["statusCheckRollup"][0]["conclusion"] = json!("FAILURE"));
         assert_eq!(handed(&job(), &obis(), &red), None);

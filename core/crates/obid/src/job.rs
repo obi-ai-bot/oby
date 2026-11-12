@@ -834,9 +834,16 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sending: Vec<Sending>,
     /// GitHub's auto-merge obid armed on its pull request (MERGING-41): `autoMerge`, the head it's
-    /// pinned to and who had it merged. A new head cancels it on GitHub, and obid arms it again.
+    /// pinned to and who had it merged. A push with write access doesn't cancel it on GitHub, so
+    /// obid turns it off itself (`autoMergeOff`) once that head stops passing every hold, the
+    /// pull request's head moves or the job stops being carried, and arms it again only on a head
+    /// that passes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_merge: Option<Sending>,
+    /// The head GitHub refused auto-merge for, and GitHub's words (MERGING-41): not asked again at
+    /// that head. Never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_merge_refused: Option<(String, String)>,
 }
 
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
@@ -1277,6 +1284,7 @@ impl Job {
             merged_by: None,
             sending: Vec::new(),
             auto_merge: None,
+            auto_merge_refused: None,
         }
     }
 
