@@ -445,21 +445,21 @@ pub struct Conversations {
     /// its folder may hold a Claude Code started for it already (crate::brain::harness). Kept in
     /// `next-id`, so the folder is found again after obid restarts.
     next: Mutex<Option<String>>,
-    /// What ends a conversation's waiting session (crate::brain::harness, `end_warm`), set once
-    /// obid starts: every deletion runs it before its folders are swept (LANES-16).
+    /// What ends a conversation's waiting session before its folders go (LANES-16).
     ending: std::sync::OnceLock<Ending>,
-    /// Conversations forgotten under the lock, whose sessions and folders end once it's let go
-    /// ([`Conversations::end_forgotten`]).
+    /// Forgotten under the lock, ended once it's let go ([`Conversations::end_forgotten`]).
     forgotten: Mutex<Vec<String>>,
 }
 
 /// What ends a conversation's waiting session ([`Conversations::end_sessions_with`]).
 type Ending = Box<dyn Fn(&str) + Send + Sync>;
 
-/// Whether a run of the conversation in `place` left its tag (crate::jobs, `own_sandbox_env`):
-/// it's still going, or its sweep couldn't finish (LANES-16).
+/// Whether obid recorded a run in `place` not yet proven swept (crate::conn, LANES-16).
 fn run_tagged(place: &Path) -> bool {
-    let entries = std::fs::read_dir(place).into_iter().flatten().flatten();
+    let entries = std::fs::read_dir(place.join("login"))
+        .into_iter()
+        .flatten()
+        .flatten();
     entries
         .into_iter()
         .any(|e| e.file_name().to_string_lossy().contains(".run-"))
@@ -505,9 +505,7 @@ impl Conversations {
         conversations.migrate(home);
         conversations.prune(&mut conversations.lock());
         conversations.end_forgotten();
-        // A deleted conversation's folders kept while a run of it went on (LANES-16) go once no
-        // run's tag is left: its `<id>.json` gone (a deletion removes it first; one that didn't
-        // read this time stays), and not the next conversation's.
+        // A deleted one's folders (its json gone, not one unread this time) go once no run's left.
         let next = conversations
             .next
             .lock()
@@ -1450,8 +1448,7 @@ impl Conversations {
         self.lock().iter().any(|t| t.id == id)
     }
 
-    /// Sets what ends a conversation's waiting session before its folders are swept and go
-    /// (LANES-16): once, at obid's start.
+    /// Sets what ends a conversation's waiting session (LANES-16), once at obid's start.
     pub fn end_sessions_with(&self, end: impl Fn(&str) + Send + Sync + 'static) {
         let _ = self.ending.set(Box::new(end));
     }
@@ -1470,10 +1467,8 @@ impl Conversations {
         gone
     }
 
-    /// Ends each forgotten conversation's waiting session, which sweeps what its commands left
-    /// running by its run's tag (LANES-16), then removes its folders while no run's tag is left
-    /// beside them (a run still going, or one whose sweep couldn't finish, keeps its tag): obid's
-    /// next start removes them once none is. Never under the conversations' lock.
+    /// Ends each forgotten conversation's session, then removes its folders unless a run of it
+    /// isn't proven swept (obid's next start does then; LANES-16). Never under the lock.
     fn end_forgotten(&self) {
         let ids = std::mem::take(&mut *self.forgotten.lock().unwrap_or_else(|e| e.into_inner()));
         for id in ids {
@@ -1499,7 +1494,6 @@ impl Conversations {
             Err(e) => return Err(Error::Io(e)),
         }
         let gone = threads.remove(index);
-        // Its session and folders end once the conversations' lock is let go (end_forgotten).
         self.forgotten
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2483,9 +2477,18 @@ mod tests {
         conversations.delete(&going).unwrap();
         assert!(place.exists(), "a running turn's folders went");
         drop(turn);
+        // Its drop sweeps off obid's async workers: its tag and obid's record go once it's done.
+        let swept = std::time::Instant::now();
+        while place.join("login/home.run-test").exists() && swept.elapsed().as_secs() < 10 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         assert!(
             !place.join("home.run-test").exists(),
             "its sweep left its tag"
+        );
+        assert!(
+            !place.join("login/home.run-test").exists(),
+            "its sweep left obid's record"
         );
         drop(super::Conversations::open(
             &home,
@@ -2524,6 +2527,26 @@ mod tests {
         drop(session);
         conversations.delete(&failed).unwrap();
         assert!(place.exists(), "an unfinished sweep's folders went");
+        // A run that took its own tag away (it may: only its sandbox may write it) still keeps
+        // its conversation's folders, by obid's record, which no run writes.
+        let untagged = conversations.start_for("Untagged").unwrap();
+        let (place, launch) = own_run(&untagged);
+        let (_stop, stop) = tokio::sync::watch::channel(crate::process::Signal::Run);
+        let conn = crate::conn::Conn::spawn(&launch, limit, stop, false).await;
+        let mut turn = conn.unwrap();
+        assert_eq!(turn.next().await.unwrap(), json!({}));
+        std::fs::remove_file(place.join("home.run-test")).unwrap();
+        conversations.delete(&untagged).unwrap();
+        assert!(
+            place.exists(),
+            "a run that took its tag away lost its folders"
+        );
+        drop(turn);
+        drop(super::Conversations::open(
+            &home,
+            crate::events::Events::new(),
+        ));
+        assert!(place.exists(), "an unproven sweep's folders went at start");
         // One no own run ever tagged goes at once.
         let plain = conversations.start_for("Plain").unwrap();
         let place = home.join("conversations").join(&plain);

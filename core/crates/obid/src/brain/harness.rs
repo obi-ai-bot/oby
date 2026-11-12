@@ -248,13 +248,18 @@ struct Warm {
 }
 
 impl Warm {
-    /// Its login copy goes now. An own session's Claude Code, its group and what its commands
-    /// left running end now too (LANES-16), before a next session starts on the same folders; a
-    /// boxed one ends (its stdin closed, it exits) in the background.
+    /// Its login copy goes now, an own session's Claude Code stops (its drop sweeps, LANES-16),
+    /// and it ends in the background.
     fn end(mut self) {
         self.place.forget_login();
-        self.conn.end_own_now();
+        self.conn.stop_own();
         tokio::spawn(self.conn.finish());
+    }
+
+    /// [`Warm::end`], its sweep done before it returns: never under the sessions' lock.
+    fn end_now(mut self) {
+        self.conn.end_own_now();
+        self.end();
     }
 }
 
@@ -316,8 +321,9 @@ impl Sessions {
 
     /// Ends `conversation`'s waiting Claude Code, if one waits: the conversation went.
     pub fn end_warm(&self, conversation: &str) {
-        if let Some(warm) = self.warm().remove(conversation) {
-            warm.end();
+        let warm = self.warm().remove(conversation);
+        if let Some(warm) = warm {
+            warm.end_now();
         }
     }
 
@@ -576,7 +582,6 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
 /// A conversation's deleted (`DELETE /v1/conversations/{id}`, or the oldest forgotten past the
 /// most kept): its waiting Claude Code ends. Started once, by obid's start.
 pub fn end_warm_with_conversations(shared: Arc<Shared>) {
-    // Before its folders are swept and go, on every path that deletes one (LANES-16).
     let weak = Arc::downgrade(&shared);
     shared.conversations.end_sessions_with(move |id| {
         if let Some(shared) = weak.upgrade() {
@@ -3736,10 +3741,10 @@ mod tests {
         assert!(!own_conversation(true, Tool::Cursor, false));
     }
 
-    /// LANES-16: when an own conversation's waiting session ends (`Warm::end`), its Claude Code
+    /// LANES-16: when an own conversation's waiting session ends (`Warm::end_now`), its Claude Code
     /// stops at once and what its commands left running, `setsid` included, is gone by the time it
     /// returns; a command the next session on the same folders starts after that survives the old
-    /// session's end, which runs on in the background.
+    /// session's end.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn lanes_16_an_own_sessions_end_takes_its_leftovers_and_spares_the_next() {
@@ -3822,7 +3827,8 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        warm.end();
+        // As `end_warm` ends it, outside the sessions' lock.
+        warm.end_now();
         // Ended by the time it returned: its parent, killed with it, left no zombie to reap.
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!alive(pid), "the leftover outlived its session");

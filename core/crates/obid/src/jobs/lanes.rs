@@ -805,7 +805,6 @@ mod tests {
         let tag = tag
             .map(|(_, path)| PathBuf::from(path))
             .expect("no run tag in its env");
-        assert!(tag.is_file(), "{}", tag.display());
         let writes = settings["sandbox"]["filesystem"]["allowWrite"]
             .as_array()
             .unwrap();

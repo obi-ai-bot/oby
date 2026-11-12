@@ -221,9 +221,7 @@ pub(crate) fn own_sandbox_env(
         (None, None) => Vec::new(),
         _ => return Err("obid has no git folder for this job's Claude Code.".into()),
     };
-    // The run's tag (LANES-16, the owner's RUNTAG-1a): a file beside its temp folder, named at
-    // random, which only this run's sandbox may write ([`own_sandbox_settings`]), so obid's sweep
-    // of what the run left running ends no process of anyone else's.
+    // The run's tag (LANES-16, RUNTAG-1a): a path only its sandbox may write (`run_tagged`).
     let temp = spec.canonical().temp;
     let name = temp
         .file_name()
@@ -746,7 +744,7 @@ pub(super) fn own_sandbox_settings(
                 "disabled": false,
                 "denyRead": names(&hidden)?,
                 "allowRead": names(&spec.readable())?,
-                "allowWrite": names(&run_tagged(spec.writable(), env)?)?,
+                "allowWrite": names(&run_tagged(spec.writable(), env))?,
                 "denyWrite": names(&kept)?,
             },
             "network": {"deniedDomains": CODE_HOSTS},
@@ -755,19 +753,11 @@ pub(super) fn own_sandbox_settings(
     .to_string())
 }
 
-/// `writable` and the run's tag ([`process::RUN_TAG`] in `env`, [`own_sandbox_env`]'s), which its
-/// sandbox may write and nothing else's may (LANES-16).
-/// The tag's file is made here, once the launch's checks passed, so a refused one leaves none.
-fn run_tagged(
-    mut writable: Vec<PathBuf>,
-    env: &[(&'static str, OsString)],
-) -> Result<Vec<PathBuf>, String> {
+/// `writable` and the run's tag, in `env` (LANES-16).
+fn run_tagged(mut writable: Vec<PathBuf>, env: &[(&'static str, OsString)]) -> Vec<PathBuf> {
     let tag = env.iter().find(|(name, _)| *name == process::RUN_TAG);
-    if let Some((_, tag)) = tag {
-        write_fresh(Path::new(tag), b"").map_err(|e| format!("obid can't tag this run: {e}"))?;
-        writable.push(PathBuf::from(tag));
-    }
-    Ok(writable)
+    writable.extend(tag.map(|(_, path)| PathBuf::from(path)));
+    writable
 }
 
 /// The variables obid's `--settings` gives an own run's Claude Code in its `env`, as obid set them

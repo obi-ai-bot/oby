@@ -273,8 +273,7 @@ pub const NO_AUTO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 /// 2026-10-17: every Bash command failed with EPERM), so it's the run's own temporary folder.
 pub const CLAUDE_TMPDIR: &str = "CLAUDE_CODE_TMPDIR";
 
-/// Where an own run's tag is ([`end_sandboxed`]'s `tag`), in its launch's environment: how its
-/// `Conn` finds it (crate::jobs, `own_sandbox_env`). Never logged.
+/// The launch's variable naming an own run's tag ([`end_sandboxed`]); never logged.
 pub const RUN_TAG: &str = "OBY_RUN_TAG";
 
 /// What a job's Claude Code launch adds too: headless, Claude Code offers no to-do tool unless told
@@ -663,17 +662,11 @@ pub fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {
     }
 }
 
-/// Ends what an own run's commands left running (LANES-16), `setsid` ones too (no process leaves
-/// its sandbox), as far as it can prove they're the run's: every process of this user's, not a
-/// zombie, whose Seatbelt sandbox may write the run's `tag` (a file of random name only that run's
-/// sandbox may write, RUNTAG-1a), `writes` (its temp folder) and `room` (its worktree or room),
-/// but neither a fresh file of this call's in `denied` (its `login` folder) nor one beside
-/// `writes` (so not a sandbox opening a parent of them). Before each stop obid proves those are
-/// there and that it may write them itself (macOS says no about a missing path, which would match
-/// everyone). Each sweep stops what it found, then kills it; Ok once a sweep found none, else an
-/// error (a lost proof, a failed listing, still forking after [`SWEEPS`]: best effort).
-// ponytail: a process ended between the check and the stop may lend its id to a new one, which
-// would be stopped with it; macOS hands out ids in turn, so that needs the ids to wrap meanwhile.
+/// Ends what an own run left running, `setsid` too (LANES-16): each process of this user's, not a
+/// zombie, whose sandbox may write the run's `tag` (RUNTAG-1a), `writes` and `room`, but not fresh
+/// files of this call's in `denied` and beside `writes`, proven again before each stop (a missing
+/// path would match everyone). Err when it can't prove a sweep found none: best effort.
+// ponytail: an id freed between check and stop could be reused; needs macOS's ids to wrap.
 #[cfg(target_os = "macos")]
 pub fn end_sandboxed(
     writes: &Path,
@@ -697,7 +690,6 @@ pub fn end_sandboxed(
         fresh(file).map_err(|e| format!("obid can't make {}: {e}", file.display()))
     });
     let me = std::process::id();
-    // Never a link in place of the run's folders or tag, nor a tag with another name.
     let folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
     let tagged = || {
         let m = std::fs::symlink_metadata(tag);
@@ -714,7 +706,6 @@ pub fn end_sandboxed(
                     && may_write(me, file) == Some(true)
             })
     };
-    // A zombie keeps its sandbox until its parent reaps it, and can't be ended again.
     let zombie = |pid: u32| {
         libproc::proc_pid::pidinfo::<BSDInfo>(pid as i32, 0).is_ok_and(|info| info.pbi_status == 5)
     };
@@ -751,11 +742,8 @@ fn fresh(path: &Path) -> std::io::Result<()> {
     open.custom_flags(libc::O_NOFOLLOW).open(path).map(drop)
 }
 
-/// [`end_sandboxed`]'s rule, apart from macOS: of the processes `list` names, those `theirs` are
-/// (never 0, which a signal would read as obid's own group, launchd or obid) are stopped, each only
-/// while `proven` holds, then killed (`signal`'s `last`), again until a sweep finds none,
-/// [`SWEEPS`] at most. A listing that fails or a proof that no longer holds stops it with an
-/// error, never as an empty sweep.
+/// [`end_sandboxed`]'s rule: what `list` names and is `theirs` (never 0, launchd or obid) is
+/// stopped while `proven` holds, then killed, until a sweep finds none; never an error as clean.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn sweep(
     list: &dyn Fn() -> Result<Vec<u32>, String>,
@@ -765,7 +753,6 @@ pub(crate) fn sweep(
 ) -> Result<usize, String> {
     let me = std::process::id();
     let unproven = || Err("obid can't prove which processes are the run's".to_string());
-    // Nothing it can't prove reads as a clean sweep, not even one that would find none.
     if !proven() {
         return unproven();
     }
@@ -776,19 +763,16 @@ pub(crate) fn sweep(
             .filter(|&pid| pid > 1 && pid != me && theirs(pid));
         let found: Vec<u32> = found.collect();
         if found.is_empty() {
-            // The run's folders gone while it listed would match nothing too.
             return if proven() { Ok(ended) } else { unproven() };
         }
         let mut stopped = Vec::new();
-        // What it stopped was proven the run's when stopped: it's killed even when a later proof
-        // fails, which ends the sweep.
+        // What it stopped was proven: killed even when a later proof fails.
         let mut lost = false;
         for pid in found {
             lost = !proven();
             if lost {
                 break;
             }
-            // Its tag and sandbox, again right before it's stopped.
             if theirs(pid) && signal(pid, false) {
                 stopped.push(pid);
             }
@@ -806,9 +790,8 @@ pub(crate) fn sweep(
 /// How many times [`end_sandboxed`] sweeps at most.
 const SWEEPS: usize = 10;
 
-/// Whether process `pid`'s Seatbelt sandbox lets it write `path`, as macOS's `sandbox_check`
-/// answers (an unsandboxed process may write anything); none when it can't tell. The one call of
-/// obid's that needs `unsafe` (the owner's decision UNSAFE-1): no safe binding has it.
+/// Whether `pid`'s sandbox may write `path`, as `sandbox_check` answers; obid's one `unsafe` call
+/// (UNSAFE-1): no safe binding has it.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 fn may_write(pid: u32, path: &Path) -> Option<bool> {
@@ -821,13 +804,11 @@ fn may_write(pid: u32, path: &Path) -> Option<bool> {
             ...
         ) -> libc::c_int;
     }
-    // SANDBOX_FILTER_PATH; SANDBOX_CHECK_NO_REPORT, no denial logged; and SANDBOX_CHECK_NOFOLLOW,
-    // the path as named, never where a link there leads (libsystem_sandbox's values).
+    // FILTER_PATH | CHECK_NO_REPORT | CHECK_NOFOLLOW (the path as named, never a link's target).
     const PATH_NO_REPORT: libc::c_int = 1 | 0x4000_0000 | 0x1000_0000;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let pid = libc::pid_t::try_from(pid).ok()?;
-    // SAFETY: both strings are NUL-terminated and outlive the call; the path is the one variadic
-    // argument a path filter reads.
+    // SAFETY: NUL-terminated strings that outlive the call; the path is the one variadic arg.
     let answer = unsafe {
         sandbox_check(
             pid,
@@ -843,8 +824,7 @@ fn may_write(pid: u32, path: &Path) -> Option<bool> {
     }
 }
 
-/// [`end_sandboxed`]: only macOS runs an own run's commands in a sandbox obid can ask about
-/// (Linux's own lane, and what an obid that crashed left, are later work: docs/contracts/lanes.md).
+/// [`end_sandboxed`]: macOS only (Linux and an obid that crashed are later work: lanes.md).
 #[cfg(not(target_os = "macos"))]
 pub fn end_sandboxed(
     _writes: &Path,
@@ -1541,63 +1521,8 @@ pub(crate) mod tests {
     #[test]
     fn unsafe_1_only_may_write_is_unsafe() {
         let lint = ["unsafe", "_code"].concat();
-        // An attribute, without its whitespace, that lets the lint through: an `allow`, `expect`
-        // or `warn` of it anywhere in it, under a `cfg_attr` too.
-        let names_lint = |attribute: &str| {
-            let levels = ["allow(", "expect(", "warn("];
-            attribute.contains(&lint)
-                && levels.iter().any(|level| {
-                    attribute.match_indices(level).any(|(at, _)| {
-                        let inside = &attribute[at + level.len()..];
-                        let end = inside.find(')').unwrap_or(inside.len());
-                        inside[..end].split(',').any(|name| name == lint)
-                    })
-                })
-        };
-        // Without its comments (`/* … */`, `// …`) and whitespace.
-        let squeeze = |text: &str| {
-            let mut text = text.to_string();
-            while let Some(at) = text.find("/*") {
-                let end = text[at..].find("*/").map_or(text.len(), |e| at + e + 2);
-                text.replace_range(at..end, " ");
-            }
-            let lines = text.lines().map(|l| l.split("//").next().unwrap_or(""));
-            lines
-                .collect::<String>()
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect::<String>()
-        };
-        for (attribute, lets) in [
-            (
-                format!("cfg_attr(target_os = \"macos\", allow({lint}))"),
-                true,
-            ),
-            (
-                format!("allow(\n    clippy::too_many_arguments,\n    {lint}\n)"),
-                true,
-            ),
-            (format!("expect({lint})"), true),
-            (format!("allow(/* FFI */ {lint})"), true),
-            (
-                format!("cfg_attr(unix, allow(dead_code, /* x */ {lint}))"),
-                true,
-            ),
-            (
-                format!(
-                    "allow(
-    // FFI
-    {lint}
-)"
-                ),
-                true,
-            ),
-            (format!("deny({lint})"), false),
-            ("allow(dead_code)".to_string(), false),
-        ] {
-            assert_eq!(names_lint(&squeeze(&attribute)), lets, "{attribute}");
-        }
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let core = crates.parent().unwrap();
         let mut found = Vec::new();
         let mut folders = vec![crates.to_path_buf()];
         while let Some(folder) = folders.pop() {
@@ -1615,48 +1540,22 @@ pub(crate) mod tests {
                     );
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let text = std::fs::read_to_string(&path).unwrap();
-                    // Each `#[…]` and `#![…]`, to its matching bracket, with no whitespace.
-                    // Spaces may sit between `#`, `!` and `[`.
-                    for (at, _) in text.match_indices('#') {
-                        let rest = text[at + 1..].trim_start();
-                        let rest = rest.strip_prefix('!').unwrap_or(rest).trim_start();
-                        let Some(body) = rest.strip_prefix('[') else {
-                            continue;
-                        };
-                        let mut depth = 1;
-                        let end = body.char_indices().find_map(|(i, c)| {
-                            depth += match c {
-                                '[' => 1,
-                                ']' => -1,
-                                _ => 0,
-                            };
-                            (depth == 0).then_some(i)
-                        });
-                        let Some(end) = end else { continue };
-                        let attribute = squeeze(&body[..end]);
-                        if names_lint(&attribute) {
-                            let after = &body[end + 1..];
-                            found.push((path.clone(), attribute, after.trim_start().to_owned()));
-                        }
+                    let lines: Vec<&str> = text.lines().collect();
+                    for (at, line) in lines.iter().enumerate().filter(|(_, l)| l.contains(&lint)) {
+                        let next = lines.get(at + 1).copied().unwrap_or_default();
+                        found.push((path.clone(), line.trim().to_owned(), next.to_owned()));
                     }
                 }
             }
         }
-        assert_eq!(
-            found.len(),
-            1,
-            "{:#?}",
-            found.iter().map(|f| (&f.0, &f.1)).collect::<Vec<_>>()
-        );
-        let (path, _, after) = &found[0];
+        // The lint's name once, whatever surrounds it (a comment, a `cfg_attr`, lines apart):
+        // `#[allow(..)]` on `fn may_write` in this file.
+        assert_eq!(found.len(), 1, "{found:#?}");
+        let (path, line, next) = &found[0];
         assert!(path.ends_with("obid/src/process.rs"), "{}", path.display());
-        assert!(
-            after.starts_with("fn may_write("),
-            "{}",
-            &after[..after.len().min(80)]
-        );
-        // Nor do cargo's own settings, which could lift it for every crate.
-        let core = crates.parent().unwrap();
+        assert_eq!(line, &format!("#[allow({lint})]"));
+        assert!(next.starts_with("fn may_write("), "{next}");
+        // Nor do cargo's own settings lift it, and the workspace denies it.
         for config in [
             core.join(".cargo/config.toml"),
             core.join("../.cargo/config.toml"),

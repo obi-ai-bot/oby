@@ -109,9 +109,7 @@ pub struct RpcError {
 pub struct Conn {
     child: Child,
     pgid: u32,
-    /// An own run's commands' temp folder, its working folder, its `login` folder (`env.sh`'s)
-    /// and its tag, what its leftovers are found by when it ends ([`process::end_sandboxed`],
-    /// LANES-16).
+    /// An own run's temp, working and `login` folders and its tag, to sweep it by (LANES-16).
     leftovers: Option<(PathBuf, PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
     lines: BufReader<ChildStdout>,
@@ -193,9 +191,33 @@ impl Conn {
             // decide publishing. Its first program, `obid __session`, sets it before anything runs.
             command.env(process::NICE, AGENT_NICE.to_string());
         }
+        let set = |name: &str| {
+            let value = launch.env.iter().rev().find(|(set, _)| set == name);
+            value.map(|(_, value)| PathBuf::from(value))
+        };
+        // An own run's tag and obid's record of it, made right before it starts (LANES-16).
+        let leftovers = launch.own_sandbox.then(|| {
+            let login = set("CLAUDE_ENV_FILE")?.parent()?.to_path_buf();
+            Some((
+                set(process::CLAUDE_TMPDIR)?,
+                launch.cwd.clone(),
+                login,
+                set(process::RUN_TAG)?,
+            ))
+        });
+        let leftovers = leftovers.flatten();
+        let made = leftovers
+            .iter()
+            .flat_map(|(_, _, login, tag)| [tag.clone(), recorded(login, tag)]);
+        let made: Vec<PathBuf> = made.collect();
+        let unmade = || made.iter().for_each(|f| drop(std::fs::remove_file(f)));
+        if let Err(e) = made.iter().try_for_each(|f| std::fs::write(f, "")) {
+            unmade();
+            return Err(e);
+        }
         // No process group set here: the command line is the job sandbox's (`Sandbox::wrap`), whose
         // first program starts a session of its own, and so a process group whose id is the child's.
-        let mut child = command.spawn()?;
+        let mut child = command.spawn().inspect_err(|_| unmade())?;
         let pgid = child.id().unwrap_or(0);
         let recorded = match &launch.group {
             Some(group) => Some(crate::groups::record(group, pgid).await),
@@ -213,19 +235,10 @@ impl Conn {
             .ok_or_else(|| std::io::Error::other("no stdout"))?;
         let stopped = *stop.borrow() != process::Signal::Run;
         let limit = limit.into();
-        let set = |name: &str| {
-            let value = launch.env.iter().rev().find(|(set, _)| set == name);
-            value.map(|(_, value)| PathBuf::from(value))
-        };
-        let leftovers = launch.own_sandbox.then(|| {
-            let login = set("CLAUDE_ENV_FILE")?.parent()?.to_path_buf();
-            let tag = set(process::RUN_TAG)?;
-            Some((set(process::CLAUDE_TMPDIR)?, launch.cwd.clone(), login, tag))
-        });
         Ok(Conn {
             child,
             pgid,
-            leftovers: leftovers.flatten(),
+            leftovers,
             stdin,
             lines: BufReader::new(stdout),
             copying,
@@ -517,50 +530,58 @@ impl Conn {
 }
 
 /// A turn dropped without [`Conn::finish`] (its job's task panicked, #914) leaves nothing running:
-/// its whole group goes, as finish's end does, not only the agent `kill_on_drop` ends; and, for an
-/// own run, whatever its commands started that left the group (LANES-16): a job's at its turn's
-/// end, a conversation's when its waiting session ends.
+/// its whole group goes, as finish's end does, not only the agent `kill_on_drop` ends; an own
+/// run's leftovers too (LANES-16).
 impl Drop for Conn {
     fn drop(&mut self) {
         process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
-        self.end_leftovers();
+        // Off obid's async workers; only this run's tag matches, never a next run's.
+        if let Some(leftovers) = self.leftovers.take() {
+            std::thread::spawn(move || swept(&leftovers));
+        }
+    }
+}
+
+/// obid's record of an own run not yet swept, in its `login` folder, which no run writes.
+fn recorded(login: &Path, tag: &Path) -> PathBuf {
+    login.join(tag.file_name().unwrap_or_default())
+}
+
+/// Sweeps an own run (LANES-16): its tag and record go once it's proven clean, else stay.
+fn swept((temp, room, login, tag): &(PathBuf, PathBuf, PathBuf, PathBuf)) -> bool {
+    match process::end_sandboxed(temp, room, login, tag) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(tag);
+            let _ = std::fs::remove_file(recorded(login, tag));
+            true
+        }
+        Err(why) => {
+            tracing::warn!("an own run's leftovers may still run: {why}");
+            false
+        }
     }
 }
 
 impl Conn {
-    /// Ends now what an own run's commands left running (LANES-16), and never again for this run
-    /// once a sweep proved none is left; one that couldn't is logged, and the drop tries again.
+    /// Sweeps an own run now; its drop tries again when it couldn't (LANES-16).
     pub fn end_leftovers(&mut self) {
-        let Some((temp, room, login, tag)) = &self.leftovers else {
-            return;
-        };
-        match process::end_sandboxed(temp, room, login, tag) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(tag);
-                self.leftovers = None;
-            }
-            Err(why) => tracing::warn!("an own run's leftovers may still run: {why}"),
+        if self.leftovers.as_ref().is_some_and(swept) {
+            self.leftovers = None;
         }
     }
 
-    /// An own run's agent, and all its group, end now, then what its commands left running
-    /// (LANES-16): a conversation's waiting session, before a next session starts on the same
-    /// folders. Nothing of the agent's can start another command after it, and its drop sweeps
-    /// nothing, even when this sweep couldn't finish (it's logged, and the run's tag stays, so its
-    /// conversation's folders do too). A boxed run's agent isn't touched: it ends by itself
-    /// ([`Conn::finish`]).
-    pub fn end_own_now(&mut self) {
-        // Taken whatever the sweep finds: the drop, later, may run while a next session works on
-        // the same folders, and must never sweep them. Its tag stays when it couldn't finish.
-        let Some((temp, room, login, tag)) = self.leftovers.take() else {
-            return;
-        };
-        process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
-        let _ = self.child.start_kill();
-        match process::end_sandboxed(&temp, &room, &login, &tag) {
-            Ok(_) => drop(std::fs::remove_file(&tag)),
-            Err(why) => tracing::warn!("an ended session's leftovers may still run: {why}"),
+    /// An own run's agent and group end now, so it starts nothing more; its drop sweeps.
+    pub fn stop_own(&mut self) {
+        if self.leftovers.is_some() {
+            process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+            let _ = self.child.start_kill();
         }
+    }
+
+    /// [`Conn::stop_own`], then the sweep, now.
+    pub fn end_own_now(&mut self) {
+        self.stop_own();
+        self.end_leftovers();
     }
 }
 
@@ -802,9 +823,13 @@ mod tests {
         std::fs::rename(&login, dir.join("away")).unwrap();
         conn.end_own_now();
         std::fs::rename(dir.join("away"), &login).unwrap();
-        // The next session's command, on the same folders, then the old session's drop.
+        // The next session's command, on the same folders with a tag of its own, then the old
+        // session's drop, which sweeps again by the old tag.
+        let next_tag = tag.with_file_name("temp.run-next");
+        std::fs::write(&next_tag, "").unwrap();
+        let next_profile = profile.replace(tag.to_str().unwrap(), next_tag.to_str().unwrap());
         let next = std::process::Command::new("/usr/bin/sandbox-exec")
-            .args(["-p", &profile, "/usr/bin/perl", "-e"])
+            .args(["-p", &next_profile, "/usr/bin/perl", "-e"])
             .arg("use POSIX; setsid(); exec q(sleep), 60")
             .spawn()
             .unwrap();
@@ -818,6 +843,44 @@ mod tests {
             "the old session's drop ended the next one's command"
         );
         drop(started);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LANES-16: an own launch that never starts (its stderr can't open, its program isn't there)
+    /// leaves neither its tag nor obid's record of it, which would keep its folders for good.
+    #[tokio::test]
+    async fn lanes_16_a_launch_that_never_starts_leaves_no_tag() {
+        let dir = std::env::temp_dir().join(format!("obid-lanes-16n-{}", uuid::Uuid::new_v4()));
+        let [temp, room, login] = ["temp", "room", "login"].map(|d| dir.join(d));
+        for folder in [&temp, &room, &login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let tag = dir.join("temp.run-test");
+        let launch = |program: &str, stderr: PathBuf| crate::agent::Launch {
+            argv: vec![program.into()],
+            env: vec![
+                (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
+                (process::RUN_TAG.into(), tag.clone().into()),
+            ],
+            cwd: room.clone(),
+            stderr,
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        for launch in [
+            launch("/no/such/program", dir.join("stderr")),
+            launch("/bin/true", dir.clone()),
+        ] {
+            let started = Conn::spawn(&launch, Duration::from_secs(5), stop.clone(), false).await;
+            assert!(started.is_err());
+            assert!(
+                !tag.exists() && !login.join("temp.run-test").exists(),
+                "{:?}",
+                launch.argv
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
