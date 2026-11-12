@@ -248,10 +248,17 @@ struct Warm {
 }
 
 impl Warm {
-    /// Its login copy goes now, and it ends (its stdin closed, it exits) in the background.
-    fn end(self) {
+    /// Its login copy goes now, an own session's Claude Code stops (its drop sweeps, LANES-16).
+    fn end(mut self) {
         self.place.forget_login();
+        self.conn.stop_own();
         tokio::spawn(self.conn.finish());
+    }
+
+    /// [`Warm::end`], its sweep done before it returns: never under the sessions' lock.
+    fn end_now(mut self) {
+        self.conn.end_own_now();
+        self.end();
     }
 }
 
@@ -313,16 +320,14 @@ impl Sessions {
 
     /// Ends `conversation`'s waiting Claude Code, if one waits: the conversation went.
     pub fn end_warm(&self, conversation: &str) {
-        if let Some(warm) = self.warm().remove(conversation) {
-            warm.end();
-        }
+        let warm = self.warm().remove(conversation);
+        warm.into_iter().for_each(Warm::end_now);
     }
 
     /// Ends every waiting Claude Code, their login copies taken out at once: obid is stopping.
     pub fn end_all_warm(&self) {
-        for (_, warm) in self.warm().drain() {
-            warm.end();
-        }
+        let all: Vec<Warm> = self.warm().drain().map(|(_, warm)| warm).collect();
+        all.into_iter().for_each(Warm::end_now);
     }
 
     /// `conversation`'s waiting Claude Code, when it runs `session` on `account`'s login as it is
@@ -573,6 +578,12 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
 /// A conversation's deleted (`DELETE /v1/conversations/{id}`, or the oldest forgotten past the
 /// most kept): its waiting Claude Code ends. Started once, by obid's start.
 pub fn end_warm_with_conversations(shared: Arc<Shared>) {
+    let weak = Arc::downgrade(&shared);
+    shared.conversations.end_sessions_with(move |id| {
+        if let Some(shared) = weak.upgrade() {
+            shared.harness.end_warm(id);
+        }
+    });
     let mut events = shared.events.subscribe();
     tokio::spawn(async move {
         loop {
@@ -3724,6 +3735,118 @@ mod tests {
         assert!(!own_conversation(true, Tool::Claude, true));
         assert!(!own_conversation(true, Tool::Codex, false));
         assert!(!own_conversation(true, Tool::Cursor, false));
+    }
+
+    /// LANES-16: when obid stops (`end_all_warm`), an own conversation's waiting session's Claude
+    /// Code stops at once and what its commands left running, `setsid` included, is gone by the
+    /// time it returns; a command the next session on the same folders starts after that survives
+    /// the old session's end.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lanes_16_an_own_sessions_end_takes_its_leftovers_and_spares_the_next() {
+        let home = std::env::temp_dir().join(format!("obid-lanes-16w-{}", uuid::Uuid::new_v4()));
+        let place = Place::of(&home, "c");
+        for folder in [&place.temp, &place.room, &place.login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let canonical = |p: &PathBuf| p.canonicalize().unwrap();
+        let (temp, room, login) = (
+            canonical(&place.temp),
+            canonical(&place.room),
+            canonical(&place.login),
+        );
+        std::fs::write(login.join("env.sh"), "").unwrap();
+        // The run's tag, a file only its sandbox may write (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name(format!(
+            "{}.run-test",
+            temp.file_name().unwrap().to_string_lossy()
+        ));
+        let profile = format!(
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
+            canonical(&place.folder).display(),
+            temp.display(),
+            room.display(),
+            tag.display()
+        );
+        let pid_file = temp.join("pid");
+        let mut started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: Some(pid_file.clone()),
+        };
+        let sleeper = "use POSIX; setsid(); exec q(sleep), 60";
+        // Its "Claude Code": a command of its left a `setsid` process, then it waits.
+        let cli_file = temp.join("cli");
+        let script = format!(
+            "echo $$ > '{}'\n/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e '{sleeper}' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nexec sleep 60\n",
+            cli_file.display(),
+            pid_file.display()
+        );
+        let launch = crate::agent::Launch {
+            argv: ["/bin/sh".into(), "-c".into(), script.into()].into(),
+            env: vec![
+                ("PATH".into(), "/bin:/usr/bin".into()),
+                (crate::process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                (crate::process::RUN_TAG.into(), tag.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
+            ],
+            cwd: room.clone(),
+            stderr: home.join("stderr"),
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = tokio::sync::watch::channel(crate::process::Signal::Run);
+        let mut conn = crate::conn::Conn::spawn(&launch, Duration::from_secs(30), stop, false)
+            .await
+            .unwrap();
+        assert_eq!(conn.next().await.unwrap(), json!({}));
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let alive =
+            |pid: i32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+        assert!(alive(pid));
+        let warm = Warm {
+            conn,
+            token: String::new(),
+            account: "a".into(),
+            config_dir: None,
+            session: None,
+            key: 0,
+            place: place.clone(),
+            since: Instant::now(),
+        };
+        let cli: i32 = std::fs::read_to_string(&cli_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let sessions = Sessions::default();
+        sessions.warm().insert("c".into(), warm);
+        sessions.end_all_warm();
+        // Ended by the time it returned (gone, or a zombie no one reaped yet), and its Claude
+        // Code too, which could otherwise start another command.
+        let ended = |pid: i32| {
+            let ps = std::process::Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+            stat.is_empty() || stat.starts_with('Z')
+        };
+        assert!(ended(pid), "the leftover outlived obid's stop");
+        assert!(ended(cli), "its Claude Code still runs");
+        let next = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &profile, "/usr/bin/perl", "-e", sleeper])
+            .spawn()
+            .unwrap();
+        started.children.push(next);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let ended = started.children[0].try_wait().unwrap();
+        assert!(ended.is_none(), "the next session's command ended");
+        drop(started);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// LANES-14: every tool an own session has is one obid's `ask` rules name, so it asks obid.

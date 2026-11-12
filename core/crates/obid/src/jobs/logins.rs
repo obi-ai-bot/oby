@@ -221,7 +221,13 @@ pub(crate) fn own_sandbox_env(
         (None, None) => Vec::new(),
         _ => return Err("obid has no git folder for this job's Claude Code.".into()),
     };
+    // The run's tag (LANES-16, RUNTAG-1a): a path only its sandbox may write (its `allowWrite`).
+    let temp = spec.canonical().temp;
+    let name = temp.file_name().ok_or("obid has no temp folder.")?;
+    let run = uuid::Uuid::new_v4().simple();
+    let tag = temp.with_file_name(format!("{}.run-{run}", name.to_string_lossy()));
     let mut env: Vec<(&'static str, OsString)> = vec![
+        (process::RUN_TAG, tag.into_os_string()),
         ("HOME", home.clone().into_os_string()),
         ("CFFIXED_USER_HOME", home.clone().into_os_string()),
         ("CLAUDE_ENV_FILE", login.join("env.sh").into_os_string()),
@@ -719,6 +725,9 @@ pub(super) fn own_sandbox_settings(
         pinned.insert(wanted.into(), value.into());
     }
     let asked: Vec<&str> = CLAUDE_TOOLS.iter().chain(&["mcp__*"]).copied().collect();
+    let mut writes = spec.writable();
+    let tag = env.iter().find(|(name, _)| *name == process::RUN_TAG);
+    writes.extend(tag.map(|(_, path)| PathBuf::from(path)));
     Ok(json!({
         "env": pinned,
         "permissions": {"deny": rules, "ask": asked},
@@ -736,7 +745,7 @@ pub(super) fn own_sandbox_settings(
                 "disabled": false,
                 "denyRead": names(&hidden)?,
                 "allowRead": names(&spec.readable())?,
-                "allowWrite": names(&spec.writable())?,
+                "allowWrite": names(&writes)?,
                 "denyWrite": names(&kept)?,
             },
             "network": {"deniedDomains": CODE_HOSTS},

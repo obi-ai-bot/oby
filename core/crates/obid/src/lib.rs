@@ -610,6 +610,7 @@ pub async fn serve(
             shared.harness.end_all_warm();
             shared.harness.shell.end_all();
             jobs.shutdown(JOBS_GRACE).await;
+            let _ = tokio::task::spawn_blocking(|| conn::sweeps_done(JOBS_GRACE)).await;
         })
     };
     let give_up_at = {

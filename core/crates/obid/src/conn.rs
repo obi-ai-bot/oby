@@ -109,6 +109,8 @@ pub struct RpcError {
 pub struct Conn {
     child: Child,
     pgid: u32,
+    /// An own run's temp, working and `login` folders and its tag, to sweep it by (LANES-16).
+    leftovers: Option<(PathBuf, PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,
@@ -189,9 +191,29 @@ impl Conn {
             // decide publishing. Its first program, `obid __session`, sets it before anything runs.
             command.env(process::NICE, AGENT_NICE.to_string());
         }
+        let set = |name: &str| {
+            let value = launch.env.iter().rev().find(|(set, _)| set == name);
+            value.map(|(_, value)| PathBuf::from(value))
+        };
+        // An own run's tag and obid's record of it, made right before it starts (LANES-16).
+        let leftovers = launch.own_sandbox.then(|| {
+            let login = set("CLAUDE_ENV_FILE")?.parent()?.to_path_buf();
+            let tag = set(process::RUN_TAG)?;
+            Some((set(process::CLAUDE_TMPDIR)?, launch.cwd.clone(), login, tag))
+        });
+        let leftovers = leftovers.flatten();
+        let made = leftovers
+            .iter()
+            .flat_map(|(_, _, login, tag)| [tag.clone(), recorded(login, tag)]);
+        let made: Vec<PathBuf> = made.collect();
+        let unmade = || made.iter().for_each(|f| drop(std::fs::remove_file(f)));
+        if let Err(e) = made.iter().try_for_each(|f| process::fresh(f)) {
+            unmade();
+            return Err(e);
+        }
         // No process group set here: the command line is the job sandbox's (`Sandbox::wrap`), whose
         // first program starts a session of its own, and so a process group whose id is the child's.
-        let mut child = command.spawn()?;
+        let mut child = command.spawn().inspect_err(|_| unmade())?;
         let pgid = child.id().unwrap_or(0);
         let recorded = match &launch.group {
             Some(group) => Some(crate::groups::record(group, pgid).await),
@@ -206,12 +228,14 @@ impl Conn {
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| std::io::Error::other("no stdout"))?;
+            .ok_or_else(|| std::io::Error::other("no stdout"))
+            .inspect_err(|_| unmade())?;
         let stopped = *stop.borrow() != process::Signal::Run;
         let limit = limit.into();
         Ok(Conn {
             child,
             pgid,
+            leftovers,
             stdin,
             lines: BufReader::new(stdout),
             copying,
@@ -507,6 +531,89 @@ impl Conn {
 impl Drop for Conn {
     fn drop(&mut self) {
         process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+        // Off obid's async workers, by this run's tag only; with no thread, at obid's next start.
+        if let Some(leftovers) = self.leftovers.take() {
+            let mut sweeps = SWEEPS.lock().unwrap_or_else(|e| e.into_inner());
+            sweeps.retain(|sweep| !sweep.is_finished());
+            match std::thread::Builder::new().spawn(move || _ = swept(&leftovers)) {
+                Ok(sweep) => sweeps.push(sweep),
+                Err(e) => tracing::warn!("an own run's sweep waits for obid's next start: {e}"),
+            }
+        }
+    }
+}
+
+static SWEEPS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// obid's stop: the drops' sweeps (`SWEEPS`) end first, for at most `within` (LANES-16).
+pub fn sweeps_done(within: Duration) {
+    let until = std::time::Instant::now() + within;
+    for sweep in std::mem::take(&mut *SWEEPS.lock().unwrap_or_else(|e| e.into_inner())) {
+        while !sweep.is_finished() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Whether no own run is recorded in `login` (LANES-16); when none can be running (`idle`: obid's
+/// start, a job that ended), each one recorded is swept first, its tag made fresh.
+pub fn sweep_records(temp: &Path, room: &Path, login: &Path, idle: bool) -> bool {
+    let mut names = std::fs::read_dir(login).into_iter().flatten().flatten();
+    let run = |entry: &std::fs::DirEntry| entry.file_name().to_string_lossy().contains(".run-");
+    let [Ok(temp), Ok(room), Ok(login)] = [temp, room, login].map(Path::canonicalize) else {
+        return !names.any(|entry| run(&entry));
+    };
+    if !idle {
+        return !names.any(|entry| run(&entry));
+    }
+    names.filter(run).fold(true, |clean, entry| {
+        let tag = temp.with_file_name(entry.file_name());
+        let _ = std::fs::remove_file(&tag);
+        let run = (temp.clone(), room.clone(), login.clone(), tag);
+        process::fresh(&run.3).is_ok() && swept(&run) && clean
+    })
+}
+
+/// obid's record of an own run not yet swept, in its `login` folder, which no run writes.
+fn recorded(login: &Path, tag: &Path) -> PathBuf {
+    login.join(tag.file_name().unwrap_or_default())
+}
+
+/// Sweeps an own run (LANES-16): its tag and record go once it's proven clean, else stay.
+fn swept((temp, room, login, tag): &(PathBuf, PathBuf, PathBuf, PathBuf)) -> bool {
+    match process::end_sandboxed(temp, room, login, tag) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(tag);
+            let _ = std::fs::remove_file(recorded(login, tag));
+            true
+        }
+        Err(why) => {
+            tracing::warn!("an own run's leftovers may still run: {why}");
+            false
+        }
+    }
+}
+
+impl Conn {
+    /// Sweeps an own run now; its drop tries again when it couldn't (LANES-16).
+    pub fn end_leftovers(&mut self) {
+        if self.leftovers.as_ref().is_some_and(swept) {
+            self.leftovers = None;
+        }
+    }
+
+    /// An own run's agent and group end now, so it starts nothing more; its drop sweeps.
+    pub fn stop_own(&mut self) {
+        if self.leftovers.is_some() {
+            process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
+            let _ = self.child.start_kill();
+        }
+    }
+
+    pub fn end_own_now(&mut self) {
+        self.stop_own();
+        self.end_leftovers();
     }
 }
 
@@ -589,6 +696,211 @@ mod tests {
         let (_stop, stop) = watch::channel(process::Signal::Run);
         let mut conn = Conn::spawn(&launch, limit, stop, false).await.unwrap();
         assert_eq!(conn.next().await.unwrap(), json!({"a": "b", "c": 1}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LANES-16: an own run's process that left its group with `setsid` ends when its Conn does
+    /// (a job's turn's end, a conversation's waiting session's, a stop or a drop), once: what the
+    /// next session on the same folders runs after that isn't touched.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lanes_16_an_own_runs_leftover_ends_with_its_conn() {
+        let dir = std::env::temp_dir().join(format!("obid-lanes-16c-{}", uuid::Uuid::new_v4()));
+        let [temp, room, login] = ["temp", "room", "login"].map(|d| dir.join(d));
+        for folder in [&temp, &room, &login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let [temp, room, login] = [temp, room, login].map(|d| d.canonicalize().unwrap());
+        let env_file = login.join("env.sh");
+        std::fs::write(&env_file, "").unwrap();
+        // As Claude Code's own sandbox for the run: its temp folder and room, nothing else of it.
+        // The run's tag, a file only its sandbox may write (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name(format!(
+            "{}.run-test",
+            temp.file_name().unwrap().to_string_lossy()
+        ));
+        let profile = format!(
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
+            dir.canonicalize().unwrap().display(),
+            temp.display(),
+            room.display(),
+            tag.display()
+        );
+        let pid_file = temp.join("pid");
+        // What the test starts, killed however it ends (crate::process::tests::Started).
+        let started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: Some(pid_file.clone()),
+        };
+        let script = format!(
+            "/usr/bin/sandbox-exec -p '{profile}' /usr/bin/perl -e 'use POSIX; setsid(); exec q(sleep), 60' &\necho $! > '{}'\nsleep 0.5\necho '{{}}'\nexec sleep 60\n",
+            pid_file.display()
+        );
+        let launch = crate::agent::Launch {
+            argv: ["/bin/sh".into(), "-c".into(), script.into()].into(),
+            env: vec![
+                ("PATH".into(), "/bin:/usr/bin".into()),
+                (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                (process::RUN_TAG.into(), tag.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), env_file.into()),
+            ],
+            cwd: room.clone(),
+            stderr: dir.join("stderr"),
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let mut conn = Conn::spawn(&launch, Duration::from_secs(30), stop, false)
+            .await
+            .unwrap();
+        assert_eq!(conn.next().await.unwrap(), json!({}));
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Running: there, and not a zombie its parent (the agent, still running) hasn't reaped.
+        let alive = || {
+            let ps = std::process::Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout);
+            !stat.trim().is_empty() && !stat.trim().starts_with('Z')
+        };
+        assert!(alive());
+        // A waiting conversation's session ends its leftovers as it ends (`Warm::end`), before
+        // the next session on the same folders starts; its drop later spares that one's commands.
+        // A sweep that can't prove which processes are the run's (its `login` folder gone)
+        // ends nothing, and the run stays to be swept again.
+        std::fs::rename(&login, dir.join("away")).unwrap();
+        conn.end_leftovers();
+        assert!(
+            conn.leftovers.is_some(),
+            "a sweep that proved nothing forgot its run"
+        );
+        assert!(alive());
+        std::fs::rename(dir.join("away"), &login).unwrap();
+        // Its drop sweeps again, on a thread obid's stop waits for (`sweeps_done`).
+        drop(conn);
+        sweeps_done(Duration::from_secs(10));
+        assert!(!alive(), "the leftover outlived obid's stop");
+        assert!(!tag.exists() && !login.join("temp.run-test").exists());
+        drop(started);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LANES-16: a waiting session ended (`end_own_now`) with a sweep that couldn't finish never
+    /// sweeps again when it drops, after a next session started on the same folders: that one's
+    /// command survives.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lanes_16_an_ended_session_never_sweeps_the_next_ones_folders() {
+        let dir = std::env::temp_dir().join(format!("obid-lanes-16e-{}", uuid::Uuid::new_v4()));
+        let [temp, room, login] = ["temp", "room", "login"].map(|d| dir.join(d));
+        for folder in [&temp, &room, &login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let [temp, room, login] = [temp, room, login].map(|d| d.canonicalize().unwrap());
+        std::fs::write(login.join("env.sh"), "").unwrap();
+        // The run's tag, a file only its sandbox may write (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name(format!(
+            "{}.run-test",
+            temp.file_name().unwrap().to_string_lossy()
+        ));
+        let profile = format!(
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
+            dir.canonicalize().unwrap().display(),
+            temp.display(),
+            room.display(),
+            tag.display()
+        );
+        let mut started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: None,
+        };
+        let launch = crate::agent::Launch {
+            argv: ["/bin/sh", "-c", "echo '{}'; exec sleep 60"]
+                .map(Into::into)
+                .into(),
+            env: vec![
+                ("PATH".into(), "/bin:/usr/bin".into()),
+                (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                (process::RUN_TAG.into(), tag.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
+            ],
+            cwd: room.clone(),
+            stderr: dir.join("stderr"),
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        let mut conn = Conn::spawn(&launch, Duration::from_secs(30), stop, false)
+            .await
+            .unwrap();
+        assert_eq!(conn.next().await.unwrap(), json!({}));
+        // Its sweep can't finish (its `login` folder away for the moment).
+        std::fs::rename(&login, dir.join("away")).unwrap();
+        conn.end_own_now();
+        std::fs::rename(dir.join("away"), &login).unwrap();
+        // The next session's command, on the same folders with a tag of its own, then the old
+        // session's drop, which sweeps again by the old tag.
+        let next_tag = tag.with_file_name("temp.run-next");
+        std::fs::write(&next_tag, "").unwrap();
+        let next_profile = profile.replace(tag.to_str().unwrap(), next_tag.to_str().unwrap());
+        let next = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &next_profile, "/usr/bin/perl", "-e"])
+            .arg("use POSIX; setsid(); exec q(sleep), 60")
+            .spawn()
+            .unwrap();
+        started.children.push(next);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(conn);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let ended = started.children[0].try_wait().unwrap();
+        assert!(
+            ended.is_none(),
+            "the old session's drop ended the next one's command"
+        );
+        drop(started);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LANES-16: an own launch that never starts (its stderr can't open, its program isn't there)
+    /// leaves neither its tag nor obid's record of it, which would keep its folders for good.
+    #[tokio::test]
+    async fn lanes_16_a_launch_that_never_starts_leaves_no_tag() {
+        let dir = std::env::temp_dir().join(format!("obid-lanes-16n-{}", uuid::Uuid::new_v4()));
+        let [temp, room, login] = ["temp", "room", "login"].map(|d| dir.join(d));
+        for folder in [&temp, &room, &login] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let tag = dir.join("temp.run-test");
+        let launch = |program: &str, stderr: PathBuf| crate::agent::Launch {
+            argv: vec![program.into()],
+            env: vec![
+                (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
+                (process::RUN_TAG.into(), tag.clone().into()),
+            ],
+            cwd: room.clone(),
+            stderr,
+            own_sandbox: true,
+            group: None,
+        };
+        let (_stop, stop) = watch::channel(process::Signal::Run);
+        for launch in [
+            launch("/no/such/program", dir.join("stderr")),
+            launch("/bin/true", dir.clone()),
+        ] {
+            let started = Conn::spawn(&launch, Duration::from_secs(5), stop.clone(), false).await;
+            assert!(started.is_err());
+            assert!(
+                !tag.exists() && !login.join("temp.run-test").exists(),
+                "{:?}",
+                launch.argv
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

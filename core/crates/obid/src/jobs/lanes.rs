@@ -4,6 +4,17 @@
 use super::*;
 
 impl Jobs {
+    /// A deleted job's worktree and folders, once a sweep ended its own runs' leftovers (LANES-16).
+    pub(super) async fn remove_folders(&self, clone: &Path, id: &str) {
+        let worktree = self.worktree_path(id);
+        let (temp, login) = (self.temp_path(id), self.login_path(id));
+        if crate::conn::sweep_records(&temp, &worktree, &login, true) {
+            super::remove_worktree(clone, &worktree).await;
+            let _ = std::fs::remove_dir_all(temp);
+            let _ = std::fs::remove_dir_all(login);
+        }
+    }
+
     /// What in a conversation's room Claude Code would load as its settings, skills, MCP servers
     /// or instructions: never written by the session, in either lane (LANES-12), so nothing a turn
     /// read steers the next one; an own session loads only the owner's user settings anyway.
@@ -796,6 +807,22 @@ mod tests {
         let at = argv.iter().position(|a| *a == "--settings").unwrap();
         let settings: Value = serde_json::from_str(argv[at + 1]).unwrap();
         assert_eq!(settings["disableAllHooks"], true, "{settings}");
+        // LANES-16, RUNTAG-1a: the run is tagged, the tag's file is there, and only its sandbox
+        // may write it, by its --settings.
+        let tag = launch
+            .env
+            .iter()
+            .find(|(name, _)| name == crate::process::RUN_TAG);
+        let tag = tag
+            .map(|(_, path)| PathBuf::from(path))
+            .expect("no run tag in its env");
+        let writes = settings["sandbox"]["filesystem"]["allowWrite"]
+            .as_array()
+            .unwrap();
+        assert!(
+            writes.iter().any(|w| w.as_str() == tag.to_str()),
+            "{settings}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1218,6 +1245,105 @@ mod tests {
             std::fs::remove_file(&plist).unwrap();
         }
         assert_eq!(allowed(), Ok(()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-16, measured on this Mac's real Claude Code: a command in its own sandbox, with an own
+    /// run's temporary folder and `env.sh`, leaves a `setsid` process; obid's sweep finds and ends
+    /// it, so Claude Code's real sandbox matches what `end_sandboxed` looks for. Nothing of the
+    /// login is read or printed. `cargo test -p obid --lib lanes_16_a_real -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "runs the real Claude Code on this Mac's own login"]
+    fn lanes_16_a_real_leftover_ends_with_its_run() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!("obid-lanes-16r-{}", uuid::Uuid::new_v4()));
+        let [work, temp, login] = ["work", "temp", "login"].map(|d| root.join(d));
+        for dir in [&work, &temp, &login] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let [work, temp, login] = [work, temp, login].map(|d| d.canonicalize().unwrap());
+        let env_file = login.join("env.sh");
+        std::fs::write(&env_file, "").unwrap();
+        // Its tag, as obid makes one (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name("temp.run-test");
+        std::fs::write(&tag, "").unwrap();
+        let pid_file = temp.join("pid");
+        // The leftover, killed however the test ends (crate::process::tests::Started).
+        let mut started = crate::process::tests::Started {
+            children: Vec::new(),
+            file: Some(pid_file.clone()),
+        };
+        let settings = json!({"sandbox": {"enabled": true, "failIfUnavailable": true,
+            "allowUnsandboxedCommands": false,
+            "filesystem": {"allowWrite": [temp, tag], "denyWrite": [login]}}});
+        let mut command = std::process::Command::new("claude");
+        command
+            .current_dir(&work)
+            .args(["-p", "--no-session-persistence", "--setting-sources", ""])
+            .args([
+                "--strict-mcp-config",
+                "--permission-mode",
+                "default",
+                "--model",
+                "sonnet",
+            ])
+            .args([
+                "--allowedTools",
+                "Bash",
+                "--settings",
+                &settings.to_string(),
+            ])
+            .args(["--tools", "Bash"])
+            .env(crate::process::CLAUDE_TMPDIR, &temp)
+            .env(crate::process::RUN_TAG, &tag)
+            .env("CLAUDE_ENV_FILE", &env_file)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        for (name, _) in std::env::vars() {
+            if name.starts_with("CLAUDE") || name.starts_with("ANTHROPIC_") {
+                command.env_remove(name);
+            }
+        }
+        let mut child = command.spawn().unwrap();
+        let prompt = format!(
+            "Run exactly this one command with the Bash tool, not in the background, then stop: perl -e 'use POSIX; setsid(); exec q(sleep), 60' > /dev/null 2>&1 & echo $! > {}",
+            pid_file.display()
+        );
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(prompt.as_bytes())
+            .unwrap();
+        // Claude Code itself is the guard's too, and waited for two minutes at most.
+        started.children.push(child);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while started.children[0].try_wait().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Claude Code didn't finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let alive = || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+        assert!(alive(), "no leftover: the probe proves nothing");
+        assert!(crate::process::end_sandboxed(&temp, &work, &login, &tag).unwrap() >= 1);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !alive(),
+            "Claude Code's own sandbox doesn't match obid's sweep"
+        );
+        let name: String = (work.to_string_lossy().chars())
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let projects = login_home().unwrap().join(".claude/projects");
+        let _ = std::fs::remove_dir_all(projects.join(name));
         let _ = std::fs::remove_dir_all(&root);
     }
 
