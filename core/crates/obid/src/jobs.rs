@@ -10868,8 +10868,8 @@ impl Jobs {
                         .filter(|_| !chatgpt);
                     // The account is full whatever the tool said, but for one model's (USAGE-13), so
                     // nothing else goes there until it resets; the job goes on where there's room.
-                    if limited && !turn.scoped {
-                        self.mark_full(&account.id, reset, now);
+                    if limited {
+                        self.limit_reached(id, &account.id, reset, turn.scoped);
                     }
                     if limited && job.obi.is_none() {
                         return Err(End::AccountLimit {

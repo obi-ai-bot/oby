@@ -1171,6 +1171,39 @@ fn usage_13_a_scoped_limit_moves_the_job_and_marks_no_account() {
     );
 }
 
+/// USAGE-13: two Claude accounts both refuse the job's model for the week: it moves once, then
+/// waits, with no card, neither account marked full, never hopping back.
+#[test]
+fn usage_13_two_accounts_refusing_one_model_move_the_job_once_then_it_waits() {
+    let folder = Folder::new("usage-13-two");
+    let mut config = limit_config(&folder.0, "fake-claude", false);
+    let second = folder.0.join("home/accounts/second");
+    std::fs::create_dir_all(&second).unwrap();
+    let stub = folder.0.join("home/accounts/stub/.credentials.json");
+    std::fs::copy(&stub, second.join(".credentials.json")).unwrap();
+    (config["agents"]["claude"]["accounts"]
+        .as_array_mut()
+        .unwrap())
+    .push(json!({"id": "second", "name": "Second", "configDir": second}));
+    let obid = start(&folder.0, &config, None);
+    let usage = json!({"status": "rejected", "resetsAt": obi_protocol::time::now() + 86_400,
+        "rateLimitType": "seven_day_opus", "overageStatus": "rejected", "isUsingOverage": false});
+    let id = post_unnamed(&obid, &format!("USAGE: {usage} LIMITED NO EVENT"));
+    let waits = waiting_for_reset(&obid, &id);
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let still = job_now(&obid, &id);
+    assert_eq!(still["status"], "queued", "{still}");
+    assert_eq!(still["resumesAt"], waits["resumesAt"], "{still}");
+    assert!(still["nextStep"].is_null(), "{still}");
+    assert_eq!(still["moves"].as_array().map(Vec::len), Some(1), "{still}");
+    assert!(pending_decisions(&obid).is_empty());
+    let accounts = call(&obid, "GET", "/v1/status", None).body["accounts"].clone();
+    assert!(
+        (accounts.as_array().unwrap().iter()).all(|a| a["fullUntil"].is_null()),
+        "{accounts}"
+    );
+}
+
 /// LIMITS-15: with no account that has room, the job waits by itself, with no card, its line
 /// saying what it waits for; Stop ends the wait for good.
 #[test]
