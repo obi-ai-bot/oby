@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { stagesOf } from '../jobPage';
-import { mergeAlert, type InboxItem } from '../../../shared/obid-wire';
+import { fresh, launch, mac, served } from './macAlerts';
 import type { Job } from '../obid';
 import type { Job as JobView, Stage } from '../mock';
 
@@ -74,15 +74,23 @@ describe('merging on the task card', () => {
     expect(stagesOf(job({ pullRequestError: why, published: null })).every((s) => !s.sub)).toBe(true);
   });
 
-  it("MERGING-12: the alert for a merge waiting on the owner is titled as its card is, once per card", () => {
-    const item = (more: Partial<InboxItem>) => ({ id: 'merge-why1-j1-h1', kind: 'merge', job: 'j1', title: 'Ready to merge: Fix it', text: '', options: [],
-      details: null, created: '', state: 'open', later: null, headline: null, recommended: null, ...more }) as InboxItem;
-    expect(mergeAlert([item({})], 'j1', 'h1')).toEqual({ key: 'merge:merge-why1-j1-h1', title: 'Ready to merge' });
-    expect(mergeAlert([item({ title: 'Needs a teammate: Fix it' })], 'j1', 'h1').title).toBe('Needs a teammate');
+  it("MERGING-12: the alert for a merge waiting on the owner is titled as its card is, once per card", async () => {
+    // obid titles it as its card (push.rs, ALERTS-7) and the Mac draws what it serves (main/notify.ts)
+    const merge = (card: string, title: string) => served('j1', { what: `merge:${card}`, title, body: 'it conflicts with dev', category: 'job', job: 'j1', thread: 'jobs' });
+    fresh();
+    await launch();
+    mac.served = [merge('merge-why1-j1-h1', 'Ready to merge: Fix it')];
+    await launch();
+    expect(mac.posted.map((b) => [b.title, b.body])).toEqual([['Ready to merge: Fix it', 'it conflicts with dev']]);
+    // the same card: said once
+    await launch();
+    expect(mac.posted).toEqual([]);
     // another reason on the same head is another card: it alerts again
-    expect(mergeAlert([item({ id: 'merge-why2-j1-h1', title: 'Not merged: Fix it' })], 'j1', 'h1'))
-      .toEqual({ key: 'merge:merge-why2-j1-h1', title: 'Not merged' });
-    // another job's, a card answered already, or none: by the head, "Not merged"
-    expect(mergeAlert([item({ job: 'j2' }), item({ state: 'done' })], 'j1', 'h1')).toEqual({ key: 'merge:h1', title: 'Not merged' });
+    mac.served = [merge('merge-why2-j1-h1', 'Not merged: Fix it')];
+    await launch();
+    expect(mac.posted.map((b) => b.title)).toEqual(['Not merged: Fix it']);
+    // a click opens the task
+    mac.posted[0].click();
+    expect(mac.opened).toEqual([{ job: 'j1' }]);
   });
 });

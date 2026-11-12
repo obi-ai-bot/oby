@@ -44,15 +44,16 @@ scratch obid run by hand instead of 7777 (a packaged app ignores them).
 
 Oby alerts on the Mac as the Swift app did (`src/main/notify.ts`): main follows
 obid's event stream by itself, from launch until Oby quits, window closed or not,
-and alerts for what obid pushes to the phones (`core/crates/obid/src/push.rs`,
-`wanted`), through one gate (`notifies`, the owner's rule of 2026-10-28): nothing
-while the window is in front, on any page, and away from it only what waits on
-the owner to decide or act (an ask, a Confirm, a Start, a question, a job that
-failed or couldn't publish); never a job that ended with nothing to decide, nor
-Oby's own answer. What the owner was shown alerts once the window goes. A click
-opens the job or the conversation; Allow, Deny and Start answer from the alert as
-the same tap in the window does, never from a locked Mac; a Confirm only opens the
-window. Settings › Notifications turns them off (`settings.json` in the app's own
+and after each burst reads what waits on the owner from obid's one list,
+`GET /v1/alerts` (`core/crates/obid/src/push.rs`, `wanted`; ALERTS-1), the one
+the phones are pushed: an ask, a Confirm, a Start, a question, a job that failed
+or couldn't publish; never a job that ended with nothing to decide, nor Oby's own
+answer. The Mac decides nothing about what alerts; it keeps nothing while the
+window is in front, on any page (`notifies`, ALERTS-8): what the owner was shown
+alerts once the window goes. A click opens the job or the conversation; the
+answers obid serves (Allow, Deny, Start) answer from the alert as the same tap in
+the window does, never from a locked Mac; a Confirm only opens the window. What
+it said is kept in `alerts-said-v2.json` in the app's own folder (ALERTS-2). Settings › Notifications turns them off (`settings.json` in the app's own
 folder). macOS delivers no notification from the unsigned development build.
 
 It opens on your own conversation with Oby, a chat, not on Home
