@@ -30,6 +30,8 @@
 //                    (the job's, the check's too: the check never sees its worktree's .obi/)
 //   ENV              says its CODEX_HOME and HOME
 //   LANE             an own run (below) says nothing until it is ended; a boxed one says its CODEX_HOME
+//   OUTPUTFIRST      five different failing commands, each sending its output before any start
+//                    and then ending, with no start at all
 //   TOOLS            a session of items, each started and completed (tests/transcript_api.rs): its
 //                    words, 5 reads, a plan, 2 file changes and a failing run of the check
 //                    (node --test)
@@ -320,6 +322,14 @@ async function runTurn(turnId, prompt) {
   }
   const limits = task.match(/LIMITS: (\{.*\})/);
   if (limits) send({ method: "account/rateLimits/updated", params: { rateLimits: JSON.parse(limits[1]) } });
+  if (task.includes("OUTPUTFIRST")) {
+    for (const file of ["a", "b", "c", "d", "e"]) {
+      const it = item("commandExecution", { command: `/bin/zsh -lc 'cat ${file}.txt'`, commandActions: [] });
+      send({ method: "item/commandExecution/outputDelta", params: { threadId: thread, turnId, itemId: it.id, delta: "no such file\n" } });
+      send({ method: "item/completed", params: { threadId: thread, turnId, item: { ...it, status: "failed", exitCode: 1 } } });
+    }
+    return complete(turnId, "Looked.");
+  }
   if (task.includes("TOOLS")) {
     const done = (fields) => {
       const it = item(fields.type, fields);

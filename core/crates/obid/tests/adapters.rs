@@ -334,6 +334,31 @@ fn codex_commits_with_obids_approval() {
     assert_eq!(accounts, [("work", "codex"), ("cursor", "cursor")]);
 }
 
+/// Commands Codex reports output first, with no start, are each the call they are, told once at
+/// their end with their own command line: five different ones failing aren't a loop (LANES-13).
+#[test]
+fn codex_commands_seen_only_by_their_output_and_end_are_each_their_own_call() {
+    let folder = Folder::new("codex-output-first");
+    let obid = obid(&folder, false);
+    let id = dispatch(&obid, json!({"agent": "codex", "task": "OUTPUTFIRST"}));
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    let answer = call(&obid, "GET", &format!("/v1/jobs/{id}/transcript"), None);
+    let ran: Vec<&str> = answer.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["tool"] == "Bash")
+        .map(|e| e["summary"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ran,
+        ["a", "b", "c", "d", "e"].map(|f| format!("Running cat {f}.txt")),
+        "{}",
+        answer.text
+    );
+}
+
 /// A Codex job's transcript (#381) has the same entries a Claude Code job's has: each item's start
 /// and end as one entry, its reads as reads, its file changes with their lines, a failed command
 /// with its exit code, and its plan as a to-do list. No command's output is in it.

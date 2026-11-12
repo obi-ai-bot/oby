@@ -23,7 +23,9 @@ fn obid(name: &str, signed_in: bool) -> (Folder, Obid) {
     obid_with(name, signed_in, "fake-codex-harness", None)
 }
 
-/// [`obid`] with `bin` as Codex, and `login` as the account's auth.json when there is one.
+/// [`obid`] with `bin` as Codex, and `login` as the account's auth.json when there is one. In Ask,
+/// so its conversations stay in Oby's box (LANES-13), what these tests are about; [`mode`] sets
+/// another.
 fn obid_with(name: &str, signed_in: bool, bin: &str, login: Option<Value>) -> (Folder, Obid) {
     let folder = Folder::new(name);
     let remote = fixture(&folder.0.join("fixture"));
@@ -38,7 +40,15 @@ fn obid_with(name: &str, signed_in: bool, bin: &str, login: Option<Value>) -> (F
         std::fs::write(account.join("auth.json"), login.to_string()).unwrap();
     }
     let obid = start(&folder.0, &config, None);
+    mode(&obid, "ask");
     (folder, obid)
+}
+
+/// Settings › Permissions: the mode new jobs get, and the lane of the owner's Codex conversation.
+fn mode(obid: &Obid, mode: &str) {
+    let body = json!({ "mode": mode });
+    let set = call_signed(obid, "PUT", "/v1/settings/permissions", Some(&body));
+    assert_eq!(set.body, body, "{}", set.text);
 }
 
 /// Every event until Oby's turn in `conversation` (not one telling how a job ended), in order.
@@ -747,4 +757,210 @@ fn conversation_agent_16_codex_out_of_room_carries_on_in_a_new_thread() {
     assert_eq!(words(&answer), "new thread", "{}", answer.text);
     let all = turns(&obid);
     assert!(all.last().unwrap()["resumed"].is_null(), "{all:?}");
+}
+
+/// The `-c` settings a turn's Codex was started with.
+fn settings(turn: &Value) -> Vec<String> {
+    let argv: Vec<&str> = turn["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    argv.windows(2)
+        .filter(|w| w[0] == "-c")
+        .map(|w| w[1].to_owned())
+        .collect()
+}
+
+/// LANES-13 (docs/contracts/lanes.md, the owner's CODEX-2, "Same as jobs"): on macOS, the owner's
+/// Codex conversation in Bypass runs as an own Bypass Codex job does (LANES-18): on the account's
+/// own folder as `CODEX_HOME`, with no login copy, its shell on and its commands in Codex's own
+/// sandbox under obid's profile, with no network, writing only its room (never `repos/`) and its
+/// temporary folder, `approval_policy` `never`, no hooks, no `notify`, the room an untrusted
+/// project, and Codex asked which settings hold before each thread. A command runs and the turn
+/// goes on; what it read marks the conversation, which stays own (CONVO-1): the job it starts is
+/// `untrusted`, and its next turn resumes the same thread, in the same profile.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_13_an_own_bypass_codex_conversation_runs_its_shell_in_codexs_sandbox() {
+    let (folder, obid) = obid("codex-conv-own", true);
+    mode(&obid, "bypass");
+    let answer = said(
+        &obid,
+        json!({"said": r#"RUN OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+               "new": true}),
+    );
+    assert_untrusted(&obid, &answer);
+    let conversation = answer.body["conversation"].as_str().unwrap().to_owned();
+    let again = said(
+        &obid,
+        json!({"said": "REMEMBER", "conversation": conversation}),
+    );
+    assert!(words(&again).starts_with("resume="), "{}", again.text);
+    assert_ne!(words(&again), "resume=none", "{}", again.text);
+    let account = folder.0.join("home/accounts/codex");
+    let place = obid.home.join(format!("conversations/{conversation}"));
+    let real = |p: PathBuf| json!(p.canonicalize().unwrap()).to_string();
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    for turn in &recorded {
+        assert_eq!(
+            turn["codexHome"].as_str().map(PathBuf::from),
+            Some(account.clone()),
+            "{turn}"
+        );
+        assert_eq!(turn["approvalPolicy"], "never", "{turn}");
+        assert_eq!(turn["permissions"], "oby_own", "{turn}");
+        assert!(turn["sandbox"].is_null(), "{turn}");
+        let set = settings(turn);
+        for want in [
+            r#"approval_policy="never""#.to_owned(),
+            r#"default_permissions="oby_own""#.into(),
+            "permissions.oby_own.network.enabled=false".into(),
+            "features.hooks=false".into(),
+            "features.shell_snapshot=false".into(),
+            "notify=[]".into(),
+            format!(
+                "projects={{{} = {{trust_level = \"untrusted\"}}}}",
+                real(place.join("room"))
+            ),
+        ] {
+            assert!(set.contains(&want), "{want}: {set:?}");
+        }
+        assert!(!set.contains(&"features.shell_tool=false".to_owned()));
+        let profile = set
+            .iter()
+            .find_map(|s| s.strip_prefix("permissions.oby_own.filesystem="))
+            .unwrap();
+        for (path, access) in [
+            (place.join("room"), "write"),
+            (place.join("room/repos"), "read"),
+            (place.join("home"), "write"),
+            (obid.home.clone(), "none"),
+            (account.clone(), "none"),
+        ] {
+            let entry = format!("{} = \"{access}\"", real(path));
+            assert!(profile.contains(&entry), "{entry} in {profile}");
+        }
+    }
+    // No login copy: Codex reads and refreshes the account's own.
+    assert!(!place.join("config/auth.json").exists());
+    // Codex was asked which settings hold, for the room, before each thread.
+    let asked = std::fs::read_to_string(account.join("asked.jsonl")).unwrap();
+    assert_eq!(asked.lines().count(), 2, "{asked}");
+    for line in asked.lines() {
+        let cwd = serde_json::from_str::<Value>(line).unwrap()["cwd"].clone();
+        assert_eq!(cwd, json!(place.join("room")), "{asked}");
+    }
+}
+
+/// LANES-13: the owner's Codex conversation in any other mode stays in Oby's box, as before: its
+/// `CODEX_HOME` the conversation's own with a login copy, `danger-full-access` with every approval
+/// obid's, its shell off and Codex asked nothing first, so a command it runs anyway ends the turn.
+#[test]
+fn lanes_13_an_ask_codex_conversation_stays_boxed() {
+    let (folder, obid) = obid("codex-conv-ask", true);
+    let answer = said(&obid, json!({"said": "RUN HELLO", "new": true}));
+    assert!(
+        words(&answer).ends_with(
+            "Codex ran a command (echo hi), which a conversation never does, so obid stopped it."
+        ),
+        "{}",
+        answer.text
+    );
+    let conversation = answer.body["conversation"].as_str().unwrap();
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(
+        recorded[0]["codexHome"].as_str().map(PathBuf::from),
+        Some(
+            obid.home
+                .join(format!("conversations/{conversation}/config"))
+        )
+    );
+    assert_eq!(recorded[0]["sandbox"], "danger-full-access");
+    assert_eq!(recorded[0]["approvalPolicy"], "untrusted");
+    let set = settings(&recorded[0]);
+    assert!(
+        set.contains(&"features.shell_tool=false".to_owned()),
+        "{set:?}"
+    );
+    assert!(
+        !set.iter().any(|s| s.starts_with("approval_policy=")),
+        "{set:?}"
+    );
+    assert!(!folder.0.join("home/accounts/codex/asked.jsonl").exists());
+}
+
+/// LANES-13 (CONVO-1): every command an own Codex conversation runs is an untrusted read, one Codex
+/// shows as a read of a file outside the room, one whose output alone obid saw, an item obid
+/// doesn't know, and another server's tool call obid saw only end, too: the mark
+/// outlives a restart, and the job a later turn starts is `untrusted`.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_13_an_own_codex_conversations_read_marks_it() {
+    for (case, (said_first, answered)) in [
+        ("READ /private/tmp/notes.md DONE", "Nothing to do."),
+        ("OUTPUT", "output came"),
+        ("ITEM somethingNew", "item ran"),
+        ("ENDONLY DONE", "Nothing to do."),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (folder, mut obid) = obid(&format!("codex-conv-own-read-{case}"), true);
+        mode(&obid, "bypass");
+        let first = said(&obid, json!({"said": said_first, "new": true}));
+        assert_eq!(words(&first), answered, "{}", first.text);
+        let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+        obid.stop();
+        let config: Value =
+            serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+        let obid = start(&folder.0, &config, None);
+        let answer = said(
+            &obid,
+            json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+                   "conversation": conversation}),
+        );
+        assert_untrusted(&obid, &answer);
+    }
+}
+
+/// LANES-13, as LANES-18's jobs (the owner's CODEX-2, "Same as jobs"): an own Codex turn asks obid
+/// nothing, so leaving Bypass ends it within a second, saying why, and the next turn runs boxed,
+/// in a new thread (the own one is in the account's `CODEX_HOME`).
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_13_leaving_bypass_ends_an_own_codex_turn() {
+    let (_folder, obid) = obid("codex-conv-own-leave", true);
+    mode(&obid, "bypass");
+    let obid = std::sync::Arc::new(obid);
+    let (sent, answered) = std::sync::mpsc::channel();
+    let asking = obid.clone();
+    std::thread::spawn(move || sent.send(said(&asking, json!({"said": "SLEEP", "new": true}))));
+    let give_up = Instant::now() + Duration::from_secs(30);
+    while turns(&obid).is_empty() {
+        assert!(Instant::now() < give_up, "the turn never started");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    mode(&obid, "ask");
+    let answer = answered
+        .recv_timeout(Duration::from_secs(3))
+        .expect("the turn went on after the owner left Bypass");
+    assert!(
+        words(&answer).ends_with("Your next message runs in Oby's box."),
+        "{}",
+        answer.text
+    );
+    let conversation = answer.body["conversation"].as_str().unwrap();
+    let again = said(
+        &obid,
+        json!({"said": "REMEMBER", "conversation": conversation}),
+    );
+    assert_eq!(words(&again), "resume=none", "{}", again.text);
+    let recorded = turns(&obid);
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert_eq!(recorded[1]["sandbox"], "danger-full-access");
+    assert_eq!(recorded[1]["approvalPolicy"], "untrusted");
 }

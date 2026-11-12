@@ -35,6 +35,8 @@ macro_rules! oby_shell {
         "Run commands with oby_shell (like Bash; oby_shell_output and oby_shell_stop for one in the background): each runs in your room, sandboxed, with no network and no login; installing, the network and, once you've read something untrusted, changing files wait for the owner's OK."
     };
 }
+/// What a boxed session hears of its shell, which an own one hears in its CLI's words instead.
+pub(super) const BOXED_SHELL: &str = oby_shell!();
 /// What an own Claude Code session hears in [`oby_shell`]'s place (LANES-12).
 const OWN_SHELL: &str = "Run commands with Bash: each runs in your room under Claude Code's own sandbox, writing only your room (repos/ is read-only) and its temporary folder, with no code-host login.";
 
@@ -523,7 +525,7 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
     let place = Place::of(&shared.config.home, id);
     place.make()?;
     checkouts(shared, &place, &|| true).await;
-    let own = own_lane(shared, Tool::Claude, id);
+    let own = own_lane(shared, Tool::Claude, &account, id);
     if !own {
         shared.jobs.claude_login_ready(Some(&account)).await?;
     }
@@ -608,20 +610,44 @@ pub fn end_warm_with_conversations(shared: Arc<Shared>) {
 
 /// Whether the conversation's `tool` session runs in the own lane (docs/contracts/lanes.md,
 /// LANES-12): the owner's Claude Code conversation, on the account's own login in Claude Code's own
-/// sandbox, with its own Bash and the owner's settings, skills and MCP servers. Another Oby's
-/// conversation, and Codex's and Cursor's, stay boxed. What it read doesn't move it: its untrusted
-/// mark and the owner's Confirm guard what goes out (CONVO-1). Only on macOS for now: elsewhere it
-/// stays boxed until it's proven there ([`own_conversation`]).
-fn own_lane(shared: &Shared, tool: Tool, conversation: &str) -> bool {
+/// sandbox, with its own Bash and the owner's settings, skills and MCP servers; and in Bypass, as
+/// an own Codex job (LANES-13, LANES-18), the owner's Codex conversation on `account`, unless it's
+/// a ChatGPT login: on its own `CODEX_HOME`, with its own shell in Codex's sandbox. Another Oby's
+/// conversation, Codex's in any other mode, and Cursor's stay boxed. What it read doesn't move it:
+/// its untrusted mark and the owner's Confirm guard what goes out (CONVO-1). Only on macOS for now:
+/// elsewhere it stays boxed until it's proven there ([`own_conversation`]). Decided at each turn.
+fn own_lane(
+    shared: &Shared,
+    tool: Tool,
+    account: &crate::config::Account,
+    conversation: &str,
+) -> bool {
     let from_obys = shared.conversations.is_from_obys(conversation);
-    own_conversation(cfg!(target_os = "macos"), tool, from_obys)
+    let codex = crate::jobs::Jobs::codex_own(shared.jobs.default_mode())
+        && !crate::jobs::Jobs::relayed(tool, account);
+    own_conversation(cfg!(target_os = "macos"), tool, from_obys, codex)
 }
 
-/// [`own_lane`]'s choice: the owner's Claude Code conversation, on macOS.
+/// Whether an own Codex session may no longer run: the mode left Bypass (LANES-13, LANES-18).
+fn left_bypass(shared: &Shared) -> bool {
+    !crate::jobs::Jobs::codex_own(shared.jobs.default_mode())
+}
+
+/// What the owner hears when leaving Bypass ended an own Codex turn.
+const LEFT_BYPASS: &str =
+    "You left Bypass, so this turn ended here. Your next message runs in Oby's box.";
+
+/// [`own_lane`]'s choice: the owner's Claude Code conversation, on macOS, and their Codex one when
+/// `codex` may leave the box.
 // ponytail: macOS only; on Linux every own session "failed twice" (tetrix-lab, 2026-11-11), so it
 // stays boxed there until the own lane is proven on Linux.
-fn own_conversation(macos: bool, tool: Tool, from_obys: bool) -> bool {
-    macos && tool == Tool::Claude && !from_obys
+fn own_conversation(macos: bool, tool: Tool, from_obys: bool, codex: bool) -> bool {
+    let lane = match tool {
+        Tool::Claude => true,
+        Tool::Codex => codex,
+        Tool::Cursor => false,
+    };
+    macos && lane && !from_obys
 }
 
 /// A conversation's Claude Code's flags, before `--resume` and `--mcp-config`; `tetrix` when its
@@ -1493,7 +1519,7 @@ async fn attempts(
 ) -> Result<(String, End), Unanswered> {
     let config = &shared.config.conversation;
     let said = &session.said;
-    let own = own_lane(shared, tool, &control.conversation);
+    let own = own_lane(shared, tool, account, &control.conversation);
     // The budget is the turn's, both runs together.
     let deadline = Instant::now() + config.budget;
     let (mcp, url, tetrix) = mcp_config(shared, place, &control.conversation, own)?;
@@ -1694,6 +1720,7 @@ async fn attempts(
                         tetrix.as_deref(),
                         token,
                         &resume,
+                        own,
                     )
                     .await
                     .map_err(Unanswered::moves)?;
@@ -1823,6 +1850,12 @@ async fn attempts(
             text if !text.is_empty() => text,
             _ => streamed,
         };
+        if turn.stopped && control.live() && own && tool == Tool::Codex && left_bypass(shared) {
+            return Ok((
+                format!("{text}\n\n{LEFT_BYPASS}").trim().to_owned(),
+                End::Stopped,
+            ));
+        }
         if turn.stopped || !control.live() {
             return Ok((text, End::Stopped));
         }
@@ -2230,12 +2263,16 @@ async fn one(
 )> {
     let control = &session.control;
     let bounds = place.bounds();
+    // An own Codex session runs its commands unasked (LANES-13): as an own job's, its turn ends once
+    // the mode leaves Bypass (LANES-18), and whatever a command reads is untrusted (CONVO-1).
+    let own_codex = own && matches!(protocol, Protocol::Codex(_));
     // Stop and cancel reach the agent: it ends with everything it started.
     let (signal, stop) = tokio::sync::watch::channel(crate::process::Signal::Run);
     let watching = {
         let control = control.clone();
+        let shared = shared.clone();
         tokio::spawn(async move {
-            while control.live() {
+            while control.live() && !(own_codex && left_bypass(&shared)) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             let _ = signal.send(crate::process::Signal::Stop);
@@ -2274,9 +2311,14 @@ async fn one(
             Event::Tool { name, .. } if name == "ToolSearch" => {}
             Event::Tool { id, name, input } => {
                 watch.mark("first step");
+                // A command Codex shows as a read, search or listing is still a command.
+                let judged = match name.as_str() {
+                    "Read" | "Grep" | "Glob" | "Tool" if own_codex => "Bash",
+                    name => name,
+                };
                 // Untrusted content read this turn (the web, repo code) taints it: work it
                 // dispatches then waits for the owner (N1).
-                if taints(&name, &input, &bounds, &place.repos) {
+                if taints(judged, &input, &bounds, &place.repos) {
                     session.taint();
                 }
                 if let Some(tool) = name.strip_prefix("mcp__oby__") {
@@ -2286,11 +2328,11 @@ async fn one(
                 // keeps what the conversation read the owner's own marks it. Oby's own tools are
                 // judged where they answer (super::tools).
                 if !name.starts_with("mcp__oby__")
-                    && !known_safe(&name, &input, &bounds, &place.repos)
+                    && !known_safe(judged, &input, &bounds, &place.repos)
                 {
                     shared
                         .conversations
-                        .mark(&control.conversation, format!("its Oby used {name}"));
+                        .mark(&control.conversation, format!("its Oby used {judged}"));
                 }
                 let index = steps.len() + 1;
                 let line = (
@@ -2333,6 +2375,14 @@ async fn one(
                         super::harness_cursor::MARK.to_owned(),
                     );
                 }
+            }
+            // Something ran that obid never saw start: in an own Codex session, a command.
+            Event::Step(step) if own_codex && step == crate::codex::UNSEEN => {
+                session.taint();
+                shared.conversations.mark(
+                    &control.conversation,
+                    "its Oby ran something obid didn't see start".into(),
+                );
             }
             Event::Step(_)
             | Event::Denied(_)
@@ -3728,14 +3778,27 @@ mod tests {
     }
 
     /// LANES-12 (docs/contracts/lanes.md): the owner's Claude Code conversation is own on macOS
-    /// only; elsewhere, another Oby's, Codex's and Cursor's stay boxed.
+    /// only; elsewhere, another Oby's and Cursor's stay boxed. LANES-13: so is the owner's Codex
+    /// conversation where Codex may leave the box (Bypass, not a ChatGPT login), never another
+    /// Oby's or one off macOS.
     #[test]
     fn lanes_12_only_the_owners_claude_conversation_on_macos_is_own() {
-        assert!(own_conversation(true, Tool::Claude, false));
-        assert!(!own_conversation(false, Tool::Claude, false));
-        assert!(!own_conversation(true, Tool::Claude, true));
-        assert!(!own_conversation(true, Tool::Codex, false));
-        assert!(!own_conversation(true, Tool::Cursor, false));
+        assert!(own_conversation(true, Tool::Claude, false, false));
+        assert!(!own_conversation(false, Tool::Claude, false, true));
+        assert!(!own_conversation(true, Tool::Claude, true, true));
+        assert!(!own_conversation(true, Tool::Codex, false, false));
+        assert!(own_conversation(true, Tool::Codex, false, true));
+        assert!(!own_conversation(true, Tool::Codex, true, true));
+        assert!(!own_conversation(false, Tool::Codex, false, true));
+        assert!(!own_conversation(true, Tool::Cursor, false, true));
+        use crate::permissions::Mode;
+        assert_eq!(
+            crate::jobs::Jobs::codex_own(Mode::Bypass),
+            cfg!(target_os = "macos")
+        );
+        for mode in [Mode::Ask, Mode::AcceptEdits, Mode::Plan, Mode::Sandbox] {
+            assert!(!crate::jobs::Jobs::codex_own(mode), "{mode:?}");
+        }
     }
 
     /// LANES-16: when obid stops (`end_all_warm`), an own conversation's waiting session's Claude

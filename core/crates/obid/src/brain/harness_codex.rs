@@ -6,11 +6,14 @@
 //! inside obid's as a job's (`danger-full-access`, every approval obid's: [`crate::codex`]), its
 //! `CODEX_HOME` the conversation's own (`config`, with a copy of the login and nothing else). Oby's
 //! MCP server (and obid's Tetrix server, while Oby is signed in to Tetrix) comes in its `-c`
-//! settings, streamable HTTP with the turn's token in `OBY_MCP_TOKEN`, never an argument.
+//! settings, streamable HTTP with the turn's token in `OBY_MCP_TOKEN`, never an argument. The
+//! owner's own conversation in Bypass on macOS runs in the own lane instead (LANES-13), as an own
+//! Bypass Codex job does (LANES-18): on the account's own `CODEX_HOME`, its shell on in Codex's
+//! own sandbox ([`crate::jobs::Jobs::conversation_own_codex_launch`]).
 
 use std::ffi::OsString;
 
-use super::harness::{Place, orientation};
+use super::harness::{BOXED_SHELL, Place, orientation};
 use crate::agent::{Launch, Tool};
 use crate::api::Shared;
 
@@ -52,6 +55,16 @@ pub(crate) const OFF: &[&str] = &[
     "analytics_plan_history",
 ];
 
+/// [`OFF`] in a conversation's `own` run too, but its shell (LANES-13): Codex's own, in its sandbox.
+fn off(own: bool) -> impl Iterator<Item = &'static str> {
+    OFF.iter()
+        .copied()
+        .filter(move |f| !own || *f != "shell_tool")
+}
+
+/// What an own session hears in the boxed shell's place (LANES-13).
+const OWN_SHELL: &str = "Run commands with your own shell: each runs in your room under Codex's own sandbox, writing only your room (repos/ is read-only) and its temporary folder, with no network and no code-host login.";
+
 /// Its other settings: the turn's token never reaches a command's environment.
 const SETTINGS: &[&str] = &[
     r#"shell_environment_policy.exclude=["OBY_MCP_TOKEN"]"#,
@@ -63,7 +76,8 @@ const SETTINGS: &[&str] = &[
 /// `resume`'s thread when there is one, the conversation's orientation, the configured model;
 /// obid's Tetrix server at `tetrix` when it's given; web search live.
 /// Refuses, saying why, a Codex that keeps a feature of [`OFF`] on and a login copy near its end
-/// ([`crate::jobs::codex_copy_ready`]).
+/// ([`crate::jobs::codex_copy_ready`]). An `own` one (LANES-13) runs on the account's own folder,
+/// its shell on, and Codex runs no turn on settings that aren't obid's (crate::codex).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn launch(
     shared: &Shared,
@@ -73,11 +87,12 @@ pub(super) async fn launch(
     tetrix: Option<&str>,
     token: &str,
     resume: &Option<String>,
+    own: bool,
 ) -> Result<(Launch, Option<crate::codex::Options>), String> {
     // Oby's server and Tetrix's as a job's are given ([`crate::codex::argv`]: its `-c` settings).
     let argv = crate::codex::argv(Default::default(), Some((url, token)), tetrix);
     let mut flags: Vec<OsString> = argv[1..argv.len() - 1].to_vec();
-    for feature in OFF {
+    for feature in off(own) {
         flags.extend(["-c".into(), format!("features.{feature}=false").into()]);
     }
     for setting in SETTINGS {
@@ -97,18 +112,29 @@ pub(super) async fn launch(
         &format!("conversation {} MCP token", place.folder.display()),
         token,
     );
-    let mut launch = shared.jobs.conversation_launch(
-        Tool::Codex,
-        account,
-        &place.room,
-        &place.temp,
-        // Its own CODEX_HOME, with a copy of the account's login only, never its refresh token.
-        &place.config,
-        vec![place.repos.clone()],
-        flags,
-        place.folder.join("agent.log"),
-    )?;
-    features_off(&launch).await?;
+    let (frozen, stderr) = (vec![place.repos.clone()], place.folder.join("agent.log"));
+    let mut launch = match own {
+        true => shared.jobs.conversation_own_codex_launch(
+            account,
+            &place.room,
+            &place.temp,
+            frozen,
+            flags,
+            stderr,
+        )?,
+        false => shared.jobs.conversation_launch(
+            Tool::Codex,
+            account,
+            &place.room,
+            &place.temp,
+            // Its own CODEX_HOME, with a copy of the account's login only, never its refresh token.
+            &place.config,
+            frozen,
+            flags,
+            stderr,
+        )?,
+    };
+    all_off(&launch, off(own)).await?;
     launch.env.push(("OBY_MCP_TOKEN".into(), token.into()));
     let offered = shared.jobs.model_lists.to_check(Tool::Codex, &account.id);
     let mut model = Some(crate::settings::account_model(
@@ -133,8 +159,11 @@ pub(super) async fn launch(
         model,
         effort: None,
         plan: false,
-        instructions: Some(orientation(shared, tetrix.is_some())),
-        no_commands: true,
+        instructions: Some(match own {
+            true => orientation(shared, tetrix.is_some()).replacen(BOXED_SHELL, OWN_SHELL, 1),
+            false => orientation(shared, tetrix.is_some()),
+        }),
+        no_commands: !own,
         usage: false,
         priced: None,
         chatgpt,
@@ -142,15 +171,15 @@ pub(super) async fn launch(
     Ok((launch, Some(options)))
 }
 
-/// Whether Codex says every feature of [`OFF`] is off: `features list` run as the real run is,
-/// in the same box, environment, `CODEX_HOME` and folder (`launch`, its `app-server` swapped for
-/// `features list`), so both see the same settings, managed ones included.
-async fn features_off(launch: &Launch) -> Result<(), String> {
-    features_off_with(launch, &[]).await
-}
-
 /// Other confined runs may remove more features from the same checked baseline.
 pub(crate) async fn features_off_with(launch: &Launch, extra: &[&str]) -> Result<(), String> {
+    all_off(launch, OFF.iter().chain(extra).copied()).await
+}
+
+/// Whether Codex says every feature of `names` is off: `features list` run as the real run is,
+/// in the same box, environment, `CODEX_HOME` and folder (`launch`, its `app-server` swapped for
+/// `features list`), so both see the same settings, managed ones included.
+async fn all_off(launch: &Launch, names: impl Iterator<Item = &str>) -> Result<(), String> {
     let mut argv = launch.argv.clone();
     if argv.last().map(|a| a.as_os_str()) != Some("app-server".as_ref()) {
         return Err(
@@ -191,7 +220,7 @@ pub(crate) async fn features_off_with(launch: &Launch, extra: &[&str]) -> Result
             );
         }
     };
-    for name in OFF.iter().chain(extra) {
+    for name in names {
         match feature(&out, name) {
             Some(false) => {}
             Some(true) => {
