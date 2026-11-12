@@ -7376,9 +7376,7 @@ impl Jobs {
         {
             chatgpt.runs.begin(&job.id);
         }
-        self.update(&job.id, |job| {
-            (job.own_lane, job.ran_unproxied) = (own, job.ran_unproxied || own)
-        });
+        self.launched(&job.id, own)?;
         // The owner's environment under obid's (LANES-4): a shell that doesn't answer leaves the run
         // obid's allowlist, and the job says so.
         let owners = if own {
@@ -10410,7 +10408,7 @@ impl Jobs {
                     break;
                 }
                 // LANES-18: a Codex session made in the other lane's folder can't go on in this one.
-                if let Some(note) = self.other_lane(id, tool, &account) {
+                if let Some(note) = self.other_lane(id, tool) {
                     renew = Some((note, "its mode changed its sandbox"));
                 }
                 let job = self.get(id).ok_or("the job is gone")?;

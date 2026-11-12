@@ -397,9 +397,11 @@ pub fn tools_path() -> OsString {
     path_with_usual(base, home.as_deref())
 }
 
-/// `base`, then the [`usual_folders`] of `home` it doesn't have yet.
+/// `base`, then the [`usual_folders`] of `home` it doesn't have yet. Absolute folders only: a
+/// relative one would be looked up in whatever folder a run starts in, a job's worktree.
 fn path_with_usual(base: &[PathBuf], home: Option<&Path>) -> OsString {
     let mut dirs = base.to_vec();
+    dirs.retain(|dir| dir.is_absolute());
     for dir in home.map(usual_folders).unwrap_or_default() {
         if !dirs.contains(&dir) {
             dirs.push(dir);
@@ -621,10 +623,11 @@ pub const CLAUDE_GATEWAY: [&str; 15] = [
     "CLAUDE_CODE_EFFORT_LEVEL",
 ];
 
-/// `bin` as a path: itself when it names one, else found on [`tools_path`].
+/// `bin` as an absolute path: itself when it names one (a relative one from obid's own folder,
+/// never the worktree a run starts in), else found on [`tools_path`].
 pub fn resolve_bin(bin: &str) -> Option<PathBuf> {
     if bin.contains('/') {
-        let path = PathBuf::from(bin);
+        let path = std::path::absolute(bin).ok()?;
         return crate::sandbox::is_executable(&path).then_some(path);
     }
     std::env::split_paths(&tools_path())
@@ -938,6 +941,30 @@ mod usual_folders_tests {
         std::fs::create_dir_all(&local).unwrap();
         assert!(has(path_with_usual(&base, Some(&home))));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// LANES-18: a tool named by a relative path, or found through a relative `PATH` folder, is
+    /// the one in obid's own folder, never one of the same name in the worktree a run starts in
+    /// (an unboxed run would be the repository's own program).
+    #[test]
+    fn a_relative_tool_is_never_the_worktrees() {
+        use std::os::unix::fs::PermissionsExt;
+        let named = "tests/bin-broken-gitleaks/gitleaks";
+        let worktree = std::env::temp_dir().join(format!("obid-relbin-{}", std::process::id()));
+        let twin = worktree.join(named);
+        std::fs::create_dir_all(twin.parent().unwrap()).unwrap();
+        std::fs::write(&twin, "#!/bin/sh\necho the repository's\n").unwrap();
+        std::fs::set_permissions(&twin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = resolve_bin(named).unwrap();
+        assert_eq!(bin, std::env::current_dir().unwrap().join(named));
+        let ran = std::process::Command::new(&bin)
+            .current_dir(&worktree)
+            .output()
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&ran.stdout).contains("the repository's"));
+        let path = path_with_usual(&["bin".into(), ".".into(), "/usr/bin".into()], None);
+        assert_eq!(path, "/usr/bin");
+        let _ = std::fs::remove_dir_all(&worktree);
     }
 }
 

@@ -10,8 +10,7 @@
 //! an approval (as the Swift runner does inside bubblewrap). In Plan mode obid declines file changes.
 //! An own run (the owner's Bypass job, LANES-18) runs unboxed instead, its commands in Codex's own
 //! sandbox as its `-c` settings say (crate::jobs, `own_codex_settings`), with `approvalPolicy`
-//! `never`, so it never asks to leave it: it starts only once Codex says those settings are the
-//! ones that hold ([`own_config_problem`], [`own_thread_problem`]).
+//! `never`, once Codex says those settings hold ([`own_config_problem`], [`own_thread_problem`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -787,49 +786,46 @@ fn not_obids(what: &str) -> String {
 }
 
 /// Why an own run can't start (LANES-18), from Codex's answer `read` to `config/read` for its
-/// `cwd`: Codex merges obid's `-c` settings with its other layers, table by table, so obid starts no
-/// thread unless they are what holds. Its approval policy, permission profile, no hooks and no
-/// `notify` program; the worktree an untrusted project, as named and where it leads (none of the
-/// repository's `.codex/` loads); and every key of obid's profile from obid's own `-c` (`origins`:
-/// one the account's `config.toml` or a managed layer adds, an `auth.json` to read, a network,
-/// would widen it). None when all of it holds.
+/// `cwd`: Codex merges obid's `-c` settings with its other layers, so obid starts no thread unless
+/// they are what holds, each key that isn't named. The worktree untrusted as named and where it
+/// leads; every key of obid's profile from obid's own `-c` (`origins`: one another layer adds would
+/// widen it); its commands' `HOME` obid's, with no `include_only`, which Codex applies after `set`
+/// (codex-cli 0.162.1) and would drop it.
 fn own_config_problem(read: &Value, cwd: &str) -> Option<String> {
-    let (config, origins) = (&read["config"], &read["origins"]);
+    let (c, origins) = (&read["config"], &read["origins"]);
+    let obids = |key: &str| origins[key]["name"]["type"] == "sessionFlags";
+    let empty = |list: &Value| list.as_array().is_none_or(Vec::is_empty);
     let real = Path::new(cwd).canonicalize().ok();
     let dirs = [Some(cwd), real.as_deref().and_then(Path::to_str)];
-    let untrusted = (dirs.into_iter().flatten())
-        .all(|dir| config["projects"][dir]["trust_level"] == "untrusted");
+    let trusted = |dir: &str| c["projects"][dir]["trust_level"] != "untrusted";
     let profile = format!("permissions.{OWN_PROFILE}.");
-    let obids = |key: &str| origins[key]["name"]["type"] == "sessionFlags";
     let added = (origins.as_object().into_iter().flatten())
         .map(|(key, _)| key.as_str())
         .find(|key| key.starts_with(&profile) && !obids(key));
-    let network = &config["permissions"][OWN_PROFILE]["network"]["enabled"];
-    let held = [
-        (config["approval_policy"] == "never", "approval_policy"),
+    let (network, off) = (format!("{profile}network.enabled"), json!(false));
+    let net = &c["permissions"][OWN_PROFILE]["network"]["enabled"];
+    let home = "shell_environment_policy.set.HOME";
+    let only = &c["shell_environment_policy"]["include_only"];
+    let wrong = [
+        ("approval_policy", c["approval_policy"] != "never"),
         (
-            config["default_permissions"] == OWN_PROFILE,
             "default_permissions",
+            c["default_permissions"] != OWN_PROFILE,
         ),
-        (config["features"]["hooks"] == false, "features.hooks"),
-        (
-            config["notify"].as_array().is_none_or(Vec::is_empty),
-            "notify",
-        ),
-        (untrusted, "the worktree's trust in projects"),
-        (
-            network == false && obids(&format!("{profile}network.enabled")),
-            "the profile's network",
-        ),
-        (added.is_none(), added.unwrap_or_default()),
+        ("features.hooks", c["features"]["hooks"] != off),
+        ("notify", !empty(&c["notify"])),
+        ("projects", dirs.into_iter().flatten().any(trusted)),
+        (network.as_str(), *net != off || !obids(&network)),
+        (added.unwrap_or_default(), added.is_some()),
+        (home, !obids(home)),
+        ("shell_environment_policy.include_only", !empty(only)),
     ];
-    let (_, what) = held.into_iter().find(|(holds, _)| !holds)?;
+    let (what, _) = wrong.into_iter().find(|(_, wrong)| *wrong)?;
     Some(not_obids(what))
 }
 
 /// Why an own run can't go on in the thread Codex `started` or resumed (LANES-18): not with
-/// `never`, or not in obid's profile (a resumed thread's own, a managed requirement's). None when
-/// it's obid's.
+/// `never`, or not in obid's profile (a resumed thread's own, a managed requirement's).
 fn own_thread_problem(started: &Value) -> Option<String> {
     let obids = started["approvalPolicy"] == "never"
         && started["activePermissionProfile"]["id"] == OWN_PROFILE;
@@ -837,8 +833,8 @@ fn own_thread_problem(started: &Value) -> Option<String> {
 }
 
 /// The thread's settings: obid's sandbox is the sandbox, and every approval comes to obid. An `own`
-/// run's sandbox is Codex's own, obid's profile named on a new thread and on a resumed one (which
-/// would otherwise keep the one it was last saved with), and it never asks to leave it (LANES-18).
+/// run's is Codex's own, obid's profile named on a new thread and on a resumed one (which would
+/// keep the one it was last saved with), and it never asks to leave it (LANES-18).
 fn thread_params(cwd: &str, own: bool) -> Value {
     if own {
         return json!({"cwd": cwd, "approvalPolicy": "never", "approvalsReviewer": "user",
@@ -1404,7 +1400,8 @@ exec sleep 30
             "origins": {"approval_policy": from_obid,
                 format!("permissions.{OWN_PROFILE}.filesystem./"): from_obid,
                 format!("permissions.{OWN_PROFILE}.filesystem.{cwd}"): from_obid,
-                format!("permissions.{OWN_PROFILE}.network.enabled"): from_obid}})
+                format!("permissions.{OWN_PROFILE}.network.enabled"): from_obid,
+                "shell_environment_policy.set.HOME": from_obid}})
     }
 
     /// LANES-18: obid starts an own run only on settings that are its own. What Codex 0.162.1
@@ -1421,12 +1418,22 @@ exec sleep 30
         let auth = format!("permissions.{OWN_PROFILE}.filesystem./a/auth.json");
         let extends = format!("permissions.{OWN_PROFILE}.extends");
         let (profile, policy) = (["config", "permissions", OWN_PROFILE], "approval_policy");
-        let cases: [(&str, Vec<&str>, Value); 9] = [
+        let (home, only) = (
+            "shell_environment_policy.set.HOME",
+            "shell_environment_policy.include_only",
+        );
+        let cases: [(&str, Vec<&str>, Value); 11] = [
+            (home, vec!["origins", home], users.clone()),
+            (
+                only,
+                vec!["config", "shell_environment_policy", "include_only"],
+                json!(["PATH"]),
+            ),
             (&auth, vec!["origins", &auth], users.clone()),
             (&extends, vec!["origins", &extends], users.clone()),
-            ("the profile's network", vec!["origins", &network], users),
+            (&network, vec!["origins", &network], users),
             (
-                "the profile's network",
+                &network,
                 [&profile[..], &["network", "enabled"]].concat(),
                 json!(true),
             ),
@@ -1447,7 +1454,7 @@ exec sleep 30
                 json!(":workspace"),
             ),
             (
-                "the worktree's trust in projects",
+                "projects",
                 vec!["config", "projects", cwd, "trust_level"],
                 json!("trusted"),
             ),

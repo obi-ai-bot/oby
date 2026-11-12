@@ -739,10 +739,9 @@ pub struct Job {
     /// terminal may open its session: [`Job::resume_command`] (LANES-9).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_lane: bool,
-    /// A run of its agent's, or of the job it follows up, launched in the own lane, with a network
-    /// obid's proxy didn't see: its check gets no declared secrets, whatever its mode, tool or
-    /// account is now (LANE-3a, crate::jobs, `ran_unproxied`). Never unset. Kept in its file, never
-    /// in the API.
+    /// A run of its agent's, or of the job it follows up, launched in the own lane: its check gets
+    /// no declared secrets, whatever its mode, tool or account is now (LANE-3a, crate::jobs,
+    /// `ran_unproxied`). Never unset, saved before that run. In its file, never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ran_unproxied: bool,
     /// Words no app of the owner's signed reached it (`POST /v1/jobs`, a message to it): since
