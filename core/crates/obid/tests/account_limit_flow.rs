@@ -1573,3 +1573,225 @@ fn limits_18_a_job_with_no_room_anywhere_is_queued_not_refused() {
     assert_eq!(done["status"], "done", "{done}");
     assert_eq!(done["account"], "stub", "{done}");
 }
+
+/// `home/usage.json` with `stub` at 85% of its week (its weekly reserve), its 5-hour window read
+/// empty since its reset, and when its week resets.
+fn stub_in_reserve() -> (Value, i64) {
+    let now = obi_protocol::time::now();
+    let week = now + 86_400;
+    let usage = json!({"stub": {"fiveHour": 0.1, "sevenDay": 0.85, "fiveHourResets": now - 1,
+        "sevenDayResets": week, "fullUntil": now - 1, "fiveHourObservedAt": now,
+        "sevenDayObservedAt": now}});
+    (usage, week)
+}
+
+/// A job the owner typed in their app (signed), on `stub` when `named`, else on Auto.
+fn post_typed(obid: &Obid, task: &str, named: bool) -> Answer {
+    let mut job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": task});
+    if named {
+        job["account"] = json!("stub");
+    }
+    let answer = call_typed(obid, "POST", "/v1/jobs", &json!({ "job": job }));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    answer
+}
+
+/// LIMITS-20: the weekly reserve holds only work nobody watches. A job the owner typed runs on an
+/// account in its reserve, and one that waited out a five-hour limit goes on at its reset though
+/// its week is now past 80%.
+#[test]
+fn limits_20_owner_typed_work_runs_past_the_reserve() {
+    let folder = Folder::new("limits-20-owner");
+    let config = limit_config(&folder.0, "fake-claude", false);
+    let usage = folder.0.join("home/usage.json");
+    std::fs::write(&usage, stub_in_reserve().0.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let typed = post_typed(&obid, "Look around", false);
+    assert!(typed.body["waiting"].is_null(), "{}", typed.text);
+    let done = ended(&obid, typed.body["id"].as_str().unwrap());
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["account"], "stub", "{done}");
+
+    // Its five-hour limit waited out, its week now in its reserve: it goes on, in its session.
+    let typed = post_typed(&obid, "LIMITED ONCE: 300", true);
+    let id = typed.body["id"].as_str().unwrap().to_owned();
+    waiting_for_reset(&obid, &id);
+    let obid = its_time_comes(&folder, &config, obid, &id, Some(stub_in_reserve().0));
+    let done = ended(&obid, &id);
+    assert_eq!(done["status"], "done", "{done}");
+    assert!(
+        done["summary"]
+            .as_str()
+            .unwrap()
+            .contains("went on: resume="),
+        "{done}"
+    );
+}
+
+/// LIMITS-20: the owner's job on an account at its five-hour limit and past 80% of its week waits
+/// for the five-hour reset, not the week's; a conversation still talks through it at 85%.
+#[test]
+fn limits_20_owner_work_waits_for_five_hours_and_talks_in_the_reserve() {
+    let folder = Folder::new("limits-20-five");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let usage = folder.0.join("home/usage.json");
+    std::fs::write(&usage, stub_in_reserve().0.to_string()).unwrap();
+    let mut obid = start(&folder.0, &config, None);
+    let status = call(&obid, "GET", "/v1/status", None);
+    assert_eq!(status.body["talkNext"], "stub", "{}", status.text);
+    obid.stop();
+    let (mut held, five) = (stub_in_reserve().0, obi_protocol::time::now() + 300);
+    held["stub"]["fiveHour"] = json!(1.0);
+    held["stub"]["fiveHourResets"] = json!(five);
+    held["codex"] = json!({"fullUntil": five + 3600});
+    std::fs::write(&usage, held.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let typed = post_typed(&obid, "Look around", false);
+    let waits = waiting_for_reset(&obid, typed.body["id"].as_str().unwrap());
+    let at = obi_protocol::time::format(five + 90);
+    assert_eq!(
+        (&waits["account"], &waits["resumesAt"]),
+        (&json!("stub"), &json!(at))
+    );
+}
+
+/// LIMITS-20: routines keep the reserve's wait: a routine's run on Auto waits for room, with Use
+/// anyway (#872), and work nobody watches whose five-hour limit reset waits again for its week.
+#[test]
+fn limits_20_a_routine_still_waits_at_the_reserve() {
+    let folder = Folder::new("limits-20-routine");
+    let config = limit_config(&folder.0, "fake-claude", false);
+    std::fs::write(
+        folder.0.join("home/usage.json"),
+        stub_in_reserve().0.to_string(),
+    )
+    .unwrap();
+    let obid = start(&folder.0, &config, None);
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/routines",
+        Some(
+            &json!({"name": "Daily", "repo": "obi-e2e/fixture-app", "kind": "research",
+            "task": "Look around", "agent": "auto", "account": "auto",
+            "schedule": {"every": "weekdays", "at": "09:00"},
+            "zone": "America/Sao_Paulo", "createdBy": "mac"}),
+        ),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let routine = made.body["id"].as_str().unwrap().to_owned();
+    let ran = within(10, "the routine ran", || {
+        let ran = call(&obid, "POST", &format!("/v1/routines/{routine}/run"), None);
+        ran.body["job"]["id"].as_str().map(str::to_owned)
+    });
+    let job = job_now(&obid, &ran);
+    assert_eq!(job["status"], "queued", "{job}");
+    assert_eq!(
+        job["waiting"],
+        json!({"kind": "limit", "text": "an account with room: Stub is in its weekly reserve", "reserved": ["stub"]})
+    );
+    call(&obid, "POST", &format!("/v1/jobs/{ran}/stop"), None);
+
+    // Sent with no app's signature, nobody watches it: at its reset it waits for its week.
+    let id = post(&obid, "LIMITED ONCE: 300");
+    waiting_for_reset(&obid, &id);
+    let (usage, week) = stub_in_reserve();
+    let obid = its_time_comes(&folder, &config, obid, &id, Some(usage));
+    let at = obi_protocol::time::format(week + 90);
+    within(60, "it waits for its week", || {
+        (job_now(&obid, &id)["resumesAt"] == at).then_some(())
+    });
+    assert_eq!(job_now(&obid, &id)["status"], "queued");
+}
+
+/// LIMITS-18: a new job that never ran, waiting on a full account, takes another that has room
+/// as a wait for room does: no handoff, no Try again, no move.
+#[test]
+fn limits_18_a_job_that_never_ran_moves_without_a_handoff() {
+    let folder = Folder::new("limits-18-never-ran");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let now = obi_protocol::time::now();
+    let usage = folder.0.join("home/usage.json");
+    let full = json!({"stub": {"fullUntil": now + 3600}, "codex": {"fullUntil": now + 7200}});
+    std::fs::write(&usage, full.to_string()).unwrap();
+    let mut obid = start(&folder.0, &config, None);
+    let id = post_unnamed_auto(&obid);
+    let waits = waiting_for_reset(&obid, &id);
+    assert_eq!(waits["account"], "stub", "{waits}");
+    obid.stop();
+    // Codex's account has room now.
+    let room = json!({"stub": {"fullUntil": now + 3600}, "codex": {"fiveHour": 0.1,
+        "sevenDay": 0.2, "fiveHourResets": now + 3600, "sevenDayResets": now + 86_400,
+        "fiveHourObservedAt": now, "sevenDayObservedAt": now}});
+    std::fs::write(&usage, room.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let done = within(90, "Codex takes it", || {
+        let job = job_now(&obid, &id);
+        (job["agent"] == "codex" && job["status"] == "done").then_some(job)
+    });
+    assert_eq!(done["account"], "codex", "{done}");
+    assert!(done["moves"].as_array().unwrap().is_empty(), "{done}");
+    assert!(
+        (done["changes"].as_array().unwrap().iter())
+            .any(|c| c["what"] == "Started when an account had room: Codex · Codex account"),
+        "{done}"
+    );
+    let worktree = Path::new(done["worktree"].as_str().unwrap());
+    assert!(!worktree.join(".obi/inputs/handoff.md").exists());
+    let heard = codex_heard(&folder, &id);
+    assert!(
+        heard.contains("Look around") && !heard.contains("handoff.md"),
+        "{heard}"
+    );
+    let kept = read_job(&folder, &id);
+    assert!(
+        !kept.heard.iter().any(|h| h.contains("Try again")),
+        "{:?}",
+        kept.heard
+    );
+}
+
+/// A job sent with no app's signature (nobody watches it) on Auto, `Look around`.
+fn post_unnamed_auto(obid: &Obid) -> String {
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
+    let answer = call(obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    answer.body["id"].as_str().unwrap().to_owned()
+}
+
+/// LIMITS-18: work nobody watches, with every account it may use at its limit, waits on the one
+/// whose limit ends first, by itself, rather than for the owner's yes on a ChatGPT login.
+#[test]
+fn limits_18_several_held_accounts_pick_the_soonest_reset() {
+    let folder = Folder::new("limits-18-soonest");
+    let mut config = limit_config(&folder.0, "fake-claude", true);
+    let now = obi_protocol::time::now();
+    // A ChatGPT login the owner hasn't said yes to for work nobody watches (CHATGPT-20).
+    let gpt = folder.0.join("home/accounts/gpt");
+    std::fs::create_dir_all(&gpt).unwrap();
+    let marker = json!({"signed": true, "planUse": true, "expiresAt": now + 864_000,
+        "refreshedAt": now});
+    std::fs::write(gpt.join("chatgpt.json"), marker.to_string()).unwrap();
+    let record = json!({"clientId": "limits-18-client", "sub": "limits-18-sub",
+        "hostId": "limits-18-host", "tokens": {"access": "limits-18-access-token",
+        "refresh": "limits-18-refresh-token", "scopes": ["chatgpt.tokens.use.direct"],
+        "expiresAt": now + 864_000, "refreshedAt": now}});
+    let vault = json!({"secrets": {"oby.chatgpt.gpt": record.to_string()}});
+    write_vault(&folder.0.join("home"), &vault.to_string());
+    let codex = config["agents"]["codex"]["accounts"]
+        .as_array_mut()
+        .unwrap();
+    codex.push(json!({"id": "gpt", "name": "ChatGPT", "configDir": gpt}));
+    let usage = json!({"stub": {"fullUntil": now + 7200}, "codex": {"fullUntil": now + 3600}});
+    std::fs::write(folder.0.join("home/usage.json"), usage.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let id = post_unnamed_auto(&obid);
+    let waits = waiting_for_reset(&obid, &id);
+    assert_eq!(waits["account"], "codex", "{waits}");
+    assert_eq!(waits["waiting"]["kind"], "cap", "{waits}");
+    assert_eq!(
+        waits["resumesAt"],
+        obi_protocol::time::format(now + 3600 + 90),
+        "{waits}"
+    );
+}

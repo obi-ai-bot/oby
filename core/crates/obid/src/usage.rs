@@ -101,26 +101,31 @@ impl Usage {
             && self.seven_day_at(now).unwrap_or(0.0) < NEARLY_FULL
     }
     /// Whether a limit that resets at `reset` is a five-hour one (LIMITS-5): a reset its tool said,
-    /// never obid's guess, no further off than that window, with the week neither nearly full nor
-    /// in its reserve. Anything else is the owner's to decide (#1563).
+    /// never obid's guess, no further off than that window, with the week not nearly full (its
+    /// reserve holds only work nobody watches, LIMITS-20).
     pub fn five_hour_limit(&self, reset: i64, now: i64) -> bool {
         let guessed = self.full_until_inferred && self.full_until == Some(reset);
         !guessed
             && reset > now
             && reset - now <= FIVE_HOURS
             && self.seven_day_at(now).unwrap_or(0.0) < NEARLY_FULL
-            && !self.reserved(now)
+    }
+    /// [`Usage::held`], where a week in its reserve alone holds only `background` work (LIMITS-20).
+    pub fn held_for(&self, now: i64, background: bool) -> Option<String> {
+        self.held(now)
+            .filter(|_| background || !self.only_reserved(now))
     }
 
     /// When it takes automatic work again, as far as its tool said: the latest of the resets that
-    /// hold it ([`Usage::held`]). `None` when it can now, or when no reset of them is known.
-    pub fn free_at(&self, now: i64) -> Option<i64> {
-        self.held(now)?;
+    /// hold it ([`Usage::held_for`]). `None` when it can now, or when no reset of them is known.
+    pub fn free_at(&self, now: i64, background: bool) -> Option<i64> {
+        self.held_for(now, background)?;
         let five = (self.five_hour_at(now).unwrap_or(0.0) >= NEARLY_FULL)
             .then_some(self.five_hour_resets)
             .flatten();
         let week = (!self.advisory
-            && (self.seven_day_at(now).unwrap_or(0.0) >= NEARLY_FULL || self.reserved(now)))
+            && (self.seven_day_at(now).unwrap_or(0.0) >= NEARLY_FULL
+                || (background && self.reserved(now))))
         .then(|| self.week_resets(now))
         .flatten();
         [self.full_until_at(now), five, week]
@@ -981,13 +986,11 @@ mod tests {
         // A reset that has come, or further off than five hours, isn't.
         assert!(!session.five_hour_limit(now, now));
         assert!(!session.five_hour_limit(now + 5 * 3600 + 120, now));
-        // The week: full, or in its reserve (lifted, it isn't held).
+        // A full week isn't; one in its reserve is waited out too (LIMITS-20).
         let week = claude("seven_day", now + 3 * 86_400, 0.2, 1.0);
         assert!(!week.five_hour_limit(now + 3 * 86_400, now));
         assert!(!week.five_hour_limit(now + 3600, now));
-        let mut reserved = claude("five_hour", now + 3600, 1.0, 0.85);
-        assert!(!reserved.five_hour_limit(now + 3600, now));
-        reserved.reserve_lifted_until = Some(now + 86_400);
+        let reserved = claude("five_hour", now + 3600, 1.0, 0.85);
         assert!(reserved.five_hour_limit(now + 3600, now));
         // obid's own guess at a reset isn't one its tool said.
         let guessed = Usage {
@@ -1152,21 +1155,55 @@ mod tests {
         assert_eq!(usage.held(300), None);
     }
 
+    /// LIMITS-20: the weekly reserve holds only work nobody watches; at 95% it holds all of it.
+    #[test]
+    fn limits_20_the_reserve_holds_only_background_work() {
+        let mut usage = week(0.85, 200);
+        assert!(
+            usage
+                .held_for(100, true)
+                .unwrap()
+                .contains("weekly reserve")
+        );
+        assert_eq!(usage.held_for(100, false), None);
+        usage.five_hour = Some(0.96);
+        assert!(
+            usage
+                .held_for(100, false)
+                .unwrap()
+                .contains("5-hour window")
+        );
+        usage.five_hour = None;
+        usage.seven_day = Some(0.95);
+        assert!(
+            usage
+                .held_for(100, false)
+                .unwrap()
+                .contains("95% of its week")
+        );
+    }
+
     /// When an account takes automatic work again: the latest reset of what holds it (#871).
     #[test]
     fn free_at_is_the_latest_reset_that_holds_it() {
         let mut usage = week(0.5, 900);
-        assert_eq!(usage.free_at(100), None, "it has room");
+        assert_eq!(usage.free_at(100, true), None, "it has room");
         usage.full_until = Some(300);
-        assert_eq!(usage.free_at(100), Some(300));
+        assert_eq!(usage.free_at(100, true), Some(300));
         usage.five_hour = Some(0.97);
         usage.five_hour_resets = Some(400);
-        assert_eq!(usage.free_at(100), Some(400));
+        assert_eq!(usage.free_at(100, true), Some(400));
         usage.seven_day = Some(0.85);
-        assert_eq!(usage.free_at(100), Some(900), "its weekly reserve too");
+        assert_eq!(
+            usage.free_at(100, true),
+            Some(900),
+            "its weekly reserve too"
+        );
+        // Work someone watches waits out its five-hour limit only (LIMITS-20).
+        assert_eq!(usage.free_at(100, false), Some(400));
         usage.seven_day_resets = None;
         assert_eq!(
-            usage.free_at(100),
+            usage.free_at(100, true),
             Some(400),
             "a reset it didn't say isn't known"
         );
@@ -1339,7 +1376,7 @@ mod tests {
             assert!(!kept.reserved(now), "{used}");
             assert!(!kept.only_reserved(now), "{used}");
             assert_eq!(kept.held(now), None, "{used}");
-            assert_eq!(kept.free_at(now), None, "{used}");
+            assert_eq!(kept.free_at(now, true), None, "{used}");
             assert!(!kept.window_full(now), "{used}");
             assert_eq!(kept.full_until, None, "{used}");
             assert_eq!(kept.seven_day_observed_at, None, "{used}");
@@ -1350,7 +1387,7 @@ mod tests {
             ..usages.get("cursor")
         };
         assert!(refused.held(now).is_some());
-        assert_eq!(refused.free_at(now), Some(now + 60));
+        assert_eq!(refused.free_at(now, true), Some(now + 60));
         // Another tool's 100% still reads full.
         let claude = Usage {
             seven_day: Some(1.0),
