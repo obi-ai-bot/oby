@@ -1,0 +1,30 @@
+# Routines: work on a schedule waits by itself
+
+The business behavior contract for how a routine's runs wait, from [the template](../business-contract-template.md). The API is `docs/runner-api.md`, "obid only: routines (#395)"; the code is `core/crates/obid/src/routines.rs`, the tests `core/crates/obid/tests/routines_api.rs` (`routines_1_*` to `routines_4_*`) and the unit test `routines_3_*` in `routines.rs`. Roadmap: OBY-84, OBY-88.
+
+## Feature and status
+
+- **Outcome:** A routine runs on its schedule without piling work up or asking the owner anything. Since LIMITS-18 (#2124) `Jobs::create` never refuses for want of room: a job with no account that has room is made `queued` and waits by itself. The owner's word: work waits by itself, never asks about a limit; ask the human least. So a routine whose last run still waits (for room, or for the owner) doesn't start another one behind it, a run too late to matter is recorded, not run, and a Mac waking with many routines due doesn't start them all at once.
+- **Status:** **Implemented** (ROUTINES-1 to 4). The words of the reasons are **proposed, Sangam's to change**: his design has no screen for a routine's runs yet.
+- **Scope:** When a scheduled run starts, is skipped or is missed. Outside it: the job a run starts (it's an ordinary job, `Jobs::create`, unchanged), pausing after 3 failures (`failuresInARow`, ALERTS-5, unchanged), Run now (the owner's own word, below), and the apps' screens.
+
+## Behavior
+
+- **Actors and ownership:** obid decides, at each check (every minute, and once as it starts), whether a routine that's due runs, is skipped or is missed, and keeps the run in the routine's file. Clients show `lastRun`, `runs` and `graceMinutes`, and send `graceMinutes` on `POST` and `PATCH`. No model call decides any of it.
+- **Triggers:** a routine's next time comes (`due`), at a check.
+- **States:** each run is `started`, `skipped`, `missed` or `failed`, as before. `skipped` and `missed` start no job and never count toward `failuresInARow`, so they never pause a routine.
+- **The previous run.** What a new run looks at is the job of the latest run that started one. Run now (`POST /v1/routines/{id}/run`) is the owner's own click: it waits only while that job is still `queued` or `running` (`409`, as before), never because it waits for the owner.
+- **Failures and recovery:** a skipped or missed run moves the routine on to its next time, kept before anything starts, so a restart never runs a time twice. A previous job that ends, moves to an account with room, or is answered or dismissed by the owner lets the next due run start.
+- **Invariants:** a routine never asks the owner about a limit, a scheduled run never starts behind a previous run's job that still waits, and a routine never pauses for runs it skipped. Every job a run starts is made by `Jobs::create`, under every rule a job has.
+
+## Interfaces
+
+- `graceMinutes` on a routine (`GET`, the `routine` event): how late, in minutes, its latest time still runs; `60` for an hourly routine and `1440` for the rest when the routine names none. Optional on `POST /v1/routines` and `PATCH /v1/routines/{id}` (a whole number, at least 1; `0` is `422`). Add-only: an older client that never sends it gets the default.
+- A skipped run's `reason`: `The previous run still waits for an account with room.` or `The previous run still waits for you.` (new), or `The previous run was still going.` (as before).
+
+## Acceptance scenarios
+
+- **ROUTINES-1** (`routines_1_a_run_whose_previous_job_waits_for_room_is_skipped`): a routine's previous run's job is `queued` and waits for room (a five-hour limit's reset, `resumesAt`, LIMITS-5 and 18; or `waiting` for room, #872). Its next due run is `skipped`, `reason` `The previous run still waits for an account with room.`, and starts no job. `failuresInARow` stays as it was; a routine skipped 3 times in a row stays on.
+- **ROUTINES-2** (`routines_2_a_run_whose_previous_job_waits_for_you_is_skipped`): a routine's previous run's job waits on the owner, and isn't dismissed: `interrupted`, a permission or question open (`permission`), a #1563 limit decision (`accountLimit`), or held for a ChatGPT yes (CHATGPT-20). Its next due run is `skipped`, `reason` `The previous run still waits for you.`, and starts no job, with no count toward `failuresInARow`. Run now still starts one.
+- **ROUTINES-3** (`routines_3_a_time_older_than_its_grace_is_missed_not_run`, and the unit test `routines_3_a_latest_time_past_its_grace_is_missed_not_run`): when a routine's latest due time is older than its grace (`graceMinutes`, else 60 for hourly and 1440 for the rest), it's recorded `missed` with the times before it (`Missed 1 run while Oby wasn't running.`), nothing runs, and the routine goes on to its next time. Within its grace it runs as a catch-up, as before.
+- **ROUTINES-4** (`routines_4_a_check_starts_one_routine_at_most`): a check starts at most one routine's job. Another routine due at the same check waits for the next check, a minute on, and runs then for the same time. A run that's skipped, missed or fails doesn't count: the check goes on to the next routine.

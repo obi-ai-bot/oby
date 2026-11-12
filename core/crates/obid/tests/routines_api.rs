@@ -160,12 +160,13 @@ fn a_routine_due_while_obid_was_off_runs_once_when_it_starts() {
         "lastFire": now - now.rem_euclid(86_400) - 3 * 86_400, "failuresInARow": 0, "runs": []});
     std::fs::write(dir.join("c0ffee01.json"), saved.to_string()).unwrap();
     // One whose account is gone: its run can't start, its third failure in a row, so it pauses.
+    // Checked first (by id): a check starts one job at most, and the rest wait (ROUTINES-4).
     let mut ghost = saved.clone();
-    ghost["id"] = json!("dead0001");
+    ghost["id"] = json!("0dead001");
     ghost["name"] = json!("Ghost check");
     ghost["account"] = json!("ghost");
     ghost["failuresInARow"] = json!(2);
-    std::fs::write(dir.join("dead0001.json"), ghost.to_string()).unwrap();
+    std::fs::write(dir.join("0dead001.json"), ghost.to_string()).unwrap();
     let obid = obid(&folder);
 
     // It runs within its first check, as obid starts.
@@ -182,9 +183,8 @@ fn a_routine_due_while_obid_was_off_runs_once_when_it_starts() {
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     };
-    // The check is done once the ghost's card is raised, its last step (ALERTS-5): every turn
-    // below was said.
-    card(&obid, "routine-paused-dead0001");
+    // The ghost's card is its last step (ALERTS-5): every turn of its was said.
+    card(&obid, "routine-paused-0dead001");
     let runs = routine["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 2, "{routine}");
     // Newest first: the catch-up for the latest time, then the missed ones before it.
@@ -204,25 +204,25 @@ fn a_routine_due_while_obid_was_off_runs_once_when_it_starts() {
     );
     assert_eq!(job.body["routine"]["catchUp"], true, "{}", job.body);
     let conversation = routine["conversation"].as_str().unwrap();
-    let turns = call(
-        &obid,
-        "GET",
-        &format!("/v1/conversation?id={conversation}"),
-        None,
-    );
-    let texts: Vec<&str> = turns
-        .body
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| t["routine"].is_object())
-        .map(|t| t["text"].as_str().unwrap())
-        .collect();
+    // Said right after the run is kept.
+    let texts: Vec<String> = within(30, "the run's turn", || {
+        let turns = call(
+            &obid,
+            "GET",
+            &format!("/v1/conversation?id={conversation}"),
+            None,
+        );
+        let texts: Vec<String> = (turns.body.as_array()?.iter())
+            .filter(|t| t["routine"].is_object())
+            .map(|t| t["text"].as_str().unwrap().to_owned())
+            .collect();
+        (!texts.is_empty()).then_some(texts)
+    });
     assert_eq!(
         texts,
         ["Nightly readme started its 0:00 run, which it missed while Oby wasn't running."]
     );
-    let ghost = call(&obid, "GET", "/v1/routines/dead0001", None).body;
+    let ghost = call(&obid, "GET", "/v1/routines/0dead001", None).body;
     assert_eq!(ghost["runs"][0]["outcome"], "failed", "{ghost}");
     assert_eq!(ghost["runs"][0]["reason"], "There's no account ghost.");
     assert_eq!(ghost["enabled"], false, "{ghost}");
@@ -691,4 +691,201 @@ fn a_check_in_turned_off_posts_nothing_and_a_failed_call_still_says_what_happene
         "",
         "the failing answer was the one taken"
     );
+}
+
+// ROUTINES-1 to 4 (docs/contracts/routines.md): each routine below is kept in obid's home before it
+// starts, due at its first check. The ghost, `ffff0001`, checked last (by id), fails on an account
+// that's gone and pauses: its card says the check got that far.
+
+/// A daily routine `id`, due as obid starts (00:00 UTC, last acted on the day before), with
+/// `fields` over its own.
+fn due_routine(folder: &Folder, id: &str, fields: Value) {
+    let now = obi_protocol::time::now();
+    let midnight = now - now.rem_euclid(86_400);
+    let mut saved = json!({"id": id, "name": format!("Check {id}"), "repo": "obi-e2e/fixture-app",
+        "kind": "investigate", "task": "Say what the README covers.", "agent": "auto",
+        "account": "auto", "mode": null, "check": null, "rounds": 1,
+        "schedule": {"every": "daily", "at": "00:00"}, "zone": "UTC", "enabled": true,
+        "created": now - 10 * 86_400, "createdBy": "mac", "conversation": null,
+        "lastFire": midnight - 86_400, "failuresInARow": 0, "runs": []});
+    for (key, value) in fields.as_object().unwrap() {
+        saved[key] = value.clone();
+    }
+    let dir = folder.0.join("home/routines");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{id}.json")), saved.to_string()).unwrap();
+}
+
+/// The ghost, whose card says the first check is done.
+fn with_ghost(folder: &Folder) -> Obid {
+    due_routine(
+        folder,
+        "ffff0001",
+        json!({"account": "ghost", "failuresInARow": 2}),
+    );
+    let obid = obid(folder);
+    card(&obid, "routine-paused-ffff0001");
+    obid
+}
+
+/// A run kept from before, `outcome`, of `job`.
+fn kept_run(outcome: &str, job: Option<&str>) -> Value {
+    let at = obi_protocol::time::now() - 2 * 86_400;
+    json!({"scheduled": at, "at": at, "outcome": outcome, "reason": null, "job": job,
+           "catchUp": false, "ended": null})
+}
+
+/// The job `id` of a routine's earlier run, kept in obid's home as `left` leaves it.
+fn previous_job(folder: &Folder, id: &str, left: impl FnOnce(&mut obid::job::Job)) {
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "investigate".into(),
+        "Say what the README covers.".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.branch = format!("oby/investigate-{id}");
+    job.round = Some(1);
+    // Its account the owner's: it doesn't move to another.
+    job.named = true;
+    left(&mut job);
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(
+        jobs.join(format!("{id}.json")),
+        serde_json::to_vec(&job).unwrap(),
+    )
+    .unwrap();
+}
+
+/// ROUTINES-1: while the previous run's job still waits for an account with room, a due run is
+/// `skipped`, saying so, and starts no job; skipped runs never count as failures, so a routine
+/// skipped 3 times in a row stays on.
+#[test]
+fn routines_1_a_run_whose_previous_job_waits_for_room_is_skipped() {
+    let folder = Folder::new("routines-1");
+    previous_job(&folder, "aaaa0101", |job| {
+        job.status = obid::job::Status::Queued;
+        job.resumes_at = Some(obi_protocol::time::now() + 3_600);
+    });
+    let runs = json!([
+        kept_run("started", Some("aaaa0101")),
+        kept_run("skipped", None),
+        kept_run("skipped", None)
+    ]);
+    due_routine(&folder, "a1000001", json!({"runs": runs}));
+    let obid = with_ghost(&folder);
+
+    let routine = call(&obid, "GET", "/v1/routines/a1000001", None).body;
+    let runs = routine["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 4, "{routine}");
+    assert_eq!(runs[0]["outcome"], "skipped", "{routine}");
+    assert_eq!(
+        runs[0]["reason"],
+        "The previous run still waits for an account with room."
+    );
+    assert_eq!(runs[0]["job"], Value::Null);
+    assert_eq!(routine["enabled"], true, "{routine}");
+    assert_eq!(routine["failuresInARow"], 0, "{routine}");
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    let started = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["id"] != "aaaa0101");
+    assert_eq!(started.count(), 0, "no job started: {jobs}");
+}
+
+/// ROUTINES-2: while the previous run's job waits for the owner (interrupted, not dismissed), a
+/// due run is `skipped`, saying so. Run now is the owner's own word: it starts one.
+#[test]
+fn routines_2_a_run_whose_previous_job_waits_for_you_is_skipped() {
+    let folder = Folder::new("routines-2");
+    previous_job(&folder, "aaaa0201", |job| {
+        job.status = obid::job::Status::Interrupted;
+        job.reason = Some("The agent stopped.".into());
+    });
+    due_routine(
+        &folder,
+        "a2000001",
+        json!({"runs": [kept_run("started", Some("aaaa0201"))]}),
+    );
+    let obid = with_ghost(&folder);
+
+    let routine = call(&obid, "GET", "/v1/routines/a2000001", None).body;
+    let runs = routine["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{routine}");
+    assert_eq!(runs[0]["outcome"], "skipped", "{routine}");
+    assert_eq!(runs[0]["reason"], "The previous run still waits for you.");
+    assert_eq!(runs[0]["job"], Value::Null);
+    assert_eq!(routine["enabled"], true, "{routine}");
+    assert_eq!(routine["failuresInARow"], 0, "{routine}");
+
+    let ran = call(&obid, "POST", "/v1/routines/a2000001/run", None);
+    assert_eq!(ran.status, 201, "{}", ran.text);
+}
+
+/// ROUTINES-3: `graceMinutes` (60 for an hourly routine, else 1440, when left out) is how late a
+/// missed time still runs: a latest time older than it is recorded `missed`, and nothing runs.
+#[test]
+fn routines_3_a_time_older_than_its_grace_is_missed_not_run() {
+    let folder = Folder::new("routines-3");
+    // Every day at 10 minutes ago, UTC, last acted on a day ago; 5 minutes' grace.
+    let at = obi_protocol::time::now() - 600;
+    let schedule = json!({"every": "daily",
+        "at": format!("{:02}:{:02}", at.rem_euclid(86_400) / 3_600, at.rem_euclid(3_600) / 60)});
+    let fields = json!({"schedule": schedule, "lastFire": at - 86_400, "graceMinutes": 5});
+    due_routine(&folder, "a3000001", fields);
+    let obid = with_ghost(&folder);
+
+    let kept = call(&obid, "GET", "/v1/routines/a3000001", None).body;
+    let runs = kept["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{kept}");
+    assert_eq!(runs[0]["outcome"], "missed", "{kept}");
+    assert_eq!(runs[0]["reason"], "Missed 1 run while Oby wasn't running.");
+    assert_eq!(kept["graceMinutes"], 5);
+    assert_eq!(kept["enabled"], true, "{kept}");
+    assert!(kept["nextRun"].is_string(), "{kept}");
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.body, json!([]), "{}", jobs.text);
+
+    // Made and changed over the API, add-only: left out, its schedule's.
+    let made = call(&obid, "POST", "/v1/routines", Some(&routine("Daily")));
+    assert_eq!(made.body["graceMinutes"], 1440, "{}", made.text);
+    let mut hourly = routine("Hourly");
+    hourly["schedule"] = json!({"every": "hourly", "minute": 5});
+    hourly["graceMinutes"] = json!(30);
+    let made = call(&obid, "POST", "/v1/routines", Some(&hourly));
+    assert_eq!(made.body["graceMinutes"], 30, "{}", made.text);
+    let path = format!("/v1/routines/{}", made.body["id"].as_str().unwrap());
+    let none = call(&obid, "PATCH", &path, Some(&json!({"graceMinutes": 0})));
+    assert_eq!(none.status, 422, "{}", none.text);
+    let changed = call(&obid, "PATCH", &path, Some(&json!({"graceMinutes": 90})));
+    assert_eq!(changed.body["graceMinutes"], 90, "{}", changed.text);
+}
+
+/// ROUTINES-4: a check starts at most one routine's job; another one due waits for the next
+/// check, a minute on, and runs then for the same time.
+#[test]
+fn routines_4_a_check_starts_one_routine_at_most() {
+    let folder = Folder::new("routines-4");
+    due_routine(&folder, "a4000001", json!({}));
+    due_routine(&folder, "a4000002", json!({}));
+    let obid = obid(&folder);
+    let runs = |id: &str| {
+        let routine = call(&obid, "GET", &format!("/v1/routines/{id}"), None).body;
+        routine["runs"].as_array().cloned().unwrap_or_default()
+    };
+    within(30, "the first starts", || {
+        (!runs("a4000001").is_empty()).then_some(())
+    });
+    assert_eq!(runs("a4000001")[0]["outcome"], "started");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(runs("a4000002"), Vec::<Value>::new(), "{}", obid.log());
+    let second = within(90, "the second starts at the next check", || {
+        runs("a4000002").first().cloned()
+    });
+    assert_eq!(second["outcome"], "started", "{second}");
+    assert_eq!(second["scheduled"], runs("a4000001")[0]["scheduled"]);
 }
