@@ -409,9 +409,9 @@ fn keychain_8_a_usage_read_asks_the_keychain_nothing_new() {
     assert!(!asked.contains("cursor-refresh-token"), "{asked}");
 }
 
-/// KEYCHAIN-3: Claude Code's Keychain login macOS didn't give obid (Deny): a run on it fails saying
-/// why, rather than starting with no login ("not logged in"), and the account then reads as signed
-/// out, its label saying to sign in again and choose Always Allow.
+/// KEYCHAIN-3: Claude Code's Keychain login macOS didn't give obid (Deny): a boxed run on it fails
+/// saying why, rather than starting with no login ("not logged in"), and the account then reads as
+/// signed out, its label saying to sign in again and choose Always Allow.
 #[cfg(target_os = "macos")]
 #[test]
 fn keychain_3_a_claude_login_macos_refused_fails_the_run_saying_why() {
@@ -420,25 +420,12 @@ fn keychain_3_a_claude_login_macos_refused_fails_the_run_saying_why() {
     let mut config = config(&folder.0, &remote, &agent("fake-claude"));
     config["claudeKeychain"] = json!(true);
     let security = agent("fake-security-holding");
-    let obid = start_with(
-        &folder.0,
-        &config,
-        None,
-        &[
-            ("OBID_SECURITY_BIN", security.to_str().unwrap()),
-            ("FAKE_SECURITY_REFUSE", "1"),
-        ],
-    );
-    let job = call(
-        &obid,
-        "POST",
-        "/v1/jobs",
-        Some(
-            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "ENV", "account": "stub"}}),
-        ),
-    );
-    assert_eq!(job.status, 201, "{}", job.text);
-    let id = job.body["id"].as_str().unwrap().to_owned();
+    let env = [
+        ("OBID_SECURITY_BIN", security.to_str().unwrap()),
+        ("FAKE_SECURITY_REFUSE", "1"),
+    ];
+    let obid = start_with(&folder.0, &config, None, &env);
+    let (obid, id) = boxed_job(obid, &config, &env, "investigate", "ENV", "stub");
     let failed = within(30, "the job ended", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
         (job["status"] != "queued" && job["status"] != "running").then_some(job)
@@ -1149,6 +1136,37 @@ fn system_claude(folder: &Path) -> PathBuf {
     claude
 }
 
+/// A job of `kind` on `account` in Oby's box, where obid copies the account's login for it and
+/// refreshes or refuses that copy (KEYCHAIN-3, KEYCHAIN-10): an `untrusted` one, since the owner's
+/// own Claude Code job runs in the own lane on the account's own login (LANES-1). Written while
+/// obid is down, it starts as obid does, with `env`: obid again, and the job's id.
+#[cfg(target_os = "macos")]
+fn boxed_job(
+    mut obid: Obid,
+    config: &Value,
+    env: &[(&str, &str)],
+    kind: &str,
+    task: &str,
+    account: &str,
+) -> (Obid, String) {
+    assert!(obid.stop().success());
+    let id = "b0c5ed01";
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        kind.into(),
+        task.into(),
+        "claude".into(),
+        account.into(),
+    );
+    job.branch = format!("oby/{kind}-{id}");
+    job.untrusted = true;
+    std::fs::create_dir_all(obid.home.join("jobs")).unwrap();
+    let text = serde_json::to_vec(&job).unwrap();
+    std::fs::write(obid.home.join(format!("jobs/{id}.json")), text).unwrap();
+    (start_with(&obid.folder, config, None, env), id.to_owned())
+}
+
 /// A Claude Code account obid adds, its Keychain item (where the stand-in `security` finds it)
 /// holding a login whose token ends `seconds` from now (before now, when negative): its id and
 /// the item's file.
@@ -1175,7 +1193,7 @@ fn added_keychain_login(folder: &Path, obid: &Obid, seconds: i64) -> (String, Pa
 }
 
 /// A Claude Code account obid added stays signed in (#877): with its token near its end, the
-/// Mac's own Claude Code refreshes the account's own Keychain item before a job's run (the
+/// Mac's own Claude Code refreshes the account's own Keychain item before a boxed job's run (the
 /// stand-in `security` finds the items a test puts in `$TMPDIR/obid-test-keychain`), and the job
 /// runs on the renewed login, in a copy of its own.
 #[cfg(target_os = "macos")]
@@ -1186,19 +1204,9 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
     let mut config = config(&folder.0, &remote, &system_claude(&folder.0));
     config["claudeKeychain"] = json!(true);
     let obid = start(&folder.0, &config, None);
-    let (_, item) = added_keychain_login(&folder.0, &obid, 60);
-
-    let job = call(
-        &obid,
-        "POST",
-        "/v1/jobs",
-        Some(
-            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
-                     "task": "TOKEN HOLDS: renewed REFRESH KEPT", "account": "Second"}}),
-        ),
-    );
-    assert_eq!(job.status, 201, "{}", job.text);
-    let job_id = job.body["id"].as_str().unwrap().to_owned();
+    let (id, item) = added_keychain_login(&folder.0, &obid, 60);
+    let task = "TOKEN HOLDS: renewed REFRESH KEPT";
+    let (obid, job_id) = boxed_job(obid, &config, &[], "research", task, &id);
     let ended = within(60, "the job ended", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body;
         (job["status"] != "queued" && job["status"] != "running").then_some(job)
@@ -1214,7 +1222,7 @@ fn an_added_claude_accounts_login_is_kept_fresh() {
 
 /// USAGE-5: a Claude Code account with a `configDir` the configuration names is refreshed like
 /// one obid added: with its token near its end, the Mac's own Claude Code refreshes the folder's
-/// own Keychain item before a job's run, and the job runs on the renewed login.
+/// own Keychain item before a boxed job's run, and the job runs on the renewed login.
 #[cfg(target_os = "macos")]
 #[test]
 fn usage_5_a_named_folder_login_is_refreshed_like_an_added_one() {
@@ -1240,18 +1248,8 @@ fn usage_5_a_named_folder_login_is_refreshed_like_an_added_one() {
                                          "refreshToken": refresh, "expiresAt": ends}});
     std::fs::write(&item, login.to_string()).unwrap();
     let obid = start(&folder.0, &config, None);
-
-    let job = call(
-        &obid,
-        "POST",
-        "/v1/jobs",
-        Some(
-            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "research",
-                     "task": "TOKEN HOLDS: renewed REFRESH KEPT", "account": "Named"}}),
-        ),
-    );
-    assert_eq!(job.status, 201, "{}", job.text);
-    let job_id = job.body["id"].as_str().unwrap().to_owned();
+    let task = "TOKEN HOLDS: renewed REFRESH KEPT";
+    let (obid, job_id) = boxed_job(obid, &config, &[], "research", task, "named");
     let ended = within(60, "the job ended", || {
         let job = call(&obid, "GET", &format!("/v1/jobs/{job_id}"), None).body;
         (job["status"] != "queued" && job["status"] != "running").then_some(job)
