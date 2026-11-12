@@ -92,14 +92,23 @@ impl Failover {
     /// `job` goes on there in a new session, the same round, as a resume does (LIMITS-12).
     pub(super) fn apply(&self, job: &mut Job, jobs: &Jobs) {
         let Failover(tool, account, from, line) = self;
+        let tuning = crate::settings::load(&jobs.config.home).tuning;
+        let offered = jobs.model_lists.to_check(*tool, &account.id);
+        // One that never ran hands nothing over: it starts there, as a wait for room does.
+        if job.session.is_none() {
+            (job.account, job.resumes_at, job.waiting) = (account.id.clone(), None, None);
+            on_tool(job, *tool);
+            tune(job, &tuning, &offered);
+            job.step = "Starting".into();
+            let on = format!("{} · {}", tool.name(), account.name);
+            return job.changed(format!("Started when an account had room: {on}"));
+        }
         let by = "by itself (Account failover)".into();
         let said = Carried {
             because: "which reached its limit",
             why: line.clone(),
             by,
         };
-        let tuning = crate::settings::load(&jobs.config.home).tuning;
-        let offered = jobs.model_lists.to_check(*tool, &account.id);
         carry_over(job, *tool, account, &tuning, &offered, from, said);
         let (round, rounds) = (job.round, job.rounds);
         hear(job, crate::brain::actions::TRY_AGAIN);
@@ -280,7 +289,8 @@ impl Jobs {
                 continue;
             }
             let gone = !self.limit_source_is_connected(&job.agent, &job.account);
-            if gone || self.usage.get(&job.account).held(now).is_some() {
+            let usage = self.usage.get(&job.account);
+            if gone || usage.held_for(now, job.background()).is_some() {
                 let at = match gone {
                     true => now + UNKNOWN_RESET,
                     false => self.limit_wait_until(&job.account, None),
@@ -575,11 +585,12 @@ impl Jobs {
         let mut result = Vec::new();
         for tool in Tool::ALL {
             for account in self.accounts(tool) {
+                let held = self.usage.get(&account.id).held_for(now, background);
                 if account.id == from
                     || self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())
                     || (background && !self.takes_background(&account))
-                    || self.usage.get(&account.id).held(now).is_some()
+                    || held.is_some()
                 {
                     continue;
                 }

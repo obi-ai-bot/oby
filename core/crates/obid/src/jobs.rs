@@ -3040,15 +3040,15 @@ impl Jobs {
             // Routing skips an account being signed in or removed.
             accounts.retain(|a| !self.being_changed(&a.id));
             match named {
-                // Routing skips an account that isn't signed in (#626), and one without room
-                // (crate::usage): full, at 95% of a window, or in its weekly reserve.
+                // Routing skips an account that isn't signed in (#626), and one without room.
                 None => {
                     for account in accounts {
+                        let usage = self.usage.get(&account.id);
                         if !signed_in(*tool, &account, home.as_deref()) {
                             first.get_or_insert((*tool, account));
                         } else if background && !self.takes_background(&account) {
                             not_yet.get_or_insert(account.name);
-                        } else if let Some(why) = self.usage.get(&account.id).held(now) {
+                        } else if let Some(why) = usage.held_for(now, background) {
                             held.push(format!("{} {why}", account.name));
                         } else {
                             ready.push((*tool, account));
@@ -3184,9 +3184,9 @@ impl Jobs {
             .as_deref()
             .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
         let background = new.unattended || new.routine.is_some();
-        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872);
-        // by a ChatGPT login the owner hasn't said yes to, for their yes (CHATGPT-20); by limits
-        // alone, as a limit's job waits (LIMITS-18).
+        // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872); by
+        // limits, as a limit's job waits (LIMITS-18); by a ChatGPT login the owner hasn't said yes
+        // to alone, for their yes (CHATGPT-20).
         let (tool, account, waiting) =
             match self.pick_for(new.agent.as_deref(), new.account.as_deref(), background) {
                 Ok((tool, account)) if background && self.waits_for_yes(tool, &account) => {
@@ -3196,8 +3196,8 @@ impl Jobs {
                 Ok((tool, account)) => (tool, account, None),
                 Err(refused) if !named => match self
                     .in_reserve(new.agent.as_deref(), background)
-                    .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
                     .or_else(|| self.no_room(new.agent.as_deref(), background))
+                    .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
                 {
                     Some(held) => held,
                     None => return Err(refused),
@@ -3239,9 +3239,9 @@ impl Jobs {
         Ok((repo, tool, account, files, waiting))
     }
 
-    /// When no account has room only because of weekly reserves (#872): the first of those of
-    /// `agent`'s tool (any tool for none or `auto`), signed in and under 95% of both windows, and
-    /// what the job waits for, naming every one of them for the apps' "Use … anyway".
+    /// When no account takes `background` work only because of weekly reserves (#872, LIMITS-20):
+    /// the first of those of `agent`'s tool (any for none or `auto`), under 95% of both windows,
+    /// and what the job waits for, naming every one of them for the apps' "Use … anyway".
     fn in_reserve(
         &self,
         agent: Option<&str>,
@@ -3254,8 +3254,7 @@ impl Jobs {
             None => Tool::ALL.to_vec(),
             Some(id) => vec![Tool::from_id(id)?],
         };
-        let home = login_home();
-        let now = obi_protocol::time::now();
+        let (home, now) = (login_home(), obi_protocol::time::now());
         let held: Vec<(Tool, crate::config::Account)> = tools
             .into_iter()
             .filter(|t| self.agent_config(*t).is_some())
@@ -3264,7 +3263,7 @@ impl Jobs {
                 !self.being_changed(&a.id)
                     && signed_in(*tool, a, home.as_deref())
                     && self.usage.get(&a.id).only_reserved(now)
-                    && (!background || self.takes_background(a))
+                    && (background && self.takes_background(a))
             })
             .collect();
         let (tool, first) = held.first().cloned()?;
@@ -18472,6 +18471,7 @@ mod tests {
                 kind: "research".into(),
                 task: "Wait".into(),
                 agent: Some("claude".into()),
+                unattended: true,
                 ..Default::default()
             })
             .unwrap();
@@ -18522,12 +18522,16 @@ mod tests {
         jobs.usage.record("x", &reserved);
         assert_eq!(jobs.preferred_agent(), None);
         crate::settings::update(&jobs.config.home, |s| s.default_agent = "codex".into()).unwrap();
+        // The owner's own work runs past a weekly reserve (LIMITS-20), not past a full account.
+        assert_eq!(jobs.preferred_agent().as_deref(), Some("codex"));
+        jobs.mark_full("x", None, now);
         assert_eq!(jobs.preferred_agent(), None, "a full default falls back");
         jobs.usage.record(
             "x",
             &crate::usage::Usage {
                 five_hour: Some(0.1),
                 seven_day: Some(0.1),
+                full_until: Some(now - 1),
                 ..Default::default()
             },
         );
@@ -18547,12 +18551,14 @@ mod tests {
         );
         crate::settings::update(&jobs.config.home, |s| s.default_agent = "auto".into()).unwrap();
         jobs.usage.record("x", &reserved);
+        // Only work nobody watches waits at a reserve (LIMITS-20).
         let made = jobs
             .create(NewJob {
                 repo: "o/r".into(),
                 kind: "fix".into(),
                 task: "Fix it".into(),
                 model: Some("opus".into()),
+                unattended: true,
                 ..Default::default()
             })
             .unwrap();

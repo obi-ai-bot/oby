@@ -101,15 +101,19 @@ impl Usage {
             && self.seven_day_at(now).unwrap_or(0.0) < NEARLY_FULL
     }
     /// Whether a limit that resets at `reset` is a five-hour one (LIMITS-5): a reset its tool said,
-    /// never obid's guess, no further off than that window, with the week neither nearly full nor
-    /// in its reserve. Anything else is the owner's to decide (#1563).
+    /// never obid's guess, no further off than that window, with the week not nearly full (its
+    /// reserve holds only work nobody watches, LIMITS-20).
     pub fn five_hour_limit(&self, reset: i64, now: i64) -> bool {
         let guessed = self.full_until_inferred && self.full_until == Some(reset);
         !guessed
             && reset > now
             && reset - now <= FIVE_HOURS
             && self.seven_day_at(now).unwrap_or(0.0) < NEARLY_FULL
-            && !self.reserved(now)
+    }
+    /// [`Usage::held`], where a week in its reserve alone holds only `background` work (LIMITS-20).
+    pub fn held_for(&self, now: i64, background: bool) -> Option<String> {
+        self.held(now)
+            .filter(|_| background || !self.only_reserved(now))
     }
 
     /// When it takes automatic work again, as far as its tool said: the latest of the resets that
@@ -981,13 +985,11 @@ mod tests {
         // A reset that has come, or further off than five hours, isn't.
         assert!(!session.five_hour_limit(now, now));
         assert!(!session.five_hour_limit(now + 5 * 3600 + 120, now));
-        // The week: full, or in its reserve (lifted, it isn't held).
+        // A full week isn't; one in its reserve is waited out too (LIMITS-20).
         let week = claude("seven_day", now + 3 * 86_400, 0.2, 1.0);
         assert!(!week.five_hour_limit(now + 3 * 86_400, now));
         assert!(!week.five_hour_limit(now + 3600, now));
-        let mut reserved = claude("five_hour", now + 3600, 1.0, 0.85);
-        assert!(!reserved.five_hour_limit(now + 3600, now));
-        reserved.reserve_lifted_until = Some(now + 86_400);
+        let reserved = claude("five_hour", now + 3600, 1.0, 0.85);
         assert!(reserved.five_hour_limit(now + 3600, now));
         // obid's own guess at a reset isn't one its tool said.
         let guessed = Usage {
@@ -1150,6 +1152,34 @@ mod tests {
         usage.full_until = Some(300);
         assert!(usage.held(201).is_some());
         assert_eq!(usage.held(300), None);
+    }
+
+    /// LIMITS-20: the weekly reserve holds only work nobody watches; at 95% it holds all of it.
+    #[test]
+    fn limits_20_the_reserve_holds_only_background_work() {
+        let mut usage = week(0.85, 200);
+        assert!(
+            usage
+                .held_for(100, true)
+                .unwrap()
+                .contains("weekly reserve")
+        );
+        assert_eq!(usage.held_for(100, false), None);
+        usage.five_hour = Some(0.96);
+        assert!(
+            usage
+                .held_for(100, false)
+                .unwrap()
+                .contains("5-hour window")
+        );
+        usage.five_hour = None;
+        usage.seven_day = Some(0.95);
+        assert!(
+            usage
+                .held_for(100, false)
+                .unwrap()
+                .contains("95% of its week")
+        );
     }
 
     /// When an account takes automatic work again: the latest reset of what holds it (#871).
