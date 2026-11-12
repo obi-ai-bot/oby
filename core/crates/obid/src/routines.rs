@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::api::{ApiError, Shared};
 use crate::events::Events;
-use crate::job::{Job, RoutineMark};
+use crate::job::{Job, RoutineMark, Status, Waiting};
 use crate::jobs::{Jobs, NewJob};
 
 /// The most routines obid keeps.
@@ -227,11 +227,21 @@ pub struct Routine {
     pub failures_in_a_row: u32,
     /// Oldest first.
     pub runs: Vec<Run>,
+    /// How late, in minutes, a missed time still runs (ROUTINES-3); none: [`Routine::grace`]'s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_minutes: Option<u32>,
 }
 
 impl Routine {
     fn zone(&self) -> TimeZone {
         TimeZone::get(&self.zone).unwrap_or(TimeZone::UTC)
+    }
+
+    /// How late its latest time still runs, in seconds: its `grace_minutes`, else an hour for an
+    /// hourly routine and a day for the rest (ROUTINES-3).
+    fn grace(&self) -> i64 {
+        let hourly = matches!(self.schedule, Schedule::Hourly { .. });
+        i64::from(self.grace_minutes.unwrap_or(if hourly { 60 } else { 1440 })) * 60
     }
 
     /// When it runs next, or none while paused.
@@ -262,7 +272,7 @@ impl Routine {
                "created": obi_protocol::time::format(self.created), "createdBy": self.created_by,
                "conversation": self.conversation,
                "nextRun": self.next_run().map(obi_protocol::time::format),
-               "failuresInARow": self.failures_in_a_row,
+               "failuresInARow": self.failures_in_a_row, "graceMinutes": self.grace() / 60,
                "lastRun": self.runs.last().map(Run::to_json)})
     }
 
@@ -304,6 +314,9 @@ impl Routine {
         TimeZone::get(&self.zone)
             .map_err(|_| format!("{} isn't a time zone obid knows.", self.zone))?;
         self.schedule = self.schedule.clone().checked()?;
+        if self.grace_minutes == Some(0) {
+            return Err("graceMinutes is at least 1.".into());
+        }
         for field in [&mut self.mode, &mut self.check] {
             if field.as_deref().is_some_and(|f| f.trim().is_empty()) {
                 *field = None;
@@ -338,6 +351,8 @@ pub struct Draft {
     pub created_by: Option<String>,
     #[serde(default)]
     pub conversation: Option<String>,
+    #[serde(default)]
+    pub grace_minutes: Option<u32>,
 }
 
 /// What `PATCH /v1/routines/{id}` changes.
@@ -354,6 +369,8 @@ pub struct Change {
     pub mode: Option<String>,
     pub check: Option<String>,
     pub rounds: Option<u32>,
+    #[serde(rename = "graceMinutes")]
+    pub grace_minutes: Option<u32>,
 }
 
 /// Why Run now didn't start one.
@@ -467,6 +484,7 @@ impl Routines {
             last_fire: None,
             failures_in_a_row: 0,
             runs: vec![],
+            grace_minutes: draft.grace_minutes,
         };
         routine.vet(jobs)?;
         Ok(routine)
@@ -575,6 +593,9 @@ impl Routines {
         if let Some(rounds) = change.rounds {
             routine.rounds = rounds;
         }
+        if let Some(grace) = change.grace_minutes {
+            routine.grace_minutes = Some(grace);
+        }
         if let Err(why) = routine.vet(jobs) {
             return Some(Err(why));
         }
@@ -640,6 +661,12 @@ enum Due {
         catch_up: bool,
         missed: Option<(i64, usize, bool)>,
     },
+    /// Its latest time is older than its grace too: every time is missed, as above, and none runs
+    /// (ROUTINES-3).
+    Missed {
+        scheduled: i64,
+        missed: (i64, usize, bool),
+    },
 }
 
 /// What's due for `routine` at `now`, from its last fire (or when it was made). Every schedule
@@ -671,6 +698,10 @@ fn due(routine: &Routine, now: i64) -> Due {
     let Some(&scheduled) = times.last() else {
         return Due::Nothing;
     };
+    if now - scheduled > routine.grace() {
+        let missed = (first, times.len(), older);
+        return Due::Missed { scheduled, missed };
+    }
     let earlier = times.len() - 1;
     Due::Run {
         scheduled,
@@ -679,14 +710,35 @@ fn due(routine: &Routine, now: i64) -> Due {
     }
 }
 
-/// Starts the job of a run of `routine` due at `scheduled`, unless its previous run is still
-/// going: the run's record, and the job when one started.
+/// Why a run waits on its previous run's `job`, or none: it still waits for you (ROUTINES-2; not
+/// on Run now, the owner's own word), for an account with room (ROUTINES-1), or still goes.
+fn held_by(job: &Job, now_asked: bool) -> Option<&'static str> {
+    let queued = job.status == Status::Queued;
+    let for_you = job.dismissed.is_none()
+        && (job.status == Status::Interrupted
+            || job.permission.is_some()
+            || job.account_limit_blocked
+            || queued && job.waiting.as_ref().is_some_and(Waiting::for_consent));
+    if for_you && !now_asked {
+        return Some("The previous run still waits for you.");
+    }
+    if queued && (job.resumes_at.is_some() || job.waiting.as_ref().is_some_and(Waiting::for_room)) {
+        return Some("The previous run still waits for an account with room.");
+    }
+    job.status
+        .is_active()
+        .then_some("The previous run was still going.")
+}
+
+/// Starts the job of a run of `routine` due at `scheduled`, unless its previous run holds it
+/// ([`held_by`]): the run's record, and the job when one started.
 fn fire(
     shared: &Shared,
     routine: &Routine,
     scheduled: i64,
     catch_up: bool,
     now: i64,
+    now_asked: bool,
 ) -> (Run, Option<String>) {
     let mut run = Run {
         scheduled,
@@ -697,15 +749,12 @@ fn fire(
         catch_up,
         ended: None,
     };
-    let busy = routine
-        .runs
-        .iter()
-        .rev()
-        .find_map(|r| r.job.as_deref())
-        .is_some_and(|id| shared.jobs.get(id).is_some_and(|j| j.status.is_active()));
-    if busy {
+    let held = (routine.runs.iter().rev().find_map(|r| r.job.as_deref()))
+        .and_then(|id| shared.jobs.get(id))
+        .and_then(|job| held_by(&job, now_asked));
+    if let Some(why) = held {
         run.outcome = "skipped".into();
-        run.reason = Some("The previous run was still going.".into());
+        run.reason = Some(why.into());
         return (run, routine.conversation.clone());
     }
     let mut routine = routine.clone();
@@ -772,11 +821,13 @@ fn lower_first(text: &str) -> String {
 }
 
 /// One check of every routine at `now`: the jobs of runs that ended are read (3 failures in a
-/// row pause it), then each routine that's due runs, once, for its latest time.
+/// row pause it), then each routine that's due runs, once, for its latest time; at most one starts
+/// a job, the rest wait for the next check (ROUTINES-4).
 pub fn tick(shared: &Shared, now: i64) {
     let routines = &shared.routines;
     // Taken apart from the loop: a guard in its head would be held through it.
     let ids: Vec<String> = routines.lock().keys().cloned().collect();
+    let mut started = false;
     for id in ids {
         ended(shared, &id);
         let Some(mut routine) = routines.get(&id).filter(|r| r.enabled) else {
@@ -789,14 +840,18 @@ pub fn tick(shared: &Shared, now: i64) {
                 None => continue,
             }
         }
-        let Due::Run {
-            scheduled,
-            catch_up,
-            missed,
-        } = due(&routine, now)
-        else {
-            continue;
+        let (scheduled, catch_up, missed, runs) = match due(&routine, now) {
+            Due::Nothing => continue,
+            Due::Run {
+                scheduled,
+                catch_up,
+                missed,
+            } => (scheduled, catch_up, missed, true),
+            Due::Missed { scheduled, missed } => (scheduled, false, Some(missed), false),
         };
+        if runs && started {
+            continue;
+        }
         let missed_run = missed.map(|(first, count, older)| Run {
             scheduled: first,
             at: now,
@@ -823,7 +878,10 @@ pub fn tick(shared: &Shared, now: i64) {
         if let Some(run) = &missed_run {
             say(shared, &routine, run, words(&routine, run, false));
         }
-        let _ = fire_kept(shared, &id, scheduled, catch_up, now, false);
+        if runs {
+            let fired = fire_kept(shared, &id, scheduled, catch_up, now, false);
+            started = fired.is_some_and(|(run, _)| run.job.is_some());
+        }
     }
 }
 
@@ -951,7 +1009,7 @@ fn fire_kept(
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let routine = shared.routines.get(id)?;
-    let (run, conversation) = fire(shared, &routine, scheduled, catch_up, now);
+    let (run, conversation) = fire(shared, &routine, scheduled, catch_up, now, now_asked);
     if now_asked && run.outcome == "skipped" {
         return Some((run, None));
     }
@@ -1253,6 +1311,7 @@ mod tests {
             last_fire: None,
             failures_in_a_row: 0,
             runs: vec![],
+            grace_minutes: None,
         }
     }
 
@@ -1315,6 +1374,43 @@ mod tests {
                 missed: Some((at("2026-09-11T09:00:00Z"), 6, true)),
             }
         );
+    }
+
+    #[test]
+    fn routines_3_a_latest_time_past_its_grace_is_missed_not_run() {
+        // Hourly: an hour's grace. Down from 9:15 to 11:20, 10:15 and 11:15 were due: 11:15 runs.
+        let mut r = routine(Schedule::Hourly { minute: 15 }, "2026-10-10T00:00:00Z");
+        r.last_fire = Some(at("2026-10-18T09:15:00Z"));
+        assert!(matches!(
+            due(&r, at("2026-10-18T11:20:00Z")),
+            Due::Run { .. }
+        ));
+        // With 4 minutes' grace, 11:15 is missed too.
+        r.grace_minutes = Some(4);
+        assert_eq!(
+            due(&r, at("2026-10-18T11:20:00Z")),
+            Due::Missed {
+                scheduled: at("2026-10-18T11:15:00Z"),
+                missed: (at("2026-10-18T10:15:00Z"), 2, false),
+            }
+        );
+        // Daily: a day's grace by default.
+        let mut r = routine(daily("09:00"), "2026-10-10T00:00:00Z");
+        r.last_fire = Some(at("2026-10-15T09:00:00Z"));
+        assert_eq!(r.to_json()["graceMinutes"], 1440);
+        assert!(matches!(
+            due(&r, at("2026-10-17T08:00:00Z")),
+            Due::Run { .. }
+        ));
+        assert!(matches!(
+            due(&r, at("2026-10-16T09:01:00Z")),
+            Due::Run { .. }
+        ));
+        r.grace_minutes = Some(60);
+        assert!(matches!(
+            due(&r, at("2026-10-16T10:01:00Z")),
+            Due::Missed { .. }
+        ));
     }
 
     #[test]
