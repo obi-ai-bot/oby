@@ -6,11 +6,13 @@ use super::*;
 
 use crate::merge::{Blocked, Merged, Reviewers};
 
-/// How long a read of the job's pull request stands before it's read again ([`follow_interval`]):
-/// at most 30 seconds while GitHub's auto-merge obid armed is on, so a hold or a head someone else
-/// pushed turns it off sooner (MERGING-41).
-pub(super) fn follow_every(job: &Job) -> i64 {
-    follow_interval().min(job.auto_merge.as_ref().map_or(i64::MAX, |_| 30))
+/// How long a read of the job's pull request stands ([`follow_interval`]): at most 30 seconds in
+/// the 10 minutes after obid armed GitHub's auto-merge on it, so a hold or a head someone else
+/// pushed turns it off sooner; then the usual, for GitHub's rate limits (MERGING-41).
+pub(super) fn follow_every(job: &Job, now: i64) -> i64 {
+    let armed = (job.outgoing.iter().rev()).find(|o| o.action == "autoMerge");
+    let soon = job.auto_merge.is_some() && armed.is_some_and(|o| now - o.date < 600);
+    follow_interval().min(if soon { 30 } else { i64::MAX })
 }
 
 impl Jobs {
@@ -188,5 +190,38 @@ impl Jobs {
                 crate::merge::unmark(job, "branchDelete");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MERGING-41: a pull request obid armed GitHub's auto-merge on is read every 30 seconds for
+    /// the 10 minutes after, then at the usual interval, as one it never armed or turned off is.
+    #[test]
+    fn merging_41_an_armed_pull_request_is_read_every_30_seconds_for_10_minutes() {
+        let (a, r) = ("claude".to_owned(), "o/r".to_owned());
+        let mut job = Job::new("j".into(), r, "fix".into(), "Fix it".into(), a.clone(), a);
+        let usual = follow_interval();
+        assert!(usual > 30, "{usual}");
+        let armed = crate::publish::Outgoing::new("autoMerge", "o/r", "url", Some("dev"));
+        let now = armed.date;
+        assert_eq!(follow_every(&job, now), usual);
+        job.outgoing = vec![
+            crate::publish::Outgoing::new("push", "o/r", "abc", Some("oby/fix")),
+            armed,
+        ];
+        job.auto_merge = Some(crate::job::Sending {
+            action: "autoMerge".into(),
+            head: "abc".into(),
+            by: None,
+            login: None,
+        });
+        assert_eq!(follow_every(&job, now), 30);
+        assert_eq!(follow_every(&job, now + 599), 30);
+        assert_eq!(follow_every(&job, now + 600), usual);
+        job.auto_merge = None;
+        assert_eq!(follow_every(&job, now), usual);
     }
 }

@@ -5967,9 +5967,9 @@ impl Jobs {
         }
     }
 
-    /// Lets go of a job that needs the owner. `Err` when it doesn't need them.
-    /// Checked and changed under one lock: a job being published by hand isn't dismissed.
-    pub fn dismiss(&self, id: &str) -> Option<Result<Job, Refused>> {
+    /// Lets go of a job that needs the owner (`Err` when it doesn't), GitHub's auto-merge on it off
+    /// at once (MERGING-41). Checked under one lock: one being published by hand isn't dismissed.
+    pub fn dismiss(self: &Arc<Self>, id: &str) -> Option<Result<Job, Refused>> {
         let dismissed = {
             let mut state = self.lock();
             let publishing = state.publishing.contains(id);
@@ -6001,6 +6001,7 @@ impl Jobs {
         // An Oby review let go (one waiting for its usage reset among them) leaves the job it
         // reviewed saying so, never `reviewing` forever.
         self.reviewed(id);
+        self.disarm_now(id);
         Some(Ok(dismissed))
     }
 
@@ -12088,8 +12089,7 @@ impl Jobs {
             commit: head.unwrap_or_default(),
             two_reviews: crate::merge::two_reviews(&author, review.security_paths.as_deref()),
         };
-        // Its next round only while it has reviews left and nothing else moves its branch: Try
-        // again's rules ([`Jobs::message`]).
+        // Its next round only with reviews left and nothing else moving its branch (Try again's).
         let (carried, busy) = {
             let state = self.lock();
             let carried = state.jobs.values().any(|j| {
@@ -12099,6 +12099,7 @@ impl Jobs {
         };
         let quoted = (!approved
             && round < review::REVIEWS
+            && after_pr::reviews_left(&author)
             && author.status == Status::Done
             && !carried
             && !past_safety(&author))
@@ -12666,8 +12667,7 @@ impl Jobs {
         }
     }
 
-    /// One pass: every published pull request that's open (or not read yet), unless it was read,
-    /// or tried, in the last three minutes.
+    /// One pass: every published pull request open or unread, and due ([`by_github::follow_every`]).
     async fn read_pull_requests(self: &Arc<Self>) {
         let now = obi_protocol::time::now();
         let due: Vec<Job> = {
@@ -12686,7 +12686,7 @@ impl Jobs {
                     {
                         return false;
                     }
-                    let fresh = |at: i64| now - at < by_github::follow_every(job);
+                    let fresh = |at: i64| now - at < by_github::follow_every(job, now);
                     let tried = state
                         .followed
                         .get(&job.id)
@@ -22631,6 +22631,39 @@ mod tests {
             assert!(
                 !runs(&review, Some(&author), true, true, command),
                 "{command}"
+            );
+        }
+    }
+
+    /// MERGING-40: Oby's own review rounds and trusted change requests' rounds are one count,
+    /// whoever asked first: a review of Oby's that asks for changes once three were had starts
+    /// none (it's the owner's), and with one left it starts the third.
+    #[tokio::test]
+    async fn merging_40_obys_review_counts_change_requests_rounds_too() {
+        for (replies, changes, left) in [(0, 3, false), (1, 2, false), (2, 1, false), (1, 1, true)]
+        {
+            let jobs = jobs_on_a_plan(true, &[]);
+            reviewed_on_the_plan(&jobs, Status::Done);
+            std::fs::create_dir_all(jobs.worktree_path("a")).unwrap();
+            jobs.update("a", |job| {
+                job.replies = (1..=replies).map(|n| (n, "Took it.".into())).collect();
+                job.changes_rounds = (0..changes).map(|n| format!("head-{n}")).collect();
+            });
+            jobs.update("r1", |review| {
+                review.summary = "Rename it.\nVERDICT: REQUEST CHANGES".into();
+            });
+            jobs.reviewed("r1");
+            let author = jobs.get("a").unwrap();
+            let told = format!("{replies} of Oby's, {changes} of members': {author:?}");
+            assert!(
+                author.review.as_ref().is_some_and(|r| !r.approved()),
+                "{told}"
+            );
+            assert_eq!(author.status == Status::Queued, left, "{told}");
+            assert_eq!(
+                author.replies.len(),
+                replies as usize + left as usize,
+                "{told}"
             );
         }
     }

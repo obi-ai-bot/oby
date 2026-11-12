@@ -12,6 +12,8 @@ use crate::github::{Merging, Review, comments, pull_request_number};
 /// Where the failed runs' logs, and the change requests, are quoted in the job's `.obi/inputs/`.
 const CHECKS_FILE: &str = "checks.md";
 const CHANGES_FILE: &str = "changes.md";
+/// Why a job that took change requests is a reach: members' words never unlock declared secrets.
+const MEMBERS_ASKED: &str = "members of the owner's organizations asked for changes on its head";
 
 /// The agent's turn after its pull request's checks failed on GitHub: fixed words naming the
 /// quoted logs, never the logs' own.
@@ -90,6 +92,9 @@ impl Jobs {
             tracing::warn!("job {id}: {file} wasn't quoted for its round: {why}");
             return false;
         }
+        if round == Round::Changes {
+            self.mark(id, format!("{MEMBERS_ASKED} {head}"), true);
+        }
         self.after_pr(id, head, stop.as_deref().unwrap_or_default(), round)
     }
 
@@ -145,21 +150,32 @@ impl Jobs {
 }
 
 /// What the change requests on `job`'s pull request at `head` wrote, each one's words and its
-/// comments on the change's lines, when every one standing is a person's on `head` whom the owner
-/// trusts ([`crate::merge::trusted_changes`], [`crate::github_work::Owner::trusts`]: the owner, as
-/// obid's gh opened it, or a member of their organization). None when any isn't, or gh can't read
-/// what they wrote: the card asks (MERGING-40).
+/// comments on the change's lines, 300 lines at most, when every one standing is a person's on
+/// `head` whom the owner trusts ([`crate::merge::trusted_changes`]: the owner, as obid's gh opened
+/// it, or a member of their organization) and none there was edited by anyone else or signed by an
+/// Oby ([`crate::github_work::asked_own`], read last). None otherwise, or when gh can't read what
+/// they wrote: the card asks (MERGING-40).
 async fn change_requests(job: &Job, gh: &Path, head: &str, merging: &Merging) -> Option<String> {
     let owner = crate::github_work::owner(merging.author.as_deref()?).await?;
     let trusts = |r: &Review| owner.trusts(&job.repo, Some(&r.login), Some(&r.association));
-    let pr = (job.published.as_deref()).and_then(|u| pull_request_number(u, &job.repo));
-    let mut quoted = vec![];
+    let pr = (job.published.as_deref()).and_then(|u| pull_request_number(u, &job.repo))?;
+    let (mut quoted, mut by) = (vec![], vec![]);
     for review in crate::merge::trusted_changes(merging, head, trusts) {
-        let lines = comments(gh, &job.repo, pr?, review.id).await.ok()?;
+        let lines = comments(gh, &job.repo, pr, review.id).await.ok()?;
         let (who, said) = (&review.login, &review.body);
         quoted.push(format!("{who} asked for changes:\n{said}\n\n{lines}"));
+        by.push(who.as_str());
     }
-    (!quoted.is_empty()).then(|| quoted.join("\n\n"))
+    let own = !by.is_empty() && crate::github_work::asked_own(gh, &job.repo, pr, head, &by).await;
+    let all = quoted.join("\n\n");
+    let cut = (all.lines().nth(300)).map(|_| "(obid cut the rest: only 300 lines are quoted.)");
+    let kept: Vec<&str> = all.lines().take(300).chain(cut).collect();
+    own.then(|| kept.join("\n"))
+}
+
+/// A review round left: Oby's own and change requests' together never pass `review::REVIEWS`.
+pub(super) fn reviews_left(job: &Job) -> bool {
+    job.replies.len() + job.changes_rounds.len() < crate::review::REVIEWS as usize
 }
 
 /// Whether the job `id`'s pull request at `head` may have a `round` of obid's by itself
@@ -170,7 +186,6 @@ async fn change_requests(job: &Job, gh: &Path, head: &str, merging: &Merging) ->
 /// for this head yet (for its checks, for the job), change requests' counted with Oby's own review
 /// rounds within [`crate::review::REVIEWS`].
 fn may_round(jobs: &HashMap<String, Job>, id: &str, head: &str, round: Round) -> bool {
-    let rounds = |job: &Job| job.replies.len() + job.changes_rounds.len();
     jobs.get(id).is_some_and(|job| {
         job.status == Status::Done
             && crate::merge::own_branch(job, &job.branch)
@@ -182,8 +197,7 @@ fn may_round(jobs: &HashMap<String, Job>, id: &str, head: &str, round: Round) ->
                 Round::Checks => job.checks_rounds == 0,
                 Round::Rebase => job.after_pr_rebase.as_deref() != Some(head),
                 Round::Changes => {
-                    !job.changes_rounds.iter().any(|h| h == head)
-                        && rounds(job) < crate::review::REVIEWS as usize
+                    !job.changes_rounds.iter().any(|h| h == head) && reviews_left(job)
                 }
             }
             && !past_safety(job)

@@ -1246,7 +1246,7 @@ impl Link {
     /// merges nothing, and open again when it didn't merge; Ask a teammate, and remember, saves
     /// the repository's workflow and asks a teammate's Oby (`Jobs::ask_teammate_and_remember`),
     /// claimed the same way, its outcome the answer's `note`; Leave it open, Not now, Dismiss or
-    /// done settle it, and nothing is sent; later puts it off.
+    /// done settle it, Leave it open turning GitHub's auto-merge off (MERGING-41); later puts it off.
     async fn answer_merge(
         &self,
         mut item: Item,

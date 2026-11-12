@@ -318,7 +318,7 @@ comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorA
 ... on PullRequest { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
 timelineItems(itemTypes: [RENAMED_TITLE_EVENT], first: 50) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { login } } } } \
 comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } } } \
-reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
+reviews(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body state commit { oid } userContentEdits(first: 50) { pageInfo { hasNextPage } nodes { editor { login } } } \
 comments(first: 100) { pageInfo { hasNextPage } nodes { author { login } authorAssociation body userContentEdits(first: 20) { pageInfo { hasNextPage } nodes { editor { login } } } } } } } } } } }";
 
 /// Whose words an issue or a pull request holds ([`owners_only`]).
@@ -350,36 +350,12 @@ pub async fn owners_only(
     signed_body: bool,
     shown: Option<&Value>,
 ) -> Wrote {
-    let Some((holder, name)) = repo.split_once('/') else {
-        return Wrote::Others;
-    };
-    let args = [
-        "api".to_owned(),
-        "graphql".into(),
-        "-f".into(),
-        format!("query={WHO_WROTE_ALL}"),
-        "-f".into(),
-        format!("owner={holder}"),
-        "-f".into(),
-        format!("name={name}"),
-        "-F".into(),
-        format!("number={number}"),
-    ];
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let Some(read) = crate::github::run(gh, &args)
-        .await
-        .ok()
-        .and_then(|said| serde_json::from_str::<Value>(&said).ok())
+    let (Some((holder, _)), Some((login, item))) =
+        (repo.split_once('/'), who_wrote_all(gh, repo, number).await)
     else {
         return Wrote::Others;
     };
-    let Some(login) = read["data"]["viewer"]["login"]
-        .as_str()
-        .filter(|l| is_login(l))
-    else {
-        return Wrote::Others;
-    };
-    let item = &read["data"]["repository"]["issueOrPullRequest"];
+    let (login, item) = (login.as_str(), &item);
     let by = |members| {
         all_by(login, members, item, signed_body)
             && shown.is_none_or(|shown| shown_by(login, members, shown))
@@ -400,6 +376,40 @@ pub async fn owners_only(
         Some(owner) if by(Some((&owner, repo))) => Wrote::Members,
         _ => Wrote::Others,
     }
+}
+
+/// What [`WHO_WROTE_ALL`] says of `number` on `repo`, and the login gh read it as.
+async fn who_wrote_all(gh: &std::path::Path, repo: &str, number: u64) -> Option<(String, Value)> {
+    let (holder, name) = repo.split_once('/')?;
+    let (q, n) = (format!("query={WHO_WROTE_ALL}"), format!("number={number}"));
+    let (o, r) = (format!("owner={holder}"), format!("name={name}"));
+    let args = ["api", "graphql", "-f", &q, "-f", &o, "-f", &r, "-F", &n];
+    let said = crate::github::run(gh, &args).await.ok()?;
+    let mut read = serde_json::from_str::<Value>(&said).ok()?;
+    let login = read["data"]["viewer"]["login"].as_str()?.to_owned();
+    let item = read["data"]["repository"]["issueOrPullRequest"].take();
+    is_login(&login).then_some((login, item))
+}
+
+/// Whether every change request on `head` of pull request `pr` (`by`'s among them: the logins
+/// obid quoted just before) is its trusted author's own words, as [`owners_only`] judges a text
+/// ([`all_by`]): it and its comments on the lines edited by no one else, unsigned ([`OBY_SIGNS`]),
+/// read whole. Nothing else of the pull request is judged (MERGING-40).
+pub async fn asked_own(gh: &std::path::Path, repo: &str, pr: u64, head: &str, by: &[&str]) -> bool {
+    let Some((login, mut item)) = who_wrote_all(gh, repo, pr).await else {
+        return false;
+    };
+    let mut reviews = item.get_mut("reviews").map(Value::take).unwrap_or_default();
+    let Some(asked) = reviews.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    asked.retain(|r| r["state"] == "CHANGES_REQUESTED" && r["commit"]["oid"] == head);
+    let quoted = (by.iter()).all(|l| asked.iter().any(|r| r["author"]["login"] == *l));
+    let whole = json!({"pageInfo": {"hasNextPage": false}, "nodes": []});
+    let judged = json!({"author": item["author"], "userContentEdits": whole,
+        "timelineItems": whole, "comments": whole, "reviews": reviews});
+    let members = owner(&login).await;
+    quoted && members.is_some_and(|owner| all_by(&login, Some((&owner, repo)), &judged, true))
 }
 
 /// Whether `node`'s author is `login`, or with `members`, one the owner trusts on its repository
