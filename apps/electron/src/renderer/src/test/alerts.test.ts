@@ -60,6 +60,30 @@ describe('ALERTS-1', () => {
     expect(mac.posted).toHaveLength(5);
   });
 
+  it('alerts_1_a_list_obid_couldnt_serve_is_read_again_by_itself', async () => {
+    await launch();
+    // obid can't serve its list when Oby opens: nothing changes, and nothing is counted yet
+    mac.served = [permission];
+    mac.down = true;
+    await launch();
+    expect(mac.posted).toEqual([]);
+    expect(mac.badge).toBe(undefined);
+    // it can again: with no event, the Mac reads it again by itself
+    mac.down = false;
+    await vi.waitFor(() => expect(titles()).toEqual(['Run npm test?']), { timeout: 5000 });
+    expect(mac.badge).toBe('1');
+    // a burst's read fails: the last list stands (nothing withdrawn), and it's read again by itself
+    mac.down = true;
+    mac.served = [permission, served('s1', { title: 'Run the tests', category: 'start', item: 's1' })];
+    mac.event('job', { id: 'j1', title: 'Fix it', status: 'running' });
+    await new Promise((done) => setTimeout(done, 2500));
+    expect(mac.posted[0].closed).toBe(false);
+    expect(mac.badge).toBe('1');
+    mac.down = false;
+    await vi.waitFor(() => expect(titles()).toEqual(['Run npm test?', 'Run the tests']), { timeout: 5000 });
+    expect(mac.badge).toBe('2');
+  });
+
   it('alerts_1_a_limit_decision_keeps_its_signed_choices', async () => {
     mac.decisions = [{ id: 'd1', revision: 3, account: 'a1', agent: 'Claude', resetAt: null, jobs: [{ id: 'j1', title: 'Fix it' }],
       options: [{ kind: 'move', account: 'a2', agent: 'Codex', name: 'Work' }, { kind: 'stop' }] }];

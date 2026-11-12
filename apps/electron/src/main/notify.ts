@@ -66,9 +66,21 @@ const readServed = async () => json<unknown[]>(await obid('GET', '/v1/alerts'))?
 async function refresh() {
   const request = ++servedRequest;
   const list = await readServed();
-  if (request !== servedRequest || !list) return;
+  if (request !== servedRequest) return;
+  if (!list) return again();
+  failures = 0;
   served = list;
   look();
+}
+// obid couldn't serve its list (its vault unreadable, a request lost): the last one stands, and
+// it's read again by itself, 2 seconds later, then twice as long each time, at most a minute apart,
+// so what waits still reaches the owner with no other event to wake a look
+let retry: ReturnType<typeof setTimeout> | undefined;
+let failures = 0;
+function again() {
+  if (retry) return;
+  const wait = Math.min(60_000, 2000 * 2 ** failures++);
+  retry = setTimeout(() => { retry = undefined; void refresh(); }, wait);
 }
 const inbox = new Map<string, InboxItem>();
 // The limit decisions, for a `limitDecision` alert's choices; obid's list is read again only when
@@ -329,14 +341,16 @@ const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const json = <T>(a: Answer): T | null => { try { return a.status === 200 ? JSON.parse(a.text) as T : null; } catch { return null; } };
 
 // What obid has now: what waits on the owner, the inbox, the limit decisions and the
-// conversations' titles. A list obid couldn't serve (its vault unreadable) changes nothing until
-// the next look reads it.
+// conversations' titles. A list obid couldn't serve (its vault unreadable) changes nothing, and is
+// read again (`again`).
 async function sync(): Promise<boolean> {
   const limitVersion = ++limitsRequest, servedVersion = ++servedRequest;
   const [list, [items, cs, decisions]] = await Promise.all([readServed(), Promise.all(['/v1/inbox', '/v1/conversations?limit=200', '/v1/limit-decisions'].map((p) => obid('GET', p)))]);
   const open = json<InboxItem[]>(items);
   if (!open) return false;
-  if (list && servedVersion === servedRequest) served = list;
+  if (servedVersion === servedRequest) {
+    if (list) { failures = 0; served = list; } else again();
+  }
   inbox.clear();
   for (const i of open) if (i.state !== 'done') inbox.set(i.id, i);
   const active = json<LimitDecision[]>(decisions);

@@ -19,6 +19,8 @@ export const mac = {
   inbox: [] as unknown[],
   decisions: [] as unknown[],
   jobs: [] as unknown[],
+  // obid can't serve GET /v1/alerts (503, its vault unreadable)
+  down: false,
   // whether the window is in front
   front: false,
   posted: [] as Banner[],
@@ -32,7 +34,7 @@ export const mac = {
 
 // A new app folder, nothing served
 export function fresh() {
-  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], front: false });
+  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, front: false });
 }
 
 // One alert of obid's list (docs/runner-api.md, GET /v1/alerts)
@@ -78,6 +80,7 @@ export async function launch() {
       return { status: 200, text: '{}' };
     }
     lists++;
+    if (path === '/v1/alerts' && mac.down) return { status: 503, text: '{"error": "The vault can’t be read."}' };
     const got = ({ '/v1/alerts': mac.served, '/v1/inbox': mac.inbox, '/v1/limit-decisions': mac.decisions, '/v1/jobs': mac.jobs } as Record<string, unknown[]>)[path] ?? [];
     return { status: 200, text: JSON.stringify(got) };
   };
