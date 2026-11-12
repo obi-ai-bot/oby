@@ -172,10 +172,10 @@ pub struct Turn {
     /// command), and why.
     pub fatal: Option<String>,
     /// When the account resets, in seconds since the epoch, if the tool said this turn it's full
-    /// (crate::limits).
+    /// (crate::limits); when `scoped`, when that one limit does.
     pub resets: Option<i64>,
-    /// Claude Code refused this turn one model's or the overage's own limit, never the whole
-    /// account's (USAGE-13): its words of a limit are that one's, so they mark no account full.
+    /// Claude Code refused this turn one model's own limit, never the whole account's (USAGE-13):
+    /// the job moves or waits as at any limit, and no account is marked full.
     pub scoped: bool,
     /// The last words the agent wrote this turn: its `result` carries none when its last message
     /// was a tool call (#764).
@@ -369,12 +369,7 @@ impl Turn {
 
     /// Whether `words`, the tool's, say a usage limit ended the turn: its own fields decide, and only
     /// where they can't do the words count. A real 429's words hold "rate limit", and it's passing.
-    /// After a scoped refusal (USAGE-13) they say that one's: no account's, so the job ends asking
-    /// the owner, with Try again, and its account takes other work.
     pub fn says_limit(&self, words: &str) -> bool {
-        if self.scoped {
-            return false;
-        }
         match self.cause() {
             Some(Cause::Limit) => true,
             Some(
@@ -741,8 +736,11 @@ pub async fn turn_on(
                 } else if crate::usage::claude_overage(&message["rate_limit_info"]) {
                     // USAGE-12: overage carries it now, whatever an earlier event said.
                     (turn.resets, turn.scoped) = (None, false);
-                } else if crate::usage::claude_scoped(&message["rate_limit_info"]) {
-                    turn.scoped = turn.resets.is_none();
+                } else if crate::usage::claude_scoped(&message["rate_limit_info"])
+                    && (turn.resets.is_none() || turn.scoped)
+                {
+                    let at = crate::limits::epoch(&message["rate_limit_info"]["resetsAt"]);
+                    (turn.resets, turn.scoped) = (at, true);
                 }
             }
             Some("result") => {
@@ -1150,17 +1148,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// USAGE-13: after claude 2.1.302's `seven_day_opus` refusal, its words of a limit say no
-    /// account's, and no reset; after a 5-hour one, they say the account's.
+    /// USAGE-13: claude 2.1.302's `seven_day_opus` refusal ends the turn at a limit, with that
+    /// limit's own reset, marked scoped so no account is marked full; a 5-hour one isn't scoped.
     #[tokio::test]
-    async fn usage_13_a_scoped_limits_words_fill_no_account() {
+    async fn usage_13_a_scoped_limit_ends_the_turn_at_its_own_reset() {
         let limit = r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"You have hit your Opus limit","session_id":"s1"}"#;
         let scoped = include_str!("../tests/fixtures/claude-rate-limit-scoped.json").trim();
         let (turn, _, root) = fake_turn_saying("usage-13-scoped", &[scoped, limit], "").await;
         assert!(turn.scoped);
-        assert_eq!(turn.resets, None);
+        assert_eq!(turn.resets, Some(1_763_290_800));
         assert_eq!(turn.cause(), Some(Cause::Limit));
-        assert!(!turn.says_limit(turn.error()));
+        assert!(turn.says_limit(turn.error()));
         let _ = std::fs::remove_dir_all(&root);
 
         let whole = scoped.replace("seven_day_opus", "five_hour");

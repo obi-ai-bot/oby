@@ -1874,6 +1874,7 @@ async fn attempts(
         // turn moves on to another account (`run`, #874). On a ChatGPT login only the relay's
         // refusal, above, says it's one.
         if crate::chatgpt::marker_of(account).is_none()
+            && !turn.scoped
             && (turn.resets.is_some() || turn.says_limit(&why))
         {
             let now = obi_protocol::time::now();

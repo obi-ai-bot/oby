@@ -429,19 +429,20 @@ pub(crate) fn claude_overage(info: &Value) -> bool {
 }
 
 /// Whether a `rate_limit_info`'s refusal is the whole account's (USAGE-13): `rejected` for the
-/// 5-hour or weekly window, or naming none, and no overage carrying it.
+/// 5-hour or weekly window, for the overage (spent past a window), or naming none, and no overage
+/// carrying it.
 pub(crate) fn claude_refused(info: &Value) -> bool {
     info["status"] == "rejected"
         && !claude_overage(info)
         && matches!(
             info["rateLimitType"].as_str(),
-            None | Some("five_hour" | "seven_day")
+            None | Some("five_hour" | "seven_day" | "overage")
         )
 }
 
 /// Whether a refusal is scoped (USAGE-13): a model's week (`seven_day_opus`, `seven_day_sonnet`,
-/// `seven_day_overage_included`) or the overage's own (`overage`). It stops the turn's model and
-/// leaves the account's other work going.
+/// `seven_day_overage_included`). It stops the turn's model and leaves the account's other work
+/// going.
 pub(crate) fn claude_scoped(info: &Value) -> bool {
     info["status"] == "rejected" && !claude_overage(info) && !claude_refused(info)
 }
@@ -1475,7 +1476,8 @@ mod tests {
     }
 
     /// A refusal of one model's week (claude 2.1.302's `seven_day_opus`) leaves the account's
-    /// other work going; one of the 5-hour or weekly window, or naming none, fills it.
+    /// other work going; one of the 5-hour or weekly window, the spent overage's, or naming none,
+    /// fills it.
     #[test]
     fn usage_13_a_scoped_limit_doesnt_fill_the_account() {
         let event: Value = serde_json::from_str(include_str!(
@@ -1491,7 +1493,6 @@ mod tests {
             "seven_day_opus",
             "seven_day_sonnet",
             "seven_day_overage_included",
-            "overage",
         ] {
             let scoped = typed(json!(kind));
             let usage = claude(&scoped);
@@ -1499,7 +1500,12 @@ mod tests {
             assert_eq!(usage.seven_day, Some(0.58), "{kind}");
             assert_eq!(crate::limits::claude_full_until(&scoped), None, "{kind}");
         }
-        for kind in [json!("five_hour"), json!("seven_day"), Value::Null] {
+        for kind in [
+            json!("five_hour"),
+            json!("seven_day"),
+            json!("overage"),
+            Value::Null,
+        ] {
             let whole = typed(kind.clone());
             assert_eq!(claude(&whole).full_until, Some(1_763_290_800), "{kind}");
             assert_eq!(

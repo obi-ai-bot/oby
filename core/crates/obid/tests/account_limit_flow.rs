@@ -1147,6 +1147,30 @@ fn limits_15_a_limit_moves_the_job_to_an_account_with_room() {
     );
 }
 
+/// USAGE-13: one model's week refused (`seven_day_opus`) moves the job by itself, with no card, as
+/// any limit does (LIMITS-15), never back onto its account, which isn't marked full.
+#[test]
+fn usage_13_a_scoped_limit_moves_the_job_and_marks_no_account() {
+    let folder = Folder::new("usage-13-move");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let reset = obi_protocol::time::now() + 86_400;
+    let usage = json!({"status": "rejected", "resetsAt": reset, "rateLimitType": "seven_day_opus",
+        "overageStatus": "rejected", "isUsingOverage": false});
+    let id = post_unnamed(&obid, &format!("USAGE: {usage} LIMITED NO EVENT"));
+    let moved = within(90, "Codex takes the job over", || {
+        let job = job_now(&obid, &id);
+        (job["agent"] == "codex" && job["status"] == "done").then_some(job)
+    });
+    assert_eq!(moved["account"], "codex", "{moved}");
+    assert!(pending_decisions(&obid).is_empty());
+    let accounts = call(&obid, "GET", "/v1/status", None).body["accounts"].clone();
+    assert!(
+        (accounts.as_array().unwrap().iter()).all(|a| a["fullUntil"].is_null()),
+        "{accounts}"
+    );
+}
+
 /// LIMITS-15: with no account that has room, the job waits by itself, with no card, its line
 /// saying what it waits for; Stop ends the wait for good.
 #[test]

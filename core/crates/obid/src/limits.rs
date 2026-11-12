@@ -57,7 +57,7 @@ pub fn reset_in(text: &str, now: i64) -> Option<i64> {
 const LATEST: f64 = 4_102_444_800.0;
 
 /// An epoch in seconds, from seconds or milliseconds, or none when it isn't a plausible one.
-fn epoch(value: &Value) -> Option<i64> {
+pub(crate) fn epoch(value: &Value) -> Option<i64> {
     let n = value.as_f64()?;
     let seconds = if n > 1e12 { n / 1000.0 } else { n };
     (seconds > 0.0 && seconds <= LATEST).then_some(seconds as i64)

@@ -62,10 +62,11 @@ fn usage_12_overage_in_use_isnt_full_a_passing_error_is_tried_again() {
     assert!(account["fullUntil"].is_null(), "{account}");
 }
 
-/// USAGE-13: a turn one model's week stopped (`seven_day_opus`) ends asking the owner, with Try
-/// again, and its account isn't marked full: the next job on it runs.
+/// USAGE-13: a turn one model's week stopped (`seven_day_opus`) waits by itself for that limit's
+/// own reset, with no card (LIMITS-15, its one account having no other to move to), and its account
+/// isn't marked full: the next job on it runs.
 #[test]
-fn usage_13_a_scoped_limit_doesnt_fill_the_account_the_next_job_runs() {
+fn usage_13_a_scoped_limit_waits_with_no_card_and_the_next_job_runs() {
     let (_folder, obid) = obid("usage-13-scoped");
     let now = obi_protocol::time::now();
     let usage = json!({"status": "rejected", "resetsAt": now + 86_400,
@@ -74,10 +75,15 @@ fn usage_13_a_scoped_limit_doesnt_fill_the_account_the_next_job_runs() {
         "unifiedWindows": {"five_hour": {"utilization": 0.31, "resetsAt": now + 3600},
             "seven_day": {"utilization": 0.58, "resetsAt": now + 86_400}}, "overageEnabled": false});
     let id = post_job(&obid, &format!("USAGE: {usage} LIMITED NO EVENT"));
-    let job = ended_within(&obid, &id, 600);
-    assert_eq!(job["status"], "interrupted", "{job}");
-    assert_eq!(job["nextStep"], "Try again", "{job}");
-    assert!(job["resumesAt"].is_null(), "{job}");
+    let job = within(600, "the job waits for its limit's reset", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] != "running" && job["status"] != "queued" || !job["resumesAt"].is_null())
+            .then_some(job)
+    });
+    assert_eq!(job["status"], "queued", "{job}");
+    assert!(job["nextStep"].is_null(), "{job}");
+    let at = obi_protocol::time::parse(job["resumesAt"].as_str().unwrap()).unwrap();
+    assert!((now + 86_400..now + 86_400 + 300).contains(&at), "{job}");
     let account = account(&obid);
     assert_eq!(account["sevenDay"], 0.58, "{account}");
     assert!(account["fullUntil"].is_null(), "{account}");
