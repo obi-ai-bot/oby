@@ -29,11 +29,12 @@ impl Jobs {
     /// [`own_sandbox_settings`] and no egress proxy (LANES-3, LANES-6); every other run is boxed
     /// with a copy of its login. `claudeOwnSandbox` doesn't change it. A Codex job is own only in
     /// Bypass (the owner's CODEX-1, "Yes, Bypass only", LANES-18), where Codex never asks to leave
-    /// its sandbox ([`own_codex_settings`]); in Ask, Accept edits, Plan or Sandbox it stays boxed.
+    /// its sandbox ([`own_codex_settings`]), and on macOS, whose sandbox is the one measured; in
+    /// Ask, Accept edits, Plan or Sandbox it stays boxed, and on a ChatGPT login ([`launches_own`]).
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
         let lane = match tool {
             Tool::Claude => true,
-            Tool::Codex => Self::mode_of(job) == Mode::Bypass,
+            Tool::Codex => cfg!(target_os = "macos") && Self::mode_of(job) == Mode::Bypass,
             Tool::Cursor => false,
         };
         lane && job.obi.is_none()
@@ -42,23 +43,57 @@ impl Jobs {
             && !(job.read_only() && job.someone_elses().is_some())
     }
 
-    /// Whether job `id`'s agent had a network obid's proxy didn't see: Claude Code or Codex ran it,
+    /// Whether job `id`'s agent had a network obid's proxy didn't see: a run of it, or of the job it
+    /// follows up, launched in the own lane ([`Job::ran_unproxied`], kept whatever its mode, tool or
+    /// account is now), or Claude Code or Codex ran it,
     /// now or before a move ([`Job::moves`]), in the own lane, where no proxy marks a site it
     /// reached `reached`. Until a command's sites do (LANES-6), its check gets no declared secrets,
     /// as a job whose agent reached past the package registries gets none. A Codex job on a ChatGPT
     /// login, boxed in any mode (`Jobs::launch`), counts too: fail closed.
     pub(super) fn ran_unproxied(&self, id: &str) -> bool {
         self.get(id).is_some_and(|job| {
-            [Tool::Claude, Tool::Codex].into_iter().any(|tool| {
-                let name = tool.name();
-                let ran = job.agent == tool.id()
-                    || job
-                        .moves
-                        .iter()
-                        .any(|m| m.from.starts_with(name) || m.to.starts_with(name));
-                ran && Self::own_lane(&job, tool)
-            })
+            job.ran_unproxied
+                || [Tool::Claude, Tool::Codex].into_iter().any(|tool| {
+                    let name = tool.name();
+                    let ran = job.agent == tool.id()
+                        || job
+                            .moves
+                            .iter()
+                            .any(|m| m.from.starts_with(name) || m.to.starts_with(name));
+                    ran && Self::own_lane(&job, tool)
+                })
         })
+    }
+
+    /// Whether job `id`'s Codex run, own when it launched ([`Job::own_lane`]), no longer is: its
+    /// mode left Bypass, so its turn ends and its round goes on in Oby's box, under the mode it has
+    /// now (LANES-18: an own run asks obid nothing, so nothing else would hold it to Ask or Plan).
+    pub(super) fn left_own_lane(&self, id: &str, tool: Tool) -> bool {
+        let left = |job: Job| job.own_lane && !Self::own_lane(&job, tool);
+        tool == Tool::Codex && self.get(id).is_some_and(left)
+    }
+
+    /// LANES-18: a Codex thread is kept in its lane's own `CODEX_HOME` (the account's folder, or
+    /// the box's), so a job whose last run was in the other lane than its next on `account` goes on
+    /// in a new session, told so: what it's told, or none when its session can go on.
+    pub(super) fn other_lane(
+        &self,
+        id: &str,
+        tool: Tool,
+        account: &crate::config::Account,
+    ) -> Option<String> {
+        let job = self.get(id).filter(|job| job.session.is_some())?;
+        if tool != Tool::Codex || job.own_lane == launches_own(&job, tool, account) {
+            return None;
+        }
+        self.update(id, |job| {
+            job.session = None;
+            job.changed("Started a new session: its mode moved it in or out of Oby's box".into());
+        });
+        Some(continue_message(
+            "its mode changed, so it runs in another sandbox, in a new session with none of the last one's history. What was done so far is on this branch: read its log and diff first",
+            None,
+        ))
     }
 
     /// obid's fixed answer to an own run's call in `worktree` of job `id` (LANES-14), which Claude
@@ -310,10 +345,21 @@ impl Jobs {
     }
 }
 
+/// Whether `job`'s run of `tool` on `account` leaves Oby's box: in the own lane
+/// ([`Jobs::own_lane`]), but never a Codex run on a ChatGPT login, which reaches OpenAI only
+/// through obid's relay.
+pub(super) fn launches_own(job: &Job, tool: Tool, account: &crate::config::Account) -> bool {
+    let chatgpt = tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some();
+    Jobs::own_lane(job, tool) && !chatgpt
+}
+
 /// What an own run of `tool` on `account` gets over a boxed run's environment: Claude Code's
 /// ([`own_sandbox_env`], the owner's user settings checked first, LANES-5); Codex's, the account's
 /// own folder as `CODEX_HOME` (its `configDir`, else `~/.codex`), with no login copy: Codex reads
-/// and refreshes its own login, config, skills and MCP servers there (LANES-18).
+/// and refreshes its own login, config, skills and MCP servers there (LANES-18), and the person's
+/// own `HOME`, as Claude Code's: Codex and the MCP servers it starts run outside its sandbox, so
+/// never with a `HOME` its commands write (theirs is the job's temporary folder,
+/// [`own_codex_settings`]).
 pub(super) fn own_run_env(
     tool: Tool,
     account: &crate::config::Account,
@@ -325,13 +371,12 @@ pub(super) fn own_run_env(
         own_settings_allowed(&own_settings_file(account)?, spec, &env)?;
         return Ok(env);
     }
-    let folder = match &account.config_dir {
-        Some(dir) => dir.clone(),
-        None => login_home()
-            .ok_or("obid can't find the home Codex's login is in.")?
-            .join(".codex"),
-    };
-    Ok(vec![("CODEX_HOME", folder.into_os_string())])
+    let home = login_home().ok_or("obid can't find the home Codex's login is in.")?;
+    let folder = account.config_dir.clone().unwrap_or(home.join(".codex"));
+    Ok(vec![
+        ("CODEX_HOME", folder.into_os_string()),
+        ("HOME", home.into_os_string()),
+    ])
 }
 
 /// The owner's login shell's environment (`env`, LANES-4) for an own run of `tool`: Claude Code's
@@ -347,23 +392,23 @@ pub(super) fn owners_for(tool: Tool, env: Vec<(OsString, OsString)>) -> Vec<(OsS
         .collect()
 }
 
-/// The permission profile [`own_codex_settings`] names.
-const CODEX_PROFILE: &str = "oby_own";
-
 /// The `-c` settings an own Codex run starts with (LANES-18, the owner's CODEX-1, "Yes, Bypass
-/// only"), which outrank the owner's `config.toml`: its commands in Codex's own sandbox,
-/// `workspace-write` with no network, writing only the worktree and its own git folder (and the
-/// job's temporary folder, its `TMPDIR`, which `workspace-write` adds), and `approval_policy`
-/// `never`. With any other policy an approved command may ask to run outside Codex's sandbox, and
-/// obid can't tell that ask from a plain one (codex-cli 0.162.1); with `never` Codex refuses it. Its
-/// permission profile reads everything but obid's home, the person's and every account's folder
-/// (its own too: a command never reads the account's `auth.json`), writes only the worktree, its
-/// git folder and its temporary folder, and
-/// keeps the git pointers and `oby-common` read-only, so nothing a command writes steers the git
-/// Codex and obid run outside the sandbox, nor the shared clone's refs, config or hooks (LANE-10a).
-/// None of the owner's hooks run (LANES-17's rule). Where two entries meet, the more specific path
-/// is the one Codex applies.
+/// only"), which outrank the owner's `config.toml`. `approval_policy` `never`: with any other an
+/// approved command may ask to run outside Codex's sandbox, and obid can't tell that ask from a
+/// plain one (codex-cli 0.162.1). Its commands' sandbox is obid's permission profile
+/// ([`codex::OWN_PROFILE`]) and no other: no network; everything read but obid's home, the person's
+/// and every account's folder (its own too: a command never reads the account's `auth.json`);
+/// written, only the worktree, its git folder and its temporary folder; the git pointers and
+/// `oby-common` read-only, so nothing a command writes steers the git Codex and obid run outside
+/// the sandbox, nor the shared clone's refs, config or hooks (LANE-10a). Where two entries meet,
+/// the more specific path is the one Codex applies. The worktree is an untrusted project, as named
+/// and where it leads: Codex loads none of the repository's `.codex/` settings, MCP servers, hooks
+/// or exec policies (LANE-6a), and doesn't write its trust in the account's `config.toml`. None of
+/// the owner's hooks run, nor their `notify` program (LANES-17's rule). Its commands' `HOME` is the
+/// job's temporary folder, as a boxed run's. Codex merges these with its other layers, so its run
+/// starts only once Codex says they are what holds ([`codex::own_config_problem`]).
 pub(super) fn own_codex_settings(spec: &Spec) -> Result<Vec<OsString>, String> {
+    let named = spec.worktree.clone();
     let spec = spec.canonical();
     let name = |path: &Path| {
         path.to_str()
@@ -386,25 +431,25 @@ pub(super) fn own_codex_settings(spec: &Spec) -> Result<Vec<OsString>, String> {
         .iter()
         .map(|(p, m)| format!("{p} = \"{m}\""))
         .collect();
-    let roots = [Some(&spec.worktree), spec.git_admin.as_ref()]
-        .into_iter()
-        .flatten()
-        .map(|p| name(p))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut projects = vec![name(&spec.worktree)?, name(&named)?];
+    projects.dedup();
+    let untrusted = projects.join(" = {trust_level = \"untrusted\"}, ");
+    let profile = codex::OWN_PROFILE;
     Ok([
-        "sandbox_mode=\"workspace-write\"".to_owned(),
-        "approval_policy=\"never\"".into(),
-        "sandbox_workspace_write.network_access=false".into(),
+        "approval_policy=\"never\"".to_owned(),
+        format!("default_permissions=\"{profile}\""),
         format!(
-            "sandbox_workspace_write.writable_roots=[{}]",
-            roots.join(", ")
-        ),
-        format!("default_permissions=\"{CODEX_PROFILE}\""),
-        format!(
-            "permissions.{CODEX_PROFILE}.filesystem={{{}}}",
+            "permissions.{profile}.filesystem={{{}}}",
             filesystem.join(", ")
         ),
+        format!("permissions.{profile}.network.enabled=false"),
+        format!("projects={{{untrusted} = {{trust_level = \"untrusted\"}}}}"),
         "features.hooks=false".into(),
+        "notify=[]".into(),
+        format!(
+            "shell_environment_policy.set={{HOME = {}}}",
+            name(&spec.temp)?
+        ),
     ]
     .into_iter()
     .flat_map(|setting| ["-c".into(), setting.into()])
@@ -827,6 +872,7 @@ mod tests {
     /// LANES-18 (the owner's CODEX-1, "Yes, Bypass only"): the owner's Codex job leaves Oby's box
     /// in Bypass only; in Ask, Accept edits, Plan or Sandbox, as a review, another Oby's or marked
     /// `untrusted`, it stays boxed.
+    #[cfg(target_os = "macos")]
     #[test]
     fn lanes_18_only_an_own_bypass_codex_job_leaves_the_box() {
         let owners = Job::new(
@@ -878,14 +924,17 @@ mod tests {
     }
 
     /// LANES-18: an own Bypass Codex job runs unboxed by obid, with no proxy of obid's, on its
-    /// account's own folder with no login copy, in Codex's own sandbox: `workspace-write` with no
-    /// network, `approval_policy = "never"` so no command runs outside it, writable roots the
-    /// worktree and its own git folder only, and a profile that reads none of obid's home, the
-    /// person's or an account's folder, and keeps the git pointers and `oby-common` read-only; no
-    /// hook of the owner's. Its check gets no declared secrets. The same job in Ask stays boxed.
+    /// account's own folder with no login copy and the person's own `HOME` (its commands' is the
+    /// job's temporary folder), in Codex's own sandbox: `approval_policy = "never"`, and obid's
+    /// profile, with no network, which reads none of obid's home, the person's or an account's
+    /// folder, writes the worktree, its git folder and its temporary folder, and keeps the git
+    /// pointers and `oby-common` read-only; the worktree an untrusted project, so none of the
+    /// repository's `.codex/` loads; no hook and no `notify` program of the owner's. A run on a
+    /// ChatGPT login stays boxed. LANE-3a: its check gets no declared secrets, and neither does it
+    /// once its mode is Ask, nor its follow-up in Ask: the run that had no proxy is remembered.
     #[cfg(target_os = "macos")]
-    #[test]
-    fn lanes_18_an_own_bypass_codex_job_runs_in_codexs_sandbox() {
+    #[tokio::test]
+    async fn lanes_18_an_own_bypass_codex_job_runs_in_codexs_sandbox() {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("obid-lanes-18-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -920,13 +969,28 @@ mod tests {
             "codex".into(),
             "a".into(),
         );
+        let mut asks = job.clone();
+        asks.id = "asks".into();
+        asks.mode = Some("ask".into());
+        for job in [&job, &asks] {
+            jobs.lock().jobs.insert(job.id.clone(), job.clone());
+        }
         let [worktree, admin, common, temp] =
             ["worktree", "admin", "common", "temp"].map(|d| root.join(d));
         for dir in [&worktree, &admin, &common, &temp] {
             std::fs::create_dir_all(dir).unwrap();
         }
         let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Codex);
-        let codex = jobs.accounts(Tool::Codex).remove(0);
+        let [codex, chatgpt] = <[_; 2]>::try_from(jobs.accounts(Tool::Codex)).unwrap();
+        // One that never left the box isn't remembered as having had no proxy.
+        assert!(!jobs.ran_unproxied("asks"));
+        std::fs::write(
+            other.join(crate::chatgpt::MARKER),
+            r#"{"signed":true,"planUse":true,"expiresAt":0,"refreshedAt":0}"#,
+        )
+        .unwrap();
+        assert!(launches_own(&job, Tool::Codex, &codex));
+        assert!(!launches_own(&job, Tool::Codex, &chatgpt));
         let launch = jobs
             .launch(&job, &spec, Tool::Codex, Vec::new(), &codex, None)
             .unwrap();
@@ -948,18 +1012,27 @@ mod tests {
                 .map(|w| w[1][key.len() + 1..].to_owned())
         };
         let quoted = |p: &Path| json!(p.to_str().unwrap()).to_string();
-        assert_eq!(set("sandbox_mode").as_deref(), Some("\"workspace-write\""));
+        // Nothing of the settings Codex ignores once a profile is named: only what holds.
+        assert_eq!(set("sandbox_mode"), None);
         assert_eq!(set("approval_policy").as_deref(), Some("\"never\""));
+        assert_eq!(set("features.hooks").as_deref(), Some("false"));
+        assert_eq!(set("notify").as_deref(), Some("[]"));
+        assert_eq!(set("default_permissions").as_deref(), Some("\"oby_own\""));
         assert_eq!(
-            set("sandbox_workspace_write.network_access").as_deref(),
+            set("permissions.oby_own.network.enabled").as_deref(),
             Some("false")
         );
         assert_eq!(
-            set("sandbox_workspace_write.writable_roots"),
-            Some(format!("[{}, {}]", quoted(&worktree), quoted(&admin)))
+            set("projects"),
+            Some(format!(
+                "{{{} = {{trust_level = \"untrusted\"}}}}",
+                quoted(&worktree)
+            ))
         );
-        assert_eq!(set("features.hooks").as_deref(), Some("false"));
-        assert_eq!(set("default_permissions").as_deref(), Some("\"oby_own\""));
+        assert_eq!(
+            set("shell_environment_policy.set"),
+            Some(format!("{{HOME = {}}}", quoted(&temp)))
+        );
         let profile = set("permissions.oby_own.filesystem").unwrap();
         let home = jobs.config.home.canonicalize().unwrap();
         let mut entries = vec![
@@ -1001,22 +1074,358 @@ mod tests {
                 .find(|(n, _)| n == name)
                 .map(|(_, v)| v.clone())
         };
-        // The account's own folder, no login copy of obid's.
+        // The account's own folder, no login copy of obid's; Codex's own `HOME` the person's.
         assert_eq!(env("CODEX_HOME"), Some(account.clone().into_os_string()));
+        assert_eq!(env("HOME"), login_home().map(PathBuf::into_os_string));
         assert!(!jobs.login_path("own").join("auth.json").exists());
         for (name, value) in &launch.env {
             if name.to_string_lossy().ends_with("_PROXY") {
                 assert_eq!(std::env::var_os(name).as_ref(), Some(value), "{name:?}");
             }
         }
-        // No proxy saw it, so its check gets no declared secrets; in Ask it's boxed, as before.
-        let mut asks = job.clone();
-        asks.id = "asks".into();
-        asks.mode = Some("ask".into());
-        jobs.lock().jobs.insert(asks.id.clone(), asks);
-        jobs.lock().jobs.insert(job.id.clone(), job);
+        // No proxy saw it, and no mode it has later forgets that; its follow-up runs its code.
         assert!(jobs.ran_unproxied("own"));
-        assert!(!jobs.ran_unproxied("asks"));
+        jobs.set_mode("own", Mode::Ask).unwrap();
+        assert!(!Jobs::own_lane(&jobs.get("own").unwrap(), Tool::Codex));
+        assert!(jobs.ran_unproxied("own"));
+        let next = jobs
+            .create(NewJob {
+                vetted: true,
+                ..follow_up(&jobs.get("own").unwrap(), "and the docs")
+            })
+            .unwrap();
+        assert_eq!(Jobs::mode_of(&next), Mode::Ask);
+        assert!(jobs.ran_unproxied(&next.id));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-18: a Codex job that ran in the own lane and left Bypass ends its turn (its run asks
+    /// obid nothing) and can't pick its thread up from the box's own `CODEX_HOME`, nor a boxed one
+    /// from the account's: its next run starts a new session, told why. In the lane its session
+    /// was made in, or with none, it goes on as it is.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_18_a_codex_job_that_changes_lane_starts_a_new_session() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-18l-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let jobs = own_jobs(&root);
+        let account = crate::config::Account {
+            config_dir: Some(root.join("account")),
+            ..jobs.accounts(Tool::Claude).remove(0)
+        };
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        (job.session, job.own_lane) = (Some("t1".into()), true);
+        jobs.lock().jobs.insert(job.id.clone(), job);
+        assert!(!jobs.left_own_lane("j", Tool::Codex));
+        assert_eq!(jobs.other_lane("j", Tool::Codex, &account), None);
+        jobs.set_mode("j", Mode::Plan).unwrap();
+        assert!(jobs.left_own_lane("j", Tool::Codex));
+        assert!(!jobs.left_own_lane("j", Tool::Claude));
+        assert_eq!(jobs.other_lane("j", Tool::Claude, &account), None);
+        let told = jobs.other_lane("j", Tool::Codex, &account).unwrap();
+        assert!(told.contains("its mode changed"), "{told}");
+        let job = jobs.get("j").unwrap();
+        assert_eq!(job.session, None);
+        assert!(job.changes.iter().any(|c| c.what.contains("new session")));
+        // A boxed run's session (its launch recorded the box) can't go on in the own lane either.
+        jobs.update("j", |job| {
+            (job.session, job.own_lane) = (Some("t2".into()), false)
+        });
+        assert!(!jobs.left_own_lane("j", Tool::Codex));
+        assert_eq!(jobs.other_lane("j", Tool::Codex, &account), None);
+        jobs.set_mode("j", Mode::Bypass).unwrap();
+        assert!(jobs.other_lane("j", Tool::Codex, &account).is_some());
+        assert_eq!(jobs.other_lane("j", Tool::Codex, &account), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-18, measured on this Mac's real codex (0.162.1), on a stand-in `CODEX_HOME` with no
+    /// login and a stand-in model (a local Responses endpoint that asks for two commands), launched
+    /// as a job's own run is (`Jobs::launch`, `codex::run_turn`). The account's `config.toml` is
+    /// hostile: full access, a network, a `notify` program, the worktree and its clone trusted, an
+    /// exec-policy rule that allows `touch`; so is the repository: a `.codex/config.toml` with an
+    /// MCP server and a `notify`, and rules of its own. What holds: the sandboxed command reads
+    /// nothing in a denied folder, writes neither the clone's config nor its `commondir`, has no
+    /// network, has the job's temporary folder as `HOME`, and writes the worktree; the allowed
+    /// `touch` stays in the sandbox, and Codex's own file edit outside the worktree is refused; no
+    /// `notify` runs, no repository MCP server starts, the
+    /// account's own does, with the person's `HOME`; Codex writes no trust in `config.toml`; a
+    /// resumed thread comes back in obid's profile. With `[permissions.oby_own]` entries in the
+    /// account's `config.toml`, which Codex would merge into obid's, no thread starts.
+    /// `cargo test -p obid --lib lanes_18_a_real -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "runs the real codex on a stand-in CODEX_HOME and a stand-in model"]
+    async fn lanes_18_a_real_codex_is_held_to_obids_settings() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Mutex;
+        let which = std::process::Command::new("/usr/bin/which")
+            .arg("codex")
+            .output()
+            .unwrap();
+        let codex_bin = String::from_utf8_lossy(&which.stdout).trim().to_owned();
+        assert!(!codex_bin.is_empty(), "no codex on PATH");
+        let root = std::env::temp_dir().join(format!("obid-lanes-18r-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let session = root.join("session");
+        std::fs::write(&session, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let [home, clone, worktree, temp] =
+            ["account", "clone", "worktree", "temp"].map(|d| root.join(d));
+        for dir in [&home.join("rules"), &clone, &temp] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let git = |dir: &Path, args: &[&str]| {
+            let ran = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["-c", "user.name=p", "-c", "user.email=p@example.com"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(ran.status.success(), "git {args:?}");
+        };
+        git(&clone, &["init", "-q", "."]);
+        git(&clone, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(
+            &clone,
+            &["worktree", "add", "-q", worktree.to_str().unwrap()],
+        );
+        let common = clone.join(".git");
+        let admin = common.join("worktrees/worktree");
+        // The repository's own settings, rules and MCP server; the account's hostile ones.
+        let mark = |name: &str| root.join(name).display().to_string();
+        std::fs::create_dir_all(worktree.join(".codex/rules")).unwrap();
+        let rule = "prefix_rule(pattern=[\"touch\"], decision=\"allow\")\n";
+        std::fs::write(worktree.join(".codex/rules/repo.rules"), rule).unwrap();
+        std::fs::write(home.join("rules/default.rules"), rule).unwrap();
+        std::fs::write(
+            worktree.join(".codex/config.toml"),
+            format!(
+                "notify = [\"/bin/sh\", \"-c\", \"touch {}\"]\n[mcp_servers.repo]\ncommand = \"/bin/sh\"\nargs = [\"-c\", \"touch {}; sleep 3\"]\n",
+                mark("repo-notify"),
+                mark("repo-mcp")
+            ),
+        )
+        .unwrap();
+        std::fs::write(home.join("standin.json"), "{\"stand-in\": \"not a login\"}").unwrap();
+        let hostile = format!(
+            "sandbox_mode = \"danger-full-access\"\napproval_policy = \"on-request\"\nnotify = [\"/bin/sh\", \"-c\", \"touch {}\"]\n[sandbox_workspace_write]\nnetwork_access = true\n[mcp_servers.owner]\ncommand = \"/bin/sh\"\nargs = [\"-c\", \"echo $HOME > {}; sleep 3\"]\n[projects.{:?}]\ntrust_level = \"trusted\"\n[projects.{:?}]\ntrust_level = \"trusted\"\n",
+            mark("notify"),
+            mark("owner-mcp"),
+            worktree.display().to_string(),
+            clone.display().to_string(),
+        );
+        std::fs::write(home.join("config.toml"), &hostile).unwrap();
+        // The stand-in model: each request gets the next command to run, then its last words.
+        let outside = root.join("outside-by-rule");
+        let probe = format!(
+            "cat {home}/standin.json; echo read=$?; echo x >> {common}/config; echo commonconfig=$?; echo x >> {admin}/commondir; echo commondir=$?; curl -sS -m 5 -o /dev/null https://example.com; echo net=$?; echo HOME=$HOME; touch {worktree}/in-worktree; echo wt=$?",
+            home = home.display(),
+            common = common.display(),
+            admin = admin.display(),
+            worktree = worktree.display(),
+        );
+        let patch = format!(
+            "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: {}\n+out\n*** End Patch\nEOF",
+            root.join("outside-by-edit").display()
+        );
+        // Taken from the end: the probe, the allowed `touch`, then Codex's own file edit.
+        let commands = Arc::new(Mutex::new(vec![
+            patch,
+            format!("touch {}", outside.display()),
+            probe,
+        ]));
+        let heard = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn({
+            let (commands, heard) = (commands.clone(), heard.clone());
+            move || {
+                for mut stream in listener.incoming().flatten() {
+                    let mut read = Vec::new();
+                    let mut buffer = [0u8; 65536];
+                    let body = loop {
+                        let n = stream.read(&mut buffer).unwrap_or(0);
+                        read.extend_from_slice(&buffer[..n]);
+                        let text = String::from_utf8_lossy(&read).into_owned();
+                        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                            if n == 0 {
+                                break String::new();
+                            }
+                            continue;
+                        };
+                        let length = head
+                            .lines()
+                            .filter_map(|l| l.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if body.len() >= length || n == 0 {
+                            break body.to_owned();
+                        }
+                    };
+                    let Ok(asked) = serde_json::from_str::<Value>(&body) else {
+                        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                        continue;
+                    };
+                    heard.lock().unwrap().push(asked);
+                    let item = match commands.lock().unwrap().pop() {
+                        Some(cmd) => {
+                            json!({"type": "function_call", "call_id": uuid::Uuid::new_v4().to_string(),
+                            "name": "exec_command", "arguments": json!({"cmd": cmd}).to_string()})
+                        }
+                        None => json!({"type": "message", "role": "assistant", "id": "m1",
+                            "content": [{"type": "output_text", "text": "Done."}]}),
+                    };
+                    let events = [
+                        json!({"type": "response.created", "response": {"id": "r"}}),
+                        json!({"type": "response.output_item.done", "item": item}),
+                        json!({"type": "response.completed", "response": {"id": "r", "usage": {
+                            "input_tokens": 0, "input_tokens_details": null, "output_tokens": 0,
+                            "output_tokens_details": null, "total_tokens": 0}}}),
+                    ];
+                    let sse: String = events
+                        .iter()
+                        .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+                        .collect();
+                    let _ = stream.write_all(
+                        format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}", sse.len()).as_bytes(),
+                    );
+                }
+            }
+        });
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"codex": {"bin": codex_bin,
+                    "accounts": [{"id": "a", "name": "A", "configDir": home}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Sandbox::detect(&session),
+        )
+        .unwrap();
+        let job = Job::new(
+            "own".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "codex".into(),
+            "a".into(),
+        );
+        jobs.lock().jobs.insert(job.id.clone(), job.clone());
+        let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Codex);
+        let account = jobs.accounts(Tool::Codex).remove(0);
+        let model = [
+            "model=\"gpt-5\"".to_owned(),
+            "model_provider=\"mock\"".into(),
+            format!(
+                "model_providers.mock={{name = \"mock\", base_url = \"http://127.0.0.1:{port}/v1\", wire_api = \"responses\"}}"
+            ),
+        ];
+        let turn = async |resume: Option<String>| {
+            let mut launch = jobs
+                .launch(&job, &spec, Tool::Codex, Vec::new(), &account, None)
+                .unwrap();
+            assert!(launch.own_sandbox);
+            std::fs::create_dir_all(launch.stderr.parent().unwrap()).unwrap();
+            let at = launch.argv.len() - 1;
+            let model = model.iter().flat_map(|m| ["-c".into(), m.into()]);
+            launch.argv.splice(at..at, model);
+            let options = codex::Options {
+                resume,
+                ..Default::default()
+            };
+            let session = Mutex::new(None);
+            let (_stop, stop) = watch::channel(Signal::Run);
+            let turn = codex::run_turn(
+                launch,
+                "Go.",
+                &options,
+                Duration::from_secs(90),
+                stop,
+                |_, _| Ruling::Now(Answer::Deny("Nothing is asked in an own run.".into())),
+                |event| {
+                    if let AgentEvent::Session(thread) = event {
+                        *session.lock().unwrap() = Some(thread);
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            (turn, session.into_inner().unwrap())
+        };
+        let (first, session) = turn(None).await;
+        assert_eq!(first.text(), "Done.", "{}", first.error());
+        let outputs: Vec<String> = heard
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|asked| asked["input"].as_array().cloned().unwrap_or_default())
+            .filter(|item| item["type"] == "function_call_output")
+            .map(|item| item["output"].to_string())
+            .collect();
+        let said = outputs.join("\n");
+        let temp_home = format!("HOME={}\\n", temp.display());
+        for held in [
+            "read=1",
+            "commonconfig=1",
+            "commondir=1",
+            "wt=0",
+            &temp_home,
+        ] {
+            assert!(said.contains(held), "{held}: {said}");
+        }
+        assert!(said.contains("net=") && !said.contains("net=0"), "{said}");
+        assert!(worktree.join("in-worktree").exists());
+        // The exec-policy rule allowed `touch`: it ran, in the sandbox still.
+        assert!(
+            said.contains("outside-by-rule: Operation not permitted"),
+            "{said}"
+        );
+        assert!(
+            said.contains("patch rejected: writing outside of the project"),
+            "{said}"
+        );
+        assert!(!outside.exists());
+        for none in ["outside-by-edit", "notify", "repo-notify", "repo-mcp"] {
+            assert!(!root.join(none).exists(), "{none} ran");
+        }
+        let owners_home = std::fs::read_to_string(root.join("owner-mcp")).unwrap();
+        assert_eq!(Some(PathBuf::from(owners_home.trim())), login_home());
+        assert_eq!(
+            std::fs::read_to_string(home.join("config.toml")).unwrap(),
+            hostile
+        );
+        // Its thread again, resumed: obid's profile still, or no turn would have started.
+        let (again, _) = turn(session).await;
+        assert_eq!(again.text(), "Done.", "{}", again.error());
+        // What Codex would merge into obid's profile stops the run before any thread.
+        let asked = heard.lock().unwrap().len();
+        let widened = format!(
+            "{hostile}[permissions.oby_own.filesystem]\n{:?} = \"read\"\n[permissions.oby_own.network]\nenabled = true\n",
+            home.join("standin.json").display().to_string()
+        );
+        std::fs::write(home.join("config.toml"), widened).unwrap();
+        let (refused, session) = turn(None).await;
+        assert!(
+            refused.error().contains("permissions.oby_own.filesystem."),
+            "{}",
+            refused.error()
+        );
+        assert_eq!((session, heard.lock().unwrap().len()), (None, asked));
         let _ = std::fs::remove_dir_all(&root);
     }
 
