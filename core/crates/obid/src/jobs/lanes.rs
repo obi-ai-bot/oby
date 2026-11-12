@@ -1238,6 +1238,9 @@ mod tests {
         let [work, temp, login] = [work, temp, login].map(|d| d.canonicalize().unwrap());
         let env_file = login.join("env.sh");
         std::fs::write(&env_file, "").unwrap();
+        // Its tag, as obid makes one (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name("temp.run-test");
+        std::fs::write(&tag, "").unwrap();
         let pid_file = temp.join("pid");
         // The leftover, killed however the test ends (crate::process::tests::Started).
         let mut started = crate::process::tests::Started {
@@ -1246,7 +1249,7 @@ mod tests {
         };
         let settings = json!({"sandbox": {"enabled": true, "failIfUnavailable": true,
             "allowUnsandboxedCommands": false,
-            "filesystem": {"allowWrite": [temp], "denyWrite": [login]}}});
+            "filesystem": {"allowWrite": [temp, tag], "denyWrite": [login]}}});
         let mut command = std::process::Command::new("claude");
         command
             .current_dir(&work)
@@ -1266,6 +1269,7 @@ mod tests {
             ])
             .args(["--tools", "Bash"])
             .env(crate::process::CLAUDE_TMPDIR, &temp)
+            .env(crate::process::RUN_TAG, &tag)
             .env("CLAUDE_ENV_FILE", &env_file)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null());
@@ -1302,7 +1306,7 @@ mod tests {
             .unwrap();
         let alive = || nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
         assert!(alive(), "no leftover: the probe proves nothing");
-        assert!(crate::process::end_sandboxed(&temp, &work, &login).unwrap() >= 1);
+        assert!(crate::process::end_sandboxed(&temp, &work, &login, &tag).unwrap() >= 1);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(
             !alive(),

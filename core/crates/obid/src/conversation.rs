@@ -451,7 +451,7 @@ pub struct Conversations {
 }
 
 /// What ends a conversation's waiting session ([`Conversations::end_sessions_with`]).
-type Ending = Box<dyn Fn(&str) + Send + Sync>;
+type Ending = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Where the next new conversation's id is kept.
 const NEXT: &str = "next-id";
@@ -1411,7 +1411,7 @@ impl Conversations {
 
     /// Sets what ends a conversation's waiting session before its folders are swept and go
     /// (LANES-16): once, at obid's start.
-    pub fn end_sessions_with(&self, end: impl Fn(&str) + Send + Sync + 'static) {
+    pub fn end_sessions_with(&self, end: impl Fn(&str) -> bool + Send + Sync + 'static) {
         let _ = self.ending.set(Box::new(end));
     }
 
@@ -1434,29 +1434,20 @@ impl Conversations {
             Err(e) => return Err(Error::Io(e)),
         }
         let gone = threads.remove(index);
-        // Its waiting Claude Code ends first, then what its own session's commands left running,
-        // while the folders that tell them apart are there (LANES-16); then its room, checkouts
-        // and login go with it. Kept when that sweep couldn't finish: a later one needs them.
-        if let Some(end) = self.ending.get() {
-            end(&id);
-        }
+        // Its waiting Claude Code ends first, and what its commands left running with it, swept
+        // by its run's tag while the folders that tell them apart are there (LANES-16); then its
+        // room, checkouts and login go. Kept when that sweep couldn't finish: a later one needs
+        // them.
+        let swept = self.ending.get().is_none_or(|end| end(&id));
         let place = self.dir.join(&id);
-        let [home, room, login] = ["home", "room", "login"].map(|d| place.join(d));
-        // No `login` folder: no own session ever ran there, so there's nothing to sweep.
-        let swept = match login.is_dir() {
-            true => crate::process::end_sandboxed(&home, &room, &login),
-            false => Ok(0),
-        };
         match swept {
-            Err(why) => {
-                tracing::warn!(
-                    "a deleted conversation's leftovers may still run, so {} stays: {why}",
-                    place.display()
-                );
-            }
-            _ => {
+            true => {
                 let _ = std::fs::remove_dir_all(&place);
             }
+            false => tracing::warn!(
+                "a deleted conversation's leftovers may still run, so {} stays",
+                place.display()
+            ),
         }
         if let Some(home) = self.dir.parent() {
             let _ = std::fs::remove_dir_all(cursor_folder(home, &id));
@@ -2360,64 +2351,42 @@ mod tests {
         crate::secrets::known().forget("vault TEST_351");
     }
 
-    /// LANES-16: deleting a conversation, however it's deleted, ends its waiting session first,
-    /// then what its own session's commands left running, then its folders; a sweep that couldn't
-    /// finish keeps them, for a later one.
-    #[cfg(target_os = "macos")]
+    /// LANES-16: deleting a conversation, however it's deleted, ends its waiting session first
+    /// (which sweeps what its commands left running, by its run's tag), then its folders go; when
+    /// that sweep couldn't finish, they stay, for a later one.
     #[test]
-    fn lanes_16_a_deleted_conversation_ends_its_session_then_its_leftovers() {
+    fn lanes_16_a_deleted_conversation_ends_its_session_then_its_folders() {
         let home = std::env::temp_dir().join(format!("obid-lanes-16d-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
-        let home = home.canonicalize().unwrap();
         let conversations = super::Conversations::open(&home, crate::events::Events::new());
         let ended = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = ended.clone();
-        conversations.end_sessions_with(move |id| seen.lock().unwrap().push(id.to_owned()));
-        let folders = |id: &str, made: &[&str]| {
+        // The kept one's sweep couldn't finish; every other one's did.
+        conversations.end_sessions_with(move |id| {
+            let mut seen = seen.lock().unwrap();
+            seen.push(id.to_owned());
+            seen.len() != 2
+        });
+        let folder = |id: &str| {
             let place = home.join("conversations").join(id);
-            for folder in made {
-                std::fs::create_dir_all(place.join(folder)).unwrap();
+            for made in ["home", "room", "login"] {
+                std::fs::create_dir_all(place.join(made)).unwrap();
             }
             place
         };
-        let id = conversations.start_for("Own").unwrap();
-        let place = folders(&id, &["home", "room", "login"]);
-        let profile = format!(
-            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
-            place.display(),
-            place.join("home").display(),
-            place.join("room").display()
-        );
-        let mut started = crate::process::tests::Started {
-            children: Vec::new(),
-            file: None,
-        };
-        let left = std::process::Command::new("/usr/bin/sandbox-exec")
-            .args(["-p", &profile, "/usr/bin/perl", "-e"])
-            .arg("use POSIX; setsid(); exec q(sleep), 60")
-            .spawn()
-            .unwrap();
-        started.children.push(left);
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        let id = conversations.start_for("Ended").unwrap();
+        let place = folder(&id);
         conversations.delete(&id).unwrap();
         assert_eq!(*ended.lock().unwrap(), std::slice::from_ref(&id));
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        assert!(
-            started.children[0].try_wait().unwrap().is_some(),
-            "its leftover still runs"
-        );
         assert!(!place.exists());
-        // A sweep that can't finish (its room gone, so obid can't prove what's its) keeps them.
         let kept = conversations.start_for("Kept").unwrap();
-        let place = folders(&kept, &["home", "login"]);
+        let place = folder(&kept);
         conversations.delete(&kept).unwrap();
         assert!(place.exists(), "the folders a later sweep needs are gone");
-        // One where no own session ever ran (no `login`) has nothing to sweep, and goes.
-        let boxed = conversations.start_for("Boxed").unwrap();
-        let place = folders(&boxed, &["home", "room"]);
-        conversations.delete(&boxed).unwrap();
-        assert!(!place.exists());
-        drop(started);
+        assert!(
+            !conversations.has(&kept),
+            "the conversation itself still goes"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

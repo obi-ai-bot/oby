@@ -221,7 +221,18 @@ pub(crate) fn own_sandbox_env(
         (None, None) => Vec::new(),
         _ => return Err("obid has no git folder for this job's Claude Code.".into()),
     };
+    // The run's tag (LANES-16, the owner's RUNTAG-1a): a file beside its temp folder, named at
+    // random, which only this run's sandbox may write ([`own_sandbox_settings`]), so obid's sweep
+    // of what the run left running ends no process of anyone else's.
+    let temp = spec.canonical().temp;
+    let name = temp
+        .file_name()
+        .ok_or("obid has no temp folder for this run.")?;
+    let run = uuid::Uuid::new_v4().simple();
+    let tag = temp.with_file_name(format!("{}.run-{run}", name.to_string_lossy()));
+    write_fresh(&tag, b"").map_err(|e| format!("obid can't tag this run: {e}"))?;
     let mut env: Vec<(&'static str, OsString)> = vec![
+        (process::RUN_TAG, tag.into_os_string()),
         ("HOME", home.clone().into_os_string()),
         ("CFFIXED_USER_HOME", home.clone().into_os_string()),
         ("CLAUDE_ENV_FILE", login.join("env.sh").into_os_string()),
@@ -736,13 +747,21 @@ pub(super) fn own_sandbox_settings(
                 "disabled": false,
                 "denyRead": names(&hidden)?,
                 "allowRead": names(&spec.readable())?,
-                "allowWrite": names(&spec.writable())?,
+                "allowWrite": names(&run_tagged(spec.writable(), env))?,
                 "denyWrite": names(&kept)?,
             },
             "network": {"deniedDomains": CODE_HOSTS},
         },
     })
     .to_string())
+}
+
+/// `writable` and the run's tag ([`process::RUN_TAG`] in `env`, [`own_sandbox_env`]'s), which its
+/// sandbox may write and nothing else's may (LANES-16).
+fn run_tagged(mut writable: Vec<PathBuf>, env: &[(&'static str, OsString)]) -> Vec<PathBuf> {
+    let tag = env.iter().find(|(name, _)| *name == process::RUN_TAG);
+    writable.extend(tag.map(|(_, path)| PathBuf::from(path)));
+    writable
 }
 
 /// The variables obid's `--settings` gives an own run's Claude Code in its `env`, as obid set them

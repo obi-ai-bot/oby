@@ -109,10 +109,10 @@ pub struct RpcError {
 pub struct Conn {
     child: Child,
     pgid: u32,
-    /// An own run's commands' temp folder, its working folder and its `login` folder
-    /// (`env.sh`'s), what its leftovers are found by when it ends ([`process::end_sandboxed`],
+    /// An own run's commands' temp folder, its working folder, its `login` folder (`env.sh`'s)
+    /// and its tag, what its leftovers are found by when it ends ([`process::end_sandboxed`],
     /// LANES-16).
-    leftovers: Option<(PathBuf, PathBuf, PathBuf)>,
+    leftovers: Option<(PathBuf, PathBuf, PathBuf, PathBuf)>,
     stdin: Option<ChildStdin>,
     lines: BufReader<ChildStdout>,
     copying: Option<tokio::task::JoinHandle<()>>,
@@ -219,7 +219,8 @@ impl Conn {
         };
         let leftovers = launch.own_sandbox.then(|| {
             let login = set("CLAUDE_ENV_FILE")?.parent()?.to_path_buf();
-            Some((set(process::CLAUDE_TMPDIR)?, launch.cwd.clone(), login))
+            let tag = set(process::RUN_TAG)?;
+            Some((set(process::CLAUDE_TMPDIR)?, launch.cwd.clone(), login, tag))
         });
         Ok(Conn {
             child,
@@ -530,11 +531,14 @@ impl Conn {
     /// Ends now what an own run's commands left running (LANES-16), and never again for this run
     /// once a sweep proved none is left; one that couldn't is logged, and the drop tries again.
     pub fn end_leftovers(&mut self) {
-        let Some((temp, room, login)) = &self.leftovers else {
+        let Some((temp, room, login, tag)) = &self.leftovers else {
             return;
         };
-        match process::end_sandboxed(temp, room, login) {
-            Ok(_) => self.leftovers = None,
+        match process::end_sandboxed(temp, room, login, tag) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(tag);
+                self.leftovers = None;
+            }
             Err(why) => tracing::warn!("an own run's leftovers may still run: {why}"),
         }
     }
@@ -542,18 +546,25 @@ impl Conn {
     /// An own run's agent, and all its group, end now, then what its commands left running
     /// (LANES-16): a conversation's waiting session, before a next session starts on the same
     /// folders. Nothing of the agent's can start another command after it, and its drop sweeps
-    /// nothing, even when this sweep couldn't finish (it's logged). A boxed run's agent isn't
-    /// touched: it ends by itself ([`Conn::finish`]).
-    pub fn end_own_now(&mut self) {
+    /// nothing, even when this sweep couldn't finish (it's logged, and the answer is false). A
+    /// boxed run's agent isn't touched: it ends by itself ([`Conn::finish`]).
+    pub fn end_own_now(&mut self) -> bool {
         // Taken whatever the sweep finds: the drop, later, may run while a next session works on
         // the same folders, and must never sweep them.
-        let Some((temp, room, login)) = self.leftovers.take() else {
-            return;
+        let Some((temp, room, login, tag)) = self.leftovers.take() else {
+            return true;
         };
         process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
         let _ = self.child.start_kill();
-        if let Err(why) = process::end_sandboxed(&temp, &room, &login) {
-            tracing::warn!("an ended session's leftovers may still run: {why}");
+        match process::end_sandboxed(&temp, &room, &login, &tag) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&tag);
+                true
+            }
+            Err(why) => {
+                tracing::warn!("an ended session's leftovers may still run: {why}");
+                false
+            }
         }
     }
 }
@@ -655,11 +666,18 @@ mod tests {
         let env_file = login.join("env.sh");
         std::fs::write(&env_file, "").unwrap();
         // As Claude Code's own sandbox for the run: its temp folder and room, nothing else of it.
+        // The run's tag, a file only its sandbox may write (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name(format!(
+            "{}.run-test",
+            temp.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&tag, "").unwrap();
         let profile = format!(
-            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
             dir.canonicalize().unwrap().display(),
             temp.display(),
-            room.display()
+            room.display(),
+            tag.display()
         );
         let pid_file = temp.join("pid");
         // What the test starts, killed however it ends (crate::process::tests::Started).
@@ -676,6 +694,7 @@ mod tests {
             env: vec![
                 ("PATH".into(), "/bin:/usr/bin".into()),
                 (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                (process::RUN_TAG.into(), tag.clone().into()),
                 ("CLAUDE_ENV_FILE".into(), env_file.into()),
             ],
             cwd: room.clone(),
@@ -747,11 +766,18 @@ mod tests {
         }
         let [temp, room, login] = [temp, room, login].map(|d| d.canonicalize().unwrap());
         std::fs::write(login.join("env.sh"), "").unwrap();
+        // The run's tag, a file only its sandbox may write (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name(format!(
+            "{}.run-test",
+            temp.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&tag, "").unwrap();
         let profile = format!(
-            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
             dir.canonicalize().unwrap().display(),
             temp.display(),
-            room.display()
+            room.display(),
+            tag.display()
         );
         let mut started = crate::process::tests::Started {
             children: Vec::new(),
@@ -764,6 +790,7 @@ mod tests {
             env: vec![
                 ("PATH".into(), "/bin:/usr/bin".into()),
                 (process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                (process::RUN_TAG.into(), tag.clone().into()),
                 ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
             ],
             cwd: room.clone(),

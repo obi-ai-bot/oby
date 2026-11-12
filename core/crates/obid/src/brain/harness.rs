@@ -251,10 +251,11 @@ impl Warm {
     /// Its login copy goes now. An own session's Claude Code, its group and what its commands
     /// left running end now too (LANES-16), before a next session starts on the same folders; a
     /// boxed one ends (its stdin closed, it exits) in the background.
-    fn end(mut self) {
+    fn end(mut self) -> bool {
         self.place.forget_login();
-        self.conn.end_own_now();
+        let swept = self.conn.end_own_now();
         tokio::spawn(self.conn.finish());
+        swept
     }
 }
 
@@ -315,10 +316,9 @@ impl Sessions {
     }
 
     /// Ends `conversation`'s waiting Claude Code, if one waits: the conversation went.
-    pub fn end_warm(&self, conversation: &str) {
-        if let Some(warm) = self.warm().remove(conversation) {
-            warm.end();
-        }
+    pub fn end_warm(&self, conversation: &str) -> bool {
+        let warm = self.warm().remove(conversation);
+        warm.is_none_or(Warm::end)
     }
 
     /// Ends every waiting Claude Code, their login copies taken out at once: obid is stopping.
@@ -578,11 +578,9 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
 pub fn end_warm_with_conversations(shared: Arc<Shared>) {
     // Before its folders are swept and go, on every path that deletes one (LANES-16).
     let weak = Arc::downgrade(&shared);
-    shared.conversations.end_sessions_with(move |id| {
-        if let Some(shared) = weak.upgrade() {
-            shared.harness.end_warm(id);
-        }
-    });
+    shared
+        .conversations
+        .end_sessions_with(move |id| weak.upgrade().is_none_or(|s| s.harness.end_warm(id)));
     let mut events = shared.events.subscribe();
     tokio::spawn(async move {
         loop {
@@ -3755,11 +3753,18 @@ mod tests {
             canonical(&place.login),
         );
         std::fs::write(login.join("env.sh"), "").unwrap();
+        // The run's tag, a file only its sandbox may write (crate::jobs, `own_sandbox_env`).
+        let tag = temp.with_file_name(format!(
+            "{}.run-test",
+            temp.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&tag, "").unwrap();
         let profile = format!(
-            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
             canonical(&place.folder).display(),
             temp.display(),
-            room.display()
+            room.display(),
+            tag.display()
         );
         let pid_file = temp.join("pid");
         let mut started = crate::process::tests::Started {
@@ -3779,6 +3784,7 @@ mod tests {
             env: vec![
                 ("PATH".into(), "/bin:/usr/bin".into()),
                 (crate::process::CLAUDE_TMPDIR.into(), temp.clone().into()),
+                (crate::process::RUN_TAG.into(), tag.clone().into()),
                 ("CLAUDE_ENV_FILE".into(), login.join("env.sh").into()),
             ],
             cwd: room.clone(),
