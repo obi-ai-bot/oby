@@ -6079,12 +6079,9 @@ impl Jobs {
             tracing::error!("can't forget job {id}: {e}");
         }
         let clone = self.clone_for(&job);
-        remove_worktree(&clone, &self.worktree_path(id)).await;
-        let _ = std::fs::remove_dir_all(self.temp_path(id));
-        let _ = std::fs::remove_dir_all(self.login_path(id));
+        self.remove_folders(&clone, id).await;
         self.transcripts.remove(id);
-        // Only a branch no other job uses, and only the clone's: what was pushed stays on the
-        // remote.
+        // Only a branch no other job uses, and only the clone's: what was pushed stays remote.
         if !branch_stays && git::is_branch_name(&job.branch) {
             // Under the lock the clone is got ready with: `git branch -D` rewrites its .git/config
             // (it drops the branch's section, there or not), and a `git config` of git::ensure_clone

@@ -663,9 +663,8 @@ pub fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {
 }
 
 /// Ends what an own run left running, `setsid` too (LANES-16): each process of this user's, not a
-/// zombie, whose sandbox may write the run's `tag` (RUNTAG-1a), `writes` and `room`, but not fresh
-/// files of this call's in `denied` and beside `writes`, proven again before each stop (a missing
-/// path would match everyone). Err when it can't prove a sweep found none: best effort.
+/// zombie, whose sandbox may write the run's `tag`, `writes` and `room`, but not fresh files of
+/// this call's in `denied` and beside `writes`, proven before each stop. Err when it can't prove.
 // ponytail: an id freed between check and stop could be reused; needs macOS's ids to wrap.
 #[cfg(target_os = "macos")]
 pub fn end_sandboxed(
@@ -677,10 +676,7 @@ pub fn end_sandboxed(
     use libproc::bsd_info::BSDInfo;
     use libproc::processes::{ProcFilter, pids_by_type};
     use nix::sys::signal::Signal;
-    let name = writes
-        .file_name()
-        .ok_or("no folder to sweep")?
-        .to_string_lossy();
+    let name = writes.file_name().ok_or("no folder")?.to_string_lossy();
     let call = uuid::Uuid::new_v4().simple();
     let files = [
         denied.join(format!(".oby-reap-{call}")),
@@ -691,15 +687,12 @@ pub fn end_sandboxed(
     });
     let me = std::process::id();
     let folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
-    let tagged = || {
-        let m = std::fs::symlink_metadata(tag);
-        m.is_ok_and(|m| m.is_file() && std::os::unix::fs::MetadataExt::nlink(&m) == 1)
-    };
+    let one = |m: std::fs::Metadata| m.is_file() && std::os::unix::fs::MetadataExt::nlink(&m) == 1;
     let proven = || {
         [writes, room]
             .iter()
             .all(|f| folder(f) && may_write(me, f) == Some(true))
-            && tagged()
+            && std::fs::symlink_metadata(tag).is_ok_and(one)
             && may_write(me, tag) == Some(true)
             && files.iter().all(|file| {
                 std::fs::symlink_metadata(file).is_ok_and(|m| m.is_file())
@@ -719,11 +712,7 @@ pub fn end_sandboxed(
     let uid = nix::unistd::getuid().as_raw();
     let list = || pids_by_type(ProcFilter::ByUID { uid }).map_err(|e| e.to_string());
     let signal = |pid: u32, last: bool| {
-        let sig = if last {
-            Signal::SIGKILL
-        } else {
-            Signal::SIGSTOP
-        };
+        let sig = [Signal::SIGSTOP, Signal::SIGKILL][usize::from(last)];
         nix::sys::signal::kill(Pid::from_raw(pid as i32), sig).is_ok()
     };
     let swept = made.and_then(|()| sweep(&list, &theirs, &proven, &signal));
@@ -734,16 +723,14 @@ pub fn end_sandboxed(
 }
 
 /// `path` as a new empty file (0600), never through what was there.
-#[cfg(target_os = "macos")]
-fn fresh(path: &Path) -> std::io::Result<()> {
+pub(crate) fn fresh(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut open = std::fs::OpenOptions::new();
     open.write(true).create_new(true).mode(0o600);
     open.custom_flags(libc::O_NOFOLLOW).open(path).map(drop)
 }
 
-/// [`end_sandboxed`]'s rule: what `list` names and is `theirs` (never 0, launchd or obid) is
-/// stopped while `proven` holds, then killed, until a sweep finds none; never an error as clean.
+/// [`end_sandboxed`]'s rule: `theirs` stopped while `proven`, killed, until a sweep finds none.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn sweep(
     list: &dyn Fn() -> Result<Vec<u32>, String>,
@@ -787,11 +774,9 @@ pub(crate) fn sweep(
     ))
 }
 
-/// How many times [`end_sandboxed`] sweeps at most.
 const SWEEPS: usize = 10;
 
-/// Whether `pid`'s sandbox may write `path`, as `sandbox_check` answers; obid's one `unsafe` call
-/// (UNSAFE-1): no safe binding has it.
+/// Whether `pid`'s sandbox may write `path` (`sandbox_check`): obid's one `unsafe` (UNSAFE-1).
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 fn may_write(pid: u32, path: &Path) -> Option<bool> {

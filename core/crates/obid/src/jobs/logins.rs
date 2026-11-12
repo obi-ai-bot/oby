@@ -221,11 +221,9 @@ pub(crate) fn own_sandbox_env(
         (None, None) => Vec::new(),
         _ => return Err("obid has no git folder for this job's Claude Code.".into()),
     };
-    // The run's tag (LANES-16, RUNTAG-1a): a path only its sandbox may write (`run_tagged`).
+    // The run's tag (LANES-16, RUNTAG-1a): a path only its sandbox may write (its `allowWrite`).
     let temp = spec.canonical().temp;
-    let name = temp
-        .file_name()
-        .ok_or("obid has no temp folder for this run.")?;
+    let name = temp.file_name().ok_or("obid has no temp folder.")?;
     let run = uuid::Uuid::new_v4().simple();
     let tag = temp.with_file_name(format!("{}.run-{run}", name.to_string_lossy()));
     let mut env: Vec<(&'static str, OsString)> = vec![
@@ -727,6 +725,9 @@ pub(super) fn own_sandbox_settings(
         pinned.insert(wanted.into(), value.into());
     }
     let asked: Vec<&str> = CLAUDE_TOOLS.iter().chain(&["mcp__*"]).copied().collect();
+    let mut writes = spec.writable();
+    let tag = env.iter().find(|(name, _)| *name == process::RUN_TAG);
+    writes.extend(tag.map(|(_, path)| PathBuf::from(path)));
     Ok(json!({
         "env": pinned,
         "permissions": {"deny": rules, "ask": asked},
@@ -744,20 +745,13 @@ pub(super) fn own_sandbox_settings(
                 "disabled": false,
                 "denyRead": names(&hidden)?,
                 "allowRead": names(&spec.readable())?,
-                "allowWrite": names(&run_tagged(spec.writable(), env))?,
+                "allowWrite": names(&writes)?,
                 "denyWrite": names(&kept)?,
             },
             "network": {"deniedDomains": CODE_HOSTS},
         },
     })
     .to_string())
-}
-
-/// `writable` and the run's tag, in `env` (LANES-16).
-fn run_tagged(mut writable: Vec<PathBuf>, env: &[(&'static str, OsString)]) -> Vec<PathBuf> {
-    let tag = env.iter().find(|(name, _)| *name == process::RUN_TAG);
-    writable.extend(tag.map(|(_, path)| PathBuf::from(path)));
-    writable
 }
 
 /// The variables obid's `--settings` gives an own run's Claude Code in its `env`, as obid set them

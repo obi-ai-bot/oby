@@ -198,12 +198,8 @@ impl Conn {
         // An own run's tag and obid's record of it, made right before it starts (LANES-16).
         let leftovers = launch.own_sandbox.then(|| {
             let login = set("CLAUDE_ENV_FILE")?.parent()?.to_path_buf();
-            Some((
-                set(process::CLAUDE_TMPDIR)?,
-                launch.cwd.clone(),
-                login,
-                set(process::RUN_TAG)?,
-            ))
+            let tag = set(process::RUN_TAG)?;
+            Some((set(process::CLAUDE_TMPDIR)?, launch.cwd.clone(), login, tag))
         });
         let leftovers = leftovers.flatten();
         let made = leftovers
@@ -211,7 +207,7 @@ impl Conn {
             .flat_map(|(_, _, login, tag)| [tag.clone(), recorded(login, tag)]);
         let made: Vec<PathBuf> = made.collect();
         let unmade = || made.iter().for_each(|f| drop(std::fs::remove_file(f)));
-        if let Err(e) = made.iter().try_for_each(|f| std::fs::write(f, "")) {
+        if let Err(e) = made.iter().try_for_each(|f| process::fresh(f)) {
             unmade();
             return Err(e);
         }
@@ -232,7 +228,8 @@ impl Conn {
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| std::io::Error::other("no stdout"))?;
+            .ok_or_else(|| std::io::Error::other("no stdout"))
+            .inspect_err(|_| unmade())?;
         let stopped = *stop.borrow() != process::Signal::Run;
         let limit = limit.into();
         Ok(Conn {
@@ -530,16 +527,52 @@ impl Conn {
 }
 
 /// A turn dropped without [`Conn::finish`] (its job's task panicked, #914) leaves nothing running:
-/// its whole group goes, as finish's end does, not only the agent `kill_on_drop` ends; an own
-/// run's leftovers too (LANES-16).
+/// its whole group goes, as finish's end does, not only the agent `kill_on_drop` ends.
 impl Drop for Conn {
     fn drop(&mut self) {
         process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
-        // Off obid's async workers; only this run's tag matches, never a next run's.
+        // Off obid's async workers, by this run's tag only; with no thread, at obid's next start.
         if let Some(leftovers) = self.leftovers.take() {
-            std::thread::spawn(move || swept(&leftovers));
+            let mut sweeps = SWEEPS.lock().unwrap_or_else(|e| e.into_inner());
+            sweeps.retain(|sweep| !sweep.is_finished());
+            match std::thread::Builder::new().spawn(move || _ = swept(&leftovers)) {
+                Ok(sweep) => sweeps.push(sweep),
+                Err(e) => tracing::warn!("an own run's sweep waits for obid's next start: {e}"),
+            }
         }
     }
+}
+
+static SWEEPS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// obid's stop: the drops' sweeps (`SWEEPS`) end first, for at most `within` (LANES-16).
+pub fn sweeps_done(within: Duration) {
+    let until = std::time::Instant::now() + within;
+    for sweep in std::mem::take(&mut *SWEEPS.lock().unwrap_or_else(|e| e.into_inner())) {
+        while !sweep.is_finished() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Whether no own run is recorded in `login` (LANES-16); when none can be running (`idle`: obid's
+/// start, a job that ended), each one recorded is swept first, its tag made fresh.
+pub fn sweep_records(temp: &Path, room: &Path, login: &Path, idle: bool) -> bool {
+    let mut names = std::fs::read_dir(login).into_iter().flatten().flatten();
+    let run = |entry: &std::fs::DirEntry| entry.file_name().to_string_lossy().contains(".run-");
+    let [Ok(temp), Ok(room), Ok(login)] = [temp, room, login].map(Path::canonicalize) else {
+        return !names.any(|entry| run(&entry));
+    };
+    if !idle {
+        return !names.any(|entry| run(&entry));
+    }
+    names.filter(run).fold(true, |clean, entry| {
+        let tag = temp.with_file_name(entry.file_name());
+        let _ = std::fs::remove_file(&tag);
+        let run = (temp.clone(), room.clone(), login.clone(), tag);
+        process::fresh(&run.3).is_ok() && swept(&run) && clean
+    })
 }
 
 /// obid's record of an own run not yet swept, in its `login` folder, which no run writes.
@@ -578,7 +611,6 @@ impl Conn {
         }
     }
 
-    /// [`Conn::stop_own`], then the sweep, now.
     pub fn end_own_now(&mut self) {
         self.stop_own();
         self.end_leftovers();
@@ -687,7 +719,6 @@ mod tests {
             "{}.run-test",
             temp.file_name().unwrap().to_string_lossy()
         ));
-        std::fs::write(&tag, "").unwrap();
         let profile = format!(
             "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
             dir.canonicalize().unwrap().display(),
@@ -697,7 +728,7 @@ mod tests {
         );
         let pid_file = temp.join("pid");
         // What the test starts, killed however it ends (crate::process::tests::Started).
-        let mut started = crate::process::tests::Started {
+        let started = crate::process::tests::Started {
             children: Vec::new(),
             file: Some(pid_file.clone()),
         };
@@ -750,21 +781,11 @@ mod tests {
         );
         assert!(alive());
         std::fs::rename(dir.join("away"), &login).unwrap();
-        conn.end_leftovers();
-        assert!(conn.leftovers.is_none());
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!alive(), "the leftover outlived its run");
-        let next = std::process::Command::new("/usr/bin/sandbox-exec")
-            .args(["-p", &profile, "/usr/bin/perl", "-e"])
-            .arg("use POSIX; setsid(); exec q(sleep), 60")
-            .spawn()
-            .unwrap();
-        started.children.push(next);
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Its drop sweeps again, on a thread obid's stop waits for (`sweeps_done`).
         drop(conn);
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let ended = started.children[0].try_wait().unwrap();
-        assert!(ended.is_none(), "the next session's command ended");
+        sweeps_done(Duration::from_secs(10));
+        assert!(!alive(), "the leftover outlived obid's stop");
+        assert!(!tag.exists() && !login.join("temp.run-test").exists());
         drop(started);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -787,7 +808,6 @@ mod tests {
             "{}.run-test",
             temp.file_name().unwrap().to_string_lossy()
         ));
-        std::fs::write(&tag, "").unwrap();
         let profile = format!(
             "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
             dir.canonicalize().unwrap().display(),

@@ -4,6 +4,17 @@
 use super::*;
 
 impl Jobs {
+    /// A deleted job's worktree and folders, once a sweep ended its own runs' leftovers (LANES-16).
+    pub(super) async fn remove_folders(&self, clone: &Path, id: &str) {
+        let worktree = self.worktree_path(id);
+        let (temp, login) = (self.temp_path(id), self.login_path(id));
+        if crate::conn::sweep_records(&temp, &worktree, &login, true) {
+            super::remove_worktree(clone, &worktree).await;
+            let _ = std::fs::remove_dir_all(temp);
+            let _ = std::fs::remove_dir_all(login);
+        }
+    }
+
     /// What in a conversation's room Claude Code would load as its settings, skills, MCP servers
     /// or instructions: never written by the session, in either lane (LANES-12), so nothing a turn
     /// read steers the next one; an own session loads only the owner's user settings anyway.

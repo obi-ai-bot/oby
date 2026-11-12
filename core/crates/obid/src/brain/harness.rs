@@ -248,8 +248,7 @@ struct Warm {
 }
 
 impl Warm {
-    /// Its login copy goes now, an own session's Claude Code stops (its drop sweeps, LANES-16),
-    /// and it ends in the background.
+    /// Its login copy goes now, an own session's Claude Code stops (its drop sweeps, LANES-16).
     fn end(mut self) {
         self.place.forget_login();
         self.conn.stop_own();
@@ -322,16 +321,13 @@ impl Sessions {
     /// Ends `conversation`'s waiting Claude Code, if one waits: the conversation went.
     pub fn end_warm(&self, conversation: &str) {
         let warm = self.warm().remove(conversation);
-        if let Some(warm) = warm {
-            warm.end_now();
-        }
+        warm.into_iter().for_each(Warm::end_now);
     }
 
     /// Ends every waiting Claude Code, their login copies taken out at once: obid is stopping.
     pub fn end_all_warm(&self) {
-        for (_, warm) in self.warm().drain() {
-            warm.end();
-        }
+        let all: Vec<Warm> = self.warm().drain().map(|(_, warm)| warm).collect();
+        all.into_iter().for_each(Warm::end_now);
     }
 
     /// `conversation`'s waiting Claude Code, when it runs `session` on `account`'s login as it is
@@ -3741,10 +3737,10 @@ mod tests {
         assert!(!own_conversation(true, Tool::Cursor, false));
     }
 
-    /// LANES-16: when an own conversation's waiting session ends (`Warm::end_now`), its Claude Code
-    /// stops at once and what its commands left running, `setsid` included, is gone by the time it
-    /// returns; a command the next session on the same folders starts after that survives the old
-    /// session's end.
+    /// LANES-16: when obid stops (`end_all_warm`), an own conversation's waiting session's Claude
+    /// Code stops at once and what its commands left running, `setsid` included, is gone by the
+    /// time it returns; a command the next session on the same folders starts after that survives
+    /// the old session's end.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn lanes_16_an_own_sessions_end_takes_its_leftovers_and_spares_the_next() {
@@ -3765,7 +3761,6 @@ mod tests {
             "{}.run-test",
             temp.file_name().unwrap().to_string_lossy()
         ));
-        std::fs::write(&tag, "").unwrap();
         let profile = format!(
             "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (literal \"{}\"))",
             canonical(&place.folder).display(),
@@ -3827,21 +3822,21 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        // As `end_warm` ends it, outside the sessions' lock.
-        warm.end_now();
-        // Ended by the time it returned: its parent, killed with it, left no zombie to reap.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(!alive(pid), "the leftover outlived its session");
-        // And its Claude Code itself, which could otherwise start another command.
-        let ps = std::process::Command::new("/bin/ps")
-            .args(["-o", "stat=", "-p", &cli.to_string()])
-            .output()
-            .unwrap();
-        let stat = String::from_utf8_lossy(&ps.stdout);
-        assert!(
-            stat.trim().is_empty() || stat.trim().starts_with('Z'),
-            "its Claude Code still runs"
-        );
+        let sessions = Sessions::default();
+        sessions.warm().insert("c".into(), warm);
+        sessions.end_all_warm();
+        // Ended by the time it returned (gone, or a zombie no one reaped yet), and its Claude
+        // Code too, which could otherwise start another command.
+        let ended = |pid: i32| {
+            let ps = std::process::Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&ps.stdout).trim().to_owned();
+            stat.is_empty() || stat.starts_with('Z')
+        };
+        assert!(ended(pid), "the leftover outlived obid's stop");
+        assert!(ended(cli), "its Claude Code still runs");
         let next = std::process::Command::new("/usr/bin/sandbox-exec")
             .args(["-p", &profile, "/usr/bin/perl", "-e", sleeper])
             .spawn()
