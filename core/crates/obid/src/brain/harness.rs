@@ -251,11 +251,10 @@ impl Warm {
     /// Its login copy goes now. An own session's Claude Code, its group and what its commands
     /// left running end now too (LANES-16), before a next session starts on the same folders; a
     /// boxed one ends (its stdin closed, it exits) in the background.
-    fn end(mut self) -> bool {
+    fn end(mut self) {
         self.place.forget_login();
-        let swept = self.conn.end_own_now();
+        self.conn.end_own_now();
         tokio::spawn(self.conn.finish());
-        swept
     }
 }
 
@@ -316,9 +315,10 @@ impl Sessions {
     }
 
     /// Ends `conversation`'s waiting Claude Code, if one waits: the conversation went.
-    pub fn end_warm(&self, conversation: &str) -> bool {
-        let warm = self.warm().remove(conversation);
-        warm.is_none_or(Warm::end)
+    pub fn end_warm(&self, conversation: &str) {
+        if let Some(warm) = self.warm().remove(conversation) {
+            warm.end();
+        }
     }
 
     /// Ends every waiting Claude Code, their login copies taken out at once: obid is stopping.
@@ -578,9 +578,11 @@ async fn start_next(shared: &Arc<Shared>, id: &str) -> Result<(), String> {
 pub fn end_warm_with_conversations(shared: Arc<Shared>) {
     // Before its folders are swept and go, on every path that deletes one (LANES-16).
     let weak = Arc::downgrade(&shared);
-    shared
-        .conversations
-        .end_sessions_with(move |id| weak.upgrade().is_none_or(|s| s.harness.end_warm(id)));
+    shared.conversations.end_sessions_with(move |id| {
+        if let Some(shared) = weak.upgrade() {
+            shared.harness.end_warm(id);
+        }
+    });
     let mut events = shared.events.subscribe();
     tokio::spawn(async move {
         loop {

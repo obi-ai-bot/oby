@@ -706,12 +706,17 @@ pub fn end_sandboxed(
         fresh(file).map_err(|e| format!("obid can't make {}: {e}", file.display()))
     });
     let me = std::process::id();
-    let folder = |path: &Path| std::fs::metadata(path).is_ok_and(|m| m.is_dir());
+    // Never a link in place of the run's folders or tag, nor a tag with another name.
+    let folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+    let tagged = std::fs::symlink_metadata(tag)
+        .is_ok_and(|m| m.is_file() && std::os::unix::fs::MetadataExt::nlink(&m) == 1);
     let proven = || {
         [writes, room]
             .iter()
             .all(|f| folder(f) && may_write(me, f) == Some(true))
-            && files.iter().chain([&tag.to_path_buf()]).all(|file| {
+            && tagged
+            && may_write(me, tag) == Some(true)
+            && files.iter().all(|file| {
                 std::fs::symlink_metadata(file).is_ok_and(|m| m.is_file())
                     && may_write(me, file) == Some(true)
             })
@@ -823,8 +828,9 @@ fn may_write(pid: u32, path: &Path) -> Option<bool> {
             ...
         ) -> libc::c_int;
     }
-    // SANDBOX_FILTER_PATH, and SANDBOX_CHECK_NO_REPORT: no denial is logged.
-    const PATH_NO_REPORT: libc::c_int = 1 | 0x4000_0000;
+    // SANDBOX_FILTER_PATH; SANDBOX_CHECK_NO_REPORT, no denial logged; and SANDBOX_CHECK_NOFOLLOW,
+    // the path as named, never where a link there leads (libsystem_sandbox's values).
+    const PATH_NO_REPORT: libc::c_int = 1 | 0x4000_0000 | 0x1000_0000;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let pid = libc::pid_t::try_from(pid).ok()?;
     // SAFETY: both strings are NUL-terminated and outlive the call; the path is the one variadic
@@ -1402,6 +1408,67 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// LANES-16: a run that swaps its tag for a link to a file of its temp folder, again and
+    /// again while obid sweeps, never gets someone else's process ended: one whose sandbox opens
+    /// that temp folder and room, but not the tag, is judged by the tag's own path, never where a
+    /// link there leads.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lanes_16_a_swapped_tag_never_matches_another_sandbox() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-16s-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let [temp, room, login] = ["temp", "room", "login"].map(|d| root.join(d));
+        for dir in [&temp, &room, &login] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let tag = root.join("temp.run-test");
+        std::fs::write(&tag, "").unwrap();
+        std::fs::write(temp.join("x"), "").unwrap();
+        let profile = format!(
+            "(version 1)(allow default)(deny file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))(allow file-write* (subpath \"{}\"))",
+            root.display(),
+            temp.display(),
+            room.display()
+        );
+        let mut started = Started {
+            children: Vec::new(),
+            file: None,
+        };
+        let other = std::process::Command::new("/usr/bin/sandbox-exec")
+            .args(["-p", &profile, "/usr/bin/perl", "-e"])
+            .arg("use POSIX; setsid(); exec q(sleep), 60")
+            .spawn()
+            .unwrap();
+        started.children.push(other);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let swapping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let swapper = {
+            let (swapping, tag, target) = (swapping.clone(), tag.clone(), temp.join("x"));
+            std::thread::spawn(move || {
+                while swapping.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = std::fs::remove_file(&tag);
+                    let _ = std::os::unix::fs::symlink(&target, &tag);
+                    let _ = std::fs::remove_file(&tag);
+                    let _ = std::fs::write(&tag, "");
+                }
+            })
+        };
+        for _ in 0..300 {
+            let _ = end_sandboxed(&temp, &room, &login, &tag);
+        }
+        swapping.store(false, std::sync::atomic::Ordering::Relaxed);
+        swapper.join().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let ended = started.children[0].try_wait().unwrap();
+        assert!(
+            ended.is_none(),
+            "a swapped tag got another sandbox's process ended"
+        );
+        drop(started);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// LANES-16: the sweep ends a process only while obid can prove it's the run's, kills what it
     /// stopped, and says when it couldn't finish: a listing that failed, a proof lost part way
     /// (the run's folders deleted meanwhile), processes still there after every sweep. It never
@@ -1488,8 +1555,17 @@ pub(crate) mod tests {
                     })
                 })
         };
+        // Without its comments (`/* … */`, `// …`) and whitespace.
         let squeeze = |text: &str| {
-            text.chars()
+            let mut text = text.to_string();
+            while let Some(at) = text.find("/*") {
+                let end = text[at..].find("*/").map_or(text.len(), |e| at + e + 2);
+                text.replace_range(at..end, " ");
+            }
+            let lines = text.lines().map(|l| l.split("//").next().unwrap_or(""));
+            lines
+                .collect::<String>()
+                .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect::<String>()
         };
@@ -1503,6 +1579,20 @@ pub(crate) mod tests {
                 true,
             ),
             (format!("expect({lint})"), true),
+            (format!("allow(/* FFI */ {lint})"), true),
+            (
+                format!("cfg_attr(unix, allow(dead_code, /* x */ {lint}))"),
+                true,
+            ),
+            (
+                format!(
+                    "allow(
+    // FFI
+    {lint}
+)"
+                ),
+                true,
+            ),
             (format!("deny({lint})"), false),
             ("allow(dead_code)".to_string(), false),
         ] {
@@ -1527,9 +1617,10 @@ pub(crate) mod tests {
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let text = std::fs::read_to_string(&path).unwrap();
                     // Each `#[…]` and `#![…]`, to its matching bracket, with no whitespace.
+                    // Spaces may sit between `#`, `!` and `[`.
                     for (at, _) in text.match_indices('#') {
-                        let rest = &text[at + 1..];
-                        let rest = rest.strip_prefix('!').unwrap_or(rest);
+                        let rest = text[at + 1..].trim_start();
+                        let rest = rest.strip_prefix('!').unwrap_or(rest).trim_start();
                         let Some(body) = rest.strip_prefix('[') else {
                             continue;
                         };
@@ -1543,8 +1634,7 @@ pub(crate) mod tests {
                             (depth == 0).then_some(i)
                         });
                         let Some(end) = end else { continue };
-                        let attribute: String =
-                            body[..end].chars().filter(|c| !c.is_whitespace()).collect();
+                        let attribute = squeeze(&body[..end]);
                         if names_lint(&attribute) {
                             let after = &body[end + 1..];
                             found.push((path.clone(), attribute, after.trim_start().to_owned()));
@@ -1566,8 +1656,21 @@ pub(crate) mod tests {
             "{}",
             &after[..after.len().min(80)]
         );
-        let workspace =
-            std::fs::read_to_string(crates.parent().unwrap().join("Cargo.toml")).unwrap();
+        // Nor do cargo's own settings, which could lift it for every crate.
+        let core = crates.parent().unwrap();
+        for config in [
+            core.join(".cargo/config.toml"),
+            core.join("../.cargo/config.toml"),
+        ] {
+            let text = std::fs::read_to_string(&config).unwrap_or_default();
+            assert!(
+                !text.contains(&lint) && !text.contains("cap-lints"),
+                "{}",
+                config.display()
+            );
+        }
+        // ponytail: a lint named through a macro (`allow($l)` with `$l` = the lint) isn't seen.
+        let workspace = std::fs::read_to_string(core.join("Cargo.toml")).unwrap();
         assert!(
             workspace.contains(&format!("{lint} = \"deny\"")),
             "the workspace's lint"

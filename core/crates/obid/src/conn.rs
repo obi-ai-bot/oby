@@ -546,25 +546,20 @@ impl Conn {
     /// An own run's agent, and all its group, end now, then what its commands left running
     /// (LANES-16): a conversation's waiting session, before a next session starts on the same
     /// folders. Nothing of the agent's can start another command after it, and its drop sweeps
-    /// nothing, even when this sweep couldn't finish (it's logged, and the answer is false). A
-    /// boxed run's agent isn't touched: it ends by itself ([`Conn::finish`]).
-    pub fn end_own_now(&mut self) -> bool {
+    /// nothing, even when this sweep couldn't finish (it's logged, and the run's tag stays, so its
+    /// conversation's folders do too). A boxed run's agent isn't touched: it ends by itself
+    /// ([`Conn::finish`]).
+    pub fn end_own_now(&mut self) {
         // Taken whatever the sweep finds: the drop, later, may run while a next session works on
-        // the same folders, and must never sweep them.
+        // the same folders, and must never sweep them. Its tag stays when it couldn't finish.
         let Some((temp, room, login, tag)) = self.leftovers.take() else {
-            return true;
+            return;
         };
         process::signal_group(self.pgid, nix::sys::signal::Signal::SIGKILL);
         let _ = self.child.start_kill();
         match process::end_sandboxed(&temp, &room, &login, &tag) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&tag);
-                true
-            }
-            Err(why) => {
-                tracing::warn!("an ended session's leftovers may still run: {why}");
-                false
-            }
+            Ok(_) => drop(std::fs::remove_file(&tag)),
+            Err(why) => tracing::warn!("an ended session's leftovers may still run: {why}"),
         }
     }
 }

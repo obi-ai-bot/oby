@@ -230,7 +230,6 @@ pub(crate) fn own_sandbox_env(
         .ok_or("obid has no temp folder for this run.")?;
     let run = uuid::Uuid::new_v4().simple();
     let tag = temp.with_file_name(format!("{}.run-{run}", name.to_string_lossy()));
-    write_fresh(&tag, b"").map_err(|e| format!("obid can't tag this run: {e}"))?;
     let mut env: Vec<(&'static str, OsString)> = vec![
         (process::RUN_TAG, tag.into_os_string()),
         ("HOME", home.clone().into_os_string()),
@@ -747,7 +746,7 @@ pub(super) fn own_sandbox_settings(
                 "disabled": false,
                 "denyRead": names(&hidden)?,
                 "allowRead": names(&spec.readable())?,
-                "allowWrite": names(&run_tagged(spec.writable(), env))?,
+                "allowWrite": names(&run_tagged(spec.writable(), env)?)?,
                 "denyWrite": names(&kept)?,
             },
             "network": {"deniedDomains": CODE_HOSTS},
@@ -758,10 +757,17 @@ pub(super) fn own_sandbox_settings(
 
 /// `writable` and the run's tag ([`process::RUN_TAG`] in `env`, [`own_sandbox_env`]'s), which its
 /// sandbox may write and nothing else's may (LANES-16).
-fn run_tagged(mut writable: Vec<PathBuf>, env: &[(&'static str, OsString)]) -> Vec<PathBuf> {
+/// The tag's file is made here, once the launch's checks passed, so a refused one leaves none.
+fn run_tagged(
+    mut writable: Vec<PathBuf>,
+    env: &[(&'static str, OsString)],
+) -> Result<Vec<PathBuf>, String> {
     let tag = env.iter().find(|(name, _)| *name == process::RUN_TAG);
-    writable.extend(tag.map(|(_, path)| PathBuf::from(path)));
-    writable
+    if let Some((_, tag)) = tag {
+        write_fresh(Path::new(tag), b"").map_err(|e| format!("obid can't tag this run: {e}"))?;
+        writable.push(PathBuf::from(tag));
+    }
+    Ok(writable)
 }
 
 /// The variables obid's `--settings` gives an own run's Claude Code in its `env`, as obid set them

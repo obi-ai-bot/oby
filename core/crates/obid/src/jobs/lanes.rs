@@ -796,6 +796,23 @@ mod tests {
         let at = argv.iter().position(|a| *a == "--settings").unwrap();
         let settings: Value = serde_json::from_str(argv[at + 1]).unwrap();
         assert_eq!(settings["disableAllHooks"], true, "{settings}");
+        // LANES-16, RUNTAG-1a: the run is tagged, the tag's file is there, and only its sandbox
+        // may write it, by its --settings.
+        let tag = launch
+            .env
+            .iter()
+            .find(|(name, _)| name == crate::process::RUN_TAG);
+        let tag = tag
+            .map(|(_, path)| PathBuf::from(path))
+            .expect("no run tag in its env");
+        assert!(tag.is_file(), "{}", tag.display());
+        let writes = settings["sandbox"]["filesystem"]["allowWrite"]
+            .as_array()
+            .unwrap();
+        assert!(
+            writes.iter().any(|w| w.as_str() == tag.to_str()),
+            "{settings}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
