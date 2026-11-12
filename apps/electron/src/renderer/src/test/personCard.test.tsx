@@ -69,7 +69,10 @@ const review = (id: string, more: Partial<InboxItem> = {}): InboxItem => item(id
     type: 'review_request', fromOwner: 'ernesto', repo: 'obi-ai-bot/tetrix', headSha: '6d201460a1b2c3d4e5f60718293a4b5c6d7e8f90',
     quoted: {
       goal: `Fix #12. ${INJECTED}`, summary: '<b>Bold</b> summary [here](http://evil.test)',
-      acceptance: [{ index: 0, note: 'run <script>alert(1)</script> too' }, { index: 1, note: null }, { index: 2, note: 'mine', text: 'No <a href=x>new</a> deps' }],
+      acceptance: [
+        { index: 0, note: 'run <script>alert(1)</script> too\nand the e2e suite,\nboth of them,\non a clean checkout' }, { index: 1, note: null },
+        { index: 2, note: 'mine', text: 'No <a href=x>new</a> deps' },
+      ],
     },
   },
   ...more,
@@ -263,10 +266,14 @@ describe('a review request', () => {
     expect(html).toContain('Review request from ernesto');
     // obid's words, then what ernesto's Oby wrote: its goal, summary and conditions' notes
     expect(html).toContain(escaped(REVIEW_TEXT));
-    expect(html).toContain('<blockquote class="msg-quote room-question">Fix #12. ');
     expect(html.indexOf(escaped(REVIEW_TEXT))).toBeLessThan(html.indexOf('Fix #12.'));
-    expect(html).toContain('Their condition: run &lt;script&gt;alert(1)&lt;/script&gt; too');
-    expect(html).toContain('Their condition: No &lt;a href=x&gt;new&lt;/a&gt; deps · mine');
+    // all of it whole, in the one quote that keeps its lines and scrolls, never in Home's clamped text
+    const quote = html.match(/<blockquote class="msg-quote room-question">(.*?)<\/blockquote>/s)?.[1] ?? '';
+    expect(quote).toContain('<p>Fix #12. ');
+    expect(quote).toContain('<p>&lt;b&gt;Bold&lt;/b&gt; summary');
+    expect(quote).toContain('<p>Their condition: run &lt;script&gt;alert(1)&lt;/script&gt; too\nand the e2e suite,\nboth of them,\non a clean checkout</p>');
+    expect(quote).toContain('<p>Their condition: No &lt;a href=x&gt;new&lt;/a&gt; deps · mine</p>');
+    expect(html).not.toContain('tc-ask-text');
     for (const o of [...OBI_OPTIONS, 'Later']) expect(html).toContain(`>${o}</button>`);
     // a look-alike id shows its codes
     await event(review('obi-tr2', { obi: { ...review('obi-tr2').obi, fromOwner: 'еrnesto' } }));

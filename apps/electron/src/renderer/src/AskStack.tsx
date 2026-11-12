@@ -174,11 +174,14 @@ function ReviewBlock({ review: r, onAnswer }: { review: PersonReview; onAnswer?:
     <div className="tc-ask">
       <span className="tc-ask-kind is-review">Review request</span>
       <p className="tc-ask-head">{r.text}</p>
-      {r.goal && <blockquote className="msg-quote room-question">{r.goal}</blockquote>}
-      {r.summary && <blockquote className="msg-quote">{r.summary}</blockquote>}
-      {r.conditions.map((c, i) => (
-        <p key={i} className="tc-ask-text">Their condition: {[c.text, c.note].filter(Boolean).join(' · ')}</p>
-      ))}
+      {/* all of it, never clamped as Home's other text is: one quote that keeps its lines and scrolls */}
+      {(r.goal || r.summary || r.conditions.length > 0) && (
+        <blockquote className="msg-quote room-question">
+          {r.goal && <p>{r.goal}</p>}
+          {r.summary && <p>{r.summary}</p>}
+          {r.conditions.map((c, i) => <p key={i}>Their condition: {[c.text, c.note].filter(Boolean).join(' · ')}</p>)}
+        </blockquote>
+      )}
       {s.problem && <p className="tc-report is-problem" role="alert">{s.problem}</p>}
       <div className="tc-options">
         {/* none looks preferred: obid recommends none for another Oby's request */}
