@@ -1373,6 +1373,7 @@ fn propose_routine(shared: &Shared, session: &Session, args: Value) -> Result<St
         rounds: None,
         created_by: Some("chat".into()),
         conversation: Some(session.conversation.clone()),
+        grace_minutes: None,
     };
     let now = obi_protocol::time::now();
     let routine = shared
