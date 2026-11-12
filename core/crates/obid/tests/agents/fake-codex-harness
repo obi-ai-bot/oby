@@ -44,6 +44,8 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 //   PERMS              asks to run a command in its room, to write inside, outside and in repos/,
 //                      and to read ~/.ssh
 //   RUN <words>        runs a command without asking (as Codex runs a "safe" one), then does <words>
+//   READ <path> <words>  runs `cat <path>` without asking, which Codex shows as a read of it, then
+//                      does <words>
 //   MAKEPAGE <words>   writes page/index.html in its room (with apply_patch, no shell), then does <words>
 //   COPY               says which tokens its CODEX_HOME's auth.json holds: "copy: access=… refresh=…"
 //   LEAK               says the tokens of its CODEX_HOME's auth.json and of OBY_MCP_TOKEN
@@ -253,6 +255,14 @@ async function act(turnId, words) {
     event("item/started", turnId, { item: run });
     event("item/completed", turnId, { item: { ...run, status: "completed", exitCode: 0, aggregatedOutput: "hi\n" } });
     return act(turnId, words.slice(4));
+  }
+  if (words.startsWith("READ ")) {
+    const [, path, ...rest] = words.split(" ");
+    const run = { type: "commandExecution", id: randomUUID(), command: `/bin/zsh -lc 'cat ${path}'`, cwd: room,
+      commandActions: [{ type: "read", command: `cat ${path}`, name: basename(path), path }], status: "inProgress" };
+    event("item/started", turnId, { item: run });
+    event("item/completed", turnId, { item: { ...run, status: "completed", exitCode: 0, aggregatedOutput: "notes\n" } });
+    return act(turnId, rest.join(" "));
   }
   if (words.startsWith("MAKEPAGE ")) {
     mkdirSync(join(room, "page"), { recursive: true });

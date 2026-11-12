@@ -628,6 +628,15 @@ fn own_lane(
     own_conversation(cfg!(target_os = "macos"), tool, from_obys, codex)
 }
 
+/// Whether an own Codex session may no longer run: the mode left Bypass (LANES-13, LANES-18).
+fn left_bypass(shared: &Shared) -> bool {
+    !crate::jobs::Jobs::codex_own(shared.jobs.default_mode())
+}
+
+/// What the owner hears when leaving Bypass ended an own Codex turn.
+const LEFT_BYPASS: &str =
+    "You left Bypass, so this turn ended here. Your next message runs in Oby's box.";
+
 /// [`own_lane`]'s choice: the owner's Claude Code conversation, on macOS, and their Codex one when
 /// `codex` may leave the box.
 // ponytail: macOS only; on Linux every own session "failed twice" (tetrix-lab, 2026-11-11), so it
@@ -1841,6 +1850,12 @@ async fn attempts(
             text if !text.is_empty() => text,
             _ => streamed,
         };
+        if turn.stopped && control.live() && own && tool == Tool::Codex && left_bypass(shared) {
+            return Ok((
+                format!("{text}\n\n{LEFT_BYPASS}").trim().to_owned(),
+                End::Stopped,
+            ));
+        }
         if turn.stopped || !control.live() {
             return Ok((text, End::Stopped));
         }
@@ -2247,12 +2262,16 @@ async fn one(
 )> {
     let control = &session.control;
     let bounds = place.bounds();
+    // An own Codex session runs its commands unasked (LANES-13): as an own job's, its turn ends once
+    // the mode leaves Bypass (LANES-18), and whatever a command reads is untrusted (CONVO-1).
+    let own_codex = own && matches!(protocol, Protocol::Codex(_));
     // Stop and cancel reach the agent: it ends with everything it started.
     let (signal, stop) = tokio::sync::watch::channel(crate::process::Signal::Run);
     let watching = {
         let control = control.clone();
+        let shared = shared.clone();
         tokio::spawn(async move {
-            while control.live() {
+            while control.live() && !(own_codex && left_bypass(&shared)) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             let _ = signal.send(crate::process::Signal::Stop);
@@ -2291,9 +2310,14 @@ async fn one(
             Event::Tool { name, .. } if name == "ToolSearch" => {}
             Event::Tool { id, name, input } => {
                 watch.mark("first step");
+                // A command Codex shows as a read, search or listing is still a command.
+                let judged = match name.as_str() {
+                    "Read" | "Grep" | "Glob" if own_codex => "Bash",
+                    name => name,
+                };
                 // Untrusted content read this turn (the web, repo code) taints it: work it
                 // dispatches then waits for the owner (N1).
-                if taints(&name, &input, &bounds, &place.repos) {
+                if taints(judged, &input, &bounds, &place.repos) {
                     session.taint();
                 }
                 if let Some(tool) = name.strip_prefix("mcp__oby__") {
@@ -2303,11 +2327,11 @@ async fn one(
                 // keeps what the conversation read the owner's own marks it. Oby's own tools are
                 // judged where they answer (super::tools).
                 if !name.starts_with("mcp__oby__")
-                    && !known_safe(&name, &input, &bounds, &place.repos)
+                    && !known_safe(judged, &input, &bounds, &place.repos)
                 {
                     shared
                         .conversations
-                        .mark(&control.conversation, format!("its Oby used {name}"));
+                        .mark(&control.conversation, format!("its Oby used {judged}"));
                 }
                 let index = steps.len() + 1;
                 let line = (
