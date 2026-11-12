@@ -261,5 +261,7 @@ mod tests {
         assert_eq!(feature(listed, "shell_tool"), Some(false));
         assert_eq!(feature(listed, "unified_exec"), Some(true));
         assert_eq!(feature(listed, "nowhere"), None);
+        // A boxed session's shell is off; an own one (LANES-13) keeps Codex's own.
+        assert!(off(false).any(|f| f == "shell_tool") && !off(true).any(|f| f == "shell_tool"));
     }
 }

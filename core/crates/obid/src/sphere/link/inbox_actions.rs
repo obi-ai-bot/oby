@@ -130,9 +130,8 @@ impl Link {
     }
 
     /// Something Oby's brain planned that persists or widens trust waits in the inbox for the
-    /// owner's own `Confirm` (#546): the brain never carries it out itself. A conversation's shell
-    /// keeps its `permission` items here too, and a paused routine its card (ALERTS-5): each put in
-    /// place of one with its id.
+    /// owner's own `Confirm` (#546): the brain never carries it out itself. A paused routine keeps
+    /// its card here too (ALERTS-5): each put in place of one with its id.
     pub fn add_confirm(&self, item: Item) -> Item {
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);
