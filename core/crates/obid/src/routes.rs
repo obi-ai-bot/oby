@@ -347,7 +347,8 @@ pub async fn stop_all(State(shared): State<Arc<Shared>>) -> Response {
     )
 }
 
-/// `POST /v1/jobs/{id}/dismiss`.
+/// `POST /v1/jobs/{id}/dismiss`: let go, GitHub's auto-merge obid armed on its pull request is
+/// turned off at once (MERGING-41).
 pub async fn dismiss(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
@@ -355,7 +356,10 @@ pub async fn dismiss(
     match shared.jobs.dismiss(&id) {
         None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
         Some(Err(refused)) => Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
-        Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
+        Some(Ok(job)) => {
+            shared.jobs.disarm_now(&id);
+            Ok(json(StatusCode::OK, job.to_json()))
+        }
     }
 }
 

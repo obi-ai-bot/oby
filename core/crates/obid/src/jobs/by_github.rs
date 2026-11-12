@@ -6,6 +6,13 @@ use super::*;
 
 use crate::merge::{Blocked, Merged, Reviewers};
 
+/// How long a read of the job's pull request stands before it's read again ([`follow_interval`]):
+/// at most 30 seconds while GitHub's auto-merge obid armed is on, so a hold or a head someone else
+/// pushed turns it off sooner (MERGING-41).
+pub(super) fn follow_every(job: &Job) -> i64 {
+    follow_interval().min(job.auto_merge.as_ref().map_or(i64::MAX, |_| 30))
+}
+
 impl Jobs {
     /// One follower pass over the job `id`'s open pull request ([`Jobs::carry`]): GitHub's
     /// auto-merge obid armed that the pass didn't keep armed (a hold of Oby's, a new head, a job
@@ -36,13 +43,21 @@ impl Jobs {
             .filter(|j| (j.outgoing.iter()).any(|o| o.action == "push" && o.branch == sent.branch))
             .map(|j| j.id.clone())
             .collect();
-        let Some(gh) = crate::github::gh().filter(|_| !armed.is_empty()) else {
+        for id in armed {
+            self.disarm_now(&id);
+        }
+    }
+
+    /// GitHub's auto-merge obid armed on the job `id`'s pull request, turned off at once, with no
+    /// read first: after obid's own push, and when the owner lets the job go or answers `Leave it
+    /// open` on its card (MERGING-41).
+    pub fn disarm_now(self: &Arc<Self>, id: &str) {
+        let armed = self.get(id).is_some_and(|j| j.auto_merge.is_some());
+        let Some(gh) = crate::github::gh().filter(|_| armed) else {
             return;
         };
-        for id in armed {
-            let (jobs, gh) = (self.clone(), gh.clone());
-            tokio::spawn(async move { jobs.disarm(&gh, &id).await });
-        }
+        let (jobs, id) = (self.clone(), id.to_owned());
+        tokio::spawn(async move { jobs.disarm(&gh, &id).await });
     }
 
     /// Turns off GitHub's auto-merge obid armed on the job `id`'s open pull request, once, listed

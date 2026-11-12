@@ -12686,7 +12686,7 @@ impl Jobs {
                     {
                         return false;
                     }
-                    let fresh = |at: i64| now - at < follow_interval();
+                    let fresh = |at: i64| now - at < by_github::follow_every(job);
                     let tried = state
                         .followed
                         .get(&job.id)

@@ -1335,6 +1335,11 @@ impl Link {
         item.answer = answer.or_else(|| item.options.last().cloned());
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);
+        // Left open, GitHub's auto-merge obid armed on it goes off now, not on the next read
+        // (MERGING-41).
+        if item.answer.as_deref() == Some(crate::merge::LEAVE_OPEN) {
+            self.jobs.disarm_now(&item.job);
+        }
         Ok(item.to_json())
     }
 

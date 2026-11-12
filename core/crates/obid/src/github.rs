@@ -587,10 +587,13 @@ pub async fn reviews(gh: &Path, repo: &str, number: u64) -> Result<Vec<Review>, 
     decode_reviews(&text).ok_or_else(|| "gh said something else about its reviews.".into())
 }
 
-/// One reviewer's latest review that counts, as GitHub's REST API has it: typed status only,
-/// never what they wrote.
+/// One reviewer's latest review that counts, as GitHub's REST API has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Review {
+    /// GitHub's id of the review, which its comments are read by ([`comments`]).
+    pub id: u64,
+    /// What they wrote: someone's words, only ever quoted to an agent (MERGING-40).
+    pub body: String,
     /// Their login; empty for an account GitHub deleted.
     pub login: String,
     /// `APPROVED`, `CHANGES_REQUESTED` or `DISMISSED`.
@@ -621,6 +624,8 @@ pub fn decode_reviews(text: &str) -> Option<Vec<Review>> {
         let login = review["user"]["login"].as_str().unwrap_or_default();
         latest.retain(|r| !r.login.eq_ignore_ascii_case(login));
         latest.push(Review {
+            id: review["id"].as_u64().unwrap_or(0),
+            body: review["body"].as_str().unwrap_or_default().to_owned(),
             login: login.to_owned(),
             state: state.to_owned(),
             commit: review["commit_id"]
@@ -637,8 +642,29 @@ pub fn decode_reviews(text: &str) -> Option<Vec<Review>> {
     Some(latest)
 }
 
+/// What the review `id` of the pull request `pr` says on the change's lines, every page of
+/// `GET repos/{repo}/pulls/{pr}/reviews/{id}/comments` ([`decode_comments`]).
+pub async fn comments(gh: &Path, repo: &str, pr: u64, id: u64) -> Result<String, String> {
+    let path = format!("repos/{repo}/pulls/{pr}/reviews/{id}/comments?per_page=100");
+    let text = run(gh, &["api", "--paginate", "--slurp", &path]).await?;
+    decode_comments(&text).ok_or_else(|| "gh said something else about its comments.".into())
+}
+
+/// Each comment's file, line and words from `gh api --paginate --slurp …/comments` (pages of
+/// them), one after another: someone's words, only ever quoted to an agent. None when it isn't that.
+pub fn decode_comments(text: &str) -> Option<String> {
+    let pages: Vec<Vec<Value>> = serde_json::from_str(text).ok()?;
+    let said = (pages.iter().flatten()).map(|c| {
+        let line = c["line"].as_u64().or(c["original_line"].as_u64());
+        let path = c["path"].as_str().unwrap_or("?");
+        let body = c["body"].as_str().unwrap_or_default();
+        format!("On {path} line {}:\n{body}", line.unwrap_or(0))
+    });
+    Some(said.collect::<Vec<_>>().join("\n\n"))
+}
+
 /// What a merge needs to know about a pull request besides [`PullRequest`], read with it
-/// (crate::merge): typed status and logins only, never what anyone wrote.
+/// (crate::merge): typed status and logins only, never what anyone wrote but its reviews' bodies.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Merging {
     /// Its head's checks on GitHub, summed up: `SUCCESS` (every one passed, was neutral or was
@@ -1242,6 +1268,36 @@ mod tests {
         );
         assert_eq!(decode_reviews("[]"), Some(vec![]));
         assert_eq!(decode_reviews("not json"), None);
+    }
+
+    /// MERGING-40: a review keeps its id, which its comments are read by, and what it says; one
+    /// with no body says nothing.
+    #[test]
+    fn decode_reviews_keeps_each_ones_id_and_words() {
+        let head = "17ac598e6afc43bb6206f074b05de9d63563a42f";
+        let mut asked = rest_review(9, "sangam", "User", "CHANGES_REQUESTED", head, "MEMBER");
+        asked["body"] = json!("Name it better.");
+        let mut bare = rest_review(10, "ana", "User", "APPROVED", head, "MEMBER");
+        bare["body"] = Value::Null;
+        let latest = decode_reviews(&json!([[asked, bare]]).to_string()).unwrap();
+        let read: Vec<_> = latest.iter().map(|r| (r.id, r.body.as_str())).collect();
+        assert_eq!(read, [(9, "Name it better."), (10, "")]);
+    }
+
+    /// MERGING-40: a review's comments, each with its file and line (an outdated one's original
+    /// line), across pages; none at all is nothing, and what isn't pages of them is none.
+    #[test]
+    fn decode_comments_keeps_each_ones_file_line_and_words() {
+        let pages = json!([
+            [{"id": 1, "path": "src/a.rs", "line": 12, "original_line": 10, "body": "Test this."}],
+            [{"id": 2, "path": "README.md", "line": null, "original_line": 3, "body": "Typo."}],
+        ]);
+        assert_eq!(
+            decode_comments(&pages.to_string()).unwrap(),
+            "On src/a.rs line 12:\nTest this.\n\nOn README.md line 3:\nTypo."
+        );
+        assert_eq!(decode_comments("[[]]").unwrap(), "");
+        assert_eq!(decode_comments("{\"message\": \"Not Found\"}"), None);
     }
 
     #[test]
