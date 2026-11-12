@@ -54,7 +54,12 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 //                      cached, 9 out), then says "used"
 //   anything else      "Nothing to do."
 // It fails the turn when its environment holds a Claude Code, Anthropic or GitHub variable, or
-// obid's API token, and when a thread isn't danger-full-access with untrusted approvals.
+// obid's API token, and when a thread isn't danger-full-access with untrusted approvals, or, in an
+// own run (LANES-13: `-c` settings for `approval_policy="never"` and obid's permission profile), a
+// thread that sets no sandbox, asks for `never` and names that profile. It answers `config/read`
+// with its `-c` settings, each from `sessionFlags`, as fake-codex does, and a thread's start with
+// the policy and profile it was asked for. Each turn's line goes to the conversation's `config`
+// folder beside its room, which is its CODEX_HOME when it's boxed, in either lane.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -97,8 +102,30 @@ const setting = (key) => {
   }
   return null;
 };
+const own = setting("approval_policy") === "never" && setting("default_permissions") === "oby_own";
+// Its `-c` settings as `config/read` gives them: the merged config, and where each key came from.
+const configRead = () => {
+  const config = {}, origins = {};
+  const leaves = (path, value) => value !== null && typeof value === "object" && !Array.isArray(value)
+    ? Object.entries(value).forEach(([key, inner]) => leaves(`${path}.${key}`, inner))
+    : origins[path] = { name: { type: "sessionFlags" }, version: "fake" };
+  argv.forEach((arg, at) => {
+    if (argv[at - 1] !== "-c") return;
+    const [key, text] = [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)];
+    let value = text;
+    // TOML's inline tables, read as JSON.
+    try { value = JSON.parse(text.replace(/"\s*=\s*/g, '":').replace(/([{,]\s*)([A-Za-z_]+)\s*=\s*/g, '$1"$2":')); } catch {}
+    const path = key.split(".");
+    let table = config;
+    for (const part of path.slice(0, -1)) table = table[part] ??= {};
+    table[path.at(-1)] = value;
+    leaves(key, value);
+  });
+  return { config, origins };
+};
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 const home = process.env.CODEX_HOME || join(process.env.HOME || "/nonexistent", ".codex");
+const records = join(dirname(process.cwd()), "config");
 const threads = join(home, "threads");
 const leaked = Object.keys(process.env).filter((name) =>
   name === "CLAUDECODE" || name.startsWith("CLAUDE_CODE_") || name.startsWith("ANTHROPIC_") ||
@@ -186,8 +213,9 @@ async function relayed() {
 
 async function runTurn(turnId, prompt) {
   if (leaked.length) return complete(turnId, null, "failed", { message: `leaked: ${leaked.join(", ")}` });
-  if (state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
-    return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy}` });
+  if (own ? state.sandbox !== undefined || state.approvalPolicy !== "never" || state.permissions !== "oby_own"
+    : state.sandbox !== "danger-full-access" || state.approvalPolicy !== "untrusted")
+    return complete(turnId, null, "failed", { message: `started with ${state.sandbox} / ${state.approvalPolicy} / ${state.permissions}` });
   // As Codex 0.162.1: a ChatGPT login whose tokens have no refresh_token key isn't one at all.
   const auth = existsSync(join(home, "auth.json")) ? JSON.parse(readFileSync(join(home, "auth.json"), "utf8")) : {};
   if (auth.tokens && !("refresh_token" in auth.tokens))
@@ -393,16 +421,23 @@ rl.on("line", (line) => {
         thread = randomUUID();
         state = {};
       }
-      Object.assign(state, { sandbox: params.sandbox, approvalPolicy: params.approvalPolicy, instructions: params.developerInstructions ?? null });
+      Object.assign(state, { sandbox: params.sandbox, approvalPolicy: params.approvalPolicy, instructions: params.developerInstructions ?? null,
+        permissions: params.config?.default_permissions });
       save();
-      return send({ id, result: { thread: { id: thread } } });
+      return send({ id, result: { thread: { id: thread }, approvalPolicy: state.approvalPolicy,
+        activePermissionProfile: state.permissions ? { id: state.permissions, extends: null } : null } });
     }
+    case "config/read":
+      appendFileSync(join(home, "asked.jsonl"), JSON.stringify(params) + "\n");
+      return send({ id, result: configRead() });
     case "turn/start": {
       const turnId = randomUUID();
       const prompt = params.input.map((i) => i.text).join("\n");
-      appendFileSync(join(home, "turns.jsonl"), JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME,
+      mkdirSync(records, { recursive: true });
+      appendFileSync(join(records, "turns.jsonl"), JSON.stringify({ at: Date.now(), argv, cwd: process.cwd(), home: process.env.HOME,
         codexHome: process.env.CODEX_HOME ?? null, holds: readdirSync(home).sort(), prompt, resumed,
-        sandbox: state.sandbox, approvalPolicy: state.approvalPolicy, instructions: state.instructions, model: params.model ?? null }) + "\n");
+        sandbox: state.sandbox, approvalPolicy: state.approvalPolicy, permissions: state.permissions ?? null,
+        instructions: state.instructions, model: params.model ?? null }) + "\n");
       send({ id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });
       event("turn/started", turnId, { turn: { id: turnId } });
       runTurn(turnId, prompt).catch((e) => complete(turnId, null, "failed", { message: `the stand-in failed: ${e}` }));

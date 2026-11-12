@@ -34,13 +34,26 @@ impl Jobs {
     pub(crate) fn own_lane(job: &Job, tool: Tool) -> bool {
         let lane = match tool {
             Tool::Claude => true,
-            Tool::Codex => cfg!(target_os = "macos") && Self::mode_of(job) == Mode::Bypass,
+            Tool::Codex => Self::codex_own(Self::mode_of(job)),
             Tool::Cursor => false,
         };
         lane && job.obi.is_none()
             && !job.untrusted
             && job.review_of.is_none()
             && !(job.read_only() && job.someone_elses().is_some())
+    }
+
+    /// Whether the owner's Codex run in `mode`, a job's or a conversation's (LANES-18, LANES-13),
+    /// may leave Oby's box: in Bypass only, where Codex never asks to leave its sandbox
+    /// ([`own_codex_settings`]), and on macOS, whose sandbox is the one measured.
+    pub(crate) fn codex_own(mode: Mode) -> bool {
+        cfg!(target_os = "macos") && mode == Mode::Bypass
+    }
+
+    /// Whether `tool` on `account` reaches its model only through obid's relay (a ChatGPT login),
+    /// so its run never leaves Oby's box, in any lane.
+    pub(crate) fn relayed(tool: Tool, account: &crate::config::Account) -> bool {
+        tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some()
     }
 
     /// Whether job `id`'s agent had a network obid's proxy didn't see: a run of it, or of the job it
@@ -192,9 +205,6 @@ impl Jobs {
         flags: Vec<OsString>,
         stderr: PathBuf,
     ) -> Result<Launch, String> {
-        // The room's own settings, MCP servers and instructions, read-only to its Bash and tools.
-        let real_room = room.canonicalize().unwrap_or_else(|_| room.to_path_buf());
-        frozen.extend(Self::ROOM_CONFIG.map(|name| real_room.join(name)));
         // Its `login` folder, where obid writes `env.sh` and the MCP configuration Claude Code
         // starts servers from outside any box (crate::brain::harness): never its commands' to write.
         frozen.push(login.to_path_buf());
@@ -205,29 +215,7 @@ impl Jobs {
         let bin = self
             .agent_bin(Tool::Claude)
             .ok_or("obid can't find Claude Code's binary.")?;
-        let mut hidden = vec![self.config.home.clone()];
-        hidden.extend(person_homes());
-        hidden.extend(self.config.agents.hidden_folders(&self.config.home));
-        let read_only = sandbox::tool_roots(
-            &process::tools_path(),
-            &hidden,
-            std::slice::from_ref(&self.config.home),
-        );
-        let spec = Spec {
-            worktree: room.to_path_buf(),
-            git_admin: None,
-            git_common: None,
-            commits: false,
-            temp: temp.to_path_buf(),
-            accounts: Vec::new(),
-            read_only,
-            hidden,
-            network: true,
-            loopback: false,
-            proxied: false,
-            frozen,
-            fixed: Vec::new(),
-        };
+        let spec = self.room_spec(room, temp, frozen);
         let mut extra = own_sandbox_env(account, &spec, login)?;
         // The owner's user settings, which it loads (CONVO-4), held to an own job's rule: nothing
         // obid's `--settings` can't take back, no file tool allowed outside the room.
@@ -259,6 +247,73 @@ impl Jobs {
             cwd: room.to_path_buf(),
             stderr,
         })
+    }
+
+    /// An own Codex conversation's thread (crate::brain::harness_codex, LANES-13), as an own Bypass
+    /// Codex job's run (LANES-18): unboxed by obid, on `account`'s own folder as `CODEX_HOME` with
+    /// the person's `HOME` ([`own_run_env`]) and the owner's shell's environment, its shell on in
+    /// Codex's own sandbox under obid's profile ([`own_codex_settings`]): no network, writing only
+    /// `room` (not `frozen` in it) and `temp`, its commands' `HOME`. `flags` come before
+    /// `app-server`.
+    pub fn conversation_own_codex_launch(
+        &self,
+        account: &crate::config::Account,
+        room: &Path,
+        temp: &Path,
+        frozen: Vec<PathBuf>,
+        flags: Vec<OsString>,
+        stderr: PathBuf,
+    ) -> Result<Launch, String> {
+        let sandbox =
+            (self.sandbox.as_ref()).map_err(|why| format!("obid can't run Codex: {why}"))?;
+        let bin = (self.agent_bin(Tool::Codex)).ok_or("obid can't find Codex's binary.")?;
+        let spec = self.room_spec(room, temp, frozen);
+        let mut extra = process::no_publish_env(temp);
+        extra.extend(own_run_env(Tool::Codex, account, &spec, temp)?);
+        let argv: Vec<OsString> = std::iter::once(bin.into_os_string())
+            .chain(own_codex_settings(&spec)?)
+            .chain(flags)
+            .chain(["app-server".into()])
+            .collect();
+        let mut env = process::sandbox_env(&process::tools_path(), temp, &extra);
+        let owners = process::login_env().map(|env| owners_for(Tool::Codex, env));
+        process::with_owners(&mut env, &owners.unwrap_or_default());
+        Ok(Launch {
+            own_sandbox: true,
+            group: None,
+            argv: sandbox.unboxed(&argv),
+            env,
+            cwd: room.to_path_buf(),
+            stderr,
+        })
+    }
+
+    /// What an own conversation's commands reach (LANES-12, LANES-13): they write `room` and
+    /// `temp`, but not `frozen` in the room, nor the room's own settings, MCP servers and
+    /// instructions; they read nothing of obid's home, the person's or any account's folder.
+    fn room_spec(&self, room: &Path, temp: &Path, mut frozen: Vec<PathBuf>) -> Spec {
+        let real_room = room.canonicalize().unwrap_or_else(|_| room.to_path_buf());
+        frozen.extend(Self::ROOM_CONFIG.map(|name| real_room.join(name)));
+        let mut hidden = vec![self.config.home.clone()];
+        hidden.extend(person_homes());
+        hidden.extend(self.config.agents.hidden_folders(&self.config.home));
+        let home = std::slice::from_ref(&self.config.home);
+        let read_only = sandbox::tool_roots(&process::tools_path(), &hidden, home);
+        Spec {
+            worktree: room.to_path_buf(),
+            git_admin: None,
+            git_common: None,
+            commits: false,
+            temp: temp.to_path_buf(),
+            accounts: Vec::new(),
+            read_only,
+            hidden,
+            network: true,
+            loopback: false,
+            proxied: false,
+            frozen,
+            fixed: Vec::new(),
+        }
     }
 
     /// Read and Edit deny rules (Read's cover Grep and Glob, Edit's Write and the rest) for what an
@@ -355,8 +410,7 @@ impl Jobs {
 /// Whether `job`'s run of `tool` on `account` leaves Oby's box: in the own lane, but never a Codex
 /// run on a ChatGPT login, which reaches OpenAI only through obid's relay.
 pub(super) fn launches_own(job: &Job, tool: Tool, account: &crate::config::Account) -> bool {
-    let chatgpt = tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some();
-    Jobs::own_lane(job, tool) && !chatgpt
+    Jobs::own_lane(job, tool) && !Jobs::relayed(tool, account)
 }
 
 /// What an own run of `tool` on `account` gets over a boxed run's environment: Claude Code's
@@ -405,8 +459,8 @@ pub(super) fn owners_for(tool: Tool, env: Vec<(OsString, OsString)>) -> Vec<(OsS
 /// no network; everything read but obid's home, the person's and every account's folder (its own
 /// too: no command reads its `auth.json`); written, only the worktree, its git folder and its
 /// temporary folder, their `HOME`; the git pointers and `oby-common` read-only, so no command
-/// steers the git Codex and obid run outside it, nor the clone's refs, config or hooks (LANE-10a).
-/// The more specific path wins. The worktree is an untrusted project, as named and where it leads:
+/// steers the git Codex and obid run outside it, nor the clone's refs, config or hooks (LANE-10a);
+/// a conversation's `frozen` (its room's `repos/`, LANES-13) read-only. The more specific path wins. The worktree is an untrusted project, as named and where it leads:
 /// none of the repository's `.codex/` loads (LANE-6a), and Codex writes no trust. No hooks, no
 /// `notify` program (LANES-17's rule). Codex merges these with its other layers, so the run starts
 /// only once Codex says they hold ([`codex::own_config_problem`]).
@@ -420,6 +474,7 @@ pub(super) fn own_codex_settings(spec: &Spec) -> Result<Vec<OsString>, String> {
     };
     let mut kept = spec.pointers();
     kept.extend(spec.git_admin.iter().map(|admin| admin.join(OWN_COMMON)));
+    kept.extend(spec.frozen.iter().cloned());
     // Later wins for the same path, never two entries for one (TOML refuses a key twice).
     let mut access = std::collections::BTreeMap::new();
     let entries = std::iter::once((PathBuf::from("/"), "read"))
@@ -1111,6 +1166,92 @@ mod tests {
             .unwrap();
         assert_eq!(Jobs::mode_of(&next), Mode::Ask);
         assert!(jobs.ran_unproxied(&next.id));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-13 (the owner's CODEX-2, "Same as jobs"): an own Codex conversation's thread runs as an
+    /// own Bypass Codex job's (LANES-18), by the same settings: unboxed, on the account's own
+    /// folder with the person's `HOME` and no login copy, `never`, obid's profile with no network,
+    /// writing only its room and its temporary folder (`repos/` and the room's own settings
+    /// read-only), reading nothing of obid's home or any account's folder, the room an untrusted
+    /// project, no hooks, no `notify`; `app-server` last, after the conversation's own settings.
+    #[test]
+    fn lanes_13_an_own_codex_conversation_writes_only_its_room() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-lanes-13-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let session = root.join("session");
+        std::fs::write(&session, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let account = root.join("account");
+        let home = root.join("home");
+        let place = home.join("conversations/c1");
+        let [room, temp] = ["room", "home"].map(|d| place.join(d));
+        let repos = room.join("repos");
+        for dir in [&account, &temp, &repos] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "o", "repos": [],
+                "agents": {"codex": {"bin": "/usr/bin/true",
+                    "accounts": [{"id": "a", "name": "A", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let (events, sandbox) = (crate::events::Events::new(), Sandbox::detect(&session));
+        let jobs = Jobs::open(config, events, sandbox).unwrap();
+        let codex = jobs.accounts(Tool::Codex).remove(0);
+        let flags = vec!["-c".into(), "features.apps=false".into()];
+        let stderr = place.join("agent.log");
+        let launch = jobs
+            .conversation_own_codex_launch(&codex, &room, &temp, vec![repos.clone()], flags, stderr)
+            .unwrap();
+        assert!(launch.own_sandbox);
+        assert_eq!(launch.cwd, room);
+        let argv: Vec<String> = (launch.argv.iter())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv[1..4], [sandbox::SESSION, "--", "/usr/bin/true"]);
+        assert_eq!(
+            argv[argv.len() - 3..],
+            ["-c", "features.apps=false", "app-server"]
+        );
+        let set = |key: &str| {
+            (argv.windows(2))
+                .find(|w| w[0] == "-c" && w[1].starts_with(&format!("{key}=")))
+                .map(|w| w[1][key.len() + 1..].to_owned())
+        };
+        let quoted = |p: &Path| json!(p.to_str().unwrap()).to_string();
+        assert_eq!(set("approval_policy").as_deref(), Some("\"never\""));
+        assert_eq!(set("default_permissions").as_deref(), Some("\"oby_own\""));
+        assert_eq!(set("features.hooks").as_deref(), Some("false"));
+        assert_eq!(set("notify").as_deref(), Some("[]"));
+        let network = set("permissions.oby_own.network.enabled");
+        assert_eq!(network.as_deref(), Some("false"));
+        let untrusted = format!("{{{} = {{trust_level = \"untrusted\"}}}}", quoted(&room));
+        assert_eq!(set("projects"), Some(untrusted));
+        let profile = set("permissions.oby_own.filesystem").unwrap();
+        let mut entries = vec![
+            (home.canonicalize().unwrap(), "none"),
+            (account.clone(), "none"),
+            (room.clone(), "write"),
+            (temp.clone(), "write"),
+            (repos, "read"),
+        ];
+        entries.extend(Jobs::ROOM_CONFIG.map(|name| (room.join(name), "read")));
+        for (path, mode) in entries {
+            let entry = format!("{} = \"{mode}\"", quoted(&path));
+            assert!(profile.contains(&entry), "{entry} in {profile}");
+        }
+        let env = |name: &str| {
+            (launch.env.iter().rev())
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(env("CODEX_HOME"), Some(account.into_os_string()));
+        assert_eq!(env("HOME"), login_home().map(PathBuf::into_os_string));
+        assert!(!place.join("config").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
