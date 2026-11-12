@@ -148,6 +148,130 @@ fn agents_6_codex_runs_on_its_accounts_model_and_effort() {
     assert_eq!(kept["effort"], "low");
 }
 
+/// LANES-18 (docs/contracts/lanes.md, the owner's CODEX-1, "Yes, Bypass only"): the owner's Codex
+/// job in Bypass runs on its account's own folder, no login copy, with Codex's own sandbox in its
+/// settings (`approval_policy="never"`, obid's permission profile with no network, the worktree
+/// an untrusted project, no hooks, no `notify`), which it starts on only once Codex says they
+/// hold, and a thread that sets no sandbox, names that profile and never asks to leave it, and
+/// shows its resume command; the same job in Ask stays in obid's box on a copy of the login, every
+/// approval obid's, as before.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_18_an_own_bypass_codex_job_runs_on_its_own_folder() {
+    let folder = Folder::new("codex-own-lane");
+    let obid = obid(&folder, false);
+    let own = dispatch(
+        &obid,
+        json!({"agent": "codex", "task": "ENV", "mode": "bypass"}),
+    );
+    let asks = dispatch(
+        &obid,
+        json!({"agent": "codex", "task": "ENV", "mode": "ask"}),
+    );
+    let thread_of = |folder: &Path, job: &Value| -> Value {
+        let thread = job["session"].as_str().unwrap();
+        let file = folder.join(format!("threads/{thread}.json"));
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap()
+    };
+    let account = folder.0.join("home/accounts/codex-work");
+    let job = ended(&obid, &own);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert!(
+        summary(&job).contains(&format!("CODEX_HOME={}", account.display())),
+        "{job}"
+    );
+    assert!(
+        !obid
+            .home
+            .join("logins")
+            .join(&own)
+            .join("auth.json")
+            .exists()
+    );
+    // Codex's own `HOME` is the person's, never a folder its commands write.
+    assert!(!summary(&job).contains(&format!("\nHOME={}", obid.home.display())));
+    let kept = thread_of(&account, &job);
+    assert_eq!(kept["approvalPolicy"], "never", "{kept}");
+    assert_eq!(kept["permissions"], "oby_own", "{kept}");
+    assert!(kept["sandbox"].is_null(), "{kept}");
+    let worktree = obid.home.join("worktrees").join(&own);
+    let worktree = worktree.canonicalize().unwrap_or(worktree);
+    for set in [
+        r#"approval_policy="never""#.to_owned(),
+        r#"default_permissions="oby_own""#.into(),
+        "permissions.oby_own.network.enabled=false".into(),
+        "features.hooks=false".into(),
+        "notify=[]".into(),
+        format!(
+            "projects={{{} = {{trust_level = \"untrusted\"}}}}",
+            json!(worktree)
+        ),
+    ] {
+        assert!(
+            kept["settings"].as_array().unwrap().contains(&json!(set)),
+            "{set}: {kept}"
+        );
+    }
+    assert_eq!(
+        job["resumeCommand"],
+        format!("codex resume {}", job["session"].as_str().unwrap())
+    );
+
+    let job = ended(&obid, &asks);
+    assert_eq!(job["status"], "done", "{job}");
+    let home = obid.home.join("logins").join(&asks);
+    assert!(
+        summary(&job).contains(&format!("CODEX_HOME={}", home.display())),
+        "{job}"
+    );
+    let kept = thread_of(&home, &job);
+    assert_eq!(kept["sandbox"], "danger-full-access");
+    assert_eq!(kept["approvalPolicy"], "untrusted");
+    assert!(job["resumeCommand"].is_null(), "{job}");
+}
+
+/// LANES-18: an own run asks obid nothing, so a mode that leaves Bypass while it runs ends its turn:
+/// the round goes on in Oby's box under the new mode, in a new session (the own run's thread is in
+/// the account's folder, which no box gets), and the job says so. Without that it would run on,
+/// unboxed, in a mode that asks.
+#[cfg(target_os = "macos")]
+#[test]
+fn lanes_18_a_running_own_codex_job_that_leaves_bypass_goes_on_boxed() {
+    let folder = Folder::new("codex-leaves-bypass");
+    let obid = obid(&folder, false);
+    let id = dispatch(
+        &obid,
+        json!({"agent": "codex", "task": "LANE", "mode": "bypass"}),
+    );
+    let own = within(60, "its own run starts a thread", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        job["session"].as_str().map(str::to_owned)
+    });
+    let account = obid.home.join("accounts/codex-work");
+    assert!(account.join(format!("threads/{own}.json")).exists());
+    let mode = format!("/v1/jobs/{id}/mode");
+    let set = call(&obid, "POST", &mode, Some(&json!({"mode": "ask"})));
+    assert_eq!(set.status, 200, "{}", set.text);
+    let job = ended_within(&obid, &id, 60);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    let home = obid.home.join("logins").join(&id);
+    assert_eq!(
+        summary(&job),
+        format!("boxed: CODEX_HOME={}", home.display()),
+        "{job}"
+    );
+    let boxed = job["session"].as_str().unwrap();
+    assert_ne!(boxed, own);
+    let kept: Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join(format!("threads/{boxed}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept["sandbox"], "danger-full-access", "{kept}");
+    assert_eq!(kept["approvalPolicy"], "untrusted", "{kept}");
+    assert!(kept["task"].as_str().unwrap().contains("its mode changed"));
+    assert!(job["resumeCommand"].is_null(), "{job}");
+}
+
 /// A Codex job: the thread starts in obid's sandbox with every approval coming to obid, its file
 /// change and its commit are approved, its commit counts, and its words are the summary. Its
 /// CODEX_HOME is a folder of the job's own (#655), never the account's: a box never writes it.
@@ -1228,8 +1352,9 @@ fn codex_and_cursor_ask_the_owner_in_ask_mode() {
 
 /// What a Codex job asks the owner, by mode (2026-10-27: the owner, on Bypass, was asked for each
 /// read of Codex's reviews). Settings' Bypass (`PUT /v1/settings/permissions`) reaches new jobs:
-/// the thread keeps obid's full access with every approval coming to obid, which answers the file
-/// change, the commit and the network without the owner. A review, in Plan, runs Codex's
+/// the job runs in the own lane (LANES-18), its thread in the account's own folder with no sandbox
+/// of obid's and `approvalPolicy` `never`, and obid answers what it asks, the file change, the
+/// commit and the network, without the owner. A review, in Plan, runs Codex's
 /// read-only commands without the owner. In Sandbox, git's local reads and tests go through, and
 /// the network waits for the owner.
 #[test]
@@ -1280,18 +1405,21 @@ fn codex_asks_the_owner_only_what_its_mode_keeps() {
         "{job}"
     );
     let thread = job["session"].as_str().unwrap();
+    // The own lane is macOS's (LANES-18); elsewhere it's obid's box, as before.
+    let (home, sandbox, policy) = match cfg!(target_os = "macos") {
+        true => (obid.home.join("accounts/codex-work"), Value::Null, "never"),
+        false => (
+            obid.home.join("logins").join(&bypass),
+            json!("danger-full-access"),
+            "untrusted",
+        ),
+    };
     let kept: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            obid.home
-                .join("logins")
-                .join(&bypass)
-                .join(format!("threads/{thread}.json")),
-        )
-        .unwrap(),
+        &std::fs::read_to_string(home.join(format!("threads/{thread}.json"))).unwrap(),
     )
     .unwrap();
-    assert_eq!(kept["sandbox"], "danger-full-access");
-    assert_eq!(kept["approvalPolicy"], "untrusted");
+    assert_eq!(kept["sandbox"], sandbox, "{kept}");
+    assert_eq!(kept["approvalPolicy"], policy, "{kept}");
     for id in [&fetch, &review, &local] {
         let job = ended(&obid, id);
         assert_eq!(summary(&job), "answer: accept", "{job}");

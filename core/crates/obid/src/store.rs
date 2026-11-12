@@ -7,6 +7,9 @@ use crate::job::Job;
 
 pub struct Store {
     dir: PathBuf,
+    /// The revision last written of each job: an older snapshot, saved later, never undoes it.
+    // ponytail: one lock for every job's save; a lock per job if saves ever queue.
+    saved: std::sync::Mutex<std::collections::HashMap<String, u64>>,
 }
 
 impl Store {
@@ -14,17 +17,24 @@ impl Store {
     pub fn open(home: &Path) -> std::io::Result<Store> {
         let dir = home.join("jobs");
         make_private_dir(&dir)?;
-        Ok(Store { dir })
+        let saved = Default::default();
+        Ok(Store { dir, saved })
     }
 
     fn path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.json"))
     }
 
-    /// Writes the job.
+    /// Writes the job, unless a later revision of it is written already.
     pub fn save(&self, job: &Job) -> std::io::Result<()> {
+        let mut saved = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        if saved.get(&job.id).is_some_and(|last| *last > job.revision) {
+            return Ok(());
+        }
         let text = serde_json::to_vec_pretty(job).map_err(std::io::Error::other)?;
-        write_private(&self.path(&job.id), &text)
+        write_private(&self.path(&job.id), &text)?;
+        saved.insert(job.id.clone(), job.revision);
+        Ok(())
     }
 
     /// Forgets the job `id`: one that isn't kept is gone already.

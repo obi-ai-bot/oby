@@ -66,6 +66,7 @@ mod budget;
 mod by_github;
 mod lanes;
 pub(crate) use lanes::claude_place;
+use lanes::{own_codex_settings, own_run_env, owners_for};
 mod logins;
 mod moves;
 mod own_refs;
@@ -3563,6 +3564,7 @@ impl Jobs {
                 .as_ref()
                 .is_some_and(|of| of.foreign_by_api && of.someone_elses_but_api().is_none());
         job.reached = of.as_ref().and_then(Job::reached_for_follow_up);
+        job.ran_unproxied = of.as_ref().is_some_and(|of| of.ran_unproxied);
         // An account the owner named keeps the job past its limit (#871); a follow-up's is its
         // job's.
         job.named = match &of {
@@ -7328,7 +7330,8 @@ impl Jobs {
         let mut spec = spec.clone();
         let mut extra = spec.git_env();
         extra.extend(process::no_publish_env(&spec.temp));
-        let own = Self::own_lane(job, tool);
+        let chatgpt = tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some();
+        let own = lanes::launches_own(job, tool, account);
         // A boxed run's only way off the Mac: obid's proxy, which lets its tool's own services
         // through and decides every other site (crate::egress, #616). An own run's network is its
         // CLI's sandbox's (LANES-6).
@@ -7348,7 +7351,7 @@ impl Jobs {
         let tetrix = self.tetrix_mcp(job);
         // On a ChatGPT login, no run holds a token: Codex goes through obid's relay, with the job's
         // broker token (crate::chatgpt_relay).
-        let relay = (tool == Tool::Codex && crate::chatgpt::marker_of(account).is_some())
+        let relay = chatgpt
             .then(|| {
                 if let Some(why) = login_problem(tool, account, login_home().as_deref()) {
                     return Err(why);
@@ -7373,11 +7376,11 @@ impl Jobs {
         {
             chatgpt.runs.begin(&job.id);
         }
-        self.update(&job.id, |job| job.own_lane = own);
+        self.launched(&job.id, own)?;
         // The owner's environment under obid's (LANES-4): a shell that doesn't answer leaves the run
         // obid's allowlist, and the job says so.
         let owners = if own {
-            process::login_env()
+            process::login_env().map(|env| owners_for(tool, env))
         } else {
             Some(Vec::new())
         };
@@ -7385,13 +7388,13 @@ impl Jobs {
             self.note_change(&job.id, "Your login shell didn't answer within 10 seconds, so this run has none of its environment.".into());
         }
         match (&account.config_dir, tool) {
-            // In Claude Code's own sandbox, with the account's own folder and login: no copy.
-            // The user's settings it loads (`--setting-sources user`, LANES-5) checked before it starts.
-            _ if own => {
-                let env = own_sandbox_env(account, &spec, &self.login_path(&job.id))?;
-                own_settings_allowed(&own_settings_file(account)?, &spec, &env)?;
-                extra.extend(env);
-            }
+            // In the CLI's own sandbox, with the account's own folder and login: no copy.
+            _ if own => extra.extend(own_run_env(
+                tool,
+                account,
+                &spec,
+                &self.login_path(&job.id),
+            )?),
             // Never the account's own folder (#655): the job's own, a login copy and nothing else.
             (Some(dir), _) => {
                 let login = self.login_path(&job.id);
@@ -7493,6 +7496,9 @@ impl Jobs {
                 }
                 if let Some((base, _)) = &relay {
                     argv.splice(1..1, crate::chatgpt_relay::codex_settings(base));
+                }
+                if own {
+                    argv.splice(1..1, own_codex_settings(&spec)?);
                 }
                 argv
             }
@@ -8195,6 +8201,9 @@ impl Jobs {
                     // A call of its agent's that waits for the owner past `parkAfter` parks it.
                     if parks {
                         self.park(id);
+                    }
+                    if self.left_own_lane(id, tool) {
+                        let _ = cut.send(Signal::Stop);
                     }
                 }
             }
@@ -10299,6 +10308,7 @@ impl Jobs {
         let mut by_hand: Option<String> = None;
         // How the transcript opens the next turn, when it's obid's words that start it.
         let mut opening: Option<String> = None;
+        let mut renew: Option<(String, &str)> = None;
         // Its base moved and its commits didn't rebase onto it: its agent had its one round to do it.
         let mut rebase_round = false;
         // The round a failed check gave it, counted when its turn launches.
@@ -10397,7 +10407,32 @@ impl Jobs {
                 if std::mem::take(&mut to_publish) {
                     break;
                 }
+                // LANES-18: a Codex session made in the other lane's folder can't go on in this one.
+                if let Some(note) = self.other_lane(id, tool) {
+                    renew = Some((note, "its mode changed its sandbox"));
+                }
                 let job = self.get(id).ok_or("the job is gone")?;
+                // A new session has heard nothing: obid's note, all it's first told, what it was last sent.
+                if let Some((note, why)) = renew.take() {
+                    let first = match first_built.take() {
+                        Some(first) => first,
+                        None => {
+                            self.first_message(id, &job, &worktree, &base, rules_quoted)
+                                .await?
+                        }
+                    };
+                    message = if message.contains(&first) {
+                        format!("{note}\n\n{message}")
+                    } else {
+                        format!("{note}\n\n{first}\n\n{message}")
+                            .trim_end()
+                            .to_owned()
+                    };
+                    opening = Some(format!(
+                        "Oby started {} in a new session: {why}",
+                        tool.name()
+                    ));
+                }
                 // A failed check's next round counts once its turn launches (below), so a restart
                 // before then runs the same round's check again.
                 let round = job.current_round() + u32::from(round_due);
@@ -10642,6 +10677,10 @@ impl Jobs {
                 if *signal.borrow() != Signal::Run {
                     return Ok(());
                 }
+                // LANES-18: its mode left Bypass under an own Codex run, which was ended: boxed now.
+                if !turn.succeeded() && self.left_own_lane(id, tool) {
+                    continue;
+                }
                 if launch_tries < RETRY_WAITS.len()
                     && let Some(cut) = self.offline(id, tool, &turn, log_from)
                 {
@@ -10708,25 +10747,7 @@ impl Jobs {
                     if turn.cause() == Some(agent::Cause::TooLong)
                         && let Some(note) = self.new_session(id)
                     {
-                        // It has heard nothing: obid's note, all it's first told, what it was last sent.
-                        let first = match first_built.take() {
-                            Some(first) => first,
-                            None => {
-                                self.first_message(id, &job, &worktree, &base, rules_quoted)
-                                    .await?
-                            }
-                        };
-                        message = if message.contains(&first) {
-                            format!("{note}\n\n{message}")
-                        } else {
-                            format!("{note}\n\n{first}\n\n{message}")
-                                .trim_end()
-                                .to_owned()
-                        };
-                        opening = Some(format!(
-                            "Oby started {} in a new session: its last was too long for its model",
-                            tool.name()
-                        ));
+                        renew = Some((note, "its last was too long for its model"));
                         continue;
                     }
                     // What the CLI said ended the turn, never the agent's own last words, which can
@@ -15414,8 +15435,10 @@ mod tests {
             .iter()
             .map(|path| PathBuf::from(path.as_str().unwrap()))
             .collect();
+        // As named where it can't be followed (a check's box hides `/Users/Shared`).
         for temp in crate::sandbox::shared_temps() {
-            assert!(!denied.contains(&real(&temp)), "{}", temp.display());
+            let temp = temp.canonicalize().unwrap_or(temp);
+            assert!(!denied.contains(&temp), "{}", temp.display());
         }
         assert!(list("denyRead").contains(&real(&root.join("account"))));
         assert!(list("allowRead").contains(&real(&worktree)));

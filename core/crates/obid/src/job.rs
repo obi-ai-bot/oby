@@ -739,6 +739,11 @@ pub struct Job {
     /// terminal may open its session: [`Job::resume_command`] (LANES-9).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_lane: bool,
+    /// A run of its agent's, or of the job it follows up, launched in the own lane: its check gets
+    /// no declared secrets, whatever its mode, tool or account is now (LANE-3a, crate::jobs,
+    /// `ran_unproxied`). Never unset, saved before that run. In its file, never in the API.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ran_unproxied: bool,
     /// Words no app of the owner's signed reached it (`POST /v1/jobs`, a message to it): since
     /// #1638 the owner's apps sign theirs, so these aren't the owner's own, and its pull request
     /// merges only after two reviews (crate::merge::two_reviews). Carried to its follow-ups.
@@ -1264,6 +1269,7 @@ impl Job {
             unattended: false,
             untrusted: false,
             own_lane: false,
+            ran_unproxied: false,
             unsigned: false,
             memory_from_others: false,
             foreign: None,
