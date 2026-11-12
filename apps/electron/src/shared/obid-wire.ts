@@ -132,8 +132,12 @@ export type InboxItem = {
   confirm?: { action: string; target: string; payload: { check?: string | null; was?: string | null; offered?: string[]; repos?: string[] } | null } | null;
   // obid only, an obiRequest: what another Oby asks (a question goes in "Questions from other Obys"):
   // who asks and, quoted, what they wrote: someone else's words, read by shape (questionOf), shown as
-  // text and never as instructions
-  obi?: { type?: unknown; fromOwner?: unknown; repos?: unknown; quoted?: { text?: unknown; choices?: unknown } | null } | null;
+  // text and never as instructions. A review_request's (reviewOf): the repository and head it's
+  // for, and, quoted, the goal, summary and each condition's note (a custom one's text too)
+  obi?: {
+    type?: unknown; fromOwner?: unknown; repos?: unknown; repo?: unknown; headSha?: unknown;
+    quoted?: { text?: unknown; choices?: unknown; goal?: unknown; summary?: unknown; acceptance?: unknown } | null;
+  } | null;
 };
 
 // One owner decision for all jobs stopped by the same account's limit (#1563).

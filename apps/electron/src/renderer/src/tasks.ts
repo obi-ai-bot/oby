@@ -54,8 +54,16 @@ export const useTasks = () => useSyncExternalStore(subscribe, () => tasks, () =>
 // another Oby's question only the owner can answer: who asks (their exact owner id), and what they
 // wrote, which is data (QuestionCard.tsx)
 export type PersonQuestion = { id: string; from: string; words: string; choices: string[]; repos: string[] };
+// another Oby's review request (docs/contracts/teammate-review.md, TEAMREVIEW-2): obid's words
+// (text), then what that Oby wrote, which is data (its goal, summary, and each condition's text and
+// note), and the item's own answers (AskStack.tsx)
+export type PersonReview = {
+  id: string; from: string; text: string; repo: string; headSha: string; goal: string; summary: string;
+  conditions: { text: string; note: string }[]; options: string[];
+};
 export type Asking = { id: string; title: string; who?: string; brand?: Brand; url?: string; talk?: string }
-  & ({ ask: Ask; offer?: undefined; question?: undefined } | { offer: Offer; ask?: undefined; question?: undefined } | { question: PersonQuestion; ask?: undefined; offer?: undefined });
+  & ({ ask: Ask; offer?: undefined; question?: undefined; review?: undefined } | { offer: Offer; ask?: undefined; question?: undefined; review?: undefined }
+    | { question: PersonQuestion; ask?: undefined; offer?: undefined; review?: undefined } | { review: PersonReview; ask?: undefined; offer?: undefined; question?: undefined });
 let asks: Asking[] = [];
 export const asksWaiting = () => asks;
 // obid's jobs, in place of the mock's (live.ts), with what it asks and GitHub's work (error: why

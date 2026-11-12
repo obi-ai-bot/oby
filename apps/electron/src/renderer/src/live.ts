@@ -6,7 +6,7 @@ import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
 import { AGENTS, STEER, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { repoTicks } from './sharing';
-import { replaceTasks, type Asking, type PersonQuestion, type Task } from './tasks';
+import { replaceTasks, type Asking, type PersonQuestion, type PersonReview, type Task } from './tasks';
 import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders } from './folders';
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
@@ -342,9 +342,9 @@ const checkOf = (item?: InboxItem) =>
 // What obid asks the owner with no task to show it on (a job's item shows on its task's card), for
 // Home's stack, of the kinds it was made for: GitHub's offers, Confirms, failures, and work Oby
 // offers to start (its job isn't one until it starts), as OfferCard shows it in its conversation.
-// Of what another Oby asks, a question, which its card shows whole (QuestionCard.tsx); any other kind
-// stays where it's shown in full (an Obi-to-Obi request must show all it quotes before it's
-// answered). Only what needs the owner (as obid sorts it: needs_you, pending with it),
+// Of what another Oby asks, a question and a review request, which their cards show whole
+// (QuestionCard.tsx, AskStack.tsx); any other kind stays where it's shown in full (an Obi-to-Obi
+// request must show all it quotes before it's answered). Only what needs the owner (as obid sorts it: needs_you, pending with it),
 // not put off, and not while its answer is on its way.
 const ON_HOME = new Set(['github', 'confirm', 'start', 'failed', 'failure', 'routine']);
 // On Home, obid's words under the headline, unless they are the headline (a failure's)
@@ -361,8 +361,23 @@ export const questionOf = (i: InboxItem): PersonQuestion | undefined => {
   if (i.kind !== 'obiRequest' || o?.type !== 'question' || typeof words !== 'string' || typeof o.fromOwner !== 'string') return undefined;
   return { id: i.id, from: o.fromOwner, words, choices: texts(o.quoted?.choices), repos: texts(o.repos) };
 };
+// Another Oby's review request (TEAMREVIEW-2), by its shape: obid's words (its text, typed fields
+// only), what that Oby wrote quoted under obi.quoted (core/crates/obid/src/sphere/inbox.rs,
+// review_request_item), and the item's own answers
+const word = (x: unknown) => (typeof x === 'string' ? x : '');
+export const reviewOf = (i: InboxItem): PersonReview | undefined => {
+  const o = i.obi, q = o?.quoted;
+  if (i.kind !== 'obiRequest' || o?.type !== 'review_request' || typeof o.fromOwner !== 'string') return undefined;
+  const conditions = (Array.isArray(q?.acceptance) ? q.acceptance as unknown[] : [])
+    .map((c) => ({ text: word((c as { text?: unknown } | null)?.text), note: word((c as { note?: unknown } | null)?.note) }))
+    .filter((c) => c.text || c.note);
+  return {
+    id: i.id, from: o.fromOwner, text: i.text, repo: word(o.repo), headSha: word(o.headSha),
+    goal: word(q?.goal), summary: word(q?.summary), conditions, options: texts(i.options),
+  };
+};
 // An escalation with no job still reaches the stack (TASKS-17): Done and Later, whole text
-const onHome = (i: InboxItem) => ON_HOME.has(i.kind) || !!questionOf(i) || (isEscalation(i) && i.kind === 'question' && !i.job);
+const onHome = (i: InboxItem) => ON_HOME.has(i.kind) || !!questionOf(i) || !!reviewOf(i) || (isEscalation(i) && i.kind === 'question' && !i.job);
 function asksOf(s: Live): Asking[] {
   const now = Date.now();
   const open = s.inbox.filter((i) => onHome(i) && !s.jobs[i.job] && (!i.triage || i.triage === 'needs_you' || i.triage === 'pending')
@@ -371,6 +386,8 @@ function asksOf(s: Live): Asking[] {
     ...open.filter((i) => !i.offer).map((i) => {
       const question = questionOf(i);
       if (question) return { id: i.id, title: `Question from ${plainId(question.from)}`, question };
+      const review = reviewOf(i);
+      if (review) return { id: i.id, title: `Review request from ${plainId(review.from)}`, review };
       // over it a GitHub item's own title, as on To do; obid's words under Oby's headline, or under
       // the title till one comes (clamped: they can be long; an escalation's is whole, TASKS-17)
       const g = i.github;
@@ -1182,8 +1199,9 @@ export async function changeCheck(repo: string, check: string | null) {
   }
 }
 
-// The owner's answer to another Oby's question, or their Decline: signed by main, or obid refuses it,
-// and that refusal is the caller's to say, over the words it keeps (QuestionCard.tsx).
+// The owner's answer to another Oby's question, or their Decline (or a review request's answer,
+// AskStack.tsx): signed by main, or obid refuses it, and that refusal is the caller's to say, over
+// the words it keeps (QuestionCard.tsx).
 export async function answerQuestion(id: string, words: string) {
   take({ kind: 'inbox', item: await api.answer(id, { answer: words }) });
 }
