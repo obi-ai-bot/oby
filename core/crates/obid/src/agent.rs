@@ -172,8 +172,11 @@ pub struct Turn {
     /// command), and why.
     pub fatal: Option<String>,
     /// When the account resets, in seconds since the epoch, if the tool said this turn it's full
-    /// (crate::limits).
+    /// (crate::limits); when `scoped`, when that one limit does.
     pub resets: Option<i64>,
+    /// Claude Code refused this turn one model's own limit, never the whole account's (USAGE-13):
+    /// the job moves or waits as at any limit, and no account is marked full.
+    pub scoped: bool,
     /// The last words the agent wrote this turn: its `result` carries none when its last message
     /// was a tool call (#764).
     pub last_words: String,
@@ -729,6 +732,15 @@ pub async fn turn_on(
             Some("rate_limit_event") => {
                 if let Some(at) = crate::limits::claude_full_until(&message) {
                     turn.resets = Some(at);
+                    turn.scoped = false;
+                } else if crate::usage::claude_overage(&message["rate_limit_info"]) {
+                    // USAGE-12: overage carries it now, whatever an earlier event said.
+                    (turn.resets, turn.scoped) = (None, false);
+                } else if crate::usage::claude_scoped(&message["rate_limit_info"])
+                    && (turn.resets.is_none() || turn.scoped)
+                {
+                    let at = crate::limits::epoch(&message["rate_limit_info"]["resetsAt"]);
+                    (turn.resets, turn.scoped) = (at, true);
                 }
             }
             Some("result") => {
@@ -1107,6 +1119,53 @@ mod tests {
         assert!(turn.succeeded());
         assert_eq!(turn.text(), "");
         assert_eq!(turn.last_said(), "Fixed it; the tests pass.");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// USAGE-12: a turn whose 5-hour window filled, then went on on the account's overage (claude
+    /// 2.1.302's event), names no reset: a passing error after it is no limit. The other way
+    /// round, the full window's reset stands.
+    #[tokio::test]
+    async fn usage_12_overage_in_use_after_a_full_window_names_no_reset() {
+        let overage = include_str!("../tests/fixtures/claude-rate-limit-overage.json").trim();
+        let spent = overage
+            .replace(r#""isUsingOverage":true"#, r#""isUsingOverage":false"#)
+            .replace(r#""overageInUse":true"#, r#""overageInUse":false"#)
+            .replace(
+                r#""overageStatus":"allowed""#,
+                r#""overageStatus":"rejected""#,
+            );
+        let passing = r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":529,"result":"API Error: 529 Overloaded","session_id":"s1"}"#;
+        let (turn, _, root) =
+            fake_turn_saying("usage-12-then", &[&spent, overage, passing], "").await;
+        assert_eq!(turn.resets, None);
+        assert!(!turn.says_limit(turn.error()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (turn, _, root) =
+            fake_turn_saying("usage-12-spent", &[overage, &spent, passing], "").await;
+        assert_eq!(turn.resets, Some(1_762_880_400));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// USAGE-13: claude 2.1.302's `seven_day_opus` refusal ends the turn at a limit, with that
+    /// limit's own reset, marked scoped so no account is marked full; a 5-hour one isn't scoped.
+    #[tokio::test]
+    async fn usage_13_a_scoped_limit_ends_the_turn_at_its_own_reset() {
+        let limit = r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"You have hit your Opus limit","session_id":"s1"}"#;
+        let scoped = include_str!("../tests/fixtures/claude-rate-limit-scoped.json").trim();
+        let (turn, _, root) = fake_turn_saying("usage-13-scoped", &[scoped, limit], "").await;
+        assert!(turn.scoped);
+        assert_eq!(turn.resets, Some(1_763_290_800));
+        assert_eq!(turn.cause(), Some(Cause::Limit));
+        assert!(turn.says_limit(turn.error()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let whole = scoped.replace("seven_day_opus", "five_hour");
+        let (turn, _, root) = fake_turn_saying("usage-13-whole", &[&whole, limit], "").await;
+        assert!(!turn.scoped);
+        assert_eq!(turn.resets, Some(1_763_290_800));
+        assert!(turn.says_limit(turn.error()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

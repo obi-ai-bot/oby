@@ -85,6 +85,10 @@ pub struct Recovery {
     pub limit_resumes: usize,
     /// New sessions it got because its last grew too long for its model (RECOVERY-8).
     pub renewed: usize,
+    /// The accounts that refused it one model's limit, and until when (USAGE-13): unmarked for
+    /// other work, but its moves pass them by until then, so it waits rather than hop between them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scoped_holds: Vec<(String, i64)>,
     /// What cut its run, for the next run's marked message; taken when that run starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,

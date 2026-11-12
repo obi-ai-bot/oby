@@ -54,6 +54,10 @@ pub struct Usage {
     /// `seven_day` is a plan's included usage that the plan can go on past (Cursor's, USAGE-9): it
     /// is shown, and holds nothing back whatever it reads. A refusal's `full_until` still does.
     pub advisory: bool,
+    /// Whether Claude's paid overage carries its work past a window, as its last `rate_limit_event`
+    /// said (USAGE-12): a window at 100% then doesn't read full ([`Usage::window_full`]). `None` in a
+    /// report that says nothing of it (`/usage`, Codex's, a refusal), which keeps what was said.
+    pub overage: Option<bool>,
 }
 
 /// A window's share now: one whose reset has passed starts again from nothing.
@@ -170,9 +174,11 @@ impl Usage {
         })
     }
 
-    /// Whether a window reads 100%, so its tool refuses work. Never an advisory figure's.
+    /// Whether a window reads 100%, so its tool refuses work. Never an advisory figure's, nor one
+    /// past which Claude's overage carries the work (USAGE-12).
     pub fn window_full(&self, now: i64) -> bool {
         !self.advisory
+            && self.overage != Some(true)
             && [self.five_hour_at(now), self.seven_day_at(now)]
                 .into_iter()
                 .flatten()
@@ -278,9 +284,17 @@ impl Usages {
                     kept.seven_day_resets = usage.seven_day_resets;
                 }
             }
+            // Only a report that says whether overage carries it changes that (not `/usage`).
+            if usage.overage.is_some() {
+                kept.overage = usage.overage;
+            }
             if usage.full_until.is_some() {
                 kept.full_until = usage.full_until;
                 kept.full_until_inferred = usage.full_until_inferred;
+            } else if usage.overage == Some(true) {
+                // USAGE-12: overage carries its work now, so no earlier hold stands.
+                kept.full_until = None;
+                kept.full_until_inferred = false;
             } else if kept.full_until_inferred
                 && usage.five_hour.is_some_and(|used| used < NEARLY_FULL)
                 && usage.seven_day.is_some_and(|used| used < NEARLY_FULL)
@@ -407,9 +421,41 @@ fn full_until(
     })
 }
 
+/// Whether Claude Code's paid overage carries the account's work past its windows (USAGE-12):
+/// `isUsingOverage` (claude 2.1.302 says it with `status` `rejected` and `overageStatus` allowing),
+/// or `overageInUse` while the overage still allows.
+pub(crate) fn claude_overage(info: &Value) -> bool {
+    info["isUsingOverage"] == true
+        || (info["overageInUse"] == true
+            && matches!(
+                info["overageStatus"].as_str(),
+                Some("allowed" | "allowed_warning")
+            ))
+}
+
+/// Whether a `rate_limit_info`'s refusal is the whole account's (USAGE-13): `rejected` for the
+/// 5-hour or weekly window, for the overage (spent past a window), or naming none, and no overage
+/// carrying it.
+pub(crate) fn claude_refused(info: &Value) -> bool {
+    info["status"] == "rejected"
+        && !claude_overage(info)
+        && matches!(
+            info["rateLimitType"].as_str(),
+            None | Some("five_hour" | "seven_day" | "overage")
+        )
+}
+
+/// Whether a refusal is scoped (USAGE-13): a model's week (`seven_day_opus`, `seven_day_sonnet`,
+/// `seven_day_overage_included`). It stops the turn's model and leaves the account's other work
+/// going.
+pub(crate) fn claude_scoped(info: &Value) -> bool {
+    info["status"] == "rejected" && !claude_overage(info) && !claude_refused(info)
+}
+
 /// Claude Code's `rate_limit_event`: its `unifiedWindows` (`five_hour`, `seven_day`), each with a
 /// `utilization` of 0...1 and a `resetsAt` in epoch seconds. Older versions name one window at the
-/// top (`rateLimitType`, `utilization`, `resetsAt`). `status` `rejected` means it refused work.
+/// top (`rateLimitType`, `utilization`, `resetsAt`). The account is full when it refused work as a
+/// whole ([`claude_refused`]) or a window reads 100% with no overage carrying it.
 pub fn claude(message: &Value) -> Usage {
     let info = &message["rate_limit_info"];
     let windows = &info["unifiedWindows"];
@@ -425,16 +471,16 @@ pub fn claude(message: &Value) -> Usage {
     };
     let (five_hour, five_hour_resets) = window("five_hour");
     let (seven_day, seven_day_resets) = window("seven_day");
+    let windows = [(five_hour, five_hour_resets), (seven_day, seven_day_resets)];
+    let overage = claude_overage(info);
+    let counted = if overage { [(None, None); 2] } else { windows };
     Usage {
         five_hour,
         seven_day,
         five_hour_resets,
         seven_day_resets,
-        full_until: full_until(
-            [(five_hour, five_hour_resets), (seven_day, seven_day_resets)],
-            info["status"] == "rejected",
-            epoch(&info["resetsAt"]),
-        ),
+        full_until: full_until(counted, claude_refused(info), epoch(&info["resetsAt"])),
+        overage: Some(overage),
         ..Usage::default()
     }
 }
@@ -1394,6 +1440,123 @@ mod tests {
             ..Usage::default()
         };
         assert!(claude.window_full(now));
+    }
+
+    /// Claude Code 2.1.302's `rate_limit_event` past its 5-hour window, paid by the account's
+    /// overage (`isUsingOverage`, with `status` `rejected`, as the CLI sets it): not full, its
+    /// window still shown. The same event with no overage is full.
+    #[test]
+    fn usage_12_overage_in_use_isnt_full() {
+        let event: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/claude-rate-limit-overage.json"
+        ))
+        .unwrap();
+        let usage = claude(&event);
+        assert_eq!(usage.full_until, None);
+        assert_eq!(
+            (usage.five_hour, usage.five_hour_resets),
+            (Some(1.0), Some(1_762_880_400))
+        );
+        assert_eq!(crate::limits::claude_full_until(&event), None);
+        // As kept: its 100% window doesn't read full while overage carries it, so a passing error
+        // is no limit (crate::jobs); a later report with no overage reads full again.
+        let home = Home::new("claude-overage");
+        let usages = Usages::open(&home.0);
+        let before = 1_762_870_000;
+        let (_, kept) = usages.record("claude", &usage);
+        assert!(!kept.window_full(before));
+        assert_eq!(kept.overage, Some(true));
+        // Claude Code's own `/usage` at 100% says nothing of overage: it keeps what was said.
+        let report = json!({"usage_report": {"rate_limits": {"limits": [{"kind": "session",
+            "percent": 100, "resets_at": time::format(1_762_880_400)}]}}});
+        let read = claude_report(&report).unwrap();
+        assert_eq!(read.overage, None);
+        let (_, kept) = usages.record("claude", &read);
+        assert_eq!(kept.five_hour, Some(1.0));
+        assert!(!kept.window_full(before));
+        let (_, kept) = usages.record(
+            "claude",
+            &Usage {
+                full_until: Some(before + 60),
+                ..Usage::default()
+            },
+        );
+        assert_eq!(kept.overage, Some(true), "a refusal alone keeps it too");
+        let mut spent = event.clone();
+        spent["rate_limit_info"]["isUsingOverage"] = json!(false);
+        spent["rate_limit_info"]["overageInUse"] = json!(false);
+        let (_, kept) = usages.record("claude", &claude(&spent));
+        assert!(kept.window_full(before));
+        assert_eq!(kept.full_until_at(before), Some(1_762_880_400));
+        // Then overage takes the work on (the owner turned it on): the hold goes with it.
+        let (_, kept) = usages.record("claude", &usage);
+        assert_eq!(kept.full_until, None);
+        assert!(!kept.window_full(before));
+        assert!(
+            kept.held(before).is_some(),
+            "new work still prefers room (USAGE-11)"
+        );
+        // `overageInUse` alone says it too, while the overage still allows.
+        let mut in_use = event.clone();
+        in_use["rate_limit_info"]["isUsingOverage"] = json!(false);
+        assert_eq!(claude(&in_use).full_until, None);
+        assert_eq!(crate::limits::claude_full_until(&in_use), None);
+
+        let mut spent = event;
+        spent["rate_limit_info"]["isUsingOverage"] = json!(false);
+        spent["rate_limit_info"]["overageStatus"] = json!("rejected");
+        assert_eq!(claude(&spent).full_until, Some(1_762_880_400));
+        assert_eq!(
+            crate::limits::claude_full_until(&spent),
+            Some(1_762_880_400)
+        );
+    }
+
+    /// A refusal of one model's week (claude 2.1.302's `seven_day_opus`) leaves the account's
+    /// other work going; one of the 5-hour or weekly window, the spent overage's, or naming none,
+    /// fills it.
+    #[test]
+    fn usage_13_a_scoped_limit_doesnt_fill_the_account() {
+        let event: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/claude-rate-limit-scoped.json"
+        ))
+        .unwrap();
+        let typed = |kind: Value| {
+            let mut event = event.clone();
+            event["rate_limit_info"]["rateLimitType"] = kind;
+            event
+        };
+        for kind in [
+            "seven_day_opus",
+            "seven_day_sonnet",
+            "seven_day_overage_included",
+        ] {
+            let scoped = typed(json!(kind));
+            let usage = claude(&scoped);
+            assert_eq!(usage.full_until, None, "{kind}");
+            assert_eq!(usage.seven_day, Some(0.58), "{kind}");
+            assert_eq!(crate::limits::claude_full_until(&scoped), None, "{kind}");
+        }
+        for kind in [
+            json!("five_hour"),
+            json!("seven_day"),
+            json!("overage"),
+            Value::Null,
+        ] {
+            let whole = typed(kind.clone());
+            assert_eq!(claude(&whole).full_until, Some(1_763_290_800), "{kind}");
+            assert_eq!(
+                crate::limits::claude_full_until(&whole),
+                Some(1_763_290_800),
+                "{kind}"
+            );
+        }
+        let mut unnamed = event;
+        unnamed["rate_limit_info"]
+            .as_object_mut()
+            .unwrap()
+            .remove("rateLimitType");
+        assert_eq!(claude(&unnamed).full_until, Some(1_763_290_800));
     }
 
     /// A read with no figure takes the last one away, and nothing else.

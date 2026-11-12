@@ -57,17 +57,20 @@ pub fn reset_in(text: &str, now: i64) -> Option<i64> {
 const LATEST: f64 = 4_102_444_800.0;
 
 /// An epoch in seconds, from seconds or milliseconds, or none when it isn't a plausible one.
-fn epoch(value: &Value) -> Option<i64> {
+pub(crate) fn epoch(value: &Value) -> Option<i64> {
     let n = value.as_f64()?;
     let seconds = if n > 1e12 { n / 1000.0 } else { n };
     (seconds > 0.0 && seconds <= LATEST).then_some(seconds as i64)
 }
 
-/// Claude Code's `rate_limit_event`: when the account resets, if it's full (refused, or a window
-/// at 100%): the latest full window's reset (it has room only once every full one resets), else
-/// the event's own.
+/// Claude Code's `rate_limit_event`: when the account resets, if it's full (refused as a whole, or
+/// a window at 100%, by crate::usage's rule, USAGE-12 and 13): the latest full window's reset (it
+/// has room only once every full one resets), else the event's own.
 pub fn claude_full_until(message: &Value) -> Option<i64> {
     let info = &message["rate_limit_info"];
+    if crate::usage::claude_overage(info) {
+        return None;
+    }
     let windows = &info["unifiedWindows"];
     let full: Vec<i64> = ["five_hour", "seven_day"]
         .iter()
@@ -77,7 +80,7 @@ pub fn claude_full_until(message: &Value) -> Option<i64> {
     if let Some(at) = full.iter().max() {
         return Some(*at);
     }
-    (info["status"] == "rejected")
+    crate::usage::claude_refused(info)
         .then(|| epoch(&info["resetsAt"]))
         .flatten()
 }

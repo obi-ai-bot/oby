@@ -128,11 +128,13 @@ impl Jobs {
     pub(super) async fn failover_for(&self, id: &str) -> Option<Failover> {
         let job = (self.get(id)).filter(|j| !j.named && self.account_failover())?;
         let (was, from) = crate::accounts::find(&self.config.agents.get(), &job.account)?;
+        let now = obi_protocol::time::now();
+        let held = |a: &str| (job.recovery.scoped_holds.iter()).any(|(h, at)| h == a && *at > now);
         let (tool, account) = (self
             .destinations(&job.agent, &job.account, std::slice::from_ref(&job))
             .await)
             .into_iter()
-            .find(|(_, a)| crate::chatgpt::marker_of(a).is_none())?;
+            .find(|(_, a)| crate::chatgpt::marker_of(a).is_none() && !held(&a.id))?;
         let (limited, took) = match tool == was {
             true => (from.name.as_str(), account.name.as_str()),
             false => (was.name(), tool.name()),
@@ -144,6 +146,22 @@ impl Jobs {
             format!("{} · {}", was.name(), from.name),
             line,
         ))
+    }
+
+    /// Job `id` hit `account`'s limit: the whole account's marks it full until `reset`; one
+    /// model's (USAGE-13) holds only this job off it until then, so its moves never come back to
+    /// it and, with nowhere left, it waits ([`Jobs::failover_for`]).
+    pub(super) fn limit_reached(&self, id: &str, account: &str, reset: Option<i64>, scoped: bool) {
+        let now = obi_protocol::time::now();
+        if !scoped {
+            return self.mark_full(account, reset, now);
+        }
+        let until = reset.filter(|at| *at > now).unwrap_or(now + UNKNOWN_RESET);
+        self.update(id, |job| {
+            let holds = &mut job.recovery.scoped_holds;
+            holds.retain(|(held, at)| held != account && *at > now);
+            holds.push((account.to_owned(), until));
+        });
     }
 
     /// A card from before LIMITS-15, pending or a Resume its account can't carry out, resolves
