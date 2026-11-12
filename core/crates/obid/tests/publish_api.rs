@@ -4425,11 +4425,11 @@ fn a_head_pushed_while_its_review_ran_gets_its_own() {
     assert_eq!(reviews_of(&obid, &id).len(), 2);
 }
 
-/// A review stopped at its account's usage limit waits for the owner's one decision (#1563), never
-/// a reset retry of its own; if the owner lets it go (Dismiss), the job it reviewed says so, never
-/// `Oby is reviewing` for good.
+/// A review its account's weekly limit stopped waits for the reset by itself, with no card, still
+/// its job's review (LIMITS-10 and 15: a review keeps its account); if the owner lets it go (Stop,
+/// LIMITS-6), the job it reviewed says so, never `Oby is reviewing` for good.
 #[test]
-fn a_dismissed_review_says_so_on_its_job() {
+fn a_waiting_review_let_go_says_so_on_its_job() {
     let folder = Folder::new("publish-review-dismissed");
     let bin = fake_gh(&folder.0);
     let (obid, _remote, _) = obid_with(&folder, &bin);
@@ -4439,33 +4439,21 @@ fn a_dismissed_review_says_so_on_its_job() {
                "check": "test -f hello.txt"}),
     );
     let rid = review_of(&obid, &id, 0)["id"].as_str().unwrap().to_owned();
-    within(120, "the review waits for the owner's decision", || {
-        let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
-        decisions
-            .as_array()?
-            .iter()
-            .any(|d| {
-                d["jobs"]
-                    .as_array()
-                    .is_some_and(|jobs| jobs.iter().any(|j| j["id"] == rid.as_str()))
-            })
-            .then_some(())
+    within(120, "the review waits for its reset", || {
+        let review = call(&obid, "GET", &format!("/v1/jobs/{rid}"), None).body;
+        (review["status"] == "queued" && !review["resumesAt"].is_null()).then_some(())
     });
-    let waits = call(&obid, "GET", &format!("/v1/jobs/{rid}"), None).body;
-    assert_eq!(waits["status"], "interrupted", "{waits}");
-    assert_eq!(waits["resumesAt"], Value::Null, "{waits}");
+    let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
+    assert_eq!(decisions, json!([]));
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["reviewing"], rid.as_str(), "{job}");
     assert_eq!(stage(&job, "review")["detail"], "Oby is reviewing");
-    let dismissed = call(&obid, "POST", &format!("/v1/jobs/{rid}/dismiss"), None);
-    assert_eq!(dismissed.status, 200, "{}", dismissed.text);
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{rid}/stop"), None);
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
     let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
     assert_eq!(job["reviewing"], Value::Null, "{job}");
-    assert!(
-        job["reviewError"]
-            .as_str()
-            .unwrap()
-            .starts_with("Oby's review didn't finish: "),
+    assert_eq!(
+        job["reviewError"], "Oby's review didn't finish: it was stopped",
         "{job}"
     );
 }
