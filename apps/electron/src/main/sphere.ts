@@ -22,6 +22,14 @@ app.on('open-url', (e, url) => {
   if (opened) opened(url); else pending = url;
 });
 
+// On the window once it shows, now or when the owner next opens Oby, never brought forward for it:
+// Oby opened hidden for an alert (ALERTS-3) stays hidden
+function onWindow(f: (w: BrowserWindow) => void) {
+  const w = BrowserWindow.getAllWindows()[0];
+  if (w) return w.isVisible() || w.isMinimized() ? f(w) : void w.once('show', () => f(w));
+  app.once('browser-window-created', (_e, w) => w.once('show', () => f(w)));
+}
+
 export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   if (app.isPackaged) app.setAsDefaultProtocolClient('oby');
   const said = (w: BrowserWindow, message: string, detail?: string) => dialog.showMessageBox(w, { type: 'warning', message, detail, buttons: ['OK'] });
@@ -32,7 +40,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // for testing (npm run drive, npm run dev), whose key is its own on the owner's real obid: it logs.
   let told = false;
   const keep = () => keepMembership(obid, ownerKey).catch((e) => {
-    if (e instanceof NotThisKey && app.isPackaged) { if (!told) { told = true; void said(show(), 'Oby can’t keep your Obysphere working.', e.message); } }
+    if (e instanceof NotThisKey && app.isPackaged) { if (!told) { told = true; onWindow((w) => void said(w, 'Oby can’t keep your Obysphere working.', e.message)); } }
     else console.warn('Obysphere membership:', e instanceof Error ? e.message : e);
   });
   void keep();

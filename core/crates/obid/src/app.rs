@@ -41,6 +41,18 @@ fn bundled_beside(exe: &Path, name: &str) -> Option<PathBuf> {
     crate::sandbox::is_executable(&tool).then_some(tool)
 }
 
+/// The `.app` obid runs from (`<Oby>.app/Contents/Helpers/obid`), which obid opens hidden when
+/// something waits on the owner (crate::push, ALERTS-3); none for an obid anywhere else.
+pub fn bundle() -> Option<PathBuf> {
+    bundle_around(&std::env::current_exe().ok()?)
+}
+
+fn bundle_around(exe: &Path) -> Option<PathBuf> {
+    let contents = exe.parent()?.parent()?;
+    let app = contents.parent()?;
+    (contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_owned())
+}
+
 /// What obid writes the first time, as install.sh does: listening where the Mac app looks for it,
 /// in the home the app reads the token from, the person's login as owner, Claude Code with its
 /// default login, Codex too when it's on the login shell's PATH, the gateway on for pairing, and
@@ -174,6 +186,11 @@ mod tests {
             std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(found(&contents.join("Helpers/obid")), None);
         }
+        let app = Some(root.join("Oby.app"));
+        assert_eq!(bundle_around(&contents.join("Helpers/obid")), app);
+        assert_eq!(bundle_around(&contents.join("MacOS/obid")), app);
+        assert_eq!(bundle_around(&root.join("bin/obid")), None);
+        assert_eq!(bundle_around(&root.join("Oby/Contents/Helpers/obid")), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

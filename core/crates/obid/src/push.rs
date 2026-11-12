@@ -85,6 +85,9 @@ const UNAUTHORIZED: u32 = 3;
 /// Oby's message within this long of the owner's own words in its conversation answers them while
 /// they're there: it isn't pushed (a turn takes at most 110 seconds).
 const ANSWERING: Duration = Duration::from_secs(120);
+/// The Mac app's stream that dropped this long ago, or obid's start, may still be reconnecting: it
+/// isn't woken meanwhile (ALERTS-3; the app tries again within 30 seconds).
+const RECONNECT: Duration = Duration::from_secs(60);
 /// The iPhone's sealed alerts: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305.
 type SealKem = hpke::kem::X25519HkdfSha256;
 type SealKdf = hpke::kdf::HkdfSha256;
@@ -902,6 +905,11 @@ pub struct Push {
     talk: Mutex<Talk>,
     /// The event streams paired devices follow now: a phone with Oby open.
     following: Arc<AtomicUsize>,
+    /// The Mac app's own streams open now (`GET /v1/events?alerts=1` on loopback), and when the
+    /// last one dropped: obid's start counts as one (ALERTS-3).
+    mac: Arc<Mutex<(usize, Instant)>>,
+    /// What waited on the owner already this run: only a new need wakes the Mac app (ALERTS-3).
+    woken: Mutex<HashSet<(String, String)>>,
     /// The control plane's origin obid pushes through (`pushRelay`).
     relay: String,
     /// The relay's `401`s in a row, by push id.
@@ -932,6 +940,59 @@ impl Drop for Following {
     }
 }
 
+/// The Mac app following the events while it's kept ([`Push::mac_followed`]).
+pub struct MacFollowing(Arc<Mutex<(usize, Instant)>>);
+
+impl Drop for MacFollowing {
+    fn drop(&mut self) {
+        let mut mac = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *mac = (mac.0.saturating_sub(1), Instant::now());
+    }
+}
+
+/// What [`Push::wakes`] says to do with the Mac app (ALERTS-3).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Wake {
+    No,
+    /// Open it hidden ([`wake`]).
+    Now,
+    /// Look again then: something new came while it may be reconnecting.
+    After(Instant),
+}
+
+/// The needs in `wanted` not woken yet this run (ALERTS-3), each its thing and what it needs (as
+/// [`told`] says it again).
+pub fn to_wake(
+    wanted: &[(String, Alert)],
+    woken: &HashSet<(String, String)>,
+) -> Vec<(String, String)> {
+    wanted
+        .iter()
+        .map(|(what, alert)| (alert.collapse.clone(), what.clone()))
+        .filter(|need| !woken.contains(need))
+        .collect()
+}
+
+/// Opens the Mac app hidden, with no window (`open -g -j`, WAKE-1), so its banner shows what waits
+/// (ALERTS-3): only on macOS, for an obid inside the app ([`crate::app::bundle`]). A failure is
+/// logged; the phones still alert.
+async fn wake() {
+    let Some(app) = crate::app::bundle().filter(|_| cfg!(target_os = "macos")) else {
+        return;
+    };
+    let opened = tokio::process::Command::new("/usr/bin/open")
+        .args(["-g", "-j", "-a"])
+        .arg(&app)
+        .args(["--args", "--background"])
+        .status()
+        .await;
+    match opened {
+        Ok(status) if status.success() => tracing::info!("opened Oby hidden: something waits"),
+        Ok(status) => tracing::warn!("couldn't open Oby hidden: open {status}"),
+        Err(e) => tracing::warn!("couldn't open Oby hidden: {e}"),
+    }
+}
+
 impl Push {
     /// The pushes kept in `home/push`, through the control plane at `relay` (an origin).
     pub fn open(home: &Path, relay: &str) -> Push {
@@ -954,6 +1015,8 @@ impl Push {
             told: Mutex::new(read("said.json").and_then(|b| serde_json::from_slice(&b).ok())),
             talk: Mutex::new(Talk::default()),
             following: Arc::new(AtomicUsize::new(0)),
+            mac: Arc::new(Mutex::new((0, Instant::now()))),
+            woken: Mutex::new(HashSet::new()),
             relay: relay.to_owned(),
             unauthorized: Mutex::new(HashMap::new()),
             folder,
@@ -1052,6 +1115,31 @@ impl Push {
     pub fn followed(&self) -> Following {
         self.following.fetch_add(1, Ordering::Relaxed);
         Following(self.following.clone())
+    }
+
+    /// The Mac app follows the events until the answer is dropped, and may reconnect for
+    /// [`RECONNECT`] after: it isn't woken meanwhile (ALERTS-3).
+    pub fn mac_followed(&self) -> MacFollowing {
+        self.mac.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
+        MacFollowing(self.mac.clone())
+    }
+
+    /// Whether `wanted` ([`wanted`]'s) wakes the Mac app at `now`: a need not woken yet this run,
+    /// with no Mac app following. While one dropped (or obid started) within [`RECONNECT`], the
+    /// new needs stay new and are looked at again when that's over: it may be reconnecting, or
+    /// quit. A need counts once, woken or not: one that came while the app followed is no news.
+    pub fn wakes(&self, wanted: &[(String, Alert)], now: Instant) -> Wake {
+        let (following, left) = *self.mac.lock().unwrap_or_else(|e| e.into_inner());
+        let mut woken = self.woken.lock().unwrap_or_else(|e| e.into_inner());
+        let new = to_wake(wanted, &woken);
+        if new.is_empty() {
+            return Wake::No;
+        }
+        if following == 0 && now < left + RECONNECT {
+            return Wake::After(left + RECONNECT);
+        }
+        woken.extend(new);
+        if following == 0 { Wake::Now } else { Wake::No }
     }
 
     /// Hears one of obid's events: whether the jobs, the inbox or a conversation changed, so the
@@ -1521,7 +1609,8 @@ pub async fn listed(shared: &Shared) -> Result<Vec<Value>, String> {
 }
 
 /// Looks at the jobs and the inbox once now (a restart's news), then two seconds after each burst
-/// of changes to jobs, the inbox or the conversations, until obid stops.
+/// of changes to jobs, the inbox or the conversations, or when a need held for a reconnecting Mac
+/// app ([`Wake::After`]) is due, until obid stops.
 pub fn spawn(shared: Arc<Shared>) {
     let mut events = shared.events.subscribe();
     let mut stopping = shared.stopping.clone();
@@ -1531,8 +1620,17 @@ pub fn spawn(shared: Arc<Shared>) {
             let paired = shared.gateway.paired(std::time::SystemTime::now());
             let (jobs, inbox) = looked_at(&shared);
             shared.push.look(&jobs, &inbox, &paired, &scratch).await;
+            // Something new waits on the owner, and no Mac app follows: Oby opens hidden.
+            let mut again = None;
+            match shared.push.wakes(&wanted(&jobs, &inbox), Instant::now()) {
+                Wake::Now => wake().await,
+                Wake::After(at) => again = Some(tokio::time::Instant::from_std(at)),
+                Wake::No => {}
+            }
             loop {
                 tokio::select! {
+                    () = tokio::time::sleep_until(again.unwrap_or_else(tokio::time::Instant::now)),
+                        if again.is_some() => break,
                     got = events.recv() => match got {
                         Ok(event) if shared.push.heard(&event) => break,
                         Ok(_) => {}
@@ -1734,6 +1832,71 @@ mod tests {
         assert!(said[0].1.urgent);
         let refused = wanted(std::slice::from_ref(&job), &[]);
         assert_eq!(refused[0].1.title, "Not merged: Android push");
+    }
+
+    /// A job that failed: it waits on the owner.
+    fn failed(id: &str) -> Job {
+        let mut job = job(id);
+        job.status = Status::Failed;
+        job.finished = Some(1_800_000_000);
+        job
+    }
+
+    /// ALERTS-3: with no Mac app following, something new that waits on the owner wakes it once;
+    /// the same need again, or FYI, wakes nothing.
+    #[test]
+    fn alerts_3_a_new_need_with_no_mac_following_wakes_once() {
+        let home = std::env::temp_dir().join(format!("obid-push-wake-{}", std::process::id()));
+        let push = Push::open(&home, RELAY);
+        let later = Instant::now() + RECONNECT;
+        let mut done = job("d1");
+        done.status = Status::Done;
+        let fyi = wanted(std::slice::from_ref(&done), &[]);
+        assert_eq!(push.wakes(&fyi, later), Wake::No, "FYI");
+        let jobs = [done, failed("f1")];
+        assert_eq!(push.wakes(&wanted(&jobs, &[]), later), Wake::Now);
+        let again = push.wakes(&wanted(&jobs, &[]), later);
+        assert_eq!(again, Wake::No, "the same need again");
+        let mut asks = job("p1");
+        asks.permission = Some(permission());
+        let next = wanted(&[failed("f1"), asks], &[]);
+        assert_eq!(push.wakes(&next, later), Wake::Now);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// ALERTS-3: a Mac app following, or one that may be reconnecting (it dropped, or obid just
+    /// started, within a minute), isn't woken: what came meanwhile is held until the minute is up,
+    /// then wakes it if it didn't come back. A phone following is no Mac app.
+    #[test]
+    fn alerts_3_a_following_or_reconnecting_mac_app_is_not_woken() {
+        let home = std::env::temp_dir().join(format!("obid-push-awake-{}", std::process::id()));
+        let push = Push::open(&home, RELAY);
+        let wakes = |ids: &[&str], at: Instant| {
+            let jobs: Vec<Job> = ids.iter().map(|id| failed(id)).collect();
+            push.wakes(&wanted(&jobs, &[]), at)
+        };
+        let started = Instant::now();
+        let held = wakes(&["f1"], started);
+        assert!(
+            matches!(held, Wake::After(_)),
+            "obid just started: {held:?}"
+        );
+        let mac = push.mac_followed();
+        let following = wakes(&["f1", "f2"], started + RECONNECT);
+        assert_eq!(following, Wake::No, "it came back: it shows them itself");
+        drop(mac);
+        let left = Instant::now();
+        // Oby quit, and a job fails 10 seconds later: held, not lost.
+        let held = wakes(&["f1", "f2", "f3"], left + Duration::from_secs(10));
+        assert!(
+            matches!(held, Wake::After(at) if at > left + RECONNECT / 2),
+            "reconnecting: {held:?}"
+        );
+        let _phone = push.followed();
+        let due = wakes(&["f1", "f2", "f3"], left + RECONNECT);
+        assert_eq!(due, Wake::Now, "it didn't come back");
+        assert_eq!(wakes(&["f1", "f2", "f3"], left + RECONNECT), Wake::No);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     fn permission() -> crate::permissions::Permission {

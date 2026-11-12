@@ -201,10 +201,18 @@ app.whenReady().then(() => {
   notifying(trusted, () => win, front);
   // Oby's own updates (updates.ts), told to About while the window is there
   updating(trusted, () => win);
-  createWindow();
+  // The window opens only while Oby is the active app (ALERTS-3). obid's `open -g -j … --background`
+  // starts it with none, and a running Oby that `open` reaches gets activate (a reopen) without
+  // becoming active: neither opens it. The owner's Dock click or app switch makes Oby active, which
+  // does. ponytail: a reopen while Oby is already the active app with no window (just closed, still in
+  // front) opens it, as a Dock click then would; telling those apart needs a mark from obid's `open`
+  let active = false;
+  app.on('did-resign-active', () => { active = false; });
+  app.on('did-become-active', () => { active = true; if (!win) createWindow(); });
+  if (!process.argv.includes('--background')) createWindow();
   // an Obysphere's invite link (sphere.ts), joined on the owner's click
   sphering(trusted, front);
-  app.on('activate', () => { if (!win) createWindow(); });
+  app.on('activate', () => { if (!win && active) createWindow(); });
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
