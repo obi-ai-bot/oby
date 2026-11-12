@@ -341,7 +341,7 @@ pub fn notifies(need: Need) -> bool {
 /// started that failed, was interrupted or couldn't publish, once (a job another Obi asked for, a
 /// stopped or a dismissed one, says nothing; one that ended done with nothing to decide is FYI,
 /// gated out); and from the open inbox (`GET /v1/inbox`'s items), what Oby's conversations wait
-/// on, Allow for a shell command, a Confirm or a Start, and an item sorted `"triage": "needs_you"`
+/// on, a Confirm or a Start, and an item sorted `"triage": "needs_you"`
 /// (urgent). Progress, FYI and unsorted items are never alerts. A job's permission item is its
 /// job's alert.
 pub fn wanted(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert)> {
@@ -484,17 +484,10 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             continue;
         }
         let category = match item["kind"].as_str() {
-            Some("permission") if job.is_some() => continue,
-            // A merge card alerts as its job (ALERTS-7); a limit never does (ALERTS-6).
-            Some("merge" | "limit") => continue,
-            Some("permission")
-                if item["options"]
-                    .as_array()
-                    .is_some_and(|o| o.iter().any(|o| o == crate::permissions::ALWAYS_ALLOW)) =>
-            {
-                "permissionRule"
-            }
-            Some(kind @ ("permission" | "confirm" | "start")) => kind,
+            // A permission and a merge card alert as their job (ALERTS-7); a limit never does
+            // (ALERTS-6).
+            Some("permission" | "merge" | "limit") => continue,
+            Some(kind @ ("confirm" | "start")) => kind,
             _ if item["triage"] == "needs_you" => "inbox",
             _ => continue,
         };
@@ -2496,7 +2489,7 @@ mod tests {
             job: Some("9f08fd10".into()),
             conversation: Some(uuid::Uuid::new_v4().to_string()),
             item: Some(format!(
-                "shell-{}-{}",
+                "{}-permission-{}",
                 uuid::Uuid::new_v4(),
                 uuid::Uuid::new_v4()
             )),
@@ -2642,19 +2635,19 @@ mod tests {
             tool: "ExitPlanMode".into(),
             ..permission()
         });
-        let long = format!("shell-{}-p9", "c".repeat(80));
-        let mut shell = inbox_item(&long, "permission", "", None);
-        shell["conversation"] = json!("conv-1");
-        let mut shell_rule = inbox_item("shell-conv-1-p8", "permission", "", None);
-        shell_rule["options"] = json!(["Allow", "Always allow", "Deny"]);
+        let long = format!("start-{}-p9", "c".repeat(80));
+        let mut offered = inbox_item(&long, "start", "", None);
+        offered["conversation"] = json!("conv-1");
         let mut later = inbox_item("later", "confirm", "", None);
         later["state"] = json!("later");
         let inbox = [
-            shell,
+            offered,
             inbox_item("confirm-1", "confirm", "", None),
             inbox_item("start-1", "start", "", None),
-            shell_rule,
             inbox_item("asks-permission-p1", "permission", "asks", None),
+            // A permission of no job (a conversation's shell command an older obid left) says
+            // nothing.
+            inbox_item("shell-conv-1-p8", "permission", "", None),
             inbox_item("watch-fyi", "watch", "", Some("fyi")),
             // Waiting for the model to sort it: not yet.
             inbox_item("watch-pending", "watch", "", Some("pending")),
@@ -2678,10 +2671,9 @@ mod tests {
                 ("planning", "plan", true),
                 ("failed", "job", false),
                 ("ready", "ready", false),
-                (digest.as_str(), "permission", true),
+                (digest.as_str(), "start", true),
                 ("confirm-1", "confirm", true),
                 ("start-1", "start", true),
-                ("shell-conv-1-p8", "permissionRule", true),
                 ("listen-1", "inbox", true),
             ]
             .map(|(id, category, urgent)| (id.to_owned(), category.to_owned(), urgent))
@@ -2702,11 +2694,8 @@ mod tests {
                 answers: vec!["Allow", "Deny"],
             }
         );
-        // Plan mode's plan is answered on its page; a shell command's Allow and Deny only when
-        // its item offers them; a Start item offering no Start gets none.
+        // Plan mode's plan is answered on its page; a Start item offering no Start gets none.
         assert!(by_id("planning").answers.is_empty());
-        assert_eq!(by_id("shell-conv-1-p8").answers, ["Allow", "Deny"]);
-        assert_eq!(by_id("shell-conv-1-p8").body, "First line. Second.");
         assert_eq!(by_id("start-1").body, "First line. Second.");
         assert!(by_id(&digest).answers.is_empty() && by_id("start-1").answers.is_empty());
         assert_eq!(by_id("confirm-1").title, "Confirm");
@@ -2719,11 +2708,11 @@ mod tests {
             "FYI: gated out"
         );
         assert_eq!(by_id("ready").title, "Couldn't publish: Android push");
-        let shell = by_id(&digest);
-        assert_eq!(shell.item.as_deref(), Some(long.as_str()));
-        assert_eq!(shell.conversation.as_deref(), Some("conv-1"));
-        assert_eq!(shell.thread, "conv-1");
-        assert_eq!(shell.body, "First line. Second.");
+        let offered = by_id(&digest);
+        assert_eq!(offered.item.as_deref(), Some(long.as_str()));
+        assert_eq!(offered.conversation.as_deref(), Some("conv-1"));
+        assert_eq!(offered.thread, "conv-1");
+        assert_eq!(offered.body, "First line. Second.");
         assert_eq!(by_id("listen-1").thread, "inbox");
 
         // What was said isn't said again; a gone urgent alert is settled in place, a gone result

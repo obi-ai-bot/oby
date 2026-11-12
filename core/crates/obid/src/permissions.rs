@@ -724,6 +724,8 @@ const EDITS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
 /// How much of a plan its card keeps.
 const PLAN_CAP: usize = 20_000;
+/// The most of a command the owner's card shows: a longer one is never saved as a rule.
+const CARD_CHARS: usize = 2_000;
 
 /// What an agent in Plan hears when it tries to change something. (Sangam's to change, as every
 /// refusal's words here: proposed, PERMISSIONS-11.)
@@ -2682,9 +2684,286 @@ fn git_config_reads(args: &[String]) -> bool {
         && !GIT_SECRET_KEYS.iter().any(|k| lower.contains(k))
 }
 
+/// The options a read-only program may be given: any (none of its options writes a file or runs
+/// a program), or only these: single letters that may be bunched (`-la`), options whose value may
+/// follow them or be attached (`-k2`, `-g '*.rs'`), and whole words (`--hidden`, `-name`; one
+/// ending in `=` takes its value attached, `--glob=*.rs`). Anything else, an abbreviated long
+/// option too (`--compress=` for `--compress-program`), makes the command one that may write.
+struct Options {
+    any: bool,
+    letters: &'static str,
+    valued: &'static [&'static str],
+    words: &'static [&'static str],
+}
+
+const ANY: Options = Options {
+    any: true,
+    letters: "",
+    valued: &[],
+    words: &[],
+};
+
+/// The programs that only read, by name, and the options each may be given. Not git: the room's
+/// own git settings, which the agent can write with a command, name programs git runs.
+fn read_options(program: &str) -> Option<Options> {
+    Some(match program {
+        "ls" | "cat" | "head" | "tail" | "wc" | "grep" | "egrep" | "fgrep" | "du" | "df"
+        | "pwd" | "echo" | "printf" | "which" | "type" | "stat" | "cut" | "tr" | "nl" | "od"
+        | "jq" | "diff" | "cmp" | "comm" | "basename" | "dirname" | "realpath" | "readlink"
+        | "whoami" | "id" | "uname" | "true" | "false" | "test" | "[" | "shasum" | "sha256sum"
+        | "md5" | "md5sum" | "cksum" | "column" => ANY,
+        // Not -o (it writes), -T (a folder it writes in) or --compress-program (it runs one).
+        "sort" => Options {
+            any: false,
+            letters: "bdfghiMnRrsuVcCmz",
+            valued: &["-k", "-t"],
+            words: &[
+                "--reverse",
+                "--numeric-sort",
+                "--unique",
+                "--ignore-case",
+                "--human-numeric-sort",
+                "--general-numeric-sort",
+                "--version-sort",
+                "--stable",
+                "--check",
+                "--zero-terminated",
+                "--key=",
+                "--field-separator=",
+            ],
+        },
+        // Tests and printing only: not -exec, -ok, -delete or -fprint.
+        "find" => Options {
+            any: false,
+            letters: "",
+            valued: &[],
+            words: &[
+                "-name",
+                "-iname",
+                "-path",
+                "-ipath",
+                "-wholename",
+                "-lname",
+                "-ilname",
+                "-regex",
+                "-iregex",
+                "-type",
+                "-maxdepth",
+                "-mindepth",
+                "-size",
+                "-mtime",
+                "-mmin",
+                "-atime",
+                "-amin",
+                "-ctime",
+                "-cmin",
+                "-newer",
+                "-empty",
+                "-perm",
+                "-user",
+                "-group",
+                "-links",
+                "-inum",
+                "-samefile",
+                "-print",
+                "-print0",
+                "-ls",
+                "-prune",
+                "-o",
+                "-a",
+                "-or",
+                "-and",
+                "-not",
+                "-true",
+                "-false",
+                "-depth",
+                "-xdev",
+                "-mount",
+                "-L",
+                "-H",
+                "-P",
+            ],
+        },
+        // Not --pre (it runs a program on each file) or -z (it runs decompressors).
+        "rg" => Options {
+            any: false,
+            letters: "iInlcwvFxsSHhuLo0qUp",
+            valued: &[
+                "-g", "-t", "-T", "-e", "-A", "-B", "-C", "-m", "-M", "-j", "-d",
+            ],
+            words: &[
+                "--hidden",
+                "--no-ignore",
+                "--files",
+                "--files-with-matches",
+                "--files-without-match",
+                "--count",
+                "--line-number",
+                "--ignore-case",
+                "--smart-case",
+                "--fixed-strings",
+                "--word-regexp",
+                "--invert-match",
+                "--only-matching",
+                "--json",
+                "--column",
+                "--heading",
+                "--no-heading",
+                "--follow",
+                "--multiline",
+                "--no-messages",
+                "--null",
+                "--vimgrep",
+                "--trim",
+                "--type-list",
+                "--glob=",
+                "--type=",
+                "--max-count=",
+                "--context=",
+                "--after-context=",
+                "--before-context=",
+                "--max-depth=",
+                "--max-columns=",
+                "--sort=",
+                "--color=",
+            ],
+        },
+        // Not -o (it writes).
+        "tree" => Options {
+            any: false,
+            letters: "adfislhDCFrtpugNQ",
+            valued: &["-L", "-I", "-P"],
+            words: &[],
+        },
+        // Not -C (it writes) or -m.
+        "file" => Options {
+            any: false,
+            letters: "bLhiIkNnr",
+            valued: &[],
+            words: &[],
+        },
+        _ => return None,
+    })
+}
+
+/// Where a program that only reads may come from: the system's software, which nothing in a box
+/// writes, never the worktree or the person's folders.
+const SYSTEM_SOFTWARE: &[&str] = &["/bin/", "/sbin/", "/usr/", "/opt/", "/nix/", "/System/"];
+
+/// bash's own commands, which no file on `PATH` stands in for.
+const BUILTINS: &[&str] = &[
+    "pwd", "echo", "printf", "type", "test", "[", "true", "false", "command",
+];
+
+/// Whether `name`, as bash finds it on the box's `PATH`, is the system's software. A name with a
+/// folder in it (`./cat`, `bin/git`) never is: the agent could have written it.
+fn system_program(name: &str) -> bool {
+    system_program_on(name, &crate::process::tools_path())
+}
+
+/// [`system_program`] with `path` as the box's `PATH`. A `PATH` with a relative or empty entry
+/// (`.`, `bin`, `::`) makes nothing a system program: bash looks those up from the worktree, where
+/// the agent writes, and they may come before the system's folder.
+fn system_program_on(name: &str, path: &std::ffi::OsStr) -> bool {
+    if name.contains('/') || name.is_empty() {
+        return false;
+    }
+    if BUILTINS.contains(&name) {
+        return true;
+    }
+    let dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
+    if dirs.iter().any(|d| !d.is_absolute()) {
+        return false;
+    }
+    let Some(found) = dirs
+        .iter()
+        .map(|dir| dir.join(name))
+        .find(|p| crate::sandbox::is_executable(p))
+    else {
+        return false;
+    };
+    // Where it's found and what it really is must both be the system's, not necessarily under the
+    // same folder: on Linux with a merged /usr, /bin/cat is a link to /usr/bin/cat.
+    let system = |p: &Path| {
+        SYSTEM_SOFTWARE
+            .iter()
+            .any(|s| p.to_string_lossy().starts_with(s))
+    };
+    found.is_absolute()
+        && system(&found)
+        && std::fs::canonicalize(&found).is_ok_and(|real| system(&real))
+}
+
+/// Whether one simple command only reads: a program [`read_options`] names, as its first word (no
+/// variable set before it, no wrapper, no folder), found among the system's software, given only
+/// the options it allows. Best-effort; whatever passes still runs boxed.
+fn reads_only(words: &[String]) -> bool {
+    words.first().is_some_and(|p| system_program(p)) && takes_read_options(words)
+}
+
+/// Whether one simple command is a program [`read_options`] names given only the options it
+/// allows, wherever the program is found ([`reads_only`] asks that it be the system's).
+fn takes_read_options(words: &[String]) -> bool {
+    let Some(program) = words.first() else {
+        return false;
+    };
+    // `command -v go` says where a program is; `command rm x` runs it.
+    if program == "command" {
+        return matches!(words.get(1).map(String::as_str), Some("-v" | "-V"));
+    }
+    let Some(options) = read_options(program) else {
+        return false;
+    };
+    if options.any {
+        return true;
+    }
+    let mut operands = false;
+    words[1..].iter().all(|word| {
+        if operands || !word.starts_with('-') || word == "-" {
+            return true;
+        }
+        if word == "--" {
+            operands = true;
+            return true;
+        }
+        options
+            .words
+            .iter()
+            .any(|w| word == w || (w.ends_with('=') && word.starts_with(w)))
+            || options.valued.iter().any(|v| word.starts_with(v))
+            || (!word.starts_with("--")
+                && !options.letters.is_empty()
+                && word[1..].chars().all(|c| options.letters.contains(c)))
+    })
+}
+
+/// Whether the line sends output to a file: any `>` but one to `/dev/null` or to another
+/// descriptor (`2>&1`), each read whole (`>&1foo` writes the file `1foo`), and `>(…)`.
+fn writes_a_file(command: &str) -> bool {
+    static HARMLESS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^>?(?:&[0-9]+|&-|\s*/dev/null)").expect("a regex")
+    });
+    let ends = |rest: &str| {
+        rest.chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || matches!(c, ';' | '|' | '&' | ')'))
+    };
+    command.match_indices('>').any(|(at, _)| {
+        // The second of `>>` is read with the first.
+        if at > 0 && command.as_bytes()[at - 1] == b'>' {
+            return false;
+        }
+        let rest = &command[at + 1..];
+        match HARMLESS.find(rest) {
+            Some(found) => !ends(&rest[found.end()..]),
+            None => true,
+        }
+    })
+}
+
 /// Whether `command` only reads, as Read and Grep do, so it asks in no mode, Plan too: Codex reads
-/// through its shell (`cat`, `rg`, `git diff`). Each simple command is a program the conversation's
-/// shell runs as a read (crate::brain::shell::reads_only), one of git's [`GIT_READS`] from the
+/// through its shell (`cat`, `rg`, `git diff`). Each simple command is a program that only reads
+/// ([`reads_only`]), one of git's [`GIT_READS`] from the
 /// worktree's top (where git finds the job's own git folder, never one the agent could have made)
 /// with no option that writes a file or runs a program, `sed -n` printing lines, or `if`'s own
 /// words around them; and nothing is written to a file. Best-effort; what passes still runs in a
@@ -2693,7 +2972,6 @@ pub(crate) fn only_reads(command: &str, bounds: &Bounds) -> bool {
     static LINES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let lines =
         LINES.get_or_init(|| regex::Regex::new(r"^([0-9]+|\$)(,([0-9]+|\$))?p$").expect("a regex"));
-    use crate::brain::shell::{reads_only, system_program, takes_read_options, writes_a_file};
     let Some(commands) = simple_commands(command).filter(|c| !c.is_empty()) else {
         return false;
     };
@@ -3356,7 +3634,6 @@ pub fn card(call: &Call, id: &str, repo: &str, bounds: &Bounds) -> Permission {
         ),
         "Bash" => {
             let command = call.command.clone().unwrap_or_default();
-            use crate::brain::shell::CARD_CHARS;
             let mut detail: String = command.chars().take(CARD_CHARS).collect();
             // What the card can't show is said, and never saved as a rule: the owner reads what
             // they allow always (PERMISSIONS-8). Proposed words, Sangam's to change.
@@ -3791,6 +4068,83 @@ mod tests {
             ),
             Verdict::Deny(_)
         ));
+    }
+
+    /// Only the system's own programs count as reads: one the agent could have written, named with
+    /// a folder, never does, nor does any program once `PATH` has a relative entry (#774's review).
+    #[test]
+    fn a_program_in_the_worktree_is_never_a_read() {
+        assert!(!reads_only(&["./cat".into(), "x".into()]));
+        assert!(!reads_only(&["no-such-program-anywhere".into()]));
+        assert!(system_program_on("cat", "/bin:/usr/bin".as_ref()));
+        for path in [".:/bin", "/bin:.", "/bin::/usr/bin", "bin:/bin", ""] {
+            assert!(!system_program_on("cat", path.as_ref()), "{path:?}");
+        }
+    }
+
+    /// Options are allowed by name, per program: an attached short one or an abbreviated long one
+    /// that writes or runs a program isn't a read (#774's review). git never is.
+    #[test]
+    fn only_known_options_are_reads() {
+        let words = |c: &str| c.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        for command in [
+            "sort -ofile notes.txt",
+            "sort -o file notes.txt",
+            "sort -bo file notes.txt",
+            "sort --compress=sh notes.txt",
+            "sort --output=file notes.txt",
+            "sort -T /tmp notes.txt",
+            "find . -fprint out",
+            "find . -exec rm {} ;",
+            "find . -delete",
+            "rg --pre=sh foo",
+            "rg --pre sh foo",
+            "rg -z foo",
+            "tree -o out",
+            "file -C -m magic",
+            "git status",
+            "command rm x",
+            "command -p rm x",
+            "command",
+        ] {
+            assert!(!reads_only(&words(command)), "{command}");
+        }
+        for command in [
+            "sort -k2 -t , -n notes.txt",
+            "sort --numeric-sort --key=2 notes.txt",
+            "find repos -maxdepth 2 -name *.md -o -type d -print",
+            "head -n5 a",
+            "ls -la -- -o",
+            "command -v go",
+        ] {
+            assert!(reads_only(&words(command)), "{command}");
+        }
+    }
+
+    /// Output to a file is a write, each redirection read whole (#774's review).
+    #[test]
+    fn redirections_are_read_whole() {
+        for writes in [
+            "echo x >&1foo",
+            "echo x > out",
+            "cat a >> b",
+            "ls >/dev/nullx",
+            "diff <(ls) >(cat)",
+            "echo x 2>err",
+        ] {
+            assert!(writes_a_file(writes), "{writes}");
+        }
+        for harmless in [
+            "ls 2>&1",
+            "ls >/dev/null",
+            "ls > /dev/null 2>&1",
+            "ls &>/dev/null",
+            "ls >&2; ls 1>&2",
+            "ls 2>&-",
+            "ls",
+        ] {
+            assert!(!writes_a_file(harmless), "{harmless}");
+        }
     }
 
     /// The `rg` Codex ships (its `codex-path`, first on its commands' `PATH`) reads as a system
@@ -5545,7 +5899,7 @@ mod tests {
     #[test]
     fn permissions_8_a_cut_command_says_what_is_hidden_and_offers_no_always() {
         let bounds = Bounds::of(Path::new(WORKTREE));
-        let cap = crate::brain::shell::CARD_CHARS;
+        let cap = CARD_CHARS;
         for head in ["swift test --filter ", "echo ", "rm "] {
             let long = format!("{head}{}", "a".repeat(cap + 345 - head.len()));
             let card = card(&bash(&long), "p1", "o/r", &bounds);

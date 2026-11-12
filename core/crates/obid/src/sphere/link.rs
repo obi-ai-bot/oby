@@ -1508,41 +1508,10 @@ impl Link {
                 Some(at) => item.later = Some(at),
                 None => item.done = Some(now),
             }
-            // Done without an answer: a shell command waiting for it doesn't run.
-            if item.done.is_some() && crate::brain::shell::is_item(&item) {
-                crate::brain::shell::answered(&item.id, None);
-            }
             self.lock().inbox.insert(item.id.clone(), item.clone());
             self.save_item(&item);
             return Ok(item.to_json());
         };
-        // A command of a conversation's shell: the owner's answer goes to it, and only once.
-        if crate::brain::shell::is_item(&item) {
-            if answer == crate::permissions::ALWAYS_ALLOW
-                && !item
-                    .options
-                    .iter()
-                    .any(|o| o == crate::permissions::ALWAYS_ALLOW)
-            {
-                return Err(api(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "It has no rule to save: allow it once instead.",
-                ));
-            }
-            if !crate::brain::shell::answered(&item.id, Some(answer.clone())) {
-                self.settle(&item.id);
-                return Err(api(
-                    StatusCode::CONFLICT,
-                    "Its command isn't waiting any more: its turn ended.",
-                ));
-            }
-            let mut item = item;
-            item.answer = Some(answer);
-            item.done = Some(now);
-            self.lock().inbox.insert(item.id.clone(), item.clone());
-            self.save_item(&item);
-            return Ok(item.to_json());
-        }
         let permission = item
             .id
             .strip_prefix(&format!("{}-permission-", item.job))
@@ -3062,6 +3031,10 @@ pub(crate) fn is_stale(
     reviewed: Option<&crate::job::Job>,
     open: &[&Item],
 ) -> bool {
+    // A permission of no job: a conversation's shell command an older obid left, which nothing runs.
+    if item.kind == "permission" && item.job.is_empty() {
+        return true;
+    }
     let about_job = !item.job.is_empty()
         && match item.kind.as_str() {
             "question" | "merge" | "limit" | "permission" | "plan" | inbox::QUESTION_KIND => true,
@@ -4300,12 +4273,13 @@ mod tests {
             }
         }
 
-        // An item about no job, a shell's permission, stays.
+        // A permission about no job, a conversation's shell command an older obid left, settles:
+        // nothing runs it any more.
         let shell = Item {
             job: String::new(),
             ..of("shell-c1-p1", "permission")
         };
-        assert!(!is_stale(&shell, None, None, &all));
+        assert!(is_stale(&shell, None, None, &all));
     }
 
     /// TASKS-13: a Confirm whose action can no longer happen settles with a plain note (the

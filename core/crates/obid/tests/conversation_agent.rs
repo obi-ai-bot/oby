@@ -857,8 +857,8 @@ fn conversation_agent_8_cursor_reaches_only_its_own_services() {
     assert_ne!(text(&direct), "direct: open", "{}", direct.text);
 }
 
-/// Cursor's commands ask, and obid's rule refuses every one (`oby_shell` is how a conversation runs
-/// one). Its edits don't ask, so what it plants for its next run goes before that run.
+/// Cursor's commands ask, and obid's rule refuses every one: a boxed conversation runs none
+/// (CONVO-2). Its edits don't ask, so what it plants for its next run goes before that run.
 #[cfg(target_os = "macos")]
 #[test]
 fn conversation_agent_9_cursors_commands_are_refused_and_what_it_plants_goes() {

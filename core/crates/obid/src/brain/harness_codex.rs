@@ -13,7 +13,7 @@
 
 use std::ffi::OsString;
 
-use super::harness::{BOXED_SHELL, Place, orientation};
+use super::harness::{NO_SHELL, Place, orientation};
 use crate::agent::{Launch, Tool};
 use crate::api::Shared;
 
@@ -62,13 +62,13 @@ fn off(own: bool) -> impl Iterator<Item = &'static str> {
         .filter(move |f| !own || *f != "shell_tool")
 }
 
-/// What an own session hears in the boxed shell's place (LANES-13).
+/// What an own session hears in [`NO_SHELL`]'s place (LANES-13).
 const OWN_SHELL: &str = "Run commands with your own shell: each runs in your room under Codex's own sandbox, writing only your room (repos/ is read-only) and its temporary folder, with no network and no code-host login.";
 
 /// Its other settings: the turn's token never reaches a command's environment.
 const SETTINGS: &[&str] = &[
     r#"shell_environment_policy.exclude=["OBY_MCP_TOKEN"]"#,
-    // Its own default is a minute: a shell command, or one waiting for the owner, takes longer.
+    // Its own default is a minute: a tool waiting for the owner, or an own shell command, takes longer.
     "mcp_servers.oby.tool_timeout_sec=3600",
 ];
 
@@ -160,7 +160,7 @@ pub(super) async fn launch(
         effort: None,
         plan: false,
         instructions: Some(match own {
-            true => orientation(shared, tetrix.is_some()).replacen(BOXED_SHELL, OWN_SHELL, 1),
+            true => orientation(shared, tetrix.is_some()).replacen(NO_SHELL, OWN_SHELL, 1),
             false => orientation(shared, tetrix.is_some()),
         }),
         no_commands: !own,
