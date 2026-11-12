@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { BrandMark } from './brands';
 import { AskBlock } from './TaskCard';
 import { OfferBlock } from './OfferCard';
 import { QuestionBlock } from './QuestionCard';
-import { asksWaiting, openOnGitHub, tasksWith, useTasks, type Asking, type Task } from './tasks';
+import { answerQuestion } from './live';
+import { answer, asksWaiting, openOnGitHub, tasksWith, useTasks, type Asking, type PersonReview, type Task } from './tasks';
 
 // What Oby is asking you, on Home, under the attention line: one card per task
 // that needs you, stacked, so everything can be answered in one place without
@@ -132,7 +133,61 @@ function AskCard({ entry, count, many, className = 'is-up', ref, onOpen, onOpenT
       </header>
       {entry.offer ? <OfferBlock offer={entry.offer} onAnswer={onAnswer} />
         : entry.question ? <QuestionBlock question={entry.question} onAnswer={onAnswer} />
+        : entry.review ? <ReviewBlock review={entry.review} onAnswer={onAnswer} />
         : <AskBlock task={{ id: entry.id, answer: entry.answer, job: { ask: entry.ask } }} onAnswer={onAnswer} />}
     </article>
+  );
+}
+
+// Another Oby's review request (docs/contracts/teammate-review.md, TEAMREVIEW-2), shaped like the
+// question card: obid's words, then what that Oby wrote (its goal, summary and conditions' notes),
+// quoted, as text nodes, then the item's own answers and Later. Each answer is its button's label,
+// which main signs (POST /v1/inbox/{id}/answer, docs/contracts/signed-words.md); one at a time, and
+// a refusal stays on the card in obid's words. Per item and outliving the card, as QuestionBlock's.
+type Sent = { busy?: boolean; problem?: string };
+const NOTHING: Sent = {};
+let sent: ReadonlyMap<string, Sent> = new Map();
+const sentListeners = new Set<() => void>();
+const mark = (id: string, change: Sent | null) => {
+  const next = new Map(sent);
+  if (change) next.set(id, { ...sent.get(id), ...change }); else next.delete(id);
+  sent = next;
+  sentListeners.forEach((l) => l());
+};
+const subscribeSent = (l: () => void) => { sentListeners.add(l); return () => { sentListeners.delete(l); }; };
+function ReviewBlock({ review: r, onAnswer }: { review: PersonReview; onAnswer?: (option: string) => void }) {
+  const s = useSyncExternalStore(subscribeSent, () => sent.get(r.id) ?? NOTHING);
+  // a click before its words have shown answers nothing (one click, one answer), as AskBlock's
+  const [shownAt] = useState(() => performance.now());
+  const send = async (option: string) => {
+    if (sent.get(r.id)?.busy || performance.now() - shownAt < 500) return;
+    mark(r.id, { busy: true, problem: undefined });
+    try {
+      await answerQuestion(r.id, option);
+      mark(r.id, null);
+      onAnswer?.(option);
+    } catch (e) {
+      mark(r.id, { busy: false, problem: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  return (
+    <div className="tc-ask">
+      <span className="tc-ask-kind is-review">Review request</span>
+      <p className="tc-ask-head">{r.text}</p>
+      {/* all of it, never clamped as Home's other text is: one quote that keeps its lines and scrolls */}
+      {(r.goal || r.summary || r.conditions.length > 0) && (
+        <blockquote className="msg-quote room-question">
+          {r.goal && <p>{r.goal}</p>}
+          {r.summary && <p>{r.summary}</p>}
+          {r.conditions.map((c, i) => <p key={i}>Their condition: {[c.text, c.note].filter(Boolean).join(' · ')}</p>)}
+        </blockquote>
+      )}
+      {s.problem && <p className="tc-report is-problem" role="alert">{s.problem}</p>}
+      <div className="tc-options">
+        {/* none looks preferred: obid recommends none for another Oby's request */}
+        {r.options.map((o) => <button key={o} className="tc-option" disabled={s.busy} onClick={() => void send(o)}>{o}</button>)}
+        <button className="tc-option is-quiet" onClick={() => { answer(r.id, 'Later'); onAnswer?.('Later'); }}>Later</button>
+      </div>
+    </div>
   );
 }

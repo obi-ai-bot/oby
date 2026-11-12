@@ -59,6 +59,24 @@ const item = (id: string, more: Partial<InboxItem> = {}): InboxItem => ({
   options: ['Decline', 'Decline, and remember for this repo'], details: null, created: '2026-11-03T12:00:00Z', state: 'open', later: null, headline: null, recommended: null, triage: 'needs_you',
   obi: { type: 'question', fromOwner: 'alex', repos: ['acme/app'], quoted: { text: INJECTED, choices: ['Yes', 'No'] } }, ...more,
 });
+// A review request as obid makes it (core/crates/obid/src/sphere/inbox.rs, review_request_item):
+// its text from typed fields only, what the other Oby wrote under obi.quoted
+const REVIEW_TEXT = "ernesto's Obi (obi-ernesto) asks for a review of obi-ai-bot/tetrix: oby/fix-12 into dev at 6d20146. Conditions: tests pass, no blocker findings. 1 custom condition, quoted below: obid doesn't judge custom conditions, so the result will say it isn't met.";
+const OBI_OPTIONS = ['Accept', 'Accept, and remember for this repo', 'Decline', 'Decline, and remember for this repo'];
+const review = (id: string, more: Partial<InboxItem> = {}): InboxItem => item(id, {
+  title: 'Review request from ernesto', text: REVIEW_TEXT, options: OBI_OPTIONS,
+  obi: {
+    type: 'review_request', fromOwner: 'ernesto', repo: 'obi-ai-bot/tetrix', headSha: '6d201460a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    quoted: {
+      goal: `Fix #12. ${INJECTED}`, summary: '<b>Bold</b> summary [here](http://evil.test)',
+      acceptance: [
+        { index: 0, note: 'run <script>alert(1)</script> too\nand the e2e suite,\nboth of them,\non a clean checkout' }, { index: 1, note: null },
+        { index: 2, note: 'mine', text: 'No <a href=x>new</a> deps' },
+      ],
+    },
+  },
+  ...more,
+});
 type Mods = { live: typeof import('../live'); Stack: typeof import('../AskStack').default; View: typeof import('../PeerThread').default };
 let m: Mods;
 let clock = 0;
@@ -117,10 +135,14 @@ describe('the card', () => {
     await event(item('obi-30c', { state: 'done' }));
   });
 
-  it('peer_30_a_review_request_stays_off_the_stack_as_before', async () => {
-    await event(item('obi-30d', { obi: { type: 'review_request', fromOwner: 'alex', quoted: { text: 'Look' } } }));
-    expect(stack()).not.toContain('Only you can answer');
-    await event(item('obi-30d', { state: 'done' }));
+  it('peer_30_a_review_request_is_on_the_stack_as_its_own_card', async () => {
+    await event(review('obi-30d'));
+    const html = stack();
+    expect(html).toContain('Review request from ernesto');
+    // never the question card: no box for words, nothing that says only the owner can answer
+    expect(html).not.toContain('Only you can answer');
+    expect(html).not.toContain('>Answer<');
+    await event(review('obi-30d', { state: 'done' }));
   });
 
   it('peer_30_the_mac_alert_says_who_and_their_words_as_plain_text', async () => {
@@ -232,5 +254,67 @@ describe('answering', () => {
     expect(stack()).not.toContain('Only you can answer');
     // obid sends nothing when its time comes: the app's own clock brings it back
     await vi.waitFor(() => expect(stack()).toContain('Only you can answer'), { timeout: 5000, interval: 50 });
+  });
+});
+
+// A teammate's review request on Home's stack (docs/contracts/teammate-review.md, TEAMREVIEW-2)
+const escaped = (s: string) => s.replaceAll("'", '&#x27;');
+describe('a review request', () => {
+  it('teamreview_2_a_review_request_shows_on_home_with_its_four_answers', async () => {
+    await event(review('obi-tr2'));
+    const html = stack();
+    expect(html).toContain('Review request from ernesto');
+    // obid's words, then what ernesto's Oby wrote: its goal, summary and conditions' notes
+    expect(html).toContain(escaped(REVIEW_TEXT));
+    expect(html.indexOf(escaped(REVIEW_TEXT))).toBeLessThan(html.indexOf('Fix #12.'));
+    // all of it whole, in the one quote that keeps its lines and scrolls, never in Home's clamped text
+    const quote = html.match(/<blockquote class="msg-quote room-question">(.*?)<\/blockquote>/s)?.[1] ?? '';
+    expect(quote).toContain('<p>Fix #12. ');
+    expect(quote).toContain('<p>&lt;b&gt;Bold&lt;/b&gt; summary');
+    expect(quote).toContain('<p>Their condition: run &lt;script&gt;alert(1)&lt;/script&gt; too\nand the e2e suite,\nboth of them,\non a clean checkout</p>');
+    expect(quote).toContain('<p>Their condition: No &lt;a href=x&gt;new&lt;/a&gt; deps · mine</p>');
+    expect(html).not.toContain('tc-ask-text');
+    for (const o of [...OBI_OPTIONS, 'Later']) expect(html).toContain(`>${o}</button>`);
+    // a look-alike id shows its codes
+    await event(review('obi-tr2', { obi: { ...review('obi-tr2').obi, fromOwner: 'еrnesto' } }));
+    expect(stack()).toContain('Review request from \\u{435}rnesto');
+    await event(review('obi-tr2', { state: 'done' }));
+    expect(stack()).not.toContain('Review request from');
+  });
+
+  it('teamreview_2_the_quoted_words_are_text_nodes', async () => {
+    await event(review('obi-tr2b'));
+    const html = stack();
+    for (const tag of ['<img', '<a ', '<script', '<b>']) expect(html).not.toContain(tag);
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).toContain('[click](http://evil.test)');
+    expect(html).toContain('&lt;b&gt;Bold&lt;/b&gt; summary [here](http://evil.test)');
+    await event(review('obi-tr2b', { state: 'done' }));
+  });
+
+  it('teamreview_2_accept_answers_the_item_once', async () => {
+    // main signs exactly this button's label as the answer (words.test.ts, preload.test.ts)
+    for (const o of OBI_OPTIONS) expect(wordsOf('POST', '/v1/inbox/obi-tr2c/answer', { answer: o })).toEqual([o]);
+    await event(review('obi-tr2c'));
+    shown(stack);
+    page.routes['POST /v1/inbox/obi-tr2c/answer'] = ok(review('obi-tr2c', { state: 'done' }));
+    // a double click: one answer
+    page.clicks.Accept();
+    page.clicks.Accept();
+    await vi.waitFor(() => expect(m.live.liveState().inbox.some((x) => x.id === 'obi-tr2c')).toBe(false));
+    expect(page.calls.filter((c) => c.method === 'POST')).toEqual([{ method: 'POST', path: '/v1/inbox/obi-tr2c/answer', body: { answer: 'Accept' } }]);
+    expect(stack()).not.toContain('Review request from');
+  });
+
+  it('teamreview_2_a_refusal_keeps_the_card_with_obids_words', async () => {
+    await event(review('obi-tr2d'));
+    shown(stack);
+    const why = 'Only you answer this one, from your own app: this answer wasn’t signed, so nothing was sent.';
+    page.routes['POST /v1/inbox/obi-tr2d/answer'] = ok({ error: why }, 403);
+    page.clicks['Decline, and remember for this repo']();
+    await vi.waitFor(() => expect(stack()).toContain(why));
+    expect(stack()).toContain('Review request from ernesto');
+    expect(m.live.liveState().inbox.some((x) => x.id === 'obi-tr2d')).toBe(true);
+    await event(review('obi-tr2d', { state: 'done' }));
   });
 });
