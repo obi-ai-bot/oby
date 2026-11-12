@@ -32,7 +32,7 @@ One gate, obid's, that the Mac and the phones alert from.
 Only what waits on the owner to decide or act, one alert per thing, said again only when what it needs changes, gone once it's settled anywhere:
 
 - a job's agent asking for an OK, or asking a question;
-- a Confirm, a Start, a conversation's shell command waiting for Allow, an inbox item sorted `needs_you`, another Oby's question to the owner;
+- a Confirm, a Start, an inbox item sorted `needs_you`, another Oby's question to the owner;
 - a job that failed, was interrupted (not at a limit: ALERTS-6), or is done with commits obid couldn't publish;
 - Oby's review left to the owner;
 - a merge that waits on the owner (ALERTS-7);
@@ -81,7 +81,6 @@ The owner's decision: "Mac's words, new ones proposed." obid's list serves the M
 | A Confirm | `Confirm` | its title, then its text | none: signed in the window | the item's title: changes |
 | A Start | the item's title | its text | Start (one job, shown whole, read nothing untrusted) | same |
 | One turn's offer of several jobs | `Oby offers <n> jobs` | the first's text | none | same |
-| A conversation's shell command | the item's title | its text | Allow, Deny (when it fits) | same |
 | Another Oby's question | `Question from <their owner>` | their words, plain | none: signed on its card | the item's title: changes |
 | An item sorted `needs_you` | the item's title | its text | none | same |
 | A queued job held for a ChatGPT yes (ALERTS-4) | `Needs your OK` **(proposed)** | its line, `waiting.text`: `your OK for work I run by myself to use the ChatGPT plan on <account>: you can allow it on your Mac, in Settings › Agents` | none: the yes is signed in Settings › Agents | not alerted: new |

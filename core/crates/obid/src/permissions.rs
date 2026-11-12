@@ -5868,7 +5868,6 @@ mod tests {
             decide_in(&bash("cat <<'E F'\nx\nE F\nrm y"), Mode::Plan, &[]),
             Verdict::Ask
         );
-        // The conversation's shell takes it the same way (crate::brain::shell).
         assert!(unsure("echo $[1<<2]"));
         assert!(!unsure("echo $[1+2]; cat <<EOF\nx\nEOF"));
     }
