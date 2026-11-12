@@ -172,19 +172,21 @@ import { createInterface } from "node:readline";
 
 // Claude Code's refresh as obid has the Mac's own run it (`-p /usage … --no-session-persistence`,
 // the Keychain item named by $CLAUDE_SECURESTORAGE_CONFIG_DIR, which a boxed run never has): writes
-// that item, renewed, where the stand-in `security` finds items (obid-test-keychain beside its
-// $TMPDIR), notes in obid-test-refreshes there what it was asked, and exits.
+// that item, renewed, where the stand-in `security` finds items (obid-test-keychain in the test
+// obid's $TMPDIR, the `tmp` beside its home: since #2064 the refresh's own $TMPDIR is a folder in
+// that home), notes in obid-test-refreshes there what it was asked, and exits.
 if (process.argv.includes("--no-session-persistence") && "CLAUDE_SECURESTORAGE_CONFIG_DIR" in process.env) {
   const { createHash } = await import("node:crypto");
   const { dirname, join } = await import("node:path");
   const storage = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? "";
   const service = storage ? `Claude Code-credentials-${createHash("sha256").update(storage).digest("hex").slice(0, 8)}` : "Claude Code-credentials";
-  const items = join(dirname(process.env.TMPDIR), "obid-test-keychain");
+  const tmp = join(dirname(dirname(process.env.TMPDIR)), "tmp");
+  const items = join(tmp, "obid-test-keychain");
   mkdirSync(items, { recursive: true });
   // As Claude Code's item holds one: a refresh token (put together here, so no scan flags it).
   const refreshToken = ["renewed", "refresh", "plain", "value"].join("-");
   writeFileSync(join(items, service), JSON.stringify({ claudeAiOauth: { accessToken: "tok-renewed-plain-test-login", refreshToken, expiresAt: Date.now() + 8 * 3600 * 1000 } }));
-  appendFileSync(join(dirname(process.env.TMPDIR), "obid-test-refreshes"), `${process.argv[process.argv.indexOf("-p") + 1]}\n`);
+  appendFileSync(join(tmp, "obid-test-refreshes"), `${process.argv[process.argv.indexOf("-p") + 1]}\n`);
   process.exit(0);
 }
 
