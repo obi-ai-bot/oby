@@ -6,7 +6,7 @@ The business behavior contract for what obid does by itself when a job's run is 
 
 - **Outcome:** The owner's direction: "Follow the exact way Claude Code follows." A job whose run was cut carries itself on and tells a person last; every automatic loop has a limit, and past it the job ends plainly, with the real reason.
 - **Status:** **Implemented.** The words on the step lines are proposed, and Sangam's to change.
-- **Scope:** The owner's own jobs on Claude Code, Codex and Cursor; RECOVERY-7's reading is for a conversation's turns too ([conversation-agent.md](conversation-agent.md), CONVERSATION-AGENT-15). Outside it: usage limits ([account-limits.md](account-limits.md), LIMITS-15), the Confirms, follow-ups on a new session or branch, a nudge for a looping agent, publish retries, `CLAUDE_CODE_RETRY_WATCHDOG`, and a review another Oby asked for (its answer goes back to that Oby).
+- **Scope:** The owner's own jobs on Claude Code, Codex and Cursor; RECOVERY-7's reading is for a conversation's turns too ([conversation-agent.md](conversation-agent.md), CONVERSATION-AGENT-15). Outside it: usage limits ([account-limits.md](account-limits.md), LIMITS-15), the Confirms, follow-ups on a new session or branch, a nudge for a looping agent, publish retries, `CLAUDE_CODE_RETRY_WATCHDOG`, and [teammate-review.md](teammate-review.md)'s TEAMREVIEW-6 (proposed), which covers a review another Oby asked for.
 
 ## Behavior
 

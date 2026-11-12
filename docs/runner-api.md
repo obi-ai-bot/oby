@@ -2841,6 +2841,8 @@ A conversation's Oby has `oby_room_read`, which writes the newest 50 posts to `r
 
 ### obid only: Obi-to-Obi review jobs
 
+The business contract is [docs/contracts/teammate-review.md](contracts/teammate-review.md) (TEAMREVIEW-1 to 8).
+
 What obid does when it accepts a `review_request` (by the owner's answer or a decision):
 
 1. It starts a job: `kind` `review`, `repo` the request's, `title` like `Review for ernesto: fixture-app`, and two keys only obid sends on jobs: `obi` (`{"correlationId", "from", "fromOwner", "requestId"}`, null on other jobs) and `worktree` (the job's worktree, an absolute path, null before it exists; the gateway nulls it). It runs on an account Routing picks.
@@ -2919,6 +2921,8 @@ Whatever the agent wrote must still pass the spec's schema before it is sent, an
 **What obid sends in an exchange it was asked in, and in what order.** First `accept` (body `{}`, or `{"by_rule": "<decision id>"}` when a remembered decision accepted it) or `decline`; after an `accept`, any number of `status` with `state` `queued` or `working` and no `note`; then one `result`. obid never sends a `status` before its `accept` or `decline`: a request waiting in the owner's inbox sends nothing back. The protocol allows a `status` there (spec `protocol.md` section 4); obid doesn't send one, so the asking Obi learns nothing about the owner's inbox, and the e2e scenario's steps 5.4 and 7.3 rely on that order.
 
 ### obid only: teammate approval
+
+The business contract is [docs/contracts/teammate-review.md](contracts/teammate-review.md) (TEAMREVIEW-1 to 8).
 
 Some repositories merge only once another person approved the pull request on GitHub (a branch rule asking for an approving review from someone other than the author, as Tetrix's does), which neither Oby's own review nor its reviewer account can give. Then the owner's Oby asks a teammate's Oby over the Sphere, and that Oby, when its own review of the exact head passes, approves it on GitHub as its owner (spec `protocol.md` section 11, "Approving on the code host"): with its owner's own tap on that exchange at that commit, or, under its owner's standing permission, next to approvals of that commit by the people who own every file it changes. The sender's owner is asked nothing unless something goes wrong.
 
