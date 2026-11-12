@@ -230,6 +230,9 @@ pub struct Routine {
     /// How late, in minutes, a missed time still runs (ROUTINES-3); none: [`Routine::grace`]'s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grace_minutes: Option<u32>,
+    /// The job of its latest run that started one: skipped runs push that run out of `runs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_job: Option<String>,
 }
 
 impl Routine {
@@ -391,6 +394,8 @@ pub struct Routines {
     /// Held from a run's busy check until its run is kept: a scheduled run and Run now never
     /// both start. ponytail: one lock for every routine; per routine if runs ever queue on it.
     firing: Mutex<()>,
+    /// When a check first put a routine off for another's start (ROUTINES-4): it's no later for it.
+    deferred: Mutex<BTreeMap<String, i64>>,
     /// What runs a run the owner confirmed (`create_routine`'s sibling `change_routine`, from the
     /// inbox, which has no conversations of its own).
     shared: std::sync::OnceLock<std::sync::Weak<Shared>>,
@@ -405,13 +410,19 @@ impl Routines {
         }
         let kept = crate::store::load_dir::<Routine>(&dir)
             .into_iter()
-            .map(|r| (r.id.clone(), r))
+            .map(|mut r| {
+                // Kept before `last_job` was: its latest run's that started one.
+                let job = r.runs.iter().rev().find_map(|run| run.job.clone());
+                r.last_job = r.last_job.take().or(job);
+                (r.id.clone(), r)
+            })
             .collect();
         Routines {
             dir,
             kept: Mutex::new(kept),
             events,
             firing: Mutex::new(()),
+            deferred: Mutex::default(),
             shared: std::sync::OnceLock::new(),
         }
     }
@@ -485,6 +496,7 @@ impl Routines {
             failures_in_a_row: 0,
             runs: vec![],
             grace_minutes: draft.grace_minutes,
+            last_job: None,
         };
         routine.vet(jobs)?;
         Ok(routine)
@@ -711,10 +723,12 @@ fn due(routine: &Routine, now: i64) -> Due {
 }
 
 /// Why a run waits on its previous run's `job`, or none: it still waits for you (ROUTINES-2; not
-/// on Run now, the owner's own word), for an account with room (ROUTINES-1), or still goes.
-fn held_by(job: &Job, now_asked: bool) -> Option<&'static str> {
+/// on Run now, the owner's own word, nor once dismissed or `followed`, carried on by a follow-up),
+/// for an account with room (ROUTINES-1), or still goes.
+fn held_by(job: &Job, followed: bool, now_asked: bool) -> Option<&'static str> {
     let queued = job.status == Status::Queued;
     let for_you = job.dismissed.is_none()
+        && !followed
         && (job.status == Status::Interrupted
             || job.permission.is_some()
             || job.account_limit_blocked
@@ -749,9 +763,12 @@ fn fire(
         catch_up,
         ended: None,
     };
-    let held = (routine.runs.iter().rev().find_map(|r| r.job.as_deref()))
+    // ponytail: every job read for each due run; an index by `follow_up_of` if that ever weighs.
+    let all = shared.jobs.list(usize::MAX);
+    let followed = |id: &str| all.iter().any(|j| j.follow_up_of.as_deref() == Some(id));
+    let held = (routine.last_job.as_deref())
         .and_then(|id| shared.jobs.get(id))
-        .and_then(|job| held_by(&job, now_asked));
+        .and_then(|job| held_by(&job, followed(&job.id), now_asked));
     if let Some(why) = held {
         run.outcome = "skipped".into();
         run.reason = Some(why.into());
@@ -828,8 +845,11 @@ pub fn tick(shared: &Shared, now: i64) {
     // Taken apart from the loop: a guard in its head would be held through it.
     let ids: Vec<String> = routines.lock().keys().cloned().collect();
     let mut started = false;
+    let mut deferred = routines.deferred.lock().unwrap_or_else(|e| e.into_inner());
     for id in ids {
         ended(shared, &id);
+        // Put off at an earlier check: as due as it was then, neither missed nor a catch-up.
+        let seen = deferred.remove(&id).map_or(now, |t| t.min(now));
         let Some(mut routine) = routines.get(&id).filter(|r| r.enabled) else {
             continue;
         };
@@ -840,7 +860,7 @@ pub fn tick(shared: &Shared, now: i64) {
                 None => continue,
             }
         }
-        let (scheduled, catch_up, missed, runs) = match due(&routine, now) {
+        let (scheduled, catch_up, missed, runs) = match due(&routine, seen) {
             Due::Nothing => continue,
             Due::Run {
                 scheduled,
@@ -850,6 +870,7 @@ pub fn tick(shared: &Shared, now: i64) {
             Due::Missed { scheduled, missed } => (scheduled, false, Some(missed), false),
         };
         if runs && started {
+            deferred.insert(id, seen);
             continue;
         }
         let missed_run = missed.map(|(first, count, older)| Run {
@@ -894,6 +915,7 @@ fn finish(
     now_asked: bool,
 ) -> Option<Routine> {
     let failed = run.outcome == "failed";
+    let mut said = false;
     let routine = shared.routines.record(id, run.clone(), |r| {
         if conversation.is_some() {
             r.conversation = conversation;
@@ -901,8 +923,14 @@ fn finish(
         if failed {
             r.failures_in_a_row += 1;
         }
+        r.last_job = run.job.clone().or(r.last_job.take());
+        // A skip is said once for the job that holds it, not at every due time.
+        let mut since = (r.runs.iter().rev().skip(1)).take_while(|r| r.job.is_none());
+        said = run.outcome == "skipped" && since.any(|r| r.outcome == "skipped");
     })?;
-    say(shared, &routine, &run, words(&routine, &run, now_asked));
+    if !said {
+        say(shared, &routine, &run, words(&routine, &run, now_asked));
+    }
     if failed {
         pause_if_failing(shared, &routine);
     }
@@ -1312,6 +1340,7 @@ mod tests {
             failures_in_a_row: 0,
             runs: vec![],
             grace_minutes: None,
+            last_job: None,
         }
     }
 
@@ -1411,6 +1440,42 @@ mod tests {
             due(&r, at("2026-10-16T10:01:00Z")),
             Due::Missed { .. }
         ));
+    }
+
+    #[test]
+    fn routines_2_a_job_that_asks_holds_the_next_run_until_it_is_answered() {
+        let mut job = Job::new(
+            "aaaa0001".into(),
+            "o/r".into(),
+            "review".into(),
+            "Review them.".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        let going = Some("The previous run was still going.");
+        let you = Some("The previous run still waits for you.");
+        job.status = Status::Running;
+        assert_eq!(held_by(&job, false, false), going);
+        // A permission or a question open: it waits for you. Run now is your own word.
+        job.permission = Some(crate::permissions::Permission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            title: "Run swift test".into(),
+            detail: "swift test".into(),
+            rule: None,
+            always: None,
+            why: None,
+            question: None,
+        });
+        assert_eq!(held_by(&job, false, false), you);
+        assert_eq!(held_by(&job, false, true), going);
+        // Interrupted: until you dismiss it, or answer it in words and a follow-up carries it on.
+        job.permission = None;
+        job.status = Status::Interrupted;
+        assert_eq!(held_by(&job, false, false), you);
+        assert_eq!(held_by(&job, true, false), None);
+        job.dismissed = Some(1);
+        assert_eq!(held_by(&job, false, false), None);
     }
 
     #[test]
