@@ -47,6 +47,7 @@ export default defineConfig({
   publicDir: resolve(__dirname, '../icon/exports/web'),
   build: { outDir: resolve(__dirname, 'out/renderer'), emptyOutDir: true },
   // a test's first import of the app (a cold transform, a busy Mac) can outlast vitest's 5 s, and
-  // what the timed-out test goes on to call lands in the next test's (#1839)
-  test: { testTimeout: 30_000 },
+  // what the timed-out test goes on to call lands in the next test's (#1839); a beforeAll that does
+  // that first import (personCard's) gets as long, past vitest's 10 s for hooks
+  test: { testTimeout: 30_000, hookTimeout: 30_000 },
 });
