@@ -1,9 +1,171 @@
-//! Why a failed check judged nothing, so the job ends for the owner's Publish by hand: a check
-//! that says so (PUBLISHING-22), the machine's failure, not the code's (PUBLISHING-17), or obid
-//! stopping one that did nothing or ran too long (PUBLISHING-29).
+//! Why a failed check judged nothing: a check that says so (PUBLISHING-22), the machine's
+//! failure, not the code's (PUBLISHING-17), obid stopping one that did nothing or ran too long
+//! (PUBLISHING-29), or no checkout to run it in (PUBLISHING-8); and how obid runs it again by
+//! itself until one judges, or for 24 hours, then ends the job with Publish on its page and no
+//! card or alert (PUBLISHING-31).
 
+use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// How a reason [`unchecked`] made ends its first line: obid runs such a check again.
+const UNJUDGED: &str = ", so nothing counts as checked.";
+
+/// The first wait before a check that judged nothing runs again: `OBID_RECHECK_MS`, else 10
+/// minutes. Each next one doubles, at most 24 of these apart, and obid stops trying once its waits
+/// would pass 144 of these (24 hours); 0 runs none again (tests).
+fn first_wait() -> Duration {
+    let ms = std::env::var("OBID_RECHECK_MS")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    Duration::from_millis(ms.unwrap_or(10 * 60 * 1000))
+}
+
+/// The wait before the next run of a check whose `tries` runs (one at least) judged nothing, from
+/// `first`; none once the waits would pass 144 `first`s (PUBLISHING-31).
+pub(super) fn next_wait(tries: u32, first: Duration) -> Option<Duration> {
+    let waits = || std::iter::successors(Some(first), move |w| Some((*w * 2).min(first * 24)));
+    let waited: Duration = waits().take(tries as usize).sum();
+    (waited < first * 144).then(|| waits().nth(tries as usize - 1).unwrap_or(first))
+}
+
+/// The most a check may run: `OBID_CHECK_LIMIT_SECONDS` (tests), else [`CHECK_LIMIT`].
+pub(super) fn limit() -> Duration {
+    std::env::var("OBID_CHECK_LIMIT_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(CHECK_LIMIT, Duration::from_secs)
+}
+
+impl Jobs {
+    /// Runs the repository's check on commit `head` ([`Jobs::check_once`]), and again by itself
+    /// while it judges nothing (PUBLISHING-31): with no card and no alert, the job's line saying
+    /// why and when, its slot free meanwhile, the next run's time kept on the job (`unjudged`) so a
+    /// restart waits it out. A run that judges ends it as any check does; a stop ends the wait.
+    /// After 24 hours of runs, the last one's, its reason saying obid stopped trying. Not for a
+    /// review, which answers with what it has.
+    pub(super) async fn check(
+        self: &Arc<Self>,
+        id: &str,
+        command: &str,
+        head: &str,
+        spec: &Spec,
+        signal: &watch::Receiver<Signal>,
+    ) -> Result<CheckRun, String> {
+        let now = obi_protocol::time::now;
+        // A wait a restart cut short goes on to its time; one obid stopped trying is over.
+        let kept = self.get(id).and_then(|job| job.unjudged);
+        let mut wait = kept
+            .as_ref()
+            .and_then(|u| u.next)
+            .map(|at| Duration::from_secs(u64::try_from(at - now()).unwrap_or(0)));
+        if kept.is_some_and(|u| u.next.is_none()) {
+            self.update(id, |job| job.unjudged = None);
+        }
+        loop {
+            if let Some(wait) = wait.take() {
+                if let Some(u) = self.get(id).and_then(|j| j.unjudged) {
+                    self.update(id, |job| job.step = waiting(&u.why, wait));
+                }
+                let idle = slots::Idle::new(self, id);
+                let mut stop = signal.clone();
+                tokio::select! {
+                    // Waiting isn't running: the job's ceiling leaves it out ([`unwaited`]).
+                    () = tokio::time::sleep(wait) => {
+                        *lock().entry(id.to_owned()).or_default() += wait.as_secs();
+                    }
+                    _ = stop.wait_for(|s| *s != Signal::Run) => return Ok(CheckRun::default()),
+                }
+                idle.back(signal).await;
+                if *signal.borrow() != Signal::Run {
+                    return Ok(CheckRun::default());
+                }
+                self.update(id, |job| job.step = format!("Running {command}"));
+            }
+            let mut run = self.check_once(id, command, head, spec, signal).await?;
+            let Some(job) = self.get(id).filter(|_| *signal.borrow() == Signal::Run) else {
+                return Ok(run);
+            };
+            let reason = run.unchecked.clone().unwrap_or_default();
+            let first = reason.lines().next().unwrap_or_default();
+            let unjudged = first
+                .strip_suffix(UNJUDGED)
+                .filter(|_| job.kind != "review");
+            let Some(why) = unjudged else {
+                if job.unjudged.is_some() {
+                    self.update(id, |job| job.unjudged = None);
+                }
+                return Ok(run);
+            };
+            let why = why
+                .strip_prefix("Not published: ")
+                .unwrap_or(why)
+                .to_owned();
+            let tries = job.unjudged.map_or(0, |u| u.tries) + 1;
+            let next = next_wait(tries, first_wait());
+            let at = next.map(|w| now() + i64::try_from(w.as_secs()).unwrap_or(i64::MAX / 2));
+            tracing::info!("job {id}: its check judged nothing ({why}), try {tries}");
+            // Its line with it, at once: the job never shows the wait without why.
+            self.update(id, |job| {
+                if let Some(next) = next {
+                    job.step = waiting(&why, next);
+                }
+                job.unjudged = Some(crate::job::Unjudged {
+                    tries,
+                    next: at,
+                    why: why.clone(),
+                })
+            });
+            if next.is_none() {
+                let rest = reason.strip_prefix(first).unwrap_or_default();
+                run.unchecked = Some(format!("{first}{GAVE_UP}{rest}"));
+                return Ok(run);
+            }
+            wait = next;
+        }
+    }
+}
+
+/// How long each job waited, in seconds, to run a check that judged nothing again since obid
+/// started (PUBLISHING-31). Apart from the jobs' lock: the ceiling reads it inside `Jobs::update`.
+/// Not kept in the job's file: `ran_secs`, which is, leaves it out already.
+static WAITED: std::sync::Mutex<std::collections::BTreeMap<String, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn lock() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, u64>> {
+    WAITED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Jobs {
+    /// What job `id`'s ceiling (`jobCeilingHours`) counts from as a run of it starts: its
+    /// `ran_secs`, and what it waited so far, which [`unwaited`] takes back off, so only what it
+    /// waits during the run is left out (PUBLISHING-31).
+    pub(super) fn ran_before(&self, id: &str) -> Duration {
+        let ran = self.get(id).and_then(|j| j.ran_secs).unwrap_or(0);
+        Duration::from_secs(ran + lock().get(id).copied().unwrap_or(0))
+    }
+}
+
+/// What job `id`'s ceiling counts of `ran` ([`Jobs::ran_before`] and the time since), in seconds:
+/// all but what it waited to run a check that judged nothing again.
+pub(super) fn unwaited(id: &str, ran: Duration) -> u64 {
+    ran.as_secs()
+        .saturating_sub(lock().get(id).copied().unwrap_or(0))
+}
+
+/// What a check's reason says once obid stopped running it again (PUBLISHING-31).
+const GAVE_UP: &str = " Oby ran it again by itself for 24 hours and none of its runs judged it: Publish it from its page once you've read its change.";
+
+/// The job's line while it waits `wait` to run a check that judged nothing because of `why`.
+fn waiting(why: &str, wait: Duration) -> String {
+    let minutes = Duration::from_secs(wait.as_secs().div_ceil(60) * 60);
+    format!(
+        "Its check judged nothing: {why}. Oby runs it again in {}.",
+        super::spell(minutes)
+    )
+}
 
 /// What a check's output ends with when obid stopped it at `limit`, the most it may run, and why
 /// it judged nothing (PUBLISHING-29).
@@ -45,11 +207,16 @@ pub(super) async fn idle(pgid: u32, heard: &AtomicUsize, quiet: Duration) -> (St
     }
 }
 
-/// The job's reason when its check judged nothing, for the owner's Publish by hand (PUBLISHING-8).
+/// The job's reason when its check judged nothing (PUBLISHING-8), which [`Jobs::check`] runs
+/// again (PUBLISHING-31).
 pub(super) fn unchecked(why: impl std::fmt::Display) -> String {
-    format!(
-        "Not published: {why}, so nothing counts as checked. Read its change, then Publish it by hand."
-    )
+    format!("Not published: {why}{UNJUDGED}")
+}
+
+/// The job's reason when its check judged, but not the change (PUBLISHING-18): it isn't run again,
+/// and waits for the owner's Publish by hand.
+pub(super) fn by_hand(why: impl std::fmt::Display) -> String {
+    unchecked(why) + " Read its change, then Publish it by hand."
 }
 
 /// Why the failed check of `command` judged nothing, from its `output`: a line that starts
@@ -161,4 +328,51 @@ pub(super) fn environment_signature(command: &str, output: &str) -> Option<&'sta
         .filter_map(|said| said.rsplit(": ").next())
         .any(|name| firsts.iter().any(|first| first == name))
         .then_some("a command its check runs isn't installed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PUBLISHING-31: 10 minutes, then twice the last, at most 4 hours apart; none once the waits
+    /// would pass 24 hours; none at all from 0. The line rounds a wait up to whole minutes.
+    #[test]
+    fn publishing_31_waits_double_to_4_hours_for_24_hours() {
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        let first = minutes(10);
+        let waits: Vec<_> = (1..).map_while(|tries| next_wait(tries, first)).collect();
+        let expected = [10, 20, 40, 80, 160, 240, 240, 240, 240].map(minutes);
+        assert_eq!(waits, expected);
+        assert!(waits.iter().sum::<Duration>() <= minutes(24 * 60));
+        assert_eq!(next_wait(1, Duration::ZERO), None);
+        assert_eq!(
+            waiting(
+                "the check did nothing for 15 minutes",
+                Duration::from_secs(301)
+            ),
+            "Its check judged nothing: the check did nothing for 15 minutes. Oby runs it again in 6 minutes."
+        );
+    }
+
+    /// PUBLISHING-31: a next round of a job (Try again, the owner's words to it once stopped)
+    /// forgets a wait Stop cut short: its first check runs at once and counts its tries from none.
+    #[test]
+    fn publishing_31_a_next_round_forgets_the_wait() {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "build".into(),
+            "t".into(),
+            "claude".into(),
+            "stub".into(),
+        );
+        job.status = Status::Stopped;
+        job.unjudged = Some(crate::job::Unjudged {
+            tries: 3,
+            next: Some(obi_protocol::time::now() + 4800),
+            why: "the check ran past its limit of 2 hours".into(),
+        });
+        next_round(&mut job);
+        assert_eq!(job.unjudged, None);
+    }
 }

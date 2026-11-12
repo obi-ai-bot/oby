@@ -9,6 +9,7 @@ import type { InboxItem } from '../../../shared/obid-wire';
 
 let userData = '';
 let open: InboxItem[] = [];
+let listed: unknown[] = [];
 let posted: string[] = [];
 let badge: string | undefined;
 
@@ -35,7 +36,7 @@ async function launch() {
     shell: {},
   }));
   let asked = 0;
-  const answer = (path: string) => { asked++; return { status: 200, text: JSON.stringify(path === '/v1/inbox' ? open : []) }; };
+  const answer = (path: string) => { asked++; return { status: 200, text: JSON.stringify(path === '/v1/inbox' ? open : path === '/v1/jobs' ? listed : []) }; };
   // the event stream stays open and quiet: the first look is the one after obid's lists
   vi.doMock('../../../main/obid', () => ({ obid: async (_: string, path: string) => answer(path), send: async () => new Response(new ReadableStream()) }));
   vi.doMock('../../../main/device', () => ({ answerLimit: vi.fn(), notificationWords: vi.fn(), writeOwn: (p: string, d: string) => writeFileSync(p, d) }));
@@ -49,6 +50,22 @@ async function launch() {
 beforeEach(() => {
   userData = mkdtempSync(join(tmpdir(), 'oby-alerts-'));
   open = [];
+  listed = [];
+});
+
+describe('PUBLISHING-31', () => {
+  it('publishing_31_publish_kept_after_checks_that_judged_nothing_alerts_nothing', async () => {
+    // done with a commit Publish sends: Ready to publish needs the owner, as before
+    const ready = { id: 'j1', title: 'Fix it', kind: 'build', status: 'done', base: 'dev', commits: 1, published: null, dismissed: null, permission: null };
+    listed = [ready];
+    await launch();
+    expect(badge).toBe('1');
+    // the same, once obid stopped running its check again (PUBLISHING-31): Publish stays on its page, quietly
+    listed = [{ ...ready, unjudged: { tries: 10, next: null } }];
+    await launch();
+    expect(posted).toEqual([]);
+    expect(badge).toBe('');
+  });
 });
 
 describe('ALERTS-2', () => {

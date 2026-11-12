@@ -13,13 +13,13 @@ impl State {
 /// A job waiting on the check queue and checking, until this is dropped: its slot is free for
 /// another job meanwhile, and it takes one back ([`Idle::back`]) before it goes on, so no more than
 /// `maxRunning` jobs ever work at once (ADMISSION-4, ADMISSION-5).
-struct Idle<'a> {
+pub(super) struct Idle<'a> {
     jobs: &'a Arc<Jobs>,
     id: &'a str,
 }
 
 impl<'a> Idle<'a> {
-    fn new(jobs: &'a Arc<Jobs>, id: &'a str) -> Self {
+    pub(super) fn new(jobs: &'a Arc<Jobs>, id: &'a str) -> Self {
         jobs.lock().idle.insert(id.to_string());
         jobs.schedule();
         Idle { jobs, id }
@@ -27,7 +27,7 @@ impl<'a> Idle<'a> {
 
     /// Back from the wait: a slot again as soon as one is free, before any queued job's that looks
     /// after it, or until the job is stopped.
-    async fn back(self, signal: &watch::Receiver<Signal>) {
+    pub(super) async fn back(self, signal: &watch::Receiver<Signal>) {
         let mut stop = signal.clone();
         loop {
             // Every slot freed tells `changed` ([`Jobs::schedule`]); listened to before looking.
@@ -69,10 +69,11 @@ impl Drop for Idle<'_> {
 }
 
 impl Jobs {
-    /// Runs the repository's check on commit `head` ([`Jobs::checking_with_turn`]), one of each
+    /// Runs the repository's check on commit `head` ([`Jobs::checking_with_turn`]) once
+    /// ([`Jobs::check`] runs it again while it judges nothing), one of each
     /// repository's at a time: a job that waits for its turn gives its slot up until it has given the turn back,
     /// then waits for a free one, so none holds the one check while it waits for a slot.
-    pub(super) async fn check(
+    pub(super) async fn check_once(
         self: &Arc<Self>,
         id: &str,
         command: &str,

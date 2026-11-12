@@ -2187,7 +2187,7 @@ fn publishing_8_a_check_the_base_doesnt_have_counts_for_nothing() {
                "check": "sh check.sh"}),
     );
     let job = ended(&obid, &id);
-    let why = "Not published: its check runs check.sh as main has it, and main has no check.sh, so nothing counts as checked. Read its change, then Publish it by hand.";
+    let why = "Not published: its check runs check.sh as main has it, and main has no check.sh, so nothing counts as checked. Oby ran it again by itself for 24 hours and none of its runs judged it: Publish it from its page once you've read its change.";
     assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
     assert_eq!(job["reason"], why, "{job}");
     assert!(job["checks"].as_array().is_none_or(Vec::is_empty), "{job}");
@@ -2245,7 +2245,7 @@ fn publishing_22_a_check_that_couldnt_judge_publishes_only_by_hand() {
     let job = ended(&obid, &id);
     // Its words on a line of their own, cleaned and cut: the first line is obid's.
     let why = format!(
-        "Not published: the check couldn't judge this change, so nothing counts as checked. Read its change, then Publish it by hand.\nnobox {}…",
+        "Not published: the check couldn't judge this change, so nothing counts as checked. Oby ran it again by itself for 24 hours and none of its runs judged it: Publish it from its page once you've read its change.\nnobox {}…",
         "0".repeat(194)
     );
     assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
@@ -2286,6 +2286,202 @@ fn publishing_22_a_check_that_couldnt_judge_publishes_only_by_hand() {
     assert_eq!(passed["status"], "done", "{passed}\n{}", obid.log());
     assert!(passed["published"].is_string(), "{passed}");
     assert!(remote_branch(&remote, &format!("oby/build-{id}")).is_some());
+}
+
+/// [`obid_with`], a check that judged nothing run again after `first_ms` (PUBLISHING-31), and
+/// `env` over that.
+fn obid_rechecking(
+    folder: &Folder,
+    bin: &Path,
+    first_ms: &str,
+    env: &[(&str, &str)],
+) -> (Obid, PathBuf, Value) {
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &agent());
+    sign_in(folder, "stub");
+    let mut env = env.to_vec();
+    env.push(("OBID_RECHECK_MS", first_ms));
+    (
+        start_with(&folder.0, &config, Some(bin), &env),
+        remote,
+        config,
+    )
+}
+
+/// Job `id` as `GET /v1/jobs/{id}` has it.
+fn job_now(obid: &Obid, id: &str) -> Value {
+    call(obid, "GET", &format!("/v1/jobs/{id}"), None).body
+}
+
+/// No open inbox item about job `id`: nothing asks the owner.
+fn asks_nothing(obid: &Obid, id: &str) {
+    let inbox = call(obid, "GET", "/v1/inbox", None).body;
+    let items = inbox.as_array().unwrap();
+    assert!(
+        items.iter().all(|i| i["state"] != "open" || i["job"] != id),
+        "{inbox}"
+    );
+}
+
+/// PUBLISHING-31: a check that ran past its limit judged nothing, so obid runs it again by itself
+/// after a wait, with no card and no alert, its line saying why and when; the next run passes,
+/// and the job publishes by itself as any job whose check passed.
+#[test]
+fn publishing_31_a_check_past_its_limit_runs_again_and_publishes_when_the_next_passes() {
+    let folder = Folder::new("recheck-past-limit");
+    let bin = fake_gh(&folder.0);
+    let limit = [("OBID_CHECK_LIMIT_SECONDS", "1")];
+    let (obid, _, _) = obid_rechecking(&folder, &bin, "4000", &limit);
+    // Its home is the job's, across its checks: the first runs past its limit, the next passes.
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": "test -f \"$HOME/tried\" || { touch \"$HOME/tried\"; sleep 30; }"}),
+    );
+    let waiting = within(60, "its check waits to run again", || {
+        Some(job_now(&obid, &id)).filter(|job| job["unjudged"]["tries"] == 1)
+    });
+    assert_eq!(waiting["status"], "running", "{waiting}");
+    assert_eq!(
+        waiting["step"],
+        "Its check judged nothing: the check ran past its limit of 1 second. Oby runs it again in 1 minute.",
+        "{waiting}"
+    );
+    assert!(waiting["unjudged"]["next"].is_string(), "{waiting}");
+    asks_nothing(&obid, &id);
+    let job = ended(&obid, &id);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["round"], 1, "{job}");
+    assert!(job["published"].is_string(), "{job}\n{}", obid.log());
+    assert!(job["unjudged"].is_null(), "{job}");
+}
+
+/// PUBLISHING-31: a check that never judges is run again, each wait twice the last (at most 24
+/// times the first), until its waits would pass 144 times the first (24 hours, from 10 minutes);
+/// then the job ends done saying so, nothing published, Publish kept on its page, and no card.
+#[test]
+fn publishing_31_after_24_hours_it_stops_trying_and_keeps_publish() {
+    let folder = Folder::new("recheck-gives-up");
+    let bin = fake_gh(&folder.0);
+    let (obid, remote, _) = obid_rechecking(&folder, &bin, "20", &[]);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": "echo \"couldn't judge: no box\"; exit 1"}),
+    );
+    let job = ended_within(&obid, &id, 120);
+    assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
+    assert_eq!(job["round"], 1, "{job}");
+    // Waits of 20, 40, 80, 160, 320 and four of 480 ms: the tenth run's would pass 2,880.
+    assert_eq!(job["unjudged"], json!({"tries": 10, "next": null}), "{job}");
+    assert_eq!(
+        job["reason"],
+        "Not published: the check couldn't judge this change, so nothing counts as checked. Oby ran it again by itself for 24 hours and none of its runs judged it: Publish it from its page once you've read its change.\nno box",
+        "{job}"
+    );
+    assert!(job["published"].is_null(), "{job}");
+    assert_eq!(job["canPublish"], true, "{job}");
+    assert!(remote_branch(&remote, &format!("oby/build-{id}")).is_none());
+    asks_nothing(&obid, &id);
+}
+
+/// PUBLISHING-31: the wait before a check runs again is kept on the job: obid stopped and started
+/// again waits out the same time, its line saying so, and Stop ends it.
+#[test]
+fn publishing_31_a_restart_keeps_the_wait() {
+    let folder = Folder::new("recheck-restart");
+    let bin = fake_gh(&folder.0);
+    let (mut obid, _, config) = obid_rechecking(&folder, &bin, "600000", &[]);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: a.txt",
+               "check": "echo \"couldn't judge: no box\"; exit 1"}),
+    );
+    let waiting = within(60, "its check waits to run again", || {
+        Some(job_now(&obid, &id)).filter(|job| job["unjudged"]["tries"] == 1)
+    });
+    let next = waiting["unjudged"]["next"].clone();
+    assert!(next.is_string(), "{waiting}");
+    assert!(obid.stop().success());
+    drop(obid);
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_RECHECK_MS", "600000")],
+    );
+    let line = "Its check judged nothing: the check couldn't judge this change. Oby runs it again in 10 minutes.";
+    let resumed = within(60, "it waits again after the restart", || {
+        Some(job_now(&obid, &id)).filter(|job| job["step"] == line)
+    });
+    assert_eq!(resumed["status"], "running", "{resumed}");
+    assert_eq!(resumed["unjudged"]["next"], next, "{resumed}");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let still = job_now(&obid, &id);
+    assert_eq!(still["unjudged"]["tries"], 1, "it ran again: {still}");
+    assert_eq!(still["step"], line, "{still}");
+    asks_nothing(&obid, &id);
+    let stopped = call(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
+    let job = ended_within(&obid, &id, 30);
+    assert_eq!(job["status"], "stopped", "{job}");
+    // The wait Stop cut short is gone: a next round of the job starts its checks afresh.
+    assert!(job["unjudged"].is_null(), "{job}");
+}
+
+/// PUBLISHING-31: the waits before a check runs again don't count toward the job's ceiling
+/// (`jobCeilingHours`): a job with 20 seconds of it left waits 30 to run its check again, the next
+/// run fails for real, and the agent gets its fix round (where it says the failure is the task's),
+/// never a ceiling stall.
+#[test]
+fn publishing_31_its_waits_dont_count_toward_the_ceiling() {
+    let folder = Folder::new("recheck-ceiling");
+    let bin = fake_gh(&folder.0);
+    let remote = fixture(&folder.0.join("fixture"));
+    // The stand-in that hears a fix round's quoted task (ON PURPOSE) as jobs_api.rs's do.
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let mut config = config(&folder.0, &remote, &fake);
+    config["jobCeilingHours"] = json!(1);
+    sign_in(&folder, "stub");
+    let id = "ce11ab31";
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "build".into(),
+        "COMMIT: a.txt, a test that fails ON PURPOSE".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.branch = format!("oby/build-{id}");
+    job.status = obid::job::Status::Queued;
+    job.rounds = Some(2);
+    job.ran_secs = Some(3600 - 20);
+    // Its first run judges nothing, the next fail for real.
+    job.check = Some(
+        "test -f \"$HOME/ran\" || { touch \"$HOME/ran\"; echo \"couldn't judge: not yet\"; }; exit 1"
+            .into(),
+    );
+    let dir = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{id}.json")),
+        serde_json::to_vec(&job).unwrap(),
+    )
+    .unwrap();
+    let obid = start_with(
+        &folder.0,
+        &config,
+        Some(&bin),
+        &[("OBID_RECHECK_MS", "30000")],
+    );
+    let job = ended_within(&obid, id, 180);
+    assert!(job["stalled"].is_null(), "{job}\n{}", obid.log());
+    assert_eq!(job["round"], 2, "{job}");
+    let last = job["summaries"].as_array().unwrap().last().unwrap().clone();
+    assert!(
+        last.as_str().unwrap().starts_with("FAILS AS ASKED"),
+        "{job}"
+    );
 }
 
 /// PUBLISHING-9, 10 and 11: a job whose check failed publishes nothing by itself, and Publish by

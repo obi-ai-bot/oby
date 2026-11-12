@@ -440,9 +440,12 @@ fn candidates(jobs: &[Job], inbox: &[Value]) -> Vec<(String, Alert, Need)> {
             continue;
         }
         // How it ended: Publish, or what failed, waits on the owner; done with nothing to decide
-        // is FYI (the job's page says it). At a limit it moves or waits by itself (ALERTS-6).
+        // is FYI (the job's page says it), as is Publish after 24 hours of checks that judged
+        // nothing (PUBLISHING-31). At a limit it moves or waits by itself (ALERTS-6).
         let (said, need) = match job.status {
-            Status::Done if job.can_publish() => (self::alert(job, Notice::Ready), Need::Owner),
+            Status::Done if job.can_publish() && job.unjudged.is_none() => {
+                (self::alert(job, Notice::Ready), Need::Owner)
+            }
             Status::Failed => (self::alert(job, Notice::Failed), Need::Owner),
             Status::Interrupted if job.account_limit_blocked => continue,
             Status::Interrupted => (self::alert(job, Notice::Interrupted), Need::Owner),
@@ -1671,6 +1674,36 @@ mod tests {
             std::slice::from_ref(&decision),
         );
         assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// PUBLISHING-31: a check that judged nothing never alerts: not while obid waits to run it
+    /// again, nor once it stopped trying with Publish kept on the job's page.
+    #[test]
+    fn publishing_31_a_check_run_again_raises_no_alert() {
+        let mut waits = job("w1");
+        waits.status = Status::Running;
+        waits.unjudged = Some(crate::job::Unjudged {
+            tries: 1,
+            next: Some(100),
+            why: "the check ran past its limit of 2 hours".into(),
+        });
+        assert_eq!(notice(&waits), None);
+        assert!(wanted(std::slice::from_ref(&waits), &[]).is_empty());
+        let mut kept = waits.clone();
+        kept.status = Status::Done;
+        kept.base = Some("dev".into());
+        kept.commits = Some(1);
+        kept.checked_head = Some("a".repeat(40));
+        kept.unjudged.as_mut().unwrap().next = None;
+        // Publish stays on its page, and the job doesn't need the owner: not on the phone's or
+        // the brain's Needs you either.
+        assert!(kept.can_publish() && !kept.needs_you());
+        assert_eq!(notice(&kept), None);
+        assert!(wanted(std::slice::from_ref(&kept), &[]).is_empty());
+        // The same job, its check judged: Ready to publish, as before.
+        kept.unjudged = None;
+        assert!(kept.needs_you());
+        assert_eq!(notice(&kept), Some(Notice::Ready));
     }
 
     /// A merge left to the owner alerts once, titled as its card; one waiting on a second review

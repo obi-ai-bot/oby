@@ -120,6 +120,12 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     var stalled: Lenient<Stalled>?
     /// The handoff note a stalled job left, or nil.
     var handoffNote: String? { stalled?.value?.note.flatMap { $0.isEmpty ? nil : $0 } }
+    /// obid runs its check again by itself, or stopped trying with Publish kept on its page
+    /// (PUBLISHING-31, obid only): either way it doesn't need the owner.
+    var unjudged: Lenient<Unjudged>?
+    struct Unjudged: Codable, Equatable, Sendable {
+        var tries: Int?
+    }
 
     /// Why and where a stalled job stopped (obid's `stalled`, #773), as far as the apps show it:
     /// its handoff note. Every key optional, so a newer obid's object still decodes.
@@ -185,7 +191,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
              started, finished, commits, published, pushed, publishError, issue, rounds, round, check, model, notes, pipeline,
              pullRequest, pullRequestError, dismissed, archived, reviewing, review, reviewError, reviewOf, outgoing, question, mode, permission, moves, waiting, report,
              conversation, turn, artifacts, followUpOf, routine, tetrix, activity, usage, windowShare, estimate, checks, scan, diff, context,
-             reason, nothingDone, nextStep, resumesAt, stalled, accountLimit
+             reason, nothingDone, nextStep, resumesAt, stalled, accountLimit, unjudged
         case stoppedMerge = "mergeNeedsYou"
         case stoppedReview = "reviewNeedsYou"
         case stoppedCloud = "cloudNeedsYou"
@@ -272,7 +278,7 @@ nonisolated struct Job: Codable, Identifiable, Equatable, Sendable {
     /// rounds, stranded or its merge stopped, and not dismissed: what the runner sends an alert for,
     /// and what Dismiss takes.
     var needsYou: Bool {
-        dismissed == nil && (canPublish || stranded || status == .failed || (status == .interrupted && accountLimit == nil) || reviewNeedsYou || mergeNeedsYou || cloudNeedsYou)
+        dismissed == nil && ((canPublish && unjudged == nil) || stranded || status == .failed || (status == .interrupted && accountLimit == nil) || reviewNeedsYou || mergeNeedsYou || cloudNeedsYou)
     }
 
     /// "Round 2 of 5 · Fable 5.1", or empty for a one-round job on the usual model.
