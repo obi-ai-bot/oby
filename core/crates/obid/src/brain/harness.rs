@@ -2312,7 +2312,7 @@ async fn one(
                 watch.mark("first step");
                 // A command Codex shows as a read, search or listing is still a command.
                 let judged = match name.as_str() {
-                    "Read" | "Grep" | "Glob" if own_codex => "Bash",
+                    "Read" | "Grep" | "Glob" | "Tool" if own_codex => "Bash",
                     name => name,
                 };
                 // Untrusted content read this turn (the web, repo code) taints it: work it

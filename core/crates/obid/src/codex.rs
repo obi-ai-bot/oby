@@ -109,6 +109,7 @@ pub async fn run_turn(
         fatal: None,
         thread: None,
         helpers: Default::default(),
+        commands: Default::default(),
         turn: None,
         said: None,
         reasoning: HashMap::new(),
@@ -268,6 +269,8 @@ struct Run<D, E> {
     failure: Option<Failure>,
     /// The helper threads that spoke this turn, each said once as a tool call.
     helpers: std::collections::HashSet<String>,
+    /// The commands this turn told of, by item.
+    commands: std::collections::HashSet<String>,
 }
 
 /// The items that aren't a tool call: words, thinking, a plan, the owner's words, a compaction, a
@@ -465,6 +468,22 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             (self.on_event)(Event::Tokens(tokens));
         }
         let item = &params["item"];
+        // A command whose start obid never saw (its output or its end came first) still ran: told
+        // as one, once, so whoever follows the run judges it (LANES-13).
+        let method = message["method"].as_str().unwrap_or("");
+        let id = item["id"].as_str().or(params["itemId"].as_str());
+        if (method.starts_with("item/commandExecution/")
+            || (method.starts_with("item/") && item["type"] == "commandExecution"))
+            && self.commands.insert(id.unwrap_or("").to_owned())
+            && method != "item/started"
+        {
+            let command = command_of(&item["command"]).unwrap_or_default();
+            (self.on_event)(Event::Tool {
+                id: id.unwrap_or("").to_owned(),
+                name: "Bash".into(),
+                input: json!({"command": unwrap_shell(&command)}),
+            });
+        }
         match message["method"].as_str() {
             Some("account/rateLimits/updated") => {
                 if let Some(at) = crate::limits::codex_full_until(&params["rateLimits"]) {

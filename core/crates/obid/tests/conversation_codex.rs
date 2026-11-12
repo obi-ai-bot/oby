@@ -894,29 +894,36 @@ fn lanes_13_an_ask_codex_conversation_stays_boxed() {
 }
 
 /// LANES-13 (CONVO-1): every command an own Codex conversation runs is an untrusted read, one Codex
-/// shows as a read of a file outside the room too: the mark outlives a restart, and the job a
-/// later turn starts is `untrusted`.
+/// shows as a read of a file outside the room, one whose output alone obid saw, and an item obid
+/// doesn't know, too: the mark
+/// outlives a restart, and the job a later turn starts is `untrusted`.
 #[cfg(target_os = "macos")]
 #[test]
 fn lanes_13_an_own_codex_conversations_read_marks_it() {
-    let (folder, mut obid) = obid("codex-conv-own-read", true);
-    mode(&obid, "bypass");
-    let first = said(
-        &obid,
-        json!({"said": "READ /private/tmp/notes.md DONE", "new": true}),
-    );
-    assert_eq!(words(&first), "Nothing to do.", "{}", first.text);
-    let conversation = first.body["conversation"].as_str().unwrap().to_owned();
-    obid.stop();
-    let config: Value =
-        serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
-    let obid = start(&folder.0, &config, None);
-    let answer = said(
-        &obid,
-        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
-               "conversation": conversation}),
-    );
-    assert_untrusted(&obid, &answer);
+    for (case, (said_first, answered)) in [
+        ("READ /private/tmp/notes.md DONE", "Nothing to do."),
+        ("OUTPUT", "output came"),
+        ("ITEM somethingNew", "item ran"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (folder, mut obid) = obid(&format!("codex-conv-own-read-{case}"), true);
+        mode(&obid, "bypass");
+        let first = said(&obid, json!({"said": said_first, "new": true}));
+        assert_eq!(words(&first), answered, "{}", first.text);
+        let conversation = first.body["conversation"].as_str().unwrap().to_owned();
+        obid.stop();
+        let config: Value =
+            serde_json::from_slice(&std::fs::read(folder.0.join("config.json")).unwrap()).unwrap();
+        let obid = start(&folder.0, &config, None);
+        let answer = said(
+            &obid,
+            json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+                   "conversation": conversation}),
+        );
+        assert_untrusted(&obid, &answer);
+    }
 }
 
 /// LANES-13, as LANES-18's jobs (the owner's CODEX-2, "Same as jobs"): an own Codex turn asks obid
