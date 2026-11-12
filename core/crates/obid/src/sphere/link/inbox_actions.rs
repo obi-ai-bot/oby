@@ -1213,7 +1213,7 @@ impl Link {
         // The owner's review (crate::review): Approve posts it on GitHub, with no lock held. The
         // answer claims it first, and the claim (`watch.posting`) is on disk before gh is asked, so
         // a second Approve, or one after obid stopped mid-post, never posts it twice; when nothing
-        // was posted it's open again.
+        // was posted it's settled with why.
         let approving = {
             let mut state = self.lock();
             let item = state
@@ -1267,17 +1267,19 @@ impl Link {
                     Ok(item.to_json())
                 }
                 Err(why) => {
-                    // Open again, unless the owner dismissed it meanwhile.
-                    let dismissed = {
-                        let mut state = self.lock();
-                        let dismissed = state.inbox.get(&open.id).is_some_and(|i| i.done.is_some());
-                        if !dismissed {
-                            state.inbox.insert(open.id.clone(), open.clone());
+                    // Settled with why (`watch.answerError`), never open again by itself: the app
+                    // says it once, and the review stays on its job's page (MERGING-43).
+                    tracing::warn!("the review in inbox item {} wasn't posted: {why}", open.id);
+                    let settled = self.lock().inbox.get_mut(&open.id).map(|item| {
+                        item.done.get_or_insert_with(time::now);
+                        if let Some(watch) = item.watch.as_mut() {
+                            watch["posting"] = Value::Null;
+                            watch["answerError"] = format!("Nothing was posted: {why}.").into();
                         }
-                        dismissed
-                    };
-                    if !dismissed {
-                        self.save_item(&open);
+                        item.clone()
+                    });
+                    if let Some(item) = settled {
+                        self.save_item(&item);
                     }
                     Err(api(
                         StatusCode::BAD_GATEWAY,

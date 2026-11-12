@@ -784,19 +784,7 @@ async fn poster(
     number: u64,
     event: &'static str,
 ) -> Result<(Option<PathBuf>, &'static str), String> {
-    let owner = crate::github_login::read_status(gh)
-        .await
-        .user
-        .ok_or("obid's gh isn't signed in to GitHub")?;
-    let number = number.to_string();
-    let said = crate::github::run(gh, &["pr", "view", &number, "-R", repo, "--json", "author"])
-        .await
-        .map_err(|said| format!("obid couldn't read who opened it: {said}"))?;
-    let own = serde_json::from_str::<Value>(&said)
-        .ok()
-        .as_ref()
-        .and_then(author_login)
-        .is_some_and(|login| login.eq_ignore_ascii_case(&owner));
+    let (owner, own) = opened_by_owner(gh, repo, number).await?;
     if !own {
         return Ok((None, event));
     }
@@ -812,6 +800,62 @@ async fn poster(
         ));
     }
     Ok((Some(folder), event))
+}
+
+/// The owner's gh login, and whether they opened pull request `number` of `repo` (in any letter
+/// case). Either unread is an error.
+async fn opened_by_owner(gh: &Path, repo: &str, number: u64) -> Result<(String, bool), String> {
+    let owner = crate::github_login::read_status(gh)
+        .await
+        .user
+        .ok_or("obid's gh isn't signed in to GitHub")?;
+    let number = number.to_string();
+    let said = crate::github::run(gh, &["pr", "view", &number, "-R", repo, "--json", "author"])
+        .await
+        .map_err(|said| format!("obid couldn't read who opened it: {said}"))?;
+    let own = serde_json::from_str::<Value>(&said)
+        .ok()
+        .as_ref()
+        .and_then(author_login)
+        .is_some_and(|login| login.eq_ignore_ascii_case(&owner));
+    Ok((owner, own))
+}
+
+/// The card that posts the owner's finished review `job` (MERGING-42), or none. Only a review
+/// started from a review request in the GitHub feed (crate::github_work keeps its quote of the pull
+/// request under obid's `attachments/github`) of a pull request someone else opened raises one:
+/// a review asked for through the API or a conversation keeps its verdict on its job's page, and
+/// GitHub refuses the owner's approval of their own. When obid can't read whose it is, none.
+pub async fn ready_card(home: &Path, gh: Option<&Path>, job: &crate::job::Job) -> Option<Item> {
+    let requested = home.join("attachments").join("github");
+    let from_feed = job
+        .attachments
+        .iter()
+        .flatten()
+        .any(|a| Path::new(a).starts_with(&requested));
+    let sha = job
+        .start_commit
+        .as_deref()
+        .filter(|s| crate::git::is_sha(s))?;
+    let number = job
+        .pr
+        .filter(|_| from_feed && !job.summary.trim().is_empty())?;
+    if !matches!(
+        opened_by_owner(gh?, &job.repo, number).await,
+        Ok((_, false))
+    ) {
+        return None;
+    }
+    let (verdict, summary) = decided(job.summary.trim());
+    let scratch = home.join("tmp");
+    let _ = crate::store::make_private_dir(&scratch);
+    let clean = matches!(
+        crate::scan::scan(&[("review.md".into(), summary.clone())], &scratch).await,
+        crate::scan::Verdict::Clean
+    );
+    let (id, repo) = (&job.id, &job.repo);
+    let item = crate::jobs::owner_review_item(id, repo, number, sha, &summary, verdict, clean);
+    Some(item)
 }
 
 /// An open pull request's head commit, with `gh`.
@@ -1373,9 +1417,11 @@ mod tests {
         assert_ne!(posted[0].3.parent(), posted[1].3.parent(), "a folder each");
     }
 
-    /// The owner's Approve on the inbox claims the item; when nothing was posted it's open again.
+    /// MERGING-43: the owner's Approve on the inbox claims the item; when nothing was posted it's
+    /// settled with why (`watch.answerError`), and it never opens again by itself, nor does one
+    /// the owner dismissed, when the same review is offered again.
     #[tokio::test]
-    async fn an_approve_that_posts_nothing_leaves_the_item_open() {
+    async fn merging_43_a_failed_approve_settles_with_why_and_never_reopens() {
         let home = scratch("listen-approve");
         let config = crate::config::Config::parse(
             &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
@@ -1396,12 +1442,14 @@ mod tests {
             .unwrap_err();
         assert_eq!(refused.status, StatusCode::BAD_GATEWAY);
         assert!(refused.message.starts_with("Nothing was posted"));
-        let open = link.item(&item.id).unwrap();
-        assert!(open.done.is_none(), "open again");
-        assert!(
-            open.watch.as_ref().unwrap()["posting"].is_null(),
-            "unclaimed"
-        );
+        let settled = link.item(&item.id).unwrap();
+        assert!(settled.done.is_some(), "not open again");
+        assert_eq!(settled.answer, None, "nothing was answered");
+        let watch = settled.watch.as_ref().unwrap();
+        assert!(watch["posting"].is_null(), "unclaimed");
+        assert_eq!(watch["answerError"], json!(refused.message), "{watch}");
+        link.add_items(vec![item.clone()]);
+        assert!(link.item(&item.id).unwrap().done.is_some(), "offered again");
         // One claimed when obid stopped mid-post: Approve asks the owner to check, Dismiss settles.
         let mut stuck = ready_item("Looks right.");
         stuck.id = "listen-review-stuck".into();
@@ -1417,12 +1465,40 @@ mod tests {
                 .await
                 .is_ok()
         );
-        assert!(
-            link.answer(&item.id, br#"{"answer": "Dismiss"}"#)
-                .await
-                .is_ok()
+        link.add_items(vec![stuck.clone()]);
+        assert!(link.item(&stuck.id).unwrap().done.is_some(), "dismissed");
+    }
+
+    /// MERGING-42: only a review started from a review request in the GitHub feed, of a pull
+    /// request someone else opened, raises the card that posts it; one asked for through the API
+    /// (no quote of the feed's) raises none and asks gh nothing, nor does one of the owner's own
+    /// pull request, in any letter case.
+    #[tokio::test]
+    async fn merging_42_only_a_feed_review_of_someone_elses_pull_request_raises_a_card() {
+        let home = scratch("ready-card");
+        let gh = stand_in_gh(&home);
+        std::fs::write(home.join("author"), "someone").unwrap();
+        let mut job = crate::job::Job::new(
+            "job1".into(),
+            "acme/app".into(),
+            "review".into(),
+            "Review pull request #7 in acme/app.".into(),
+            "claude".into(),
+            "a".into(),
         );
-        assert!(link.item(&item.id).unwrap().done.is_some());
+        job.pr = Some(7);
+        job.start_commit = Some(SHA.into());
+        job.summary = "Looks right.\nVERDICT: APPROVE".into();
+        assert!(ready_card(&home, Some(&gh), &job).await.is_none(), "API");
+        assert!(!home.join("calls").exists(), "gh asked nothing");
+        let quote = home.join("attachments/github/1/github-app-7.md");
+        job.attachments = Some(vec![quote.to_string_lossy().into_owned()]);
+        let card = ready_card(&home, Some(&gh), &job).await.expect("a card");
+        assert_eq!(card.options, [APPROVE, crate::sphere::inbox::DISMISS]);
+        assert_eq!(card.watch.unwrap()["verdict"], "approve");
+        std::fs::write(home.join("author"), "Octo-Cat").unwrap();
+        assert!(ready_card(&home, Some(&gh), &job).await.is_none(), "own");
+        assert!(ready_card(&home, None, &job).await.is_none(), "no gh");
     }
 
     /// A phone's Approve on a listener's review is refused by the item itself; its Dismiss, or

@@ -11652,9 +11652,8 @@ impl Jobs {
         conflicts
     }
 
-    /// The owner's own review, once it has ended done: an inbox item with the summary, which is the
-    /// review. Approve posts that text on the pull request; a scan that flags it or can't run
-    /// offers only Dismiss, and nothing is posted. Another Oby's review is not this.
+    /// The owner's own review, once it has ended done: the card that posts it, when it raises one
+    /// (crate::review::ready_card). Another Oby's review is not this.
     async fn offer_owner_review(&self, id: &str) {
         let Some(job) = self.get(id) else { return };
         // Oby's review of its own published work is never posted ([`Jobs::reviewed`]).
@@ -11665,26 +11664,13 @@ impl Jobs {
         {
             return;
         }
-        let Some(number) = job.pr else { return };
-        let Some(sha) = job.start_commit.clone().filter(|sha| git::is_sha(sha)) else {
-            return;
-        };
-        if job.summary.trim().is_empty() {
-            return;
+        let gh = crate::github::gh();
+        let home = &self.config.home;
+        if let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade)
+            && let Some(card) = crate::review::ready_card(home, gh.as_deref(), &job).await
+        {
+            link.add_items(vec![card]);
         }
-        let (verdict, summary) = crate::review::decided(job.summary.trim());
-        let Some(link) = self.link.get().and_then(std::sync::Weak::upgrade) else {
-            return;
-        };
-        let scratch = self.config.home.join("tmp");
-        let _ = crate::store::make_private_dir(&scratch);
-        let clean = matches!(
-            crate::scan::scan(&[("review.md".into(), summary.clone())], &scratch).await,
-            crate::scan::Verdict::Clean
-        );
-        link.add_items(vec![owner_review_item(
-            id, &job.repo, number, &sha, &summary, verdict, clean,
-        )]);
     }
 
     /// Who reviews `author`'s published work (docs/runner-api.md, "Oby's review"): an account of
