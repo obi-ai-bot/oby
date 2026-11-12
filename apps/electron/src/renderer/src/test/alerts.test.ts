@@ -84,6 +84,18 @@ describe('ALERTS-1', () => {
     expect(mac.badge).toBe('2');
   });
 
+  it('alerts_1_a_streaming_reply_doesnt_read_the_list_again', async () => {
+    await launch();
+    const before = mac.alertReads;
+    // Oby's reply streams: each turn only looks again, so obid scans nothing more
+    for (let i = 0; i < 3; i++) mac.event('turn', { id: `t${i}`, conversation: 'c1', who: 'oby', text: 'Working on it', at: new Date().toISOString() });
+    await new Promise((done) => setTimeout(done, 2500));
+    expect(mac.alertReads).toBe(before);
+    // a job's change still reads obid's list again
+    mac.event('job', { id: 'j1', title: 'Fix it', status: 'running' });
+    await vi.waitFor(() => expect(mac.alertReads).toBe(before + 1), { timeout: 5000 });
+  });
+
   it('alerts_1_a_limit_decision_keeps_its_signed_choices', async () => {
     mac.decisions = [{ id: 'd1', revision: 3, account: 'a1', agent: 'Claude', resetAt: null, jobs: [{ id: 'j1', title: 'Fix it' }],
       options: [{ kind: 'move', account: 'a2', agent: 'Codex', name: 'Work' }, { kind: 'stop' }] }];

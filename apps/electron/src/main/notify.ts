@@ -299,9 +299,14 @@ export const pingOf = (t: Pick<Turn, 'asks' | 'text'>) => {
 const pings = new Map<string, { id: string; title: string; body: string }>();
 
 // A burst of changes (a job's steps, its end and publish) settles first, as obid's push waits;
-// then obid's list is read again
+// then obid's list is read again. A turn alone only looks again: obid scans every alert it serves
+// for secrets, and a reply streams many turns
 let timer: ReturnType<typeof setTimeout> | undefined;
-const later = () => { timer ??= setTimeout(() => { timer = undefined; void refresh(); }, 2000); };
+let reread = false;
+const later = (read = true) => {
+  reread ||= read;
+  timer ??= setTimeout(() => { timer = undefined; const r = reread; reread = false; if (r) void refresh(); else look(); }, 2000);
+};
 
 // A turn of any conversation: the owner's words, from any app, settle Oby's answer there; Oby's
 // answer alerts when it's news (a turn comes again when a job it started changes), recent, and
@@ -324,7 +329,7 @@ function heard(t: Turn) {
 function take(e: Event) {
   if (e.kind === 'inbox' && e.item.state === 'done') inbox.delete(e.item.id);
   else if (e.kind === 'inbox') inbox.set(e.item.id, e.item);
-  else if (e.kind === 'turn') heard(e.turn);
+  else if (e.kind === 'turn') return void (heard(e.turn), later(false));
   else if (e.kind === 'conversation') return void titles.set(e.conversation.id, e.conversation.title);
   else if (e.kind === 'conversationGone') {
     titles.delete(e.id); lastAnswer.delete(e.id); answers.delete(e.id); askedAt.delete(e.id);

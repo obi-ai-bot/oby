@@ -29,6 +29,8 @@ export const mac = {
   sent: [] as { method: string; path: string; body?: unknown; signed: boolean }[],
   // where a banner's click opened the window
   opened: [] as unknown[],
+  // how many times GET /v1/alerts was read since launch
+  alertReads: 0,
   event: (_name: string, _data: unknown) => {},
 };
 
@@ -74,12 +76,14 @@ export async function launch() {
     shell: {},
   }));
   let lists = 0;
+  mac.alertReads = 0;
   const answer = (method: string, path: string, body: unknown, signed: boolean) => {
     if (method !== 'GET') {
       mac.sent.push({ method, path, body, signed });
       return { status: 200, text: '{}' };
     }
     lists++;
+    if (path === '/v1/alerts') mac.alertReads++;
     if (path === '/v1/alerts' && mac.down) return { status: 503, text: '{"error": "The vault can’t be read."}' };
     const got = ({ '/v1/alerts': mac.served, '/v1/inbox': mac.inbox, '/v1/limit-decisions': mac.decisions, '/v1/jobs': mac.jobs } as Record<string, unknown[]>)[path] ?? [];
     return { status: 200, text: JSON.stringify(got) };
