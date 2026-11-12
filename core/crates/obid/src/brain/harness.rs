@@ -2375,6 +2375,14 @@ async fn one(
                     );
                 }
             }
+            // Something ran that obid never saw start: in an own Codex session, a command.
+            Event::Step(step) if own_codex && step == crate::codex::UNSEEN => {
+                session.taint();
+                shared.conversations.mark(
+                    &control.conversation,
+                    "its Oby ran something obid didn't see start".into(),
+                );
+            }
             Event::Step(_)
             | Event::Denied(_)
             | Event::Said(_)

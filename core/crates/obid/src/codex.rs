@@ -109,7 +109,7 @@ pub async fn run_turn(
         fatal: None,
         thread: None,
         helpers: Default::default(),
-        commands: Default::default(),
+        told: Default::default(),
         turn: None,
         said: None,
         reasoning: HashMap::new(),
@@ -269,8 +269,21 @@ struct Run<D, E> {
     failure: Option<Failure>,
     /// The helper threads that spoke this turn, each said once as a tool call.
     helpers: std::collections::HashSet<String>,
-    /// The commands this turn told of, by item.
-    commands: std::collections::HashSet<String>,
+    /// The items this turn told of, by id, and those whose news came first (`news <id>`).
+    told: std::collections::HashSet<String>,
+}
+
+/// The step told when an item obid never saw start sends news (a command's output): something ran
+/// that no call names.
+pub const UNSEEN: &str = "Running something obid didn't see start";
+
+/// An item as the tool call it is ([`tool_call`]), or, when obid doesn't parse it, a tool call of a
+/// kind it doesn't know; none for an item that isn't a tool call ([`NOT_TOOLS`]).
+fn call_of(item: &Value) -> Option<(String, Value)> {
+    tool_call(item).or_else(|| {
+        (!NOT_TOOLS.contains(&item["type"].as_str().unwrap_or("")))
+            .then(|| ("Tool".into(), json!({"type": item["type"]})))
+    })
 }
 
 /// The items that aren't a tool call: words, thinking, a plan, the owner's words, a compaction, a
@@ -468,21 +481,39 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
             (self.on_event)(Event::Tokens(tokens));
         }
         let item = &params["item"];
-        // A command whose start obid never saw (its output or its end came first) still ran: told
-        // as one, once, so whoever follows the run judges it (LANES-13).
-        let method = message["method"].as_str().unwrap_or("");
-        let id = item["id"].as_str().or(params["itemId"].as_str());
-        if (method.starts_with("item/commandExecution/")
-            || (method.starts_with("item/") && item["type"] == "commandExecution"))
-            && self.commands.insert(id.unwrap_or("").to_owned())
-            && method != "item/started"
+        // What an item obid never saw start did (LANES-13): its news first (a command's output) is
+        // a step that names no call ([`UNSEEN`]), so nothing counts it as one; its end first, the
+        // call it is, told once before its end, as its start would have.
+        let id = item["id"]
+            .as_str()
+            .or(params["itemId"].as_str())
+            .unwrap_or("");
+        match message["method"]
+            .as_str()
+            .unwrap_or("")
+            .split('/')
+            .collect::<Vec<_>>()[..]
         {
-            let command = command_of(&item["command"]).unwrap_or_default();
-            (self.on_event)(Event::Tool {
-                id: id.unwrap_or("").to_owned(),
-                name: "Bash".into(),
-                input: json!({"command": unwrap_shell(&command)}),
-            });
+            ["item", "completed"] if !self.told.contains(id) => {
+                if let Some((name, input)) = call_of(item) {
+                    (self.on_event)(Event::Tool {
+                        id: id.to_owned(),
+                        name,
+                        input,
+                    });
+                }
+            }
+            ["item", kind, _]
+                if !NOT_TOOLS.contains(&kind)
+                    && !self.told.contains(id)
+                    && self.told.insert(format!("news {id}")) =>
+            {
+                (self.on_event)(Event::Step(UNSEEN.into()));
+            }
+            _ => {}
+        }
+        if message["method"] == "item/started" || message["method"] == "item/completed" {
+            self.told.insert(id.to_owned());
         }
         match message["method"].as_str() {
             Some("account/rateLimits/updated") => {
@@ -525,18 +556,11 @@ impl<D: Fn(&str, &Value) -> Ruling, E: FnMut(Event)> Run<D, E> {
                         .or_default()
                         .push((tool.to_owned(), item["arguments"].clone()));
                 }
-                if let Some((name, input)) = tool_call(item) {
+                if let Some((name, input)) = call_of(item) {
                     (self.on_event)(Event::Tool {
                         id: item["id"].as_str().unwrap_or("").to_owned(),
                         name,
                         input,
-                    });
-                } else if !NOT_TOOLS.contains(&item["type"].as_str().unwrap_or("")) {
-                    // An item obid doesn't parse: a tool call of a kind it doesn't know.
-                    (self.on_event)(Event::Tool {
-                        id: item["id"].as_str().unwrap_or("").to_owned(),
-                        name: "Tool".into(),
-                        input: json!({"type": item["type"]}),
                     });
                 }
             }

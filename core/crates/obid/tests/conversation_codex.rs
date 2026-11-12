@@ -894,8 +894,8 @@ fn lanes_13_an_ask_codex_conversation_stays_boxed() {
 }
 
 /// LANES-13 (CONVO-1): every command an own Codex conversation runs is an untrusted read, one Codex
-/// shows as a read of a file outside the room, one whose output alone obid saw, and an item obid
-/// doesn't know, too: the mark
+/// shows as a read of a file outside the room, one whose output alone obid saw, an item obid
+/// doesn't know, and another server's tool call obid saw only end, too: the mark
 /// outlives a restart, and the job a later turn starts is `untrusted`.
 #[cfg(target_os = "macos")]
 #[test]
@@ -904,6 +904,7 @@ fn lanes_13_an_own_codex_conversations_read_marks_it() {
         ("READ /private/tmp/notes.md DONE", "Nothing to do."),
         ("OUTPUT", "output came"),
         ("ITEM somethingNew", "item ran"),
+        ("ENDONLY DONE", "Nothing to do."),
     ]
     .into_iter()
     .enumerate()

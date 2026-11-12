@@ -44,6 +44,8 @@ if (process.argv[2] === "debug" && process.argv[3] === "models") {
 //   PERMS              asks to run a command in its room, to write inside, outside and in repos/,
 //                      and to read ~/.ssh
 //   RUN <words>        runs a command without asking (as Codex runs a "safe" one), then does <words>
+//   ENDONLY <words>    an MCP tool call of another server ends (files' read) with no start, then
+//                      does <words>
 //   READ <path> <words>  runs `cat <path>` without asking, which Codex shows as a read of it, then
 //                      does <words>
 //   MAKEPAGE <words>   writes page/index.html in its room (with apply_patch, no shell), then does <words>
@@ -255,6 +257,12 @@ async function act(turnId, words) {
     event("item/started", turnId, { item: run });
     event("item/completed", turnId, { item: { ...run, status: "completed", exitCode: 0, aggregatedOutput: "hi\n" } });
     return act(turnId, words.slice(4));
+  }
+  if (words.startsWith("ENDONLY ")) {
+    const call = { type: "mcpToolCall", id: randomUUID(), server: "files", tool: "read", arguments: { path: "/private/tmp/notes.md" },
+      status: "completed", result: { content: [{ type: "text", text: "notes" }] } };
+    event("item/completed", turnId, { item: call });
+    return act(turnId, words.slice(8));
   }
   if (words.startsWith("READ ")) {
     const [, path, ...rest] = words.split(" ");
