@@ -347,7 +347,7 @@ pub async fn stop_all(State(shared): State<Arc<Shared>>) -> Response {
     )
 }
 
-/// `POST /v1/jobs/{id}/dismiss`.
+/// `POST /v1/jobs/{id}/dismiss` ([`crate::jobs::Jobs::dismiss`]).
 pub async fn dismiss(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,

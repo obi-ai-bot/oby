@@ -12,6 +12,8 @@
 //                    turn with "Committed the draft." (without it, that turn is "Nothing to do.")
 //   .obi/fix-checks  (a file a test puts in the worktree) told by obid that GitHub's checks failed,
 //                    commits checks.txt holding what .obi/inputs/checks.md quoted (MERGING-39)
+//   .obi/fix-changes (the same) told by obid that a review asks for changes, commits changes.txt
+//                    holding what .obi/inputs/changes.md quoted (MERGING-40)
 //   KEEP PROMPTS    from now on appends every prompt it gets to .obi/prompts.log, each ended by a
 //                    line "<<<end of prompt>>>", and every answer to its permission prompts to
 //                    .obi/answers.log, one per line
@@ -564,6 +566,12 @@ rl.on("line", (line) => {
     execFileSync("git", ["add", "--all"]);
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "Add the draft"]);
     return result("Committed the draft.");
+  }
+  if (prompt.includes(".obi/inputs/changes.md") && existsSync(".obi/fix-changes")) {
+    writeFileSync("changes.txt", readFileSync(".obi/inputs/changes.md"));
+    execFileSync("git", ["add", "changes.txt"]);
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "Make the changes"]);
+    return result("Made the changes.");
   }
   if (prompt.includes(".obi/inputs/checks.md") && existsSync(".obi/fix-checks")) {
     writeFileSync("checks.txt", readFileSync(".obi/inputs/checks.md"));

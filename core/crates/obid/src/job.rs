@@ -467,6 +467,10 @@ pub struct Job {
     /// (MERGING-39). Kept in its file, never in the API.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub checks_rounds: u32,
+    /// The heads whose trusted change requests had obid's round by itself, oldest first: one per
+    /// head, counted with Oby's own review rounds (MERGING-40). Kept in its file, never in the API.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes_rounds: Vec<String>,
     /// When obid picked it up again after going down while it ran, other than by a clean stop
     /// (#915): the last 30 minutes' only. Kept in its file, never in the API; emptied when the job
     /// ends.
@@ -1196,6 +1200,7 @@ impl Job {
             cut: None,
             after_pr_rebase: None,
             checks_rounds: 0,
+            changes_rounds: Vec::new(),
             crash_resumes: Vec::new(),
             recovery: Recovery::default(),
             dismissed: None,

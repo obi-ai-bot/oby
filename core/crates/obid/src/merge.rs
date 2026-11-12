@@ -1263,23 +1263,43 @@ fn counts(review: &Review, head: &str, author: &str, by: Approval, reviewers: &R
 /// change request never goes unseen.
 fn asked_for_changes(pr: &PullRequest, merging: &Merging) -> bool {
     pr.review_decision.as_deref() == Some("CHANGES_REQUESTED")
-        || merging
-            .reviews
-            .iter()
-            .any(|r| r.state == "CHANGES_REQUESTED")
+        || change_requests(merging).count() > 0
+}
+
+/// Each reviewer's latest review that asks for changes.
+fn change_requests(merging: &Merging) -> impl Iterator<Item = &Review> {
+    (merging.reviews.iter()).filter(|r| r.state == "CHANGES_REQUESTED")
+}
+
+/// The change requests on `head` a round of the agent's may take by itself (MERGING-40): every one
+/// standing, when each is a person's on that head whom the owner `trusts` (the owner, or a member
+/// of their organization); none when any isn't, so anyone else's request stays the owner's card.
+pub fn trusted_changes<'a>(
+    merging: &'a Merging,
+    head: &str,
+    trusts: impl Fn(&Review) -> bool,
+) -> Vec<&'a Review> {
+    let asked: Vec<&Review> = change_requests(merging).collect();
+    let on_head = |r: &&Review| !r.bot && r.commit.as_deref() == Some(head) && trusts(r);
+    let all = asked.iter().all(on_head);
+    asked.into_iter().filter(|_| all).collect()
 }
 
 /// Why only the owner can settle the job's own pull request now: a review asks for changes, or
 /// its checks failed on GitHub. Nothing of Oby's answers either any more, so they ask the owner
 /// whatever the workflow, learned or not (a pull request into main, which merges only on their word,
 /// included), and before a teammate's Oby is asked to review a red head. Red checks alone
-/// ([`RED_CHECKS`]) get obid's one round by itself first, where it may have one (MERGING-39).
+/// ([`RED_CHECKS`]) get obid's one round by itself first, where it may have one (MERGING-39), and
+/// so do change requests the owner trusts ([`CHANGES_ASKED`], [`trusted_changes`]: MERGING-40).
 pub fn owner_must_settle(pr: &PullRequest, merging: &Merging) -> Option<&'static str> {
     if asked_for_changes(pr, merging) {
-        return Some("Not merged yet: a review asks for changes.");
+        return Some(CHANGES_ASKED);
     }
     (merging.checks == Some("FAILURE")).then_some(RED_CHECKS)
 }
+
+/// [`owner_must_settle`]'s words for a head a review asks changes of.
+pub const CHANGES_ASKED: &str = "Not merged yet: a review asks for changes.";
 
 /// [`owner_must_settle`]'s words for a head whose checks failed on GitHub.
 pub const RED_CHECKS: &str = "Not merged yet: its checks failed on GitHub.";
@@ -4096,6 +4116,43 @@ mod tests {
                 .needs_you
         );
         assert!(!check(&job(), Some(&obis()), &none).unwrap_err().needs_you);
+    }
+
+    /// MERGING-40: the change requests a round may take are every one standing, when each is a
+    /// person's on the head whom the owner trusts; none when any isn't (someone else's, one on an
+    /// older head, a bot's), so those keep the card.
+    #[test]
+    fn merging_40_only_trusted_requests_on_the_head_get_a_round() {
+        let head = head();
+        let asks = |id: u64, login: &str, commit: &str| {
+            let kind = if login.ends_with("[bot]") {
+                "Bot"
+            } else {
+                "User"
+            };
+            json!({"id": id, "user": {"login": login, "type": kind}, "state": "CHANGES_REQUESTED",
+                   "commit_id": commit, "author_association": "MEMBER", "body": "Rename it."})
+        };
+        let approves = json!({"id": 9, "user": {"login": "max", "type": "User"},
+            "state": "APPROVED", "commit_id": head, "author_association": "MEMBER"});
+        let taken = |reviews: Vec<Value>| {
+            let reviews = github::decode_reviews(&json!([reviews]).to_string()).unwrap();
+            let merging = Merging {
+                reviews,
+                ..Default::default()
+            };
+            let trusted = trusted_changes(&merging, &head, |r: &Review| r.login != "joe");
+            trusted.iter().map(|r| r.login.clone()).collect::<Vec<_>>()
+        };
+        let (sangam, ana) = (asks(1, "sangam", &head), asks(2, "ana", &head));
+        assert_eq!(
+            taken(vec![sangam.clone(), ana, approves.clone()]),
+            ["sangam", "ana"]
+        );
+        assert!(taken(vec![sangam.clone(), asks(3, "joe", &head)]).is_empty());
+        assert!(taken(vec![sangam, asks(4, "ana", &"b".repeat(40))]).is_empty());
+        assert!(taken(vec![asks(5, "app[bot]", &head)]).is_empty());
+        assert!(taken(vec![approves]).is_empty());
     }
 
     /// MERGING-41: what GitHub alone holds under a learned workflow (its checks still running,
