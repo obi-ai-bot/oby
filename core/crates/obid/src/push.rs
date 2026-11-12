@@ -950,6 +950,16 @@ impl Drop for MacFollowing {
     }
 }
 
+/// What [`Push::wakes`] says to do with the Mac app (ALERTS-3).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Wake {
+    No,
+    /// Open it hidden ([`wake`]).
+    Now,
+    /// Look again then: something new came while it may be reconnecting.
+    After(Instant),
+}
+
 /// The needs in `wanted` not woken yet this run (ALERTS-3), each its thing and what it needs (as
 /// [`told`] says it again).
 pub fn to_wake(
@@ -1115,14 +1125,21 @@ impl Push {
     }
 
     /// Whether `wanted` ([`wanted`]'s) wakes the Mac app at `now`: a need not woken yet this run,
-    /// with no Mac app following, nor one dropped (or obid started) within [`RECONNECT`]. Each
-    /// need counts once, woken or not: one that came while the app followed is no news later.
-    pub fn wakes(&self, wanted: &[(String, Alert)], now: Instant) -> bool {
+    /// with no Mac app following. While one dropped (or obid started) within [`RECONNECT`], the
+    /// new needs stay new and are looked at again when that's over: it may be reconnecting, or
+    /// quit. A need counts once, woken or not: one that came while the app followed is no news.
+    pub fn wakes(&self, wanted: &[(String, Alert)], now: Instant) -> Wake {
+        let (following, left) = *self.mac.lock().unwrap_or_else(|e| e.into_inner());
         let mut woken = self.woken.lock().unwrap_or_else(|e| e.into_inner());
         let new = to_wake(wanted, &woken);
-        woken.extend(new.iter().cloned());
-        let (following, left) = *self.mac.lock().unwrap_or_else(|e| e.into_inner());
-        !new.is_empty() && following == 0 && now.duration_since(left) >= RECONNECT
+        if new.is_empty() {
+            return Wake::No;
+        }
+        if following == 0 && now < left + RECONNECT {
+            return Wake::After(left + RECONNECT);
+        }
+        woken.extend(new);
+        if following == 0 { Wake::Now } else { Wake::No }
     }
 
     /// Hears one of obid's events: whether the jobs, the inbox or a conversation changed, so the
@@ -1592,7 +1609,8 @@ pub async fn listed(shared: &Shared) -> Result<Vec<Value>, String> {
 }
 
 /// Looks at the jobs and the inbox once now (a restart's news), then two seconds after each burst
-/// of changes to jobs, the inbox or the conversations, until obid stops.
+/// of changes to jobs, the inbox or the conversations, or when a need held for a reconnecting Mac
+/// app ([`Wake::After`]) is due, until obid stops.
 pub fn spawn(shared: Arc<Shared>) {
     let mut events = shared.events.subscribe();
     let mut stopping = shared.stopping.clone();
@@ -1603,11 +1621,16 @@ pub fn spawn(shared: Arc<Shared>) {
             let (jobs, inbox) = looked_at(&shared);
             shared.push.look(&jobs, &inbox, &paired, &scratch).await;
             // Something new waits on the owner, and no Mac app follows: Oby opens hidden.
-            if shared.push.wakes(&wanted(&jobs, &inbox), Instant::now()) {
-                wake().await;
+            let mut again = None;
+            match shared.push.wakes(&wanted(&jobs, &inbox), Instant::now()) {
+                Wake::Now => wake().await,
+                Wake::After(at) => again = Some(tokio::time::Instant::from_std(at)),
+                Wake::No => {}
             }
             loop {
                 tokio::select! {
+                    () = tokio::time::sleep_until(again.unwrap_or_else(tokio::time::Instant::now)),
+                        if again.is_some() => break,
                     got = events.recv() => match got {
                         Ok(event) if shared.push.heard(&event) => break,
                         Ok(_) => {}
@@ -1828,41 +1851,51 @@ mod tests {
         let later = Instant::now() + RECONNECT;
         let mut done = job("d1");
         done.status = Status::Done;
-        assert!(
-            !push.wakes(&wanted(std::slice::from_ref(&done), &[]), later),
-            "FYI"
-        );
+        let fyi = wanted(std::slice::from_ref(&done), &[]);
+        assert_eq!(push.wakes(&fyi, later), Wake::No, "FYI");
         let jobs = [done, failed("f1")];
-        assert!(push.wakes(&wanted(&jobs, &[]), later));
-        assert!(
-            !push.wakes(&wanted(&jobs, &[]), later),
-            "the same need again"
-        );
+        assert_eq!(push.wakes(&wanted(&jobs, &[]), later), Wake::Now);
+        let again = push.wakes(&wanted(&jobs, &[]), later);
+        assert_eq!(again, Wake::No, "the same need again");
         let mut asks = job("p1");
         asks.permission = Some(permission());
-        assert!(push.wakes(&wanted(&[failed("f1"), asks], &[]), later));
+        let next = wanted(&[failed("f1"), asks], &[]);
+        assert_eq!(push.wakes(&next, later), Wake::Now);
         let _ = std::fs::remove_dir_all(&home);
     }
 
     /// ALERTS-3: a Mac app following, or one that may be reconnecting (it dropped, or obid just
-    /// started, within a minute), isn't woken; a phone following is no Mac app.
+    /// started, within a minute), isn't woken: what came meanwhile is held until the minute is up,
+    /// then wakes it if it didn't come back. A phone following is no Mac app.
     #[test]
     fn alerts_3_a_following_or_reconnecting_mac_app_is_not_woken() {
         let home = std::env::temp_dir().join(format!("obid-push-awake-{}", std::process::id()));
         let push = Push::open(&home, RELAY);
-        let wakes = |id: &str, at: Instant| push.wakes(&wanted(&[failed(id)], &[]), at);
-        assert!(!wakes("f1", Instant::now()), "obid just started");
+        let wakes = |ids: &[&str], at: Instant| {
+            let jobs: Vec<Job> = ids.iter().map(|id| failed(id)).collect();
+            push.wakes(&wanted(&jobs, &[]), at)
+        };
+        let started = Instant::now();
+        let held = wakes(&["f1"], started);
+        assert!(
+            matches!(held, Wake::After(_)),
+            "obid just started: {held:?}"
+        );
         let mac = push.mac_followed();
-        assert!(!wakes("f2", Instant::now() + RECONNECT), "following");
+        let following = wakes(&["f1", "f2"], started + RECONNECT);
+        assert_eq!(following, Wake::No, "it came back: it shows them itself");
         drop(mac);
         let left = Instant::now();
-        assert!(!wakes("f3", left + RECONNECT / 2), "reconnecting");
-        let _phone = push.followed();
-        assert!(wakes("f4", left + RECONNECT));
+        // Oby quit, and a job fails 10 seconds later: held, not lost.
+        let held = wakes(&["f1", "f2", "f3"], left + Duration::from_secs(10));
         assert!(
-            !wakes("f1", left + RECONNECT),
-            "came while it followed: no news"
+            matches!(held, Wake::After(at) if at > left + RECONNECT / 2),
+            "reconnecting: {held:?}"
         );
+        let _phone = push.followed();
+        let due = wakes(&["f1", "f2", "f3"], left + RECONNECT);
+        assert_eq!(due, Wake::Now, "it didn't come back");
+        assert_eq!(wakes(&["f1", "f2", "f3"], left + RECONNECT), Wake::No);
         let _ = std::fs::remove_dir_all(&home);
     }
 

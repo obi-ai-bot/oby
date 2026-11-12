@@ -201,14 +201,18 @@ app.whenReady().then(() => {
   notifying(trusted, () => win, front);
   // Oby's own updates (updates.ts), told to About while the window is there
   updating(trusted, () => win);
-  // obid opened Oby hidden for an alert (ALERTS-3): no window, only the banner; a Dock click later
-  // opens it, but not this launch's own activate
-  const background = process.argv.includes('--background');
-  const launched = Date.now();
-  if (!background) createWindow();
+  // obid opened Oby hidden for an alert (ALERTS-3, `open -g -j`): no window, only the banner. That
+  // launch's own activate comes while Oby was never made active, and is ignored; a Dock click (or
+  // ⌘-Tab) makes it active, which opens the window, whichever of the two events comes first
+  let activated = !process.argv.includes('--background');
+  if (activated) createWindow();
+  app.on('did-become-active', () => {
+    if (!activated && !win) createWindow();
+    activated = true;
+  });
   // an Obysphere's invite link (sphere.ts), joined on the owner's click
   sphering(trusted, front);
-  app.on('activate', () => { if (!win && !(background && Date.now() - launched < 5000)) createWindow(); });
+  app.on('activate', () => { if (!win && activated) createWindow(); });
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
