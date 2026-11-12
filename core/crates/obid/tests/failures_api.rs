@@ -193,7 +193,9 @@ fn tasks_18_a_job_stopped_while_its_question_waited_is_recorded() {
     let folder = Folder::new("failures-question");
     let remote = fixture(&folder.0.join("fixture"));
     let obid = start(&folder.0, &config(&folder.0, &remote, &fake_claude()), None);
-    let ask = json!({"tool": "Glob", "input": {"pattern": "/etc/*"}});
+    // What reaches past the model's API still asks in the owner's own lane, which refuses a read
+    // outside the worktree without asking (LANES-1, `jobs_api::what_leaves_the_sandbox_still_asks`).
+    let ask = json!({"tool": "WebFetch", "input": {"url": "https://example.com/a"}});
     let id = post_job(
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": format!("ASK: {ask}")}),

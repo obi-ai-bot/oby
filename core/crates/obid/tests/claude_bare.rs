@@ -108,7 +108,9 @@ fn never_bare(what: &str, launches: &[Launch], which: impl Fn(&Launch) -> bool) 
                     || (name.starts_with("CLAUDE_CODE_")
                         && name != "CLAUDE_CODE_TMPDIR"
                         && name != "CLAUDE_CODE_ENABLE_TODO_TOOLS"
-                        && name != "CLAUDE_CODE_DISABLE_CLAUDE_MDS")),
+                        && name != "CLAUDE_CODE_DISABLE_CLAUDE_MDS"
+                        // An own conversation's auto-memory off (LANES-12, process::NO_AUTO_MEMORY).
+                        && name != "CLAUDE_CODE_DISABLE_AUTO_MEMORY")),
                 "{what}: {name} reached Claude Code"
             );
         }
@@ -238,9 +240,10 @@ fn issue_1867_a_side_call_of_the_brain_never_runs_bare() {
 async fn issue_1867_a_review_never_runs_bare() {
     let folder = Folder::new("bare-review");
     let mut config = signed_in(&folder.0, "fake-claude");
-    // In this test's own process, whose `PATH` doesn't show the box this checkout under the person's
-    // home: the stand-ins from a folder it does.
-    let standins = folder.0.join("standins");
+    // In this test's own process, whose `PATH` doesn't show the box this checkout (under the
+    // person's home or a shared temporary folder, which a box hides: #2064): the stand-ins beside
+    // the agent's binary, which it reads (`sandbox::install_root`).
+    let standins = folder.0.join("bin");
     std::fs::create_dir_all(&standins).unwrap();
     for name in ["fake-claude", "fake-claude-recording"] {
         std::fs::copy(agent(name), standins.join(name)).unwrap();
@@ -315,14 +318,16 @@ fn issue_1867_a_sign_in_and_the_login_check_never_run_bare() {
 }
 
 /// The Mac's own Claude Code renewing a login near its end (`jobs::logins::refresh_command`): it
-/// runs `-p /usage` unboxed, and a bare one wouldn't read the login it's there to renew.
+/// runs `-p /usage` unboxed, and a bare one wouldn't read the login it's there to renew. Only a
+/// boxed run's copy is refreshed by obid (KEYCHAIN-10): an own run reads the account's own login,
+/// which Claude Code refreshes itself (LANES-1), so the job here is an untrusted one, in Oby's box.
 #[cfg(target_os = "macos")]
 #[test]
 fn issue_1867_the_refresh_never_runs_bare() {
     let folder = Folder::new("bare-refresh");
     let mut config = signed_in(&folder.0, "fake-claude");
     config["claudeKeychain"] = json!(true);
-    let obid = start_with(&folder.0, &config, None, &OWN_ENV);
+    let mut obid = start_with(&folder.0, &config, None, &OWN_ENV);
     let added = call(
         &obid,
         "POST",
@@ -344,7 +349,24 @@ fn issue_1867_the_refresh_never_runs_bare() {
     let login = json!({"claudeAiOauth": {"accessToken": "tok-old-plain-test-login",
                                          "refreshToken": refresh, "expiresAt": ends}});
     std::fs::write(&item, login.to_string()).unwrap();
-    job_ended(&obid, Some("Second"));
+    // Written while obid is down, it starts as obid does.
+    assert!(obid.stop().success());
+    let mut job = obid::job::Job::new(
+        "aaaa1867".into(),
+        "obi-e2e/fixture-app".into(),
+        "research".into(),
+        "Look at the average".into(),
+        "claude".into(),
+        id.into(),
+    );
+    job.branch = "oby/research-aaaa1867".into();
+    job.untrusted = true;
+    let text = serde_json::to_vec(&job).unwrap();
+    std::fs::create_dir_all(obid.home.join("jobs")).unwrap();
+    std::fs::write(obid.home.join("jobs/aaaa1867.json"), text).unwrap();
+    let obid = start_with(&folder.0, &config, None, &OWN_ENV);
+    let ended = call(&obid, "GET", "/v1/jobs/aaaa1867/wait", None);
+    assert_eq!(ended.status, 200, "{}", ended.text);
     assert!(std::fs::read_to_string(&item).unwrap().contains("renewed"));
     never_bare("the refresh", &launches(&folder.0), |l| {
         l.env
