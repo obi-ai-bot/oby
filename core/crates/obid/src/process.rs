@@ -663,24 +663,15 @@ pub fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {
     }
 }
 
-/// Ends what an own run's commands left running (LANES-16), as far as it can prove which they
-/// are: every process of this user's, not a zombie, whose Seatbelt sandbox may write the run's
-/// `tag` (a file of random name only that run's sandbox may write: the owner's RUNTAG-1a), so
-/// nobody else's sandbox can match, `writes` (the run's commands' temp folder) and `room` (its
-/// worktree, or a conversation's room), but may write
-/// neither a file obid makes fresh in `denied` (the run's `login` folder, which its commands never
-/// write) nor one beside `writes` (so its sandbox opens this run's folder, not a parent of it), as
-/// Claude Code's own sandbox for that run is (measured with 2.1.302); one that left the run's
-/// process group with `setsid` too: no process leaves its sandbox. The person's own processes may
-/// write those files, so they never match; a terminal's Claude Code started in obid's temp folders
-/// may not write the run's `room`. The files are this call's own (a fresh name each), and obid
-/// proves, again before each process it stops, that they're there and that it, unsandboxed, may
-/// write them, `writes` and `room`: macOS answers no about a path that isn't there, so a missing
-/// one would match everyone. Each sweep stops what it found, then kills it, so a tree of them can't
-/// fork meanwhile. Ok with how many it ended once a sweep found none; an error when it couldn't
-/// prove that (a proof gone, a listing that failed, processes still forking after [`SWEEPS`]
-/// sweeps: best effort against a chain that forks faster than a sweep), for its caller to log and
-/// try again.
+/// Ends what an own run's commands left running (LANES-16), `setsid` ones too (no process leaves
+/// its sandbox), as far as it can prove they're the run's: every process of this user's, not a
+/// zombie, whose Seatbelt sandbox may write the run's `tag` (a file of random name only that run's
+/// sandbox may write, RUNTAG-1a), `writes` (its temp folder) and `room` (its worktree or room),
+/// but neither a fresh file of this call's in `denied` (its `login` folder) nor one beside
+/// `writes` (so not a sandbox opening a parent of them). Before each stop obid proves those are
+/// there and that it may write them itself (macOS says no about a missing path, which would match
+/// everyone). Each sweep stops what it found, then kills it; Ok once a sweep found none, else an
+/// error (a lost proof, a failed listing, still forking after [`SWEEPS`]: best effort).
 // ponytail: a process ended between the check and the stop may lend its id to a new one, which
 // would be stopped with it; macOS hands out ids in turn, so that needs the ids to wrap meanwhile.
 #[cfg(target_os = "macos")]
@@ -708,13 +699,15 @@ pub fn end_sandboxed(
     let me = std::process::id();
     // Never a link in place of the run's folders or tag, nor a tag with another name.
     let folder = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
-    let tagged = std::fs::symlink_metadata(tag)
-        .is_ok_and(|m| m.is_file() && std::os::unix::fs::MetadataExt::nlink(&m) == 1);
+    let tagged = || {
+        let m = std::fs::symlink_metadata(tag);
+        m.is_ok_and(|m| m.is_file() && std::os::unix::fs::MetadataExt::nlink(&m) == 1)
+    };
     let proven = || {
         [writes, room]
             .iter()
             .all(|f| folder(f) && may_write(me, f) == Some(true))
-            && tagged
+            && tagged()
             && may_write(me, tag) == Some(true)
             && files.iter().all(|file| {
                 std::fs::symlink_metadata(file).is_ok_and(|m| m.is_file())
@@ -1387,6 +1380,10 @@ pub(crate) mod tests {
         assert!(end_sandboxed(&gone, &room, &login, &tag).is_err());
         assert!(end_sandboxed(&temp, &gone, &login, &tag).is_err());
         assert!(end_sandboxed(&temp, &room, &login, &gone).is_err());
+        // Nor does a tag with a second name (a hard link somewhere else).
+        std::fs::hard_link(&tag, root.join("also")).unwrap();
+        assert!(end_sandboxed(&temp, &room, &login, &tag).is_err());
+        std::fs::remove_file(root.join("also")).unwrap();
         assert!(started.children[0].try_wait().unwrap().is_none());
         assert!(end_sandboxed(&temp, &room, &login, &tag).unwrap() >= 3);
         // Nothing of the run's is left, a child forked during the sweep included.

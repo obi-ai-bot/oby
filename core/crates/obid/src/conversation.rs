@@ -505,26 +505,27 @@ impl Conversations {
         conversations.migrate(home);
         conversations.prune(&mut conversations.lock());
         conversations.end_forgotten();
-        // A deleted conversation's folders kept while a run of it went on (LANES-16) go once
-        // none is left: no thread, not the next one's, and no run's tag beside them.
-        let known = |id: &str| {
-            conversations.has(id)
-                || conversations
-                    .next
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_deref()
-                    == Some(id)
-        };
+        // A deleted conversation's folders kept while a run of it went on (LANES-16) go once no
+        // run's tag is left: its `<id>.json` gone (a deletion removes it first; one that didn't
+        // read this time stays), and not the next conversation's.
+        let next = conversations
+            .next
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for entry in std::fs::read_dir(&conversations.dir)
             .into_iter()
             .flatten()
             .flatten()
         {
-            let id = entry.file_name().to_string_lossy().into_owned();
-            let left = is_id(&id) && entry.path().is_dir() && !known(&id);
-            if left && !run_tagged(&entry.path()) {
-                let _ = std::fs::remove_dir_all(entry.path());
+            let (id, place) = (
+                entry.file_name().to_string_lossy().into_owned(),
+                entry.path(),
+            );
+            let gone = !conversations.dir.join(format!("{id}.json")).exists();
+            let left = is_id(&id) && place.is_dir() && gone && next.as_deref() != Some(&id);
+            if left && !run_tagged(&place) {
+                let _ = std::fs::remove_dir_all(place);
             }
         }
         conversations
@@ -2493,6 +2494,23 @@ mod tests {
         assert!(
             !place.exists(),
             "obid's start kept them once no run was left"
+        );
+        // A conversation whose file doesn't read this time keeps its folders through a start.
+        let damaged = conversations.start_for("Damaged").unwrap();
+        let place = home.join("conversations").join(&damaged);
+        std::fs::create_dir_all(place.join("room")).unwrap();
+        std::fs::write(
+            home.join("conversations").join(format!("{damaged}.json")),
+            "{",
+        )
+        .unwrap();
+        drop(super::Conversations::open(
+            &home,
+            crate::events::Events::new(),
+        ));
+        assert!(
+            place.exists(),
+            "a start removed the folders of a conversation that didn't read"
         );
         // Its session ended earlier with a sweep that couldn't finish: kept on deletion.
         let failed = conversations.start_for("Failed").unwrap();
