@@ -446,12 +446,12 @@ pub struct Conversations {
     /// `next-id`, so the folder is found again after obid restarts.
     next: Mutex<Option<String>>,
     /// What ends a conversation's waiting session before its folders go (LANES-16).
-    ending: std::sync::OnceLock<Box<dyn Fn(&str) + Send + Sync>>,
+    ending: std::sync::OnceLock<Ending>,
     /// Forgotten under the lock, ended once it's let go ([`Conversations::end_forgotten`]).
     forgotten: Mutex<Vec<String>>,
 }
 
-/// [`crate::conn::sweep_records`] for a conversation's `place` (crate::harness's `Place`).
+type Ending = Box<dyn Fn(&str) + Send + Sync>;
 fn runs_swept(place: &Path, idle: bool) -> bool {
     let [temp, room, login] = ["home", "room", "login"].map(|name| place.join(name));
     crate::conn::sweep_records(&temp, &room, &login, idle)
