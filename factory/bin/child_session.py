@@ -1,6 +1,7 @@
 """Run a command as a child in a session of its own, and stop whatever it leaves there.
 
-Shared by factory/bin/check-lock and factory/bin/test-run, which import it from beside themselves.
+Shared by factory/bin/check-lock, factory/bin/test-run and factory/bin/nightly, which import it from
+beside themselves.
 
 handle_stops() makes SIGTERM and SIGINT stop the run: everything still running in the command's
 session gets SIGTERM, and the process exits 128 + signal. Install it before anything else, so that a
