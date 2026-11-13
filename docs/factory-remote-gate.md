@@ -6,7 +6,7 @@ commit's Linux check groups in one of four slots there. Task A00-10 built the ga
 those groups on the VM, starts it when it is stopped, keeps the macOS-only part on the Mac and falls back to
 the Mac, and the Mac's `factory/bin/job queue` deallocates the VM once it is idle. Gates use the VM once the
 owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). The scenarios are
-[REMOTE-1 to 9 and REMOTE-11](contracts/remote-gate.md).
+[REMOTE-1 to 9, REMOTE-11 and REMOTE-12](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -18,7 +18,9 @@ owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). 
   minutes (`gate --idle`), and the owner's 05:00 UTC auto-shutdown stays as the safety net.
 - Set up by `factory/remote/setup.sh` with `.github/workflows/ci.yml`'s pins (Rust toolchain, Node major,
   gitleaks and its SHA-256, the bwrap proof), read from the checkout, never copied: `setup.sh --pins` prints
-  them. Run it again whenever: what is already at its pin is left as it is.
+  them. Run it again whenever: what is already at its pin is left as it is. It also installs every package
+  ci.yml installs with apt-get (today bubblewrap, slirp4netns and zsh, the last for the ChatGPT gate's test,
+  which runs `scripts/package.sh` with `/bin/zsh`), [REMOTE-12](contracts/remote-gate.md).
 - Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
   host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
   slots (`factory/remote/tighten.sh`), checks `oby-check-blok` with origin/dev's own `scripts/oby-check.sh`,
