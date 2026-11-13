@@ -14,8 +14,8 @@ bin/test-run    a builder's own test, clippy or build run: one at a time on its 
 bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
                 it stops the check's leftovers and passes its exit code through
 bin/child_session.py  runs a command in a session of its own and stops its leftovers; shared by check-lock and test-run
-tests/          the factory's own tests, stdlib only, from the repository root: python3 factory/tests/test_test_run.py,
-                python3 factory/tests/test_check_lock.py
+tests/          the factory's own tests, stdlib only, from the repository root: python3 -m unittest discover -s factory/tests;
+                the check runs them when bin/, checks.sh, tests/ or config.json change
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html

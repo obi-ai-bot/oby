@@ -33,11 +33,14 @@ that changes the tool is checked by the installed one until it's merged and inst
 
 `check` runs only the built-in workflow (`tools/oby-check-blok/workflows/oby-check.json`), never
 `OBY_CHECK_WORKFLOW` or the pipelines editor's saved copy, and writes no journal. Planning stays in
-`scripts/oby-check.sh`: `OBY_CHECK_PLAN=1` with `OBY_CHECK_ONLY=rust|electron|swift|scan` selects
-its groups, and a plan says `oby-check: group <group>` once per group with work, the host's only
-selection signal. Then four typed nodes, `rust-affected-tests`, `swift-tests`, `ts-checks` and
-`secret-scan`, run the planned groups one at a time (to limit memory), each through the script with
-`OBY_CHECK_ONLY` and `OBY_CHECK_INNER=1`; `OBY_CHECK_PATHS` and `OBY_CHECK_ALL` reach them. Each
+`scripts/oby-check.sh`: `OBY_CHECK_PLAN=1` with `OBY_CHECK_ONLY=rust|electron|swift|factory|scan`
+selects its groups, and a plan says `oby-check: group <group>` once per group with work, the host's
+only selection signal. Then five typed nodes, `rust-affected-tests`, `swift-tests`, `ts-checks`,
+`factory-tests` and `secret-scan`, run the planned groups one at a time (to limit memory), each
+through the script with `OBY_CHECK_ONLY` and `OBY_CHECK_INNER=1`; `OBY_CHECK_PATHS` and
+`OBY_CHECK_ALL` reach them. The `factory` group runs `python3 -m unittest discover -s factory/tests`,
+with no GitHub login, when a change touches `factory/bin/`, `factory/checks.sh`, `factory/tests/` or
+`factory/config.json`, and in a full run (`OBY_CHECK_ALL`); it plans no Rust group. Each
 node's output streams to stderr as it runs; a node's `couldn't judge:` line comes as `oby-check:
 <group>: couldn't judge: …`. The run ends `oby-check: passed` (exit 0), `oby-check: failed: <nodes>`
 on stderr (exit 1), or, with nothing failed and something not judged, a `couldn't judge: <why>` line
