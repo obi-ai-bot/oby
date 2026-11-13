@@ -878,6 +878,8 @@ mod tests {
         }
         let mut spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
         let account = jobs.accounts(Tool::Claude).remove(0);
+        // An own run starts only for a job obid keeps, its no-proxy mark saved (LANE-3a).
+        jobs.insert(job.clone()).unwrap();
         let launch = jobs
             .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
             .unwrap();
@@ -1692,6 +1694,8 @@ mod tests {
         }
         let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
         let account = jobs.accounts(Tool::Claude).remove(0);
+        // An own run starts only for a job obid keeps, its no-proxy mark saved (LANE-3a).
+        jobs.insert(job.clone()).unwrap();
         let launch = jobs
             .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
             .unwrap();

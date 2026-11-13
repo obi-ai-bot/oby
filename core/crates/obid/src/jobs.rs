@@ -15155,6 +15155,8 @@ mod tests {
                 id.into(),
             );
             job.untrusted = id == "boxed";
+            // An own run starts only for a job obid keeps, its no-proxy mark saved (LANE-3a).
+            jobs.insert(job.clone()).unwrap();
             let [worktree, admin, common, temp] =
                 ["worktree", "admin", "common", "temp"].map(|d| root.join(id).join(d));
             for dir in [&worktree, &admin, &common, &temp] {
