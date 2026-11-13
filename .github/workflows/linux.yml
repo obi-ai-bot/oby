@@ -184,7 +184,9 @@ jobs:
 
       - name: cargo nextest
         # --no-fail-fast: every test runs and reports, not only up to the first that fails.
-        run: cargo nextest run --manifest-path core/Cargo.toml --workspace --locked --no-fail-fast --partition slice:${{ matrix.shard }}/3
+        # --retries 2: a test that fails and then passes is a timing flake, not a red night; nextest
+        # still names it FLAKY in the log, so it gets a task (docs/ci-architecture.md, R01-13).
+        run: cargo nextest run --manifest-path core/Cargo.toml --workspace --locked --no-fail-fast --retries 2 --partition slice:${{ matrix.shard }}/3
 
   secrets:
     name: Secret scan (gitleaks)
