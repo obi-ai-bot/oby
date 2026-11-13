@@ -76,7 +76,7 @@ A Mac runner (below) keeps its API on loopback and starts one more listener, the
 - **Pairing.** The Mac app makes an invitation on the loopback API, with the runner's own token: `POST /v1/pairing/invite` with `{"url": "https://oby-….tetrix.pro", "name": "<the Mac's name>", "hostname": "oby-….tetrix.pro"}` answers `{"url", "name", "hostname", "link", "secret", "code", "expiresAt"}`: a high-entropy one-time `secret` (in the QR code, with the `url` and the `link`), a six-digit `code` to type instead, both good for two minutes and once; five wrong tries end the invitation. These endpoints exist on a Mac runner only and are never reachable through the gateway: nothing that reaches the gateway can mint an invitation, and no file on the Mac stands for the app. Settings › Remote access › Pair a device advertises a route the phone can reach over HTTPS: Remote access's hostname while it's on, else the gateway as `tailscale serve` publishes it on the tailnet (the app runs only `tailscale serve status --json`, from `/usr/local/bin/tailscale`, `/opt/homebrew/bin/tailscale` or `/Applications/Tailscale.app/Contents/MacOS/Tailscale` (with `TAILSCALE_BE_CLI=1`, so the app's binary acts as the CLI), its output capped at 1 MiB, and takes the `host:port` whose `/` proxies, or whose TLS-ending TCP forward goes, to `127.0.0.1:<the gateway's port>`; when any Funnel `host:port`, in the background config or a foreground session's, reaches the gateway on any path, there's no tailnet route and the screen says to turn Funnel off first), then `{"url": "https://mac.tail0000.ts.net:8443", "hostname": "mac.tail0000.ts.net:8443"}`. With both, Remote access is chosen and the user can pick the tailnet instead; the screen says which route the QR uses. With no `gateway` in obid's configuration, neither works, and it says so. With neither, it says to turn on Remote access or run `tailscale serve --bg --https=8443 http://127.0.0.1:8810`.
 - **Redeeming.** The phone sends `POST /v1/pairing` to the gateway with `{"credential": "<the secret or the code>", "name": "<the phone's name>"}` and gets `{"token": "<device token>", "deviceID": "…", "expiresAt": "…", "link": {"name": "<the Mac's name>", "hostname": "oby-….tetrix.pro"}}`. The token is shown once: the runner keeps only its SHA-256 digest, with the device's name, in `gateway-devices.json`, and the phone keeps it in its keychain. Tokens last 30 days from their last use (PAIRING-6): a request with a token that has under 15 days left gives it 30 more, saved in `gateway-devices.json`, and `expiresAt` in Paired devices moves with it; a request refused for coming the wrong way (a relay-paired token unsealed, or a listener-paired one through a relay) doesn't extend it; one unused for 30 days stops working. A device not paired through the Obysphere (no relay: the local network, Remote access, the tailnet) stops at 90 days from pairing (its `created`) however it was used, and must pair again (PAIRING-7): the slide never takes it past day 90, and its `expiresAt` in Paired devices is never later. The `expiresAt` redeem answered is only the pairing-time date. The `link` lets a phone that typed the code link the Mac as the QR code would.
 - **Paired devices.** `GET /v1/pairing/devices` on the loopback API lists them, `[{"id", "name", "created", "expiresAt"}]`, never a token or digest; `DELETE /v1/pairing/devices/{id}` revokes one (`204`), and the phone must pair again; on `obid` its FCM push tokens and its iPhone relay registration go with it (`POST /v1/notifications`). Settings › Remote access › Paired devices on the Mac shows this list with Revoke.
-- **Every other gateway request** sends `Authorization: Bearer <device token>`. Besides `Content-Type` and `X-Oby-Words`, the gateway forwards the request's `Idempotency-Key` (obid only, R02-04), so a phone's retried `POST /v1/jobs` gets its first job back (docs/contracts/receipts.md). The gateway checks the method and path against an explicit allowlist (Runner/Routes.swift: exactly the routes the iPhone uses, and the Watch through it) before forwarding to the loopback API with the runner's own token. A route not on the list is `404` whatever the token; a missing, wrong, expired or revoked token is `401`. Adding a route to the loopback API doesn't open it through the gateway: that's a change to the list, on purpose. Off the list: `/v1/checks/…` and `/v1/agent/…` (the Mac's own and an agent's own calls, over loopback), `/v1/connections…` (managed on the Mac), `/v1/speech` (the Watch's own API has it) and the pairing endpoints. `PATCH /v1/accounts/{id}` and `PUT /v1/settings/jobs` are on it (obid, the owner's decision of 2026-11-01), so the iPhone's Settings › Agents changes an agent's model and efforts and the account new tasks go to, as the Electron app's does; the paired phone is the owner's own app, so it may send that route's other keys too (`maxRunning`, `accountFailover`, `limits`), each within obid's own bounds.
+- **Every other gateway request** sends `Authorization: Bearer <device token>`. Besides `Content-Type` and `X-Oby-Words`, the gateway forwards the request's `Idempotency-Key` (obid only, R02-04), so a phone's retried `POST /v1/jobs` gets its first job back (docs/contracts/receipts.md). The gateway checks the method and path against an explicit allowlist (Runner/Routes.swift: exactly the routes the iPhone uses, and the Watch through it) before forwarding to the loopback API with the runner's own token. A route not on the list is `404` whatever the token; a missing, wrong, expired or revoked token is `401`. Adding a route to the loopback API doesn't open it through the gateway: that's a change to the list, on purpose. Off the list: `/v1/checks/…` and `/v1/agent/…` (the Mac's own and an agent's own calls, over loopback), `/v1/connections…` (managed on the Mac) and the pairing endpoints. `PATCH /v1/accounts/{id}` and `PUT /v1/settings/jobs` are on it (obid, the owner's decision of 2026-11-01), so the iPhone's Settings › Agents changes an agent's model and efforts and the account new tasks go to, as the Electron app's does; the paired phone is the owner's own app, so it may send that route's other keys too (`maxRunning`, `accountFailover`, `limits`), each within obid's own bounds.
 - **Scrubbing.** Before an answer or an event leaves the Mac, the gateway nulls every `session` (an agent's session id, which resumes its conversation) and every `resumeCommand` (which names it, LANES-9), replaces the accounts' home paths with `[home]` in every string, and runs the vault's redaction over the text (`[vault: name]`), the same that cleans the runner's logs. Event streams are scrubbed a frame at a time, so a secret split across chunks never goes out in pieces.
 
 - **Base URL:** `https://<the runner's tailnet name>:8443` (set in the app), or `http://127.0.0.1:7777` for the runner on the Mac itself (below). Everything is under `/v1`.
@@ -84,7 +84,7 @@ A Mac runner (below) keeps its API on loopback and starts one more listener, the
 - **Who you are:** `tailscale serve` adds `Tailscale-User-Login` to every request. The runner answers only its owner's login (set when it's installed) and returns `401` to anyone else. The app sends no token and stores no secret for this. The one exception is `/v1/agent/…`, which agents call from their sandbox on the runner itself (`oby-check apple`, Apple check below): those requests carry their job's token instead, `Authorization: Bearer <token>`, and answer nothing else.
 - **JSON** everywhere, camelCase keys, dates as ISO 8601 strings (`2026-10-09T21:43:30Z`). Errors are `{"error": "One line a person can read."}` with a 4xx or 5xx status. obid's sign-in routes add `"reason"`, a stable word an app shows its own sentence for ([Sign-in reasons](#obid-only-sign-in-reasons)); an app that doesn't know a reason shows its own plain sentence.
 - **No vault secret** in an answer or an event: every string has the vault's secrets, plain or encoded, taken out. When the runner can't read its vault, answers are `503` with the reason, and events aren't sent.
-- **The Apple Watch** can't run Tailscale, so without its iPhone it uses a second, smaller API through a Cloudflare Tunnel: [The Watch API](#the-watch-api), below.
+- **The Apple Watch** reaches obid only through its iPhone: the Watch's own API, the Swift runner's, is gone ([Routes obid does not serve](#routes-obid-does-not-serve)).
 
 ## Objects
 
@@ -333,9 +333,9 @@ At most 5. The runner checks them when the job is dispatched (`422` with why: an
 
 The job gets its worktree ready, then waits `queued`, with `waiting` and `step` saying what for, joining every condition still to hold with ", and": `"Waiting for Cards screen (#250) to merge, and until 9:00 AM"`. It doesn't count as running on its account, takes no slot (`maxRunning`), and its `files` claim holds from when it was queued, like any queued job's. The runner checks every minute, and as soon as any job ends: pull requests it waits on (and the pull request of a job it waits to see merged) are read from GitHub then. Once everything holds, `startWhen` goes back to null, it's brought up to date with its base and starts (or waits for a slot), and its report says `Started when what it waited for came: …`. It keeps waiting across runner restarts, however many: it never ran, so it isn't picked up like a job whose agent crashed. What changes while its worktree gets ready (started now, told to wait for something else) holds once it's ready. The Mac's, the iPhone's and the Watch's job screens have Start now, and the Watch's list says `Scheduled, waiting …` where it would say Starting.
 
-A condition that can never hold (the job it waits on failed, was stopped or ended with nothing published; the pull request was closed without merging; the account is gone) makes it a decision: `step` is `"Waiting for you: Broken build failed, so it won't be done."` and `question` asks `"It can't start as planned: …. Start it anyway, cancel it, or wait for something else?"` with the options `Start anyway`, `Cancel` and `Wait for something else`, as a `question` inbox item. `Start anyway` starts it now; `Cancel` stops it; `Wait for something else` keeps it waiting, unasked (a failed job tried again, a pull request reopened, may still come), until you change what it waits for (`POST /v1/jobs/{id}/start-when`), start it or stop it. Other words are refused (`422`). After a restart it asks again.
+A condition that can never hold (the job it waits on failed, was stopped or ended with nothing published; the pull request was closed without merging; the account is gone) makes it a decision: `step` is `"Waiting for you: Broken build failed, so it won't be done."` and `question` asks `"It can't start as planned: …. Start it anyway, cancel it, or wait for something else?"` with the options `Start anyway`, `Cancel` and `Wait for something else`, as a `question` inbox item. `Start anyway` starts it now; `Cancel` stops it; `Wait for something else` keeps it waiting, unasked (a failed job tried again, a pull request reopened, may still come), until you start it or stop it. Other words are refused (`422`). After a restart it asks again.
 
-A waiting job can be started now (`POST /v1/jobs/{id}/start`), told to wait for something else (`POST /v1/jobs/{id}/start-when`), moved (`POST /v1/jobs/{id}/move`: what it waited for on an account it left goes, and with nothing left it starts; a new model on the same account keeps it) or stopped (`POST /v1/jobs/{id}/stop`). In words, the brain fills `startWhen` on the job it plans (`POST /v1/plans`), which then starts waiting: "do this on Codex when it resets", "after the cards job merges", "once #205 is merged", "tomorrow at 9", "when Personal has room".
+A waiting job can be started now (`POST /v1/jobs/{id}/start`), moved (`POST /v1/jobs/{id}/move`: what it waited for on an account it left goes, and with nothing left it starts; a new model on the same account keeps it) or stopped (`POST /v1/jobs/{id}/stop`). In words, the brain fills `startWhen` on the job it plans (`POST /v1/plans`), which then starts waiting: "do this on Codex when it resets", "after the cards job merges", "once #205 is merged", "tomorrow at 9", "when Personal has room".
 
 ### Job pipeline and pull request following
 
@@ -401,7 +401,7 @@ Xcode Cloud builds and tests every pull request into `dev` (the "Pull Requests" 
 
 ### Connection
 
-On obid (2026-10-27), connected apps are gone: `GET`/`POST /v1/connections` and `DELETE /v1/connections/{name}` answer `404` (the apps treat that as none), and jobs get no connected app. GitHub is the only outside connection (docs/trim.md, batch 2), through `gh`. The per-job broker stays: Codex and Cursor agents reach `oby_ask_owner` on `/v1/agent/mcp/{job}` with the job's token, and Tetrix's server is `/v1/agent/tetrix/{job}` (obid only: Tetrix), whose calls are in the job's `connectionUses`.
+On obid (2026-10-27), connected apps are gone: `GET`/`POST /v1/connections` and `DELETE /v1/connections/{name}` answer `404` (the apps treat that as none), and jobs get no connected app. GitHub is the only outside connection (docs/trim.md, batch 2), through `gh`. The per-job broker stays: Codex and Cursor agents reach `oby_ask_owner` on `POST /v1/agent/mcp/{job}` with the job's token, and Tetrix's server is `/v1/agent/tetrix/{job}` (obid only: Tetrix), whose calls are in the job's `connectionUses`.
 
 ### Inbox item
 
@@ -515,7 +515,7 @@ Accounts are signed in on the runner itself, through each tool's own login; the 
 
 ### No Dispatch card (#269)
 
-There's no draft to confirm any more: the work the brain plans starts as it's planned, like the Lead's, and `POST /v1/plans` answers the jobs it started. Everything the card let you change before the start changes after it: the account, tool or model (`POST /v1/jobs/{id}/move`), the mode (`POST /v1/jobs/{id}/mode`), what it waits for (`POST /v1/jobs/{id}/start-when`), a message to the agent, Stop. The outgoing gates don't move: checks, the secret scan and Oby's review still gate every push and merge. A rules guess or dispatch after research waits in a `start` inbox item (Inbox, below), and nothing starts until its `Start`.
+There's no draft to confirm any more: the work the brain plans starts as it's planned, like the Lead's, and `POST /v1/plans` answers the jobs it started. Everything the card let you change before the start changes after it: the account, tool or model (`POST /v1/jobs/{id}/move`), the mode (`POST /v1/jobs/{id}/mode`), a message to the agent, Stop. The outgoing gates don't move: checks, the secret scan and Oby's review still gate every push and merge. A rules guess or dispatch after research waits in a `start` inbox item (Inbox, below), and nothing starts until its `Start`.
 
 ## Endpoints
 
@@ -785,15 +785,11 @@ Research jobs receive no instruction to run the repository check and reserve no 
 
 Returns a finished research job's saved report as `{"job":"…","commit":"…","markdown":"…","proposals":[]}`. `markdown` is its saved `summary`, with the same masking as the job endpoint; `commit` is always a string, its pinned `startCommit`. No separate report or proposals are stored. `404` for an unknown job or one without a report (not research, not done, an empty summary, or no start commit). A research job without a start commit advertises `report: false`.
 
-### `POST /v1/jobs/{id}/proposals/{index}/file`
-
-Files the selected proposed issue only after an explicit user action. The body is `{"start":false}`; with `start:true`, a build job on the new issue is also queued. The issue's body is the proposal's, then `by Oby: a research job proposed this issue, and it was filed from Oby.`: an agent's words under the owner's login (obid only: GitHub work, "Whose words"). Oby scans the title and that body for secrets first. If the scan cannot run or finds a possible secret, it returns `422` and files nothing. `409` when already filed, `404` for an unknown proposal index. A filed issue is listed in the job's `outgoing` actions.
-
 ### `GET /v1/jobs/{id}/wait`
 
 Answers once the job has ended (`done`, `failed`, `stopped` or `interrupted`) with the `Job`, or right away if it already has. Until then it sends a space every 15 seconds to keep the connection open, so the body is the job's JSON after some whitespace. `404` for a job the runner doesn't know.
 
-The iPhone app waits on this as a background download: iOS keeps it going while the app is suspended and wakes the app when it's answered, so the Live Activity can say how the job ended even on a runner without push (`POST /v1/activities`).
+The iPhone app waits on this as a background download: iOS keeps it going while the app is suspended and wakes the app when it's answered, so the Live Activity can say how the job ended: obid sends no Live Activity pushes ([Routes obid does not serve](#routes-obid-does-not-serve)).
 
 ### `GET /v1/jobs/{id}/transcript` (obid only)
 
@@ -939,16 +935,6 @@ On obid, Oby's own review of published work (`reviewOf` set) runs with nobody wa
 ### `POST /v1/jobs/{id}/start`
 
 Start now: a job waiting for its `startWhen` starts as if it had come (or waits for a slot); one still getting its worktree ready starts once it's ready. No body. Returns the job, with `startWhen` null; its report says `Started by you before what it waited for came.` `404` for an unknown job, `409` when it isn't waiting to start. On obid, only a job waiting for an account with room waits to start (#872): Start now lifts its account's weekly reserve, as `Use … anyway` does, and it starts there.
-
-### `POST /v1/jobs/{id}/start-when`
-
-Changes what a job that hasn't started waits for:
-
-```json
-{"startWhen": [{"pr": 205, "is": "merged"}, {"at": "2026-10-13T09:00:00Z"}]}
-```
-
-The list replaces the job's (Start when); `[]` starts it now. A condition on an account moves the job to that account. A job waiting to be asked about a condition that can't hold stops asking. Returns the job. `404` for an unknown job; `422` with why for a job that started already, one of Oby's own reviews, or conditions that can't be.
 
 ### `POST /v1/accounts/{id}/reserve`
 
@@ -1206,25 +1192,6 @@ Forgets a device's publishing key, with a registered key's signature for it (its
 - `signature`: ECDSA P-256 with SHA-256 (DER, base64) over `"oby-revoke-device\n<id>\n<signedAt>"`, within 2 minutes, once.
 - It returns `{"revoked": "<id>"}`; `404` for a device it doesn't know, `403` for an approval that isn't a registered key's for this device. Not on the gateway.
 
-### `POST /v1/activities`
-
-Hands the runner a Live Activity push token, so it can keep the phone's Lock Screen and Dynamic Island current while the app is suspended:
-
-```json
-{"token": "80a1f2…", "kind": "update", "topic": "com.deskree.oby", "environment": "development"}
-```
-
-- `token`: the push token in hex. `kind`: `"update"` for one activity's token, `"start"` for the app's push-to-start token (a newer one replaces the older for the same app and environment). `topic`: the app's bundle ID. `environment`: `"development"` (a build from Xcode) or `"production"` (TestFlight and the App Store).
-- It returns `{"push": true}` when the runner pushes, `{"push": false}` when it has no APNs key (the token isn't kept). `422` for a token, kind, topic or environment that isn't one of those.
-
-Two seconds after a job changes, the runner pushes what its jobs look like then (one Live Activity, as the app shows it):
-
-- **A job is active** and the runner has update tokens: an `update` with the newest active job (priority 5, skipped when nothing the card shows changed).
-- **A job is active**, no update tokens, and it hasn't started one yet: a push-to-start (`start`, priority 10, with an alert) to the start tokens. The phone then hands over the new activity's update token.
-- **Nothing is active:** an `end` with how the last job finished and a dismissal 15 minutes after it finished, with no alert (a job that needs you says so with its own notification, below); then the update tokens are dropped.
-
-Apple's answer `410` or `BadDeviceToken` drops a token. The runner keeps tokens in `apns/tokens.json`.
-
 ### `POST /v1/notifications`
 
 Hands the runner the app's device token, so it can tell the phone when a job needs you:
@@ -1233,8 +1200,8 @@ Hands the runner the app's device token, so it can tell the phone when a job nee
 {"token": "5b0e9c…", "topic": "com.deskree.oby", "environment": "production"}
 ```
 
-- `token`: the device token from `registerForRemoteNotifications`, in hex. `topic` and `environment` as for `/v1/activities`. The app sends it on every launch once notifications are allowed (it asks the first time something said on the phone starts a job).
-- It returns `{"push": true}` or `{"push": false}`, and `422`, as `/v1/activities` does.
+- `token`: the device token from `registerForRemoteNotifications`, in hex. `topic`: the app's bundle ID. `environment`: `"development"` (a build from Xcode) or `"production"` (TestFlight and the App Store). The app sends it on every launch once notifications are allowed (it asks the first time something said on the phone starts a job).
+- It returns `{"push": true}` when the runner pushes, `{"push": false}` when it has no APNs key (the token isn't kept). `422` for a token, topic or environment that isn't one of those.
 
 Two seconds after a job changes, the runner sends an alert push (`apns-push-type: alert`, the app's bundle ID as topic, priority 10) for each job whose need changed. Nothing else notifies: steps, rounds, and jobs that end needing nothing (stopped, or done without commits) only move the Live Activity.
 
@@ -1351,15 +1318,13 @@ The saved rules, oldest first:
 
 `decision` is `allow` or `deny`; deny beats allow. "Always" on a permission saves one. `DELETE` forgets one and answers with the rules left; `404` for a rule the runner doesn't know.
 
-### `GET /v1/settings/models` and `PUT /v1/settings/models`
+### `GET /v1/settings/models` and `GET /v1/settings/models/options`
 
-obid (#1574) answers `GET /v1/settings/models` with `status.models` and `GET /v1/settings/models/options` with the choices Settings › Agents offers (each model with the efforts it takes); it has no `PUT` (`405`): a model and efforts are an account's (`PATCH /v1/accounts/{id}`). The rest of this section is the Swift runner's.
+obid (#1574) answers `GET /v1/settings/models` with `status.models` and `GET /v1/settings/models/options` with the choices Settings › Agents offers (each model with the efforts it takes); it has no `PUT` (`405`): a model and efforts are an account's (`PATCH /v1/accounts/{id}`).
 
 Cursor's options also carry `groups` (obid, add-only; docs/contracts/agents.md, AGENTS-11): `cursor-agent models` lists one id per model, effort and Fast (`grok-4.7-low`, `grok-4.7-low-fast`, …, 276 on cursor-agent 2026.10.01), so obid groups the same `models` by model, in the list's order. Each group has `base` (the ids without effort and Fast, `thinking` kept: `claude-opus-5-thinking`; a key, not always an id), `name` (the words all its names share: "Grok 4.7"), `default` (the plain id Cursor names with the fewest words, `medium` on a tie: where a pick of the model starts) and `variants: [{"id", "effort"?, "fast"}]`, sorted by effort (`none` `minimal` `low` `medium`, the bare id with no `effort`, `high` `xhigh` `max` `ultra`; `extra-high` reads as `xhigh`), the plain one before Fast. Every listed id is in exactly one group, so a choice made from them is always an id Cursor listed; that id is what `PATCH /v1/accounts/{id}` keeps as `model` and what runs. `models` is unchanged.
 
-Each tool's model, routine effort and complex-job effort, as in `status.models`; Cursor has a model and no effort: `"cursor": {"model": "auto"}` (`auto` lets Cursor pick). `PUT` takes `cursor` optionally: older clients leave it out and the value is kept; it must be a model id (`422` for anything else, such as an option). `GET /v1/settings/models/options` lists the choices per tool (add-only shape): Claude Code stays on its fixed models and efforts (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) — its CLI has no models subcommand or config-folder cache that lists them without a model call; for Codex and Cursor, the first signed-in account's last good list from its own CLI (`codex debug models` with visibility `list` and display names, or app-server `model/list` not hidden; `cursor-agent models` as `id - name` lines), with that account's config folder (`CODEX_HOME`; Cursor as obid runs it), refreshed when the Usage panel's accounts are read, never blocking a turn or a job; today's fixed list when a read fails or the tool isn't there. When an account's list differs from that tool options list, `GET /v1/status` and the `accounts` event add `models: [{"id","name"},…]` on that account (add-only). `PATCH /v1/accounts/{id}` and `offered_model` accept an id from that account's list. Defaults are Claude Code `xhigh` and Codex `high` for `complexEffort`; older clients that omit it keep the current value.
-
-The chat's set_setting action uses those same choices. It changes one tool's model, routine effort or `complexEffort` (Cursor's model only: `effort` and `complex_effort` must be null for it), maxRunning (1 through 20), or an account's weekly reserve (lift true or false). For example, "complex jobs on Codex at xhigh" sets Codex's `complexEffort`. Swift checks every value against the briefing before the runner applies it; a rejected model or effort includes the available choices. Each action reply names the old and new value. A request that changes two tools is planned as two actions so the brain receives a fresh briefing between them.
+Each tool's model, routine effort and complex-job effort, as in `status.models`; Cursor has a model and no effort: `"cursor": {"model": "auto"}` (`auto` lets Cursor pick). `GET /v1/settings/models/options` lists the choices per tool (add-only shape): Claude Code stays on its fixed models and efforts (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5) — its CLI has no models subcommand or config-folder cache that lists them without a model call; for Codex and Cursor, the first signed-in account's last good list from its own CLI (`codex debug models` with visibility `list` and display names, or app-server `model/list` not hidden; `cursor-agent models` as `id - name` lines), with that account's config folder (`CODEX_HOME`; Cursor as obid runs it), refreshed when the Usage panel's accounts are read, never blocking a turn or a job; today's fixed list when a read fails or the tool isn't there. When an account's list differs from that tool options list, `GET /v1/status` and the `accounts` event add `models: [{"id","name"},…]` on that account (add-only). `PATCH /v1/accounts/{id}` and `offered_model` accept an id from that account's list. Defaults are Claude Code `xhigh` and Codex `high` for `complexEffort`.
 
 ```json
 {"claude": {"models": [{"id": "claude-opus-5-5", "name": "Opus 5.5"}], "efforts": ["low", "medium", "high", "xhigh", "max"], "complexEfforts": ["low", "medium", "high", "xhigh", "max"]},
@@ -1384,137 +1349,6 @@ obid also answers `accountFailover`, `defaultAccount` and `talkAccount` (`{"maxR
 `limits` (obid only, the owner's decision of 2026-10-31: docs/contracts/agents.md, AGENTS-9) are the owner's own ceilings on what Oby holds to by itself, each shown as its value now: `{"rounds": 10, "maxRunning": 20, "folders": 20, "routines": 20, "accounts": 32}`, the most rounds a job may be given, the highest `maxRunning`, the most folders a conversation works in, routines and accounts obid keeps. `PUT` takes any of them, each a whole number from 1 to its ceiling (rounds 100, maxRunning 64, folders 200, routines 500, accounts 256: past them the Mac itself runs out), or null for its default (anything else, or another key, is `422`, and a `422` keeps nothing of its body); a lower `limits.maxRunning` lowers `maxRunning` with it. Kept across restarts. The other caps here protect only the Mac (lengths, file counts and sizes, connections) and stay fixed limits.
 
 `defaultAccount` (#1573) is the account new tasks go to: an account id obid has (`422` for another), or null for routing's own order; removing the account sets it back to null. A job with no account named (`auto`) goes to it first, whatever its tool, while it's signed in with room; one that names a tool goes to it when it's that tool's. Signed out, out of room, or being signed in or removed, it's passed over as routing passes any. A conversation's plan whose account is `auto` takes its tool unless the owner's words name an agent, before `defaultAgent` (docs/contracts/agents.md, AGENTS-1 to AGENTS-4).
-
-### `POST /v1/speech?device=<UUID>&utterance=<UUID>&final=false&language=auto`
-
-Transcribes one utterance on the runner's CPU using whisper.cpp, independently of the iPhone and of any agent. It uses the same owner gate as the other `/v1` endpoints. This is the speech service only; a Watch gateway can call it later.
-
-The body is binary audio: signed 16-bit little-endian PCM, 16 kHz, mono (`Content-Type: audio/pcm` or `application/octet-stream`), or a complete RIFF/WAV chunk containing that same format (`audio/wav` or `audio/x-wav`). Send sequential chunks of at most ten seconds; each WAV request has its own header. The HTTP body limit is 324,096 bytes including WAV metadata. Audio for an utterance may total at most 60 seconds (1,920,000 PCM bytes).
-
-- `device`: stable UUID chosen by the app for this device. This is a concurrency key, not authentication.
-- `utterance`: a fresh UUID for each utterance. Reuse it for every chunk of that utterance.
-- `final`: `false` by default. Every non-final call appends the chunk and transcribes **all** audio so far with multilingual `base-q5_1`. A `true` call appends its optional last chunk and transcribes all audio with `small-q5_1`, then discards the utterance. An empty final body is allowed after earlier audio. Partial text can change.
-- `language`: `auto` (default, detection while transcribing), `en` or `pt`. Use the same language on every call. Transcription keeps the spoken language; it does not translate. With `auto`, partials keep detecting the language from all audio so far. After at least five seconds of partial audio, the final pass reuses the latest detected English or Portuguese language to avoid a second encoder pass. Final-only requests, shorter partials and other detected languages still use automatic detection.
-
-Returns `{"utterance":"<UUID>","text":"…","final":false}` (or `true`). Wait for each answer before sending the next chunk. Accepted chunks append exactly once per received call; this endpoint does not deduplicate retries. After an uncertain network result, let the session expire before starting again.
-
-Only one utterance per device is open or transcribing at once (`409` for an overlapping call, a different utterance or a changed language). One resident server per distinct model and 32 open utterances are allowed across devices. Each model accepts one inference at a time (`503` when busy). A busy `503` consumes none of the rejected chunk and preserves earlier audio and its idle deadline; retry the same chunk with the same utterance UUID. Fast and final models can work independently. Idle utterances are discarded after 120 seconds following their last partial answer. `400` means invalid parameters/audio; `413` means a body or utterance is too large. Exceeding the utterance limit discards it. `415` means unsupported content type. `501` clearly identifies a missing server/model or invalid thread count. `500` means transcription failed or timed out: audio is discarded and the client starts a fresh utterance. Each inference has a 120-second deadline; a timeout kills that model’s server to release its audio. The next request or five-second maintenance pass restarts it.
-
-Audio stays in memory throughout: normalized WAV is posted as multipart `file` data to whisper-server's `/inference` endpoint, with `language`, `prompt`, `response_format=verbose_json`, `no_language_probabilities=true` and `no_context=true`. Language probabilities are disabled because upstream otherwise encodes the audio again for that response. The runner consumes only the text and detected language; its public response is unchanged. Neither Oby nor the server writes audio or transcript files (`--convert` is never enabled). Servers bind only to `127.0.0.1`, have a random request-path prefix, receive no agent/login environment, and run directly under the runner outside `Agents.sandboxed`. Their stdout/stderr go to `/dev/null`; audio and transcripts never reach logs or agents. Startup removes legacy crash leftovers from `OBY_HOME/whisper/audio`. HTTP uses a fresh, verified loopback socket for each request, without cookies, cache or proxies. No previous utterance's decoder context is carried into another request.
-
-The runner starts both model servers before serving requests and keeps them resident, restarting exited servers during maintenance or on demand. Startup warms each server with one second of generated silence (not microphone audio) using the short encoder window, and discards the result. Readiness and warmup share a 120-second startup deadline. A missing installation leaves the other API routes usable and returns `501` for speech. Runner shutdown kills its servers; systemd's default control-group cleanup also covers a runner crash. If both model paths are identical, they share one server. Reserve the configured loopback ports for this runner; an occupied port causes readiness to fail. Before sending any request bytes (including warmup), the runner verifies that the connected peer socket belongs to its spawned child: `/proc/net/tcp` and the child’s descriptors on Linux, `lsof` on macOS. Audio travels over that same verified socket, with no redirects or automatic reconnects, so a different listener cannot receive it even if the port changes hands. If ownership cannot be verified, speech fails closed.
-
-Run `OBY_HOME=/srv/nvme/oby Runner/scripts/setup-whisper.sh` once as the runner's owner on tetrix-lab. It requires git, CMake, a C++ compiler, curl and flock (Ubuntu: `git cmake build-essential curl util-linux`). It pins whisper.cpp v1.8.2, builds static release `whisper-cli` and `whisper-server` binaries optimized for this CPU with GPU backends off, and atomically downloads multilingual `base-q5_1`, `large-v3-turbo-q5_0` and `small-q5_1`. Repeated runs reuse the checkout/build and completed downloads; interrupted downloads are retried. Existing unquantized models are retained but unused by default. See the [upstream server](https://github.com/ggml-org/whisper.cpp/blob/v1.8.2/examples/server/server.cpp) and [model distribution](https://github.com/ggml-org/whisper.cpp/blob/v1.8.2/models/download-ggml-model.sh).
-
-Short audio no longer pays for Whisper's default 30-second padding. Each request sets `audio_ctx` to `min(1500, max(600, (ceil(seconds) + 1) * 50))`: at least 12 seconds, a second beyond the audio, and at most the full 30-second encoder window. The 11-second sample uses 600 frames. Utterances of 30–60 seconds use the full window and whisper.cpp's successive-window processing; the 60-second input cap is unchanged.
-
-Measured on tetrix-lab (16 CPU cores), 2026-10-11, with whisper.cpp v1.8.2's 11-second `samples/jfk.wav`, CPU-only, eight inference threads, `no_context=true`, no timestamps, and prompt `oby, tetrix`. Timing covers the loopback inference request through the parsed response, excluding startup/model loading. Models were resident and warmed with generated silence. Loads are one-minute averages recorded before each request; concurrent work changed between runs, so this is not a controlled comparison with the earlier load-13.6 CLI measurements (base-q5_1 4.3 s, unquantized turbo 27 s).
-
-| Model / language | Encoder frames | Inference seconds | Load before each request |
-| --- | --- | --- | --- |
-| small-q5_1 / en | 600 | 1.710, 2.083, 1.632 | 28.12, 27.15, 27.15 |
-| large-v3-turbo-q5_0 / en | 600 | 13.129, 12.826, 13.715 | 48.08, 49.90, 46.28 |
-| small-q5_1 / auto | 600 | 9.764, 2.991 | 27.15, 40.65 |
-| large-v3-turbo-q5_0 / auto | 600 | 25.900, 24.094 | 49.00, 53.18 |
-
-These first measurements used the text-only JSON response. A repeat with the production verbose response and language probabilities disabled measured small-q5_1 at **27.008, 10.515, 11.136 s**, at loads **76.72, 77.19, 74.21**. The same production-response repeat measured quantized turbo at **13.181, 12.641, 12.174 s**, at loads **75.15, 70.89, 60.78**. The returned word sequence matched in the response-format checks. Earlier full-window (1500-frame) resident runs were also slow: small 47.923/63.658 s (loads 75.91/83.18), quantized turbo 50.006/36.528 s (loads 71.16/73.02). Reducing threads to one, two or four did not improve the best eight-thread result; retain eight by default.
-
-**Default: small-q5_1.** It reached about two seconds on the warmed English sample; turbo remains too slow. Startup warmup, the smaller encoder window and reuse of a sufficiently long partial's detected language avoid repeated setup and detection work in the live speech path. This is not a two-second guarantee under heavy contention: the current machine sometimes ran at loads above 100, and even the small model missed the target badly. Final-only automatic detection is also slower. Use `en`/`pt` when the device knows its language, or send live partials; longer utterances and Portuguese recognition still need real Watch measurements.
-
-The runner reads this configuration from its environment at startup (restart after changes):
-
-| Variable | Default |
-| --- | --- |
-| `OBY_WHISPER_SERVER` | `OBY_HOME/whisper/bin/whisper-server` |
-| `OBY_WHISPER_FAST_MODEL` | `OBY_HOME/whisper/models/ggml-base-q5_1.bin` |
-| `OBY_WHISPER_FINAL_MODEL` | `OBY_HOME/whisper/models/ggml-small-q5_1.bin` |
-| `OBY_WHISPER_THREADS` | `8` per model server, allowing two inferences to share tetrix-lab's 16 CPU cores |
-| `OBY_WHISPER_FAST_PORT` | `8171` (loopback only) |
-| `OBY_WHISPER_FINAL_PORT` | `8172` (loopback only) |
-| `OBY_SPEECH_NAMES` | Unset: `oby`, `tetrix` and the short names of the runner's current `Desk.repos` list. Set a comma-separated list to override these names. Duplicates are removed and the initial prompt is capped at 512 UTF-8 bytes, including for overrides. |
-
-No GPU is needed. The sample timings above do not replace checks with real Watch recordings.
-
-### `GET /v1/watches`, `POST /v1/watches` and `DELETE /v1/watches/{id}`
-
-The Apple Watches paired with the runner, for [the Watch API](#the-watch-api). On this API, so only the owner's iPhone over the tailnet reaches them.
-
-`POST /v1/watches` pairs one. The Watch makes its key in its Secure Enclave and hands the public half to the iPhone over WatchConnectivity; the iPhone signs the pairing with its approval key (the owner's tap) and sends it with the Cloudflare Access service token it gives the Watch:
-
-```json
-{"name": "Wellington's Apple Watch", "publicKey": "BK9…",
- "accessClientId": "4a1c….access", "accessClientSecret": "9f2e…",
- "approval": {"device": "d7c1…", "signedAt": "2026-10-11T09:12:30Z", "signature": "MEUCIQ…"}}
-```
-
-- `publicKey`: the Watch's P-256 key, X9.63, base64. `approval.signature`: ECDSA P-256 with SHA-256 (DER, base64) by the registered phone's key (`POST /v1/devices`) over `"oby-pair-watch\n<publicKey>\n<signedAt>"`, within 2 minutes, once. Agents on the runner's machine reach this API as the owner, but they can't make that signature.
-- The service token goes to the runner's vault (`watch-access-client-id`, `watch-access-client-token`), where no agent sees it and the secret scan learns it, so nothing outgoing carries it. A newer pairing replaces it. No answer or event carries it.
-- It returns `201` with `{"id": "5e0f…", "url": "https://oby-watch.example.com"}`: the Watch's id and the Watch API's address, which the iPhone hands the Watch with the token. A key the runner knows keeps its id. `409` when the runner has no `watch.json` yet, `403` for an approval that doesn't pass, `422` for a key or token that isn't one.
-
-`GET /v1/watches` lists them, `[{"id": "5e0f…", "name": "Wellington's Apple Watch", "registered": "2026-10-11T09:12:31Z"}]`, never a key or the token. `DELETE /v1/watches/{id}` removes one (the iPhone's Settings): its requests fail from then on and its push tokens are dropped; with the last Watch gone, the service token leaves the vault. `404` for a Watch the runner doesn't know.
-
-## The Watch API
-
-Only the Swift runner served this API, and it was deleted on 2026-11-02; obid does not serve it (#454, not planned), so this section is kept only as the contract if it comes back.
-
-The Watch works without its iPhone. While the phone is in reach, the Watch goes through it as before (WatchConnectivity, `Shared/WatchWire.swift`); otherwise it calls this API itself, and goes back to the phone once it's in reach again. watchOS has no Tailscale or VPN, and only plain HTTPS through `URLSession` (no WebSockets), so:
-
-- **Where:** the runner listens on a second address, `127.0.0.1:7778` (`OBY_WATCH_PORT`), which serves only the endpoints below. A Cloudflare Tunnel (`cloudflared`) publishes it at a hostname of the owner's, and a Cloudflare Access application on that hostname lets through only requests carrying its service token (`CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, a Service Auth policy).
-- **Set up** on the runner's machine, in `$OBY_HOME/watch.json`, read again whenever it changes:
-
-  ```json
-  {"url": "https://oby-watch.example.com", "team": "example",
-   "audience": "4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2",
-   "keys": [{"kid": "…", "kty": "RSA", "alg": "RS256", "n": "…", "e": "AQAB"}]}
-  ```
-
-  `url` is the tunnel's hostname, `team` the Zero Trust team name, `audience` the Access application's AUD tag, and `keys` the `keys` list from `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`. Cloudflare rotates those keys every six weeks: paste the new list in. Without a usable `watch.json`, every request is `503`.
-- **Never** `Tailscale-User-Login`: it means nothing here. Every request needs both of these, or it's `401` with the reason:
-  1. **`Cf-Access-Jwt-Assertion`**, which Access adds to every request it lets through: an RS256 JWT, checked against `keys` (by `kid`), with `audience` in `aud`, `iss` `https://<team>.cloudflareaccess.com`, and `exp`, `nbf` and `iat` current (a minute of clock difference allowed).
-  2. **A signature from a paired Watch**, over the request:
-     - `Oby-Watch`: the Watch's id from pairing.
-     - `Oby-Time`: when it was signed, in seconds since 1970. At most 2 minutes behind the runner's clock and 5 seconds ahead of it.
-     - `Oby-Nonce`: 16 to 64 letters, digits, `-` or `_`, new for every request. A nonce the runner has seen from that Watch is refused, so a replayed request fails, after a restart too: the runner keeps used nonces in `$OBY_HOME/watch-nonces.json` (0600) until their request is too old to get in. When it can't save or read that file, Watch requests are `503`.
-     - `Oby-Signature`: ECDSA P-256 with SHA-256 (DER, base64), by the Watch's Secure Enclave key, over the UTF-8 bytes of `"oby-watch\n<METHOD>\n<path and query, as sent>\n<Oby-Time>\n<Oby-Nonce>\n<hex SHA-256 of the body>"` (the body's hash is that of no bytes for a `GET`).
-- Answers and errors are as on the tailnet API, vault secrets taken out the same way.
-
-The endpoints, each as on the tailnet API unless it says otherwise:
-
-| Endpoint | |
-|---|---|
-| `GET /v1/jobs?limit=50` | The jobs. |
-| `GET /v1/jobs/{id}` | One job. |
-| `GET /v1/events` | The event stream. The Watch follows it only while Oby is on screen. |
-| `POST /v1/plans` | What was dictated: the work it plans starts, and the answer carries the jobs. |
-| `POST /v1/jobs` | A job described whole; a plan's draft from before #269 is `410`. |
-| `POST /v1/jobs/{id}/messages` | A word to the job's agent. |
-| `POST /v1/jobs/{id}/dismiss` | Dismiss. |
-| `POST /v1/jobs/{id}/move` | Move to another tool, account or model. |
-| `POST /v1/jobs/{id}/start` | Start now, a job waiting for its `startWhen`. |
-| `POST /v1/jobs/{id}/permission` | Answer a waiting permission. |
-| `POST /v1/jobs/{id}/mode` | Change a job's mode. |
-| `GET /v1/jobs/{id}/publish` | The sentence publishing would carry out. |
-| `POST /v1/jobs/{id}/publish` | Publish, approved on the Watch (below). |
-| `POST /v1/notifications` | The Watch's push tokens (below). |
-| `POST /v1/speech` | A piece of a held recording (below). |
-
-### `POST /v1/jobs/{id}/publish` on the Watch API
-
-The Watch approves with a turn of the crown, after showing the runner's sentence. `{"action": "Push oby/fix-ab12cd to deskree-inc/oby and open a pull request into dev."}`: the signed request is the approval (fresh, once, from a paired Watch's key), and `action` must be the runner's own sentence exactly, else `403`. Then Publish runs as for `POST /v1/jobs/{id}/publish` above, and returns `{"url": …}`.
-
-### `POST /v1/notifications` on the Watch API
-
-The Watch's own push tokens: `{"token": "5b0e9c…", "topic": "com.deskree.oby.watchkitapp", "environment": "production", "kind": "alert"}`.
-
-- `kind` `"alert"` (the default) is the Watch app's device token. The runner sends it exactly the alerts and clearing pushes it sends the iPhone (`POST /v1/notifications` above), the same payload with the same `apns-collapse-id`, so the Watch shows each alert once.
-- `kind` `"widget"` is the complications' WidgetKit push token. When the number of jobs that need you or are working changes, the runner sends `{"aps": {"content-changed": true}}` (`apns-push-type: widgets`, topic `<topic>.push-type.widgets`), and the complications fetch the jobs themselves. A newer widget token replaces the Watch's older one.
-- It returns `{"push": true}` or `{"push": false}`, and `422`, as `POST /v1/notifications` does. Unpairing the Watch drops its tokens.
-
-### `POST /v1/speech?request={id}&sequence={n}` on the Watch API
-
-A piece of the recording the user is holding the talk button for: the body is mono signed 16-bit little-endian PCM at 16 kHz (`application/octet-stream`), up to 32,000 bytes (one second), `request` the hold's id (8 to 64 letters, digits or `-`) and `sequence` 0, 1, 2… in order.
-
-The Watch API doesn't pass pieces on to the runner's speech service (`POST /v1/speech` on the tailnet API, above) yet: a well-formed piece is answered `501`, `{"error": "Speech-to-text isn't set up on the runner yet. Dictate instead."}`, and the Watch stops recording and offers the system's dictation. `400` without `request` and `sequence`, `422` for an empty, odd or too-long piece.
 
 ## What the runner doesn't do by itself
 
@@ -1551,6 +1385,28 @@ obid's caps, each either a limit of what it can hold or a policy the owner can c
 | Routines | 20, none more often than hourly | A setting, `limits.routines` (at most 500); how often, the brain's (Limits 1/3) |
 | One conversation turn | at most 10 jobs started or told; a check-in at most daily | A policy: the owner's own number or schedule is proposed to pass (the brain, Limits 1/3) |
 
+## Routes obid does not serve
+
+Routes this document or the apps once named that obid doesn't serve: obid answers `404` for each (`405` where it serves another method on the same path), on loopback and through the gateway, whose allowlist names none of them. Each bullet is one route, the date it went and why. The Brain (`tools/brain`) reads this list: a route on it never counts as documented, and one obid routes again is a check (docs/contracts/retired.md, RETIRED-7 and RETIRED-8).
+
+- `POST /v1/speech` (gone 2026-11-02): the Swift runner's speech service, deleted with it; obid never served it, and the iPhone transcribes on the phone (`PhoneSpeech.swift`).
+- `POST /v1/activities` (gone 2026-11-02): the Swift runner's Live Activity push tokens, deleted with it; obid never served it and sends no Live Activity pushes.
+- `GET /v1/watches` (gone 2026-11-02): the Swift runner's list of paired Apple Watches, deleted with it; obid never served it.
+- `POST /v1/watches` (gone 2026-11-02): pairing an Apple Watch with the Swift runner, deleted with it; obid never served it.
+- `DELETE /v1/watches/{id}` (gone 2026-11-02): unpairing an Apple Watch from the Swift runner, deleted with it; obid never served it.
+- `POST /v1/jobs/{id}/start-when` (gone 2026-11-02): the Swift runner's way to change what a waiting job waits for, deleted with it; obid never served it, and a waiting job is started now or stopped.
+- `POST /v1/jobs/{id}/proposals/{index}/file` (gone 2026-11-02): the Swift runner's filing of a research job's proposed issue, deleted with it; obid never served it, and its report's `proposals` is always `[]`.
+- `PUT /v1/settings/models` (gone 2026-11-02): the Swift runner's per-tool models, deleted with it; obid never served it (`405`), and a model and efforts are an account's.
+- `GET /v1/connections` (gone 2026-10-27): connected apps went with the strip to a dispatcher (Connection, above).
+- `POST /v1/connections` (gone 2026-10-27): connecting an app, gone with them.
+- `DELETE /v1/connections/{name}` (gone 2026-10-27): disconnecting an app, gone with them.
+- `GET /v1/checks/next` (gone 2026-10-27): the Mac app's separate Mac checks went with the strip to a dispatcher (Mac check, above).
+- `GET /v1/checks/{id}/bundle` (gone 2026-10-27): a Mac check's bundle, gone with them.
+- `POST /v1/checks/{id}/result` (gone 2026-10-27): a Mac check's result, gone with them.
+- `POST /v1/hooks/{id}/deliver` (gone 2026-10-25): a hook's deliveries, cut with webhooks in trim batch 2b (#1446, docs/trim.md).
+
+The Watch API, the Swift runner's second listener for the Apple Watch, went with the Swift runner's routes on 2026-11-02 (#454, closed not planned): the Watch reaches obid through its iPhone.
+
 ## obid only
 
 The Rust daemon `obid` (`core/`, docs/ARCHITECTURE.md) serves this whole API, so the apps keep working against it unchanged, and also the endpoints in this section. **The Swift runner is frozen and never implements them.** They are what Obi-to-Obi work and the end-to-end scenario (e2e/SCENARIO.md) need. JSON keys are camelCase as everywhere in this API; objects of the Obi-to-Obi protocol (envelopes, agent cards, action bodies) appear exactly as the protocol defines them, in snake_case (obi-ai-bot/obi-sphere, `spec/`). None of these endpoints is on the gateway's allowlist (`core/crates/obid/src/gateway.rs`): they are managed on the machine itself. A phone answers an Obi-to-Obi request through the inbox endpoints it already has. Two reads are the exception, for the iPhone's side panel, which lists the Obysphere and teammates' Obys (docs/contracts/ios-new-oby.md, IOSNEW-4): `GET /v1/obid/sphere` and `GET /v1/obid/sphere/members`. They carry the membership's public facts (no token, no private key) and who's in it, to a device that's the owner's; joining, leaving, keys, cards and pins stay off it.
@@ -1575,7 +1431,7 @@ The Rust daemon `obid` (`core/`, docs/ARCHITECTURE.md) serves this whole API, so
   - A review that ended `failed` or `interrupted` before its verdict (a login refused, as codex-cli 0.162.1's `workspace routing discovery unauthorized (401)`; the tool crashing) goes to the next reviewer that may take it, by the same order, never one whose review of that head ended so: once, by itself. When none can (none left, or the second ends so too), the job needs the owner: `reviewError` `Oby couldn't review #7: <why>`, `reviewNeedsYou` true while the pull request is open (until a new head is pushed), the Review stage `Waiting for review · …`, an alert (`Couldn't review: <title>`, below), and one `failed` inbox item (`<job>-review-<review job>`, its `text` the `reviewError`) with `Try again` alone: it runs the review again, with one more reviewer to fall back on, and a second give-up is one new item, after an approving first review (MERGING-14) too. A second review that gave none, or that the owner stopped or let go, isn't started again by itself, on another account either, until Try again or a new head, and no merge card says it's the owner's to merge beside its item. No item while the pull request is merged or closed. Oby doesn't merge without a review by itself, and today merging without it isn't offered (proposed: a Merge on that item, the owner's, merges it with no review): no workflow merges without a review (`oby` waits for Oby's own, `reviewer`, `teammate` and `person` for someone's on GitHub). Its item is the owner's alone. The failed review job is dismissed (its end is its author's), so it asks no one itself; one the owner dismissed (waiting on an account-limit decision, say) isn't tried again. Internally the author keeps which reviews of its head failed (`review_failed`, never sent).
   - A review that was stopped, made commits or gave no verdict needs the owner at once, the same way (`Oby couldn't review #7: it gave no verdict`, `reviewNeedsYou`, the alert and the one `failed` item with `Try again`; RECOVERY-15), with no other reviewer tried by itself; one the owner dismissed, or stopped themself (`Stopped through Oby's API`, `Stopped by a conversation`), only leaves `reviewError` (`Oby's review didn't finish: …`), with no alert or item. One its account's usage limit stopped stays its author's review (`reviewing`, `Oby is reviewing`) and waits on its account for the reset by itself, with no card (docs/contracts/account-limits.md, LIMITS-5, 10 and 15: a review keeps its account), never dismissed or tried on another account by itself; the owner's Stop ends the wait and leaves `reviewError` (`Oby's review didn't finish: it was stopped`). The review job's own end is no event.
   - Every job that publishes by itself is reviewed, an untrusted turn's too, and twice, by two tools (Two reviews, above). A job published by hand isn't by itself (the owner can still ask Oby to review it, as any pull request): its Review stage reads `Pull request open · waiting for your review on GitHub` until GitHub has a decision.
-- The Watch API's `POST /v1/jobs/{id}/publish` isn't served (#454).
+- The Watch API isn't served (#454, [Routes obid does not serve](#routes-obid-does-not-serve)).
 
 ### obid only: merging (#853, #854)
 
@@ -1975,7 +1831,7 @@ The owner connects Tetrix once, in Oby, and every agent on every account (Claude
 - The client: a public client with PKCE (S256) and no secret. A preset may name its client id; otherwise obid registers one by dynamic client registration (`registration_endpoint`, `token_endpoint_auth_method` `none`, redirect `http://127.0.0.1/callback`) once per authorization server and keeps its id. Neither: `502`.
 - The metadata must be for the server obid was given (RFC 9728 3.3): its `resource` has the URL's origin and its path, or a prefix of it at a `/`; else `502` and no sign-in. That `resource` is the resource indicator obid sends. Plain-HTTP endpoints on 127.0.0.1 are taken only when the URL itself is on 127.0.0.1. Answers from the sign-in server are read up to 256 KB.
 - Scopes: the resource's `scopes_supported`, else `graph:read sessions:write hitl:write`; plus `offline_access`, so obid can refresh. The request carries `resource` (RFC 8707), the `state` and the PKCE challenge.
-- The redirect is `http://127.0.0.1:<port>/callback` on a port obid opens for this sign-in alone, on 127.0.0.1 only. It answers that one path, takes the first request whose `state` matches, and then closes; a request whose `state` doesn't match gets `400` and changes nothing.
+- The redirect is `http://127.0.0.1:<port>/callback` on a port obid opens for this sign-in alone, on 127.0.0.1 only. It answers that one path (`GET /callback`), takes the first request whose `state` matches, and then closes; a request whose `state` doesn't match gets `400` and changes nothing.
 - One at a time: a second `POST` ends the one under way (and waits up to 5 seconds for its page to close, so a registered client's port is free again) and starts another. A sign-in ends when the token exchange does, after 10 minutes, with `DELETE`, or when obid stops.
 - The login (access token, refresh token, expiry) goes into obid's vault as `oby.tetrix.access` and `oby.tetrix.refresh` (a connection can't name an `oby.` secret), so it lives where the vault lives (`home/vault/secrets.json`, a Mac's too since 2026-10-30) and is taken out of every answer, log line and push like every vault secret (obid only: the vault). Everything else (`url`, the client id, the endpoints, the expiry, the granted scopes) is in `home/tetrix.json` (0600).
 - Until a sign-in finishes, the login before it stays in use. One that finishes on another sign-in server than the login it replaces (another token endpoint: another Tetrix's) has the old one take that login back, as `DELETE /v1/tetrix` does (its `revocation_endpoint`, the refresh token), in the background once the new login is kept; a failure there is only logged. On the same sign-in server nothing is taken back: there the old and new logins can share one session (Keycloak's client session), and revoking the old would end the new.
@@ -2052,7 +1908,7 @@ obid serves the LAN gateway's pairing and forwarding (LAN gateway (#284), above)
 - **Paired devices** are kept, by their token's SHA-256 digest only, in `home/gateway-devices.json` (0600), not in `devices.json`: a phone paired with the Swift runner pairs again with obid.
 - **Forwarding** happens inside obid: an allowed request with a paired device's token goes to obid's own API router with obid's API token and a loopback `Host`, carrying only its method, path, query, body (at most 4 MiB) and `Content-Type`. The answer has passed through the API's own layers, so the vault's secrets are already out; the gateway then nulls `session` and `resumeCommand` and puts `[home]` for the accounts' `configDir` paths and for `home/logins` (where a job's copy of its login lives), as above, and sends only the status, `Content-Type`, `Cache-Control`, and an artifact's `Content-Security-Policy`, `X-Content-Type-Options` and `Referrer-Policy`. An answer that isn't text (not `text/…`, JSON or `…+json`: an artifact's image or PDF) goes byte for byte, as the API's own layer sends it. An answer of known length goes whole; any other (the event stream, `GET /v1/jobs/{id}/wait`) goes chunk by chunk as obid sends it, so a wait's first space reaches the phone at once. A stream ends at its first chunk after its device is revoked.
 - **Redeeming** takes only what a phone sends: a request with an `Origin` (a browser) is `403` and one that isn't `application/json` is `415`, before it counts as a try, so a web page can't use an invitation up. A device's name keeps no control characters.
-- **The allowlist** is Runner/Routes.swift's, plus `GET /v1/conversations`, `PATCH` and `DELETE /v1/conversations/{id}` (obid only: conversations), `GET /v1/obid/sphere` and `GET /v1/obid/sphere/members` (the iPhone's side panel, docs/contracts/ios-new-oby.md), `GET /v1/obid/sphere/peers/{owner}` (obid only: a member's thread), `GET /v1/artifacts`, `GET /v1/artifacts/{id}` and `GET /v1/artifacts/{id}/{version}/{path}` at any depth (obid only: artifacts), `GET /v1/jobs/{id}/report`, `GET /v1/jobs/{id}/transcript`, `GET /v1/jobs/{id}/transcript/{n}`, `POST /v1/jobs/{id}/proposals/{index}/file`, `POST /v1/jobs/{id}/delete` (the apps' Delete task, which asks before losing work), `GET /v1/github/work`, `POST /v1/github/work/refresh` and `POST /v1/github/work/{id}/start` (obid only: GitHub work), and `GET /v1/repos` (obid only: repositories). Routes obid doesn't serve yet answer `404` through the gateway as they do on loopback.
+- **The allowlist** is Runner/Routes.swift's, plus `GET /v1/conversations`, `PATCH` and `DELETE /v1/conversations/{id}` (obid only: conversations), `GET /v1/obid/sphere` and `GET /v1/obid/sphere/members` (the iPhone's side panel, docs/contracts/ios-new-oby.md), `GET /v1/obid/sphere/peers/{owner}` (obid only: a member's thread), `GET /v1/artifacts`, `GET /v1/artifacts/{id}` and `GET /v1/artifacts/{id}/{version}/{*path}` at any depth (obid only: artifacts), `GET /v1/jobs/{id}/report`, `GET /v1/jobs/{id}/transcript`, `GET /v1/jobs/{id}/transcript/{n}`, `POST /v1/jobs/{id}/delete` (the apps' Delete task, which asks before losing work), `GET /v1/github/work`, `POST /v1/github/work/refresh` and `POST /v1/github/work/{id}/start` (obid only: GitHub work), and `GET /v1/repos` (obid only: repositories). Routes obid doesn't serve answer `404` through the gateway as they do on loopback ([Routes obid does not serve](#routes-obid-does-not-serve)).
 
 ### obid only: the phone relay
 
@@ -3002,7 +2858,7 @@ What an agent makes to be looked at (docs/conversation-harness.md, section 4): a
 
 **`GET /v1/artifacts/{id}`**: the artifact; `404` when there's no such one.
 
-**`GET /v1/artifacts/{id}/{version}/{path}`**: one of the version's files, `path` as `files` lists it (`assets/site.css`); anything else (another name, `..`, a hidden name, a version that isn't there) is `404`. `Content-Type` by its extension (`text/html; charset=utf-8`, `text/css; charset=utf-8`, `text/javascript; charset=utf-8`, `text/markdown; charset=utf-8`, `image/png`, `application/pdf`…; `application/octet-stream` when unknown), and on every file:
+**`GET /v1/artifacts/{id}/{version}/{*path}`**: one of the version's files, `path` as `files` lists it (`assets/site.css`); anything else (another name, `..`, a hidden name, a version that isn't there) is `404`. `Content-Type` by its extension (`text/html; charset=utf-8`, `text/css; charset=utf-8`, `text/javascript; charset=utf-8`, `text/markdown; charset=utf-8`, `image/png`, `application/pdf`…; `application/octet-stream` when unknown), and on every file:
 
 ```
 Content-Security-Policy: default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts
