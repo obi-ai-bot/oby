@@ -158,14 +158,15 @@ pub enum Phase {
     Publish,
 }
 
-/// How long what obid said about publishing a job by hand counts: the two minutes an approval is
-/// fresh.
+/// How long what obid said of a publish by hand counts: the two minutes an approval is fresh.
 const OFFERS_KEPT: i64 = 120;
 
-/// What obid said a publish by hand would do: when, and of which run (its `finished`).
+/// What obid said a publish by hand would do: when, and of which run (its round and `finished`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offer {
     pub run: Option<i64>,
+    #[serde(default)]
+    pub round: Option<u32>,
     pub at: i64,
 }
 
@@ -579,9 +580,8 @@ pub struct Job {
     /// round's work is reviewed again. Never in the API's job.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replies: Vec<(u32, String)>,
-    /// When obid said what publishing it by hand would do (`GET /v1/jobs/{id}/publish`), and
-    /// which run it described (that run's `finished`): the last two minutes' worth. Never in the
-    /// API's job.
+    /// When obid said what publishing it by hand would do (`GET /v1/jobs/{id}/publish`), of which
+    /// run (its round and `finished`): the last two minutes'. Never in the API's job.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offers: Vec<Offer>,
     /// This round is one the owner asked for with their words: it may end `done` with nothing
@@ -1193,21 +1193,21 @@ impl Job {
         self.offers.retain(|offer| now - offer.at < OFFERS_KEPT);
         self.offers.push(Offer {
             run: self.finished,
+            round: Some(self.current_round()),
             at: now,
         });
     }
 
-    /// Whether a device's approval signed at `signed_at` can only be of the job's latest run: the
-    /// run ended before it was signed, and nothing obid said in the two minutes before it was of
-    /// an earlier run (one device may have shown that one while another asked again). The
-    /// sentence a device signs names the branch, not its commits, so an approval that could be of
-    /// either is refused; two minutes on, it can't be.
+    /// Whether an approval signed at `signed_at` can only be of the latest run (the sentence names
+    /// the branch, not its commits): it ended before then, and nothing obid said in the two minutes
+    /// before was of another round (two runs can end in the same second) or another end.
     pub fn approvable_at(&self, signed_at: i64) -> bool {
         self.finished.is_none_or(|ended| ended <= signed_at)
             && !self.offers.iter().any(|offer| {
                 offer.at <= signed_at
                     && signed_at - offer.at < OFFERS_KEPT
-                    && offer.run != self.finished
+                    && (offer.run != self.finished
+                        || offer.round.is_some_and(|r| r != self.current_round()))
             })
     }
 
@@ -2991,5 +2991,28 @@ mod tests {
         assert!(!review.ended_with_its_pull_request(None, false));
         assert!(!review.ended_with_its_pull_request(Some(&ended("OPEN")), false));
         assert!(review.ended_with_its_pull_request(Some(&ended("CLOSED")), false));
+    }
+
+    /// A hand publish is for the run that was approved: what obid said of a run is refused for the
+    /// next one even when both ended in the same second, and an older obid's offer, which names no
+    /// round, still loads and compares by the run's end alone.
+    #[test]
+    fn an_offer_of_an_earlier_round_ending_in_the_same_second_is_refused() {
+        let mut job = job();
+        job.finished = Some(100);
+        job.offered(100);
+        assert!(job.approvable_at(100));
+        // The job runs again (`next_round`) and ends in the same second.
+        job.round = Some(job.current_round() + 1);
+        job.finished = Some(100);
+        assert!(!job.approvable_at(100));
+
+        let old: Offer = serde_json::from_value(serde_json::json!({"run": 5, "at": 7})).unwrap();
+        assert_eq!(old.run, Some(5));
+        job.offers =
+            vec![serde_json::from_value(serde_json::json!({"run": 100, "at": 100})).unwrap()];
+        assert!(job.approvable_at(100));
+        job.offers[0].run = Some(99);
+        assert!(!job.approvable_at(100));
     }
 }
