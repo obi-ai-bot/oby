@@ -1473,7 +1473,10 @@ impl Jobs {
     /// Oby's Tetrix server for `job`'s agent (URL and the job's token), when it gets one.
     fn tetrix_mcp(&self, job: &Job) -> Option<(String, String)> {
         self.tetrix_for(job)?;
-        Some(self.connections.get()?.open_tetrix(&job.id))
+        let (url, token) = self.connections.get()?.open_tetrix(&job.id);
+        let own = matches!(self.job_account(job), Ok((tool, _)) if Self::own_lane(job, tool));
+        let host = if own { "//127.0.0.1:" } else { "//10.0.2.2:" }; // an own run is on the host
+        Some((url.replace("//10.0.2.2:", host), token))
     }
 
     /// Notes what the agent of job `id` got from Tetrix through obid.
@@ -18569,7 +18572,7 @@ mod tests {
         let _logging = tracing::subscriber::set_default(subscriber);
 
         let root = std::env::temp_dir().join(format!("obid-cursor-{}", uuid::Uuid::new_v4()));
-        let login = root.join("accounts/own/.cursor/auth.json");
+        let login = root.join("accounts/own").join(cursor_login_file());
         std::fs::create_dir_all(login.parent().unwrap()).unwrap();
         std::fs::write(
             &login,
@@ -18652,9 +18655,9 @@ mod tests {
         let _only = STAND_IN_TAKEN.lock().await;
         let root = std::env::temp_dir().join(format!("obid-share-{}", uuid::Uuid::new_v4()));
         let dir = root.join("running");
-        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        std::fs::create_dir_all(dir.join(cursor_login_file()).parent().unwrap()).unwrap();
         std::fs::write(
-            dir.join(".cursor/auth.json"),
+            dir.join(cursor_login_file()),
             json!({ "accessToken": TOKEN }).to_string(),
         )
         .unwrap();
@@ -18792,8 +18795,8 @@ mod tests {
             .iter()
             .map(|id| {
                 let dir = root.join(id);
-                std::fs::create_dir_all(dir.join(".cursor")).unwrap();
-                std::fs::write(dir.join(".cursor/auth.json"), r#"{"apiKey":"k"}"#).unwrap();
+                std::fs::create_dir_all(dir.join(cursor_login_file()).parent().unwrap()).unwrap();
+                std::fs::write(dir.join(cursor_login_file()), r#"{"apiKey":"k"}"#).unwrap();
                 json!({"id": id, "name": id, "configDir": dir})
             })
             .collect();

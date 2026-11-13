@@ -888,7 +888,13 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
         "{summary}"
     );
     // A local command the review's box holds runs: it reaches nothing outside and writes nothing.
-    assert!(summary.lines().any(|l| l == "Bash: allow"), "{summary}");
+    // Only where obid holds the box's network to its proxy (`Sandbox::confines_egress`: Seatbelt;
+    // bubblewrap's is #616's next step): elsewhere `cargo test` is refused as the rest are.
+    assert_eq!(
+        summary.lines().any(|l| l == "Bash: allow"),
+        cfg!(target_os = "macos"),
+        "{summary}"
+    );
     assert!(
         !ended
             .reason
@@ -896,11 +902,12 @@ async fn permissions_14_a_review_refuses_instead_of_asking() {
             .is_some_and(|r| r.contains("changed while it ran")),
         "{shown}"
     );
-    assert!(
+    assert_eq!(
         ended
             .answered
             .iter()
             .any(|a| a.tool == "Bash" && a.decision == "allowed"),
+        cfg!(target_os = "macos"),
         "{shown}"
     );
     // Plan refuses a file write by itself, as before: it never asked.
