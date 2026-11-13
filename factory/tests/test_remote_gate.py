@@ -129,7 +129,10 @@ class RemoteGate(unittest.TestCase):
             f'echo "${{npm_config_offline:-unset}}" >>"{self.fake}/npm-offline"\n'
         )
         (bin_dir / "npm").chmod(0o755)
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_")}
+        # The host's own environment, as ssh gives it: none of the check's offline settings, which
+        # the check that runs these tests has set (REMOTE-9 sets them for the groups alone).
+        offline = {"CARGO_NET_OFFLINE", "npm_config_offline"}
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_") and k not in offline}
         self.env.update(
             OBY_REMOTE_ROOT=str(self.root),
             OBY_REMOTE_URL=str(origin),
