@@ -273,6 +273,18 @@ fn request_with(
     body: Option<&str>,
     words: Option<&str>,
 ) -> Answer {
+    let words = words.map(|words| ("X-Oby-Words", words));
+    request_headers(obid, method, target, body, words.as_slice())
+}
+
+/// `body` to `target` with `headers` besides the token's and the content's.
+fn request_headers(
+    obid: &Obid,
+    method: &str,
+    target: &str,
+    body: Option<&str>,
+    headers: &[(&str, &str)],
+) -> Answer {
     let mut stream = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(150)))
@@ -280,8 +292,8 @@ fn request_with(
     let mut text = format!(
         "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n"
     );
-    if let Some(words) = words {
-        text.push_str(&format!("X-Oby-Words: {words}\r\n"));
+    for (name, value) in headers {
+        text.push_str(&format!("{name}: {value}\r\n"));
     }
     if let Some(body) = body {
         text.push_str(&format!(
@@ -658,6 +670,117 @@ fn dispatch_takes_only_whole_jobs() {
         404
     );
     assert_eq!(request(&obid, "GET", "/v1/jobs", None).body, json!([]));
+}
+
+/// `POST /v1/jobs` with `job`, its request key in an `Idempotency-Key` header.
+fn post_keyed(obid: &Obid, job: &Value, key: &str) -> Answer {
+    let body = json!({"job": job}).to_string();
+    request_headers(
+        obid,
+        "POST",
+        "/v1/jobs",
+        Some(&body),
+        &[("Idempotency-Key", key)],
+    )
+}
+
+/// The ids of the jobs obid lists.
+fn job_ids(obid: &Obid) -> Vec<String> {
+    let jobs = request(obid, "GET", "/v1/jobs", None).body;
+    let ids = jobs.as_array().unwrap().iter();
+    ids.map(|job| job["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// RECEIPTS-5: the same `POST /v1/jobs` sent again with its key, in the header or the body,
+/// answers 200 with the first job and makes none.
+#[test]
+fn receipts_5_a_repeated_job_request_makes_one_job() {
+    let folder = Folder::new("receipts-5");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let status = request(&obid, "GET", "/v1/status", None);
+    assert_eq!(status.body["receipts"], json!(true), "{}", status.text);
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix it"});
+    let first = post_keyed(&obid, &job, "retry-5");
+    assert_eq!(first.status, 201, "{}", first.text);
+    assert_eq!(first.body["clientRequestId"], json!("retry-5"));
+    let id = first.body["id"].as_str().unwrap().to_owned();
+    let again = post_keyed(&obid, &job, "retry-5");
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(again.body["id"], json!(id));
+    // The key in the body this time: the same request.
+    let mut in_body = job.clone();
+    in_body["clientRequestId"] = json!("retry-5");
+    let again = post_job(&obid, in_body);
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(again.body["id"], json!(id));
+    assert_eq!(again.body["clientRequestId"], json!("retry-5"));
+    assert_eq!(job_ids(&obid), vec![id]);
+}
+
+/// RECEIPTS-6: another body under a used key is 409 and makes nothing; two different keys, or a
+/// key that isn't one, are 422; a refused request keeps no receipt, so its key stays free.
+#[test]
+fn receipts_6_another_body_under_a_key_is_409() {
+    let folder = Folder::new("receipts-6");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let mut job = json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix it",
+        "clientRequestId": "first-6"});
+    let first = post_job(&obid, job.clone());
+    assert_eq!(first.status, 201, "{}", first.text);
+    let id = first.body["id"].as_str().unwrap().to_owned();
+    job["task"] = json!("Fix something else");
+    let other = post_job(&obid, job.clone());
+    assert_eq!(other.status, 409, "{}", other.text);
+    assert!(other.body["error"].is_string(), "{}", other.text);
+    assert_eq!(job_ids(&obid), vec![id.clone()]);
+    let differ = post_keyed(&obid, &job, "not-first-6");
+    assert_eq!(differ.status, 422, "{}", differ.text);
+    for key in [json!(""), json!("x".repeat(129)), json!(6)] {
+        job["clientRequestId"] = key;
+        assert_eq!(post_job(&obid, job.clone()).status, 422);
+    }
+    // Refused, under a new key: the corrected request takes it.
+    job["clientRequestId"] = json!("second-6");
+    job["kind"] = json!("dance");
+    let refused = post_job(&obid, job.clone());
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    job["kind"] = json!("fix");
+    let corrected = post_job(&obid, job);
+    assert_eq!(corrected.status, 201, "{}", corrected.text);
+    assert_eq!(job_ids(&obid).len(), 2);
+}
+
+/// RECEIPTS-7: two requests with one key at the same moment make one job, and both name it.
+#[test]
+fn receipts_7_two_requests_at_once_make_one_job() {
+    let folder = Folder::new("receipts-7");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix it"});
+    let together = std::sync::Barrier::new(2);
+    let answers: Vec<Answer> = std::thread::scope(|scope| {
+        let send = || {
+            together.wait();
+            post_keyed(&obid, &job, "at-once-7")
+        };
+        let threads = [scope.spawn(send), scope.spawn(send)];
+        threads.map(|t| t.join().unwrap()).into_iter().collect()
+    });
+    let mut statuses: Vec<u16> = answers.iter().map(|a| a.status).collect();
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [200, 201],
+        "{} {}",
+        answers[0].text,
+        answers[1].text
+    );
+    assert_eq!(answers[0].body["id"], answers[1].body["id"]);
+    let id = answers[0].body["id"].as_str().unwrap().to_owned();
+    assert_eq!(job_ids(&obid), vec![id]);
 }
 
 /// A stand-in `gh` in `folder/bin` that keeps its arguments (`folder/gh-calls`) and environment

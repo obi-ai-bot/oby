@@ -9,6 +9,12 @@ impl Jobs {
         self.update(id, owner_spoke);
     }
 
+    /// Job `id` was made by a `POST /v1/jobs` with request key `key` (RECEIPTS-5): a retry of it
+    /// gets this job back (docs/contracts/receipts.md).
+    pub fn mark_request_key(&self, id: &str, key: &str) -> Option<Job> {
+        self.update(id, |job| job.client_request_id = Some(key.to_owned()))
+    }
+
     /// Waits `wait` (capped by the stall window) before try `attempt` of `of` after `error`
     /// (RECOVERY-1, RECOVERY-14), its step saying when and `each` run on the job every minute.
     /// Words for it end the wait: they're its next try's. False when it was stopped meanwhile.

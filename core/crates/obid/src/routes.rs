@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 
 use crate::api::{ApiError, Shared};
 use crate::jobs::NewJob;
+use crate::receipts::Found;
 
 const NO_JOB: &str = "There's no such job.";
 
@@ -673,6 +674,29 @@ pub async fn dispatch(
             "A job needs repo, kind and task.",
         ));
     }
+    let key = request_key(job, &headers)
+        .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    // A request key (docs/contracts/receipts.md): held from the lookup to the receipt, so the
+    // same request again, or at once, gets the first job (RECEIPTS-5 to 7).
+    let mut receipt = None;
+    if let (Some(key), Some(receipts)) = (&key, &shared.receipts) {
+        let guard = receipts.lock(key).await;
+        let mut keyed = value.clone();
+        keyed["job"]["clientRequestId"] = Value::Null; // as left out: the header's or the body's
+        let now = obi_protocol::time::now();
+        match receipts.get(key, JOBS_ROUTE, &keyed, now) {
+            Err(why) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why)),
+            Ok(Found::Conflict) => return Err(ApiError::new(StatusCode::CONFLICT, REUSED_KEY)),
+            Ok(Found::Repeat { answer, job, .. }) => {
+                let body = match job.and_then(|id| shared.jobs.get(&id)) {
+                    Some(job) => job.to_json(),
+                    None => serde_json::from_str(&answer).unwrap_or(Value::String(answer)),
+                };
+                return Ok(json(StatusCode::OK, body));
+            }
+            Ok(Found::None) => receipt = Some((receipts, keyed, guard)),
+        }
+    }
     let mut new =
         new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
     new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
@@ -700,7 +724,52 @@ pub async fn dispatch(
         true => shared.jobs.mark_unsigned(&job.id).unwrap_or(job),
         false => job,
     };
-    Ok(json(StatusCode::CREATED, job.to_json()))
+    let Some(key) = key else {
+        return Ok(json(StatusCode::CREATED, job.to_json()));
+    };
+    let job = shared.jobs.mark_request_key(&job.id, &key).unwrap_or(job);
+    let answer = job.to_json();
+    if let Some((receipts, keyed, _guard)) = receipt {
+        let now = obi_protocol::time::now();
+        let put = receipts.put(&key, JOBS_ROUTE, &keyed, 201, &answer, Some(&job.id), now);
+        if let Err(e) = put {
+            tracing::warn!("job {}: its request key's receipt wasn't kept: {e}", job.id);
+        }
+    }
+    Ok(json(StatusCode::CREATED, answer))
+}
+
+/// The receipt store's name for [`dispatch`]'s route.
+const JOBS_ROUTE: &str = "POST /v1/jobs";
+
+const REUSED_KEY: &str =
+    "That request key was used for another request: send this one with a new key.";
+
+/// The request's key: `job.clientRequestId` or the `Idempotency-Key` header, which mean the same.
+fn request_key(job: &Map<String, Value>, headers: &HeaderMap) -> Result<Option<String>, String> {
+    let body = match job.get("clientRequestId") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(key)) => Some(key.clone()),
+        Some(_) => return Err("clientRequestId is a string.".into()),
+    };
+    let mut sent = headers.get_all("idempotency-key").iter();
+    let header = match (sent.next(), sent.next()) {
+        (None, _) => None,
+        (Some(key), None) => Some(key.to_str().map_err(|_| "Idempotency-Key is plain text.")?),
+        _ => return Err("Send one Idempotency-Key.".into()),
+    };
+    let longest = crate::receipts::LONGEST;
+    for key in body.iter().map(String::as_str).chain(header) {
+        if key.is_empty() || key.chars().count() > longest {
+            return Err(format!("A request key is 1 to {longest} characters."));
+        }
+    }
+    match (body, header) {
+        (Some(body), Some(header)) if body != header => {
+            Err("clientRequestId and Idempotency-Key differ: send one key.".into())
+        }
+        (body, header) => Ok(body.or(header.map(str::to_owned))),
+    }
 }
 
 /// The body's fields, by type; what they mean is checked when the job is made.
