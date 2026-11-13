@@ -71,7 +71,7 @@ const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// The folders a sign-in uses for its temporary files, under obid's home: `sign-in-<…>`, swept at
 /// every start ([`sweep`]).
-const SCRATCH_PREFIX: &str = "sign-in-";
+pub(crate) const SCRATCH_PREFIX: &str = "sign-in-";
 
 // ---------------------------------------------------------------------------------------------
 // The accounts, live
@@ -1416,16 +1416,14 @@ impl SignIn {
     }
 }
 
-/// Removes the folders sign-ins left in `home/tmp` when obid stopped before they ended.
-pub fn sweep(home: &Path) {
+/// Removes the folders sign-ins left in `home/tmp` when obid stopped before they ended: those
+/// whose names start with `prefix`, accounts' ([`SCRATCH_PREFIX`]) or GitHub's.
+pub fn sweep(home: &Path, prefix: &str) {
     let Ok(entries) = std::fs::read_dir(home.join("tmp")) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(SCRATCH_PREFIX)
+        if entry.file_name().to_string_lossy().starts_with(prefix)
             && entry.file_type().is_ok_and(|t| t.is_dir())
         {
             let _ = std::fs::remove_dir_all(entry.path());

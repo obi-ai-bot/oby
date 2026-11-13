@@ -544,6 +544,8 @@ pub struct Link {
     stopping: watch::Receiver<bool>,
     /// The phone relay (crate::relay): told at once when this Obi's membership is revoked.
     relay: std::sync::OnceLock<Arc<crate::relay::Relay>>,
+    /// What each request key got (crate::receipts): obid's own Try again runs once per revision.
+    receipts: std::sync::OnceLock<Arc<crate::receipts::Receipts>>,
     /// Who obid acts for in its Sphere ([`Link::owner`]).
     owner: Mutex<String>,
     /// What obid keeps of the Sphere's room (crate::sphere::room).
@@ -913,6 +915,7 @@ impl Link {
             sender_running: AtomicBool::new(false),
             stopping,
             relay: std::sync::OnceLock::new(),
+            receipts: std::sync::OnceLock::new(),
             owner: Mutex::new(owner),
             room: Mutex::new(room),
             room_outbox: Notify::new(),
@@ -1082,6 +1085,10 @@ impl Link {
 
     pub fn use_relay(&self, relay: Arc<crate::relay::Relay>) {
         let _ = self.relay.set(relay);
+    }
+
+    pub fn use_receipts(&self, receipts: Arc<crate::receipts::Receipts>) {
+        let _ = self.receipts.set(receipts);
     }
 
     /// What a read of the owner's GitHub work found (crate::github_work): a `github` item for each
