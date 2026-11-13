@@ -2128,19 +2128,9 @@ fn card(job: &Job, id: String, title: String, text: String, options: Vec<(&str, 
         text,
         options: options.iter().map(|(o, _)| (*o).to_owned()).collect(),
         details: Some(options.into_iter().map(|(_, d)| d).collect()),
-        recommended: None,
         created: obi_protocol::time::now(),
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(crate::sphere::inbox::arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 

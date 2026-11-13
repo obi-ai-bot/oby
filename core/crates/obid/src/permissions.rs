@@ -1080,12 +1080,6 @@ fn simple_commands(command: &str) -> Option<Vec<Simple>> {
     read_commands(command, &Within::default(), &mut next, &mut out).then_some(out)
 }
 
-/// The words of each simple command `command` runs, as obid reads a job's ([`simple_commands`]);
-/// none when the code nests deeper than obid reads.
-pub fn command_words(command: &str) -> Option<Vec<Vec<String>>> {
-    simple_commands(command).map(|commands| commands.into_iter().map(|c| c.words).collect())
-}
-
 /// Whether the saved `rule` covers `call` ([`matches`]): an allow rule (`allowing`) only a plain
 /// command, a deny rule a chained one when any of its commands matches.
 pub fn covers(rule: &str, call: &Call, worktree: &Path, allowing: bool) -> bool {
@@ -3384,25 +3378,10 @@ fn parse(rule: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// `path` with `.` and `..` taken out, without touching the disk.
-fn normalized(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out
-}
-
 /// A path as the worktree sees it: `Engine/Jobs.swift`.
 fn relative(path: &str, worktree: &Path) -> String {
-    let root = normalized(worktree);
-    let file = normalized(&worktree.join(path));
+    let root = crate::policy::normalized(worktree);
+    let file = crate::policy::normalized(&worktree.join(path));
     match file.strip_prefix(&root) {
         Ok(inside) => inside.to_string_lossy().into_owned(),
         Err(_) => file.to_string_lossy().into_owned(),

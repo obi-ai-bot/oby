@@ -18,6 +18,7 @@ pub mod brain;
 pub mod chatgpt;
 pub mod chatgpt_relay;
 pub mod clear;
+pub mod cli_versions;
 pub mod codex;
 pub mod config;
 pub mod conn;
@@ -372,10 +373,15 @@ pub async fn serve(
     // What the accounts API changed, over the configuration's accounts, before anything uses them;
     // and what sign-ins cut short by the last stop left behind.
     config.agents.open(&config.home);
-    accounts::sweep(&config.home);
+    accounts::sweep(&config.home, accounts::SCRATCH_PREFIX);
     // The tools' own logins on this Mac, listed as accounts unless the owner removed them.
     accounts::adopt_own_logins(&config.agents, &config.home);
-    github_login::sweep(&config.home);
+    // Each tool's version, read in the background so the first status finds it (CLIVERSIONS-1).
+    for tool in agent::Tool::ALL {
+        let bin = accounts::bin_of(&config.agents.get(), tool).to_owned();
+        tokio::task::spawn_blocking(move || cli_versions::read(tool, &bin, false));
+    }
+    accounts::sweep(&config.home, github_login::SCRATCH_PREFIX);
     // The reviewer's token, taken out of everything from the start.
     github_login::learn_reviewer(&github_login::reviewer_folder(&config.home));
     // What an older obid's boxes could have left in the accounts' folders (#655), said once.
@@ -473,6 +479,9 @@ pub async fn serve(
         .map(Arc::new)
         .inspect_err(|e| tracing::error!("can't keep request receipts: {e}"))
         .ok();
+    if let Some(receipts) = &receipts {
+        link.use_receipts(receipts.clone());
+    }
     let shared = Arc::new(api::Shared {
         config,
         token,

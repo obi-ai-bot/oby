@@ -544,7 +544,7 @@ pub async fn act(
 ) -> Outcome {
     match plan.action {
         Action::StopAgent => stop(shared, plan),
-        Action::RetryJob => on_jobs(shared, plan, source, conversation),
+        Action::RetryJob => on_jobs(shared, plan, source, conversation).await,
         Action::AnswerInbox => answer_inbox(shared, plan, conversation, None).await,
         Action::MessageJob => message_job(shared, plan, said, source, conversation, turn),
         Action::Dispatch => {
@@ -556,7 +556,7 @@ pub async fn act(
 /// retry_job (Engine/JobActions.swift, `actOnJobs`), one line per job. It failed when nothing
 /// happened to any of them. A job another conversation started is tried again only on the owner's
 /// Confirm (#631); an event turn acts on any conversation's jobs.
-fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str) -> Outcome {
+async fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str) -> Outcome {
     let ids = plan.named();
     if ids.is_empty() {
         return Outcome::NeedsWhich("Say which task.".into());
@@ -577,7 +577,7 @@ fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str
                 .conversation
                 .as_deref()
                 .is_some_and(|c| c != conversation);
-        let (line, done) = retry(shared, &job, theirs, source == Source::Owner);
+        let (line, done) = retry(shared, &job, theirs, source == Source::Owner).await;
         any |= done;
         lines.push(line);
     }
@@ -593,7 +593,7 @@ fn on_jobs(shared: &Arc<Shared>, plan: &Plan, source: Source, conversation: &str
 /// and the brain's prompt: "a failed, stopped or cut-off job"): obid has no
 /// failed-job inbox item, so it tells the job's agent to try again, which picks its session up.
 /// Another conversation's job (`theirs`) waits for the owner's Confirm.
-fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool, owners: bool) -> (String, bool) {
+async fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool, owners: bool) -> (String, bool) {
     let name = job.short_title();
     if job.status.is_active() {
         return (
@@ -636,13 +636,13 @@ fn retry(shared: &Arc<Shared>, job: &Job, theirs: bool, owners: bool) -> (String
             true,
         );
     }
-    // Try again's own words pick its session up again: they never start a follow-up.
-    let carried = shared.jobs.message(&job.id, TRY_AGAIN, Source::Event);
-    // The owner's Try again gives the 10 back (RECOVERY-17), once it went through; the words still
-    // go as an event's, so a refused one (a #1563 hold) resets nothing.
-    if owners && matches!(carried, Some(Ok(_))) {
-        shared.jobs.owner_asked(&job.id);
-    }
+    // Try again's own words pick its session up again: they never start a follow-up. They go as an
+    // event's, so a refused one (a #1563 hold) resets nothing; once per revision (RECEIPTS-13).
+    let receipts = shared.receipts.as_deref();
+    let carried = shared
+        .jobs
+        .try_again(&job.id, job.revision, Source::Event, owners, receipts)
+        .await;
     match carried {
         Some(Ok(job)) => (
             format!("Started {name} again on {}.", place(shared, &job)),

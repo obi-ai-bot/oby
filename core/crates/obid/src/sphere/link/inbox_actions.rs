@@ -482,11 +482,15 @@ impl Link {
                 if self.jobs.get(target).is_some_and(|j| j.status.is_active()) {
                     return Err(api(StatusCode::CONFLICT, "That job is running again."));
                 }
-                match self.jobs.message(
-                    target,
-                    crate::brain::actions::TRY_AGAIN,
-                    crate::jobs::Source::Confirmed,
-                ) {
+                // Once for the job as it is now (RECEIPTS-13).
+                let revision = self.jobs.get(target).map_or(0, |j| j.revision);
+                let confirmed = crate::jobs::Source::Confirmed;
+                let receipts = self.receipts.get().map(|r| &**r);
+                match self
+                    .jobs
+                    .try_again(target, revision, confirmed, false, receipts)
+                    .await
+                {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(refused)) => Err(api(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
                     None => Err(self.gone(target)),
@@ -917,17 +921,9 @@ impl Link {
             ]),
             recommended: Some(0),
             created: time::now(),
-            done: None,
-            later: None,
-            answer: None,
-            obi: None,
-            plugin: None,
             arrived: Some(inbox::arrival()),
-            answered_by: None,
-            confirm: None,
             start: Some(Box::new(start)),
-            github: None,
-            watch: None,
+            ..Default::default()
         };
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);
@@ -1431,6 +1427,80 @@ impl Link {
             };
         }
         let now = time::now();
+        // A crashed job's `failed` item (#911): Try again runs it again, Dismiss lets the job
+        // go. The answer claims it under the lock, so a second tap carries nothing out.
+        let failed = {
+            let mut state = self.lock();
+            let open = state
+                .inbox
+                .get(id)
+                .filter(|i| i.done.is_none() && i.kind == "failed");
+            let mut item = open.cloned();
+            if let Some(item) = &mut item {
+                match &given {
+                    Given::Later(at) => item.later = Some(*at),
+                    Given::Done => item.done = Some(now),
+                    Given::Answer(a)
+                        if a == crate::job::TRY_AGAIN
+                            || a == inbox::DISMISS
+                            || (a == crate::job::ONE_MORE_ROUND && inbox::is_review_item(item)) =>
+                    {
+                        item.answer = Some(a.clone());
+                        item.done = Some(now);
+                    }
+                    Given::Answer(_) if inbox::is_review_item(item) => {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("The answer is {}.", item.options.join(" or ")),
+                        ));
+                    }
+                    Given::Answer(_) => {
+                        return Err(api(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "The answer is Try again or Dismiss.",
+                        ));
+                    }
+                }
+                state.inbox.insert(item.id.clone(), item.clone());
+            }
+            item
+        };
+        if let Some(mut item) = failed {
+            self.save_item(&item);
+            let carried = match item.answer.as_deref() {
+                // An approval obid couldn't dismiss: the owner removes it on GitHub; nothing
+                // else is carried out.
+                _ if approval::is_dismissal_item(&item) => return Ok(item.to_json()),
+                // Oby's review that couldn't run: Try again is its review's, never the job's.
+                Some(crate::job::TRY_AGAIN) if inbox::is_review_item(&item) => {
+                    self.jobs.review_again(&item.job)
+                }
+                // Oby's reviews ran out: their last changes go to the agent once more.
+                Some(crate::job::ONE_MORE_ROUND) => self.jobs.review_round_again(&item.job),
+                // The owner's click gives the 10 back once it went through (RECOVERY-17), and
+                // runs once for the job as it is now (RECEIPTS-13).
+                Some(crate::job::TRY_AGAIN) => {
+                    let (job, event) = (&item.job, crate::jobs::Source::Event);
+                    let revision = self.jobs.get(job).map_or(0, |j| j.revision);
+                    let receipts = self.receipts.get().map(|r| &**r);
+                    self.jobs
+                        .try_again(job, revision, event, true, receipts)
+                        .await
+                }
+                Some(_) => self.jobs.dismiss(&item.job),
+                None => return Ok(item.to_json()),
+            };
+            let refused = match carried {
+                Some(Ok(_)) => return Ok(item.to_json()),
+                Some(Err(refused)) => api(StatusCode::CONFLICT, refused.0),
+                None => self.gone(&item.job),
+            };
+            item.answer = None;
+            item.done = None;
+            self.lock().inbox.insert(item.id.clone(), item.clone());
+            self.save_item(&item);
+            return Err(refused);
+        }
         let (item, exchange, decisions) = {
             let mut state = self.lock();
             let item = state
@@ -1453,75 +1523,6 @@ impl Link {
                     Given::Done => self.answer_permission_item(item, None, None, false),
                     Given::Later(at) => self.answer_permission_item(item, None, Some(at), false),
                 };
-            }
-            // A crashed job's `failed` item (#911): Try again runs it again, Dismiss lets the job
-            // go. The answer claims it under the lock, so a second tap carries nothing out.
-            if item.kind == "failed" {
-                let mut item = item;
-                match &given {
-                    Given::Later(at) => item.later = Some(*at),
-                    Given::Done => item.done = Some(now),
-                    Given::Answer(a)
-                        if a == crate::job::TRY_AGAIN
-                            || a == inbox::DISMISS
-                            || (a == crate::job::ONE_MORE_ROUND
-                                && inbox::is_review_item(&item)) =>
-                    {
-                        item.answer = Some(a.clone());
-                        item.done = Some(now);
-                    }
-                    Given::Answer(_) if inbox::is_review_item(&item) => {
-                        return Err(api(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            format!("The answer is {}.", item.options.join(" or ")),
-                        ));
-                    }
-                    Given::Answer(_) => {
-                        return Err(api(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            "The answer is Try again or Dismiss.",
-                        ));
-                    }
-                }
-                state.inbox.insert(item.id.clone(), item.clone());
-                drop(state);
-                self.save_item(&item);
-                let carried = match item.answer.as_deref() {
-                    // An approval obid couldn't dismiss: the owner removes it on GitHub; nothing
-                    // else is carried out.
-                    _ if approval::is_dismissal_item(&item) => return Ok(item.to_json()),
-                    // Oby's review that couldn't run: Try again is its review's, never the job's.
-                    Some(crate::job::TRY_AGAIN) if inbox::is_review_item(&item) => {
-                        self.jobs.review_again(&item.job)
-                    }
-                    // Oby's reviews ran out: their last changes go to the agent once more.
-                    Some(crate::job::ONE_MORE_ROUND) => self.jobs.review_round_again(&item.job),
-                    // The owner's click gives the 10 back once it went through (RECOVERY-17).
-                    Some(crate::job::TRY_AGAIN) => self
-                        .jobs
-                        .message(
-                            &item.job,
-                            crate::brain::actions::TRY_AGAIN,
-                            crate::jobs::Source::Event,
-                        )
-                        .inspect(|carried| {
-                            if carried.is_ok() {
-                                self.jobs.owner_asked(&item.job);
-                            }
-                        }),
-                    Some(_) => self.jobs.dismiss(&item.job),
-                    None => return Ok(item.to_json()),
-                };
-                let refused = match carried {
-                    Some(Ok(_)) => return Ok(item.to_json()),
-                    Some(Err(refused)) => api(StatusCode::CONFLICT, refused.0),
-                    None => self.gone(&item.job),
-                };
-                item.answer = None;
-                item.done = None;
-                self.lock().inbox.insert(item.id.clone(), item.clone());
-                self.save_item(&item);
-                return Err(refused);
             }
             // A `start` item: every answer settles it under the lock, so of two at the same
             // moment only the first counts. A second Start finds it done and starts nothing

@@ -8,9 +8,10 @@ use serde_json::{Value, json};
 /// `queued`, `running`, `done`, `failed`, `stopped` or `interrupted`. On obid, `interrupted` is a
 /// job that needs the owner: it stopped part way, its work kept on its branch (`reason`, `nextStep`);
 /// `failed` is a dead end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Status {
+    #[default]
     Queued,
     Running,
     Done,
@@ -339,7 +340,7 @@ pub struct Unjudged {
 }
 
 /// A job as obid keeps it (`home/jobs/<id>.json`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
     pub id: String,
@@ -414,6 +415,10 @@ pub struct Job {
     pub issue: Option<u64>,
     pub rounds: Option<u32>,
     pub round: Option<u32>,
+    /// Its tool's version as its latest round started (crate::cli_versions), or none when it
+    /// couldn't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
     pub check: Option<String>,
     /// Whether Oby asked the owner for its repository's check when it started with none (#1062):
     /// it went on without one, and its pull request says so. Kept in its file, never in the API.
@@ -1152,158 +1157,10 @@ impl Job {
             agent,
             account,
             repo,
-            branch: String::new(),
-            base: None,
-            pr: None,
             kind,
             task,
-            title: None,
-            status: Status::Queued,
-            step: String::new(),
-            summary: String::new(),
-            session: None,
             created: obi_protocol::time::now(),
-            started: None,
-            finished: None,
-            commits: None,
-            published: None,
-            pushed: None,
-            publish_error: None,
-            publish_step: None,
-            outgoing: Vec::new(),
-            pull_request: None,
-            pull_request_error: None,
-            review_error: None,
-            reviewing: None,
-            review: None,
-            approvals: Vec::new(),
-            review_of: None,
-            security_paths: None,
-            no_reviewer: None,
-            review_failed: None,
-            summaries: None,
-            issue: None,
-            rounds: None,
-            round: None,
-            check: None,
-            check_asked: false,
-            checked: None,
-            model: None,
-            effort: None,
-            model_from_account: false,
-            complex: false,
-            issue_unread: None,
-            notes: None,
-            files: None,
-            attachments: None,
-            attachments_gone: None,
-            limit: None,
-            stalled: None,
-            start_commit: None,
-            checked_head: None,
-            mode: None,
-            waiting: None,
-            phase: None,
-            cut: None,
-            after_pr_rebase: None,
-            checks_rounds: 0,
-            changes_rounds: Vec::new(),
-            crash_resumes: Vec::new(),
-            recovery: Recovery::default(),
-            dismissed: None,
-            worktree: None,
-            obi: None,
-            conversation: None,
-            turn: None,
-            review_result: None,
-            approvable: false,
-            obi_request: None,
-            permission: None,
-            question_call: None,
-            parked: None,
-            mac_check: None,
-            apple_check: None,
-            apple_ran: None,
-            apple_token: None,
-            answered: Vec::new(),
-            answered_count: 0,
-            connection_uses: Vec::new(),
-            tetrix: None,
-            teammates: None,
-            heard: Vec::new(),
-            owners: Vec::new(),
-            said: Vec::new(),
-            api_said: Vec::new(),
-            replies: Vec::new(),
-            offers: Vec::new(),
-            asked: false,
-            brief: None,
-            artifacts: Vec::new(),
-            artifact_problems: Vec::new(),
-            follow_up_of: None,
-            unfollowed: None,
-            activity: None,
-            context: None,
-            doing: None,
-            owner_spoke: false,
-            reason: None,
-            next_step: None,
-            stopped_by: None,
-            resumes_at: None,
-            unjudged: None,
-            account_limit_blocked: false,
-            account_limit_episode: None,
-            account_limit_nonce: None,
-            account_limit_reset: None,
-            account_limit_choice: None,
-            earlier: None,
-            made_branch: false,
-            start_from: None,
-            supervised: Vec::new(),
-            revision: 0,
-            diffs: Vec::new(),
-            checks: Vec::new(),
-            scan: None,
-            stage_times: Vec::new(),
-            estimate: None,
-            archived: None,
-            changes: Vec::new(),
-            moves: Vec::new(),
-            named: false,
-            usage: None,
-            peak_rss: None,
-            agent_peak_rss: None,
-            check_peak_rss: None,
-            build_freed: None,
-            usage_seen: None,
-            window_share: None,
-            routine: None,
-            unattended: false,
-            untrusted: false,
-            own_lane: false,
-            ran_unproxied: false,
-            unsigned: false,
-            client_request_id: None,
-            memory_from_others: false,
-            foreign: None,
-            foreign_by_api: false,
-            withheld: None,
-            check_withheld: None,
-            check_withheld_was: false,
-            reached: None,
-            made: Vec::new(),
-            apart: false,
-            clone_root: None,
-            vetted: false,
-            ran_secs: None,
-            budget_from: None,
-            merge_error: None,
-            told: None,
-            merge_needs_you: false,
-            merged_by: None,
-            sending: Vec::new(),
-            auto_merge: None,
-            auto_merge_refused: None,
+            ..Job::default()
         }
     }
 
@@ -1824,6 +1681,7 @@ impl Job {
         if let Some(why) = &self.no_reviewer {
             value["noReviewer"] = json!(why);
         }
+        value["agentVersion"] = json!(self.agent_version);
         value["teammates"] = json!(self.teammates);
         value["addedTo"] = json!(self.added_to());
         if let Some(context) = &self.context {
@@ -2525,6 +2383,7 @@ mod tests {
             "base",
             "session",
             "resumeCommand",
+            "agentVersion",
             "finished",
             "commits",
             "published",
@@ -2578,8 +2437,8 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-five, `supervised` and `revision`.
-        assert_eq!(object.len(), 92);
+        // The Swift runner's 65 keys, obid's twenty-six, `supervised` and `revision`.
+        assert_eq!(object.len(), 93);
         assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);
