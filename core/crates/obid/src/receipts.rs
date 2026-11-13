@@ -2,7 +2,8 @@
 //! restarts, which request key got which answer, so the same request sent again gets the first
 //! answer, not a second job. One file per key, `home/receipts/<sha256 of the key>.json` (0600),
 //! holding the body's hash and the answer with the secrets obid knows taken out: never the body.
-//! `POST /v1/jobs` uses them (R02-04); the other routes come with R02-05 and R02-06.
+//! `POST /v1/jobs` uses them (R02-04), and so do a conversation's `oby_dispatch` and `oby_tell_job`
+//! and obid's own Try again ([`once`], R02-06); the other routes come with R02-05.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,34 @@ pub struct Receipts {
 pub fn body_hash(body: &Value) -> Result<String, String> {
     let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
     Ok(hex::encode(obi_protocol::keys::sha256(bytes)))
+}
+
+/// `run` once for `key` (RECEIPTS-12 to 14): held from the lookup to the receipt, a receipt for the
+/// same `route` and `body` gives `repeat` its answer and job, and runs nothing. Else `run`'s answer,
+/// kept with its job when it gives one. With no store, a conflict or a store that fails, it runs.
+pub async fn once<T>(
+    store: Option<&Receipts>,
+    key: &str,
+    route: &str,
+    body: &Value,
+    repeat: impl FnOnce(String, Option<String>) -> T,
+    run: impl Future<Output = (T, Option<(Value, Option<String>)>)>,
+) -> T {
+    let Some(store) = store else {
+        return run.await.0;
+    };
+    let _guard = store.lock(key).await;
+    let now = obi_protocol::time::now();
+    if let Ok(Found::Repeat { answer, job, .. }) = store.get(key, route, body, now) {
+        return repeat(answer, job);
+    }
+    let (answer, kept) = run.await;
+    if let Some((kept, job)) = kept
+        && let Err(e) = store.put(key, route, body, 200, &kept, job.as_deref(), now)
+    {
+        tracing::warn!("{route}: its receipt wasn't kept: {e}");
+    }
+    answer
 }
 
 /// The file's name for `key`, its sha256: a key never becomes a path.

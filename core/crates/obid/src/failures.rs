@@ -79,6 +79,11 @@ pub struct Record {
     pub what: String,
     /// The rounds the job had used.
     pub rounds: u32,
+    /// Its tool's version as its latest round started (crate::cli_versions); left out of records
+    /// written before obid read it.
+    #[serde(rename = "agentVersion")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
     pub evidence: Evidence,
 }
 
@@ -94,6 +99,7 @@ impl Record {
             "title": self.title,
             "what": self.what,
             "rounds": self.rounds,
+            "agentVersion": self.agent_version,
             "intervention": false,
             "evidence": {
                 "summary": self.evidence.summary,
@@ -221,6 +227,7 @@ pub fn observe(home: &Path, job: &Job) {
         title: crate::secrets::known().redact(&job.short_title()),
         what: crate::secrets::known().redact(&what),
         rounds: job.current_round(),
+        agent_version: job.agent_version.clone(),
         evidence: evidence(home, job),
     };
     let kept = serde_json::to_vec_pretty(&record)
@@ -529,6 +536,27 @@ mod tests {
                 .is_some_and(|c| c.contains("the first run's check")),
             "{records:?}"
         );
+    }
+
+    #[test]
+    fn a_record_carries_its_jobs_agent_version_and_an_older_one_loads_without() {
+        let home = Home::new("version");
+        let mut failed = job(Status::Failed);
+        failed.finished = Some(obi_protocol::time::now());
+        failed.agent_version = Some("2.1.296".into());
+        observe(&home.0, &failed);
+        let records = home.records();
+        assert_eq!(records[0].agent_version.as_deref(), Some("2.1.296"));
+        assert_eq!(records[0].to_json()["agentVersion"], "2.1.296");
+        let file = folder(&home.0).join(format!("{}.json", records[0].id));
+        let mut kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(kept["agentVersion"], "2.1.296");
+
+        // A record written before obid read versions has no key: it loads, and says null.
+        kept.as_object_mut().unwrap().remove("agentVersion");
+        let older: Record = serde_json::from_value(kept).unwrap();
+        assert_eq!(older.agent_version, None);
+        assert_eq!(older.to_json()["agentVersion"], Value::Null);
     }
 
     #[test]

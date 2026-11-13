@@ -15,6 +15,32 @@ impl Jobs {
         self.update(id, |job| job.client_request_id = Some(key.to_owned()))
     }
 
+    /// obid's own Try again of job `id`, decided on its `revision` (RECEIPTS-13): once per
+    /// revision. A second for the same one gets the job as it is now, and nothing runs or changes.
+    /// Once it went through, the owner's (`owners`) gives the 10 back (RECOVERY-17).
+    pub async fn try_again(
+        self: &Arc<Self>,
+        id: &str,
+        revision: u64,
+        source: Source,
+        owners: bool,
+        receipts: Option<&crate::receipts::Receipts>,
+    ) -> Option<Result<Job, Refused>> {
+        let key = format!("try-again:{id}:{revision}");
+        let body = json!({"job": id, "revision": revision});
+        let repeat = |_, _| self.get(id).map(Ok);
+        crate::receipts::once(receipts, &key, "Try again", &body, repeat, async {
+            let carried = self.message(id, crate::brain::actions::TRY_AGAIN, source);
+            let went = matches!(carried, Some(Ok(_)));
+            if owners && went {
+                self.owner_asked(id);
+            }
+            let kept = went.then(|| (json!({"id": id}), Some(id.to_owned())));
+            (carried, kept)
+        })
+        .await
+    }
+
     /// Waits `wait` (capped by the stall window) before try `attempt` of `of` after `error`
     /// (RECOVERY-1, RECOVERY-14), its step saying when and `each` run on the job every minute.
     /// Words for it end the wait: they're its next try's. False when it was stopped meanwhile.
@@ -165,6 +191,7 @@ fn queued(job: &mut Job) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::brain::actions::TRY_AGAIN;
 
     const ID: &str = "eeee0001";
 
@@ -198,6 +225,76 @@ mod tests {
         let jobs = Jobs::open(config, Events::new(), Err("no sandbox".into())).unwrap();
         jobs.update(ID, |job| job.status = Status::Running);
         (root, jobs)
+    }
+
+    /// [`running`]'s job ended with a session, in a Jobs that starts no run (its rounds are only
+    /// counted); and the receipts in its home.
+    fn ended() -> (PathBuf, Arc<Jobs>, crate::receipts::Receipts) {
+        let (root, jobs) = running(0, 900);
+        jobs.shutting_down.store(true, Ordering::Relaxed);
+        jobs.update(ID, |job| {
+            job.status = Status::Failed;
+            job.session = Some("00000000-0000-4000-8000-000000000001".into());
+        });
+        let receipts = crate::receipts::Receipts::open(&root.join("home")).unwrap();
+        (root, jobs, receipts)
+    }
+
+    /// RECEIPTS-13: Try again twice for one revision of an ended job, one after the other or at
+    /// once, runs one more round, which hears it once; once the job ended again, that revision's
+    /// runs nothing and changes nothing, and its new revision's runs one more.
+    #[tokio::test]
+    async fn receipts_13_try_again_twice_is_one_round() {
+        let (root, jobs, receipts) = ended();
+        let again = |revision| jobs.try_again(ID, revision, Source::Event, true, Some(&receipts));
+        let before = jobs.get(ID).unwrap();
+        let (first, second) = tokio::join!(again(before.revision), again(before.revision));
+        assert!(matches!((&first, &second), (Some(Ok(_)), Some(Ok(_)))));
+        assert!(matches!(again(before.revision).await, Some(Ok(_))));
+        let tried = jobs.get(ID).unwrap();
+        assert_eq!(tried.current_round(), before.current_round() + 1);
+        let heard = |job: &Job| job.heard.iter().filter(|h| h.as_str() == TRY_AGAIN).count();
+        assert_eq!(heard(&tried), 1, "{:?}", tried.heard);
+        assert_eq!(tried.status, Status::Queued);
+
+        jobs.update(ID, |job| {
+            job.status = Status::Failed;
+            job.heard.clear();
+        });
+        let ended = jobs.get(ID).unwrap();
+        let repeat = again(before.revision).await.unwrap().unwrap();
+        assert_eq!(
+            (repeat.current_round(), repeat.revision),
+            (ended.current_round(), ended.revision)
+        );
+        let now = jobs.get(ID).unwrap();
+        assert_eq!((now.revision, now.status), (ended.revision, Status::Failed));
+
+        for _ in 0..2 {
+            assert!(matches!(again(ended.revision).await, Some(Ok(_))));
+        }
+        let tried = jobs.get(ID).unwrap();
+        assert_eq!(tried.current_round(), ended.current_round() + 1);
+        assert_eq!(heard(&tried), 1, "{:?}", tried.heard);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// RECEIPTS-13: with no receipts, Try again is `message`'s as before: twice for one revision,
+    /// the job hears it twice.
+    #[tokio::test]
+    async fn receipts_13_with_no_receipts_try_again_is_as_before() {
+        let (root, jobs, _) = ended();
+        let revision = jobs.get(ID).unwrap().revision;
+        for _ in 0..2 {
+            let tried = jobs
+                .try_again(ID, revision, Source::Event, true, None)
+                .await;
+            assert!(matches!(tried, Some(Ok(_))), "{tried:?}");
+        }
+        let job = jobs.get(ID).unwrap();
+        let heard = job.heard.iter().filter(|h| h.as_str() == TRY_AGAIN);
+        assert_eq!(heard.count(), 2, "{:?}", job.heard);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// RECOVERY-14: a stop while the job waits for its clone again, after a wait to fetch again,

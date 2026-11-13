@@ -34,7 +34,7 @@ const CODE_WITHIN: Duration = Duration::from_secs(30);
 /// How long a status read is kept: `gh auth status` asks GitHub.
 const STATUS_KEPT: Duration = Duration::from_secs(30);
 /// The start of a sign-in's folder's name in `home/tmp`.
-const SCRATCH_PREFIX: &str = "github-sign-in-";
+pub(crate) const SCRATCH_PREFIX: &str = "github-sign-in-";
 /// The only page a code is typed on.
 const DEVICE_PAGE: &str = "https://github.com/login/device";
 
@@ -668,23 +668,6 @@ async fn keep_reviewer(
     learn_reviewer(&folder);
     tracing::info!("GitHub reviewer signed in");
     Ok(())
-}
-
-/// Removes the folders sign-ins left in `home/tmp` when obid stopped before they ended.
-pub fn sweep(home: &Path) {
-    let Ok(entries) = std::fs::read_dir(home.join("tmp")) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(SCRATCH_PREFIX)
-            && entry.file_type().is_ok_and(|t| t.is_dir())
-        {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
 }
 
 /// gh started and its sign-in not yet handed to its own task: dropped armed (the request ended

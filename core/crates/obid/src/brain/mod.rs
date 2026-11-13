@@ -751,19 +751,9 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
             ));
         }
         out.push(Turn {
-            id: String::new(),
             who: t.who,
             text: t.text,
-            at: String::new(),
-            jobs: vec![],
-            conversation: String::new(),
-            ended: false,
-            artifacts: vec![],
-            routine: None,
-            asked: None,
-            attachments: vec![],
-            relayed: false,
-            asks: vec![],
+            ..Turn::default()
         });
     }
     Ok(Some(out))

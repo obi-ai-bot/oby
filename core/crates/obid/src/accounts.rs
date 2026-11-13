@@ -71,7 +71,7 @@ const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// The folders a sign-in uses for its temporary files, under obid's home: `sign-in-<…>`, swept at
 /// every start ([`sweep`]).
-const SCRATCH_PREFIX: &str = "sign-in-";
+pub(crate) const SCRATCH_PREFIX: &str = "sign-in-";
 
 // ---------------------------------------------------------------------------------------------
 // The accounts, live
@@ -494,6 +494,13 @@ fn default_bin(tool: Tool) -> &'static str {
     }
 }
 
+/// The binary `tool` runs as: the configuration's `bin`, else [`default_bin`].
+pub(crate) fn bin_of(agents: &Agents, tool: Tool) -> &str {
+    agent_of(agents, tool)
+        .as_ref()
+        .map_or(default_bin(tool), |a| a.bin.as_str())
+}
+
 fn agent_of(agents: &Agents, tool: Tool) -> &Option<Agent> {
     match tool {
         Tool::Claude => &agents.claude,
@@ -607,10 +614,7 @@ fn own_logins(agents: &Live) -> Vec<Tool> {
     Tool::ALL
         .into_iter()
         .filter(|tool| {
-            let bin = agent_of(&now, *tool)
-                .as_ref()
-                .map_or(default_bin(*tool), |a| a.bin.as_str());
-            crate::process::resolve_bin(bin).is_some()
+            crate::process::resolve_bin(bin_of(&now, *tool)).is_some()
                 && crate::jobs::has_login(*tool, &own_login(*tool), home.as_deref())
         })
         .collect()
@@ -1416,16 +1420,14 @@ impl SignIn {
     }
 }
 
-/// Removes the folders sign-ins left in `home/tmp` when obid stopped before they ended.
-pub fn sweep(home: &Path) {
+/// Removes the folders sign-ins left in `home/tmp` when obid stopped before they ended: those
+/// whose names start with `prefix`, accounts' ([`SCRATCH_PREFIX`]) or GitHub's.
+pub fn sweep(home: &Path, prefix: &str) {
     let Ok(entries) = std::fs::read_dir(home.join("tmp")) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(SCRATCH_PREFIX)
+        if entry.file_name().to_string_lossy().starts_with(prefix)
             && entry.file_type().is_ok_and(|t| t.is_dir())
         {
             let _ = std::fs::remove_dir_all(entry.path());

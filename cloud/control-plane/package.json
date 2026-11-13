@@ -3,13 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Oby's control plane on Cloudflare: sign-in, installations and one tunnel per Mac.",
+  "description": "Oby's control plane on Cloudflare: the sealed push relay for iPhones.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit",
     "test": "vitest run --config worker.vitest.ts",
-    "suffixes": "node scripts/suffixes.mjs",
     "migrate:local": "wrangler d1 migrations apply oby-control --local",
     "migrate:remote": "wrangler d1 migrations apply oby-control --remote"
   },
