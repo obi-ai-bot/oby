@@ -449,13 +449,14 @@ rm -r core/crates/obid
 # Each filtered plan contains only its group, including side effects outside step.
 # Use the candidate's implementation: the base's script may predate OBY_CHECK_ONLY.
 printf '%s\n' "$committed_script" >scripts/oby-check.sh
-for group in rust electron swift scan; do
+for group in rust electron swift factory scan; do
     said=$(OBY_CHECK_ONLY="$group" OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
     case "$group" in
-        rust) wanted='cargo'; unwanted='apps/electron run\|==> gitleaks\|==> swift\|==> xcodebuild' ;;
-        electron) wanted='apps/electron run'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|==> swift\|==> xcodebuild' ;;
-        swift) wanted='build-for-testing\|swift test\|Apple apps and swift test'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|apps/electron run' ;;
-        scan) wanted='gitleaks'; unwanted='==> cargo\|Rust core has\|apps/electron run\|==> swift\|==> xcodebuild' ;;
+        rust) wanted='cargo'; unwanted='apps/electron run\|==> gitleaks\|==> swift\|==> xcodebuild\|unittest' ;;
+        electron) wanted='apps/electron run'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|==> swift\|==> xcodebuild\|unittest' ;;
+        swift) wanted='build-for-testing\|swift test\|Apple apps and swift test'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|apps/electron run\|unittest' ;;
+        factory) wanted='python3 -m unittest discover -s factory/tests'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|apps/electron run\|==> swift\|==> xcodebuild' ;;
+        scan) wanted='gitleaks'; unwanted='==> cargo\|Rust core has\|apps/electron run\|==> swift\|==> xcodebuild\|unittest' ;;
     esac
     grep -q "$wanted" <<<"$said" && ! grep -q "$unwanted" <<<"$said" || {
         echo "oby-check-test: incorrect $group filter: $said" >&2
@@ -465,7 +466,7 @@ done
 
 # The machine-readable plan names each selected group once, independently of messages.
 said=$(OBY_CHECK_ALL=1 OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
-for group in rust electron swift scan; do
+for group in rust electron swift factory scan; do
     [[ $(grep -cxF "oby-check: group $group" <<<"$said") == 1 ]] || {
         echo "oby-check-test: missing or repeated $group plan marker: $said" >&2
         exit 1
@@ -478,8 +479,21 @@ for command in 'cargo fmt --manifest-path tools/oby-check-blok/Cargo.toml --all 
     grep -qF "$command" <<<"$said" || { echo "oby-check-test: missing pilot step $command: $said" >&2; exit 1; }
 done
 said=$(OBY_CHECK_PATHS=README.md OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
-! grep -qE '^oby-check: group (rust|electron|swift)$' <<<"$said" || {
+! grep -qE '^oby-check: group (rust|electron|swift|factory)$' <<<"$said" || {
     echo "oby-check-test: unchanged groups were planned: $said" >&2; exit 1;
+}
+# The factory's own scripts plan its tests, and no Rust group (factory/checks.sh runs that plan
+# outside the Cargo lock).
+for path in factory/bin/test-run factory/checks.sh factory/tests/test_x.py factory/config.json; do
+    said=$(OBY_CHECK_PATHS=$path OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -qx 'oby-check: group factory' <<<"$said" &&
+        grep -q '^==> .*python3 -m unittest discover -s factory/tests$' <<<"$said" || {
+        echo "oby-check-test: $path didn't plan the factory's tests: $said" >&2; exit 1;
+    }
+done
+said=$(OBY_CHECK_PATHS=factory/bin/test-run OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+! grep -qx 'oby-check: group rust' <<<"$said" || {
+    echo "oby-check-test: a change to factory/bin/test-run planned the Rust group: $said" >&2; exit 1;
 }
 
 # The check is the installed oby-check-blok's (BLOK-1, PUBLISHING-26): a run with none of
