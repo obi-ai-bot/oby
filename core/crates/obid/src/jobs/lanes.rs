@@ -89,12 +89,20 @@ impl Jobs {
     /// the job's file before it starts, or it doesn't start.
     pub(super) fn launched(&self, id: &str, own: bool) -> Result<(), String> {
         let mark = |j: &mut Job| (j.own_lane, j.ran_unproxied) = (own, j.ran_unproxied || own);
-        let Some(job) = self.update(id, mark).filter(|_| own) else {
-            return Ok(());
+        let unsaved = |e: String| {
+            format!("obid couldn't save that this run has no proxy ({e}), so it didn't start.")
         };
-        let unsaved =
-            |e| format!("obid couldn't save that this run has no proxy ({e}), so it didn't start.");
-        self.store.save(&job).map_err(unsaved)
+        // A mark that couldn't be kept changed nothing ([`Jobs::unkept`]): an own run doesn't start.
+        let Some(job) = self.update(id, mark) else {
+            return self
+                .unkept(id)
+                .filter(|_| own)
+                .map_or(Ok(()), |e| Err(unsaved(e)));
+        };
+        if !own {
+            return Ok(());
+        }
+        self.store.save(&job).map_err(|e| unsaved(e.to_string()))
     }
 
     /// LANES-18: a Codex thread is kept in its lane's own `CODEX_HOME` (the account's folder, or
