@@ -664,7 +664,27 @@ fn bubblewrap_args_reading(
     let worktree = spec.worktree.as_os_str();
     push(&["--bind".as_ref(), worktree, worktree]);
     // What stays read-only inside the worktree is bound over it again, read-only: a mount point,
-    // so it can't be renamed or removed either.
+    // so it can't be renamed or removed either. Each folder between the worktree and it is bound
+    // over itself too, as writable as it was: a folder above it renamed would carry it away
+    // (PUBLISHING-7, `mv tools moved`), and a mount point can't be renamed. A link is never bound:
+    // bubblewrap would follow it out of the worktree.
+    let mut held: Vec<PathBuf> = Vec::new();
+    for frozen in &spec.frozen {
+        let mut folder = spec.worktree.clone();
+        let parent = frozen
+            .strip_prefix(&spec.worktree)
+            .ok()
+            .and_then(Path::parent);
+        for part in parent.into_iter().flat_map(Path::components) {
+            folder.push(part);
+            if !folder.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                break;
+            } else if !held.contains(&folder) {
+                push(&["--bind".as_ref(), folder.as_os_str(), folder.as_os_str()]);
+                held.push(folder.clone());
+            }
+        }
+    }
     for frozen in &spec.frozen {
         push(&["--ro-bind".as_ref(), frozen.as_os_str(), frozen.as_os_str()]);
     }
@@ -1555,6 +1575,45 @@ mod tests {
             })
             .unwrap();
         assert!(bind < frozen, "{args:?}");
+    }
+
+    /// PUBLISHING-7 on Linux: each real folder between the worktree and a frozen file is bound over
+    /// itself before the file is, so `mv tools moved` can't carry the base's check away; a link
+    /// among them, and what is under it, is never bound.
+    #[test]
+    fn publishing_7_the_folders_above_a_frozen_file_cant_be_renamed() {
+        let root = std::env::temp_dir().join(format!("obid-frozen-{}", uuid::Uuid::new_v4()));
+        let worktree = root.join("w");
+        std::fs::create_dir_all(worktree.join("tools/ci")).unwrap();
+        std::fs::create_dir_all(root.join("elsewhere/x")).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere"), worktree.join("linked")).unwrap();
+        let spec = Spec {
+            worktree: worktree.clone(),
+            temp: root.join("t"),
+            frozen: vec![
+                worktree.join("tools/ci/check.sh"),
+                worktree.join(".gitleaks.toml"),
+                worktree.join("linked/x/file"),
+            ],
+            ..Spec::default()
+        };
+        let args: Vec<String> = bubblewrap_args(&spec)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = |flag: &str, path: &Path| {
+            let path = path.to_string_lossy().into_owned();
+            args.windows(3)
+                .position(|w| w[0] == flag && w[1] == path && w[2] == path)
+        };
+        let tools = at("--bind", &worktree.join("tools")).expect("tools is held");
+        let ci = at("--bind", &worktree.join("tools/ci")).expect("tools/ci is held");
+        let script = at("--ro-bind", &worktree.join("tools/ci/check.sh")).unwrap();
+        assert!(at("--bind", &worktree).unwrap() < tools, "{args:?}");
+        assert!(tools < ci && ci < script, "{args:?}");
+        assert_eq!(at("--bind", &worktree.join("linked")), None, "{args:?}");
+        assert_eq!(at("--bind", &worktree.join("linked/x")), None, "{args:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
