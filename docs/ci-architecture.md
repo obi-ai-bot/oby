@@ -252,9 +252,10 @@ requests wait for the owner.
    and, nightly, by the full Mac check. R01-12 rewrites AGENTS.md's line to say so.
 4. **The builder runs targeted tests, not the whole check.** The gate runs the check right after
    it (`.claude/agents/builder.md`).
-5. **A nightly full Mac run on `dev`** (R01-14): when no gate is waiting, `OBY_CHECK_ALL=1
-   scripts/oby-check.sh origin/dev` in a worktree of its own, under the same lock. A failure tells
-   the owner and writes a fix task file. The factory opens no GitHub issue.
+5. **A nightly full Mac run on `dev`** (R01-14, built: `factory/bin/nightly`): when no gate is
+   waiting, `OBY_CHECK_ALL=1 scripts/oby-check.sh origin/dev` in a worktree of its own, under the
+   same lock. A failure tells the owner and writes a fix task file. The factory opens no GitHub
+   issue.
 6. Unchanged: `factory/checks.sh`, its lock and shared Cargo folder, `concurrency: 4`, the reviewers.
 
 ### Flaky tests: one list that only shrinks
