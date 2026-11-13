@@ -8,8 +8,7 @@ import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { forgetToken, sealToken } from "../src/apns";
 import { PUSH, PUSH_ALERT, sweep } from "../src/app";
-import { sha256Hex } from "../src/signin";
-import { fromBase64url } from "../src/tokens";
+import { fromBase64url, sha256Hex } from "../src/tokens";
 import { base64url, DAY, MINUTE, testApp } from "./helpers";
 
 const TOPIC = "com.deskree.oby.ios";
@@ -261,7 +260,7 @@ describe("registering a phone", () => {
   });
 });
 
-describe("a push", () => {
+describe("a push: retired_4_a_sealed_push_still_reaches_apns", () => {
   it("goes to APNs as the contract says, with a provider token from the .p8 key", async () => {
     forgetToken();
     const fresh = await apnsKey();

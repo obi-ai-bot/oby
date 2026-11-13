@@ -29,7 +29,7 @@ pub const EXCERPT: usize = 500;
 /// Where the thread of obid before #493 is kept once it's a conversation, for a rollback.
 const PRE_493: &str = "conversation.json.pre-493";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Turn {
     pub id: String,
     pub who: String,
@@ -80,7 +80,7 @@ pub struct Asked {
 }
 
 /// One conversation as obid keeps it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Thread {
     id: String,
@@ -547,19 +547,10 @@ impl Conversations {
                         .map_or_else(|| "Conversation with Oby".into(), |t| titled(&t.text)),
                     created: turns[0].at.clone(),
                     sequence: next_sequence(&threads),
-                    pinned: false,
                     id,
                     turns,
-                    tasks: vec![],
-                    tasks_tainted: false,
                     foreign: kept_before_marks(),
-                    read_untrusted: false,
-                    from_obys: false,
-                    folders: vec![],
-                    uploads: vec![],
-                    talk_account: None,
-                    talked_on: None,
-                    moved_off: None,
+                    ..Thread::default()
                 };
                 // The conversation's name in its folder must be on disk before the old file goes.
                 if let Err(e) = self.write(&thread).and_then(|()| sync_dir(&self.dir)) {
@@ -669,20 +660,8 @@ impl Conversations {
                         .filter(|_| said.trim().is_empty())
                         .unwrap_or(&said),
                 ),
-                pinned: false,
                 created: obi_protocol::time::format(obi_protocol::time::now()),
-                sequence: 0,
-                turns: vec![],
-                tasks: vec![],
-                tasks_tainted: false,
-                foreign: None,
-                read_untrusted: false,
-                from_obys: false,
-                folders: vec![],
-                uploads: vec![],
-                talk_account: None,
-                talked_on: None,
-                moved_off: None,
+                ..Thread::default()
             });
             threads.len() - 1
         });
@@ -891,20 +870,9 @@ impl Conversations {
         let thread = Thread {
             id: new_id(),
             title: titled(title),
-            pinned: false,
             created: obi_protocol::time::format(obi_protocol::time::now()),
             sequence: next_sequence(&threads),
-            turns: vec![],
-            tasks: vec![],
-            tasks_tainted: false,
-            foreign: None,
-            read_untrusted: false,
-            from_obys: false,
-            folders: vec![],
-            uploads: vec![],
-            talk_account: None,
-            talked_on: None,
-            moved_off: None,
+            ..Thread::default()
         };
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", thread.summary());
@@ -929,21 +897,12 @@ impl Conversations {
         let thread = Thread {
             id: new_id(),
             title: titled("Questions from other Obys"),
-            pinned: false,
             created: obi_protocol::time::format(obi_protocol::time::now()),
             sequence: next_sequence(&threads),
-            turns: vec![],
-            tasks: vec![],
-            tasks_tainted: false,
-            foreign: None,
             // Every turn there hears another Oby's words.
             read_untrusted: true,
             from_obys: true,
-            folders: vec![],
-            uploads: vec![],
-            talk_account: None,
-            talked_on: None,
-            moved_off: None,
+            ..Thread::default()
         };
         self.write(&thread).map_err(Error::Io)?;
         self.events.send("conversation", thread.summary());
