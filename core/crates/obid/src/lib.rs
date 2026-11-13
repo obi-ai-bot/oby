@@ -18,6 +18,7 @@ pub mod brain;
 pub mod chatgpt;
 pub mod chatgpt_relay;
 pub mod clear;
+pub mod cli_versions;
 pub mod codex;
 pub mod config;
 pub mod conn;
@@ -375,6 +376,11 @@ pub async fn serve(
     accounts::sweep(&config.home, accounts::SCRATCH_PREFIX);
     // The tools' own logins on this Mac, listed as accounts unless the owner removed them.
     accounts::adopt_own_logins(&config.agents, &config.home);
+    // Each tool's version, read in the background so the first status finds it (CLIVERSIONS-1).
+    for tool in agent::Tool::ALL {
+        let bin = accounts::bin_of(&config.agents.get(), tool).to_owned();
+        tokio::task::spawn_blocking(move || cli_versions::read(tool, &bin, false));
+    }
     accounts::sweep(&config.home, github_login::SCRATCH_PREFIX);
     // The reviewer's token, taken out of everything from the start.
     github_login::learn_reviewer(&github_login::reviewer_folder(&config.home));

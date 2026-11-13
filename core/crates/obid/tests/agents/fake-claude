@@ -170,6 +170,12 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { getPriority, homedir } from "node:os";
 import { createInterface } from "node:readline";
 
+// Its version, as `claude --version` prints it (docs/contracts/cli-versions.md).
+if (process.argv[2] === "--version") {
+  process.stdout.write("2.1.296 (Claude Code)\n");
+  process.exit(0);
+}
+
 // Claude Code's refresh as obid has the Mac's own run it (`-p /usage … --no-session-persistence`,
 // the Keychain item named by $CLAUDE_SECURESTORAGE_CONFIG_DIR, which a boxed run never has): writes
 // that item, renewed, where the stand-in `security` finds items (obid-test-keychain in the test

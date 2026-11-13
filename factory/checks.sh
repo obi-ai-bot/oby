@@ -28,6 +28,14 @@ fi
 # Cargo locks it only while it builds, so two checks at once would still clash:
 # one job's build replaces the obid binary another job's tests are running
 # (R02-01's gate saw it). So the whole check holds a lock on the folder, below.
+#
+# Cargo also gives a workspace crate the same build record in every worktree and
+# rebuilds it only when a source file is newer than the last build. So a worktree
+# whose files are older than another branch's last build would be tested against
+# that branch's obid (R01-06's gate ran R02-06's). Inside the lock, before the
+# check, every tracked file under core/ and tools/ gets the current time, so this
+# worktree's own code is what gets built. Only the times change; touch -c creates
+# no file a branch deleted. Third-party crates stay built.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/oby-factory/core-target}"
 mkdir -p "$CARGO_TARGET_DIR"
 
@@ -49,5 +57,8 @@ except BlockingIOError:
     print("factory/checks.sh: another check is running on this Mac; waiting for it", file=sys.stderr, flush=True)
     fcntl.flock(lock, fcntl.LOCK_EX)
 os.set_inheritable(lock.fileno(), True)
+import subprocess
+files = subprocess.run(["git", "ls-files", "-z", "--", "core", "tools"], capture_output=True, check=True).stdout
+subprocess.run(["xargs", "-0", "touch", "-c"], input=files, check=True)
 os.execvp(sys.argv[2], sys.argv[2:])
 ' "$CARGO_TARGET_DIR/.factory-check.lock" scripts/oby-check.sh "$base"
