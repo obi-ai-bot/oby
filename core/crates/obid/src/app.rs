@@ -55,8 +55,7 @@ fn bundle_around(exe: &Path) -> Option<PathBuf> {
 
 /// What obid writes the first time, as install.sh does: listening where the Mac app looks for it,
 /// in the home the app reads the token from, the person's login as owner, Claude Code with its
-/// default login, Codex too when it's on the login shell's PATH, the gateway on for pairing, and
-/// telemetry off.
+/// default login, Codex too when it's on the login shell's PATH, and the gateway on for pairing.
 pub fn default_config(home: &Path, owner: &str, codex: bool) -> serde_json::Value {
     let mut agents = serde_json::json!({
         "claude": {"bin": "claude", "accounts": [{"id": "default", "name": "Default", "configDir": null}]}
@@ -71,8 +70,7 @@ pub fn default_config(home: &Path, owner: &str, codex: bool) -> serde_json::Valu
         "home": obid_home(home),
         "owner": owner,
         "agents": agents,
-        "gateway": "127.0.0.1:8810",
-        "telemetry": false
+        "gateway": "127.0.0.1:8810"
     })
 }
 
@@ -243,7 +241,6 @@ mod tests {
             config.gateway.map(|g| g.to_string()).as_deref(),
             Some("127.0.0.1:8810")
         );
-        assert!(!config.telemetry);
         std::fs::write(&path, "{\"edited\": true}").unwrap();
         ensure_config(&path, &home).unwrap();
         assert_eq!(

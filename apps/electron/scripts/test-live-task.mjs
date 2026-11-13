@@ -36,7 +36,7 @@ async function startObid() {
   const { port } = server.address();
   await new Promise((done) => server.close(done));
   json(join(root, 'config.json'), {
-    listen: `127.0.0.1:${port}`, home, owner: 'wellington', telemetry: false,
+    listen: `127.0.0.1:${port}`, home, owner: 'wellington',
     claudeKeychain: false, cursorKeychain: false, allowFileRemotes: true,
     agents: { claude: { bin: join(agents, 'fake-harness-jobs'), accounts: [{ id: 'stub', name: 'Stub', configDir: join(home, 'accounts/stub') }] } },
     repos: [{ repo: 'obi-e2e/fixture-app', remote: fixture.remoteUrl, defaultBranch: 'main', check: 'node --test', pullRequests: true }],

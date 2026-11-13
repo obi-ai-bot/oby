@@ -56,7 +56,7 @@ async function startObid() {
   json(join(home, 'accounts/stub/.credentials.json'), { claudeAiOauth: { accessToken: 'fake-claude', expiresAt: (Math.floor(Date.now() / 1000) + 86400) * 1000 } });
   const port = await freePort();
   json(join(root, 'config.json'), {
-    listen: `127.0.0.1:${port}`, home, owner: 'wellington', telemetry: false,
+    listen: `127.0.0.1:${port}`, home, owner: 'wellington',
     claudeKeychain: false, cursorKeychain: false, allowFileRemotes: true,
     agents: {
       claude: { bin: join(agents, 'fake-harness-jobs'), accounts: [{ id: 'stub', name: 'Stub', configDir: join(home, 'accounts/stub') }] },

@@ -79,7 +79,7 @@ async function obid(name, owner) {
   writeFileSync(join(home, 'api-token'), `${token}\n`, { mode: 0o600 });
   writeFileSync(join(home, 'accounts/stub/.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'fake', expiresAt: Date.now() + 86_400_000 } }), { mode: 0o600 });
   writeFileSync(join(root, 'config.json'), JSON.stringify({
-    listen: `127.0.0.1:${port}`, home, owner, telemetry: false, claudeKeychain: false, cursorKeychain: false,
+    listen: `127.0.0.1:${port}`, home, owner, claudeKeychain: false, cursorKeychain: false,
     agents: { claude: { bin: join(agents, 'fake-claude'), accounts: [{ id: 'stub', name: 'Stub', configDir: join(home, 'accounts/stub') }] } },
   }));
   const process_ = start(name, binary, ['serve', '--config', join(root, 'config.json')], {

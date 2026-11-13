@@ -57,8 +57,7 @@ fn config(folder: &Path, port: u16) -> Value {
         ]}},
         "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", folder.join("remote.git").display()),
                    "defaultBranch": "main", "check": "node --test"}],
-        "allowFileRemotes": true,
-        "telemetry": false
+        "allowFileRemotes": true
     })
 }
 
@@ -271,6 +270,7 @@ fn optional_parts_never_stop_obid() {
     let mut config = config(&folder.0, 0);
     config["gateway"] = json!(address);
     config["telemetri"] = json!(true);
+    config["telemetry"] = json!(true);
     config["conversation"] = json!({"agent": "plan", "harness": false});
     let home = Path::new(config["home"].as_str().unwrap()).to_path_buf();
     std::fs::create_dir_all(&home).unwrap();
@@ -287,7 +287,7 @@ fn optional_parts_never_stop_obid() {
     let log = std::fs::read_to_string(&obid.stderr).unwrap();
     assert!(log.contains("no gateway: can't listen on"), "{log}");
     assert!(log.contains("starting: listen done in"), "{log}");
-    for key in ["telemetri", "conversation.harness"] {
+    for key in ["telemetri", "telemetry", "conversation.harness"] {
         assert!(
             log.contains(&format!("{key} isn't a key this obid knows: ignored")),
             "{key}: {log}"
