@@ -105,7 +105,7 @@ impl Jobs {
             let next = next_wait(tries, first_wait());
             let at = next.map(|w| now() + i64::try_from(w.as_secs()).unwrap_or(i64::MAX / 2));
             tracing::info!("job {id}: its check judged nothing ({why}), try {tries}");
-            // Its line with it, at once: the job never shows the wait without why.
+            // Its line with it, at once: the job never shows the wait without why. Tries count once kept.
             self.update(id, |job| {
                 if let Some(next) = next {
                     job.step = waiting(&why, next);
@@ -115,7 +115,8 @@ impl Jobs {
                     next: at,
                     why: why.clone(),
                 })
-            });
+            })
+            .ok_or("the job couldn't be kept")?;
             if next.is_none() {
                 let rest = reason.strip_prefix(first).unwrap_or_default();
                 run.unchecked = Some(format!("{first}{GAVE_UP}{rest}"));

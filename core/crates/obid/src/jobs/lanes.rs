@@ -89,12 +89,14 @@ impl Jobs {
     /// the job's file before it starts, or it doesn't start.
     pub(super) fn launched(&self, id: &str, own: bool) -> Result<(), String> {
         let mark = |j: &mut Job| (j.own_lane, j.ran_unproxied) = (own, j.ran_unproxied || own);
-        let Some(job) = self.update(id, mark).filter(|_| own) else {
+        // The job its update saved says so, or an own run doesn't start (gone, or unsaved: unkept).
+        if self.update(id, mark).is_some_and(|job| job.ran_unproxied) || !own {
             return Ok(());
-        };
-        let unsaved =
-            |e| format!("obid couldn't save that this run has no proxy ({e}), so it didn't start.");
-        self.store.save(&job).map_err(unsaved)
+        }
+        let e = self.unkept(id).unwrap_or_else(|| "the job is gone".into());
+        Err(format!(
+            "obid couldn't save that this run has no proxy ({e}), so it didn't start."
+        ))
     }
 
     /// LANES-18: a Codex thread is kept in its lane's own `CODEX_HOME` (the account's folder, or
@@ -876,6 +878,8 @@ mod tests {
         }
         let mut spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
         let account = jobs.accounts(Tool::Claude).remove(0);
+        // An own run starts only for a job obid keeps, its no-proxy mark saved (LANE-3a).
+        jobs.insert(job.clone()).unwrap();
         let launch = jobs
             .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
             .unwrap();
@@ -1690,6 +1694,8 @@ mod tests {
         }
         let spec = jobs.spec(&worktree, &admin, &common, &temp, true, Tool::Claude);
         let account = jobs.accounts(Tool::Claude).remove(0);
+        // An own run starts only for a job obid keeps, its no-proxy mark saved (LANE-3a).
+        jobs.insert(job.clone()).unwrap();
         let launch = jobs
             .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
             .unwrap();

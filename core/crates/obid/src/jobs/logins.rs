@@ -3120,7 +3120,7 @@ attributes:
             "claude".into(),
             "a".into(),
         );
-        jobs.insert(job);
+        jobs.insert(job).unwrap();
         jobs.schedule();
         assert!(!jobs.lock().workers.contains_key("j"));
         assert_eq!(jobs.get("j").unwrap().status, Status::Queued);

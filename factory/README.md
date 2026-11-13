@@ -7,7 +7,7 @@ intake → spec → build → gate → review → approve. How to run it and wha
 ```
 config.json     concurrency, rounds, the active sprint, routing, protected paths, prices
 checks.sh       the gate's checks: scripts/oby-check.sh on the job's worktree
-bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; merges
+bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; queues approved PRs
 bin/gate        runs checks.sh in a job's worktree → round-N/checks.md
 bin/route       risk + surfaces → the job's reviewers and models
 queue/tasks/    open tasks, one file each (R01-02.md)
@@ -19,7 +19,9 @@ jobs/           runtime state, local to this Mac (gitignored)
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks
 its `DEPENDS` line names are in `queue/done`. Intake's questions and the owner's answers stay in the job's
-folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the project board.
+folder (`/factory <answer>`), and nothing reads or writes a GitHub issue or the project board. A pull request
+stays a draft until the approver says APPROVE; then GitHub merges it, and the job waits in the stage `queued`
+while GitHub's merge queue holds it.
 
 ## Licence
 

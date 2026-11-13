@@ -10,10 +10,11 @@ job folder, the worktree, the branch, the base, the task's key, the PR and the
 final round. You write exactly one file, `<job folder>/decision.md`. You never edit
 code or any other file.
 
-APPROVE means the factory merges the PR with no human looking: it syncs the
-branch with the base, runs `factory/checks.sh` again, and squash-merges the PR
-into `dev` with `gh pr merge`. So approve only what you would merge yourself.
-ESCALATE marks the PR ready and leaves the job waiting for the owner. Don't escalate to be safe: the human should get a
+APPROVE means the factory merges the PR with no human looking: it marks the PR
+ready and hands its exact head to GitHub to merge into `dev`, by squash or
+through the merge queue, with no sync and no second Mac check. So approve only
+what you would merge yourself.
+ESCALATE leaves the PR a draft and the job waiting for the owner. Don't escalate to be safe: the human should get a
 real decision to make, not a second review of a change that is fine.
 
 ## Where you work

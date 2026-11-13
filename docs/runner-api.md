@@ -775,6 +775,8 @@ Returns the queued `Job` (`201`), routed and claimed as a planned one, as a `job
 
 **A request key** (obid only, R02-04; docs/contracts/receipts.md, RECEIPTS-5 to 7): a client that may send the same request again (a retry after a lost answer) names it with a key of 1 to 128 characters, as `job.clientRequestId` or an `Idempotency-Key` header (visible ASCII, sent once); they mean the same, and the gateway forwards the header. `422`, and nothing made, for a `clientRequestId` that isn't a string, a key that's empty or longer than 128 characters, a header that isn't visible ASCII or comes more than once, or both keys sent and different. `"clientRequestId": null` is none. The first request with a key answers `201` with the job, its `clientRequestId` the key, and obid keeps a receipt for 24 hours. The same body again with that key, within 24 hours, answers `200` with that job as it is now (the receipt's answer if obid no longer has the job) and makes nothing; the key may come in the header one time and in the body the next. Its `X-Oby-Words` aren't checked or used up, and the first job's signed or unsigned mark and mode stay as they were. Another body under the key answers `409` and makes nothing. Two requests with one key at once make one job: obid answers them one after the other, `201` then `200`. A request refused with `400`, `410` or `422` (PUBLISHING-4's busy branch and `runsOn` included) keeps no receipt, so the corrected request can use the key. With no key, nothing here applies. `receipts` on `GET /v1/status` says whether obid honours keys; when it's `false`, a keyed request runs as one without a key would, and the job still carries its key.
 
+On obid, `500` with `The job couldn't be kept: <reason>` when it couldn't save the new job's file (`home/jobs/<id>.json`): then the job doesn't exist, in memory, on disk or in `GET /v1/jobs`, no `job` event was sent and no receipt is kept for its key (docs/contracts/home.md, HOME-2).
+
 ### `GET /v1/jobs?limit=50`
 
 The latest jobs, newest first.
@@ -782,6 +784,8 @@ The latest jobs, newest first.
 ### `GET /v1/jobs/{id}`
 
 One job, however old: fetch it when an inbox item or a notification names a job that isn't in `GET /v1/jobs`'s latest 50. Every job's routes (`/dismiss`, `/messages`, `/stop`, `/move`, `/publish`, `/wait`) work on any job the runner ever had, after any number of restarts; `404` means it never had it. An app that gets `404` for a job it holds drops the job from its lists (the Mac does) instead of keeping it under Needs you.
+
+On obid, any route that changes a job (`PATCH`, `/dismiss`, `/messages`, `/stop`, `/move`, `/mode` and the others), and an inbox answer that carries one out, answers `500` with `The job couldn't be kept: <reason>` when obid couldn't save the job's file, never `404`, `409` or `2xx`. Then the job and every app's view of it are as they were, its `revision` too, and no `job` event was sent: memory and events follow the disk, never lead it (docs/contracts/home.md, HOME-1). obid doesn't try that save again by itself; the same request, once the disk takes it, does.
 
 On startup the runner keeps the latest 50 jobs in memory, plus every job that still needs something however old: queued, running or interrupted, needing you or waiting for your answer, or published with a pull request that isn't merged or closed, whose reviews, checks and merge it goes on following. Not once dismissed.
 

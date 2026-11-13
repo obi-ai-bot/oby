@@ -1370,6 +1370,147 @@ fn tasks_12_nothing_committed_is_done_with_nothing_done_and_needs_nothing() {
     );
 }
 
+/// `GET /v1/events`, open: what's sent from now on.
+fn open_events(obid: &Obid) -> BufReader<TcpStream> {
+    let mut events = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    events
+        .write_all(format!("GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut events = BufReader::new(events);
+    let mut line = String::new();
+    events.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    std::thread::sleep(Duration::from_millis(200));
+    events
+}
+
+/// The `job` events `events` brings within 2 seconds of quiet that `of` picks.
+fn job_events(events: &mut BufReader<TcpStream>, of: impl Fn(&Value) -> bool) -> Vec<Value> {
+    events
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let (mut line, mut event, mut jobs) = (String::new(), String::new(), Vec::new());
+    loop {
+        line.clear();
+        if !matches!(events.read_line(&mut line), Ok(n) if n > 0) {
+            return jobs;
+        }
+        let text = line.trim();
+        if let Some(name) = text.strip_prefix("event: ") {
+            event = name.to_owned();
+        } else if let Some(data) = text.strip_prefix("data: ")
+            && event == "job"
+        {
+            let job: Value = serde_json::from_str(data).unwrap();
+            if of(&job) {
+                jobs.push(job);
+            }
+        }
+    }
+}
+
+/// `home/jobs` made read-only (`0500`) or writable again: every job's save fails, or works.
+fn jobs_folder_writable(obid: &Obid, writable: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if writable { 0o700 } else { 0o500 };
+    std::fs::set_permissions(
+        obid.home.join("jobs"),
+        std::fs::Permissions::from_mode(mode),
+    )
+    .unwrap();
+}
+
+/// HOME-1: a change obid couldn't save answers `500` with why, sends no `job` event, and leaves the
+/// job as it was, its revision too; once it can save again, the same change lands and is sent once.
+#[test]
+fn home_1_a_failed_save_sends_no_event() {
+    let folder = Folder::new("home-1");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research", "task": "Look around"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait(&obid, &id);
+    // Its last change, as in TASKS-12: the cleanup pass that frees its builds.
+    until(&obid, &id, |job| {
+        job["buildFreed"]["at"]
+            .as_str()
+            .is_some_and(|at| job["finished"].as_str().is_some_and(|end| at >= end))
+    });
+    let path = format!("/v1/jobs/{id}");
+    let before = request(&obid, "GET", &path, None).body;
+
+    jobs_folder_writable(&obid, false);
+    let mut events = open_events(&obid);
+    let renamed = request(&obid, "PATCH", &path, Some(r#"{"title": "Renamed"}"#));
+    let sent = job_events(&mut events, |job| job["id"] == id.as_str());
+    let after = request(&obid, "GET", &path, None).body;
+    jobs_folder_writable(&obid, true);
+    assert_eq!(renamed.status, 500, "{}", renamed.text);
+    let error = renamed.body["error"].as_str().unwrap_or_default();
+    assert!(error.contains("couldn't be kept"), "{error}");
+    assert!(sent.is_empty(), "{sent:?}");
+    assert_eq!(after["revision"], before["revision"], "{after}");
+    assert_eq!(after["title"], before["title"], "{after}");
+
+    let renamed = request(&obid, "PATCH", &path, Some(r#"{"title": "Renamed"}"#));
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    let sent = job_events(&mut events, |job| job["id"] == id.as_str());
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["title"], "Renamed");
+}
+
+/// HOME-2: a job obid couldn't save isn't made: `500` with why, no `job` event, the same jobs in
+/// `GET /v1/jobs`, and no new file in `home/jobs`.
+#[test]
+fn home_2_a_failed_save_makes_no_job() {
+    let folder = Folder::new("home-2");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let files = || {
+        let mut names: Vec<_> = std::fs::read_dir(obid.home.join("jobs"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n.to_string_lossy().ends_with(".json"))
+            .collect();
+        names.sort();
+        names
+    };
+    let (jobs, kept) = (request(&obid, "GET", "/v1/jobs", None).body, files());
+
+    jobs_folder_writable(&obid, false);
+    let mut events = open_events(&obid);
+    let made = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Look around"}),
+    );
+    let sent = job_events(&mut events, |_| true);
+    let (after, files_after) = (request(&obid, "GET", "/v1/jobs", None).body, files());
+    jobs_folder_writable(&obid, true);
+    assert_eq!(made.status, 500, "{}", made.text);
+    let error = made.body["error"].as_str().unwrap_or_default();
+    assert!(error.contains("couldn't be kept"), "{error}");
+    assert!(sent.is_empty(), "{sent:?}");
+    assert_eq!(after, jobs);
+    assert_eq!(files_after, kept);
+
+    // With a request key (RECEIPTS-5): an unsaved job keeps no receipt, so the same request
+    // makes the job once obid can save it.
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "fix", "task": "Fix it"});
+    jobs_folder_writable(&obid, false);
+    let made = post_keyed(&obid, &job, "home-2");
+    jobs_folder_writable(&obid, true);
+    assert_eq!(made.status, 500, "{}", made.text);
+    let made = post_keyed(&obid, &job, "home-2");
+    assert_eq!(made.status, 201, "{}", made.text);
+}
+
 /// A job that changes obid runs obid's own tests inside its job sandbox, and they start obid's
 /// fake agent there. Seatbelt can't make a sandbox inside another, so the test's obid runs its agent
 /// in the job's sandbox it inherits, and only in a job's ("The job sandbox"). Each case runs one of
