@@ -333,11 +333,11 @@ rl.on("line", (line) => {
   }
   emit({ type: "system", subtype: "init", cwd: process.cwd(), session_id: session, tools: ["Bash", "Read", "Edit"], mcp_servers: [], model: "fake", permissionMode: "default", apiKeySource: "none" });
   // LANES-4: what it got of a login shell's, and its --model, before `leaked` (an own run gets the
-  // owner's gateway).
+  // owner's gateway); then whether its self-update is off (CLIVERSIONS-5).
   if (prompt.includes("SHOW_ENV")) {
     const names = ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "SSH_AUTH_SOCK", "GH_TOKEN", "GIT_CONFIG_COUNT", "LANES_4"];
     const at = process.argv.indexOf("--model");
-    return result(`${names.map((name) => `${name}=${process.env[name] ?? "none"}`).join(" ")} model=${at >= 0 ? process.argv[at + 1] : "none"}`);
+    return result(`${names.map((name) => `${name}=${process.env[name] ?? "none"}`).join(" ")} model=${at >= 0 ? process.argv[at + 1] : "none"} DISABLE_AUTOUPDATER=${process.env.DISABLE_AUTOUPDATER ?? "none"}`);
   }
   if (leaked.length) return result(`leaked: ${leaked.join(", ")}`, true);
   // What obid cut, it does again when obid continues its session (its marked message).

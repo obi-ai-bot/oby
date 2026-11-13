@@ -222,7 +222,7 @@ impl Jobs {
         // The owner's user settings, which it loads (CONVO-4), held to an own job's rule: nothing
         // obid's `--settings` can't take back, no file tool allowed outside the room.
         own_settings_allowed(&own_settings_file(account)?, &spec, &extra)?;
-        extra.extend(CLAUDE_TELEMETRY_OFF.map(|name| (name, "1".into())));
+        extra.extend(process::CLAUDE_RUN_SWITCHES.map(|name| (name, "1".into())));
         // Off as `--restricted` had it: what a turn read never lands in the account's memory.
         extra.push((process::NO_AUTO_MEMORY, "1".into()));
         let settings = own_sandbox_settings(&spec, login, &extra)?;

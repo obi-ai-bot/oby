@@ -79,6 +79,18 @@ pub fn read(tool: Tool, bin: &str, recheck: bool) -> Read {
     read
 }
 
+/// What a job's transcript says when `tool`'s version changed between two of its rounds
+/// (CLIVERSIONS-6): none on a first round, when either can't be read, or when it's the same.
+pub fn changed(tool: Tool, was: Option<&str>, now: Option<&str>) -> Option<String> {
+    let (was, now) = (was?, now?);
+    // Proposed words, Sangam's to change.
+    let line = format!(
+        "{} changed from {was} to {now} since the last round",
+        tool.name()
+    );
+    (was != now).then_some(line)
+}
+
 fn lock() -> MutexGuard<'static, Vec<Last>> {
     LAST.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -158,5 +170,24 @@ mod tests {
         let long = format!("1.{}", "0".repeat(63));
         assert_eq!(parse(&format!("{long} 2.0")).as_deref(), Some("2.0"));
         assert_eq!(parse(&long), None);
+    }
+
+    #[test]
+    fn cliversions_6_only_a_real_change_is_said() {
+        assert_eq!(changed(Tool::Claude, None, Some("2.1.310")), None);
+        assert_eq!(
+            changed(Tool::Claude, Some("2.1.300"), Some("2.1.300")),
+            None
+        );
+        assert_eq!(changed(Tool::Claude, Some("2.1.300"), None), None);
+        assert_eq!(changed(Tool::Claude, None, None), None);
+        let line = changed(Tool::Claude, Some("2.1.300"), Some("2.1.310")).unwrap();
+        assert!(line.contains(Tool::Claude.name()), "{line}");
+        assert!(
+            line.contains("2.1.300") && line.contains("2.1.310"),
+            "{line}"
+        );
+        let line = changed(Tool::Codex, Some("0.162.1"), Some("0.163.0")).unwrap();
+        assert!(line.starts_with(Tool::Codex.name()), "{line}");
     }
 }
