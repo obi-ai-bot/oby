@@ -47,4 +47,6 @@ export interface BrainConfig {
   internalHosts: string[];
   /** Folders scanned for internal hosts, relative to root. */
   hostScan: string[];
+  /** The Swift client's folders, relative to root (their `tests` folders skipped): each `call`/`send` path must reach a route. */
+  swiftClient: string[];
 }
