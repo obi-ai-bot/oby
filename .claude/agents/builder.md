@@ -74,13 +74,26 @@ job's check waits for one lock on this Mac, so a builder's own run doubles the
 queue. Run only the test binaries and suites your change touched, never the
 whole check, which the gate runs next. Use your own build folder so you never
 touch the shared one: `cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target`
-in front of `cargo fmt --check`, `cargo clippy -p obid --all-targets -- -D warnings`,
-`cargo test --test <x>` for a test binary and `cargo test -p obid <module>::` for
-a lib module you changed or that names what you changed
-(`OBY_CHECK_PLAN=1 scripts/oby-check.sh origin/dev` prints the plan the gate
-will run); `npm run typecheck` and `npm test` in apps/electron when you touched
-it. Delete `<worktree>/core/target` before you finish if the disk has
-under 20 GB free (`df -h /`). If the gate fails, its log is in round-<N>/checks.log.
+in front of each Cargo command.
+
+Every test, clippy and build run of your own goes through
+`factory/bin/test-run --`: one such run on the Mac at a time, at background
+priority and half the cores, so gates get the CPU first. That is
+`cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target factory/bin/test-run -- cargo clippy -p obid --all-targets -- -D warnings`,
+`cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target factory/bin/test-run -- cargo test -p obid --test <x>`
+for a test binary and
+`cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target factory/bin/test-run -- cargo test -p obid <module>::`
+for a lib module you changed or that names what you changed;
+`cd <worktree>/apps/electron && ../../factory/bin/test-run -- npm run typecheck`,
+`../../factory/bin/test-run -- npm test` and `../../factory/bin/test-run -- npm run build`
+when you touched it; and `swift test` or `xcodebuild` the same way. A run may
+wait for another builder's run; test-run says so and for whom. Run directly,
+without test-run: `cargo fmt --check` (it compiles nothing), `npm install`,
+the plan print (`OBY_CHECK_PLAN=1 scripts/oby-check.sh origin/dev` prints the
+plan the gate will run), and the long-lived dev server (`npm run web`, below),
+which would hold the lock for your whole session. Delete
+`<worktree>/core/target` before you finish if the disk has under 20 GB free
+(`df -h /`). If the gate fails, its log is in round-<N>/checks.log.
 
 Then verify every acceptance criterion and record the evidence in build.md: the
 command you ran and its result, or what the page showed.

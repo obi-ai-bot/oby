@@ -46,7 +46,9 @@ is in the main checkout; your one file goes there.
 `factory/checks.sh` already passed on this commit: `round-<N>/checks.md` in the
 job folder has its output. Don't re-run the test suite, lint or build. Run a
 command yourself only to confirm a specific finding, and never use a mode that
-rewrites files, such as `--fix`.
+rewrites files, such as `--fix`. A test or build command you run goes through
+`factory/bin/test-run --` (`factory/bin/test-run -- cargo test -p obid --test <x>`),
+so it takes its turn with builders' runs and yields the CPU to gates.
 
 ## What to look for
 
