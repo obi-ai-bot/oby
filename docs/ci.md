@@ -1,6 +1,6 @@
 # Checks
 
-Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20); the design behind it, with the merge queue on `dev` still to come (R01-03), is [docs/ci-architecture.md](ci-architecture.md).
+Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20) and how a merge lands (CI-7, 8 and 21); the design behind it is [docs/ci-architecture.md](ci-architecture.md).
 
 ## What GitHub runs
 
@@ -71,6 +71,16 @@ The Mac's `scripts/oby-check.sh` runs the suites each change reaches, tests incl
 | obi-sphere | In `server/`: `pnpm run check`, `pnpm test`, `pnpm run check:validators`, `pnpm run test:client`, and `pnpm run conformance` with `spec/` installed. |
 
 The route guard, obid's `tests/routes_guard.rs` (docs/contracts/ci.md, CI-9 to 11), fails when a route goes, when a client calls a path obid doesn't serve, or when the gateway's `ROUTES` lists one; `scripts/oby-check.sh` plans it for a change to `api.rs`, `gateway.rs`, another obid source with a `.route(`, `docs/api/`, or the clients' sources (`apps/electron/src` but its tests and mock, `apps/shared`, `mcp/server`). To add a route, commit its line in `docs/api/routes.txt` with it. `docs/api/dead-client-calls.txt`, the calls already dead when the guard came, only shrinks.
+
+## How a merge lands
+
+A merge into `dev` goes through GitHub's merge queue and needs its `Check` (docs/contracts/ci.md, CI-7, 8 and 21). `dev`'s ruleset asks for a pull request with 0 approvals and the required status check `Check`, and queues it: squash, build concurrency 1, a minimum group of 2 with a 15-minute wait, a maximum group of 5, every entry must pass, and a status-check timeout of 60 minutes. The queue tests each group on top of `dev` and squash-merges its pull requests in order, so the code that lands is the code that was tested; a group whose `Check` fails merges nothing.
+
+Oby (MERGING-41) and the factory (`job merge`, CI-23) hand an approved pull request to GitHub with `gh pr merge --auto --match-head-commit <head>`, which queues it pinned to the head that was reviewed. A pull request into `main` needs `Check` green, with no queue.
+
+The Mac's check still gates each pull request before approval, and the nightly full Mac run (CI-29) checks `dev` as merged.
+
+The queue and the required check are GitHub's limits, not Oby's: the owner, as the repository's admin, changes or bypasses them in its settings, and when one holds a merge Oby says what holds it.
 
 ## Signing
 
