@@ -547,15 +547,11 @@ fn obid_signs_in_to_tetrix_once_and_agents_use_it_without_its_login() {
         serde_json::from_str(&std::fs::read_to_string(worktree.join(".obi/report.json")).unwrap())
             .unwrap();
     let server = &report["mcp"]["mcpServers"]["tetrix"];
-    // Agents reach obid at loopback, or on Linux at slirp4netns's host alias (crate's broker_host).
-    let host = if cfg!(target_os = "linux") {
-        "10.0.2.2"
-    } else {
-        "127.0.0.1"
-    };
+    // The owner's own job runs in the own lane, on the host: it reaches obid at loopback on every
+    // system (a boxed run on Linux, at slirp4netns's host alias 10.0.2.2: crate's broker_host).
     assert_eq!(
         server["url"],
-        format!("http://{host}:{}/v1/agent/tetrix/{id}", obid.port)
+        format!("http://127.0.0.1:{}/v1/agent/tetrix/{id}", obid.port)
     );
     let job_token = server["headers"]["Authorization"].as_str().unwrap();
     assert!(job_token.starts_with("Bearer ") && job_token.len() > 40);

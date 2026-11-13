@@ -46,19 +46,40 @@ if ! git diff --quiet "$base"...HEAD -- scripts/oby-check.sh scripts/oby-check-t
     echo "factory/checks.sh: this branch changes the check's own files; its copy of them runs below." >&2
 fi
 
-# One check at a time on this Mac: the lock is held until oby-check.sh and
-# everything it starts have exited, and a second check waits for it.
+# A change whose plan builds no Rust (docs, factory, cloud, an Electron-only change) needs neither
+# the shared Cargo folder nor its lock: it runs at once instead of queueing behind Rust checks.
+# A plan that can't be read takes the lock, as before.
+if plan=$(OBY_CHECK_PLAN=1 scripts/oby-check.sh "$base" 2>/dev/null) \
+        && ! grep -q '^oby-check: group rust$' <<<"$plan"; then
+    exec scripts/oby-check.sh "$base"
+fi
+
+# One check at a time on this Mac. Python holds the lock and runs oby-check.sh as a child in a session
+# of its own; the lock's file isn't inherited, so nothing the check leaves behind (a test's obid
+# server) can keep holding it. When the check ends, or the gate is stopped, everything still running
+# in that session is stopped too, and the lock is released with Python.
 exec python3 -c '
-import fcntl, os, sys
+import fcntl, os, signal, subprocess, sys
 lock = open(sys.argv[1], "w")
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
     print("factory/checks.sh: another check is running on this Mac; waiting for it", file=sys.stderr, flush=True)
     fcntl.flock(lock, fcntl.LOCK_EX)
-os.set_inheritable(lock.fileno(), True)
-import subprocess
 files = subprocess.run(["git", "ls-files", "-z", "--", "core", "tools"], capture_output=True, check=True).stdout
 subprocess.run(["xargs", "-0", "touch", "-c"], input=files, check=True)
-os.execvp(sys.argv[2], sys.argv[2:])
+child = subprocess.Popen(sys.argv[2:], start_new_session=True)
+def leftovers(*_):
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+def stop(signum, _):
+    leftovers()
+    sys.exit(128 + signum)
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+code = child.wait()
+leftovers()
+sys.exit(code)
 ' "$CARGO_TARGET_DIR/.factory-check.lock" scripts/oby-check.sh "$base"

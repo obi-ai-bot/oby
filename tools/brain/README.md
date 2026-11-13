@@ -70,5 +70,10 @@ cd tools/brain && npm test
 `test/repo.test.ts` runs the Brain on the real repository and holds what must stay true for any version of the code:
 every route read from its own line and its handler found; every module in an area; every app call reaching a route;
 every kept-locally choice owned, and every owed one tied to an issue; every rule tied to code that's still there and to
-a test; no internal host in the open-source code. `cargo test --manifest-path obid-extract/Cargo.toml` tests the
+a test; no internal host in the open-source code; every phone route served and every documented route served
+(RETIRED-7 and RETIRED-8, docs/contracts/retired.md). `scripts/oby-check.sh` doesn't run them: run `npm test` by hand.
+
+`docs/runner-api.md`'s section "Routes obid does not serve" (`goneSection` in `brain.config.ts`) lists the routes obid
+stopped serving: a mention of one anywhere in the doc never counts as documented, and one obid routes again is a
+`gone-but-routed` check. `cargo test --manifest-path obid-extract/Cargo.toml` tests the
 extractor on small Rust snippets. `npm run typecheck` checks the generator and the interface.

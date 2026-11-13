@@ -47,6 +47,7 @@ export function RulesView() {
 export const CHECK_LABEL: Record<CheckKind, string> = {
   'route-undocumented': 'Route not in runner-api.md',
   'doc-without-route': 'Documented, but obid has no such route',
+  'gone-but-routed': 'Listed as gone, but obid routes it',
   'phone-without-route': 'Phone allowlist entry with no route',
   'call-without-route': 'The app calls a route obid doesn\'t have',
   'route-unused': 'No screen calls it',
@@ -59,7 +60,7 @@ export const CHECK_LABEL: Record<CheckKind, string> = {
   extract: 'The extractor couldn\'t read it',
 };
 
-const ORDER: CheckKind[] = ['internal-host', 'call-without-route', 'doc-without-route', 'phone-without-route', 'rule-unlinked', 'local-unclassified', 'layering', 'route-undocumented', 'wire', 'extract', 'local-owed'];
+const ORDER: CheckKind[] = ['internal-host', 'call-without-route', 'doc-without-route', 'gone-but-routed', 'phone-without-route', 'rule-unlinked', 'local-unclassified', 'layering', 'route-undocumented', 'wire', 'extract', 'local-owed'];
 
 /** What the code and its docs disagree about. */
 export function ChecksView({ route }: { route: HashRoute }) {

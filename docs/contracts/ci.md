@@ -1,15 +1,15 @@
-# CI: what the check guards
+# CI: what GitHub runs, and what the check guards
 
-The business behavior contract for what the check itself guards, from [the template](../business-contract-template.md). Roadmap milestone R01 (Safety net); CI-9 to 11 are task R01-05, CI-12 and 13 are task R01-06.
+The business behavior contract for what GitHub's Linux workflow runs and what the check itself guards, from [the template](../business-contract-template.md). Roadmap milestone R01 (Safety net); CI-1 and CI-2 are task R01-01, CI-9 to 11 are task R01-05, CI-12 and 13 are task R01-06.
 
 ## Feature and status
 
-- **Outcome:** obid's API stays add-only (AGENTS.md, "How we work"): the iPhone, the Apple Watch, the Electron app and oby-mcp keep working after obid changes. Removing a route that a client still calls fails the check, as does a client call to a path obid doesn't serve and a gateway allowlist entry with no route, instead of showing up as a `404` on someone's phone.
+- **Outcome:** GitHub spends minutes only on runs someone reads: a ready pull request gets the secret scan, fmt and clippy, and `dev` is tested in full once a night and on demand, never on every push (docs/ci.md, "What GitHub runs"). obid's API stays add-only (AGENTS.md, "How we work"): the iPhone, the Apple Watch, the Electron app and oby-mcp keep working after obid changes. Removing a route that a client still calls fails the check, as does a client call to a path obid doesn't serve and a gateway allowlist entry with no route, instead of showing up as a `404` on someone's phone.
 - **Outcome:** A test that waits on elapsed time fails when the Mac is busy, and a flaky test blocks merges for everyone (#1804, #1656). obid's tests may only lose their `thread::sleep` and `time::sleep` calls, so each one a later change removes stays removed and none comes back.
-- **Status:** CI-9 to 11 are **implemented**: one test binary, `core/crates/obid/tests/routes_guard.rs`, with the committed lists `docs/api/routes.txt` and `docs/api/dead-client-calls.txt`. The gateway's dead entries it found were deleted with it; nothing else in obid changed, and no client changed.
+- **Status:** CI-1 is **implemented** and CI-2 is **proposed** until a nightly or on-demand run on `dev` proves it (below): `.github/workflows/linux.yml` as #2166 and #2167 left it, with no change here. CI-9 to 11 are **implemented**: one test binary, `core/crates/obid/tests/routes_guard.rs`, with the committed lists `docs/api/routes.txt` and `docs/api/dead-client-calls.txt`. The gateway's dead entries it found were deleted with it; nothing else in obid changed, and no client changed.
 - **Status:** CI-12 and CI-13 are **implemented** (task R01-06).
-- **Scope:** The paths of obid's routes, of the clients' calls and of the gateway's allowlist. Out of scope: request and response keys, enum values and frozen client decoders (R07); matching a client call by its HTTP method; paths built only by concatenation past a literal prefix; the iPhone and Watch app targets (`apps/ios`, `apps/watch`), the Electron app's tests and mock, `mcp/tests` and `cloud/`; removing the dead client calls themselves (each is a task of its own).
-- **Scope:** The count of sleep calls in obid's tests and its limit. Out of scope: converting the sleeps there are today (later changes lower the limit), a clippy `disallowed-methods` rule, any per-file allowance.
+- **Scope:** For CI-1 and CI-2, the triggers, jobs and cache saving of `.github/workflows/linux.yml`. Out of scope there: the new workflow, its lanes and shards (R01-02), and the merge queue and branch protection (R01-03). For CI-9 to 11, the paths of obid's routes, of the clients' calls and of the gateway's allowlist. Out of scope: request and response keys, enum values and frozen client decoders (R07); matching a client call by its HTTP method; paths built only by concatenation past a literal prefix; the iPhone and Watch app targets (`apps/ios`, `apps/watch`), the Electron app's tests and mock, `mcp/tests` and `cloud/`; removing the dead client calls themselves (each is a task of its own).
+- **Scope:** For CI-12 and CI-13, the count of sleep calls in obid's tests and its limit. Out of scope: converting the sleeps there are today (later changes lower the limit), a clippy `disallowed-methods` rule, any per-file allowance.
 
 ## Behavior
 
@@ -43,6 +43,7 @@ The business behavior contract for what the check itself guards, from [the templ
 
 ## Interfaces and dependencies
 
+- **Workflow:** `.github/workflows/linux.yml` (GitHub's `Linux` workflow) is what CI-1 and CI-2 describe; GitHub's own runs prove them, since no test runner in this repository runs a workflow's triggers.
 - **Files:** `docs/api/routes.txt`, `docs/api/dead-client-calls.txt`, read by `core/crates/obid/tests/routes_guard.rs`.
 - **Check:** `scripts/oby-check.sh` plans the Rust group with `tests/routes_guard.rs` when `core/crates/obid/src/api.rs` or `gateway.rs` changes, another file under `core/crates/obid/src/` with a `.route(` in it, anything under `docs/api/`, or a client source as above (`apps/electron/src` but its tests and mock, `apps/shared/*.swift`, `mcp/server/*.swift`); the groups those paths planned before stay as they were. `scripts/oby-check-test.sh` proves that plan.
 - **Cost:** an Electron-only or Swift-only change to client sources now also runs `cargo fmt`, clippy on obid and a build of one obid test binary.
@@ -50,6 +51,8 @@ The business behavior contract for what the check itself guards, from [the templ
 
 ## Acceptance scenarios
 
+- **CI-1** (implemented). Given a ready pull request into `dev`, when it is opened, reopened, pushed or marked ready, then the Linux workflow starts by itself on that head and runs the secret scan, plus `cargo fmt --check` and clippy when the change reaches Rust. Given a draft without `full-ci`, its jobs are skipped. Proof: run [43444624617](https://github.com/obi-ai-bot/oby/actions/runs/43444624617) (#2170, a ready pull request reaching Rust: Changes, Secret scan and Rust (core) with fmt and clippy passed, `cargo test` skipped, E2E and Control plane skipped), run [43445078023](https://github.com/obi-ai-bot/oby/actions/runs/43445078023) (#2171, `factory/` only: the secret scan alone), and run [43428763381](https://github.com/obi-ai-bot/oby/actions/runs/43428763381) (a draft: every job skipped).
+- **CI-2** (proposed). Given a push to `dev`, when it lands, then no Linux workflow run starts. Given the nightly schedule or a `workflow_dispatch` on `dev`, every job runs to the end, and only that run saves the Rust caches. Proof: the pushes to `dev` after #2166 (`9991deb0` to `80d9d398`) started no run (`gh run list --workflow linux.yml --branch dev --event push`: the latest is [43430439449](https://github.com/obi-ai-bot/oby/actions/runs/43430439449), on `f3b0120f`, #2165, before #2166). Missing: a nightly or `workflow_dispatch` run on `dev`; none has run yet.
 - **CI-9** (implemented). Given a change that removes a route from obid, when the check runs, then it fails and names the route (`` `POST /v1/clear` went ``). Test: `ci_9_a_removed_route_fails` (core/crates/obid/tests/routes_guard.rs), seen red on an inline router and list.
 - **CI-10** (implemented). Given a client file that calls a `/v1/` path obid does not serve, when the check runs, then it fails and names the file and path. Test: `ci_10_a_client_path_without_a_route_fails` (core/crates/obid/tests/routes_guard.rs), seen red on an inline client snippet and known-dead list.
 - **CI-11** (implemented). Given a `gateway.rs` `ROUTES` entry with no route, when the check runs, then it fails and names the entry. Test: `ci_11_a_dead_gateway_entry_fails` (core/crates/obid/tests/routes_guard.rs), seen red on an inline `ROUTES` snippet.
