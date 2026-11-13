@@ -10,7 +10,17 @@
 #
 # A draft pull request runs the workflow but skips its jobs (a skipped job reports success under
 # the same name), unless it has the `full-ci` label: that takes effect on the next push after
-# labelling. Marking it ready for review runs everything on the same head.
+# labelling. Marking it ready for review runs what its change reaches on the same head.
+#
+# To spend GitHub's minutes only where they tell something (docs/ci-architecture.md):
+#   - A pull request whose files are all docs (not docs/api), factory/, .claude/, design/,
+#     character/, apps/ios, apps/watch or other Markdown runs only the secret scan; one that
+#     doesn't touch cloud/control-plane skips that job. A skipped job reports success.
+#   - A push to dev or main runs nothing: nobody read those runs, and the merge queue will test
+#     the merged code before it lands. Instead everything runs nightly on dev, and on demand.
+#   - Only the nightly and on-demand runs save caches: a pull request's caches can't be read by
+#     any other pull request (they're scoped to refs/pull/<n>/merge), so they only churned the
+#     repository's 10 GB.
 name: Linux
 
 on:
@@ -19,10 +29,11 @@ on:
     # ready_for_review runs a draft that turned ready on the same head. No `labeled`: a run started
     # by another label would skip and post a success over a failed check on that head.
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [dev, main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
-# A newer push to the same pull request cancels the run it supersedes; pushes to dev and main
+# A newer push to the same pull request cancels the run it supersedes; nightly and on-demand runs
 # each run to the end.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -39,9 +50,53 @@ env:
   WRANGLER_SEND_METRICS: "false"
 
 jobs:
+  changes:
+    name: Changes
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.lanes.outputs.rust }}
+      cloud: ${{ steps.lanes.outputs.cloud }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # rust: the Rust job and make e2e; cloud: the control plane. Everything runs when it isn't a
+      # pull request, or when the diff can't be read.
+      - name: What the change reaches
+        id: lanes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          rust=false cloud=false
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] || ! files=$(git diff --name-only "$BASE...$HEAD"); then
+            rust=true cloud=true
+          else
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              case "$f" in
+                .github/*) rust=true cloud=true ;;
+                cloud/control-plane/*) cloud=true ;;
+                docs/api/*) rust=true ;;
+                docs/*|factory/*|.claude/*|design/*|character/*|apps/ios/*|apps/watch/*|cloud/*) ;;
+                core/*) rust=true ;;
+                *.md) ;;
+                *) rust=true ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "rust=$rust cloud=$cloud"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "cloud=$cloud" >> "$GITHUB_OUTPUT"
+
   rust:
     name: Rust (core)
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -55,6 +110,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: core
+          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       # obid's job sandbox on Linux is bubblewrap (with slirp4netns for an agent's network), and
       # tests/sandbox.rs, the plug-in tests and the job tests make one. Ubuntu 24.04's AppArmor
@@ -143,7 +199,8 @@ jobs:
 
   control-plane:
     name: Control plane
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    needs: changes
+    if: needs.changes.outputs.cloud == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -176,7 +233,8 @@ jobs:
 
   e2e:
     name: E2E (stub agents)
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -213,6 +271,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: oby/core
+          save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
       # obid runs each job's agent (here the stub) in its bubblewrap sandbox: see the Rust job.
       - name: bubblewrap for obid's job sandbox
