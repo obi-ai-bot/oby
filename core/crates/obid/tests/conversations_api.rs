@@ -854,6 +854,43 @@ fn failed_turn_write_does_not_change_the_existing_conversation() {
     restarted.stop();
 }
 
+/// HOME-3: the owner's words a conversation couldn't keep on disk answer `500`, the apps hear of
+/// no change to it, and the list stays as it was; once the folder takes them, they're kept.
+#[test]
+fn home_3_a_failed_conversation_save_sends_no_event() {
+    let folder = Folder::new("home-3");
+    let (obid, config) = harness_obid(&folder);
+    let id = plan(&obid, json!({"said": "kept words", "new": true}))["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let listed = conversations(&obid, "");
+    let home = Path::new(config["home"].as_str().unwrap());
+    let dir = home.join("conversations");
+    let saved = home.join("conversations-saved");
+    let events = follow_events(&obid);
+    std::fs::rename(&dir, &saved).unwrap();
+    std::fs::write(&dir, b"not a directory").unwrap();
+    let said = json!({"said": "words to keep", "conversation": id});
+    let failed = call(&obid, "POST", "/v1/plans", Some(&said));
+    let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut sent = Vec::new();
+    while let Ok((name, data)) =
+        events.recv_timeout(give_up_at.saturating_duration_since(std::time::Instant::now()))
+    {
+        if name == "conversation" || name == "turn" {
+            sent.push((name, data));
+        }
+    }
+    let after = conversations(&obid, "");
+    std::fs::remove_file(&dir).unwrap();
+    std::fs::rename(&saved, &dir).unwrap();
+    assert_eq!(failed.status, 500, "{}", failed.text);
+    assert!(sent.is_empty(), "{sent:?}");
+    assert_eq!(after, listed);
+    plan(&obid, said);
+}
+
 /// TASKCONV-18: a job that ended with nobody to hear it (obid went down) tells its conversation at
 /// the next start, once; one that ended before obid kept the mark says nothing, so an upgrade adds
 /// nothing to old conversations.
