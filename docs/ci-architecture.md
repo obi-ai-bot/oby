@@ -1,28 +1,32 @@
-# CI architecture: test each change once, in batches
+# CI architecture: the Mac gates each change, GitHub tests dev nightly
 
-Status: **proposed** (2026-11-13). It replaces the plan in roadmap tasks R01-01 to R01-03 and adds
-R01-12 to R01-14 (`factory/queue/tasks/`). Nothing here is built yet. Where it changes a rule only
-the owner changes (AGENTS.md, a security path, the Mac check), it says so and waits for the owner's
-word.
+Status: **decided by the owner on 2026-11-13, partly built.** "Go with the leaner option, nightly
+only", and "Yes, drop the Mac merge gate". #2166 and #2167 put the GitHub side in place. Roadmap
+tasks R01-01 to R01-03 are rewritten to fit, and R01-12 to R01-14 are new
+(`factory/queue/tasks/`). Where something changes a rule only the owner changes (AGENTS.md, a
+security path, the Mac check), it says so.
 
 ## In short
 
-Think of a bakery that checks every loaf three times on its own and then once more, alone, after
-it is already on the shelf. This design checks a loaf once, before it goes out, and checks a whole
-tray at a time.
+Think of a bakery where every loaf was checked three times on its own, and then once more after it
+was already on the shelf. Now each loaf is checked once before it goes out, and the whole shelf is
+checked every night.
 
-1. **A pull request costs almost nothing on GitHub until it is ready to merge.** Drafts run no jobs.
-   A ready pull request runs only fmt, clippy and the secret scan (about 5 billed minutes).
-2. **The full Linux suite runs once per batch, in GitHub's merge queue on `dev`.** Up to 5 pull
-   requests are put on top of `dev` together and tested as one, then squash-merged in order. That
-   is what catches the #2152 kind of miss (a merge that broke tests its own change never ran).
-3. **The Mac check stays the gate a pull request needs before it is reviewed**, and runs what only a
-   Mac runs or what the change reaches. It no longer runs a second time after syncing with `dev`:
-   the queue now tests the combined code on Linux. A full Mac run of `dev` happens once a night.
-4. **Flaky tests are retried in CI only when they are on one shrink-only list**, each with a task to
-   fix it. A test that is flaky but not listed still fails.
-5. **Everything runs on GitHub's standard Linux runners.** No macOS runners and no larger runners:
-   those are billed even on a public repository. No self-hosted runner.
+1. **Each pull request is tested once, on the Mac.** The Mac check (`scripts/oby-check.sh`) runs
+   the suites the change reaches, the Apple suites included, on the pull request's head. It no
+   longer runs a second time after syncing with `dev`.
+2. **GitHub runs no tests on a pull request.** It runs the secret scan and, for a Rust change, fmt
+   and clippy: a few minutes. The `full-ci` label asks for everything.
+3. **GitHub tests `dev` as merged once a night.** The whole Linux suite, e2e and the control plane
+   run at 03:17 UTC, or on demand. That is where a break that only shows up once changes are
+   combined (the #2152 kind) is found, **within a day rather than before the merge**. That is the
+   trade-off the owner chose.
+4. **A red night stops the factory's merges** until a fix lands (R01-03). The factory also runs the
+   full Mac check of `dev` nightly (R01-14).
+5. **Flaky tests are retried only when they are on one shrink-only list**, each with a task to fix
+   it.
+6. **Standard Linux runners only.** No macOS runners, no larger runners (both are billed even on a
+   public repository), and no self-hosted runner.
 
 ## What exists today, measured
 
@@ -56,8 +60,7 @@ So, in October:
   billed, mostly `tetrix-collectors` and `oberon`. That is a separate problem, with its own fix.
   This design keeps `oby` at $0 and doesn't touch deskree-inc.
 
-What `oby` is short of is not money: it is **the Mac's time, CI that gates nothing, and shared
-concurrency**.
+What `oby` is short of is not money: it is **the Mac's time, and CI that gates nothing**.
 
 ### The Mac gate is the factory's real limit
 
@@ -78,9 +81,9 @@ owner's Mac), across the 13 jobs run on 2026-11-13:
 
   Each one cost a full builder round and another gate.
 
-### GitHub CI runs today, but decides nothing
+### GitHub CI ran, but decided nothing (before #2166)
 
-`.github/workflows/linux.yml` runs everything on every non-draft pull request and on every push to
+`.github/workflows/linux.yml` ran everything on every non-draft pull request and on every push to
 `dev` and `main`. Its jobs: Rust fmt, clippy and the whole suite, gitleaks, the control plane, and
 `make e2e`. On 2026-10-27 a green run took 13 minutes of Rust plus about 3 more; call it 18–20 billed
 minutes. That was before today's suite. The factory never waits for it:
@@ -93,273 +96,181 @@ minutes. That was before today's suite. The factory never waits for it:
 5. Its caches are saved under `refs/pull/<n>/merge`, which no other pull request can read: 464 MB
    wasted from #2154 alone ([dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)).
 
-**Today GitHub runs about 2.5 full runs per factory pull request, and none of them can stop a
-merge.**
+**GitHub ran about 2.5 full runs per factory pull request, and none of them could stop a
+merge.** Every one of them was also red on 2026-11-13, for one Linux-only clippy error that the
+Mac never saw (fixed by #2165).
 
 ## The design
 
 ```mermaid
 flowchart LR
   subgraph Mac["Owner's Mac (one check at a time)"]
-    B[builder: targeted tests it changed] --> G[gate: scripts/oby-check.sh<br/>affected suites + Apple + scan]
-    N[nightly: OBY_CHECK_ALL=1 on dev]
+    B[builder: the tests it touched] --> G[gate: scripts/oby-check.sh<br/>suites the change reaches + Apple + scan]
+    MN[nightly: OBY_CHECK_ALL=1 on dev<br/>R01-14]
   end
   subgraph PR["Pull request on GitHub"]
-    D[draft: every job skipped<br/>0 minutes] -->|factory: approved| R[ready: plan + scan + fmt + clippy<br/>~5 billed min → Check]
+    D[draft: nothing runs] -->|approved| R[ready: secret scan, fmt, clippy<br/>a few minutes, no tests]
   end
-  subgraph Q["Merge queue on dev (GitHub)"]
-    MG[merge_group: up to 5 PRs on top of dev<br/>full Linux suite, 4 nextest shards, e2e, lanes<br/>~38 billed min → Check] -->|pass| M[squash-merged into dev in order]
-    MG -->|fail| X[PR removed → factory: re-queue once, then a builder round with the log]
+  G -->|PASS| REV[reviewers + approver] -->|APPROVE| R --> M[squash-merged into dev]
+  subgraph GH["GitHub, nightly on dev"]
+    N[03:17 UTC: whole Linux suite, e2e, control plane<br/>saves caches, lists flaky tests]
   end
-  G -->|PASS| REV[reviewers + approver]
-  REV -->|APPROVE| R
-  R -->|Check green| MG
-  NIGHT[schedule: nightly full run on dev<br/>saves caches, reports flaky tests] -.-> MG
+  M -.-> N
+  N -->|red| STOP[factory pauses merges<br/>and writes a fix task, R01-03]
+  MN -->|red| STOP
 ```
 
 ### Who runs what, once
 
 | Where | When | What it runs | Why there |
 |---|---|---|---|
-| The builder, on the Mac | while it works | the test binaries it touched (`cargo test --test <x>`), Electron's typecheck if touched | fast feedback; it isn't a gate |
-| The gate, on the Mac | once per round, on the pull request's head | `scripts/oby-check.sh` as now: affected Rust, Electron, Swift/iOS, gitleaks | the Mac's own suites (Seatbelt, Keychain, Swift, iOS) exist only there; it is "fit to review" |
-| GitHub, pull request (ready) | when the factory approves, once per head | plan, gitleaks, `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings` | cheap admission to the queue; a clippy error caught here doesn't sink a batch |
-| GitHub, merge queue | once per batch of ≤5 pull requests | everything the batch's combined diff reaches, in coarse lanes: all of the Rust suite for any `core/` change, e2e, control plane, Electron | the only place the combined code is tested before it lands; catches #2152 |
-| GitHub, nightly on `dev` | 03:17 UTC and on demand | everything, every lane | saves the caches the other runs read; finds flaky tests; a daily full signal |
-| The factory, nightly on the Mac | once a day when no gate waits | `OBY_CHECK_ALL=1 scripts/oby-check.sh` on `origin/dev` | the Mac-only suites on the code as merged |
+| The builder, on the Mac | while it works | the test binaries and suites it touched | fast feedback; it isn't a gate |
+| The gate, on the Mac | once per round, on the pull request's head | `scripts/oby-check.sh`: the Rust, Electron and Swift/iOS suites the change reaches, then gitleaks | the one test run per pull request; the Mac's own suites exist only there |
+| GitHub, pull request | when it isn't a draft | secret scan; fmt and clippy for a Rust change (Linux-only code included: #2165's error) | cheap; catches what the Mac's build can't see |
+| GitHub, nightly | 03:17 UTC on `dev`, and `workflow_dispatch` | everything: `cargo test --workspace`, `make e2e`, the control plane | `dev` as merged, on Linux; the only run that saves caches |
+| The factory, nightly | once a day when no gate waits (R01-14) | `OBY_CHECK_ALL=1 scripts/oby-check.sh` on `origin/dev` | the Mac-only suites on `dev` as merged |
 
-So each Rust test runs **once per batch on Linux**, plus the affected ones **once per pull request
-on the Mac**. Today it is 2–4 times on the Mac and 2–3 times on GitHub, per pull request.
+### Trigger matrix (`linux.yml` after #2166 and #2167)
 
-### Trigger matrix
+The `Changes` job reads which paths a pull request touches:
 
-There is one workflow file, `ci.yml`, which replaces `linux.yml`. It has no workflow-level path
-filter, so the required check `Check` always reports. GitHub leaves a check skipped by a path
-filter "Pending", which blocks merging
-([workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)).
-Jobs are skipped with `if:` instead, and a skipped job reports success
-([troubleshooting required checks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)).
+- **Rust lane:** anything but docs (not `docs/api`), `factory/`, `.claude/`, `design/`,
+  `character/`, `apps/ios`, `apps/watch`, other `cloud/` and Markdown.
+- **Cloud lane:** `cloud/control-plane/` or `.github/`.
+- **Tests:** only off pull requests, or with the `full-ci` label.
 
-Lanes come from the paths a change touches. In the merge queue, that is the group's whole diff,
-`merge_group.base_sha..head_sha`.
+A skipped job reports success, and nothing is a required check.
 
-| Lane | Paths that reach it |
-|---|---|
-| `rust` | `core/**`, `docs/api/**` (route guard), `e2e/**`, `Makefile` |
-| `e2e` | `core/**`, `e2e/**`, `Makefile` |
-| `electron` | `apps/electron/**` |
-| `control-plane` | `cloud/control-plane/**` |
-| `tools` | `tools/oby-check-blok/**` (its own Cargo workspace) |
-| every lane | `.github/**`, `scripts/oby-check*`, `core/Cargo.lock`, `core/Cargo.toml`, `rust-toolchain*` |
-| no lane (plan and scan only) | `docs/**`, `factory/**`, `.claude/**`, `*.md`, `design/**`, `character/**`, `apps/ios/**`, `apps/watch/**`, `apps/shared/**`, `apps/Oby.xcodeproj/**`, `mcp/**` (Mac only) |
+| Event | Secret scan | fmt + clippy | `cargo test` | `make e2e` | Control plane | Saves caches |
+|---|---|---|---|---|---|---|
+| `pull_request`, draft | — | — | — | — | — | no |
+| `pull_request`, ready | ✓ | ✓ if Rust lane | — | — | — | no |
+| `pull_request` with label `full-ci` | ✓ | ✓ if Rust lane | ✓ if Rust lane | ✓ if Rust lane | ✓ if cloud lane | no |
+| `schedule` (nightly on `dev`), `workflow_dispatch` | ✓ | ✓ | ✓ | ✓ | ✓ | **yes** |
+| `push` to `dev` or `main` | — | — | — | — | — | — |
 
-Which jobs run for which event:
+### The nightly run must be read
 
-| Event | `plan` + gitleaks | `lint` (fmt, clippy) | `rust-build` + 4 × `rust-test` | `e2e` | `electron`, `control-plane`, `tools` | `Check` | Cancels older runs |
-|---|---|---|---|---|---|---|---|
-| `pull_request`, draft | — | — | — | — | — | skipped (GitHub won't queue a draft) | yes |
-| `pull_request`, ready, into `dev` | ✓ | ✓ if `rust` | — | — | — | ✓ | yes, per PR |
-| `pull_request` with label `full-ci` | ✓ | ✓ | ✓ if `rust` | ✓ if `e2e` | ✓ per lane | ✓ | yes, per PR |
-| `pull_request` into `main` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | yes, per PR |
-| `merge_group` (queue on `dev`) | ✓ | ✓ if `rust` | ✓ if `rust` | ✓ if `e2e` | ✓ per lane | ✓ | never |
-| `schedule` (nightly, `dev`), `workflow_dispatch` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓, and saves caches | never |
-| `push` to `dev` or `main` | — | — | — | — | — | — | — (dropped: the queue already tested that exact commit) |
+A nightly run nobody reads is the old problem again. GitHub notifies whoever last changed the
+workflow's schedule, but the factory merges all day. So R01-03 makes the factory itself read it:
 
-`Check` has `needs:` on every job and `if: always()`. It fails when any needed job failed or was
-cancelled, or when `plan` failed. That way a skipped lane can't hide a broken plan (R01-02's CI-5
-and CI-6 hold).
+1. Before each merge, `factory/bin/job` reads the latest `schedule` run of `linux.yml` on `dev`.
+2. If that run is red and no fix has merged since, the job waits in `needs-human`, saying which
+   tests failed.
+3. The orchestrator writes one fix task file naming those tests, in the queue's format.
 
-### The merge queue on `dev`
-
-`dev` is this repository's default branch, and the queue is open to public repositories owned by
-an organization ([merge queue](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-a-pull-request-with-a-merge-queue)).
-The proposed settings are a repository ruleset on `dev`. "Require merge queue" is repository-level
-only ([rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
-
-| Setting | Value | Why |
-|---|---|---|
-| Merge method | squash | The remembered workflow for this repository (AGENTS.md). |
-| Build concurrency | 1 | No speculative group that a failure throws away. One group about every 15 minutes merges up to 5 pull requests, about 20 an hour, far more than the factory makes. |
-| Minimum group size, wait time | 2, 15 minutes | Batches what arrives together: four jobs often finish close together. A lone pull request still goes after 15 minutes. |
-| Maximum group size | 5 | A failure throws away at most 5 pull requests' worth of run. |
-| Require all entries to pass | on | A pull request whose group failed never merges. |
-| Status check timeout | 60 minutes | Twice the batch's expected time. |
-| Required status check | `Check` | The one aggregate job. |
-| Required approvals | 0 | The factory and obid review by themselves; GitHub's approvals stay the owner's choice ("Oby forbids nothing"). |
-
-`main` gets only a required `Check` and no queue. Pull requests into `main` are rare and the
-owner's; they run everything.
-
-**When a batch fails.** GitHub documents that it removes the failing pull request and rebuilds the
-others behind it. It doesn't document bisecting, and it doesn't say how it picks the one to blame
-inside a single group of several (I could not confirm either:
-[managing a merge queue](https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)).
-So the factory does its own cheap bisect:
-
-1. A pull request removed from the queue is queued again once, by itself, with no builder round.
-   Something else in its group may have been at fault.
-2. If it fails again, the job gets a builder round with the failed log quoted as data, as obid's
-   MERGING-39 does, and the pull request goes back to draft.
-3. A removal for a conflict sends it straight to a builder round that merges `dev`.
-
-**How merges reach the queue.**
-
-- `gh pr merge` "automatically adds the pull request to the queue if required checks have passed",
-  and otherwise turns on auto-merge, which queues it later (same merge-queue page).
-- The REST `PUT /pulls/{n}/merge` doesn't merge into a queue ([pulls API](https://docs.github.com/en/rest/pulls/pulls)).
-  That is the case obid's MERGING-41 already handles: when GitHub refuses a merge because the base
-  takes pull requests only through its queue, obid calls `gh pr merge --auto --match-head-commit`,
-  which queues it. **obid needs no code change.** R01-03 proves it on one real job.
-- `PUT /pulls/{n}/merge-async` with `merge_action: merge_queue` is the newer REST route (same
-  page). It is not needed now.
+The factory reads and writes no GitHub issue.
 
 ### Each run's cost
 
 | Lever | Choice |
 |---|---|
-| Runner | `ubuntu-latest` standard (4 vCPU on public repositories). Never `macos-*`, never larger runners: "Larger runners are billed for public repositories" ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). |
-| Build once, test in shards | `rust-build` runs `cargo nextest archive --workspace` and uploads it (retention 1 day). Four `rust-test` jobs run `cargo nextest run --archive-file … --partition slice:k/4` ([archiving](https://nexte.st/docs/ci-features/archiving/), [partitioning](https://nexte.st/docs/ci-features/partitioning/): `count:` is deprecated for `slice:`). That is one compile, not four. |
-| Rust cache | `Swatinem/rust-cache` with `save-if` true only for `schedule` and `workflow_dispatch`. It saves on every branch by default ([rust-cache](https://github.com/Swatinem/rust-cache)). Runs on pull requests and in the queue only restore, from `dev`, the default branch, which any run may read. One `shared-key` per job kind: lint, test build, e2e. The workspace crates themselves are never cached, so obid compiles in every run. sccache wouldn't help there, since obid is one crate any change rebuilds. |
-| Cache budget | 10 GB per repository, least recently used first, 7 days unused ([caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)). Three Rust keys and the node caches fit in about 4–5 GB. Today's pull-request caches can't be shared and churn it. |
-| Concurrency | `pull_request` runs cancel older runs of the same pull request, as today. `merge_group` and nightly runs never cancel. |
-| Flaky tests | A nextest `ci` profile: `retries = 1` for every test in the queue and at night; `retries = 2` for tests on the quarantine list ([retries](https://nexte.st/docs/features/retries/)). JUnit per shard; a test that passed on retry shows as `flakyFailure` ([JUnit](https://nexte.st/docs/machine-readable/junit/)), and `Check`'s summary lists it. |
-
-The nightly run tests everything, so it catches what lane-skipping in the queue might miss: a
-change under `apps/` that a Rust test reads, say.
+| Runner | `ubuntu-latest` standard. Never `macos-*` or larger runners: "Larger runners are billed for public repositories" ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). |
+| Rust cache | `Swatinem/rust-cache` saves only on `schedule` and `workflow_dispatch` (#2166); every other run restores from `dev`, the default branch, which any run may read ([caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)). |
+| Cache budget | 10 GB per repository, least recently used first, 7 days unused. The nightly keys fit in a few GB. |
+| Pull-request runs | `cancel-in-progress` per pull request, as before. |
+| Nightly test report | R01-02: `cargo nextest` with a `ci` profile, JUnit uploaded, retries for listed flaky tests. Sharding isn't needed: one nightly run's time doesn't hold anyone up. |
 
 ### What changes in the factory
 
-These are tasks R01-12 and R01-14. Files under `.claude/` are a security path, so those pull
-requests wait for the owner.
+These are tasks R01-12, R01-03 and R01-14. Files under `.claude/` and AGENTS.md are security
+paths, so those pull requests wait for the owner.
 
-1. **Pull requests stay drafts until the approver says APPROVE.** The builder already opens drafts.
-   Going to `needs-human` no longer marks a pull request ready (`factory/bin/job`, `advance`); the
-   owner or the merge marks it. So every round's push runs no GitHub jobs.
-2. **`job merge` queues instead of syncing, gating and merging.** It runs `gh pr ready`, then
-   `gh pr merge <n> --auto --match-head-commit <head>`, which queues the pull request once `Check`
-   is green on the pull request, and goes to a new waiting stage, `queued`. `job queue` reads
-   queued jobs at most once every 2 minutes:
-   - merged → `merged`
-   - removed → re-queue once, then a builder round with the log, then `needs-human` when the rounds
-     run out (as now)
-   - conflict → a builder round
-3. **The merge gate goes.** With no sync there is nothing new to test on the Mac: the head is the
-   one the gate passed, and `factory/bin/gate --merge`'s reuse rule from #2160 already passes it
-   without running the check. This changes a rule only the owner changes: AGENTS.md says a pull
-   request into `dev` merges after "the checks on the user's Mac pass on the same commit". **The
-   owner decided it on 2026-11-13: "Yes, drop the Mac merge gate".** From R01-12 on, the Mac check
-   passes the pull request's own head. The merged code is tested by the queue's full Linux suite
-   and, nightly, by the full Mac check. R01-12 rewrites AGENTS.md's line to say so.
-4. **The builder runs targeted tests, not the whole check.** The gate runs the check right after
-   it (`.claude/agents/builder.md`).
-5. **A nightly full Mac run on `dev`** (R01-14): when no gate is waiting, `OBY_CHECK_ALL=1
-   scripts/oby-check.sh origin/dev` in a worktree of its own, under the same lock. A failure tells
-   the owner and writes a fix task file. The factory opens no GitHub issue.
-6. Unchanged: `factory/checks.sh`, its lock and shared Cargo folder, `concurrency: 4`, the reviewers.
+1. **Pull requests stay drafts until the approver says APPROVE.** Going to `needs-human` no longer
+   marks a pull request ready, so a round's pushes start no GitHub run.
+2. **No Mac merge gate.** The owner decided it on 2026-11-13: "Yes, drop the Mac merge gate".
+   - `job merge` stops syncing with `dev` and re-running the check. It marks the pull request ready
+     and squash-merges the head the gate passed.
+   - A conflict with `dev` still stops it: GitHub refuses the merge, and the job gets a builder
+     round that merges `dev`.
+   - AGENTS.md's remembered workflow changes to "the Mac check passed on the pull request's head",
+     with `dev` tested as merged nightly.
+3. **The builder runs only the tests it touched.** The gate runs the whole check right after it.
+4. **A red nightly pauses merges** (R01-03, above), and **the factory runs the full Mac check of
+   `dev` nightly** (R01-14), with the same pause on red.
+5. Unchanged: `factory/checks.sh`, its lock and shared Cargo folder, `concurrency: 4`, the reviewers.
 
 ### Flaky tests: one list that only shrinks
 
-- The list lives in `core/.config/nextest.toml` (`[[profile.ci.overrides]]`, one `filter` naming
-  each test). The Mac check reads the same list and re-runs a failed test once only if it is on it
-  (R01-13). That changes `scripts/oby-check.sh` and `tools/oby-check-blok`, the check's own files,
-  so the owner decides.
-- An entry needs a task that fixes it. R01-06 already covers #1656 and #1804; R01-13 adds the other
-  three seen today.
-- Fixing a test removes its line. The list never grows without a task, and nothing is retried
-  blind on the Mac.
+- The list lives in `core/.config/nextest.toml` (`[[profile.ci.overrides]]`, one `filter` per test,
+  `retries = 2`). The nightly reads it, and so does the Mac check, which re-runs a failed test once
+  only if it is listed (R01-13). That changes the check's own files, so the owner decides.
+- Each entry names the task that fixes it. R01-06 covers #1656 and #1804; R01-13 adds the other
+  three seen on 2026-11-13.
+- Fixing a test removes its line.
 
 ## Minutes, before and after (≈20 factory pull requests a day)
 
-These are estimates. Inputs:
+These are estimates.
 
-- a full run of today's `linux.yml` ≈ 19 billed minutes (13 min of Rust on 2026-10-27, plus e2e,
-  control plane and scan, each rounded up to the minute)
-- a batch run ≈ 38 billed minutes:
-  - plan 1, lint 3, build 7
-  - 4 shards × 5
-  - e2e 3, control plane 1, Electron 2, Check 1
-- groups average 2.5 pull requests, and 25% of groups fail and run again
-- Mac gates average 10.6 minutes (measured)
+| Input | Value |
+|---|---|
+| A full Linux run | ≈19 billed minutes (13 min of Rust on 2026-10-27, plus e2e, control plane and scan, each rounded up) |
+| A lint run | ≈4 billed minutes (checkout, cached build for clippy, scan) |
+| A Mac gate | 10.6 minutes on average (measured) |
 
-| | Today, Actions on | This design |
+| | Before #2166 | Now (nightly only) |
 |---|---|---|
-| GitHub runs per pull request | ≈2.5 full (ready, later pushes, push to `dev`) | 1 lint run + ⅖ of a batch (×1.25 for failures) |
-| GitHub billed minutes per pull request | ≈45–55 | ≈5 + ≈19 = **≈24** |
-| GitHub billed minutes per day | **≈950–1,100** | 20 × 24 + nightly 40 ≈ **≈520** |
-| Dollars per day (public, standard runners) | $0 (list price ≈ $6) | $0 (list price ≈ $3) |
-| GitHub runs that can stop a bad merge | none | every batch |
-| Mac gate minutes per pull request | ≈25–36 (2–3 gates, one at a time) | ≈11–14 (1–1.3 gates) |
-| Mac gate hours per day | ≈8–12 (more than the day allows at 20/day) | ≈4–5, plus a 30-minute nightly |
-| Peak concurrent GitHub jobs | 4 per run, several runs at once | ≤8 for the one batch, plus 2–3 per ready pull request |
-| Time from APPROVE to merged | seconds (no gate) | ≈15–35 min (wait for the group, then about 15 min of run) |
+| GitHub runs per pull request | ≈2.5 full | 1 lint run, or 0 for a docs, factory or `.claude` change |
+| GitHub billed minutes per day | **≈950–1,100** | 20 × ≈4 + 1 nightly × ≈20 ≈ **≈100** |
+| Dollars per day (public, standard runners) | $0 (list price ≈ $6) | $0 (list price ≈ $0.60) |
+| Mac gate minutes per pull request | ≈25–36 (2–3 gates) | ≈11–14 (1–1.3 gates, no merge gate) |
+| Mac gate hours per day | ≈8–12 | ≈4–5, plus a 30-minute nightly |
+| Time from APPROVE to merged | seconds | seconds |
+| When a combined-code break is found | never, on GitHub (no one read the runs) | at the next nightly run, ≤ 24 h |
 
-The last row is the price: a merge now waits for a batch to be tested. Factory jobs don't sit idle
-for it, because `queued` is a waiting stage and the slot goes to the next task.
+## Limits
 
-## Limits, and how this stays inside them
-
-| Limit | Value | This design |
+| Limit | Value | Here |
 |---|---|---|
-| Concurrent jobs, standard runners | 500 on Enterprise (20 Free, 60 Team); macOS 50 ([limits](https://docs.github.com/en/actions/reference/limits)) | ≤8 for one batch. Whether the 500 is shared with deskree-inc's 64k-minute month is undocumented (could not confirm). Either way `oby` adds little. |
-| Job time | 6 h per job, 35 days per run | Shards run about 5 min; the batch has a 60-minute timeout. |
-| Matrix | 256 jobs | 4 shards. |
-| `GITHUB_TOKEN` REST | 1,000 per hour per repository (15,000 for Enterprise Cloud) ([rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)) | 1–3 calls per run (paths filter). |
-| The owner's `gh` token | 5,000 REST per hour; 5,000 GraphQL points per hour; secondary limits of 100 concurrent requests and 80 content-creating requests per minute (same pages) | The factory reads a queued job at most every 2 minutes: 4 jobs × 30 = 120 a hour. obid's MERGING-41 reads every 30 s for 10 min after arming, then every 180 s. Both share this token. |
-| Cache | 10 GB per repository; above that is billed only with a payment method | Only `dev` saves: ≈4–5 GB. |
-| Artifacts | public: 1–90 days retention | nextest archive 1 day; JUnit 14 days. Free on a public repo: likely, but not confirmed. |
-| Queue throughput | 500 queued runs per 10 s per repository | Far below. |
+| Concurrent jobs, standard runners | 500 on Enterprise; macOS 50 ([limits](https://docs.github.com/en/actions/reference/limits)) | ≤4 per run. Whether the limit is shared with deskree-inc is undocumented (could not confirm). |
+| Job time | 6 h per job | The nightly Rust job has a 60-minute timeout. |
+| `GITHUB_TOKEN` REST | 1,000 per hour per repository (15,000 for Enterprise Cloud) ([rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)) | none used |
+| The owner's `gh` token | 5,000 REST per hour; 5,000 GraphQL points per hour; 80 content-creating requests per minute | R01-03 adds one read per merge. |
+| Cache | 10 GB per repository | Only the nightly saves. |
 
 ## Risks
 
 | Risk | How bad | What the design does |
 |---|---|---|
-| A batch fails on a flaky test and removes good pull requests | Medium: a lost batch is about 38 min and a re-queue | `retries = 1` in the queue, the quarantine list, and the factory's re-queue-once. |
-| GitHub blames the wrong pull request in a multi-PR group (undocumented) | Low | Re-queue once alone before any builder round; maximum group size 5. |
-| Lanes in the queue skip a test a change reaches through a path not in the table | Low | Coarse lanes (any `core/` change runs all of Rust), every lane for CI and toolchain files, and the nightly full run. |
-| Mac-only breakage merged (Seatbelt, Keychain, Swift) between nightly runs | Medium, until the nightly | The nightly Mac run, and the gate still runs the affected Mac suites on each head. The owner accepted this risk on 2026-11-13 by dropping the Mac merge gate. |
-| nextest's process-per-test model changes how obid's tests behave | Low: the statics found guard production code, not tests; `tests/swift_client.rs` builds once per process | R01-02 spikes it first. Its fallback, shards by test binary, is already in that task. |
-| The archive misses `CARGO_BIN_EXE_obid` or fixtures under `tests/` | Low | `--workspace-remap` to the checkout; R01-02's spike proves it. |
-| The queue blocks all merges if `ci.yml` breaks | High, but visible | `Check` fails loudly. A change to `.github/` runs every lane, and the owner's ruleset bypass stays theirs. |
-| Concurrency shared with deskree-inc's private-repo storms | Unknown | Small footprint. If queue waits show up, ask GitHub Support, or fix deskree-inc's CI. |
-| Public repository with a self-hosted runner | n/a | None proposed. A fork's `pull_request` runs the fork's workflow file, so a runner label is no barrier. |
+| A break that only shows up once changes are combined lands on `dev` | Medium: up to a day of red `dev`; factory work built on it may fail its gates | The owner accepted it. The nightly finds it, R01-03 pauses merges, and the fix task goes first. |
+| A Mac-only break lands (Seatbelt, Keychain, Swift) | Medium, until the Mac nightly | The gate runs the suites each change reaches on the Mac; R01-14 runs everything nightly. |
+| Nobody reads the nightly | High: it was the old problem | R01-03 makes the factory read it before every merge. |
+| Linux-only test failures go unseen until night | Low | clippy on each pull request catches Linux-only build errors; `full-ci` runs everything on demand. |
+| A flaky test turns a night red | Low | The list, and retries for listed tests. |
 
 ## Rollout order
 
-Each step is safe alone and makes the next one possible.
+1. **Done** (#2165, #2166, #2167): clippy green on Linux; no push runs; tests nightly only; caches
+   saved nightly only.
+2. **R01-01**: docs/ci.md says what runs where; contract CI-1 and CI-2; the first nightly's red
+   tests listed.
+3. **R01-03**: the factory reads the nightly before merging. This is what makes nightly-only safe.
+4. **R01-12**: drafts until APPROVE; no Mac merge gate; AGENTS.md's line.
+5. **R01-13** with **R01-06**: the flaky list, and the fixes it names.
+6. **R01-02**: nextest, JUnit and a flaky report in the nightly.
+7. **R01-14**: the nightly full Mac check.
+8. **R01-11**, the CLI canary: scheduled, unchanged.
 
-1. **R01-01, today's file made honest** (no new infrastructure):
-   - drop the `push` runs, which the queue will replace and which nobody reads today
-   - add the nightly `schedule` and `workflow_dispatch`
-   - caches saved only by those
-   - list today's red tests (clippy `Started` never constructed, on #2154) in the pull request
-   - rewrite `docs/ci.md`
+## Considered and not chosen: a merge queue
 
-   GitHub minutes drop by about half at once.
-2. **R01-13, the quarantine list**, and **R01-06**, which fixes the flaky tests the list names.
-3. **R01-02, `ci.yml`**: plan, lanes, lint, archive and 4 shards, e2e, Electron, control plane, and
-   the `Check` aggregator, with its PR, queue and nightly modes. Proven on throwaway branches,
-   including a red shard and a red plan.
-4. **R01-12, the factory queues**: drafts until APPROVE, `queued` stage, re-queue once, merge gate
-   reused. It works with or without a queue: `gh pr merge --auto` merges at once when nothing holds
-   it. Its merge-gate drop is decided (item 3 above).
-5. **R01-03, the owner's step**: a ruleset on `dev` (queue and required `Check`) and a required
-   `Check` on `main`. It goes on only after R01-12, or every factory merge would go to needs-human.
-   Then one real obid job goes through MERGING-41's path into the queue, and one factory job too.
-6. **R01-14, the nightly full Mac run** by the factory. It can go any time.
-7. **R01-11, the CLI canary**: scheduled only, not a required check, its own concurrency group.
-   Unchanged.
+GitHub's merge queue on `dev` would test each batch of up to 5 pull requests, with the whole Linux
+suite, before it lands. That catches a combined-code break before the merge, not the next night,
+for about 520 billed minutes a day (free on this public repository).
+
+The owner chose nightly only on 2026-11-13. If a day of red `dev` turns out to cost more than the
+queue's wait, these facts still hold:
+
+- the queue is open to public organization repositories, and `dev` is the default branch
+- workflows must listen to `merge_group`
+- the REST merge endpoint doesn't merge into a queue, but `gh pr merge` and obid's MERGING-41 do
+  ([merge queue](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-a-pull-request-with-a-merge-queue),
+  [pulls API](https://docs.github.com/en/rest/pulls/pulls))
 
 ## What I could not verify
 
 - Whether GitHub's 500-job concurrency limit is per org or per enterprise, and so whether
   deskree-inc's runs compete with `oby`'s.
-- How GitHub picks which pull request to remove when a multi-PR group fails, and whether it bisects.
-- The cache scope of `merge_group` runs (`gh-readonly-queue/dev/…` refs). The design relies only on
-  restoring from `dev`, the default branch, which any run may read.
-- Whether artifact storage is free on public repositories.
 - The date `oby` became public. Billing points to between October 16 and 21.
 - Whether `obi-ai-bot`'s Enterprise allowance ($300 a month of compute) is shared with deskree-inc.
-  October's deskree-inc bill suggests a shared pool ran out early in the month.
-- The minute figures above are estimates from one October run and today's gate logs. A green
-  `ci.yml` batch is the first real measurement.
-- `count:` vs `slice:` in the nextest version the runner installs. R01-02 pins a version.
+- The minute figures, which are estimates until the first nightly runs are measured.

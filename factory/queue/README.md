@@ -19,7 +19,7 @@ acceptance scenarios, files, steps, tests and done-when checks.
 
 | Milestone | Goal | Tasks |
 | --- | --- | --- |
-| **R01 Safety net** | GitHub Actions tests every change once, in batches: a ready pull request gets a cheap lint run, and dev merges only through GitHub's merge queue, whose batch runs the whole Linux suite under one required Check; the Mac check gates each pull request's head and runs in full on dev nightly; flaky tests sit on one shrink-only list (docs/ci-architecture.md). Each agent CLI's version is known, recorded on jobs and failures, and checked against a tested and known-bad table, and a scheduled canary finds CLI drift. Released job files and obid's routes cannot be broken silently. | 14 |
+| **R01 Safety net** | Each change is tested once, by the Mac check on its pull request's head; GitHub runs the secret scan, fmt and clippy per pull request and the whole Linux suite nightly on dev, and a red night pauses the factory's merges; the Mac check runs in full on dev nightly; flaky tests sit on one shrink-only list (docs/ci-architecture.md). Each agent CLI's version is known, recorded on jobs and failures, and checked against a tested and known-bad table, and a scheduled canary finds CLI drift. Released job files and obid's routes cannot be broken silently. | 14 |
 | **R02 Commands that are safe to repeat** | A double click, a relay retry, a retried brain tool call or a restart never makes a second job or follow-up: each request that creates work carries a key, and a repeat gets the first answer. obid sends an event only for what it has on disk, refuses a home a newer obid wrote, and never drops an unreadable file or setting silently. Every log line is redacted where it is written. | 14 |
 | **R03 Delete what has no caller** | Code, routes, flags and docs that nothing calls leave the repository: the telemetry flag, the control plane's sign-in, tunnel and hook routes, the phone allowlist entries and runner-api.md sections for routes obid does not serve, and the iPhone's calls to them. The clients that do not ship (apps/web, the Watch target, oby-mcp) are deleted or kept by the owner's recorded word, and Android is frozen out of the parity work. Each deletion says what it searched to prove that nothing calls it. | 8 |
 | **R04 One owner for job state** | A job's status and the side fields that go with it change only through one pure transition function, and a stale worker can no longer end a run that Stop, Try again or a move took from it. The branch of a task chain is stored once and read by one function, so Publish, follow-ups, delete and the follower agree. Every step leaves obid working, shrinks jobs.rs, and is pinned by tests named after numbered scenarios. | 15 |
@@ -37,15 +37,15 @@ acceptance scenarios, files, steps, tests and done-when checks.
 
 ### Sprint 1: Safety net · Commands that are safe to repeat · Delete what has no caller
 
-23 tasks, 25 points (a small task is 1, a medium task is 3).
+23 tasks, 23 points (a small task is 1, a medium task is 3).
 
 | Key | Task | Area | Size | Risk | Depends on |
 | --- | --- | --- | --- | --- | --- |
-| R01-01 | chore(ci): linux.yml stops runs nobody reads: a nightly full run on dev instead of every push | process | S | low |  |
+| R01-01 | docs(ci): say what runs where now that GitHub tests dev nightly, and list the first nightly's red tests | process | S | low |  |
 | R02-01 | fix(obid): send a job event only after the job file is saved | obid | S | medium |  |
-| R01-02 | chore(ci): one ci.yml: lanes, a nextest archive in 4 shards, and one Check for pull requests, the merge queue and the nightly run | process | M | medium | R01-01 |
+| R01-02 | chore(ci): the nightly run uses nextest, keeps a JUnit report and names flaky tests; Electron joins it | process | S | low | R01-01 |
 | R02-02 | fix(obid): conversations and inbox items send an event only after their save | obid | S | low | R02-01 |
-| R01-03 | chore(process): dev merges through GitHub's merge queue, gated by Check; main requires Check | process | S | medium | R01-02, R01-12 |
+| R01-03 | chore(factory): a red nightly run on dev pauses the factory's merges and becomes a fix task | process | S | low | R01-01 |
 | R02-03 | feat(obid): a receipt store for requests that create work | obid | S | low |  |
 | R01-04 | test(obid): load a job file and config.json from each released version | tests | S | low |  |
 | R02-04 | feat(obid): POST /v1/jobs takes a request key | obid | S | low | R02-03 |
@@ -61,7 +61,7 @@ acceptance scenarios, files, steps, tests and done-when checks.
 | R03-02 | chore(cloud): delete the control plane's sign-in, installation, tunnel and hook routes; keep the push relay | cloud | S | medium |  |
 | R03-03 | fix(obid,docs): the phone allowlist and runner-api.md name only the routes obid serves | obid | S | low |  |
 | R03-04 | chore(ios): the iPhone stops calling routes obid does not serve | ios | S | low |  |
-| R01-12 | chore(factory): pull requests stay drafts until approved, and an approved one is queued, not synced, gated again and merged | process | S | medium | R01-02 |
+| R01-12 | chore(factory): pull requests stay drafts until approved, and an approved one merges with no second Mac check | process | S | medium |  |
 | R01-13 | test(ci): one shrink-only list of flaky tests, retried in CI and once on the Mac, each with a task to fix it | tests | S | low | R01-02 |
 | R01-14 | chore(factory): a nightly full Mac check of dev, run by the factory when no gate waits | process | S | low |  |
 
