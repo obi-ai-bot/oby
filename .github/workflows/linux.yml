@@ -1,7 +1,9 @@
 # Linux CI: what this repository's own checks already run, on GitHub's standard Ubuntu runners.
 #
 #   Rust (core)        scripts/oby-check.sh's core/ part, for the whole workspace: cargo fmt --check,
-#                      clippy -D warnings on every target, cargo test (obid's sandbox tests included)
+#                      clippy -D warnings on every target
+#   Rust tests         the whole workspace's tests (obid's sandbox tests included), cargo nextest
+#                      over 3 runners
 #   Secret scan        scripts/oby-check.sh's gitleaks, with .gitleaks.toml, over what was pushed
 #   Control plane      cloud/control-plane: pnpm test (vitest inside Miniflare) and pnpm check
 #   E2E (stub agents)  make e2e: headless, stub agents, no credentials, against oby-sphere's dev
@@ -118,13 +120,49 @@ jobs:
           workspaces: core
           save-if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path core/Cargo.toml --all -- --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+  rust-tests:
+    # The suite, split over 3 runners: cargo test ran obid's test binaries one after another and
+    # took 16 minutes and more; nextest runs every binary's tests at once, and each runner takes a
+    # third of them (--partition slice). Only when tests run (nightly, on demand, full-ci).
+    name: Rust tests (${{ matrix.shard }}/3)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: core
+          shared-key: tests
+          save-if: ${{ matrix.shard == 1 && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-nextest@0.9.150
+
       # obid's job sandbox on Linux is bubblewrap (with slirp4netns for an agent's network), and
       # tests/sandbox.rs, the plug-in tests and the job tests make one. Ubuntu 24.04's AppArmor
       # refuses unprivileged user namespaces by default, which bubblewrap needs: this throwaway
       # runner allows them. The last line proves bubblewrap works here, so a sandbox test that
       # fails is the sandbox's failure, not the runner's.
       - name: bubblewrap for obid's job sandbox
-        if: needs.changes.outputs.tests == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap slirp4netns
@@ -133,7 +171,6 @@ jobs:
 
       # obid's own secret scan runs gitleaks (on PATH); its tests and make e2e need it.
       - name: Install gitleaks
-        if: needs.changes.outputs.tests == 'true'
         env:
           GITLEAKS_VERSION: 8.30.1
           GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -145,16 +182,9 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
-      - name: cargo fmt --check
-        run: cargo fmt --manifest-path core/Cargo.toml --all -- --check
-
-      - name: cargo clippy -D warnings
-        run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
-
-      - name: cargo test
-        if: needs.changes.outputs.tests == 'true'
-        # --no-fail-fast: every test binary runs and reports, not only up to the first that fails.
-        run: cargo test --manifest-path core/Cargo.toml --workspace --locked --no-fail-fast
+      - name: cargo nextest
+        # --no-fail-fast: every test runs and reports, not only up to the first that fails.
+        run: cargo nextest run --manifest-path core/Cargo.toml --workspace --locked --no-fail-fast --partition slice:${{ matrix.shard }}/3
 
   secrets:
     name: Secret scan (gitleaks)
