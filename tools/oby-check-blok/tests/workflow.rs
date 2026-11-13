@@ -781,3 +781,37 @@ fn check_waits_a_minute_for_a_slow_nodes_binary() {
     assert_eq!(code, Some(0), "{out}{err}");
     assert_eq!(out.lines().last(), Some("oby-check: passed"));
 }
+
+#[test]
+fn a_failing_factory_test_fails_the_check_and_is_named() {
+    let factory = "if [[ -n $OBY_CHECK_PLAN ]]; then [[ $OBY_CHECK_ONLY == factory || $OBY_CHECK_ONLY == scan ]] && echo \"oby-check: group $OBY_CHECK_ONLY\"; exit 0; fi\nif [[ $OBY_CHECK_ONLY == factory ]]; then echo 'FAIL: test_example (test_x.T.test_example)' >&2; exit 1; fi\n";
+    let scratch = checkout(factory);
+    let (code, out, err) = check(scratch.path(), &[]);
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(
+        err.contains("FAIL: test_example (test_x.T.test_example)"),
+        "{err}"
+    );
+    assert_eq!(err.lines().last(), Some("oby-check: failed: factory-tests"));
+}
+
+#[test]
+fn a_script_that_predates_the_factory_group_still_judges_and_no_other_group_may_be_unknown() {
+    // A branch's script from before the factory group refuses it as today's refuses any unknown one.
+    let older = |known: &str| {
+        format!("case \"${{OBY_CHECK_ONLY:-}}\" in\n    ''|{known}) ;;\n    *) echo 'oby-check: invalid OBY_CHECK_ONLY' >&2; exit 2 ;;\nesac\nif [[ -n $OBY_CHECK_PLAN ]]; then [[ $OBY_CHECK_ONLY == scan ]] && echo 'oby-check: group scan'; exit 0; fi\nexit 0\n")
+    };
+    let scratch = checkout(&older("rust|electron|swift|scan"));
+    let (code, out, err) = check(scratch.path(), &[]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(out.lines().last(), Some("oby-check: passed"));
+
+    // The same answer for one of the original groups is a broken script, never a pass.
+    let scratch = checkout(&older("electron|swift|factory|scan"));
+    let (code, out, err) = check(scratch.path(), &[]);
+    assert_ne!(code, Some(0), "{out}{err}");
+    assert!(
+        format!("{out}{err}").contains("script planning failed for rust"),
+        "{out}{err}"
+    );
+}

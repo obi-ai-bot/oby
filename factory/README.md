@@ -20,9 +20,8 @@ bin/child_session.py  runs a command in a session of its own and stops its lefto
 bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
                 jobs/nightly/<stamp>.md, and a fix task on a failure
 remote/         the gate VM's side: setup.sh provisions the gate VM over SSH; oby-remote-gate runs a commit's Linux check groups in one of four slots there
-tests/          the factory's own tests, stdlib only, from the repository root: python3 factory/tests/test_test_run.py,
-                python3 factory/tests/test_check_lock.py, python3 factory/tests/test_nightly.py,
-                python3 factory/tests/test_remote_gate.py, python3 factory/tests/test_gate_remote.py
+tests/          the factory's own tests, stdlib only, from the repository root: python3 -m unittest discover -s factory/tests;
+                the check runs them when bin/, checks.sh, tests/ or config.json change
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html

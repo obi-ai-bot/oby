@@ -8,7 +8,7 @@
 #   scripts/oby-check.sh [base]    what changed since the merge base with base (default origin/dev),
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
 #                                  with OBY_CHECK_ALL=1, runs everything, whatever changed;
-#                                  with OBY_CHECK_ONLY=rust|electron|swift|scan, runs only that group;
+#                                  with OBY_CHECK_ONLY=rust|electron|swift|factory|scan, runs only that group;
 #                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
 #                                  obid sets it when it runs this on a job's base, which changed
 #                                  nothing, to see whether the base fails as the job does
@@ -33,6 +33,8 @@
 #   mcp/, Package.swift   swift test
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #   scripts/oby-check*    scripts/oby-check-test.sh and the line limit below
+#   factory/bin/, factory/checks.sh, factory/tests/, factory/config.json
+#                         python3 -m unittest discover -s factory/tests, with no GitHub login
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
@@ -212,7 +214,7 @@ tests_sleeps() {
 
 failed=() unjudged=()
 case "${OBY_CHECK_ONLY:-}" in
-    ''|rust|electron|swift|scan) ;;
+    ''|rust|electron|swift|factory|scan) ;;
     *) echo 'oby-check: invalid OBY_CHECK_ONLY' >&2; exit 2 ;;
 esac
 group=rust
@@ -303,7 +305,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script=''
+rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script='' factory=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -366,6 +368,7 @@ while IFS= read -r file; do
     case "$file" in
         apps/electron/*) electron=1 ;;
         scripts/oby-check*) check_script=1 ;;
+        factory/bin/* | factory/checks.sh | factory/tests/* | factory/config.json) factory=1 ;;
     esac
 done <<< "$changed"
 # Not nested (the Mac's own check of a pull request), what plans tests/jobs_api.rs plans the setup's
@@ -379,7 +382,7 @@ fi
 # Electron app, swift test and the Apple apps' build (no suites named: build-for-testing). The secret
 # scan still covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1
+    rust=1 blok=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1 factory=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -505,6 +508,16 @@ if selected && [[ -n "$electron" ]]; then
     step npm --prefix apps/electron run --silent typecheck
     step npm --prefix apps/electron run --silent test
     step npm --prefix apps/electron run --silent build
+fi
+
+# The factory's own tests (factory/tests), in a job's box too: they need no network, no lock and no
+# build, and nothing outside TMPDIR and the checkout. The owner's GitHub login stays out of them (their
+# gh is a stand-in), and Python writes no __pycache__ into the checkout.
+group=factory
+if selected && [[ -n "$factory" ]]; then
+    step env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+        GH_CONFIG_DIR=/nonexistent/oby-check-no-gh-login PYTHONDONTWRITEBYTECODE=1 \
+        python3 -m unittest discover -s factory/tests
 fi
 
 # What changed, committed or not, scanned for secrets with this repository's rules.

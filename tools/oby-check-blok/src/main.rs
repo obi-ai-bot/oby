@@ -80,6 +80,14 @@ async fn workflow(
         scope(plan.env("OBY_CHECK_PLAN", "1"));
         let output = plan.output().await?;
         let text = text_output(&output);
+        // A branch whose script predates the factory group doesn't know it: nothing planned there.
+        // Any other group it refuses is a broken script.
+        if group == "factory"
+            && output.status.code() == Some(2)
+            && text.contains("oby-check: invalid OBY_CHECK_ONLY")
+        {
+            continue;
+        }
         if !output.status.success() {
             let said = text.trim().lines().last().unwrap_or_default();
             bail!("script planning failed for {group}: {said}");
