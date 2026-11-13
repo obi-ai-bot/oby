@@ -28,6 +28,8 @@ So work runs in two lanes. In the **own lane**, the work the owner asked for run
 
 The Rust core's production lines outside the Sphere stay under `obid_lines_limit` in `scripts/oby-check.sh`, and past it the check fails. A cut lowers the limit, and the owner's word raises it.
 
+obid's tests may only lose `thread::sleep`/`time::sleep` calls (`tests_sleep_limit` in `scripts/oby-check.sh`, docs/contracts/ci.md): a test waits for state with `support::within` instead.
+
 ## How we work
 
 - Branch from `dev` and open pull requests into `dev`. `dev` is merged into `main` only when a feature's "Test it when it's done" list passes on a real Mac.

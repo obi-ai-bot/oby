@@ -18,7 +18,15 @@ cd "$repo"
 git init --quiet
 mkdir scripts
 cp "$script" scripts/oby-check.sh
-git add scripts
+# obid's tests' sleeps (docs/contracts/ci.md): the base holds as many as its copy's limit, none for a
+# copy with no limit, so no other case fails on them.
+sleepy=core/crates/obid/tests/fixtures/sleeps.rs
+sleeps() { # file count
+    mkdir -p "$(dirname "$1")"
+    for ((n = 0; n < ${2:-0}; n++)); do echo 'std::thread::sleep(d);'; done >"$1"
+}
+sleeps "$sleepy" "$(sed -n 's/^tests_sleep_limit=//p' "$script")"
+git add scripts "$sleepy"
 git -c user.name=check -c user.email=check@example.invalid -c commit.gpgsign=false commit --quiet -m base
 
 code() { # file lines
@@ -206,6 +214,56 @@ expect 'jobs.rs has .* past its limit' "a commit's lower jobs.rs limit holds aga
 git reset --quiet --hard HEAD~1
 since=
 rm "$jobs"
+
+# obid's tests may only lose sleeps (docs/contracts/ci.md). The base's copy a job's check installs
+# may predate the limit: these run on the commit's own copy, committed here as the base.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+commit_scripts 'the sleep limit'
+sleep_limit=$(sed -n 's/^tests_sleep_limit=//p' scripts/oby-check.sh)
+sleep_failed="failed: obid's tests' sleep limit"
+# What changed is the tests' sleeps, said so: at the base's own count the diff alone has nothing, and
+# the limits wouldn't be judged.
+export OBY_CHECK_PATHS=$sleepy
+sleeps "$sleepy" "$sleep_limit"
+expect no "$sleep_failed\|sleep calls, past\|lower tests_sleep_limit" 'CI-12: obid tests at their sleep limit are within it'
+expect "obid's tests have $sleep_limit sleep calls, within their limit of $sleep_limit" 'CI-12: at the sleep limit, it says so'
+# CI-12: one more sleep fails, saying to wait for state instead.
+sleeps "$sleepy" "$((sleep_limit + 1))"
+expect "have $((sleep_limit + 1)) sleep calls, past their limit of $sleep_limit.*support::within" 'CI-12: one sleep past the limit says to wait with support::within'
+if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
+    echo 'oby-check-test: CI-12: a run with one sleep past the limit passed' >&2
+    exit 1
+fi
+grep -q "$sleep_failed" <<<"$ran" || {
+    echo "oby-check-test: CI-12: a run with one sleep past the limit failed without naming it:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
+    exit 1
+}
+# CI-13: one sleep fewer asks for the limit to come down, to the new count.
+sleeps "$sleepy" "$((sleep_limit - 1))"
+expect "lower tests_sleep_limit in this script from $sleep_limit to $((sleep_limit - 1)), so the cut stays cut" 'CI-13: a removed sleep asks for the limit to come down'
+if ran=$(env -u OBY_CHECK_PLAN scripts/oby-check.sh HEAD 2>&1); then
+    echo 'oby-check-test: CI-13: a run with one sleep under the limit passed' >&2
+    exit 1
+fi
+grep -q "$sleep_failed" <<<"$ran" || {
+    echo "oby-check-test: CI-13: a run with one sleep under the limit failed without naming it:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
+    exit 1
+}
+# CI-13: a commit that lowers the limit is held to it, against the base's copy.
+since=HEAD~1
+set_limit tests_sleep_limit "$((sleep_limit - 1))"
+commit_scripts 'a sleep cut'
+git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
+expect no "$sleep_failed\|sleep calls, past\|lower tests_sleep_limit" "CI-13: a commit's lower sleep limit holds against the base's copy"
+sleeps "$sleepy" "$sleep_limit"
+expect "have $sleep_limit sleep calls, past their limit of $((sleep_limit - 1))" "CI-13: a commit's lower sleep limit holds against the base's copy"
+git reset --quiet --hard HEAD~2
+since=
+unset OBY_CHECK_PATHS
 
 # Nested in a job's sandbox, the tests that make a sandbox of their own aren't run, and a change
 # they'd test ends the check couldn't judge (PUBLISHING-22).
