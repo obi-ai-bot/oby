@@ -764,6 +764,8 @@ Starts a job described whole, for clients that know the work already (oby-mcp, s
 
 Returns the queued `Job` (`201`), routed and claimed as a planned one, as a `job` event too. `422` with why when something's wrong: an unknown repository or kind, an empty task, an account that isn't signed in, a path outside the repository, a model the tool doesn't have, or `startWhen` that can't be (Start when). On obid, also while a queued or running job on the same repository works on the branch it would take, letter case aside (two jobs on one issue both take `oby/fix-34`, or the `branch` it names): `<title> (job <id>) is working on oby/fix-34 now: tell that one instead.`, so no two jobs ever move one branch (docs/contracts/publishing.md, PUBLISHING-4). A standing rule's and GitHub work's jobs are refused the same way, and so is an ended job run again (Try again, `oby_continue_job`, the owner's account-limit choice) and the round Oby's review asks for (its `reviewError` says so). `410 Gone` for a body from before #269, a plan's draft (`id` with no `repo`, `kind` and `task`): `Oby starts planned work by itself now`.
 
+On obid, `500` with `The job couldn't be kept: <reason>` when it couldn't save the new job's file (`home/jobs/<id>.json`): then the job doesn't exist, in memory, on disk or in `GET /v1/jobs`, and no `job` event was sent (docs/contracts/home.md, HOME-2).
+
 ### `GET /v1/jobs?limit=50`
 
 The latest jobs, newest first.
@@ -771,6 +773,8 @@ The latest jobs, newest first.
 ### `GET /v1/jobs/{id}`
 
 One job, however old: fetch it when an inbox item or a notification names a job that isn't in `GET /v1/jobs`'s latest 50. Every job's routes (`/dismiss`, `/messages`, `/stop`, `/move`, `/publish`, `/wait`) work on any job the runner ever had, after any number of restarts; `404` means it never had it. An app that gets `404` for a job it holds drops the job from its lists (the Mac does) instead of keeping it under Needs you.
+
+On obid, any route that changes a job (`PATCH`, `/dismiss`, `/messages`, `/stop`, `/move`, `/mode` and the others), and an inbox answer that carries one out, answers `500` with `The job couldn't be kept: <reason>` when obid couldn't save the job's file, never `404`, `409` or `2xx`. Then the job and every app's view of it are as they were, its `revision` too, and no `job` event was sent: memory and events follow the disk, never lead it (docs/contracts/home.md, HOME-1). obid doesn't try that save again by itself; the same request, once the disk takes it, does.
 
 On startup the runner keeps the latest 50 jobs in memory, plus every job that still needs something however old: queued, running or interrupted, needing you or waiting for your answer, or published with a pull request that isn't merged or closed, whose reviews, checks and merge it goes on following. Not once dismissed.
 
