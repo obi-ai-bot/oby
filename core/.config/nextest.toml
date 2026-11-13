@@ -4,7 +4,6 @@
 # GitHub's ci.yml: each shard of the suite runs every test to the end, retries a failed test once
 # (a pass on the retry shows as `flakyFailure` in the JUnit report, and Check lists it as flaky),
 # and stops a test that runs past 5 minutes, so a hung test fails instead of holding its shard.
-# R01-13 adds the quarantine list here as [[profile.ci.overrides]] entries.
 [profile.ci]
 retries = 1
 fail-fast = false
@@ -12,3 +11,41 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# The flaky list (docs/contracts/ci.md, CI-26 to 28): every [[profile.ci.overrides]] here is one of
+# its entries, and the Mac check (scripts/oby-check.sh) reads the same entries. Each is exactly four
+# lines: `# <task key>: <what the test waits on>`, the header, a filter naming one binary and one
+# test by its full name, never a prefix, and `retries = 2`. GitHub retries a listed test twice, and
+# the Mac runs it once more only when it failed and is listed at the merge base too. The list only
+# shrinks: a new entry comes with its task, factory/queue/tasks/<key>.md, in the same change, and
+# the fix takes its entry out.
+
+# R01-15: its card is the first red one, which can still be the earlier head's (merge_api.rs:2108)
+[[profile.ci.overrides]]
+filter = 'binary_id(obid::merge_api) & test(=merging_39_a_second_red_head_asks_the_owner)'
+retries = 2
+
+# R01-15: its card is the first change request's, which can still be the earlier head's (merge_api.rs:2310)
+[[profile.ci.overrides]]
+filter = 'binary_id(obid::merge_api) & test(=merging_40_a_members_change_request_starts_one_round)'
+retries = 2
+
+# R01-16: a fixed 3-second sleep before it reads the settled card (merge_api.rs:3376)
+[[profile.ci.overrides]]
+filter = 'binary_id(obid::merge_api) & test(=merging_24_a_follow_ups_push_settles_the_tasks_open_card)'
+retries = 2
+
+# R01-17: Codex's process must end within 1.5 seconds of wall clock (codex.rs:1751)
+[[profile.ci.overrides]]
+filter = 'binary_id(obid) & test(=codex::tests::a_command_ends_the_codex_process_at_once)'
+retries = 2
+
+# R01-18: real checks of `sleep 15`, `sleep 3` and `sleep 60` set its order (runner_api.rs:627)
+[[profile.ci.overrides]]
+filter = 'binary_id(obid::runner_api) & test(=admission_5_a_job_back_from_the_check_queue_never_passes_max_running)'
+retries = 2
+
+# R01-19: the first cut must come 6 to 12 seconds of wall clock after the start (long_jobs.rs:1152)
+[[profile.ci.overrides]]
+filter = 'binary_id(obid::long_jobs) & test(=recovery_12_an_idle_jobs_first_cut_comes_after_one_window)'
+retries = 2
