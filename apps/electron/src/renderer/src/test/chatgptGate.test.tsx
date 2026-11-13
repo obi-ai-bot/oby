@@ -55,7 +55,8 @@ function release(gateLine: string, confirmed = '') {
     // GitHub, as it answers for that comment (and nothing else on PATH that could build)
     writeFileSync(join(folder, 'bin/gh'), `#!/bin/sh\n[ -n "${confirmed}" ] && echo "${confirmed}" && exit 0\nexit 1\n`);
     chmodSync(join(folder, 'bin/gh'), 0o755);
-    const { status, stdout, stderr } = spawnSync('/bin/zsh', [join(folder, 'scripts/package.sh'), 'arm64'], { encoding: 'utf8', env: { PATH: `${join(folder, 'bin')}:/usr/bin:/bin`, HOME: folder } });
+    const { status, stdout, stderr, error } = spawnSync('/bin/zsh', [join(folder, 'scripts/package.sh'), 'arm64'], { encoding: 'utf8', env: { PATH: `${join(folder, 'bin')}:/usr/bin:/bin`, HOME: folder } });
+    if (error) throw new Error(`/bin/zsh is missing or couldn't be started (${error.message}): scripts/package.sh needs zsh, as ci.yml's electron lane and factory/remote/setup.sh install it`);
     return { status, words: stdout + stderr };
   } finally {
     rmSync(folder, { recursive: true, force: true });
