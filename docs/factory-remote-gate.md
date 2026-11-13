@@ -1,10 +1,12 @@
 # The factory's gate on an Azure Linux VM
 
-Status: the VM exists and its scripts exist, but gates don't use it yet (the owner's "Yes, plan the VM",
-2026-11-13). Task A00-03 built the VM's side: `factory/remote/setup.sh` provisions it and
-`factory/remote/oby-remote-gate` runs a commit's Linux check groups in one of four slots there. Gates still
-run on the Mac until a second task wires `factory/bin/gate` to it ("Still to build", below). The scenarios
-are [REMOTE-1 to 8](contracts/remote-gate.md).
+Status: built, and off until the owner turns it on (the owner's "Yes, plan the VM", 2026-11-13). Task A00-03
+built the VM's side: `factory/remote/setup.sh` provisions it and `factory/remote/oby-remote-gate` runs a
+commit's Linux check groups in one of four slots there. Task A00-10 built the gate's: `factory/bin/gate` runs
+those groups on the VM, starts it when it is stopped, keeps the macOS-only part on the Mac and falls back to
+the Mac, and the Mac's `factory/bin/job queue` deallocates the VM once it is idle. Gates use the VM once the
+owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). The scenarios are
+[REMOTE-1 to 9](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -12,8 +14,8 @@ are [REMOTE-1 to 8](contracts/remote-gate.md).
   pay-as-you-go at about $1.45 an hour while it runs.
 - One 256 GB OS disk and no data disk; `/srv/oby` is on it.
 - SSH host `oby-gate` in the owner's `~/.ssh/config`, user `oby`, key only.
-- No managed identity, so it can't deallocate itself. Nothing stops it but a hand `az vm deallocate` and
-  the owner's 05:00 UTC safety net.
+- No managed identity, so it can't deallocate itself: the Mac's `job queue` deallocates it after 30 idle
+  minutes (`gate --idle`), and the owner's 05:00 UTC auto-shutdown stays as the safety net.
 - Set up by `factory/remote/setup.sh` with `.github/workflows/ci.yml`'s pins (Rust toolchain, Node major,
   gitleaks and its SHA-256, the bwrap proof), read from the checkout, never copied: `setup.sh --pins` prints
   them. Run it again whenever: what is already at its pin is left as it is.
@@ -34,7 +36,7 @@ The Linux suite has been green since #2170, so most of the check no longer needs
  ─────────────────────────────────────                ─────────────────────────────────────
  factory/bin/gate <job>
    ├─ plan = OBY_CHECK_PLAN=1 oby-check.sh
-   ├─ remote? (VM configured, plan has rust/electron)
+   ├─ remote? (remote_gate set, plan has rust, electron or scan, the commit on origin)
    │     ├─ az vm start (if deallocated) ───────────▶ boots in ~1 min, keeps its disk
    │     ├─ ssh oby-gate oby-remote-gate \
    │     │        <commit> <base> ──────────────────▶ the first free slot N of 4, or wait for one
@@ -42,10 +44,11 @@ The Linux suite has been green since #2170, so most of the check no longer needs
    │     │                                            worktree in slot N, its own CARGO_TARGET_DIR
    │     │                                            OBY_CHECK_ONLY=rust, electron, scan
    │     │  ◀─── output streamed, exit 0/1/2 ──────── 
-   │     └─ on the Mac too, only when the job touches macOS-only code:
-   │           OBY_CHECK_ONLY=rust (macOS-only test files) and swift
-   └─ round-N/checks.md: verdict, commit, checks.sh hash, HOST: oby-gate | mac
- idle 30 min ─────────────────────────────────────▶ the VM deallocates itself
+   │     └─ then on the Mac, once the VM's part passed: OBY_CHECK_ONLY=swift when planned,
+   │           and OBY_CHECK_ONLY=rust when the diff touches a macOS-only path
+   └─ round-N/checks.md: verdict, commit, checks.sh hash, HOST: oby-gate | oby-gate, mac | mac
+ factory/bin/job queue → gate --idle
+   └─ idle 30 min, no job in gate or merging: az vm deallocate --no-wait ──▶ deallocated
 ```
 
 - **Up to 4 gates run at once on the VM**, one per slot. Each slot has its own checkout and its own
@@ -53,19 +56,25 @@ The Linux suite has been green since #2170, so most of the check no longer needs
   A slot's lock replaces the Mac's single lock. The Mac's lock stays for what still runs there.
 - **The Mac keeps the macOS-only suites.** About 70 tests only build on macOS (`cfg(target_os =
   "macos")`: `sandbox.rs`, `secretspec.rs`, the own lane, Keychain, `jobs_setup.rs`), plus Swift. The
-  gate runs those on the Mac only when the job's diff touches the paths they cover (`sandbox.rs`,
-  `egress.rs`, `process.rs`, `jobs/setup.rs`, `secretspec.rs`, lanes, keychain, `apps/`, `mcp/`). The
-  nightly full Mac run (R01-14) covers everything else every night. This is the same trade the owner
-  accepted for merging in #2163.
+  gate runs the plan's whole rust group on the Mac too when the job's diff touches one of these
+  (`MACOS_ONLY` in `factory/bin/gate`, the one list): `core/crates/obid/src/sandbox.rs`, `egress.rs`,
+  `process.rs`, `secretspec.rs`, `jobs/setup.rs`, `jobs/lanes.rs`, `jobs/logins.rs`, and
+  `core/crates/obid/tests/sandbox.rs`, `jobs_setup.rs`, `secretspec.rs`. swift (which `apps/` and `mcp/`
+  reach) runs on the Mac whenever it is planned. The nightly full Mac run (R01-14) covers everything else
+  every night. This is the same trade the owner accepted for merging in #2163.
 - **The VM needs no secrets.** `obi-ai-bot/oby` is public, so the VM fetches commits without a token.
   The check runs offline after `cargo fetch` and `npm ci`. No owner login, agent login or vault value
   ever reaches it.
 - **It decides nothing new.** The VM runs the same `scripts/oby-check.sh` (the branch's copy, as the Mac
   does today) with the same `oby-check-blok`, built from `origin/dev`. `checks.md` names the host.
-- **It falls back to the Mac.** If the VM can't be reached or started within 3 minutes, the gate runs
-  on the Mac as it does today, and `checks.md` says why.
-- **It stops itself.** A timer on the VM deallocates it after 30 minutes with no gate. Only deallocation
-  stops compute billing; a stopped-but-allocated VM is billed as running.
+- **It falls back to the Mac.** If the VM can't be reached or started within 3 minutes, the remote gate
+  couldn't judge or was cut off, or the commit isn't on origin, the gate runs the whole check on the Mac
+  as without a VM, and `checks.md` says why. A real failure on the VM fails the gate.
+- **The Mac stops it.** The VM has no managed identity, so it can't deallocate itself. Every gate that uses
+  it stamps `factory/jobs/remote-gate/state.json`; `factory/bin/job queue` runs `factory/bin/gate --idle`,
+  which deallocates it (`az vm deallocate --no-wait`) once that stamp is 30 minutes old and no job is in
+  `gate` or `merging`. Only deallocation stops compute billing; a stopped-but-allocated VM is billed as
+  running. A VM the owner started by hand, with no gate since, is left to the 05:00 UTC shutdown.
 
 ## Measured (A00-03, 2026-11-13)
 
@@ -110,7 +119,7 @@ Expected effect, an estimate until the gate uses the VM (A00-03 measured one com
 - **Throughput:** four gates run at once instead of one.
 - **Flakes:** the Mac's load falls, so the timeout flakes mostly go.
 
-## The owner's steps (done before A00-03 was built)
+## The owner's steps
 
 1. **Install and sign in to the Azure CLI on this Mac:** `brew install azure-cli`, then `az login`.
    Or create the VM in the portal and skip to step 4.
@@ -122,11 +131,20 @@ Expected effect, an estimate until the gate uses the VM (A00-03 measured one com
 4. **Add an SSH host `oby-gate`** to `~/.ssh/config` and accept its host key once:
    `ssh oby-gate true`.
 
+Steps 1 to 4 were done before A00-03 was built. After A00-10 merges:
+
+5. **Install the merged `oby-remote-gate`** on the VM, so its groups run offline (REMOTE-9): start it if it
+   is deallocated, then run `factory/remote/setup.sh oby-gate` from the main checkout.
+6. **Turn the remote path on:** add this key to `factory/config.json` (protected, so the owner's edit). It
+   sends every gate's Linux groups to the VM:
+   `"remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate" }`.
+   Removing it, or setting it to `null`, turns the path off again.
+
 ## Risks
 
 - **A dropped connection:** a gate in progress is lost (a Spot eviction would do the same, if the owner
   moves to Spot). `oby-remote-gate` stops the check and frees its slot when its SSH connection drops
-  (REMOTE-7); the gate should rerun that gate on the Mac.
+  (REMOTE-7), and the gate runs that check on the Mac (REMOTE-3).
 - **macOS-only coverage:** a job that breaks a macOS-only test without touching the listed paths is
   caught by the nightly Mac run, not its gate. Grow the path list when that happens.
 - **Drift between the VM's toolchain and CI's:** the VM's setup script pins the same Rust toolchain
@@ -139,13 +157,8 @@ Expected effect, an estimate until the gate uses the VM (A00-03 measured one com
 
 ## Still to build
 
-- **REMOTE-1, 3 and 6:** `factory/bin/gate` runs the Linux groups on the VM when `remote_gate` is set,
-  starts it when it is deallocated, writes `HOST: oby-gate` or `HOST: mac` and why into `checks.md`, and
-  falls back to the Mac within 3 minutes. `factory/config.json` is protected, so the gate treats a missing
-  `remote_gate` key as off and the owner adds the key.
-- **The commit on origin:** the gate checks the job's commit is on origin before it goes remote, since it
-  reads the worktree's `HEAD` and never checks that today (`oby-remote-gate` refuses one origin doesn't have,
-  REMOTE-8).
-- **REMOTE-4:** the macOS-only suites run on the Mac only when the job's diff touches their paths.
-- **REMOTE-5:** deallocation after 30 idle minutes. The VM has no managed identity, so the choice is between
-  the owner adding one (a systemd timer on the VM calls `az vm deallocate`) and the Mac deallocating it.
+- **A check user without `sudo`** on the VM, separate from the admin user `oby` (a change to `setup.sh` and
+  to how the gate reaches the VM).
+- **Records in `~/.oby-flow/pipelines/runs.jsonl`**, the file the pipelines viewer reads: each gate's host,
+  slot, commit, verdict and times.
+- **The dashboard header:** the VM's state and its four slots in `factory/dashboard.html`.
