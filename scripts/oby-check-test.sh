@@ -413,11 +413,13 @@ rm core/crates/obid/tests/routes_guard.rs
 
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
 # its failure is named and comes last, each runs quietly, and a binary cargo didn't build fails the
-# check. Cargo is a stand-in here: it builds each `--test` it's given, unless OBY_FAKE_BUILDS_NONE.
+# check. Cargo is a stand-in here: it builds each `--test` it's given, unless OBY_FAKE_BUILDS_NONE,
+# and runs the lib's tests as OBY_FAKE_LIB, when set.
 fake=$(mktemp -d "${TMPDIR:-/tmp}/oby-check-fake.XXXXXX")
 trap 'rm -rf "$repo" "$fake"' EXIT
 cat >"$fake/cargo" <<STANDIN
 #!/bin/bash
+[[ " \$* " != *" --lib "* || -z "\$OBY_FAKE_LIB" ]] || exec "\$OBY_FAKE_LIB" "\$@"
 [[ " \$* " == *" --no-run "* ]] || exit 0
 [[ -z "\$OBY_FAKE_BUILDS_NONE" ]] || exit 0
 while [[ \$# -gt 0 ]]; do
@@ -503,6 +505,111 @@ else
 fi
 rm -r core/crates/obi-protocol
 rm -r core/crates/obid
+
+# The flaky list (docs/contracts/ci.md, CI-26 to 28), on the commit's own copy of the script (the
+# base's copy a job's check installs may predate it). The base lists a test of tests/flaky.rs and one
+# of the lib's, and has one task file. Within its limits, so only what a case does can fail its run.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+code "$main" "$(($(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh) - 500))"
+sleeps "$sleepy" "$(sed -n 's/^tests_sleep_limit=//p' scripts/oby-check.sh)"
+listed=core/.config/nextest.toml
+entry() { # key, binary id, the filter's test(…)
+    printf '\n# %s: what it waits on\n[[profile.ci.overrides]]\nfilter = '"'"'binary_id(%s) & test(%s)'"'"'\nretries = 2\n' "$@"
+}
+mkdir -p core/.config
+{ echo '[profile.ci]'; echo 'retries = 1'; entry R01-70 obid::flaky =listed_test; entry R01-71 obid =codex::tests::listed_test; } >"$listed"
+code factory/queue/tasks/R01-80.md 1
+commit 'the flaky list'
+# A libtest-shaped run: the tests OBY_FAKE_FAILS names fail, on the first run only with OBY_FAKE_ONCE;
+# with OBY_FAKE_BARE it fails naming none. Each run's arguments are a line of OBY_FAKE_CALLS.
+cat >"$fake/libtest" <<'STANDIN'
+#!/bin/bash
+echo "$*" >>"$OBY_FAKE_CALLS"
+printf '\nrunning 2 tests\n'
+[[ -z "$OBY_FAKE_BARE" ]] || { echo 'it crashed'; exit 101; }
+if [[ -z "$OBY_FAKE_FAILS" || (-n "$OBY_FAKE_ONCE" && $(wc -l <"$OBY_FAKE_CALLS") -gt 1) ]]; then
+    printf '\ntest result: ok. 2 passed; 0 failed; 0 ignored\n'
+    exit 0
+fi
+printf '\nfailures:\n\n'
+for test in $OBY_FAKE_FAILS; do printf -- '---- %s stdout ----\nit failed\n\n' "$test"; done
+printf '\nfailures:\n'
+for test in $OBY_FAKE_FAILS; do printf '    %s\n' "$test"; done
+printf '\ntest result: FAILED. 1 passed; %s failed; 0 ignored\n' "$(wc -w <<<"$OBY_FAKE_FAILS" | tr -d ' ')"
+exit 101
+STANDIN
+chmod +x "$fake/libtest"
+cp "$fake/libtest" "$fake/flaky-0123abcd"
+calls="$fake/calls"
+flaky_run() { rm -f "$calls"; run OBY_CHECK_ONLY=rust OBY_FAKE_CALLS="$calls" "$@"; }
+wrong() { # what went wrong, said with the run's output
+    echo "oby-check-test: $1:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$ran" >&2
+    exit 1
+}
+runs() { wc -l <"$calls" | tr -d ' '; }
+code core/crates/obid/tests/flaky.rs 3
+ran=$(flaky_run OBY_FAKE_FAILS=listed_test OBY_FAKE_ONCE=1) || wrong 'CI-26: a listed test that passed its retry failed the check'
+grep -qxF 'retried flaky: obid::flaky listed_test' <<<"$ran" && [[ $(runs) == 2 ]] &&
+    [[ $(sed -n 2p "$calls") == '--quiet --exact listed_test' ]] && ! grep -q 'tests/flaky.rs failed' <<<"$ran" ||
+    wrong "CI-26: a listed test that failed once wasn't retried alone, saying so (its runs: $(cat "$calls"))"
+if ran=$(flaky_run OBY_FAKE_FAILS=listed_test); then wrong 'CI-26: a listed test that failed its retry too passed the check'; fi
+[[ $(runs) == 2 ]] && grep -q 'tests/flaky.rs failed' <<<"$ran" && ! grep -q 'retried flaky' <<<"$ran" ||
+    wrong 'CI-26: a listed test that failed its retry too was not a failed binary'
+if ran=$(flaky_run OBY_FAKE_FAILS=other_test OBY_FAKE_ONCE=1); then wrong 'CI-27: an unlisted test that failed passed the check'; fi
+[[ $(runs) == 1 ]] && grep -q 'failed: test_binaries' <<<"$ran" && ! grep -q 'retried flaky' <<<"$ran" ||
+    wrong 'CI-27: an unlisted test that failed was retried'
+if ran=$(flaky_run OBY_FAKE_FAILS='listed_test other_test' OBY_FAKE_ONCE=1); then
+    wrong 'CI-27: a listed and an unlisted test that failed passed the check'
+fi
+[[ $(runs) == 1 ]] || wrong 'CI-27: a listed and an unlisted test that failed in one binary were retried'
+if ran=$(flaky_run OBY_FAKE_BARE=1 OBY_FAKE_ONCE=1); then wrong 'CI-27: a failure that named no test passed the check'; fi
+[[ $(runs) == 1 ]] || wrong 'CI-27: a failure with no summary was retried'
+# Listed in the checked tree only, with its task: the change can't pass its own gate with it.
+entry R01-81 obid::flaky =new_test >>"$listed"
+code factory/queue/tasks/R01-81.md 1
+if ran=$(flaky_run OBY_FAKE_FAILS=new_test OBY_FAKE_ONCE=1); then wrong 'CI-27: a test listed only in the checked tree passed the check'; fi
+[[ $(runs) == 1 ]] && grep -q 'failed: test_binaries' <<<"$ran" ||
+    wrong 'CI-27: a test listed only in the checked tree, not at the base, was retried'
+git checkout --quiet -- "$listed"
+rm factory/queue/tasks/R01-81.md core/crates/obid/tests/flaky.rs
+# The lib's tests: through cargo, with every target run to its end.
+code core/crates/obid/src/codex.rs 1
+ran=$(flaky_run OBY_FAKE_LIB="$fake/libtest" OBY_FAKE_FAILS=codex::tests::listed_test OBY_FAKE_ONCE=1) ||
+    wrong 'CI-26: a listed lib test that passed its retry failed the check'
+grep -qxF 'retried flaky: obid codex::tests::listed_test' <<<"$ran" && [[ $(runs) == 2 ]] &&
+    [[ $(sed -n 1p "$calls") == *' --no-fail-fast -p obid --lib -- codex::' ]] &&
+    [[ $(sed -n 2p "$calls") == *' --no-fail-fast -p obid --lib -- --exact codex::tests::listed_test' ]] ||
+    wrong "CI-26: a listed lib test that failed once wasn't retried alone, saying so (its runs: $(cat "$calls"))"
+if ran=$(flaky_run OBY_FAKE_LIB="$fake/libtest" OBY_FAKE_FAILS=codex::tests::other_test OBY_FAKE_ONCE=1); then
+    wrong 'CI-27: an unlisted lib test that failed passed the check'
+fi
+[[ $(runs) == 1 ]] && ! grep -q 'retried flaky' <<<"$ran" || wrong 'CI-27: an unlisted lib test that failed was retried'
+rm core/crates/obid/src/codex.rs
+# CI-28: the list only shrinks. A new entry passes only with the task file the same change adds.
+guard() { # what it's about, then `passes` or the words its failure says
+    if ran=$(run OBY_CHECK_ONLY=rust); then
+        [[ "$2" == passes ]] && grep -q '^oby-check: the flaky list has ' <<<"$ran" || wrong "$1 passed the check"
+    else
+        [[ "$2" != passes ]] && grep -q 'failed: the flaky list' <<<"$ran" && grep -qF "$2" <<<"$ran" ||
+            wrong "$1 didn't fail naming the flaky list and \"$2\""
+    fi
+}
+entry R01-90 obid::merge_api =brand_new >>"$listed"
+guard 'CI-28: a new entry with no task file' 'new entry obid::merge_api brand_new names R01-90'
+code factory/queue/tasks/R01-90.md 1
+guard 'CI-28: a new entry whose task file the same change adds' passes
+git checkout --quiet -- "$listed"
+entry R01-80 obid::merge_api =brand_new >>"$listed"
+guard 'CI-28: a new entry naming a task file the base already had' 'new entry obid::merge_api brand_new names R01-80'
+git checkout --quiet -- "$listed"
+entry R01-90 obid::merge_api merging_39_ >>"$listed"
+guard 'CI-28: a prefix filter' "isn't a flaky list entry"
+{ echo '[profile.ci]'; echo 'retries = 1'; entry R01-70 obid::flaky =listed_test; } >"$listed"
+guard 'CI-28: a removed entry' passes
+git checkout --quiet -- "$listed"
+rm factory/queue/tasks/R01-90.md "$fake/flaky-0123abcd"
 
 # Each filtered plan contains only its group, including side effects outside step.
 # Use the candidate's implementation: the base's script may predate OBY_CHECK_ONLY.
