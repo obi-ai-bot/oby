@@ -478,14 +478,36 @@ async fn peer_3_a_thread_is_only_that_member() {
             );
             assert_eq!(answer.status, 404, "{nobody}: {}", answer.text);
         }
+        // Until each member's event holds obid's `waiting_on_owner` back to them: a sent post.
         let told = events_named(&events, "peerThread", 20, |got| {
-            ["ernesto", "giulia", "copycat"]
-                .iter()
-                .all(|o| got.iter().any(|e| e["owner"] == *o))
+            ["ernesto", "giulia", "copycat"].iter().all(|o| {
+                got.iter().any(|e| {
+                    e["owner"] == *o
+                        && e["posts"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|p| p["direction"] == "sent" && p["kind"] == "status")
+                })
+            })
         });
+        // What a member said is theirs; what obid sent back is this Mac's owner's.
+        let words = [
+            ("ernesto", "From Ernesto?"),
+            ("giulia", "From Giulia?"),
+            ("copycat", "From the copycat?"),
+        ];
         for event in told {
+            let owner = event["owner"].as_str().unwrap();
             for post in event["posts"].as_array().unwrap() {
-                assert_eq!(post["owner"], event["owner"], "{event}");
+                match post["direction"].as_str() {
+                    Some("received") => assert_eq!(post["owner"], owner, "{event}"),
+                    Some("sent") => assert_eq!(post["owner"], "wellington", "{event}"),
+                    _ => panic!("a post neither received nor sent: {event}"),
+                }
+                for (other, said) in words.iter().filter(|(o, _)| *o != owner) {
+                    assert_ne!(post["text"], *said, "{other}'s words: {event}");
+                }
             }
         }
     });
