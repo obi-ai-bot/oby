@@ -78,6 +78,7 @@ mod secrets;
 mod setup;
 mod slots;
 mod unjudged;
+mod versions;
 pub use logins::person_homes;
 pub(crate) use logins::*;
 pub use moves::Moving;
@@ -10553,6 +10554,7 @@ impl Jobs {
                         job.step = format!("Starting {}", tool.name());
                     }
                 });
+                self.stamp_version(id, tool);
                 round_due = false;
                 stages.begin(&format!("agent round {round}"));
                 // A launch the network cut goes again in the same transcript turn (RECOVERY-14).

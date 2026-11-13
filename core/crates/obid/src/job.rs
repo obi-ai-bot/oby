@@ -415,6 +415,10 @@ pub struct Job {
     pub issue: Option<u64>,
     pub rounds: Option<u32>,
     pub round: Option<u32>,
+    /// Its tool's version as its latest round started (crate::cli_versions), or none when it
+    /// couldn't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
     pub check: Option<String>,
     /// Whether Oby asked the owner for its repository's check when it started with none (#1062):
     /// it went on without one, and its pull request says so. Kept in its file, never in the API.
@@ -1677,6 +1681,7 @@ impl Job {
         if let Some(why) = &self.no_reviewer {
             value["noReviewer"] = json!(why);
         }
+        value["agentVersion"] = json!(self.agent_version);
         value["teammates"] = json!(self.teammates);
         value["addedTo"] = json!(self.added_to());
         if let Some(context) = &self.context {
@@ -2378,6 +2383,7 @@ mod tests {
             "base",
             "session",
             "resumeCommand",
+            "agentVersion",
             "finished",
             "commits",
             "published",
@@ -2431,8 +2437,8 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-five, `supervised` and `revision`.
-        assert_eq!(object.len(), 92);
+        // The Swift runner's 65 keys, obid's twenty-six, `supervised` and `revision`.
+        assert_eq!(object.len(), 93);
         assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);
