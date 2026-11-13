@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::{Map, Value, json};
 
-use crate::api::{ApiError, Shared};
+use crate::api::{ApiError, Shared, answer as json};
 use crate::jobs::{NewJob, NotMade};
 use crate::receipts::Found;
 
@@ -51,10 +51,6 @@ async fn stopping(mut receiver: tokio::sync::watch::Receiver<bool>) {
             return;
         }
     }
-}
-
-fn json(status: StatusCode, value: Value) -> Response {
-    (status, axum::Json(value)).into_response()
 }
 
 /// An explicit proof-of-possession migration for older endorsed iPhone keys.

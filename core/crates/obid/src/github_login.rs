@@ -25,6 +25,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
+use crate::accounts::Pending;
 use crate::api::{ApiError, Shared};
 
 /// How long a sign-in waits for the person: GitHub's device codes last 15 minutes.
@@ -668,26 +669,6 @@ async fn keep_reviewer(
     learn_reviewer(&folder);
     tracing::info!("GitHub reviewer signed in");
     Ok(())
-}
-
-/// gh started and its sign-in not yet handed to its own task: dropped armed (the request ended
-/// while gh started), gh's whole group is killed (not yet reaped, so the id is still its) and the
-/// sign-in's folder removed.
-struct Pending {
-    group: Option<u32>,
-    scratch: PathBuf,
-    armed: bool,
-}
-
-impl Drop for Pending {
-    fn drop(&mut self) {
-        if self.armed {
-            if let Some(group) = self.group {
-                crate::process::signal_group(group, nix::sys::signal::Signal::SIGKILL);
-            }
-            let _ = std::fs::remove_dir_all(&self.scratch);
-        }
-    }
 }
 
 /// A folder of obid's own for the sign-in (its `TMPDIR`, working folder, and the git settings gh

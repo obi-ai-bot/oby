@@ -17,7 +17,7 @@ use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::api::{ApiError, Shared};
+use crate::api::{ApiError, Shared, answer};
 use crate::events::Events;
 use crate::job::{Job, RoutineMark, Status, Waiting};
 use crate::jobs::{Jobs, NewJob};
@@ -1068,10 +1068,6 @@ pub fn spawn(shared: Arc<Shared>) {
             }
         }
     });
-}
-
-fn answer(status: StatusCode, value: Value) -> Response {
-    (status, axum::Json(value)).into_response()
 }
 
 fn unprocessable(why: impl Into<String>) -> ApiError {
