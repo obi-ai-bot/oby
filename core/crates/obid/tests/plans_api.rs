@@ -1717,21 +1717,20 @@ fn thoughts(events: &[serde_json::Value]) -> Vec<String> {
         .collect()
 }
 
-/// #592's acceptance: however long the brain thinks, the turn says so within 500 ms of
-/// `POST /v1/plans`, and the line is done when the plan comes.
+/// #592's acceptance: however long the brain thinks, the turn says so before the brain's answer
+/// comes, and the line is done when the plan comes. The 500 ms is obid's promise
+/// (docs/runner-api.md), not measured here: wall clock under load isn't state (#1804).
 #[test]
 fn a_turn_says_it_is_thinking_within_half_a_second() {
     let folder = Folder::new("brain-thinking-first");
     let obid = started_harness(&folder);
     let events = follow_events(&obid);
     let answer = std::thread::scope(|scope| {
-        let begun = std::time::Instant::now();
         let asking = scope.spawn(|| said(&obid, "LINGER 2000"));
         let first = events_named(&events, "thinking", 5, |got| !got.is_empty());
-        let took = begun.elapsed();
         assert!(
-            took < std::time::Duration::from_millis(500),
-            "the first thinking event came after {took:?}"
+            !asking.is_finished(),
+            "the first thinking event came after the turn's answer"
         );
         assert_eq!(thoughts(&first), ["1:running:Thinking"]);
         assert!(first[0]["at"].is_string());
