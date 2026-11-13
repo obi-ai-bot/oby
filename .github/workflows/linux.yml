@@ -16,8 +16,12 @@
 #   - A pull request whose files are all docs (not docs/api), factory/, .claude/, design/,
 #     character/, apps/ios, apps/watch or other Markdown runs only the secret scan; one that
 #     doesn't touch cloud/control-plane skips that job. A skipped job reports success.
-#   - A push to dev or main runs nothing: nobody read those runs, and the merge queue will test
-#     the merged code before it lands. Instead everything runs nightly on dev, and on demand.
+#   - Tests run only nightly on dev and on demand (the owner's decision of 2026-11-13: "nightly
+#     only"): a pull request runs the secret scan and, when it touches Rust, fmt and clippy; no
+#     cargo test, no make e2e, no control-plane tests. The Mac check (scripts/oby-check.sh) runs
+#     the tests each change reaches before it merges; the nightly run tests dev as merged. A pull
+#     request with the `full-ci` label runs everything its change reaches.
+#   - A push to dev or main runs nothing: nobody read those runs.
 #   - Only the nightly and on-demand runs save caches: a pull request's caches can't be read by
 #     any other pull request (they're scoped to refs/pull/<n>/merge), so they only churned the
 #     repository's 10 GB.
@@ -58,6 +62,8 @@ jobs:
     outputs:
       rust: ${{ steps.lanes.outputs.rust }}
       cloud: ${{ steps.lanes.outputs.cloud }}
+      # Tests run nightly, on demand, or on a pull request labelled full-ci.
+      tests: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -118,6 +124,7 @@ jobs:
       # runner allows them. The last line proves bubblewrap works here, so a sandbox test that
       # fails is the sandbox's failure, not the runner's.
       - name: bubblewrap for obid's job sandbox
+        if: needs.changes.outputs.tests == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap slirp4netns
@@ -126,6 +133,7 @@ jobs:
 
       # obid's own secret scan runs gitleaks (on PATH); its tests and make e2e need it.
       - name: Install gitleaks
+        if: needs.changes.outputs.tests == 'true'
         env:
           GITLEAKS_VERSION: 8.30.1
           GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -144,6 +152,7 @@ jobs:
         run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test
+        if: needs.changes.outputs.tests == 'true'
         # --no-fail-fast: every test binary runs and reports, not only up to the first that fails.
         run: cargo test --manifest-path core/Cargo.toml --workspace --locked --no-fail-fast
 
@@ -200,7 +209,7 @@ jobs:
   control-plane:
     name: Control plane
     needs: changes
-    if: needs.changes.outputs.cloud == 'true'
+    if: needs.changes.outputs.cloud == 'true' && needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -234,7 +243,7 @@ jobs:
   e2e:
     name: E2E (stub agents)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
