@@ -281,6 +281,14 @@ pub const RUN_TAG: &str = "OBY_RUN_TAG";
 /// make the list its card shows (docs/contracts/live-task.md).
 pub const CLAUDE_TODO_TOOLS: &str = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
 
+/// Claude Code's own switches, each `1` in every job's and own conversation's run: no Datadog
+/// telemetry, no Sentry reports (PERMISSIONS-2), and no self-update under a run (CLIVERSIONS-5).
+pub const CLAUDE_RUN_SWITCHES: [&str; 3] = [
+    "DISABLE_TELEMETRY",
+    "DISABLE_ERROR_REPORTING",
+    "DISABLE_AUTOUPDATER",
+];
+
 /// The person's Rust toolchain as their shell finds it: rustup's home (`RUSTUP_HOME`, else
 /// `~/.rustup`) and cargo's own `bin` (`CARGO_HOME/bin`, else `~/.cargo/bin`), each when it's a
 /// folder. A box's `HOME` is the job's, so without them a rustup proxy finds no toolchain there,

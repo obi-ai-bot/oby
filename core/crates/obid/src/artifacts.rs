@@ -587,18 +587,15 @@ fn extension(name: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Every field must be there to pass; only `file` is read.
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct Frame {
-    #[allow(dead_code)]
     title: String,
     file: String,
-    #[allow(dead_code)]
     x: f64,
-    #[allow(dead_code)]
     y: f64,
-    #[allow(dead_code)]
     w: f64,
-    #[allow(dead_code)]
     h: f64,
 }
 

@@ -39,7 +39,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::api::{ApiError, Shared};
+use crate::api::{ApiError, Shared, answer};
 use crate::brain::briefing::{fence, fence_rule, nonce};
 use crate::brain::calls::{Failure, QUOTED_FILE};
 
@@ -1758,10 +1758,6 @@ fn repos(shared: &Shared) -> Vec<(String, String)> {
 
 fn scratch(home: &Path) -> PathBuf {
     home.join("plans").join(uuid::Uuid::new_v4().to_string())
-}
-
-fn answer(status: StatusCode, value: Value) -> Response {
-    (status, axum::Json(value)).into_response()
 }
 
 /// `GET /v1/memory`: every memory, and the suggestions waiting for an answer.

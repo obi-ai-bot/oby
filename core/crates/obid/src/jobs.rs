@@ -45,9 +45,6 @@ pub const FILES_ALONE: &str = "Look at the files I attached.";
 /// How much of a check's output obid keeps: its end.
 const CHECK_OUTPUT_MAX: usize = 64 * 1024;
 
-/// Claude Code's own switches for its telemetry (Datadog) and error reports (Sentry), each `1` in
-/// every job's environment ([`Jobs::launch`]).
-const CLAUDE_TELEMETRY_OFF: [&str; 2] = ["DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING"];
 /// Why a job that commits ended done with nothing to publish.
 const NOTHING_COMMITTED: &str = "Nothing committed, so nothing was published.";
 /// In the changes of a task obid let go itself (TASKS-13): not the owner's Dismiss.
@@ -771,11 +768,12 @@ fn room_step(wait: &Waiting) -> String {
 }
 
 /// A job waiting for room goes to `tool`: a model of another tool's gives way to the new tool's
-/// own, as a move's does.
+/// own, as a move's does, and its version to the next round's read (CLIVERSIONS-6).
 fn on_tool(job: &mut Job, tool: Tool) {
     if job.agent != tool.id() {
         job.agent = tool.id().into();
         job.model = None;
+        job.agent_version = None;
         job.model_from_account = false;
     }
 }
@@ -7500,14 +7498,12 @@ impl Jobs {
                     extra.push((process::CLAUDE_TMPDIR, spec.temp.clone().into_os_string()));
                     extra.push((process::CLAUDE_TODO_TOOLS, "1".into()));
                     // Claude Code's documented switches: no Datadog telemetry, no Sentry reports,
-                    // in both lanes. Through the egress proxy they were a site like any other, a
-                    // card for the owner and a foreign mark (PERMISSIONS-2).
+                    // no self-update, in both lanes. Through the egress proxy they were a site like
+                    // any other, a card for the owner and a foreign mark (PERMISSIONS-2).
                     // ponytail: Codex and Cursor document no environment switch for theirs (Codex's
-                    // is `config.toml`'s `[analytics]` and `[otel]`, its OTel off by default), so
-                    // what they send is still decided as any site is.
-                    for name in CLAUDE_TELEMETRY_OFF {
-                        extra.push((name, "1".into()));
-                    }
+                    // is `config.toml`'s `[analytics]`, `[otel]` and `check_for_update_on_startup`,
+                    // its OTel off by default), so what they send is still decided as any site is.
+                    extra.extend(process::CLAUDE_RUN_SWITCHES.map(|name| (name, "1".into())));
                 }
                 let mut env = process::sandbox_env(&process::tools_path(), &spec.temp, &extra);
                 process::with_owners(&mut env, &owners.unwrap_or_default());
@@ -15175,7 +15171,7 @@ mod tests {
                 .launch(&job, &spec, Tool::Claude, Vec::new(), &account, None)
                 .unwrap();
             assert_eq!(launch.own_sandbox, id == "own");
-            for name in CLAUDE_TELEMETRY_OFF {
+            for name in process::CLAUDE_RUN_SWITCHES {
                 assert!(
                     launch
                         .env
