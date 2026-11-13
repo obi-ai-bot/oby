@@ -2922,7 +2922,12 @@ fn merging_6_a_signed_out_gh_asks_the_owner() {
         (job(&obid)["mergedBy"]["by"] == "memory").then_some(())
     });
     assert_eq!(job(&obid)["mergeNeedsYou"], false);
-    assert!(merge_cards(&obid).iter().all(|c| !c["done"].is_null()));
+    within(30, "the card to be settled", || {
+        merge_cards(&obid)
+            .iter()
+            .all(|c| !c["done"].is_null())
+            .then_some(())
+    });
 }
 
 /// MERGING-5: GitHub's checks still running an hour after obid pushed the head ask the owner;
@@ -2948,11 +2953,12 @@ fn merging_5_checks_that_run_long_ask_then_merge_by_themselves() {
     });
     assert_eq!(job(&obid)["mergeNeedsYou"], false);
     // Settled: not open any more (a settled card leaves the inbox's list).
-    assert!(
+    within(30, "the card to be settled", || {
         merge_cards(&obid)
             .iter()
             .all(|c| c["id"] != card["id"] || !c["done"].is_null())
-    );
+            .then_some(())
+    });
 }
 
 /// [`published`], but Oby's review of its head asks for changes: on its first round, with nothing
