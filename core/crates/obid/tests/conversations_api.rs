@@ -342,9 +342,10 @@ fn jobs_and_their_events_land_in_the_conversation_that_started_them() {
         .as_str()
         .unwrap()
         .to_owned();
+    // Two different jobs: the same `oby_dispatch` repeated in one turn makes one (R02-06,
+    // docs/contracts/receipts.md RECEIPTS-14).
     let dispatched = plan(
         &obid,
-        // Two calls that differ: the same call again in a turn answers the first (RECEIPTS-12).
         json!({"said": r#"REPEAT 1 OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"} THEN OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a farewell", "kind": "build"}"#, "new": true}),
     );
     let started = dispatched["conversation"].as_str().unwrap().to_owned();
