@@ -14,10 +14,32 @@ use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::{Map, Value, json};
 
 use crate::api::{ApiError, Shared};
-use crate::jobs::NewJob;
+use crate::jobs::{NewJob, NotMade};
 use crate::receipts::Found;
 
 const NO_JOB: &str = "There's no such job.";
+
+/// `404`, or the `500` of a job whose change obid couldn't save (docs/contracts/home.md, HOME-1).
+fn no_job(shared: &Shared, id: &str) -> ApiError {
+    let missing = ApiError::new(StatusCode::NOT_FOUND, NO_JOB);
+    unless_unkept(&shared.jobs, id, missing)
+}
+
+/// `missing`, or the `500` of a job whose last save failed ([`crate::jobs::Jobs::unkept`]).
+pub(crate) fn unless_unkept(jobs: &crate::jobs::Jobs, id: &str, missing: ApiError) -> ApiError {
+    jobs.unkept(id)
+        .map_or(missing, |why| NotMade::Unkept(why).into())
+}
+
+impl From<NotMade> for ApiError {
+    fn from(e: NotMade) -> ApiError {
+        let status = match e {
+            NotMade::Refused(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            NotMade::Unkept(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        ApiError::new(status, e.to_string())
+    }
+}
 
 /// What a job sent to a teammate's Mac hears: compute sharing went with the strip to a dispatcher.
 pub const ELSEWHERE: &str = "Jobs run only on this Mac now: runsOn is null or left out.";
@@ -233,10 +255,7 @@ pub async fn job(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let job = shared
-        .jobs
-        .get(&id)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+    let job = shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     Ok(json(StatusCode::OK, job.detail_json()))
 }
 
@@ -251,10 +270,7 @@ pub async fn report(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let job = shared
-        .jobs
-        .get(&id)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+    let job = shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let report = job
         .saved_report()
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "There's no saved research report."))?;
@@ -286,7 +302,7 @@ pub async fn transcript(
     let (entries, next) = shared
         .jobs
         .transcript(&id, after, usize::try_from(limit).unwrap_or(usize::MAX))
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+        .ok_or_else(|| no_job(&shared, &id))?;
     Ok(json(
         StatusCode::OK,
         json!({"entries": entries, "next": next}),
@@ -301,9 +317,7 @@ pub async fn transcript_entry(
     let n = n
         .parse::<u64>()
         .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "n is a number."))?;
-    if shared.jobs.get(&id).is_none() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let (entry, detail) = shared
         .jobs
         .transcript_entry(&id, n)
@@ -323,7 +337,7 @@ pub async fn stop(
     let job = shared
         .jobs
         .stop(&id, crate::jobs::STOPPED_BY_API)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+        .ok_or_else(|| no_job(&shared, &id))?;
     Ok(json(StatusCode::OK, job.to_json()))
 }
 
@@ -333,7 +347,7 @@ pub async fn start(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     match shared.jobs.start_now(&id) {
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => Err(no_job(&shared, &id)),
         Some(Err(refused)) => Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
         Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
     }
@@ -354,7 +368,7 @@ pub async fn dismiss(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     match shared.jobs.dismiss(&id) {
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => Err(no_job(&shared, &id)),
         Some(Err(refused)) => Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
         Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
     }
@@ -385,7 +399,7 @@ pub async fn archive(
             .archived
     };
     match shared.jobs.archive(&id, archived, "by you") {
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => Err(no_job(&shared, &id)),
         Some(Err(refused)) => Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
         Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
     }
@@ -445,7 +459,7 @@ pub async fn rename(
         None => shared.jobs.get(&id),
     };
     match job {
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => Err(no_job(&shared, &id)),
         Some(job) => Ok(json(StatusCode::OK, job.to_json())),
     }
 }
@@ -457,7 +471,7 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     match shared.jobs.delete(&id).await {
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => Err(no_job(&shared, &id)),
         Some(Err(refused)) => Err(ApiError::new(StatusCode::CONFLICT, refused.0)),
         Some(Ok(_)) => {
             shared.link.settle_job(&id);
@@ -475,10 +489,7 @@ pub async fn delete_asked(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     use crate::sphere::inbox::{Confirmed, action, confirm_item};
-    let job = shared
-        .jobs
-        .get(&id)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+    let job = shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     if let Some(refused) = shared.jobs.undeletable(&id) {
         return Err(ApiError::new(StatusCode::CONFLICT, refused.0));
     }
@@ -514,9 +525,7 @@ pub async fn wait(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     enum Step {
         Waiting,
         Done,
@@ -709,6 +718,8 @@ pub async fn dispatch(
     let words = new.task.clone();
     let unsigned = !new.vetted;
     let foreign = unsigned.then(|| "words no app of the owner's signed".to_owned());
+    // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
+    (new.unsigned, new.client_request_id) = (unsigned, key.clone());
     let job = crate::task_conversation::create(
         &shared,
         new,
@@ -717,17 +728,10 @@ pub async fn dispatch(
             foreign,
         }),
         None,
-    )
-    .map_err(|refused| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0))?;
-    // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
-    let job = match unsigned {
-        true => shared.jobs.mark_unsigned(&job.id).unwrap_or(job),
-        false => job,
-    };
+    )?;
     let Some(key) = key else {
         return Ok(json(StatusCode::CREATED, job.to_json()));
     };
-    let job = shared.jobs.mark_request_key(&job.id, &key).unwrap_or(job);
     let answer = job.to_json();
     if let Some((receipts, keyed, _guard)) = receipt {
         let now = obi_protocol::time::now();
@@ -850,6 +854,9 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         adding: None,
         heard: Vec::new(),
         owners: Vec::new(),
+        // Set by [`dispatch`] from how the request came, never from its body.
+        unsigned: false,
+        client_request_id: None,
     })
 }
 
@@ -1163,9 +1170,7 @@ pub async fn message(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let bad = || ApiError::new(StatusCode::BAD_REQUEST, "The body is {\"text\": \"…\"}.");
     let value = serde_json::from_slice::<Value>(&body).map_err(|_| bad())?;
     let text = value.get("text").and_then(Value::as_str).ok_or_else(bad)?;
@@ -1206,7 +1211,7 @@ pub async fn message(
         &attachments,
     );
     let job = match answer {
-        None => return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => return Err(no_job(&shared, &id)),
         Some(Err(refused)) => {
             return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0));
         }
@@ -1284,9 +1289,7 @@ pub async fn publish_action(
     Path(id): Path<String>,
     axum::extract::Query(mut by_hand): axum::extract::Query<crate::publish::ByHand>,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     // What the owner is shown, read now, never what the request says: the sentence they sign
     // names the commit Publish anyway sends and the one a force-push replaces.
     by_hand.head = None;
@@ -1299,7 +1302,7 @@ pub async fn publish_action(
             .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
     }
     match shared.jobs.offer_publish(&id, &by_hand) {
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => Err(no_job(&shared, &id)),
         Some(Err(why)) => Err(ApiError::new(StatusCode::CONFLICT, why)),
         Some(Ok((action, base))) => {
             let mut said = json!({"action": action, "base": base});
@@ -1339,7 +1342,7 @@ pub async fn publish(
         )
     })?;
     let action = match shared.jobs.publish_action(&id, &by_hand) {
-        None => return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => return Err(no_job(&shared, &id)),
         Some(Err(why)) => return Err(ApiError::new(StatusCode::CONFLICT, why)),
         Some(Ok((action, _))) => action,
     };
@@ -1377,9 +1380,7 @@ pub async fn permission(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec). Checked
     // once: a signature counts once, so a second look would find the owner's own words used.
     let signed = std::cell::OnceCell::new();
@@ -1413,7 +1414,7 @@ pub async fn permission(
     if let Some(answered) = answered {
         return match answered {
             Ok(job) => Ok(json(StatusCode::OK, job.to_json())),
-            Err(PermissionRefused::NoJob) => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+            Err(PermissionRefused::NoJob) => Err(no_job(&shared, &id)),
             Err(PermissionRefused::NotWaiting(why)) => {
                 Err(ApiError::new(StatusCode::CONFLICT, why))
             }
@@ -1446,7 +1447,7 @@ pub async fn permission(
         .answer_permission(&id, permission, decision, message)
     {
         Ok(job) => Ok(json(StatusCode::OK, job.to_json())),
-        Err(PermissionRefused::NoJob) => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        Err(PermissionRefused::NoJob) => Err(no_job(&shared, &id)),
         Err(PermissionRefused::NotWaiting(why)) => Err(ApiError::new(StatusCode::CONFLICT, why)),
         Err(PermissionRefused::Refused(why)) => {
             Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))
@@ -1480,7 +1481,7 @@ pub async fn mode(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let Some(job) = shared.jobs.get(&id) else {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
+        return Err(no_job(&shared, &id));
     };
     let mode = mode_of(&body)?;
     if mode.reach() > crate::jobs::Jobs::mode_of(&job).reach()
@@ -1491,7 +1492,7 @@ pub async fn mode(
     let job = shared
         .jobs
         .set_mode(&id, mode)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_JOB))?;
+        .ok_or_else(|| no_job(&shared, &id))?;
     Ok(json(StatusCode::OK, job.to_json()))
 }
 
@@ -1504,9 +1505,7 @@ pub async fn move_job(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let shape = "The body is {\"agent\", \"account\", \"model\", \"why\"}, each a string or null, why up to 500 characters.";
     let mut to: crate::jobs::Moving = serde_json::from_slice(&body)
         .ok()
@@ -1520,7 +1519,7 @@ pub async fn move_job(
     }
     let source = [crate::jobs::Source::Api, crate::jobs::Source::Owner][usize::from(typed)];
     match shared.jobs.move_to(&id, to, source).await {
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, NO_JOB)),
+        None => Err(no_job(&shared, &id)),
         Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
         Some(Err(refused)) => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
     }

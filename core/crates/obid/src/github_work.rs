@@ -1420,9 +1420,7 @@ async fn begin(
         adding,
         ..NewJob::default()
     };
-    let job = jobs
-        .create(new)
-        .map_err(|refused| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0))?;
+    let job = jobs.create(new)?;
     Ok((job, true))
 }
 

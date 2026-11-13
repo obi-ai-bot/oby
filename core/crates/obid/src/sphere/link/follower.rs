@@ -1078,9 +1078,9 @@ impl Link {
                 tracing::warn!(
                     "sphere: the review for {} couldn't start: {}",
                     exchange.correlation_id,
-                    refused.0
+                    refused
                 );
-                exchange.error = Some(refused.0);
+                exchange.error = Some(refused.to_string());
                 let mut failed = failed_result(&exchange.request);
                 if let Some(rule) = rule {
                     failed["by_rule"] = json!(rule);

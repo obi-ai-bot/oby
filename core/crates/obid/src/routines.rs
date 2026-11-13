@@ -787,7 +787,7 @@ fn fire(
         Ok(job) => run.job = Some(job.id),
         Err(refused) => {
             run.outcome = "failed".into();
-            run.reason = Some(refused.0);
+            run.reason = Some(refused.to_string());
         }
     }
     (run, routine.conversation)

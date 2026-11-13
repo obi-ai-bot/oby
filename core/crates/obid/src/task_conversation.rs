@@ -9,7 +9,7 @@
 //! ([`of`]), its chain (the task, the one it follows up, and theirs) gets one then.
 
 use crate::api::Shared;
-use crate::jobs::{NewJob, Refused};
+use crate::jobs::{NewJob, NotMade};
 
 /// The owner's words that started a task, for its conversation's first turn, and why they aren't
 /// on obid's allowlist when they aren't (crate::secretspec: words no app of the owner's signed).
@@ -28,7 +28,7 @@ pub fn create(
     new: NewJob,
     words: Option<Words>,
     foreign: Option<String>,
-) -> Result<crate::job::Job, Refused> {
+) -> Result<crate::job::Job, NotMade> {
     let alone = new.conversation.is_none() && new.follow_up_of.is_none();
     let job = shared.jobs.create(new)?;
     if !alone {
