@@ -14,3 +14,6 @@ Config/Signing.local.xcconfig
 .env.local
 *.p12
 *.p8
+# The software factory's runtime state and each job's worktree (factory/README.md).
+/factory/jobs/
+/.worktrees/
