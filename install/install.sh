@@ -437,8 +437,7 @@ else
   "owner": "$owner",
   "agents": {
     "claude": {"bin": "claude", "accounts": [{"id": "default", "name": "Default", "configDir": null}]}$codex
-  },
-  "telemetry": false
+  }
 }
 EOF
   )

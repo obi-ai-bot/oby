@@ -97,8 +97,7 @@ fn config(folder: &Path, remote: &Path, check: Option<&str>) -> Config {
                                   "accounts": [{"id": "stub", "name": "Stub", "configDir": home.join("accounts/stub")}]}},
             "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
                        "defaultBranch": "main", "check": check}],
-            "allowFileRemotes": true,
-            "telemetry": false
+            "allowFileRemotes": true
         })
         .to_string(),
     )

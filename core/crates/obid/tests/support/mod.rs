@@ -171,8 +171,7 @@ pub fn config(folder: &Path, remote: &Path, agent: &Path) -> Value {
                               "accounts": [{"id": "stub", "name": "Stub", "configDir": folder.join("home/accounts/stub")}]}},
         "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
                    "defaultBranch": "main", "check": "node --test", "pullRequests": true}],
-        "allowFileRemotes": true,
-        "telemetry": false
+        "allowFileRemotes": true
     })
 }
 

@@ -105,8 +105,7 @@ fn config(folder: &Path, remote: &Path) -> Value {
         "agents": {"claude": {"bin": Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude"),
                               "accounts": [{"id": "stub", "name": "Stub", "configDir": folder.join("home/accounts/stub")}]}},
         "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()), "defaultBranch": "main", "pullRequests": true}],
-        "allowFileRemotes": true,
-        "telemetry": false
+        "allowFileRemotes": true
     })
 }
 
