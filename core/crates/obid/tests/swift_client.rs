@@ -33,8 +33,6 @@ const APP_SOURCES: &[&str] = &[
     "apps/shared/DeviceKey.swift",
     "apps/shared/TetrixStatus.swift",
     "apps/shared/GitHubWorkModel.swift",
-    "apps/shared/SlackStatus.swift",
-    "apps/shared/SentryStatus.swift",
     "apps/shared/PhoneRelay.swift",
     "apps/shared/RemoteRoute.swift",
     "apps/shared/Usage.swift",
