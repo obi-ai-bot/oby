@@ -543,8 +543,8 @@ pub fn job_hidden(home: &Path, homes: Vec<PathBuf>) -> Vec<PathBuf> {
     hidden
 }
 
-/// The folders every program on the Mac shares, which Oby's box hides (on Linux its `/tmp` is
-/// already its own): never the own lane's, which reads them as the owner's terminal does.
+/// The folders every program shares, which Oby's box hides (Linux's `/tmp` is empty in it, as a CLI
+/// there finds: [`install_root`]); never the own lane's, which reads them as a terminal does.
 pub fn shared_temps() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     return vec![
@@ -553,7 +553,7 @@ pub fn shared_temps() -> Vec<PathBuf> {
         std::env::temp_dir(),
     ];
     #[cfg(not(target_os = "macos"))]
-    Vec::new()
+    vec![PathBuf::from("/tmp")]
 }
 
 /// What a confined process reads of the system on macOS: the system's own folders, the
@@ -663,11 +663,8 @@ fn bubblewrap_args_reading(
     }
     let worktree = spec.worktree.as_os_str();
     push(&["--bind".as_ref(), worktree, worktree]);
-    // What stays read-only inside the worktree is bound over it again, read-only: a mount point,
-    // so it can't be renamed or removed either. Each folder between the worktree and it is bound
-    // over itself too, as writable as it was: a folder above it renamed would carry it away
-    // (PUBLISHING-7, `mv tools moved`), and a mount point can't be renamed. A link is never bound:
-    // bubblewrap would follow it out of the worktree.
+    // What stays read-only in the worktree is bound read-only, each real folder above it on
+    // itself: a mount point can't be renamed or removed (PUBLISHING-7). Never a link: it leads out.
     let mut held: Vec<PathBuf> = Vec::new();
     for frozen in &spec.frozen {
         let mut folder = spec.worktree.clone();
