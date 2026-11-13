@@ -405,7 +405,6 @@ final class Phone {
             // again instead of restoring a link that sends requests the gateway will reject.
             UserDefaults.standard.removeObject(forKey: "mac.link")
         }
-        JobsActivity.watchTokens { [weak self] in self?.runner }
         conversation.page = { [weak self] before, limit in
             guard let self, !startingNew else { return [] }
             let turns = try await runner.conversationTurns(id: current, before: before, limit: limit)
@@ -1401,12 +1400,6 @@ final class Phone {
     func setDefaultAccount(_ id: String) async throws {
         try await runner.setDefaultAccount(id)
         defaultAccount = id
-    }
-
-    // MARK: Models
-
-    func setModels(_ models: ModelSettings) async throws {
-        self.models = try await runner.setModels(models)
     }
 
     // MARK: This phone's publishing key

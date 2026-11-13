@@ -49,6 +49,8 @@ The first run builds the Rust extractor (about 15 s); after that a full read tak
   included), spawns, stored-file names, serde structs, string constants and every function and test.
 - `generator/design.ts` reads the Electron app with ts-morph (syntax and imports, no type checker): the `api` object in
   `obid.ts`, which stores each screen's code reaches it through, mock imports, storage keys, gates and words.
+- `generator/index.ts` also reads the Swift client's `call`/`send` paths in `apps/shared` and `apps/ios` (`swiftClient`)
+  and checks them against obid's routes.
 - `generator/index.ts` joins them and runs the checks; `brain.config.ts` holds only what the code can't say (the areas,
   who owns each kept-locally choice, which code keeps each rule).
 - `vite-plugin-brain.ts` serves the JSON at `/brain.json` and regenerates it on save; the React interface in `src/`
@@ -70,8 +72,8 @@ cd tools/brain && npm test
 `test/repo.test.ts` runs the Brain on the real repository and holds what must stay true for any version of the code:
 every route read from its own line and its handler found; every module in an area; every app call reaching a route;
 every kept-locally choice owned, and every owed one tied to an issue; every rule tied to code that's still there and to
-a test; no internal host in the open-source code; every phone route served and every documented route served
-(RETIRED-7 and RETIRED-8, docs/contracts/retired.md). `scripts/oby-check.sh` doesn't run them: run `npm test` by hand.
+a test; no internal host in the open-source code; every phone route served, every documented route served and
+every call of the Swift client served but the test's named exceptions (RETIRED-7 to RETIRED-9, docs/contracts/retired.md). `scripts/oby-check.sh` doesn't run them: run `npm test` by hand.
 
 `docs/runner-api.md`'s section "Routes obid does not serve" (`goneSection` in `brain.config.ts`) lists the routes obid
 stopped serving: a mention of one anywhere in the doc never counts as documented, and one obid routes again is a

@@ -127,4 +127,6 @@ export const config: BrainConfig = {
   ],
   internalHosts: ['34-45-0-97.sslip.io', 'tail8de49b'],
   hostScan: ['core/crates', 'apps/electron/src', 'apps/ios', 'apps/shared', 'mcp', 'docs', 'scripts', 'install', 'README.md', 'AGENTS.md'],
+  // The iPhone's client (Runner.swift, shared with the Watch) and the iPhone app beside it
+  swiftClient: ['apps/shared', 'apps/ios'],
 };
