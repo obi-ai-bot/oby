@@ -571,6 +571,22 @@ def slugify(title):
     return "-".join(words) or "task"
 
 
+def code_files(task):
+    """The code files a task's `### Files` list names: what two jobs at once would conflict on.
+    Markdown is left out (docs/runner-api.md and the contracts are in most tasks, and their
+    conflicts are cheap to resolve)."""
+    m = re.search(r"^### Files\n(.*?)(?=^### |\Z)", task["body"], re.M | re.S)
+    files = set()
+    for line in (m.group(1) if m else "").splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        path = line[2:].strip().strip("`").removeprefix("new: ").strip("`").split()[0]
+        if path and not path.endswith(".md"):
+            files.add(path)
+    return files
+
+
 def waits_for(task, done):
     return [k for k in task["depends"] if k not in done]
 
@@ -680,14 +696,29 @@ def cmd_queue():
             other_rows.append(("skip", key, j["id"], j["stage"], "its task file is gone from factory/queue/tasks"))
     # Jobs already in a running stage hold a slot whether or not an agent is on them.
     slots = CONCURRENCY - len(running(jobs.values()))
+    by_key = {t["key"]: t for t in tasks}
+    busy = {}  # code file -> the running or just-started task that touches it
+    for j in running(jobs.values()):
+        t = by_key.get(j["issue"]) or (read_task(DONE / f"{j['issue']}.md")
+                                       if (DONE / f"{j['issue']}.md").exists() else None)
+        for f in code_files(t) if t else ():
+            busy.setdefault(f, j["issue"])
     rows, held = list(running_rows), 0
     for row in new_rows:
-        if slots > 0:
+        mine = code_files(by_key[row[1]])
+        clash = sorted(f for f in mine if f in busy)
+        if clash:
+            held += 1
+            if held <= 8:
+                rows.append(("hold",) + row[1:4] + (f"shares {clash[0]} with {busy[clash[0]]}",))
+        elif slots > 0:
             rows.append(row)
             slots -= 1
+            for f in mine:
+                busy.setdefault(f, row[1])
         else:
             held += 1
-            if held <= 5:
+            if held <= 8:
                 rows.append(("hold",) + row[1:4] + (f"concurrency {CONCURRENCY} reached",))
     for row in rows + other_rows:
         print("\t".join(str(c) for c in row))
