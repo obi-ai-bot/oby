@@ -159,7 +159,8 @@ class GateRemote(unittest.TestCase):
         (self.fake / "groups").write_text(" ".join(names) + "\n")
 
     def run_bin(self, name, *args, remote=True, **env):
-        env = {**self.env, **({"FACTORY_REMOTE_GATE": REMOTE} if remote else {}), **env}
+        # Off is FACTORY_REMOTE_GATE=null, so the test doesn't depend on config.json's own remote_gate.
+        env = {**self.env, "FACTORY_REMOTE_GATE": REMOTE if remote else "null", **env}
         res = subprocess.run([str(self.repo / "factory" / "bin" / name), *args], cwd=self.repo, env=env,
                              capture_output=True, text=True, timeout=120)
         return res.returncode, res.stdout, res.stderr
