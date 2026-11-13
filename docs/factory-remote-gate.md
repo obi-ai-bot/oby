@@ -6,7 +6,7 @@ commit's Linux check groups in one of four slots there. Task A00-10 built the ga
 those groups on the VM, starts it when it is stopped, keeps the macOS-only part on the Mac and falls back to
 the Mac, and the Mac's `factory/bin/job queue` deallocates the VM once it is idle. Gates use the VM once the
 owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). The scenarios are
-[REMOTE-1 to 10](contracts/remote-gate.md).
+[REMOTE-1 to 11](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -19,6 +19,12 @@ owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). 
 - Set up by `factory/remote/setup.sh` with `.github/workflows/ci.yml`'s pins (Rust toolchain, Node major,
   gitleaks and its SHA-256, the bwrap proof), read from the checkout, never copied: `setup.sh --pins` prints
   them. Run it again whenever: what is already at its pin is left as it is.
+- Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
+  host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
+  slots (`factory/remote/tighten.sh`), checks `oby-check-blok` with origin/dev's own `scripts/oby-check.sh`,
+  stops naming any path still writable by others, and prints their modes. Ubuntu's default umask (0002)
+  had left `~/.cargo`, `~/.cargo/bin` and `oby-check-blok` group-writable, so the check refused its tool
+  (A00-09's gate); on 2026-11-13 the live VM was fixed by hand (`chmod go-w` on those three paths).
 
 ## The problem in one picture
 
@@ -173,6 +179,9 @@ Steps 1 to 4 were done before A00-03 was built. After A00-10 merges:
 
 ## Still to build
 
+- **Re-run `factory/remote/setup.sh oby-gate` on the real VM**, starting it only for this and deallocating
+  it after, and record the modes it prints before and after (task A00-12's last step, not done by its pull
+  request).
 - **A check user without `sudo`** on the VM, separate from the admin user `oby` (a change to `setup.sh` and
   to how the gate reaches the VM).
 - **Records in `~/.oby-flow/pipelines/runs.jsonl`**, the file the pipelines viewer reads: each gate's host,

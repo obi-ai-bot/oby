@@ -16,7 +16,8 @@
 # /usr/local/bin/oby-remote-gate; /srv/oby, the ssh user's, with a full bare clone (repo.git, gc.auto
 # 0) and slot-1 to slot-4. Run it again whenever: what is already at its pin is left as it is. It
 # writes no secret, token, key or login to the host, and changes no sshd setting, firewall or network
-# rule.
+# rule. The host part runs under umask 022, and setup ends by tightening, checking (with origin/dev's
+# own scripts/oby-check.sh) and printing the modes on the check's path (tighten.sh).
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -76,9 +77,11 @@ fi' <"$here/oby-remote-gate"
 # nothing it runs reads the script.
 {
     printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap"
+    cat "$here/tighten.sh"
     cat <<'REMOTE'
 setup() {
     set -euo pipefail
+    umask 022
     say() { printf 'setup.sh: %s\n' "$*"; }
     local url=https://github.com/obi-ai-bot/oby.git root=/srv/oby user
     user=$(id -un)
@@ -187,7 +190,11 @@ setup() {
     slirp4netns --version | sed -n 1p
     echo "oby-check-blok from origin/dev $(cut -d' ' -f1 "$stamp")"
     echo "$root/repo.git shallow: $(git -C "$root/repo.git" rev-parse --is-shallow-repository), gc.auto $(git -C "$root/repo.git" config gc.auto)"
-    ls -ld /usr/local/bin/oby-remote-gate "$root" "$root"/slot-*
+
+    # origin/dev's own check script, in a folder that isn't a checkout, judges the tool (tighten.sh).
+    mkdir "$tmp/vet"
+    git -C "$root/repo.git" archive "$dev" scripts/oby-check.sh | tar -x -C "$tmp/vet"
+    tighten "$HOME" "$root" /usr/local/bin/oby-remote-gate "$tmp/vet/scripts/oby-check.sh" "$tmp"
 }
 setup </dev/null
 REMOTE

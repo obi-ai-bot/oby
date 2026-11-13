@@ -52,7 +52,13 @@ impl Link {
             return Err(invalid("repo is owner/name, or * for every repository."));
         }
         let item = approval::remember_item(owner, repo, None, time::now());
-        Ok(self.add_confirm(item).to_json())
+        match self.add_confirm(item) {
+            Ok(item) => Ok(item.to_json()),
+            Err(e) => Err(api(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("The item couldn't be kept: {e}"),
+            )),
+        }
     }
 
     /// `DELETE /v1/obid/decisions/{id}`: `false` for one obid doesn't have.
@@ -137,11 +143,10 @@ impl Link {
 
     /// Something Oby's brain planned that persists or widens trust waits in the inbox for the
     /// owner's own `Confirm` (#546): the brain never carries it out itself. A paused routine keeps
-    /// its card here too (ALERTS-5): each put in place of one with its id.
-    pub fn add_confirm(&self, item: Item) -> Item {
-        self.lock().inbox.insert(item.id.clone(), item.clone());
-        self.save_item(&item);
-        item
+    /// its card here too (ALERTS-5): each put in place of one with its id. Why not, when it
+    /// couldn't be kept (HOME-4).
+    pub fn add_confirm(&self, item: Item) -> Result<Item, String> {
+        self.add_new(item, |_| false)
     }
 
     /// [`Link::add_confirm`], unless a `confirm` item with the same action and target is still
@@ -153,19 +158,11 @@ impl Link {
                 .as_ref()
                 .map(|c| (c.action.clone(), c.target.clone()))
         };
-        {
-            let mut state = self.lock();
-            if let Some(open) = state
-                .inbox
-                .values()
-                .find(|i| i.kind == "confirm" && i.done.is_none() && what(i) == what(&item))
-            {
-                return open.clone();
-            }
-            state.inbox.insert(item.id.clone(), item.clone());
-        }
-        self.save_item(&item);
-        item
+        let asked = what(&item);
+        self.add_new(item.clone(), |i| {
+            i.kind == "confirm" && i.done.is_none() && what(i) == asked
+        })
+        .unwrap_or(item)
     }
 
     /// [`Link::add_confirm`] in place of every open `confirm` item with the same action and
@@ -177,25 +174,21 @@ impl Link {
                 .as_ref()
                 .map(|c| (c.action.clone(), c.target.clone()))
         };
-        let closed: Vec<Item> = {
-            let mut state = self.lock();
-            let now = time::now();
-            let closed = state
-                .inbox
-                .values_mut()
-                .filter(|i| i.kind == "confirm" && i.done.is_none() && what(i) == what(&item))
-                .map(|i| {
-                    i.done = Some(now);
-                    i.clone()
-                })
-                .collect();
-            state.inbox.insert(item.id.clone(), item.clone());
-            closed
-        };
-        for old in closed.iter().chain([&item]) {
+        let now = time::now();
+        let closed: Vec<Item> = self
+            .lock()
+            .inbox
+            .values_mut()
+            .filter(|i| i.kind == "confirm" && i.done.is_none() && what(i) == what(&item))
+            .map(|i| {
+                i.done = Some(now);
+                i.clone()
+            })
+            .collect();
+        for old in &closed {
             self.save_item(old);
         }
-        item
+        self.add_new(item.clone(), |_| false).unwrap_or(item)
     }
 
     /// `POST /v1/inbox/{id}/answer` on a `confirm` item: `Confirm` carries out what its title
@@ -925,9 +918,7 @@ impl Link {
             start: Some(Box::new(start)),
             ..Default::default()
         };
-        self.lock().inbox.insert(item.id.clone(), item.clone());
-        self.save_item(&item);
-        item
+        self.add_new(item.clone(), |_| false).unwrap_or(item)
     }
 
     /// Start on a `start` item `answer_as` claimed: queues the job as planned. What couldn't start

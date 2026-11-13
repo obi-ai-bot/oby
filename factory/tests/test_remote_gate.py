@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""factory/remote/oby-remote-gate's and setup.sh --pins' own tests, with no VM.
+"""factory/remote/oby-remote-gate's, setup.sh --pins' and tighten.sh's own tests, with no VM.
 
-Each test makes an origin repository whose scripts/oby-check.sh is a stand-in, and a root
-with repo.git cloned from it, as setup.sh makes /srv/oby.
+Each RemoteGate test makes an origin repository whose scripts/oby-check.sh is a stand-in, and a
+root with repo.git cloned from it, as setup.sh makes /srv/oby. Each Tighten test runs the function
+setup.sh runs last on the host against a temporary home, root and gate, with this checkout's real
+scripts/oby-check.sh.
 
 Run from the repository root: python3 factory/tests/test_remote_gate.py
 """
@@ -22,6 +24,8 @@ from pathlib import Path
 FACTORY = Path(__file__).resolve().parents[1]
 GATE = FACTORY / "remote" / "oby-remote-gate"
 SETUP = FACTORY / "remote" / "setup.sh"
+TIGHTEN = FACTORY / "remote" / "tighten.sh"
+CHECK = FACTORY.parent / "scripts" / "oby-check.sh"
 CI = FACTORY.parent / ".github" / "workflows" / "ci.yml"
 
 # The stand-in check: the plan prints $FAKE/groups' groups; a run records its slot, CARGO_TARGET_DIR,
@@ -129,7 +133,10 @@ class RemoteGate(unittest.TestCase):
             f'echo "${{npm_config_offline:-unset}}" >>"{self.fake}/npm-offline"\n'
         )
         (bin_dir / "npm").chmod(0o755)
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_")}
+        # The host's own environment, as ssh gives it: none of the check's offline settings, which
+        # the check that runs these tests has set (REMOTE-9 sets them for the groups alone).
+        offline = {"CARGO_NET_OFFLINE", "npm_config_offline"}
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_") and k not in offline}
         self.env.update(
             OBY_REMOTE_ROOT=str(self.root),
             OBY_REMOTE_URL=str(origin),
@@ -300,6 +307,98 @@ class Pins(unittest.TestCase):
             done = self.pins(ci)
             self.assertNotEqual(done.returncode, 0, done.stdout)
             self.assertIn("GITLEAKS_VERSION disagree", done.stderr)
+
+
+class Tighten(unittest.TestCase):
+    """REMOTE-11: setup leaves nothing on the check's path writable by group or others."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.home = self.dir / "home"
+        self.bin = self.home / ".cargo" / "bin"
+        self.bin.mkdir(parents=True)
+        self.marker = self.dir / "ran"
+        (self.bin / "oby-check-blok").write_text(f'#!/bin/sh\necho "$*" >"{self.marker}"\nexit 0\n')
+        (self.bin / "oby-check-blok-nodes").write_text("#!/bin/sh\nexit 0\n")
+        (self.home / ".rustup" / "toolchains").mkdir(parents=True)
+        self.root = self.dir / "root"
+        for n in range(1, 5):
+            (self.root / f"slot-{n}").mkdir(parents=True)
+        self.gate = self.dir / "oby-remote-gate"
+        self.gate.write_text("#!/bin/sh\n")
+        os.chmod(self.gate, 0o755)
+        # setup.sh's copy is origin/dev's, extracted into a folder that isn't a checkout.
+        self.script = self.dir / "vet" / "scripts" / "oby-check.sh"
+        self.script.parent.mkdir(parents=True)
+        shutil.copy(CHECK, self.script)
+        self.scratch = self.dir / "scratch"
+        self.scratch.mkdir()
+        self.paths = [
+            self.home / ".cargo",
+            self.bin,
+            self.bin / "oby-check-blok",
+            self.bin / "oby-check-blok-nodes",
+            self.home / ".rustup" / "toolchains",
+            *(self.root / f"slot-{n}" for n in range(1, 5)),
+        ]
+        for path in self.paths:
+            os.chmod(path, 0o775)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_CHECK_")}
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def tighten(self):
+        args = [self.home, self.root, self.gate, self.script, self.scratch]
+        # From the home, where ssh starts setup on the host.
+        return subprocess.run(
+            ["bash", "-c", '. "$0"; tighten "$@"', str(TIGHTEN), *map(str, args)],
+            cwd=self.home,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=60,
+        )
+
+    def test_remote_11_setup_tightens_the_checks_path(self):
+        done = self.tighten()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        for path in [*self.paths, self.home / ".rustup", self.root, self.gate]:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755, f"{path}\n{done.stdout}")
+        self.assertTrue(self.marker.exists(), done.stdout)
+        self.assertIn("setup.sh: removed group and other write from", done.stdout)
+        self.assertIn("setup.sh: oby-check-blok passes scripts/oby-check.sh's own vetting", done.stdout)
+        lines = done.stdout.splitlines()
+        self.assertIn("setup.sh: modes:", lines)
+        self.assertTrue(
+            any(line.startswith("-rwxr-xr-x") and line.endswith(f"{self.bin}/oby-check-blok") for line in lines),
+            done.stdout,
+        )
+        again = self.tighten()
+        self.assertEqual(again.returncode, 0, again.stdout)
+        self.assertIn("setup.sh: modes already right", again.stdout.splitlines())
+
+    def test_remote_11_a_path_that_cant_be_tightened_stops_setup(self):
+        stand_in = self.dir / "bin"
+        stand_in.mkdir()
+        (stand_in / "chmod").write_text("#!/bin/sh\nexit 1\n")
+        os.chmod(stand_in / "chmod", 0o755)
+        self.env["PATH"] = f"{stand_in}{os.pathsep}{self.env['PATH']}"
+        done = self.tighten()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        lines = done.stdout.splitlines()
+        self.assertIn(f"setup.sh: still writable by others: {self.bin}", lines)
+        self.assertIn(f"setup.sh: still writable by others: {self.bin}/oby-check-blok", lines)
+        self.assertEqual((self.bin / "oby-check-blok").stat().st_mode & 0o777, 0o775)
+        self.assertFalse(self.marker.exists(), done.stdout)
+
+    def test_remote_11_setup_applies_the_checks_own_rule(self):
+        (self.bin / "oby-check-blok-nodes").unlink()
+        done = self.tighten()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn("oby-check: failed: oby-check-blok (no oby-check-blok-nodes beside", done.stdout)
+        self.assertFalse(self.marker.exists(), done.stdout)
 
 
 if __name__ == "__main__":

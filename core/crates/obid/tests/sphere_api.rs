@@ -1824,6 +1824,90 @@ async fn the_inbox_lists_answers_and_tells_every_app() {
     );
 }
 
+/// HOME-4: an inbox item obid couldn't keep on disk isn't made, and the apps hear of no item, new
+/// or changed, whose save failed. Once the folder takes it, the same item comes with one event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn home_4_a_failed_inbox_save_sends_no_event() {
+    let folder = Folder::new("home-4");
+    let (_sphere, obid, _ernesto) = setup(&folder, &stub_agent(), None).await;
+    let inbox = obid.home.join("inbox");
+    let saved = obid.home.join("inbox-saved");
+    let writable = |yes: bool| {
+        if yes {
+            std::fs::remove_file(&inbox).unwrap();
+            std::fs::rename(&saved, &inbox).unwrap();
+        } else {
+            std::fs::rename(&inbox, &saved).unwrap();
+            std::fs::write(&inbox, b"not a directory").unwrap();
+        }
+    };
+    // Every `inbox` event within 2 seconds.
+    let inbox_events = |events: &std::sync::mpsc::Receiver<(String, Value)>| {
+        let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut got = Vec::new();
+        while let Ok((name, data)) =
+            events.recv_timeout(give_up_at.saturating_duration_since(std::time::Instant::now()))
+        {
+            if name == "inbox" {
+                got.push(data);
+            }
+        }
+        got
+    };
+    let confirms = |obid: &Obid| -> Vec<Value> {
+        get(obid, "/v1/inbox")
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["kind"] == "confirm")
+            .cloned()
+            .collect()
+    };
+    let propose = |obid: &Obid| {
+        call(
+            obid,
+            "POST",
+            "/v1/obid/decisions",
+            Some(&json!({"type": "host_approval", "fromOwner": "zoe", "repo": "*"})),
+        )
+    };
+    tokio::task::block_in_place(|| {
+        let events = follow_events(&obid);
+        writable(false);
+        let refused = propose(&obid);
+        let sent = inbox_events(&events);
+        let listed = confirms(&obid);
+        writable(true);
+        assert_eq!(refused.status, 500, "{}", refused.text);
+        let error = refused.body["error"].as_str().unwrap_or_default();
+        assert!(error.contains("couldn't be kept"), "{error}");
+        assert!(sent.is_empty(), "{sent:?}");
+        assert!(listed.is_empty(), "{listed:?}");
+
+        let proposed = propose(&obid);
+        assert_eq!(proposed.status, 202, "{}", proposed.text);
+        let id = proposed.body["id"].as_str().unwrap().to_owned();
+        let sent = inbox_events(&events);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["id"], id.as_str());
+        let listed = confirms(&obid);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0]["id"], id.as_str());
+
+        // A change to it that can't be kept isn't told either.
+        writable(false);
+        call_typed(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{id}/answer"),
+            &json!({"later": "2099-01-01T00:00:00Z"}),
+        );
+        let sent = inbox_events(&events);
+        writable(true);
+        assert!(sent.iter().all(|e| e["id"] != id.as_str()), "{sent:?}");
+    });
+}
+
 /// A Sphere that serves another owner key for a member (identity.md, "Pinning, in every Obi"):
 /// obid trusts the key it pinned first, so that member isn't trusted until the owner compares the
 /// new key's fingerprint and accepts it.
