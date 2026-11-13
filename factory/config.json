@@ -1,5 +1,5 @@
 {
-  "concurrency": 2,
+  "concurrency": 4,
   "max_rounds": 3,
   "base_branch": "dev",
   "merge_method": "squash",
