@@ -57,7 +57,12 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/bin/gate                        runs checks.sh in a worktree → round-N/checks.md
 <repo>/factory/bin/route                       risk + surfaces → the job's agents
 <repo>/factory/bin/test-run                    runs a builder's own test, clippy or build run: one at a time, below the gates
+<repo>/factory/bin/check-lock                  the gate's lock holder for a check that builds Rust: stops its leftovers, passes its code
+<repo>/factory/bin/child_session.py            a command in a session of its own, its leftovers stopped; shared by check-lock, test-run, nightly
+<repo>/factory/bin/nightly                     the nightly full Mac check of origin/dev when it is due → jobs/nightly/<stamp>.md
 <repo>/factory/tests/test_test_run.py          test-run's tests: python3 factory/tests/test_test_run.py
+<repo>/factory/tests/test_check_lock.py        check-lock's tests: python3 factory/tests/test_check_lock.py
+<repo>/factory/tests/test_nightly.py           nightly's tests: python3 factory/tests/test_nightly.py
 <repo>/factory/queue/README.md                 the roadmap: milestones, sprints, every task's line
 <repo>/factory/queue/tasks/<KEY>.md            an open task: SPRINT, ORDER, DEPENDS, FIXES, then its text
 <repo>/factory/queue/done/<KEY>.md             a finished task; its own PR moved it here
@@ -72,7 +77,10 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/round-<N>/queue-failure.md why GitHub's merge queue removed the PR, quoted data
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
 <repo>/factory/jobs/<job-id>/feedback-<k>.md            the user's feedback on an escalated job
+<repo>/factory/jobs/nightly/<stamp>.md         a nightly result: GATE: PASS|FAIL, COMMIT, STARTED, TASK on a failure
+<repo>/factory/jobs/nightly/<stamp>.log        that run's full checks.sh output
 <repo>/.worktrees/<job-id>/                    the job's worktree, on factory/<job-id>
+<repo>/.worktrees/nightly/                     the nightly run's detached worktree, only while it runs
 ```
 
 Read `job.json` with `cat` when you need a field. Read agents' files only by
@@ -210,6 +218,19 @@ those variables (`npm test`, `npm run typecheck`, `swift test`) are held only by
 and an explicit `-j` or `--test-threads` overrides them. `cargo fmt --check`, `npm install`, the check's plan
 print and the dev server (`npm run web`) run directly.
 
+**nightly.** Once a day, when no job is in `gate` or `merging`, `factory/bin/job queue` prints a
+`nightly due<TAB><why>` line. Run `factory/bin/nightly` in the background, the way the gate runs,
+and keep starting and advancing jobs while it runs. It fetches `origin/dev`, runs the main checkout's
+`factory/checks.sh` with `OBY_CHECK_ALL=1` in a detached worktree at `.worktrees/nightly` (every
+suite, under the same check lock as any gate, so a gate that comes meanwhile waits for it), writes
+`factory/jobs/nightly/<stamp>.md` and removes the worktree. When it ends, report its line
+(`NIGHTLY: PASS (…)` or `NIGHTLY: FAIL (…)`). On `FAIL`, tell the owner in one line, naming the
+commit and the task key: the script has written that task, `factory/queue/tasks/A00-<n>.md`,
+uncommitted, with the failing lines and the log quoted as data, and the next `job queue` lists it as
+a `new` row like any other. Never run a second nightly while one runs (it says `not due` anyway),
+and never delete `.worktrees/nightly` yourself: the run removes it, and the next run clears a
+leftover.
+
 A person can merge a job's PR by hand at any stage. `factory/bin/job queue`
 then moves the job to `merged`; stop any agents still running for it.
 
@@ -219,7 +240,9 @@ then moves the job to `merged`; stop any agents still running for it.
    `resume` (pick it up from its stage), `new` (no job yet), `hold` (no free
    slot), `wait` (needs the owner, or GitHub's merge queue holds it) or
    `skip`. Its last line, starting with `#`, counts the active sprint: done,
-   running, ready, blocked by a dependency, and in later sprints. The script enforces `concurrency`, the sprint and
+   running, ready, blocked by a dependency, and in later sprints. Just before it, a
+   `nightly due<TAB><why>` line means the nightly full Mac check is due: start it (**nightly**,
+   above). The script enforces `concurrency`, the sprint and
    `DEPENDS`: only tasks of sprint `sprint` or earlier whose dependencies are
    all in `factory/queue/done` come out as `new`, and `job create` refuses a
    task whose dependencies aren't done.
