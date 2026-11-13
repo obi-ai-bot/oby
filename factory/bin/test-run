@@ -49,6 +49,8 @@ PRIORITY = 15
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
 
 child = None
+starting = False
+stopped = 0
 
 
 def leftovers():
@@ -56,11 +58,17 @@ def leftovers():
         return
     try:
         os.killpg(child.pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # macOS answers EPERM, not ESRCH, when the group's last process has just ended.
         pass
 
 
 def stop(signum, _):
+    global stopped
+    if starting:
+        # The command is being started and isn't known yet: main stops it once it is.
+        stopped = signum
+        return
     leftovers()
     sys.exit(128 + signum)
 
@@ -88,7 +96,7 @@ def environment():
 
 
 def main(argv):
-    global child
+    global child, starting
     if len(argv) < 3 or argv[1] != "--":
         print(__doc__, file=sys.stderr)
         return 2
@@ -98,7 +106,11 @@ def main(argv):
     fd = lock()
     os.ftruncate(fd, 0)
     os.pwrite(fd, f"{os.getpid()} {os.getcwd()} {' '.join(command)}\n".encode(), 0)
+    starting = True
     child = subprocess.Popen(["nice", "-n", str(PRIORITY), *command], env=environment(), start_new_session=True)
+    starting = False
+    if stopped:
+        stop(stopped, None)
     code = child.wait()
     leftovers()
     return 128 - code if code < 0 else code
