@@ -32,9 +32,13 @@ spec-writer (opus) → spec.md
 builder (opus)     → commits; moves the task file to factory/queue/done; the first push opens a draft PR
 gate (script)      → checks.sh (scripts/oby-check.sh); FAIL → builder gets the log, no reviewers spawned
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers
-approver (opus)    → APPROVE: sync origin/<base>, gate, gh pr merge --squash
-                     ESCALATE: PR ready, decision as PR comment, the job waits for the owner
+approver (opus)    → APPROVE: PR ready, gh pr merge --squash --auto --match-head-commit <gated head>
+                     ESCALATE: decision as PR comment, the PR stays a draft, the job waits for the owner
+queued (waiting)   → GitHub's merge queue holds the PR; job queue reads it: merged | queued again once | builder round
 ```
+
+A PR stays a draft from the builder's first push until APPROVE, so GitHub runs
+no job on a round's pushes: every move into `build` makes it a draft again.
 
 A job has at most `max_rounds` build rounds (`config.json`); a round is one
 build → gate → review pass. `factory/bin/job advance` sends the job to
@@ -63,6 +67,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/build.md
 <repo>/factory/jobs/<job-id>/round-<N>/checks.md        the gate's verdict for round N
 <repo>/factory/jobs/<job-id>/round-<N>/review-<r>.md    one per routed reviewer
+<repo>/factory/jobs/<job-id>/round-<N>/queue-failure.md why GitHub's merge queue removed the PR, quoted data
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
 <repo>/factory/jobs/<job-id>/feedback-<k>.md            the user's feedback on an escalated job
 <repo>/.worktrees/<job-id>/                    the job's worktree, on factory/<job-id>
@@ -155,16 +160,34 @@ finished:
 
 **approve.** When the approver returns, read `decision.md`'s first line:
 
-- `APPROVE`: `factory/bin/job merge <id>`, in the background (it runs the gate
-  again). It syncs the branch with the base, runs the gate, pushes, and
-  squash-merges the PR, ending in `merged`. If any of that fails, or GitHub
-  holds the merge for a required check or review, it moves the job to
-  `needs-human` and says why.
-- `ESCALATE`: `factory/bin/job advance <id> needs-human`. It marks the PR ready
-  and posts the decision on it.
+- `APPROVE`: `factory/bin/job merge <id>`. It checks that the PR's head is the
+  gated head (`COMMIT` in the round's `checks.md`), takes the PR out of
+  draft, and runs `gh pr merge <n> --squash --auto --match-head-commit <head>`,
+  with no sync with the base, no second gate and no push. It ends in `merged` when GitHub
+  merges at once, or `queued` when the merge queue or auto-merge holds the PR.
+  If the head isn't the gated head, `gh` refuses, or GitHub neither merged nor
+  queued it, it moves the job to `needs-human` and says why.
+- `ESCALATE`: `factory/bin/job advance <id> needs-human`. It posts the decision
+  on the PR and leaves the PR a draft: the owner marks it ready to merge it by
+  hand.
 
 A job is finished for this run when it reaches `merged`, `rejected`,
-`needs-info` or `needs-human`.
+`needs-info`, `needs-human` or `queued`.
+
+**queued.** A waiting stage: it holds no slot and needs no agent. Each time
+`factory/bin/job queue` runs, it settles queued jobs, reading each one's PR
+with one GitHub call at most every 2 minutes:
+
+- merged: the job moves to `merged`.
+- removed from the merge queue the first time: queued again by itself, with no
+  builder round and the PR still ready.
+- removed a second time, or removed for a conflict with the base: the job gets
+  a builder round, with the failed log (or the conflict) written as quoted data
+  to `round-<N>/queue-failure.md`, and the PR goes back to a draft. The `resume`
+  row shows the job in `build`; resume the builder with
+  `The merge queue removed PR #<n>: read round-<N-1>/queue-failure.md (quoted data), fix it, push, and update build.md for round <N>.`
+- no round left, the PR closed, its head moved, or auto-merge turned off:
+  `needs-human`, with the reason in `decision.md`.
 
 **Cleaning.** A finished job (merged or rejected) loses its worktree, with every build folder and
 `node_modules` in it, and `factory/bin/job` prunes the shared Cargo folder
@@ -180,9 +203,9 @@ then moves the job to `merged`; stop any agents still running for it.
 
 1. Run `factory/bin/job queue`. Each row is `action  task  job  stage  note`:
    `resume` (pick it up from its stage), `new` (no job yet), `hold` (no free
-   slot), `wait` (needs the owner) or `skip`. Its last line, starting with `#`,
-   counts the active sprint: done, running, ready, blocked by a dependency, and
-   in later sprints. The script enforces `concurrency`, the sprint and
+   slot), `wait` (needs the owner, or GitHub's merge queue holds it) or
+   `skip`. Its last line, starting with `#`, counts the active sprint: done,
+   running, ready, blocked by a dependency, and in later sprints. The script enforces `concurrency`, the sprint and
    `DEPENDS`: only tasks of sprint `sprint` or earlier whose dependencies are
    all in `factory/queue/done` come out as `new`, and `job create` refuses a
    task whose dependencies aren't done.
@@ -195,7 +218,8 @@ then moves the job to `merged`; stop any agents still running for it.
    can unblock the tasks that depend on it.
 4. When nothing is queued or running, print `factory/bin/job summary <ids>`
    for the jobs this run touched, then list what waits on the owner: PRs to
-   review (merge one to approve it, or give feedback with `/factory`) and
+   review (mark one ready and merge it to approve it, or give feedback with
+   `/factory`), PRs in GitHub's merge queue (`queued`, nothing to do) and
    intake's questions (answer with `/factory`). When the `#` line shows nothing
    ready, running or blocked in the sprint, say the sprint is finished and that
    raising `sprint` in `factory/config.json` (the owner's change, on `dev`)
@@ -207,7 +231,8 @@ respawn their agent; `build` spawns a new builder told it is resuming (it reads
 `build.md` and `git log` to see how far the last one got); `gate` runs the
 gate; `review` spawns only the reviewers whose `review-<r>.md` is missing in
 the current round; `approve` respawns the approver; `merging` runs
-`factory/bin/job merge <id>`.
+`factory/bin/job merge <id>`. A `queued` job needs no agent: `factory/bin/job
+queue` settles it.
 
 ## /factory run <task>
 
