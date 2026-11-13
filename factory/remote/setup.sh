@@ -11,7 +11,9 @@
 # On the host, with sudo where it needs it: git, curl and the build tools; rustup with the pinned
 # toolchain as the default, rustfmt and clippy; the newest Node of the pinned major; gitleaks at its
 # pin, checked against its SHA-256; bubblewrap and slirp4netns, with unprivileged user namespaces
-# allowed now and after a reboot (/etc/sysctl.d), proven with ci.yml's bwrap line; oby-check-blok,
+# allowed now and after a reboot (/etc/sysctl.d), proven with ci.yml's bwrap line; zsh, as ci.yml's
+# electron lane installs it for the ChatGPT gate's test, which runs scripts/package.sh with /bin/zsh
+# (every package ci.yml installs with apt-get is in the packages list, REMOTE-12); oby-check-blok,
 # built from origin/dev's commit, never from one being checked; this checkout's oby-remote-gate as
 # /usr/local/bin/oby-remote-gate; /srv/oby, the ssh user's, with a full bare clone (repo.git, gc.auto
 # 0) and slot-1 to slot-4. Run it again whenever: what is already at its pin is left as it is. It
@@ -89,7 +91,7 @@ setup() {
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
 
-    local packages=(git curl ca-certificates build-essential pkg-config libssl-dev cmake xz-utils bubblewrap slirp4netns)
+    local packages=(git curl ca-certificates build-essential pkg-config libssl-dev cmake xz-utils bubblewrap slirp4netns zsh)
     local missing=() package
     for package in "${packages[@]}"; do
         dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing+=("$package")
@@ -188,6 +190,7 @@ setup() {
     echo "gitleaks $(gitleaks version)"
     bwrap --version
     slirp4netns --version | sed -n 1p
+    zsh --version
     echo "oby-check-blok from origin/dev $(cut -d' ' -f1 "$stamp")"
     echo "$root/repo.git shallow: $(git -C "$root/repo.git" rev-parse --is-shallow-repository), gc.auto $(git -C "$root/repo.git" config gc.auto)"
 

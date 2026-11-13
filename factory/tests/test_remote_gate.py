@@ -308,6 +308,21 @@ class Pins(unittest.TestCase):
             self.assertNotEqual(done.returncode, 0, done.stdout)
             self.assertIn("GITLEAKS_VERSION disagree", done.stderr)
 
+    def test_remote_12_setup_installs_ci_yml_s_apt_packages(self):
+        # ci.yml stays the one place the list is written: every word after `apt-get install` but its flags
+        wanted = {
+            word
+            for line in CI.read_text().splitlines()
+            if "apt-get install" in line
+            for word in line.split("apt-get install", 1)[1].split()
+            if not word.startswith("-")
+        }
+        self.assertTrue(wanted, "ci.yml installs nothing with apt-get install")
+        arrays = re.findall(r"^\s*local packages=\(([^)]*)\)", SETUP.read_text(), re.MULTILINE)
+        self.assertEqual(len(arrays), 1, f"setup.sh needs exactly one `local packages=(...)`: {arrays}")
+        missing = sorted(wanted - set(arrays[0].split()))
+        self.assertEqual(missing, [], f"ci.yml installs {missing} with apt-get, and setup.sh doesn't")
+
 
 class Tighten(unittest.TestCase):
     """REMOTE-11: setup leaves nothing on the check's path writable by group or others."""
