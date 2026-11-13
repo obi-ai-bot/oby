@@ -139,10 +139,10 @@ class GateRemote(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=cwd, env=self.env, check=True,
                               capture_output=True, text=True).stdout.strip()
 
-    def change(self, path, push=False):
+    def change(self, path, push=False, text="x\n"):
         file = self.worktree / path
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(file.read_text() + "x\n" if file.exists() else "x\n")
+        file.write_text(file.read_text() + text if file.exists() else text)
         self.git(self.worktree, "add", path)
         self.git(self.worktree, "commit", "-q", "-m", f"change {path}")
         if push:
@@ -262,8 +262,8 @@ class GateRemote(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertEqual(self.lines("mac-runs"), ["rust"])
         self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("PASS", "oby-gate, mac"))
-        self.assertIn("- mac: rust (the diff touches core/crates/obid/src/sandbox.rs): passed with exit 0",
-                      self.checks())
+        self.assertIn("- mac: rust (the diff touches macOS-only code: core/crates/obid/src/sandbox.rs): "
+                      "passed with exit 0", self.checks())
         # Only the Mac's part fails: the gate fails.
         (self.fake / "mac-exit-rust").write_text("1\n")
         code, out, err = self.gate()
@@ -277,6 +277,38 @@ class GateRemote(unittest.TestCase):
         self.assertEqual(self.lines("mac-runs"), ["rust", "rust"])
         self.assertIn("not run: the VM's part failed", self.checks())
         self.assertEqual(self.header()["HOST"], "oby-gate")
+
+    def test_remote_4_macos_code_in_an_unlisted_file_also_runs_rust_on_the_mac(self):
+        self.change("core/crates/obid/src/jobs.rs", push=True,
+                    text='#[cfg(target_os = "macos")]\nfn keychain_only() {}\n')
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["rust"])
+        self.assertEqual(self.header()["HOST"], "oby-gate, mac")
+        self.assertIn("(the diff touches macOS-only code: core/crates/obid/src/jobs.rs)", self.checks())
+
+    def test_remote_4_a_deleted_file_with_macos_code_also_runs_rust_on_the_mac(self):
+        # dev gains a file with a macOS-only test; the branch takes it, then deletes it.
+        self.git(self.worktree, "checkout", "-q", "-b", "dev-next", "origin/dev")
+        self.change("core/crates/obid/src/power.rs", text='#[cfg(all(test, target_os = "macos"))]\nmod tests {}\n')
+        self.git(self.worktree, "push", "-q", "origin", "dev-next:dev")
+        self.git(self.worktree, "checkout", "-q", "factory/x")
+        self.git(self.worktree, "merge", "-q", "--no-edit", "origin/dev")
+        self.git(self.worktree, "rm", "-q", "core/crates/obid/src/power.rs")
+        self.git(self.worktree, "commit", "-q", "-m", "delete power.rs")
+        self.git(self.worktree, "push", "-q", "origin", "factory/x")
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["rust"])
+        self.assertIn("(the diff touches macOS-only code: core/crates/obid/src/power.rs)", self.checks())
+
+    def test_remote_4_a_listed_file_whose_macos_tests_live_elsewhere_runs_rust_on_the_mac(self):
+        # accounts.rs names no macOS cfg; its Keychain tests are macOS-only in tests/accounts_api.rs.
+        self.change("core/crates/obid/src/accounts.rs", push=True)
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["rust"])
+        self.assertIn("(the diff touches macOS-only code: core/crates/obid/src/accounts.rs)", self.checks())
 
     def test_remote_4_swift_runs_on_the_mac(self):
         self.groups("scan", "swift")

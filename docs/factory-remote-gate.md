@@ -56,11 +56,20 @@ The Linux suite has been green since #2170, so most of the check no longer needs
   A slot's lock replaces the Mac's single lock. The Mac's lock stays for what still runs there.
 - **The Mac keeps the macOS-only suites.** About 70 tests only build on macOS (`cfg(target_os =
   "macos")`: `sandbox.rs`, `secretspec.rs`, the own lane, Keychain, `jobs_setup.rs`), plus Swift. The
-  gate runs the plan's whole rust group on the Mac too when the job's diff touches one of these
-  (`MACOS_ONLY` in `factory/bin/gate`, the one list): `core/crates/obid/src/sandbox.rs`, `egress.rs`,
-  `process.rs`, `secretspec.rs`, `jobs/setup.rs`, `jobs/lanes.rs`, `jobs/logins.rs`, and
-  `core/crates/obid/tests/sandbox.rs`, `jobs_setup.rs`, `secretspec.rs`. swift (which `apps/` and `mcp/`
-  reach) runs on the Mac whenever it is planned. The nightly full Mac run (R01-14) covers everything else
+  gate runs the plan's whole rust group on the Mac too when the job's diff touches macOS-only code:
+  - any touched file whose copy on the branch or the base names `target_os = "macos"`, read at gate time
+    (`jobs.rs`, `brain/tools.rs`, `conversation.rs`, `meter.rs`, `tests/jobs_api.rs`,
+    `tests/accounts_api.rs` and 35 others today), so the rule can't go stale;
+  - and `MACOS_ONLY` in `factory/bin/gate`, the one list of files whose macOS-only tests live in other
+    files: `core/Cargo.lock`, obid's `Cargo.toml`, and under `core/crates/obid/` `src/sandbox.rs`,
+    `egress.rs`, `process.rs`, `secretspec.rs`, `accounts.rs`, `acp.rs`, `agent.rs`, `codex.rs`,
+    `cursor_usage.rs`, `job.rs`, `lib.rs`, `merge.rs`, `usage.rs`, `vault.rs`,
+    `brain/harness_codex.rs`, `brain/harness_cursor.rs`, `jobs/setup.rs`, `jobs/lanes.rs`,
+    `jobs/logins.rs`, `jobs/secrets.rs`, and `tests/support/mod.rs`, `tests/sandbox.rs`,
+    `tests/jobs_setup.rs`, `tests/secretspec.rs`.
+
+  When git can't tell, every touched file counts, and when in doubt a file joins the list. swift (which
+  `apps/` and `mcp/` reach) runs on the Mac whenever it is planned. The nightly full Mac run (R01-14) covers everything else
   every night. This is the same trade the owner accepted for merging in #2163.
 - **The VM needs no secrets.** `obi-ai-bot/oby` is public, so the VM fetches commits without a token.
   The check runs offline after `cargo fetch` and `npm ci`. No owner login, agent login or vault value
@@ -145,8 +154,9 @@ Steps 1 to 4 were done before A00-03 was built. After A00-10 merges:
 - **A dropped connection:** a gate in progress is lost (a Spot eviction would do the same, if the owner
   moves to Spot). `oby-remote-gate` stops the check and frees its slot when its SSH connection drops
   (REMOTE-7), and the gate runs that check on the Mac (REMOTE-3).
-- **macOS-only coverage:** a job that breaks a macOS-only test without touching the listed paths is
-  caught by the nightly Mac run, not its gate. Grow the path list when that happens.
+- **macOS-only coverage:** a job that breaks a macOS-only test without touching a file with a macOS
+  cfg or one on the list is caught by the nightly Mac run, not its gate. Grow `MACOS_ONLY` when that
+  happens.
 - **Drift between the VM's toolchain and CI's:** the VM's setup script pins the same Rust toolchain
   (`RUSTUP_TOOLCHAIN` in `ci.yml`), Node 22, gitleaks and bubblewrap that `ci.yml` uses, reading them from
   `ci.yml` itself; its test fails when they can't be read or `ci.yml`'s copies disagree.

@@ -18,7 +18,8 @@ Linux groups (rust, electron, scan) on the VM with `ssh <host> oby-remote-gate
 <commit> origin/<base>`, starting the VM with `az vm start` when it is stopped
 and waiting for SSH, at most 180 seconds (FACTORY_REMOTE_REACH_SECONDS shortens
 that, for the tests only). Only after the VM's part passes does the Mac run its
-own: swift when planned, and rust when the diff touches MACOS_ONLY, each with
+own: swift when planned, and rust when the diff touches macOS-only code
+(macos_only: MACOS_ONLY, or a file naming target_os = "macos"), each with
 OBY_CHECK_ONLY through checks.sh. The whole check runs on the Mac as without a
 VM when the settings are invalid, the plan can't be read, the commit isn't on
 origin, the VM can't be reached in time, or oby-remote-gate couldn't judge or
@@ -48,15 +49,35 @@ CHECKS = FACTORY / "checks.sh"
 TAIL = 80
 
 LINUX_GROUPS = ("rust", "electron", "scan")
-# The files whose tests only build on macOS: a diff touching one also runs rust on the Mac (REMOTE-4).
+# A diff touching macOS-only code or tests also runs rust on the Mac (REMOTE-4): any touched file whose copy on
+# the branch or the base names MACOS_CODE, found at gate time, and the files below, whose macOS-only tests live in
+# other files (obid's integration tests run the whole binary: the box, the own lane, Keychain logins, the Cursor
+# and Codex launches, withheld secrets). When in doubt, a file belongs here: a miss is judged on Linux only.
+MACOS_CODE = r'target_os *= *"macos"'
 MACOS_ONLY = (
+    "core/Cargo.lock",
+    "core/crates/obid/Cargo.toml",
     "core/crates/obid/src/sandbox.rs",
     "core/crates/obid/src/egress.rs",
     "core/crates/obid/src/process.rs",
     "core/crates/obid/src/secretspec.rs",
+    "core/crates/obid/src/accounts.rs",
+    "core/crates/obid/src/acp.rs",
+    "core/crates/obid/src/agent.rs",
+    "core/crates/obid/src/codex.rs",
+    "core/crates/obid/src/cursor_usage.rs",
+    "core/crates/obid/src/job.rs",
+    "core/crates/obid/src/lib.rs",
+    "core/crates/obid/src/merge.rs",
+    "core/crates/obid/src/usage.rs",
+    "core/crates/obid/src/vault.rs",
+    "core/crates/obid/src/brain/harness_codex.rs",
+    "core/crates/obid/src/brain/harness_cursor.rs",
     "core/crates/obid/src/jobs/setup.rs",
     "core/crates/obid/src/jobs/lanes.rs",
     "core/crates/obid/src/jobs/logins.rs",
+    "core/crates/obid/src/jobs/secrets.rs",
+    "core/crates/obid/tests/support/mod.rs",
     "core/crates/obid/tests/sandbox.rs",
     "core/crates/obid/tests/jobs_setup.rs",
     "core/crates/obid/tests/secretspec.rs",
@@ -297,6 +318,20 @@ def vm_part(remote, commit, base, groups, log):
     return {"host": host, "groups": groups, "slot": slot and slot.group(1), "seconds": seconds, "code": code}
 
 
+def macos_only(worktree, base):
+    """The touched files that count as macOS-only: those in MACOS_ONLY, and those whose copy on the branch or the
+    base names MACOS_CODE (a deleted file's too). When git can't tell, every touched file counts."""
+    touched = git(worktree, "diff", "--name-only", "--no-renames", f"{base}...HEAD").splitlines()
+    if not touched:
+        return []
+    found = subprocess.run(["git", "--literal-pathspecs", "grep", "-l", "-E", MACOS_CODE, "HEAD", base, "--",
+                            *touched], cwd=worktree, capture_output=True, text=True)
+    if found.returncode > 1:
+        return touched
+    named = {line.split(":", 1)[1] for line in found.stdout.splitlines()}
+    return [f for f in touched if f in MACOS_ONLY or f in named]
+
+
 def remote_parts(remote, invalid, job, worktree, commit):
     """The check's parts where they belong: (parts, why it fell back to the Mac or None, log)."""
     base = f"origin/{CONFIG['base_branch']}"
@@ -317,11 +352,11 @@ def remote_parts(remote, invalid, job, worktree, commit):
         log.append(f"==== mac: the whole check, after falling back: {e} ====\n{out}")
         return [{"host": "mac", "groups": ["the whole check"], "seconds": seconds, "code": code}], str(e), \
             "\n".join(log)
-    touched = sorted(set(git(worktree, "diff", "--name-only", "--no-renames", f"{base}...HEAD").splitlines())
-                     & set(MACOS_ONLY))
-    mac = (["rust"] if "rust" in planned and touched else []) + (["swift"] if "swift" in planned else [])
+    touched = macos_only(worktree, base) if "rust" in planned else []
+    mac = (["rust"] if touched else []) + (["swift"] if "swift" in planned else [])
     for group in mac:
-        why = f" (the diff touches {', '.join(touched)})" if group == "rust" else ""
+        named = ", ".join(touched[:5]) + (f" and {len(touched) - 5} more" if len(touched) > 5 else "")
+        why = f" (the diff touches macOS-only code: {named})" if group == "rust" else ""
         if parts[0]["code"] != 0:
             parts.append({"host": "mac", "groups": [group + why], "note": "not run: the VM's part failed"})
             continue
