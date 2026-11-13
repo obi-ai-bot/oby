@@ -14,6 +14,8 @@ export interface BrainConfig {
     crate: string;
     /** The API doc whose `METHOD /path` mentions count as documenting a route. */
     apiDoc: string;
+    /** The heading of the API doc's section that lists the routes obid stopped serving. */
+    goneSection: string;
   };
   app: {
     /** The renderer (Sangam's screens), main and preload, relative to root. */

@@ -23,6 +23,7 @@ Usage:
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
   job sync <job>                 refresh reviews, gate and cost from the job's files
   job summary [<job>...]         table of jobs: task, stage, PR, cost, time
+  job clean                      free disk: remove finished jobs' worktrees, prune the shared Cargo folder
 
 <job> is a job id (004-r01-02-path-lanes) or a task key (R01-02).
 """
@@ -31,6 +32,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -552,9 +554,8 @@ def advance(job, stage):
         comment(job["pr"], "### Factory: needs a human\n\n"
                 + (d / "decision.md").read_text().split(chr(10), 1)[1].strip())
 
-    if stage in TERMINAL and Path(job["worktree"]).exists():
-        run(["git", "worktree", "remove", "--force", job["worktree"]])
-        run(["git", "branch", "-D", job["branch"]], check=False)
+    if stage in TERMINAL:
+        remove_worktree(job)
 
     job["stage"] = stage
     job["ended"] = now() if stage in TERMINAL | WAITING else None
@@ -568,6 +569,22 @@ def slugify(title):
     title = re.sub(r"^[a-z]+(\([^)]*\))?:\s*", "", title)  # drop a conventional-commit prefix
     words = re.findall(r"[a-z0-9]+", title.lower())[:4]
     return "-".join(words) or "task"
+
+
+def code_files(task):
+    """The code files a task's `### Files` list names: what two jobs at once would conflict on.
+    Markdown is left out (docs/runner-api.md and the contracts are in most tasks, and their
+    conflicts are cheap to resolve)."""
+    m = re.search(r"^### Files\n(.*?)(?=^### |\Z)", task["body"], re.M | re.S)
+    files = set()
+    for line in (m.group(1) if m else "").splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        path = line[2:].strip().strip("`").removeprefix("new: ").strip("`").split()[0]
+        if path and not path.endswith(".md"):
+            files.add(path)
+    return files
 
 
 def waits_for(task, done):
@@ -641,6 +658,7 @@ def cmd_queue():
     for j in jobs.values():
         if j["stage"] not in TERMINAL and j["pr"] and pr_state(j) == "MERGED":
             save(advance(sync(j), "merged"))
+    cmd_clean(quiet=True)
     done = done_keys() | {k for k, j in jobs.items() if j["stage"] == "merged"}
     tasks = open_tasks()
     running_rows, new_rows, other_rows = [], [], []
@@ -678,14 +696,29 @@ def cmd_queue():
             other_rows.append(("skip", key, j["id"], j["stage"], "its task file is gone from factory/queue/tasks"))
     # Jobs already in a running stage hold a slot whether or not an agent is on them.
     slots = CONCURRENCY - len(running(jobs.values()))
+    by_key = {t["key"]: t for t in tasks}
+    busy = {}  # code file -> the running or just-started task that touches it
+    for j in running(jobs.values()):
+        t = by_key.get(j["issue"]) or (read_task(DONE / f"{j['issue']}.md")
+                                       if (DONE / f"{j['issue']}.md").exists() else None)
+        for f in code_files(t) if t else ():
+            busy.setdefault(f, j["issue"])
     rows, held = list(running_rows), 0
     for row in new_rows:
-        if slots > 0:
+        mine = code_files(by_key[row[1]])
+        clash = sorted(f for f in mine if f in busy)
+        if clash:
+            held += 1
+            if held <= 8:
+                rows.append(("hold",) + row[1:4] + (f"shares {clash[0]} with {busy[clash[0]]}",))
+        elif slots > 0:
             rows.append(row)
             slots -= 1
+            for f in mine:
+                busy.setdefault(f, row[1])
         else:
             held += 1
-            if held <= 5:
+            if held <= 8:
                 rows.append(("hold",) + row[1:4] + (f"concurrency {CONCURRENCY} reached",))
     for row in rows + other_rows:
         print("\t".join(str(c) for c in row))
@@ -735,6 +768,7 @@ def cmd_merge(job):
     run(["git", "push", "origin", "--delete", job["branch"]], check=False)
     save(advance(sync(job), "merged"))
     print(f"{job['id']}: merged PR #{job['pr']}")
+    cmd_clean()
 
 
 def cmd_answer(job, text):
@@ -785,6 +819,104 @@ def elapsed(job):
     return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
 
 
+# ---- Cleaning: the disk is shared with every job ---------------------------
+
+
+SHARED = Path(os.environ.get("CARGO_TARGET_DIR_FACTORY",
+                             Path.home() / "Library/Caches/oby-factory/core-target"))
+LOCK = SHARED / ".factory-check.lock"
+
+
+def remove_worktree(job):
+    """A finished job keeps its folder and files but not its checkout: its worktree, with every
+    build folder and node_modules inside it, and its local branch."""
+    if Path(job["worktree"]).exists():
+        run(["git", "worktree", "remove", "--force", job["worktree"]], check=False)
+        if Path(job["worktree"]).exists():  # a worktree git no longer knows
+            shutil.rmtree(job["worktree"], ignore_errors=True)
+    run(["git", "branch", "-D", job["branch"]], check=False)
+    run(["git", "worktree", "prune"], check=False)
+
+
+def size(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def prune_shared():
+    """Prune the shared Cargo folder, only while no check holds its lock (never wait for one).
+
+    1. In debug/deps, a test or binary built from several branches leaves one executable per
+       build hash (name-<hash>), 100-300 MB each. Keep the newest of each name; the others belong
+       to branches already built again or gone. Libraries (lib*.rlib, *.rmeta) are left alone:
+       several versions of one crate are normal.
+    2. In debug/incremental, delete sessions untouched for 6 hours.
+    3. If the folder is still over `shared_build_cap_gb` (config.json, default 30), delete
+       debug/incremental, then, if still over, everything but the lock: the next check
+       rebuilds from scratch."""
+    if not SHARED.exists():
+        return "no shared Cargo folder"
+    LOCK.touch(exist_ok=True)
+    with open(LOCK, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "a check holds the shared Cargo folder: not pruned this time"
+        before = size(SHARED)
+        deps = SHARED / "debug" / "deps"
+        groups = {}
+        if deps.exists():
+            for f in deps.iterdir():
+                if f.is_file() and not f.suffix and os.access(f, os.X_OK) and "-" in f.name:
+                    groups.setdefault(f.name.rsplit("-", 1)[0], []).append(f)
+        for files in groups.values():
+            for old in sorted(files, key=lambda f: f.stat().st_mtime)[:-1]:
+                for extra in (old, old.with_suffix(".d"), Path(str(old) + ".dSYM")):
+                    if extra.is_dir():
+                        shutil.rmtree(extra, ignore_errors=True)
+                    elif extra.exists():
+                        extra.unlink()
+        incremental = SHARED / "debug" / "incremental"
+        if incremental.exists():
+            cutoff = datetime.now(timezone.utc).timestamp() - 6 * 3600
+            for d in incremental.iterdir():
+                if d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+        cap = CONFIG.get("shared_build_cap_gb", 30) * 1024 ** 3
+        if size(SHARED) > cap and incremental.exists():
+            shutil.rmtree(incremental, ignore_errors=True)
+        if size(SHARED) > cap:
+            for entry in SHARED.iterdir():
+                if entry != LOCK:
+                    shutil.rmtree(entry, ignore_errors=True) if entry.is_dir() else entry.unlink()
+        after = size(SHARED)
+        return f"shared Cargo folder {before / 1024 ** 3:.1f} GB -> {after / 1024 ** 3:.1f} GB"
+
+
+def free_gb():
+    return shutil.disk_usage(REPO).free / 1024 ** 3
+
+
+def cmd_clean(quiet=False):
+    start = free_gb()
+    removed = []
+    for j in all_jobs():
+        if j["stage"] in TERMINAL and Path(j["worktree"]).exists():
+            remove_worktree(j)
+            removed.append(j["id"])
+    note = prune_shared()
+    line = (f"clean: {start:.1f} GB free -> {free_gb():.1f} GB; worktrees removed: "
+            f"{', '.join(removed) or 'none'}; {note}")
+    if not quiet or removed or free_gb() - start > 0.5:
+        print(line)
+
+
 def cmd_summary(args):
     jobs = [resolve(a) for a in args] if args else all_jobs()
     rows = [("job", "task", "stage", "round", "pr", "cost", "time")]
@@ -831,6 +963,8 @@ def main(argv):
             print(f"{job['id']}: {job['stage']} round {job['round']} gate {job['gate'] or '-'} {reviews}".rstrip())
         elif cmd == "summary":
             cmd_summary(args)
+        elif cmd == "clean" and not args:
+            cmd_clean()
         else:
             die(f"bad arguments: {' '.join(argv)}\n\n{__doc__.strip()}")
     except Refused as e:

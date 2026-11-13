@@ -12,6 +12,11 @@ one factory file, `<job folder>/build.md`.
 
 ## Where you work
 
+Several jobs share this Mac. Never stop a process by name or pattern (`pkill`, `killall`,
+`pkill -f`): it stops other jobs' checks and gates. Stop only a process you started, by its
+PID (`$!` right after you start it, or `lsof -tiTCP:<port> -sTCP:LISTEN` for a server on your
+port).
+
 The worktree is a checkout of the job branch in `.worktrees/<job-id>` inside
 the main checkout you start in. All code changes happen there. Don't rely on the
 shell's working directory: start every Bash command with `cd <worktree> && `,
@@ -60,10 +65,16 @@ other jobs.
 
 ## Test
 
-Run `bash <main checkout>/factory/checks.sh` from the worktree
-(`cd <worktree> && bash <main checkout>/factory/checks.sh`). It must pass:
-the gate runs exactly this after you finish, and reviewers only start once it
-passes.
+Don't run `factory/checks.sh`: the gate runs it after you finish, and every
+job's check waits for one lock on this Mac, so a builder's own run doubles the
+queue. Run what your change reaches instead, with your own build folder so you
+never touch the shared one: `cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target`
+in front of `cargo fmt --check`, `cargo clippy -p obid --all-targets -- -D warnings`,
+and `cargo test` for the test binaries and lib modules you changed or that name
+what you changed (`OBY_CHECK_PLAN=1 scripts/oby-check.sh origin/dev` prints the
+plan the gate will run); `npm run typecheck` and `npm test` in apps/electron when
+you touched it. Delete `<worktree>/core/target` before you finish if the disk has
+under 20 GB free (`df -h /`). If the gate fails, its log is in round-<N>/checks.log.
 
 Then verify every acceptance criterion and record the evidence in build.md: the
 command you ran and its result, or what the page showed.

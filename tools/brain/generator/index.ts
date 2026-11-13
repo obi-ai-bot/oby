@@ -8,8 +8,51 @@ import type {
   AccessKind, Area, BrainData, Check, JumpState, LocalKey, Module, PhoneRoute, Route, Rule, RuleLink, StoredFile, WireType,
 } from './types.js';
 
-/** `/v1/jobs/{id}/stop` and `/v1/jobs/{}/stop` both → `/v1/jobs/{}/stop`; a trailing `{*path}` → `/**`. */
-export const normPath = (p: string) => p.split('?')[0].replace(/\{\*[^}]*\}/g, '**').replace(/\{[^}]*\}/g, '{}').replace(/\/$/, '');
+/**
+ * `/v1/jobs/{id}/stop` and `/v1/jobs/{}/stop` both → `/v1/jobs/{}/stop`; a trailing `{*path}` → `/**`; a segment holding
+ * `<…>` (`conversation-<id>`) is a placeholder too.
+ */
+export const normPath = (p: string) => p.split('?')[0].replace(/\{\*[^}]*\}/g, '**').replace(/\{[^}]*\}/g, '{}').replace(/[^/]*<[^>]*>[^/]*/g, '{}').replace(/\/$/, '');
+
+export interface ApiDoc {
+  /** The served routes' keys (`METHOD /normalized/path`) the doc mentions outside its gone list, under any prefix. */
+  documented: Set<string>;
+  /** Every `/v1/` route the doc mentions outside its gone list, by key, and whether obid routes it. */
+  docRoutes: Array<{ id: string; line: number; exists: boolean }>;
+  checks: Check[];
+}
+
+/**
+ * What the API doc says about obid's routes. Every backticked `METHOD /path` counts; those inside the section headed
+ * `gone` (to the next heading of its level or higher) are routes obid stopped serving, and a mention of one anywhere
+ * never counts as documenting it.
+ */
+export function readApiDoc(text: string, served: ReadonlySet<string>, doc: { file: string; gone: string }): ApiDoc {
+  const mentions = new Map<string, number>();
+  const gone = new Map<string, number>();
+  let goneLevel = 0;
+  let fenced = false;
+  text.split('\n').forEach((line, i) => {
+    if (line.trimStart().startsWith('```')) fenced = !fenced;
+    const heading = fenced ? null : /^(#+)\s+(.*?)\s*$/.exec(line);
+    if (heading) {
+      if (goneLevel && heading[1].length <= goneLevel) goneLevel = 0;
+      if (heading[2] === doc.gone) goneLevel = heading[1].length;
+    }
+    for (const m of line.matchAll(/`(GET|POST|PUT|PATCH|DELETE) (\/[^`\s]*)`/g)) {
+      const key = `${m[1]} ${normPath(m[2])}`;
+      const into = goneLevel ? gone : mentions;
+      if (!into.has(key)) into.set(key, i + 1);
+    }
+  });
+  const kept = [...mentions].filter(([key]) => !gone.has(key));
+  const documented = new Set(kept.map(([key]) => key).filter(key => served.has(key)));
+  const docRoutes = kept.filter(([key]) => key.split(' ')[1].startsWith('/v1/')).map(([id, line]) => ({ id, line, exists: served.has(id) }));
+  const checks: Check[] = [];
+  for (const d of docRoutes) if (!d.exists) checks.push({ kind: 'doc-without-route', message: `${doc.file} documents ${d.id}, which obid doesn't route`, source: { file: doc.file, line: d.line }, ref: d.id });
+  for (const [key, line] of gone) if (served.has(key)) checks.push({ kind: 'gone-but-routed', message: `${doc.file} lists ${key} as gone, but obid routes it`, source: { file: doc.file, line }, ref: key });
+  return { documented, docRoutes, checks };
+}
 
 /** A phone allowlist pattern (`*` one segment, `**` last only, one or more) against a route's path. */
 export function patternMatches(pattern: string, path: string): boolean {
@@ -56,20 +99,15 @@ export function generateBrain(config: BrainConfig): BrainData {
   const checks: Check[] = [];
   for (const e of rust.errors) checks.push({ kind: 'extract', message: `obid-extract couldn't read it: ${e.message}`, source: { file: e.file, line: 1 } });
 
-  // ---- docs: every `METHOD /v1/...` the API doc mentions
-  const docText = existsSync(join(root, config.obid.apiDoc)) ? readFileSync(join(root, config.obid.apiDoc), 'utf8') : '';
-  const docMentions = new Map<string, number>();
-  docText.split('\n').forEach((line, i) => {
-    for (const m of line.matchAll(/`(GET|POST|PUT|PATCH|DELETE) (\/v1\/[^`\s]*)`/g)) {
-      const id = `${m[1]} ${normPath(m[2])}`;
-      if (!docMentions.has(id)) docMentions.set(id, i + 1);
-    }
-  });
-
   // ---- callers: the renderer's api methods and main's literals, matched to routes
   const routeKey = (method: string, path: string) => `${method} ${normPath(path)}`;
   const rustKeys = new Set(rust.routes.map(r => routeKey(r.method, r.path)));
   const idOfKey = new Map(rust.routes.map(r => [routeKey(r.method, r.path), `${r.method} ${r.path}`]));
+
+  // ---- docs: every `METHOD /path` the API doc mentions, and the routes it lists as gone
+  const docText = existsSync(join(root, config.obid.apiDoc)) ? readFileSync(join(root, config.obid.apiDoc), 'utf8') : '';
+  const doc = readApiDoc(docText, rustKeys, { file: config.obid.apiDoc, gone: config.obid.goneSection });
+  checks.push(...doc.checks);
   const callersOf = new Map<string, Route['callers']>();
   const addCaller = (key: string, via: string, file: string, line: number) => {
     if (!callersOf.has(key)) callersOf.set(key, []);
@@ -102,12 +140,11 @@ export function generateBrain(config: BrainConfig): BrainData {
     return {
       id, method: r.method, path: r.path, router: r.router, source: { file: r.file, line: r.line }, handler: r.handler,
       handlerSource: r.handlerFile ? { file: r.handlerFile, line: r.handlerLine ?? 1 } : null, handlerDoc: r.handlerDoc,
-      extractors: r.extractors, errors: r.errors, access, phone: onPhone, documented: docMentions.has(key), callers,
+      extractors: r.extractors, errors: r.errors, access, phone: onPhone, documented: doc.documented.has(key), callers,
     };
   }).sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
   for (const r of routes) if (!r.documented && r.router !== 'gateway') checks.push({ kind: 'route-undocumented', message: `${r.id} isn't in ${config.obid.apiDoc}`, source: r.source, ref: r.id });
-  const docRoutes = [...docMentions].map(([key, line]) => ({ id: idOfKey.get(key) ?? key, line, exists: rustKeys.has(key) }));
-  for (const d of docRoutes) if (!d.exists) checks.push({ kind: 'doc-without-route', message: `${config.obid.apiDoc} documents ${d.id}, which obid doesn't route`, source: { file: config.obid.apiDoc, line: d.line }, ref: d.id });
+  const docRoutes = doc.docRoutes.map(d => ({ ...d, id: idOfKey.get(d.id) ?? d.id }));
   const phoneRoutes: PhoneRoute[] = phone.map(p => ({ ...p, matches: routes.filter(r => r.method === p.method && patternMatches(p.pattern, r.path)).map(r => r.id) }));
   for (const p of phoneRoutes) if (!p.matches.length) checks.push({ kind: 'phone-without-route', message: `The phone allowlist lets ${p.method} ${p.pattern} through, but no route matches it`, source: { file: 'core/crates/obid/src/gateway.rs', line: p.line } });
 

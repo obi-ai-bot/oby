@@ -652,7 +652,11 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
         let body = job(&obid, &second);
         (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
     });
-    assert_eq!(job(&obid, &fifth)["status"], "running");
+    // The first ended and gave its slot to the fifth: on Linux's box it may still be publishing.
+    within(60, "the fifth runs", || {
+        count();
+        (job(&obid, &fifth)["status"] == "running").then_some(())
+    });
     // It gave the check's turn up first: the third checks meanwhile.
     within(30, "the third checks", || {
         count();

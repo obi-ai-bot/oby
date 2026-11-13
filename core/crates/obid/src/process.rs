@@ -1202,7 +1202,9 @@ pub(crate) mod tests {
 
     /// What a test started, killed when it's dropped, a failing assertion's unwinding included,
     /// so a test that fails never leaves processes behind: `children`, and every process id
-    /// listed in `file` (one a line: what they started, detached).
+    /// listed in `file` (one a line: what they started, detached). Only macOS tests use it, so
+    /// Linux's clippy (`-D warnings`) would call it dead.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) struct Started {
         pub(crate) children: Vec<std::process::Child>,
         pub(crate) file: Option<PathBuf>,

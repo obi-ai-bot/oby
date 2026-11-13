@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { config } from '../brain.config.js';
-import { generateBrain, normPath, patternMatches } from '../generator/index.js';
+import { generateBrain, normPath, patternMatches, readApiDoc } from '../generator/index.js';
 
 const brain = generateBrain(config);
 const lineAt = (file: string, line: number) => readFileSync(join(config.root, file), 'utf8').split('\n')[line - 1] ?? '';
@@ -31,6 +31,34 @@ describe('obid', () => {
     expect(patternMatches('/v1/jobs/*', '/v1/jobs/{id}/stop')).toBe(false);
     expect(patternMatches('/v1/artifacts/**', '/v1/artifacts/{id}/{version}/{*path}')).toBe(true);
     expect(normPath('/v1/jobs/{id}?limit=50')).toBe('/v1/jobs/{}');
+  });
+});
+
+// docs/contracts/retired.md, "Routes obid does not serve"
+describe('retired routes', () => {
+  it('retired_7_every_phone_route_is_served', () => {
+    expect(count('phone-without-route').map(c => c.message)).toEqual([]);
+  });
+
+  it('retired_8_every_documented_route_is_served', () => {
+    expect(count('doc-without-route').map(c => c.message)).toEqual([]);
+    expect(count('gone-but-routed').map(c => c.message)).toEqual([]);
+    const text = [
+      'A phone once paired a Watch with `POST /v1/watches`, and `GET /v1/nowhere` was promised.',
+      'A turn reaches `POST /v1/agent/mcp/conversation-<id>`.',
+      '## Routes obid does not serve',
+      '- `POST /v1/watches` (gone 2026-11-02): the Swift runner\'s.',
+      '- `GET /v1/status` (gone 2026-11-02): listed by mistake.',
+      '## After the list',
+      'Then `PATCH /v1/elsewhere`.',
+    ].join('\n');
+    const doc = readApiDoc(text, new Set(['GET /v1/status', 'POST /v1/agent/mcp/{}']), { file: 'api.md', gone: 'Routes obid does not serve' });
+    expect(doc.checks.map(c => `${c.kind} ${c.ref}`)).toEqual([
+      'doc-without-route GET /v1/nowhere',
+      'doc-without-route PATCH /v1/elsewhere',
+      'gone-but-routed GET /v1/status',
+    ]);
+    expect([...doc.documented]).toEqual(['POST /v1/agent/mcp/{}']);
   });
 });
 

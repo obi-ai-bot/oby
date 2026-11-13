@@ -1,8 +1,21 @@
 # Checks
 
-GitHub Actions doesn't run for obi-ai-bot's repositories (there's no Actions budget), so their workflows were removed on 2026-10-23. Every check runs on a Mac: workers run the checks for what they changed, the coordinator runs the full suites before a merge (the merge ritual), and every pull request says what was run and what it printed.
+Checks run in two places: GitHub's `Linux` workflow (`.github/workflows/linux.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 and CI-2); where CI is going, a new workflow and the merge queue on `dev`, is [docs/ci-architecture.md](ci-architecture.md).
 
-## What runs
+## What GitHub runs
+
+- **A ready pull request** starts the `Linux` workflow by itself on its head, when it is opened, reopened, pushed or marked ready. It runs the secret scan (gitleaks over the pull request's commits, with `.gitleaks.toml`). When the change reaches Rust, it also runs `cargo fmt --check` and `cargo clippy -D warnings`. It runs no tests: no `cargo test`, no `make e2e`, no control-plane tests.
+- **What reaches Rust.** A pull request whose files are all under `docs/` (but not `docs/api/`), `factory/`, `.claude/`, `design/`, `character/`, `apps/ios/`, `apps/watch/` or `cloud/`, or other Markdown, runs only the secret scan. `docs/api/`, `core/`, `.github/` and any other file reach Rust. `cloud/control-plane/` and `.github/` reach the control-plane job, which runs only with the tests (nightly, on demand, or `full-ci`).
+- **A draft's jobs are skipped**, and a skipped job reports success. Marking a draft ready runs it on the same head.
+- **The `full-ci` label** runs everything the change reaches, tests included, from the next push after labelling (a draft with it runs too).
+- **A newer push to the same pull request cancels the run it supersedes.**
+- **Nightly at 03:17 UTC on `dev`, and on demand** (`workflow_dispatch`, for example `gh workflow run linux.yml --ref dev`), every job runs to the end: fmt, clippy, `cargo test`, the secret scan, the control plane's `pnpm test` and `pnpm check`, and `make e2e` (stub agents, against the oby-sphere commit in `e2e/oby-sphere.ref`).
+- **A push to `dev` or `main` starts no run.** The factory merges a pull request as soon as it is ready, so nobody read those runs.
+- **Caches.** Only the nightly and on-demand runs save the Rust caches (`Swatinem/rust-cache`'s `save-if`). Every other run only restores them, because a pull request's caches are scoped to `refs/pull/<n>/merge` and no other pull request can read them. The pnpm cache from `actions/setup-node` has no save switch and is left as it is, because it is small.
+
+## What the Mac runs
+
+The Mac's `scripts/oby-check.sh` runs the suites each change reaches, tests included, before it merges (AGENTS.md, "Build and run"). The Apple suites (`xcodebuild`) and `swift test` run only on the Mac.
 
 | Area | On a Mac |
 | --- | --- |
