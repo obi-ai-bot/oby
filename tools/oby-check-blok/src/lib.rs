@@ -9,10 +9,11 @@ use std::{
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 
-pub const GROUPS: [(&str, &str); 4] = [
+pub const GROUPS: [(&str, &str); 5] = [
     ("rust-affected-tests", "rust"),
     ("swift-tests", "swift"),
     ("ts-checks", "electron"),
+    ("factory-tests", "factory"),
     ("secret-scan", "scan"),
 ];
 
