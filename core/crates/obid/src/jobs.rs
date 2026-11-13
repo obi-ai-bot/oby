@@ -78,6 +78,7 @@ mod secrets;
 mod setup;
 mod slots;
 mod unjudged;
+mod versions;
 pub use logins::person_homes;
 pub(crate) use logins::*;
 pub use moves::Moving;
@@ -2382,15 +2383,7 @@ impl Jobs {
     /// One account's models from its CLI (crate::model_lists). Keeps the last good list; a failed
     /// read changes nothing. Notifies when the list changed so apps hear it on `accounts`.
     async fn refresh_models(&self, tool: Tool, account: &crate::config::Account) {
-        let agents = self.config.agents.get();
-        let Some(bin) = match tool {
-            Tool::Claude => agents.claude.as_ref(),
-            Tool::Codex => agents.codex.as_ref(),
-            Tool::Cursor => agents.cursor.as_ref(),
-        }
-        .map(|agent| agent.bin.as_str())
-        .and_then(crate::process::resolve_bin)
-        .filter(|bin| bin.is_absolute()) else {
+        let Some(bin) = self.agent_bin(tool).filter(|bin| bin.is_absolute()) else {
             return;
         };
         let dir = self
@@ -10561,6 +10554,7 @@ impl Jobs {
                         job.step = format!("Starting {}", tool.name());
                     }
                 });
+                self.stamp_version(id, tool);
                 round_due = false;
                 stages.begin(&format!("agent round {round}"));
                 // A launch the network cut goes again in the same transcript turn (RECOVERY-14).
