@@ -63,7 +63,7 @@ const HOME: &str = "[home]";
 /// The routes a phone may use through the gateway (Runner/Routes.swift), apart from the API's own
 /// router: adding an endpoint never makes it reachable from a phone by itself. Kept off on purpose:
 /// `/v1/checks/…` and `/v1/agent/…` (the Mac's and agents' own calls), `/v1/connections…`,
-/// `/v1/speech`, `/v1/pairing/…`, `/v1/obid/…` but the reads of the Sphere below, adding,
+/// `/v1/pairing/…`, `/v1/obid/…` but the reads of the Sphere below, adding,
 /// removing and signing in accounts, and everything else.
 /// `*` is one path segment; `**`, last only, is one or more.
 const ROUTES: &[(&str, &str)] = &[
@@ -100,7 +100,6 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/jobs/*/transcript"),
     ("GET", "/v1/jobs/*/transcript/*"),
     ("GET", "/v1/jobs/*/report"),
-    ("POST", "/v1/jobs/*/proposals/*/file"),
     ("POST", "/v1/jobs/*/stop"),
     ("POST", "/v1/stop-all"),
     ("POST", "/v1/jobs/*/dismiss"),
@@ -115,7 +114,6 @@ const ROUTES: &[(&str, &str)] = &[
     ("PUT", "/v1/settings/jobs"),
     ("POST", "/v1/jobs/*/move"),
     ("POST", "/v1/jobs/*/start"),
-    ("POST", "/v1/jobs/*/start-when"),
     ("POST", "/v1/jobs/*/mode"),
     ("POST", "/v1/jobs/*/permission"),
     ("POST", "/v1/jobs/*/messages"),
@@ -134,7 +132,6 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/failures/*/fix"),
     ("POST", "/v1/accounts/*/reserve"),
     ("GET", "/v1/settings/models"),
-    ("PUT", "/v1/settings/models"),
     ("GET", "/v1/settings/models/options"),
     ("GET", "/v1/settings/jobs"),
     ("GET", "/v1/settings/permissions"),
@@ -144,11 +141,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/devices"),
     ("GET", "/v1/devices/*/pairing"),
     ("POST", "/v1/devices/*/pairing"),
-    ("POST", "/v1/activities"),
     ("POST", "/v1/notifications"),
-    ("GET", "/v1/watches"),
-    ("POST", "/v1/watches"),
-    ("DELETE", "/v1/watches/*"),
 ];
 
 /// Whether a phone may `method` `path` through the gateway: `*` is one path segment.
@@ -1086,6 +1079,17 @@ mod tests {
         // CHATGPT-24: a yes for work nobody's watching only from this Mac's app.
         assert!(!allows(&Method::POST, "/v1/accounts/abc/background"));
         assert!(!allows(&Method::GET, "/v1/jobs/abc/def/wait"));
+        // The Swift runner's routes, which obid never served (docs/runner-api.md, "Routes obid
+        // does not serve"): refused at the gateway. The models' reads stay.
+        assert!(!allows(&Method::POST, "/v1/jobs/abc/proposals/0/file"));
+        assert!(!allows(&Method::POST, "/v1/jobs/abc/start-when"));
+        assert!(!allows(&Method::PUT, "/v1/settings/models"));
+        assert!(!allows(&Method::POST, "/v1/activities"));
+        assert!(!allows(&Method::GET, "/v1/watches"));
+        assert!(!allows(&Method::POST, "/v1/watches"));
+        assert!(!allows(&Method::DELETE, "/v1/watches/abc"));
+        assert!(allows(&Method::GET, "/v1/settings/models"));
+        assert!(allows(&Method::GET, "/v1/settings/models/options"));
         for (method, path) in [
             (Method::GET, "/v1/connections"),
             (Method::POST, "/v1/pairing/invite"),
