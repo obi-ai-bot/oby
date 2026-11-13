@@ -18,9 +18,11 @@ Linux groups (rust, electron, scan) on the VM with `ssh <host> oby-remote-gate
 <commit> origin/<base>`, starting the VM with `az vm start` when it is stopped
 and waiting for SSH, at most 180 seconds (FACTORY_REMOTE_REACH_SECONDS shortens
 that, for the tests only). Only after the VM's part passes does the Mac run its
-own: swift when planned, and rust when the diff touches macOS-only code
-(macos_only: MACOS_ONLY, or a file naming target_os = "macos"), each with
-OBY_CHECK_ONLY through checks.sh. The whole check runs on the Mac as without a
+own: rust when the diff touches macOS-only code (macos_only: MACOS_ONLY, or a
+file naming target_os = "macos"), then swift and factory when planned, each with
+OBY_CHECK_ONLY through checks.sh. A diff touching the check's own files
+(CHECK_FILES: oby-check-test.sh expects macOS's plan) runs the whole check on
+the Mac, with no az, ssh or stamp. The whole check runs on the Mac as without a
 VM when the settings are invalid, the plan can't be read, the commit isn't on
 origin, the VM can't be reached in time, or oby-remote-gate couldn't judge or
 was cut off; checks.md says where each part ran (HOST, "## Where it ran") and
@@ -82,6 +84,9 @@ MACOS_ONLY = (
     "core/crates/obid/tests/jobs_setup.rs",
     "core/crates/obid/tests/secretspec.rs",
 )
+# The check's own files (REMOTE-10): their tests expect macOS's plan, so a diff touching one runs the whole check
+# on the Mac. A path ending in / stands for everything under it.
+CHECK_FILES = ("scripts/oby-check.sh", "scripts/oby-check-test.sh", "tools/oby-check-blok/")
 REMOTE_KEYS = ("ssh_host", "resource_group", "vm")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -318,10 +323,19 @@ def vm_part(remote, commit, base, groups, log):
     return {"host": host, "groups": groups, "slot": slot and slot.group(1), "seconds": seconds, "code": code}
 
 
-def macos_only(worktree, base):
+def touched_files(worktree, base):
+    """The files the job's diff touches, a deleted or renamed file's old path too."""
+    return git(worktree, "diff", "--name-only", "--no-renames", f"{base}...HEAD").splitlines()
+
+
+def named(files):
+    """At most five files for a checks.md line, then how many more."""
+    return ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
+
+
+def macos_only(worktree, base, touched):
     """The touched files that count as macOS-only: those in MACOS_ONLY, and those whose copy on the branch or the
     base names MACOS_CODE (a deleted file's too). When git can't tell, every touched file counts."""
-    touched = git(worktree, "diff", "--name-only", "--no-renames", f"{base}...HEAD").splitlines()
     if not touched:
         return []
     found = subprocess.run(["git", "--literal-pathspecs", "grep", "-l", "-E", MACOS_CODE, "HEAD", base, "--",
@@ -339,11 +353,14 @@ def remote_parts(remote, invalid, job, worktree, commit):
     try:
         if invalid:
             raise Fallback(invalid)
-        planned = plan(worktree, base)
+        touched = touched_files(worktree, base)
+        own = [f for f in touched if any(f == p or p.endswith("/") and f.startswith(p) for p in CHECK_FILES)]
+        planned = [] if own else plan(worktree, base)
         linux = [g for g in LINUX_GROUPS if g in planned]
         if not linux:
+            why = f"the diff touches the check's own files: {named(own)}" if own else "no Linux group planned"
             code, out, seconds = run_checks(worktree)
-            return [{"host": "mac", "groups": ["the whole check (no Linux group planned)"], "seconds": seconds,
+            return [{"host": "mac", "groups": [f"the whole check ({why})"], "seconds": seconds,
                      "code": code}], None, out
         on_origin(job.get("branch"), worktree, commit, base)
         parts = [vm_part(remote, commit, base, linux, log)]
@@ -352,11 +369,10 @@ def remote_parts(remote, invalid, job, worktree, commit):
         log.append(f"==== mac: the whole check, after falling back: {e} ====\n{out}")
         return [{"host": "mac", "groups": ["the whole check"], "seconds": seconds, "code": code}], str(e), \
             "\n".join(log)
-    touched = macos_only(worktree, base) if "rust" in planned else []
-    mac = (["rust"] if touched else []) + (["swift"] if "swift" in planned else [])
+    macos = macos_only(worktree, base, touched) if "rust" in planned else []
+    mac = (["rust"] if macos else []) + [g for g in ("swift", "factory") if g in planned]
     for group in mac:
-        named = ", ".join(touched[:5]) + (f" and {len(touched) - 5} more" if len(touched) > 5 else "")
-        why = f" (the diff touches macOS-only code: {named})" if group == "rust" else ""
+        why = f" (the diff touches macOS-only code: {named(macos)})" if group == "rust" else ""
         if parts[0]["code"] != 0:
             parts.append({"host": "mac", "groups": [group + why], "note": "not run: the VM's part failed"})
             continue

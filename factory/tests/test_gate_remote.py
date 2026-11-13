@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6), with a fake `az` and `ssh`, never the VM.
+"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10), with a fake `az` and `ssh`, never the VM.
 
 Run from the repository root: python3 factory/tests/test_gate_remote.py
 Each test builds a throwaway repository: a bare `origin` with a `dev` branch whose scripts/oby-check.sh is a
@@ -318,6 +318,55 @@ class GateRemote(unittest.TestCase):
         self.assertEqual(self.lines("mac-runs"), ["swift"])
         self.assertEqual(self.header()["HOST"], "oby-gate, mac")
         self.assertIn("- oby-gate: scan in slot 2: passed", self.checks())
+
+    def test_remote_4_factory_runs_on_the_mac(self):
+        self.groups("scan", "factory")
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["factory"])
+        self.assertEqual(self.header()["HOST"], "oby-gate, mac")
+        self.assertIn("- mac: factory: passed with exit 0", self.checks())
+
+    def test_remote_4_a_factory_failure_on_the_mac_fails_the_gate(self):
+        self.groups("scan", "factory")
+        (self.fake / "mac-exit-factory").write_text("1\n")
+        code, out, err = self.gate()
+        self.assertEqual(code, 1, out + err)
+        self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("FAIL", "oby-gate, mac"))
+
+    def test_remote_4_factory_isnt_run_when_the_vms_part_failed(self):
+        self.groups("scan", "factory")
+        (self.fake / "remote-exit").write_text("1\n")
+        code, out, err = self.gate()
+        self.assertEqual(code, 1, out + err)
+        self.assertEqual(self.lines("mac-runs"), [])
+        self.assertIn("- mac: factory: not run: the VM's part failed", self.checks())
+
+    # ---- REMOTE-10 -------------------------------------------------------------------------------
+
+    def assert_the_whole_check_runs_on_the_mac(self, path):
+        self.change(path, push=True)
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.lines("mac-runs"), ["all"])
+        self.assertEqual((self.az_calls(), self.ssh_calls()), ([], []))
+        self.assertFalse(self.state.exists(), "a gate that never used the VM stamped it")
+        self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("PASS", "mac"))
+        self.assertIn(f"- mac: the whole check (the diff touches the check's own files: {path}): passed with exit 0",
+                      self.checks())
+        self.assertNotIn("Fell back", self.checks())
+        # The Mac's run is the verdict.
+        (self.fake / "mac-exit-all").write_text("1\n")
+        code, out, err = self.gate()
+        self.assertEqual(code, 1, out + err)
+        self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("FAIL", "mac"))
+        self.assertEqual((self.az_calls(), self.ssh_calls()), ([], []))
+
+    def test_remote_10_a_change_to_the_checks_test_runs_the_whole_check_on_the_mac(self):
+        self.assert_the_whole_check_runs_on_the_mac("scripts/oby-check-test.sh")
+
+    def test_remote_10_a_change_under_oby_check_blok_runs_the_whole_check_on_the_mac(self):
+        self.assert_the_whole_check_runs_on_the_mac("tools/oby-check-blok/src/main.rs")
 
     # ---- REMOTE-5 --------------------------------------------------------------------------------
 
