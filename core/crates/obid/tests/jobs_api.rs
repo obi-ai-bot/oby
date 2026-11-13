@@ -782,6 +782,140 @@ fn receipts_7_two_requests_at_once_make_one_job() {
     assert_eq!(job_ids(&obid), vec![id]);
 }
 
+/// `POST target` with `body`, its request key in an `Idempotency-Key` header, and `words` as its
+/// `X-Oby-Words` when the owner's app signed it.
+fn post_with_key(
+    obid: &Obid,
+    target: &str,
+    body: &Value,
+    key: &str,
+    words: Option<&str>,
+) -> Answer {
+    let mut headers = vec![("Idempotency-Key", key)];
+    headers.extend(words.map(|words| ("X-Oby-Words", words)));
+    request_headers(obid, "POST", target, Some(&body.to_string()), &headers)
+}
+
+/// A job the owner's app started (its words signed) with `task`, once it ended done.
+fn ended(obid: &Obid, task: &str) -> String {
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": task});
+    let made = typed(obid, "POST", "/v1/jobs", &json!({ "job": job }));
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(wait(obid, &id)["status"], "done");
+    id
+}
+
+/// RECEIPTS-8: the same words sent again with their key to a job that ended make one follow-up:
+/// both answers are 201 with it, and it carries the key.
+#[test]
+fn receipts_8_repeated_words_make_one_follow_up() {
+    let folder = Folder::new("receipts-8");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = ended(&obid, "Look around");
+    let target = format!("/v1/jobs/{id}/messages");
+    let words = json!({"text": "Look around once more"});
+    let first = post_with_key(&obid, &target, &words, "words-8", None);
+    assert_eq!(first.status, 201, "{}", first.text);
+    assert_eq!(first.body["clientRequestId"], "words-8", "{}", first.text);
+    let again = post_with_key(&obid, &target, &words, "words-8", None);
+    assert_eq!(again.status, 201, "{}", again.text);
+    assert_eq!(again.body["id"], first.body["id"]);
+    assert_eq!(again.body["clientRequestId"], "words-8");
+    assert_eq!(job_ids(&obid).len(), 2, "the job and one follow-up");
+}
+
+/// RECEIPTS-8: a byte-identical retry of signed words, whose single-use signature is spent, isn't
+/// as signed as the first: `409`, and nothing happens to the follow-up the first made.
+#[test]
+fn receipts_8_a_retry_with_used_words_changes_nothing() {
+    let folder = Folder::new("receipts-8-signed");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = ended(&obid, "Look around");
+    let target = format!("/v1/jobs/{id}/messages");
+    let words = json!({"text": "Look around once more"});
+    let signed = support::words_header(&obid, "POST", &target, Some(&words));
+    let first = post_with_key(&obid, &target, &words, "signed-8", Some(&signed));
+    assert_eq!(first.status, 201, "{}", first.text);
+    let follow_up = first.body["id"].as_str().unwrap().to_owned();
+    let file = obid.home.join(format!("jobs/{follow_up}.json"));
+    let vetted = || {
+        let kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        kept["vetted"].clone()
+    };
+    assert_eq!(vetted(), json!(true), "the owner's signed words");
+    let retry = post_with_key(&obid, &target, &words, "signed-8", Some(&signed));
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    assert_eq!(vetted(), json!(true), "unchanged by the retry");
+    assert_eq!(job_ids(&obid).len(), 2, "the job and one follow-up");
+}
+
+/// RECEIPTS-9: the same words sent again with their key to a job at work answer the same, and its
+/// agent hears them once.
+#[test]
+fn receipts_9_repeated_words_are_heard_once() {
+    let folder = Folder::new("receipts-9");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    // At work for 5 seconds: words for it are its next turn.
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "KEEP PROMPTS HOG: 1 5"});
+    let id = post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    support::within(30, "the agent at work", || {
+        (prompts(&obid, &id).len() == 1).then_some(())
+    });
+    let target = format!("/v1/jobs/{id}/messages");
+    let words = json!({"text": "Also read the README."});
+    let first = post_with_key(&obid, &target, &words, "words-9", None);
+    assert_eq!(first.status, 200, "{}", first.text);
+    let again = post_with_key(&obid, &target, &words, "words-9", None);
+    assert_eq!((again.status, &again.body), (first.status, &first.body));
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let asked = prompts(&obid, &id);
+    let heard = asked.concat().matches("Also read the README.").count();
+    assert_eq!(heard, 1, "{asked:?}");
+    assert_eq!(job_ids(&obid), vec![id]);
+}
+
+/// RECEIPTS-11: a stop sent again with its key answers what the first did, byte for byte, though
+/// the job changed since, and its `stoppedBy` stays.
+#[test]
+fn receipts_11_a_repeated_stop_answers_the_same() {
+    let folder = Folder::new("receipts-11");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"});
+    let id = post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    beat(&obid, &id);
+    let stop = || {
+        let target = format!("/v1/jobs/{id}/stop");
+        request_headers(
+            &obid,
+            "POST",
+            &target,
+            None,
+            &[("Idempotency-Key", "stop-11")],
+        )
+    };
+    let first = stop();
+    assert_eq!(first.status, 200, "{}", first.text);
+    assert_eq!(first.body["status"], "stopped", "{}", first.text);
+    let narrower = json!({"mode": "ask"}).to_string();
+    let changed = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/mode"),
+        Some(&narrower),
+    );
+    assert_eq!(changed.status, 200, "{}", changed.text);
+    assert_ne!(changed.body, first.body, "the job is another now");
+    let again = stop();
+    assert_eq!((again.status, &again.text), (first.status, &first.text));
+    let now = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(now["stoppedBy"], first.body["stoppedBy"], "{now}");
+}
+
 /// A stand-in `gh` in `folder/bin` that keeps its arguments (`folder/gh-calls`) and environment
 /// (`folder/gh-env`), opens pull request 7, and answers `gh pr view` with `folder/pr-view.json`
 /// when there's one.

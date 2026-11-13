@@ -325,16 +325,22 @@ pub async fn transcript_entry(
     Ok(json(StatusCode::OK, value))
 }
 
-/// `POST /v1/jobs/{id}/stop`: a job that already ended comes back as it is.
+/// `POST /v1/jobs/{id}/stop`: a job that already ended comes back as it is. A body is for a key.
 pub async fn stop(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Response, ApiError> {
-    let job = shared
-        .jobs
-        .stop(&id, crate::jobs::STOPPED_BY_API)
-        .ok_or_else(|| no_job(&shared, &id))?;
-    Ok(json(StatusCode::OK, job.to_json()))
+    let key = request_key(&serde_json::from_slice(&body).unwrap_or_default(), &headers)
+        .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let route = format!("POST /v1/jobs/{id}/stop");
+    keyed(&shared, key.as_deref(), &route, &json!({}), stored, async {
+        let job = shared.jobs.stop(&id, crate::jobs::STOPPED_BY_API);
+        let job = job.ok_or_else(|| no_job(&shared, &id))?;
+        Ok((StatusCode::OK, job.to_json(), Some(job.id)))
+    })
+    .await
 }
 
 /// `POST /v1/jobs/{id}/start`: a job waiting for an account with room starts now (#872).
@@ -679,75 +685,88 @@ pub async fn dispatch(
             "A job needs repo, kind and task.",
         ));
     }
-    let key = request_key(job, &headers)
+    let key = request_key(&value["job"], &headers)
         .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
-    // A request key (docs/contracts/receipts.md): held from the lookup to the receipt, so the
-    // same request again, or at once, gets the first job (RECEIPTS-5 to 7).
-    let mut receipt = None;
-    if let (Some(key), Some(receipts)) = (&key, &shared.receipts) {
-        let guard = receipts.lock(key).await;
-        let mut keyed = value.clone();
-        keyed["job"]["clientRequestId"] = Value::Null; // as left out: the header's or the body's
-        let now = obi_protocol::time::now();
-        match receipts.get(key, JOBS_ROUTE, &keyed, now) {
-            Err(why) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why)),
-            Ok(Found::Conflict) => return Err(ApiError::new(StatusCode::CONFLICT, REUSED_KEY)),
-            Ok(Found::Repeat { answer, job, .. }) => {
-                let body = match job.and_then(|id| shared.jobs.get(&id)) {
-                    Some(job) => job.to_json(),
-                    None => serde_json::from_str(&answer).unwrap_or(Value::String(answer)),
-                };
-                return Ok(json(StatusCode::OK, body));
-            }
-            Ok(Found::None) => receipt = Some((receipts, keyed, guard)),
-        }
-    }
-    let mut new =
-        new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
-    new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
-    // Only an app of the owner's signs: anything else holding the token, nobody's said to watch.
-    new.unattended = !new.vetted;
-    if job.get("runsOn").is_some_and(|place| !place.is_null()) {
-        return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
-    }
-    // The owner's words start it, so they open its conversation (crate::task_conversation).
-    let words = new.task.clone();
-    let unsigned = !new.vetted;
-    let foreign = unsigned.then(|| "words no app of the owner's signed".to_owned());
-    // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
-    (new.unsigned, new.client_request_id) = (unsigned, key.clone());
-    let job = crate::task_conversation::create(
-        &shared,
-        new,
-        Some(crate::task_conversation::Words {
-            text: &words,
-            foreign,
-        }),
-        None,
-    )?;
-    let Some(key) = key else {
-        return Ok(json(StatusCode::CREATED, job.to_json()));
+    let mut judged = value.clone();
+    judged["job"]["clientRequestId"] = Value::Null; // as left out: the header's or the body's
+    // The same request again, or at once, gets the first job as it is now (RECEIPTS-5 to 7).
+    let repeat = |_, answer, job: Option<String>| match job.and_then(|id| shared.jobs.get(&id)) {
+        Some(job) => json(StatusCode::OK, job.to_json()),
+        None => stored(200, answer, None),
     };
-    let answer = job.to_json();
-    if let Some((receipts, keyed, _guard)) = receipt {
-        let now = obi_protocol::time::now();
-        let put = receipts.put(&key, JOBS_ROUTE, &keyed, 201, &answer, Some(&job.id), now);
-        if let Err(e) = put {
-            tracing::warn!("job {}: its request key's receipt wasn't kept: {e}", job.id);
+    let work = async {
+        let mut new =
+            new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+        new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
+        // Only an app of the owner's signs: anything else with the token, nobody's said to watch.
+        new.unattended = !new.vetted;
+        if job.get("runsOn").is_some_and(|place| !place.is_null()) {
+            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, ELSEWHERE));
         }
-    }
-    Ok(json(StatusCode::CREATED, answer))
+        // The owner's words start it, so they open its conversation (crate::task_conversation).
+        let text = &new.task.clone();
+        let unsigned = !new.vetted;
+        let foreign = unsigned.then(|| "words no app of the owner's signed".to_owned());
+        // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
+        (new.unsigned, new.client_request_id) = (unsigned, key.clone());
+        let words = crate::task_conversation::Words { text, foreign };
+        let job = crate::task_conversation::create(&shared, new, Some(words), None)?;
+        Ok((StatusCode::CREATED, job.to_json(), Some(job.id)))
+    };
+    keyed(&shared, key.as_deref(), JOBS_ROUTE, &judged, repeat, work).await
 }
 
 /// The receipt store's name for [`dispatch`]'s route.
 const JOBS_ROUTE: &str = "POST /v1/jobs";
 
-const REUSED_KEY: &str =
-    "That request key was used for another request: send this one with a new key.";
+const REUSED_KEY: &str = "That request key was used for another request, or for this one signed differently, so nothing changed.";
 
-/// The request's key: `job.clientRequestId` or the `Idempotency-Key` header, which mean the same.
-fn request_key(job: &Map<String, Value>, headers: &HeaderMap) -> Result<Option<String>, String> {
-    let body = match job.get("clientRequestId") {
+/// `work` once per request `key` (docs/contracts/receipts.md): held from lookup to receipt, the
+/// same `route` and `judged` body again gets `repeat` of the first status, answer and job, another
+/// `409`, and neither runs `work`. Only a 2xx answer is kept. No key or no store: `work` just runs.
+pub(crate) async fn keyed(
+    shared: &Shared,
+    key: Option<&str>,
+    route: &str,
+    judged: &Value,
+    repeat: impl FnOnce(u16, String, Option<String>) -> Response,
+    work: impl Future<Output = Result<(StatusCode, Value, Option<String>), ApiError>>,
+) -> Result<Response, ApiError> {
+    let (Some(key), Some(receipts)) = (key, shared.receipts.as_deref()) else {
+        return work.await.map(|(status, answer, _)| json(status, answer));
+    };
+    let _guard = receipts.lock(key).await;
+    let now = obi_protocol::time::now();
+    match receipts.get(key, route, judged, now) {
+        Err(why) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why)),
+        Ok(Found::Conflict) => return Err(ApiError::new(StatusCode::CONFLICT, REUSED_KEY)),
+        Ok(Found::Repeat {
+            status,
+            answer,
+            job,
+        }) => return Ok(repeat(status, answer, job)),
+        Ok(Found::None) => {}
+    }
+    let (status, answer, job) = work.await?;
+    let code = status.as_u16();
+    if status.is_success()
+        && let Err(e) = receipts.put(key, route, judged, code, &answer, job.as_deref(), now)
+    {
+        tracing::warn!("{route}: its request key's receipt wasn't kept: {e}");
+    }
+    Ok(json(status, answer))
+}
+
+/// A repeat's answer: the first one's status and answer, as kept.
+pub(crate) fn stored(status: u16, answer: String, _: Option<String>) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    let answer = serde_json::from_str(&answer).unwrap_or(Value::String(answer));
+    json(status, answer)
+}
+
+/// The request's key: the body's `clientRequestId` or the `Idempotency-Key` header, either one.
+pub(crate) fn request_key(body: &Value, headers: &HeaderMap) -> Result<Option<String>, String> {
+    let body = match body.get("clientRequestId") {
         None | Some(Value::Null) => None,
         Some(Value::String(key)) => Some(key.clone()),
         Some(_) => return Err("clientRequestId is a string.".into()),
@@ -1168,25 +1187,14 @@ pub async fn message(
 ) -> Result<Response, ApiError> {
     shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let bad = || ApiError::new(StatusCode::BAD_REQUEST, "The body is {\"text\": \"…\"}.");
-    let value = serde_json::from_slice::<Value>(&body).map_err(|_| bad())?;
-    let text = value.get("text").and_then(Value::as_str).ok_or_else(bad)?;
-    let attachments = match value.get("attachments") {
-        None | Some(Value::Null) => vec![],
-        Some(Value::Array(items)) => {
-            let paths = items
-                .iter()
-                .map(|p| p.as_str().map(str::to_owned))
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "attachments are paths."))?;
-            crate::brain::validate_attachments(&shared.config.home, &paths)?
-        }
-        Some(_) => {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "attachments are paths.",
-            ));
-        }
-    };
+    let mut value = serde_json::from_slice::<Value>(&body).map_err(|_| bad())?;
+    value.get("text").and_then(Value::as_str).ok_or_else(bad)?;
+    let key = request_key(&value, &headers)
+        .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let paths = serde_json::from_value::<Option<Vec<String>>>(value["attachments"].clone())
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "attachments are paths."))?;
+    let paths =
+        crate::brain::validate_attachments(&shared.config.home, &paths.unwrap_or_default())?;
     let say = value.get("conversation").and_then(Value::as_bool) == Some(true);
     let first = shared.jobs.get(&id);
     let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
@@ -1196,83 +1204,81 @@ pub async fn message(
             "Continuing a limit-stopped job needs your app's signed choice.",
         ));
     }
-    let answer = shared.jobs.message_attaching(
-        &id,
-        text,
-        if typed {
-            crate::jobs::Source::Owner
+    value.as_object_mut().map(|b| b.remove("clientRequestId"));
+    let judged = json!({"body": value, "signed": typed});
+    let text = judged["body"]["text"].as_str().unwrap_or_default();
+    let route = format!("POST /v1/jobs/{id}/messages");
+    keyed(&shared, key.as_deref(), &route, &judged, stored, async {
+        let source = [crate::jobs::Source::Api, crate::jobs::Source::Owner][usize::from(typed)];
+        let job = shared.jobs.message_attaching(&id, text, source, &paths);
+        let job = job.ok_or_else(|| no_job(&shared, &id))?;
+        let job = job.map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why.0))?;
+        // Words no app of the owner's signed: the job that heard them (or the follow-up they
+        // started) is no longer the owner's own words alone (crate::secretspec).
+        let job = if typed {
+            job
         } else {
-            crate::jobs::Source::Api
-        },
-        &attachments,
-    );
-    let job = match answer {
-        None => return Err(no_job(&shared, &id)),
-        Some(Err(refused)) => {
-            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0));
-        }
-        Some(Ok(job)) => job,
-    };
-    // Words no app of the owner's signed: the job that heard them (or the follow-up they started)
-    // is no longer the owner's own words alone (crate::secretspec).
-    let job = if typed {
-        job
-    } else {
-        // Unsigned API follow-ups are born untrusted, before their scheduler can run. Keep
-        // the same audit evidence even when there is no vetted state left to revoke.
-        if !job.vetted {
-            tracing::info!(
-                "job {}: words no app of the owner's signed reached it",
-                job.id
-            );
-        }
-        shared
-            .jobs
-            .unvet(&job.id, "words no app of the owner's signed reached it");
-        shared.jobs.mark_unsigned(&job.id).unwrap_or(job)
-    };
-    // Said on the task's page (Sangam's TaskView): the words and Oby's answer go on the end of the
-    // job's conversation, which the app opens, as if said there. A task with none (one kept from
-    // before every task had one) gets it now (crate::task_conversation, TASKCONV-4).
-    let conversation = say
-        .then(|| crate::task_conversation::of(&shared, &id))
-        .flatten();
-    let job = shared.jobs.get(&job.id).unwrap_or(job);
-    if let Some((first, conversation)) = first.zip(conversation) {
-        let said = shared
-            .conversations
-            .append(
-                &conversation,
-                "user",
-                text.trim().to_owned(),
-                vec![],
-                (!typed).then(|| "words no app of the owner's signed".to_owned()),
-            )
-            .and_then(|_| {
-                let line = crate::brain::actions::told_line(&shared, &first, &job);
-                // It names the job: someone else's words only as the job's are (MERGING-32).
-                let foreign = first
-                    .not_owners_words()
-                    .map(|why| format!("the title of job {}, which {why}", first.id));
-                shared.conversations.append(
+            // Unsigned API follow-ups are born untrusted, before their scheduler can run. Keep
+            // the same audit evidence even when there is no vetted state left to revoke.
+            if !job.vetted {
+                tracing::info!(
+                    "job {}: words no app of the owner's signed reached it",
+                    job.id
+                );
+            }
+            shared
+                .jobs
+                .unvet(&job.id, "words no app of the owner's signed reached it");
+            shared.jobs.mark_unsigned(&job.id).unwrap_or(job)
+        };
+        // Said on the task's page (Sangam's TaskView): the words and Oby's answer go on the end of
+        // the job's conversation, which the app opens, as if said there. A task with none (one kept
+        // from before every task had one) gets it now (crate::task_conversation, TASKCONV-4).
+        let conversation = say
+            .then(|| crate::task_conversation::of(&shared, &id))
+            .flatten();
+        let job = shared.jobs.get(&job.id).unwrap_or(job);
+        if let Some((first, conversation)) = first.zip(conversation) {
+            let said = shared
+                .conversations
+                .append(
                     &conversation,
-                    "oby",
-                    line,
-                    vec![job.id.clone()],
-                    foreign,
+                    "user",
+                    text.trim().to_owned(),
+                    vec![],
+                    (!typed).then(|| "words no app of the owner's signed".to_owned()),
                 )
-            });
-        if let Err(e) = said {
-            tracing::info!("words for job {id}; conversation {conversation} wasn't told: {e:?}");
+                .and_then(|_| {
+                    let line = crate::brain::actions::told_line(&shared, &first, &job);
+                    // It names the job: someone else's words only as the job's are (MERGING-32).
+                    let foreign = first
+                        .not_owners_words()
+                        .map(|why| format!("the title of job {}, which {why}", first.id));
+                    shared.conversations.append(
+                        &conversation,
+                        "oby",
+                        line,
+                        vec![job.id.clone()],
+                        foreign,
+                    )
+                });
+            if let Err(e) = said {
+                tracing::info!(
+                    "words for job {id}; conversation {conversation} wasn't told: {e:?}"
+                );
+            }
         }
-    }
-    // A follow-up it started; one already working heard the words, and is a 200.
-    let status = if job.id != id && job.heard.is_empty() {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    Ok(json(status, job.to_json()))
+        // A follow-up it started carries the words' key (RECEIPTS-8); one already working heard
+        // the words, and is a 200.
+        let made = job.id != id && job.heard.is_empty();
+        let job = match key.as_deref().filter(|_| made) {
+            Some(key) => shared.jobs.mark_request_key(&job.id, key).unwrap_or(job),
+            None => job,
+        };
+        let status = [StatusCode::OK, StatusCode::CREATED][usize::from(made)];
+        Ok((status, job.to_json(), Some(job.id)))
+    })
+    .await
 }
 
 /// `GET /v1/jobs/{id}/publish`: what publishing the job by hand would do, in obid's one sentence,
@@ -1508,17 +1514,26 @@ pub async fn move_job(
         .filter(|to: &crate::jobs::Moving| to.why.as_ref().is_none_or(|w| w.chars().count() <= 500))
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, shape))?;
     to.why = to.why.filter(|why| !why.trim().is_empty());
+    let mut value = serde_json::from_slice::<Value>(&body).unwrap_or_default();
+    let key = request_key(&value, &headers)
+        .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    value.as_object_mut().map(|b| b.remove("clientRequestId"));
     let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
-    if to.why.is_some() && !typed {
-        let why = "words no app of the owner's signed reached it";
-        shared.jobs.unvet(&id, why);
-    }
-    let source = [crate::jobs::Source::Api, crate::jobs::Source::Owner][usize::from(typed)];
-    match shared.jobs.move_to(&id, to, source).await {
-        None => Err(no_job(&shared, &id)),
-        Some(Ok(job)) => Ok(json(StatusCode::OK, job.to_json())),
-        Some(Err(refused)) => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
-    }
+    let judged = json!({"body": value, "signed": typed});
+    let route = format!("POST /v1/jobs/{id}/move");
+    keyed(&shared, key.as_deref(), &route, &judged, stored, async {
+        if to.why.is_some() && !typed {
+            let why = "words no app of the owner's signed reached it";
+            shared.jobs.unvet(&id, why);
+        }
+        let source = [crate::jobs::Source::Api, crate::jobs::Source::Owner][usize::from(typed)];
+        match shared.jobs.move_to(&id, to, source).await {
+            None => Err(no_job(&shared, &id)),
+            Some(Ok(job)) => Ok((StatusCode::OK, job.to_json(), Some(job.id))),
+            Some(Err(refused)) => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
+        }
+    })
+    .await
 }
 
 /// `GET /v1/settings/permissions`: the mode new jobs get.

@@ -3215,3 +3215,49 @@ async fn a_token_that_isnt_bearer_is_no_token() {
     });
     assert!(said.contains("not Bearer"), "{said}");
 }
+
+/// RECEIPTS-10: a `failed` item's Try again sent again with its key answers what the first did, and
+/// the job runs one more round, not two.
+#[test]
+fn receipts_10_a_repeated_try_again_is_one_round() {
+    let folder = Folder::new("receipts-10");
+    let remote = fixture(&folder.0.join("fixture"));
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    // A job obid kept going down with: the next start leaves it with a `failed` item (#915).
+    let mut job = obid::job::Job::new(
+        "dddd0010".into(),
+        "obi-e2e/fixture-app".into(),
+        "investigate".into(),
+        "Look around".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    let now = obi_protocol::time::now();
+    job.branch = "oby/investigate-dddd0010".into();
+    job.status = obid::job::Status::Running;
+    job.started = Some(now - 200);
+    let mut kept = serde_json::to_value(&job).unwrap();
+    kept["crashResumes"] = json!([now - 600, now - 60]);
+    let jobs = folder.0.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(jobs.join("dddd0010.json"), kept.to_string()).unwrap();
+    let obid = start(&folder.0, &config(&folder.0, &remote, &agent), None);
+    let item = within(10, "the job's failed item", || {
+        let inbox = get(&obid, "/v1/inbox");
+        let items = inbox.as_array().unwrap().iter();
+        items
+            .filter(|i| i["kind"] == "failed" && i["job"] == "dddd0010")
+            .find_map(|i| i["id"].as_str().map(str::to_owned))
+    });
+    let round = get(&obid, "/v1/jobs/dddd0010")["round"].as_u64().unwrap();
+    let target = format!("/v1/inbox/{item}/answer");
+    let body = json!({"answer": "Try again"});
+    let key = [("Idempotency-Key", "again-10")];
+    let try_again = || call_with_headers(&obid, TOKEN, "POST", &target, Some(&body), &key);
+    let first = try_again();
+    assert_eq!(first.status, 200, "{}", first.text);
+    let again = try_again();
+    assert_eq!((again.status, &again.body), (first.status, &first.body));
+    let ended = ended_within(&obid, "dddd0010", 60);
+    assert_eq!(ended["round"], json!(round + 1), "{ended}");
+}
