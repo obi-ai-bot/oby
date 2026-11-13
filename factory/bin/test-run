@@ -28,49 +28,25 @@ Commands that read none of them (npm test, npm run typecheck, swift test) are
 held only by the lock and the priority, not by a core cap. Everything else in
 the environment, CARGO_TARGET_DIR included, passes through unchanged.
 
-Ending. As factory/checks.sh: the lock stays in test-run's own process and
-isn't inherited; the command runs as a child in a session of its own. When it
-ends, or test-run gets SIGTERM or SIGINT (while waiting for the lock too),
-everything still running in that session gets SIGTERM, and test-run exits with
-the command's code (128 + signal when it or test-run was stopped). The lock is
-released with test-run.
+Ending. As factory/bin/check-lock, through child_session.py beside it: the
+lock stays in test-run's own process and isn't inherited; the command runs as a
+child in a session of its own. When it ends, or test-run gets SIGTERM or SIGINT
+(while waiting for the lock too), everything still running in that session gets
+SIGTERM, and test-run exits with the command's code (128 + signal when it or
+test-run was stopped). The lock is released with test-run.
 """
 
 import fcntl
 import os
-import signal
-import subprocess
 import sys
 from pathlib import Path
+
+import child_session
 
 NAME = "factory/bin/test-run"
 LOCK = Path(os.environ.get("OBY_TEST_RUN_LOCK") or Path.home() / "Library/Caches/oby-factory/test-run.lock")
 PRIORITY = 15
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
-
-child = None
-starting = False
-stopped = 0
-
-
-def leftovers():
-    if child is None:
-        return
-    try:
-        os.killpg(child.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        # macOS answers EPERM, not ESRCH, when the group's last process has just ended.
-        pass
-
-
-def stop(signum, _):
-    global stopped
-    if starting:
-        # The command is being started and isn't known yet: main stops it once it is.
-        stopped = signum
-        return
-    leftovers()
-    sys.exit(128 + signum)
 
 
 def lock():
@@ -96,24 +72,15 @@ def environment():
 
 
 def main(argv):
-    global child, starting
     if len(argv) < 3 or argv[1] != "--":
         print(__doc__, file=sys.stderr)
         return 2
     command = argv[2:]
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
+    child_session.handle_stops()
     fd = lock()
     os.ftruncate(fd, 0)
     os.pwrite(fd, f"{os.getpid()} {os.getcwd()} {' '.join(command)}\n".encode(), 0)
-    starting = True
-    child = subprocess.Popen(["nice", "-n", str(PRIORITY), *command], env=environment(), start_new_session=True)
-    starting = False
-    if stopped:
-        stop(stopped, None)
-    code = child.wait()
-    leftovers()
-    return 128 - code if code < 0 else code
+    return child_session.run(["nice", "-n", str(PRIORITY), *command], env=environment())
 
 
 if __name__ == "__main__":

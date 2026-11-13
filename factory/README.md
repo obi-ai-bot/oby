@@ -11,7 +11,11 @@ bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses 
 bin/gate        runs checks.sh in a job's worktree → round-N/checks.md
 bin/route       risk + surfaces → the job's reviewers and models
 bin/test-run    a builder's own test, clippy or build run: one at a time on its own lock, at nice 15, half the cores
-tests/          the factory's own tests, stdlib only: python3 factory/tests/test_test_run.py, from the repository root
+bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
+                it stops the check's leftovers and passes its exit code through
+bin/child_session.py  runs a command in a session of its own and stops its leftovers; shared by check-lock and test-run
+tests/          the factory's own tests, stdlib only, from the repository root: python3 factory/tests/test_test_run.py,
+                python3 factory/tests/test_check_lock.py
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
