@@ -11,6 +11,11 @@ folder, the worktree, the branch and the task's key. You write exactly one file,
 
 ## Where you work
 
+Several jobs share this Mac. Never stop a process by name or pattern (`pkill`, `killall`,
+`pkill -f`): it stops other jobs' checks and gates. Stop only a process you started, by its
+PID (`$!` right after you start it, or `lsof -tiTCP:<port> -sTCP:LISTEN` for a server on your
+port).
+
 The worktree is a checkout of the job branch, fresh from the base branch, in
 `.worktrees/<job-id>` inside the main checkout you start in. Don't rely on the
 shell's working directory: start every Bash command with `cd <worktree> && `,

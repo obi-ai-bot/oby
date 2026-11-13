@@ -46,6 +46,14 @@ if ! git diff --quiet "$base"...HEAD -- scripts/oby-check.sh scripts/oby-check-t
     echo "factory/checks.sh: this branch changes the check's own files; its copy of them runs below." >&2
 fi
 
+# A change whose plan builds no Rust (docs, factory, cloud, an Electron-only change) needs neither
+# the shared Cargo folder nor its lock: it runs at once instead of queueing behind Rust checks.
+# A plan that can't be read takes the lock, as before.
+if plan=$(OBY_CHECK_PLAN=1 scripts/oby-check.sh "$base" 2>/dev/null) \
+        && ! grep -q '^oby-check: group rust$' <<<"$plan"; then
+    exec scripts/oby-check.sh "$base"
+fi
+
 # One check at a time on this Mac: the lock is held until oby-check.sh and
 # everything it starts have exited, and a second check waits for it.
 exec python3 -c '
