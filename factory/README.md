@@ -10,11 +10,21 @@ checks.sh       the gate's checks: scripts/oby-check.sh on the job's worktree
 bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; queues approved PRs
 bin/gate        runs checks.sh in a job's worktree → round-N/checks.md
 bin/route       risk + surfaces → the job's reviewers and models
+bin/test-run    a builder's own test, clippy or build run: one at a time on its own lock, at nice 15, half the cores
+tests/          the factory's own tests, stdlib only: python3 factory/tests/test_test_run.py, from the repository root
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
 jobs/           runtime state, local to this Mac (gitignored)
 ```
+
+Builders' own test, clippy and build runs go through `bin/test-run`, so they don't slow a gate past the check's
+caps: one at a time on `~/Library/Caches/oby-factory/test-run.lock`, never the gate's lock, so a gate never
+waits on them; at `nice -n 15`, so a gate's check gets the CPU first when both want it, and not
+`taskpolicy -b`, which also throttles disk I/O and keeps the run on the efficiency cores even when no gate runs;
+with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores. Commands that read
+none of those (`npm test`, `npm run typecheck`, `swift test`) are held only by the lock and the priority, and an
+explicit `-j` or `--test-threads` overrides them.
 
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks

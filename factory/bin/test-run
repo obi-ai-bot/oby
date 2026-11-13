@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Run a builder's own test, clippy or build run so that it yields to the gates.
+
+Usage:
+  factory/bin/test-run -- <command> [args...]
+
+e.g.
+  factory/bin/test-run -- cargo test -p obid --test jobs_api
+  factory/bin/test-run -- npm test
+
+Lock. One such run at a time on this Mac: test-run holds
+~/Library/Caches/oby-factory/test-run.lock (OBY_TEST_RUN_LOCK overrides it, for
+the tests only), beside the shared Cargo folder and not in it, so pruning that
+folder never deletes it. It is never the gate's lock: a gate's check holds only
+its own, so a gate never waits on a builder's run. A run that finds the lock
+held says who holds it (pid, working directory, command) and waits.
+
+Priority. The command runs at `nice -n 15`, so a gate's check, at normal
+priority, gets the CPU first whenever both want it, and the run has the whole
+Mac when no gate runs. Not `taskpolicy -b`: it also throttles the run's disk
+I/O and keeps it on the Mac's efficiency cores even when no gate runs, which
+makes a Rust build several times slower for no gain.
+
+Cores. CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS are each
+set to half the cores (at least 1); a smaller positive value the caller set is
+kept. An explicit `-j` or `--test-threads` on the command line overrides them.
+Commands that read none of them (npm test, npm run typecheck, swift test) are
+held only by the lock and the priority, not by a core cap. Everything else in
+the environment, CARGO_TARGET_DIR included, passes through unchanged.
+
+Ending. As factory/checks.sh: the lock stays in test-run's own process and
+isn't inherited; the command runs as a child in a session of its own. When it
+ends, or test-run gets SIGTERM or SIGINT (while waiting for the lock too),
+everything still running in that session gets SIGTERM, and test-run exits with
+the command's code (128 + signal when it or test-run was stopped). The lock is
+released with test-run.
+"""
+
+import fcntl
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+NAME = "factory/bin/test-run"
+LOCK = Path(os.environ.get("OBY_TEST_RUN_LOCK") or Path.home() / "Library/Caches/oby-factory/test-run.lock")
+PRIORITY = 15
+CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
+
+child = None
+starting = False
+stopped = 0
+
+
+def leftovers():
+    if child is None:
+        return
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        # macOS answers EPERM, not ESRCH, when the group's last process has just ended.
+        pass
+
+
+def stop(signum, _):
+    global stopped
+    if starting:
+        # The command is being started and isn't known yet: main stops it once it is.
+        stopped = signum
+        return
+    leftovers()
+    sys.exit(128 + signum)
+
+
+def lock():
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        holder = LOCK.read_text(errors="replace").strip()
+        print(f"{NAME}: another test run holds the lock ({holder}); waiting for it", file=sys.stderr, flush=True)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def environment():
+    half = max(1, os.cpu_count() // 2)
+    env = dict(os.environ)
+    for var in CORE_VARS:
+        value = env.get(var, "")
+        if not (value.isdigit() and 0 < int(value) < half):
+            env[var] = str(half)
+    return env
+
+
+def main(argv):
+    global child, starting
+    if len(argv) < 3 or argv[1] != "--":
+        print(__doc__, file=sys.stderr)
+        return 2
+    command = argv[2:]
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    fd = lock()
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, f"{os.getpid()} {os.getcwd()} {' '.join(command)}\n".encode(), 0)
+    starting = True
+    child = subprocess.Popen(["nice", "-n", str(PRIORITY), *command], env=environment(), start_new_session=True)
+    starting = False
+    if stopped:
+        stop(stopped, None)
+    code = child.wait()
+    leftovers()
+    return 128 - code if code < 0 else code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

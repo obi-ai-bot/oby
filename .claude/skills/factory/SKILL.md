@@ -56,6 +56,8 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/bin/job                         the only writer of job.json
 <repo>/factory/bin/gate                        runs checks.sh in a worktree → round-N/checks.md
 <repo>/factory/bin/route                       risk + surfaces → the job's agents
+<repo>/factory/bin/test-run                    runs a builder's own test, clippy or build run: one at a time, below the gates
+<repo>/factory/tests/test_test_run.py          test-run's tests: python3 factory/tests/test_test_run.py
 <repo>/factory/queue/README.md                 the roadmap: milestones, sprints, every task's line
 <repo>/factory/queue/tasks/<KEY>.md            an open task: SPRINT, ORDER, DEPENDS, FIXES, then its text
 <repo>/factory/queue/done/<KEY>.md             a finished task; its own PR moved it here
@@ -195,6 +197,18 @@ with one GitHub call at most every 2 minutes:
 `factory/bin/job queue` runs. Pruning never waits for a check: when a check holds the folder's lock it
 is skipped until the next time. Run `factory/bin/job clean` yourself when the disk runs low; it prints
 the free space before and after.
+
+**Builders' own runs.** Builders, and a code reviewer confirming a finding, run their own tests, clippy
+and builds through `factory/bin/test-run -- <command>`. Those runs take turns on
+`~/Library/Caches/oby-factory/test-run.lock` (beside the shared Cargo folder, so pruning never deletes it),
+run at `nice -n 15` with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores,
+and a run that waits says for whom. Gates never wait on it: the gate's check holds only `.factory-check.lock`,
+and at normal priority it gets the CPU first whenever both want it. It is `nice`, not `taskpolicy -b`, because
+`taskpolicy -b` also throttles the run's disk I/O and keeps it on the Mac's 6 efficiency cores even when no
+gate runs, which makes a builder's Rust build several times slower for no gain. Commands that read none of
+those variables (`npm test`, `npm run typecheck`, `swift test`) are held only by the lock and the priority,
+and an explicit `-j` or `--test-threads` overrides them. `cargo fmt --check`, `npm install`, the check's plan
+print and the dev server (`npm run web`) run directly.
 
 A person can merge a job's PR by hand at any stage. `factory/bin/job queue`
 then moves the job to `merged`; stop any agents still running for it.
