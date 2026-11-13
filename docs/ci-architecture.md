@@ -245,11 +245,11 @@ requests wait for the owner.
    - conflict → a builder round
 3. **The merge gate goes.** With no sync there is nothing new to test on the Mac: the head is the
    one the gate passed, and `factory/bin/gate --merge`'s reuse rule from #2160 already passes it
-   without running the check. *This changes a rule only the owner changes:* AGENTS.md says a pull
-   request into `dev` merges after "the checks on the user's Mac pass on the same commit". After
-   this, the Mac passes the pull request's own head, and the merged tree is tested by the full
-   Linux suite and, nightly, by the full Mac check. The alternative, keeping today's Mac merge
-   gate, costs about 10 Mac minutes per pull request. **The owner picks.**
+   without running the check. This changes a rule only the owner changes: AGENTS.md says a pull
+   request into `dev` merges after "the checks on the user's Mac pass on the same commit". **The
+   owner decided it on 2026-11-13: "Yes, drop the Mac merge gate".** From R01-12 on, the Mac check
+   passes the pull request's own head. The merged code is tested by the queue's full Linux suite
+   and, nightly, by the full Mac check. R01-12 rewrites AGENTS.md's line to say so.
 4. **The builder runs targeted tests, not the whole check.** The gate runs the check right after
    it (`.claude/agents/builder.md`).
 5. **A nightly full Mac run on `dev`** (R01-14): when no gate is waiting, `OBY_CHECK_ALL=1
@@ -316,7 +316,7 @@ for it, because `queued` is a waiting stage and the slot goes to the next task.
 | A batch fails on a flaky test and removes good pull requests | Medium: a lost batch is about 38 min and a re-queue | `retries = 1` in the queue, the quarantine list, and the factory's re-queue-once. |
 | GitHub blames the wrong pull request in a multi-PR group (undocumented) | Low | Re-queue once alone before any builder round; maximum group size 5. |
 | Lanes in the queue skip a test a change reaches through a path not in the table | Low | Coarse lanes (any `core/` change runs all of Rust), every lane for CI and toolchain files, and the nightly full run. |
-| Mac-only breakage merged (Seatbelt, Keychain, Swift) between nightly runs | Medium, until the nightly | The nightly Mac run, and the gate still runs the affected Mac suites on each head. Keep the Mac merge gate if the owner says so (3, above). |
+| Mac-only breakage merged (Seatbelt, Keychain, Swift) between nightly runs | Medium, until the nightly | The nightly Mac run, and the gate still runs the affected Mac suites on each head. The owner accepted this risk on 2026-11-13 by dropping the Mac merge gate. |
 | nextest's process-per-test model changes how obid's tests behave | Low: the statics found guard production code, not tests; `tests/swift_client.rs` builds once per process | R01-02 spikes it first. Its fallback, shards by test binary, is already in that task. |
 | The archive misses `CARGO_BIN_EXE_obid` or fixtures under `tests/` | Low | `--workspace-remap` to the checkout; R01-02's spike proves it. |
 | The queue blocks all merges if `ci.yml` breaks | High, but visible | `Check` fails loudly. A change to `.github/` runs every lane, and the owner's ruleset bypass stays theirs. |
@@ -341,7 +341,7 @@ Each step is safe alone and makes the next one possible.
    including a red shard and a red plan.
 4. **R01-12, the factory queues**: drafts until APPROVE, `queued` stage, re-queue once, merge gate
    reused. It works with or without a queue: `gh pr merge --auto` merges at once when nothing holds
-   it. The owner decides on item 3 above first.
+   it. Its merge-gate drop is decided (item 3 above).
 5. **R01-03, the owner's step**: a ruleset on `dev` (queue and required `Check`) and a required
    `Check` on `main`. It goes on only after R01-12, or every factory merge would go to needs-human.
    Then one real obid job goes through MERGING-41's path into the queue, and one factory job too.
