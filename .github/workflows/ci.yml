@@ -93,6 +93,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
+          exit 1 # temporary (R01-02, CI-6): plan fails, so Check must fail
           tests=true
           case "$GITHUB_EVENT_NAME" in
             pull_request)
