@@ -12,9 +12,8 @@ pub enum NotMade {
 }
 
 impl Jobs {
-    /// Saves `next`, job `id` changed on a copy one revision on, then puts it in memory, all under
-    /// the state lock it was changed under. A failed save changes nothing but the marks that only
-    /// restrict the job ([`carry_marks`]); why is kept for [`Jobs::unkept`] until a save succeeds.
+    /// Saves `next`, job `id` changed a revision on, and puts it in memory, under its state lock. A
+    /// failed save carries only the restricting marks ([`carry_marks`]); [`Jobs::unkept`] says why.
     pub(super) fn keep(&self, state: &mut State, id: &str, next: Job) -> Result<Job, String> {
         if let Err(e) = self.store.save(&next) {
             tracing::error!("can't keep job {id}: {e}");
@@ -29,8 +28,7 @@ impl Jobs {
         Ok(next)
     }
 
-    /// Keeps a new job and tells the apps: one whose save fails doesn't exist, nor the place
-    /// [`Jobs::create`] took for it (HOME-2).
+    /// Keeps a new job and tells the apps; one not saved doesn't exist, nor its place (HOME-2).
     pub(super) fn insert(&self, mut job: Job) -> Result<Job, String> {
         let (mut state, id) = (self.lock(), job.id.clone());
         let kept = self.keep(&mut state, &id, job.revised());
@@ -51,8 +49,8 @@ impl Jobs {
     }
 }
 
-/// The marks that only restrict a job, from `next` onto `job` though `next` wasn't saved: a job is
-/// never treated as less marked than it was found to be, and its next save keeps them.
+/// The marks that only restrict a job, from unsaved `next` onto `job`, the newest `check_withheld`
+/// reason winning: a job is never treated as less marked than it was, and its next save keeps them.
 fn carry_marks(job: &mut Job, next: &Job) {
     if job.foreign.is_none() {
         job.foreign_by_api = next.foreign_by_api;
@@ -66,4 +64,6 @@ fn carry_marks(job: &mut Job, next: &Job) {
     job.memory_from_others |= next.memory_from_others;
     job.ran_unproxied |= next.ran_unproxied;
     job.vetted &= next.vetted;
+    job.withheld = job.withheld.take().or_else(|| next.withheld.clone());
+    job.check_withheld = next.check_withheld.clone().or(job.check_withheld.take());
 }

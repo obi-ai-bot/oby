@@ -19501,9 +19501,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A mark that only restricts a job (someone else's code, unsigned words, no longer vetted)
-    /// stays on it though its save failed, and its next save keeps it: a job is never treated as
-    /// less marked than it was found to be (round-4 security review, finding 1).
+    /// A mark that only restricts a job (someone else's code, unsigned words, no longer vetted,
+    /// the declared secrets withheld) stays on it though its save failed, and its next save keeps
+    /// it: a job is never treated as less marked than it was found to be (round-4 security review,
+    /// finding 1). A `check_withheld` cleared by a failed save keeps its older reason (A00-06).
     #[test]
     fn a_mark_whose_save_failed_stays_and_the_next_save_keeps_it() {
         use std::os::unix::fs::PermissionsExt;
@@ -19518,15 +19519,51 @@ mod tests {
             "c".into(),
         );
         (job.status, job.apart, job.vetted) = (Status::Running, true, true);
+        (job.foreign, job.foreign_by_api) = (Some("words no app signed".into()), true);
+        job.check_withheld = Some("an older check".into());
         let jobs = jobs_with_kept(&home, &[&job]);
         let kept = home.join("jobs");
         std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o500)).unwrap();
-        jobs.mark("aaaa0006", "it reached example.com".into(), false);
+        jobs.mark("aaaa0006", "it read someone else's review".into(), false);
+        jobs.mark("aaaa0006", "it reached example.com".into(), true);
         assert!(jobs.mark_unsigned("aaaa0006").is_none());
         assert!(jobs.unvet("aaaa0006", "a title no app signed").is_none());
+        assert!(jobs.update("aaaa0006", Job::reached_chatgpt).is_none());
+        for mark in [
+            (|job: &mut Job| job.untrusted = true) as fn(&mut Job),
+            |job| job.memory_from_others = true,
+            |job| job.ran_unproxied = true,
+            |job| job.check_withheld = None,
+        ] {
+            assert!(jobs.update("aaaa0006", mark).is_none());
+        }
+        let older = jobs.get("aaaa0006").unwrap().check_withheld;
+        assert_eq!(older.as_deref(), Some("an older check"));
+        let newer = |job: &mut Job| job.check_withheld = Some("a newer check".into());
+        assert!(jobs.update("aaaa0006", newer).is_none());
         std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let marked = |job: &Job| (job.foreign.clone(), job.unsigned, job.vetted);
-        let want = (Some("it reached example.com".to_owned()), true, false);
+        // Every mark `carry_marks` keeps: one set but not carried fails below.
+        let marked = |job: &Job| {
+            (
+                (job.foreign.clone(), job.foreign_by_api, job.reached.clone()),
+                (job.untrusted, job.unsigned, job.memory_from_others),
+                (job.ran_unproxied, job.vetted),
+                (job.withheld.clone(), job.check_withheld.clone()),
+            )
+        };
+        let want = (
+            (
+                Some("words no app signed".to_owned()),
+                false,
+                Some("it reached example.com".to_owned()),
+            ),
+            (true, true, true),
+            (true, false),
+            (
+                Some("this job reached chatgpt.com".to_owned()),
+                Some("a newer check".to_owned()),
+            ),
+        );
         assert_eq!(marked(&jobs.get("aaaa0006").unwrap()), want);
         jobs.update("aaaa0006", |job| job.step = "Working".into())
             .unwrap();
