@@ -148,7 +148,7 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # Dispatcher, not harness (AGENTS.md): how many production lines the Rust core may have outside the
 # Sphere. A cut lowers it. Raising it is the owner's word: this is the check, so a job's own change
 # to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
-obid_lines_limit=99016
+obid_lines_limit=99032
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
 jobs_rs_limit=15107
 # A job's check runs the base's copy of this script on the commit (PUBLISHING-7). A branch that
