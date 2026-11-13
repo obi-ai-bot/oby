@@ -59,8 +59,9 @@ tighten() {
     # scripts/oby-check.sh's own vetting of oby-check-blok, run rather than copied, so the rule is
     # written once: unset, the OBY_CHECK_* variables would skip it. setup runs origin/dev's copy from a
     # folder that isn't a git checkout, so a vetted `oby-check-blok check` stops at `checkout has no
-    # HEAD` (exit 2) and runs no check. Only the refusal line or exit 1 counts as a refusal.
-    if output=$(env -u OBY_CHECK_INNER -u OBY_CHECK_PLAN -u OBY_CHECK_ONLY -u OBY_CHECK_PATHS -u OBY_CHECK_ALL \
+    # HEAD` (exit 2) and runs no check. Only the refusal line or exit 1 counts as a refusal. It starts in
+    # <scratch>, never the caller's folder: the rule refuses a tool inside $PWD, and ssh starts in the home.
+    if output=$(cd "$scratch" && env -u OBY_CHECK_INNER -u OBY_CHECK_PLAN -u OBY_CHECK_ONLY -u OBY_CHECK_PATHS -u OBY_CHECK_ALL \
         PATH="$home/.cargo/bin:$PATH" TMPDIR="$scratch" bash "$script" 2>&1); then
         status=0
     else

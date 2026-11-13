@@ -350,8 +350,10 @@ class Tighten(unittest.TestCase):
 
     def tighten(self):
         args = [self.home, self.root, self.gate, self.script, self.scratch]
+        # From the home, where ssh starts setup on the host.
         return subprocess.run(
             ["bash", "-c", '. "$0"; tighten "$@"', str(TIGHTEN), *map(str, args)],
+            cwd=self.home,
             env=self.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
