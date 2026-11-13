@@ -457,9 +457,12 @@ fn merge_and_remember_merges_and_keeps_the_workflow() {
     );
     assert_eq!(answered.status, 200, "{}", answered.text);
     assert!(folder.0.join("gh/merged").exists());
-    let merged = job(&obid);
+    // The job reads the pull request back after the merge: on a slower runner, a beat later.
+    let merged = within(10, "the job says merged", || {
+        let job = job(&obid);
+        (job["pullRequest"]["state"] == "MERGED").then_some(job)
+    });
     assert_eq!(merged["mergedBy"]["by"], "owner");
-    assert_eq!(merged["pullRequest"]["state"], "MERGED");
     let memory = call(&obid, "GET", "/v1/memory", None).body;
     assert_eq!(memory["memories"][0]["kind"], "workflow");
     assert_eq!(
