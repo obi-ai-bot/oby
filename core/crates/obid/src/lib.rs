@@ -53,6 +53,7 @@ pub mod process;
 pub mod profiles;
 pub mod publish;
 pub mod push;
+pub mod receipts;
 pub mod relay;
 pub mod repos;
 pub mod review;
@@ -467,6 +468,11 @@ pub async fn serve(
     let github =
         github_work::Feed::open(config.clone(), jobs.clone(), link.clone(), events.clone());
     let pushes = push::Push::open(&config.mac_home, &config.push_relay);
+    // What each request key got (crate::receipts): without them obid still starts.
+    let receipts = receipts::Receipts::open(&config.home)
+        .map(Arc::new)
+        .inspect_err(|e| tracing::error!("can't keep request receipts: {e}"))
+        .ok();
     let shared = Arc::new(api::Shared {
         config,
         token,
@@ -494,6 +500,7 @@ pub async fn serve(
         chatgpt: chatgpt.clone(),
         github_work: github.clone(),
         push: pushes,
+        receipts,
         stopping: stopping_rx.clone(),
     });
     let app = api::router(shared.clone());
@@ -508,6 +515,21 @@ pub async fn serve(
     repos::spawn(shared.clone());
     // Job alerts to Android phones through FCM (crate::push).
     push::spawn(shared.clone());
+    // Request receipts a day old go, now and every hour (crate::receipts).
+    if let Some(receipts) = shared.receipts.clone() {
+        let mut stopping = stopping_rx.clone();
+        tokio::spawn(async move {
+            let mut hourly = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                tokio::select! {
+                    _ = hourly.tick() => if let Err(e) = receipts.sweep(obi_protocol::time::now()) {
+                        tracing::warn!("can't sweep the request receipts: {e}");
+                    },
+                    _ = stopping.changed() => return,
+                }
+            }
+        });
+    }
     // The worktrees' cleanup pass, in the background: never before the first answer.
     tokio::spawn(keep_worktrees_clean(shared.clone(), cancelled.clone()));
     // The machine's memory and each running job's, while jobs run (crate::meter).

@@ -74,6 +74,8 @@ pub struct Shared {
     pub github_work: Arc<crate::github_work::Feed>,
     /// The phones' FCM tokens and the job alerts sent to them (crate::push).
     pub push: crate::push::Push,
+    /// What each request key got, for a day; none when `home/receipts` can't be made.
+    pub receipts: Option<Arc<crate::receipts::Receipts>>,
     /// True once obid is stopping: streams end.
     pub stopping: tokio::sync::watch::Receiver<bool>,
 }
