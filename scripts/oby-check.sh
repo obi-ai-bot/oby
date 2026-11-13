@@ -153,6 +153,8 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 obid_lines_limit=99052
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
 jobs_rs_limit=15107
+# obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
+tests_sleep_limit=206
 # A job's check runs the base's copy of this script on the commit (PUBLISHING-7). A branch that
 # changed a limit since it started from its merge base (a cut lowers it) is held to its own number,
 # but never to one higher than the running copy's; one that didn't gets the running copy's, an
@@ -175,6 +177,7 @@ pick_limit() { # name: sets it from the commit's copy where the branch changed i
 }
 pick_limit obid_lines_limit
 pick_limit jobs_rs_limit
+pick_limit tests_sleep_limit
 # Said after a limit's failure: dev's limit changed since this branch started.
 moved() { [[ " ${limit_moved[*]} " != *" $1 "* ]] || echo " (dev's limit changed since this branch started: rebase onto dev)"; }
 # A file counts all but its test modules: from a `#[cfg(test)]` on a `mod name {` to the next `}` in
@@ -199,6 +202,14 @@ obid_lines() {
 }
 jobs_rs_lines() {
     if [[ -f core/crates/obid/src/jobs.rs ]]; then awk "$production_lines" core/crates/obid/src/jobs.rs; else echo 0; fi
+}
+# Each `thread::sleep` and `time::sleep` in obid's tests, however many share a line.
+tests_sleeps() {
+    if [[ -d core/crates/obid/tests ]]; then
+        { grep -rEo '(thread|time)::sleep' --include='*.rs' core/crates/obid/tests || true; } | wc -l | tr -d ' '
+    else
+        echo 0
+    fi
 }
 
 failed=() unjudged=()
@@ -404,6 +415,16 @@ if selected && [[ -n "$rust$check_script" ]]; then
         failed+=("jobs.rs's line limit")
     else
         echo "oby-check: jobs.rs has $jobs_lines production lines, within its limit of $jobs_rs_limit"
+    fi
+    sleeps=$(tests_sleeps)
+    if ((sleeps > tests_sleep_limit)); then
+        echo "oby-check: obid's tests have $sleeps sleep calls, past their limit of $tests_sleep_limit (docs/contracts/ci.md, CI-12): a test waits for state with support::within instead of sleeping$(moved tests_sleep_limit)" >&2
+        failed+=("obid's tests' sleep limit")
+    elif ((sleeps < tests_sleep_limit)); then
+        echo "oby-check: obid's tests have $sleeps sleep calls, under their limit of $tests_sleep_limit (docs/contracts/ci.md, CI-13): lower tests_sleep_limit in this script from $tests_sleep_limit to $sleeps, so the cut stays cut$(moved tests_sleep_limit)" >&2
+        failed+=("obid's tests' sleep limit")
+    else
+        echo "oby-check: obid's tests have $sleeps sleep calls, within their limit of $tests_sleep_limit"
     fi
 fi
 

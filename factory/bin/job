@@ -12,7 +12,8 @@ task's own pull request does by moving it there. Nothing here reads or writes
 GitHub issues; pull requests still go through `gh`.
 
 Usage:
-  job queue                      what /factory run should do with each task in the active sprint; settles queued jobs
+  job queue                      what /factory run should do with each task in the active sprint; settles queued jobs;
+                                 a `nightly due<TAB><why>` line before the `#` line when factory/bin/nightly is due
   job create <task>              new job for an open task whose dependencies are done; prints the job id
   job add <title>                new task file from stdin (the task's text); prints its key
   job advance <job> <stage>      move a job to <stage>, or refuse
@@ -666,6 +667,15 @@ def cmd_add(title, text):
     print(key)
 
 
+def nightly_due():
+    """Why the nightly full Mac check is due, or None. The rule is factory/bin/nightly's own."""
+    try:
+        res = subprocess.run([str(BIN / "nightly"), "--due"], cwd=REPO, capture_output=True, text=True)
+    except OSError:
+        return None
+    return (res.stdout.strip() or None) if res.returncode == 0 else None
+
+
 def cmd_queue():
     """Rows in the order to start them. `resume` and `new` rows fit in the
     concurrency slots; the rest show as `hold` until a running job finishes.
@@ -746,6 +756,9 @@ def cmd_queue():
                 rows.append(("hold",) + row[1:4] + (f"concurrency {CONCURRENCY} reached",))
     for row in rows + other_rows:
         print("\t".join(str(c) for c in row))
+    why = nightly_due()
+    if why:
+        print(f"nightly due\t{why}")
     print(f"# sprint {SPRINT}: {finished} done, {len(running_rows)} running, {len(new_rows)} ready"
           + (f" ({held} held for a slot)" if held else "")
           + f", {len(blocked)} blocked, {later} in later sprints"
