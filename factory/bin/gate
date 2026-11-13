@@ -4,7 +4,6 @@
 Usage:
   gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL
   gate <job-id> --merge    same, as round-N/merge-checks.md (job merge runs it)
-  gate --hook              builder SubagentStop hook: run the checks once, exit 2 on failure
 
 The gate runs the main checkout's factory/checks.sh inside the job's worktree,
 so a branch can't change the checks it is judged by. It also fails when the
@@ -13,6 +12,7 @@ branch modifies or deletes a file matching config.json `protected_paths`
 """
 
 import fnmatch
+import hashlib
 import json
 import subprocess
 import sys
@@ -58,6 +58,40 @@ def run_checks(worktree):
     return res.returncode, res.stdout + res.stderr, int(time.monotonic() - start)
 
 
+def checks_hash():
+    return hashlib.sha256(CHECKS.read_bytes()).hexdigest()
+
+
+def header(path):
+    fields = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            break
+        key, _, value = line.partition(":")
+        fields[key.strip().upper()] = value.strip()
+    return fields
+
+
+def reuse(round_dir, commit, merge):
+    """The round's own gate already passed this exact commit with this exact checks.sh: the merge
+    gate's sync with the base brought nothing new, so running the check again would test the same
+    code with the same script. Write merge-checks.md saying so and pass."""
+    if not merge or not (round_dir / "checks.md").exists():
+        return False
+    h = header(round_dir / "checks.md")
+    if h.get("GATE") != "PASS" or h.get("COMMIT") != commit or h.get("CHECKS") != checks_hash():
+        return False
+    (round_dir / "merge-checks.md").write_text(
+        f"GATE: PASS\nCOMMIT: {commit}\nCHECKS: {checks_hash()}\nREUSED: checks.md\n\n"
+        "## Summary\n"
+        f"- Syncing with the base brought no new commit: the head is still {commit[:7]}\n"
+        "- This round's gate passed that exact commit with this exact checks.sh, so it wasn't run again\n"
+        "- See checks.md and checks.log for that run\n")
+    print(f"GATE: PASS (reused round {round_dir.name.split('-')[1]}'s pass on {commit[:7]}: "
+          "the sync brought nothing new)")
+    return True
+
+
 def gate(job_id, merge):
     job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
     worktree = job["worktree"]
@@ -65,6 +99,8 @@ def gate(job_id, merge):
         die(f"{job_id} hasn't started a build round")
     round_dir = FACTORY / "jobs" / job_id / f"round-{job['round']}"
     commit = git(worktree, "rev-parse", "HEAD").strip()
+    if reuse(round_dir, commit, merge):
+        sys.exit(0)
     protected = protected_changes(worktree)
     code, log, seconds = run_checks(worktree)
     verdict = "PASS" if code == 0 and not protected else "FAIL"
@@ -77,7 +113,7 @@ def gate(job_id, merge):
         f"Commit {commit[:7]}" + (", synced with the latest main before merging" if merge else ""),
     ]
     (round_dir / f"{name}.md").write_text(
-        f"GATE: {verdict}\nCOMMIT: {commit}\n\n"
+        f"GATE: {verdict}\nCOMMIT: {commit}\nCHECKS: {checks_hash()}\n\n"
         "## Summary\n" + "\n".join(f"- {s}" for s in summary) + "\n\n"
         "## Protected paths\n"
         + ("\n".join(f"- {p}" for p in protected) if protected else "None changed.")
@@ -88,28 +124,8 @@ def gate(job_id, merge):
     sys.exit(0 if verdict == "PASS" else 1)
 
 
-def hook():
-    event = json.load(sys.stdin)
-    if event.get("stop_hook_active"):
-        sys.exit(0)  # one nudge per stop; the gate decides
-    with open(Path(event["agent_transcript_path"]).expanduser()) as f:
-        content = json.loads(f.readline())["message"]["content"]
-    prompt = content if isinstance(content, str) else " ".join(b.get("text", "") for b in content)
-    job_id = prompt.split("Job: ", 1)[1].split(".", 1)[0]
-    job = json.loads((FACTORY / "jobs" / job_id / "job.json").read_text())
-    code, log, _ = run_checks(job["worktree"])
-    if code != 0:
-        tail = "\n".join(log.rstrip().splitlines()[-40:])
-        print(f"factory/checks.sh fails in your worktree (exit {code}). The gate will reject this "
-              f"build. Fix it, or write STATUS: BLOCKED in build.md if you can't.\n\n{tail}",
-              file=sys.stderr)
-        sys.exit(2)
-
-
 def main(argv):
-    if argv == ["--hook"]:
-        hook()
-    elif len(argv) == 1 and not argv[0].startswith("-"):
+    if len(argv) == 1 and not argv[0].startswith("-"):
         gate(argv[0], merge=False)
     elif len(argv) == 2 and argv[1] == "--merge":
         gate(argv[0], merge=True)
