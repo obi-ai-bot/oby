@@ -88,6 +88,9 @@
                 0 8px 24px -12px color-mix(in srgb, var(--human) 60%, transparent);
   }
   .card.done { opacity: .72; }
+  .card.queued { border-style: dashed; box-shadow: none; cursor: default; }
+  .card.queued.blocked { opacity: .6; }
+  .card.queued .num { color: var(--muted, inherit); }
   .card.rejected .feature { text-decoration: line-through; text-decoration-color: var(--faint); }
   .flag.wait { color: var(--changes); }
   .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
@@ -404,6 +407,22 @@ function card(job, rounds) {
     </article>`
 }
 
+// A task of the active sprint that has no job yet: ready (its DEPENDS are done) or blocked.
+function queuedCard(t, done) {
+  const waits = t.depends.filter((k) => !done.has(k))
+  const state = waits.length ? `waits for ${waits.join(', ')}` : 'ready, next free slot'
+  return `
+    <article class="card queued ${waits.length ? 'blocked' : ''}">
+      <div class="card-top">
+        <span class="num">${esc(t.key)} · sprint ${esc(t.sprint)}</span>
+        <span class="flag wait">${waits.length ? 'blocked' : 'queued'}</span>
+      </div>
+      <p class="feature">${esc(t.title)}</p>
+      <div class="links">${link(`queue/tasks/${t.key}.md`, `task ${esc(t.key)}`)}</div>
+      <div class="meta">${t.risk ? `<span class="risk-${esc(t.risk)}">${esc(t.risk)}</span>` : ''}<span>${esc(state)}</span></div>
+    </article>`
+}
+
 async function render() {
   const problems = []
   const cards = new Map(COLUMNS.map((c) => [c, []]))
@@ -413,6 +432,17 @@ async function render() {
     for (let n = 1; n <= job.round; n++) rounds.push(roundRow(job, n, await roundVerdicts(job, n)))
     cards.get(COLUMNS.find((c) => c.stages.includes(job.stage))).push(card(job, rounds))
   }
+  // The rest of the active sprint, from queue/tasks: listed under Intake after the jobs there,
+  // ready ones first, in the queue's order. The column is reversed below (newest job first), so
+  // they go in at the front, each before the last, to come out after the jobs in this order.
+  const started = new Set(jobs.map((j) => String(j.issue)))
+  const done = new Set([...queue.done, ...jobs.filter((j) => j.stage === 'merged').map((j) => String(j.issue))])
+  const waiting = queue.tasks
+    .filter((t) => !started.has(t.key) && !done.has(t.key) && t.sprint <= queue.sprint)
+    .sort((a, b) => (a.depends.some((k) => !done.has(k)) - b.depends.some((k) => !done.has(k)))
+      || a.sprint - b.sprint || a.order - b.order)
+  const intake = cards.get(COLUMNS[0])
+  for (const t of waiting) intake.unshift(queuedCard(t, done))
   // Newest first within a column.
   const html = COLUMNS.map((c) => `
     <section class="col ${c.cls || ''}">
@@ -430,13 +460,14 @@ async function render() {
   }
   const running = jobs.filter((j) => LIVE.has(j.stage)).length
   const cost = jobs.reduce((sum, j) => sum + Number(j.cost_usd), 0)
-  $('totals').textContent = `${running} running · $${cost.toFixed(2)} API-equivalent`
+  $('totals').textContent = `sprint ${queue.sprint}: ${waiting.length} not started · ${running} running · $${cost.toFixed(2)} API-equivalent`
 }
 
 async function poll() {
   const status = $('status')
   try {
     jobs = await loadJobs()
+    queue = await loadQueue()
     await render()
     if (openJobId) await refreshDrawer()
     status.className = 'status'
@@ -458,6 +489,43 @@ async function loadJobs() {
     .map((h) => h.slice(0, -1))
     .sort()
   return Promise.all(ids.map(async (id) => JSON.parse(await fetchText(`jobs/${id}/job.json`))))
+}
+
+// The queue: queue/tasks/<KEY>.md (open) and queue/done/<KEY>.md (finished), with the active sprint
+// from config.json. A task file's header (NAME: value lines up to the first blank line) is read once.
+let queue = { sprint: 0, tasks: [], done: [] }
+const taskCache = new Map()
+
+async function listing(dir) {
+  try {
+    const doc = new DOMParser().parseFromString(await fetchText(dir), 'text/html')
+    return [...doc.querySelectorAll('a')].map((a) => decodeURIComponent(a.getAttribute('href')))
+      .filter((h) => /^[A-Z][0-9]{2}-[0-9]{2}\.md$/.test(h)).map((h) => h.slice(0, -3))
+  } catch { return [] }
+}
+
+async function loadTask(key) {
+  if (taskCache.has(key)) return taskCache.get(key)
+  const h = {}
+  for (const line of (await fetchText(`queue/tasks/${key}.md`)).split('\n')) {
+    if (!line.trim()) break
+    const i = line.indexOf(':')
+    h[line.slice(0, i).trim().toUpperCase()] = line.slice(i + 1).trim()
+  }
+  const t = {
+    key, title: h.TITLE || key, sprint: Number(h.SPRINT || 0), order: Number(h.ORDER || 0),
+    risk: h.RISK || '', depends: (h.DEPENDS || '').match(/[A-Z][0-9]{2}-[0-9]{2}/g) || [],
+  }
+  taskCache.set(key, t)
+  return t
+}
+
+async function loadQueue() {
+  let sprint = queue.sprint
+  try { sprint = JSON.parse(await fetchText('config.json')).sprint ?? sprint } catch {}
+  const [open, done] = await Promise.all([listing('queue/tasks/'), listing('queue/done/')])
+  const tasks = (await Promise.all(open.map((k) => loadTask(k).catch(() => null)))).filter(Boolean)
+  return { sprint, tasks, done }
 }
 
 // ---- Drawer --------------------------------------------------------------
