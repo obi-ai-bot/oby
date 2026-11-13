@@ -80,6 +80,44 @@ function walkText(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+function swiftFiles(dir: string, out: string[] = []): string[] {
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) { if (name !== 'tests') swiftFiles(full, out); }
+    else if (name.endsWith('.swift')) out.push(full);
+  }
+  return out;
+}
+
+/**
+ * The Swift client's `call("METHOD", "v1/…")` and `send("METHOD", "v1/…")`: the path is the literal alone (anything
+ * concatenated after it is ignored), each `\(…)` in it, nested parentheses included, a `{}` segment.
+ */
+export function swiftCalls(text: string): Array<{ method: string; path: string; line: number }> {
+  const calls: Array<{ method: string; path: string; line: number }> = [];
+  for (const m of text.matchAll(/\b(?:call|send)\(\s*"(GET|POST|PUT|PATCH|DELETE)"\s*,\s*"(?=v1\/)/g)) {
+    let i = m.index + m[0].length;
+    let path = '/';
+    while (i < text.length && text[i] !== '"' && text[i] !== '\n') {
+      if (text[i] === '\\' && text[i + 1] === '(') {
+        // to the interpolation's own closing parenthesis, past the strings inside it
+        let depth = 0;
+        for (i++; i < text.length; i++) {
+          if (text[i] === '"') { for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === '\\') i++; }
+          else if (text[i] === '(') depth++;
+          else if (text[i] === ')' && --depth === 0) break;
+        }
+        path += '{}';
+        i++;
+      } else if (text[i] === '\\') { path += text[i + 1]; i += 2; }
+      else path += text[i++];
+    }
+    calls.push({ method: m[1], path, line: text.slice(0, m.index).split('\n').length });
+  }
+  return calls;
+}
+
 function git(root: string): BrainData['git'] {
   try {
     const run = (...a: string[]) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8' }).trim();
@@ -99,7 +137,7 @@ export function generateBrain(config: BrainConfig): BrainData {
   const checks: Check[] = [];
   for (const e of rust.errors) checks.push({ kind: 'extract', message: `obid-extract couldn't read it: ${e.message}`, source: { file: e.file, line: 1 } });
 
-  // ---- callers: the renderer's api methods and main's literals, matched to routes
+  // ---- callers: the renderer's api methods, main's literals and the Swift client's calls, matched to routes
   const routeKey = (method: string, path: string) => `${method} ${normPath(path)}`;
   const rustKeys = new Set(rust.routes.map(r => routeKey(r.method, r.path)));
   const idOfKey = new Map(rust.routes.map(r => [routeKey(r.method, r.path), `${r.method} ${r.path}`]));
@@ -122,6 +160,14 @@ export function generateBrain(config: BrainConfig): BrainData {
     const key = routeKey(c.method, c.path);
     if (rustKeys.has(key)) addCaller(key, c.file.split('/').pop()!, c.file, c.line);
     else checks.push({ kind: 'call-without-route', message: `${c.file.split('/').pop()} calls ${c.method} ${c.path}, which obid doesn't route`, source: { file: c.file, line: c.line } });
+  }
+  for (const dir of config.swiftClient) for (const full of swiftFiles(join(root, dir))) {
+    const file = relative(root, full).split(sep).join('/');
+    for (const c of swiftCalls(readFileSync(full, 'utf8'))) {
+      const key = routeKey(c.method, c.path);
+      if (rustKeys.has(key)) addCaller(key, file.split('/').pop()!, file, c.line);
+      else checks.push({ kind: 'call-without-route', message: `${file.split('/').pop()} calls ${c.method} ${c.path}, which obid doesn't route`, source: { file, line: c.line }, ref: key });
+    }
   }
   const apiRoute = new Map(design.api.map(a => [a.name, a.route]));
   for (const s of design.screens) for (const l of s.live) l.route = apiRoute.get(l.api) ?? null;

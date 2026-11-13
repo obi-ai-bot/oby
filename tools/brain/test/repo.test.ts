@@ -60,12 +60,27 @@ describe('retired routes', () => {
     ]);
     expect([...doc.documented]).toEqual(['POST /v1/agent/mcp/{}']);
   });
+
+  it('retired_9_the_swift_client_calls_only_served_routes', () => {
+    const exceptions = [
+      'GET /v1/watches', // R03-07, the Watch's pairing
+      'POST /v1/watches', // R03-07, the Watch's pairing
+      'DELETE /v1/watches/{}', // R03-07, the Watch's pairing
+      'POST /v1/jobs/{}/proposals/{}/file', // the task page's file-a-proposal button: removing it changes a screen, its own task
+    ];
+    const swift = count('call-without-route').filter(c => config.swiftClient.some(d => c.source?.file.startsWith(`${d}/`)) && c.source!.file.endsWith('.swift'));
+    expect(swift.filter(c => !exceptions.includes(c.ref!)).map(c => c.message)).toEqual([]);
+    // a scan that reads nothing can't pass
+    expect(brain.routes.find(r => r.id === 'GET /v1/status')!.callers.some(c => c.source.file === 'apps/shared/Runner.swift')).toBe(true);
+    expect(brain.routes.flatMap(r => r.callers).filter(c => c.source.file.endsWith('.swift')).length).toBeGreaterThan(50);
+  });
 });
 
 describe('the app', () => {
   it('reaches a real route with every call it makes', () => {
     expect(brain.api.length).toBeGreaterThan(20);
-    expect(count('call-without-route').map(c => c.message)).toEqual([]);
+    // the Swift client's calls are RETIRED-9's
+    expect(count('call-without-route').filter(c => !c.source?.file.endsWith('.swift')).map(c => c.message)).toEqual([]);
   });
 
   it('says who owns every choice it keeps itself', () => {
