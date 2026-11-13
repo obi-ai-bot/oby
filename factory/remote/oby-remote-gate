@@ -30,8 +30,10 @@ tools/ gets the current time, as factory/checks.sh does.
 Check. The commit's own `OBY_CHECK_PLAN=1 scripts/oby-check.sh <base>` says which
 groups run; rust, electron and scan run here, in that order, each with OBY_CHECK_ONLY
 set and OBY_BUILD_JOBS at the cores / 4, every one to its end. swift is the Mac's and
-never runs here. Before rust, `cargo fetch --locked` (the check builds offline); before
-electron, `npm ci` in apps/electron. ~/.cargo/bin, where setup.sh's rustup puts cargo,
+never runs here. Before rust, `cargo fetch --locked`; before electron, `npm ci` in
+apps/electron. Those two have the network; the groups then run offline, with
+CARGO_NET_OFFLINE=true and npm_config_offline=true, as oby-check-blok runs them on the
+Mac. ~/.cargo/bin, where setup.sh's rustup puts cargo,
 comes first on PATH: a command over ssh reads no profile. The output is relayed as it
 comes, stderr in stdout.
 
@@ -66,6 +68,8 @@ VERDICTS = {0: "passed", 1: "failed", 2: "couldn't judge"}
 SHA = re.compile(r"[0-9a-f]{40}")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
 GRACE = 10
+# As oby-check-blok's check_command sets them on the Mac: no network for a group's builds and tests.
+OFFLINE = {"CARGO_NET_OFFLINE": "true", "npm_config_offline": "true"}
 
 child = None
 starting = False
@@ -299,7 +303,7 @@ def main(argv):
             results.append(2)
             continue
         say(f"group {group}")
-        code = run([check, base], worktree, dict(env, OBY_CHECK_ONLY=group))[0]
+        code = run([check, base], worktree, dict(env, OBY_CHECK_ONLY=group, **OFFLINE))[0]
         say(f"group {group} ended {code}")
         results.append(code)
 

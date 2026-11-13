@@ -8,7 +8,9 @@ intake → spec → build → gate → review → approve. How to run it and wha
 config.json     concurrency, rounds, the active sprint, routing, protected paths, prices
 checks.sh       the gate's checks: scripts/oby-check.sh on the job's worktree
 bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; queues approved PRs
-bin/gate        runs checks.sh in a job's worktree → round-N/checks.md
+bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `remote_gate` set, the Linux groups on
+                the gate VM and the macOS-only part on the Mac, falling back to the Mac; `gate --idle` deallocates the
+                idle VM (job queue runs it)
 bin/route       risk + surfaces → the job's reviewers and models
 bin/test-run    a builder's own test, clippy or build run: one at a time on its own lock, at nice 15, half the cores
 bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
@@ -23,7 +25,7 @@ tests/          the factory's own tests, stdlib only, from the repository root: 
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
-jobs/           runtime state, local to this Mac (gitignored)
+jobs/           runtime state, local to this Mac (gitignored); jobs/remote-gate/state.json is the gate VM's last use
 ```
 
 `jobs/nightly/` holds the nightly check's results, one `<stamp>.md` (`GATE: PASS|FAIL`, the commit, when it
@@ -38,9 +40,13 @@ with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half 
 none of those (`npm test`, `npm run typecheck`, `swift test`) are held only by the lock and the priority, and an
 explicit `-j` or `--test-threads` overrides them.
 
-Gates still run on the Mac: `bin/gate` doesn't use `remote/` yet, which a second task wires in
-(`docs/factory-remote-gate.md`, "Still to build"). The gate VM `oby-gate` is only started by hand
-(`az vm start`), and deallocated by hand when its work is done.
+Gates run on the Mac until the owner adds `remote_gate` to `config.json` (`docs/factory-remote-gate.md`, "The
+owner's steps"). With it, `bin/gate` reads the check's plan, starts the gate VM `oby-gate` when it is stopped
+(`az vm start`), runs the Linux groups there with `ssh oby-gate oby-remote-gate <commit> origin/dev`, and runs
+swift, and rust when the diff touches a macOS-only path, on the Mac. It runs the whole check on the Mac when the
+VM can't be reached in 3 minutes, couldn't judge, or the commit isn't on origin. `FACTORY_REMOTE_GATE` (the same
+JSON) turns it on for one run. Each remote use stamps `jobs/remote-gate/state.json`, and `bin/job queue` runs
+`bin/gate --idle`, which deallocates the VM 30 minutes after its last use when no job is in `gate` or `merging`.
 
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks

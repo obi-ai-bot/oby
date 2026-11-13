@@ -34,6 +34,7 @@ if [ -n "$OBY_CHECK_PLAN" ]; then
     exit 0
 fi
 slot=$(basename "$(dirname "$PWD")")
+echo "$OBY_CHECK_ONLY ${CARGO_NET_OFFLINE:-unset} ${npm_config_offline:-unset}" >>"$FAKE/offline"
 sleep 300 >/dev/null 2>&1 &
 echo "$slot $CARGO_TARGET_DIR $OBY_CHECK_ONLY $$ $!" >>"$FAKE/runs"
 while [ ! -e "$FAKE/release" ] && [ ! -e "$FAKE/release-$slot" ]; do sleep 0.1; done
@@ -123,7 +124,10 @@ class RemoteGate(unittest.TestCase):
         # A stand-in npm, so the electron group needs no network.
         bin_dir = self.dir / "bin"
         bin_dir.mkdir()
-        (bin_dir / "npm").write_text(f'#!/bin/sh\necho "npm $*" >>"{self.fake}/npm"\n')
+        (bin_dir / "npm").write_text(
+            f'#!/bin/sh\necho "npm $*" >>"{self.fake}/npm"\n'
+            f'echo "${{npm_config_offline:-unset}}" >>"{self.fake}/npm-offline"\n'
+        )
         (bin_dir / "npm").chmod(0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_")}
         self.env.update(
@@ -251,6 +255,18 @@ class RemoteGate(unittest.TestCase):
         self.assertIn("oby-remote-gate: groups rust electron scan", gate.lines)
         self.assertEqual((self.fake / "npm").read_text(), "npm ci\n")
         self.assertRegex(gate.lines[-1], r"^oby-remote-gate: failed in slot 1 after \d+s$")
+
+    def test_remote_9_groups_run_offline(self):
+        self.groups("rust", "electron", "scan")
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base)
+        self.assertEqual(gate.finish(), 0, gate.output())
+        self.assertEqual(
+            (self.fake / "offline").read_text().splitlines(),
+            ["rust true true", "electron true true", "scan true true"],
+        )
+        # npm ci, before the electron group, still has the network.
+        self.assertEqual((self.fake / "npm-offline").read_text(), "unset\n")
 
 
 class Pins(unittest.TestCase):
