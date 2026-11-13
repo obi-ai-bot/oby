@@ -166,6 +166,13 @@ finished:
 A job is finished for this run when it reaches `merged`, `rejected`,
 `needs-info` or `needs-human`.
 
+**Cleaning.** A finished job (merged or rejected) loses its worktree, with every build folder and
+`node_modules` in it, and `factory/bin/job` prunes the shared Cargo folder
+(`~/Library/Caches/oby-factory/core-target`): after each merge it makes, and each time
+`factory/bin/job queue` runs. Pruning never waits for a check: when a check holds the folder's lock it
+is skipped until the next time. Run `factory/bin/job clean` yourself when the disk runs low; it prints
+the free space before and after.
+
 A person can merge a job's PR by hand at any stage. `factory/bin/job queue`
 then moves the job to `merged`; stop any agents still running for it.
 
