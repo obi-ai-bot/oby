@@ -1004,7 +1004,7 @@ fn pause_if_failing(shared: &Shared, routine: &Routine) {
         PAUSE_AFTER,
         obi_protocol::time::now(),
     );
-    shared.link.add_confirm(card);
+    let _ = shared.link.add_confirm(card);
 }
 
 /// Run now: a run for `now`, paused or not, that leaves its next time as it was.
