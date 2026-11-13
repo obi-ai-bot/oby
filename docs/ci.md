@@ -1,17 +1,59 @@
 # Checks
 
-Checks run in two places: GitHub's `Linux` workflow (`.github/workflows/linux.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 and CI-2); where CI is going, a new workflow and the merge queue on `dev`, is [docs/ci-architecture.md](ci-architecture.md).
+Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20); the design behind it, with the merge queue on `dev` still to come (R01-03), is [docs/ci-architecture.md](ci-architecture.md).
 
 ## What GitHub runs
 
-- **A ready pull request** starts the `Linux` workflow by itself on its head, when it is opened, reopened, pushed or marked ready. It runs the secret scan (gitleaks over the pull request's commits, with `.gitleaks.toml`). When the change reaches Rust, it also runs `cargo fmt --check` and `cargo clippy -D warnings`. It runs no tests: no `cargo test`, no `make e2e`, no control-plane tests.
-- **What reaches Rust.** A pull request whose files are all under `docs/` (but not `docs/api/`), `factory/`, `.claude/`, `design/`, `character/`, `apps/ios/`, `apps/watch/` or `cloud/`, or other Markdown, runs only the secret scan. `docs/api/`, `core/`, `.github/` and any other file reach Rust. `cloud/control-plane/` and `.github/` reach the control-plane job, which runs only with the tests (nightly, on demand, or `full-ci`).
-- **A draft's jobs are skipped**, and a skipped job reports success. Marking a draft ready runs it on the same head.
-- **The `full-ci` label** runs everything the change reaches, tests included, from the next push after labelling (a draft with it runs too).
-- **A newer push to the same pull request cancels the run it supersedes.**
-- **Nightly at 03:17 UTC on `dev`, and on demand** (`workflow_dispatch`, for example `gh workflow run linux.yml --ref dev`), every job runs to the end: fmt, clippy, `cargo test`, the secret scan, the control plane's `pnpm test` and `pnpm check`, and `make e2e` (stub agents, against the oby-sphere commit in `e2e/oby-sphere.ref`).
-- **A push to `dev` or `main` starts no run.** The factory merges a pull request as soon as it is ready, so nobody read those runs.
-- **Caches.** Only the nightly and on-demand runs save the Rust caches (`Swatinem/rust-cache`'s `save-if`). Every other run only restores them, because a pull request's caches are scoped to `refs/pull/<n>/merge` and no other pull request can read them. The pnpm cache from `actions/setup-node` has no save switch and is left as it is, because it is small.
+`ci.yml` has one job, `Check`, that says whether a run passed. The other jobs run or are skipped by `if:` (a skipped job reports success); the workflow has no `paths:` filter, so `Check` always reports.
+
+| Job | What it runs |
+| --- | --- |
+| `plan` | Which lanes the change reaches (below), and gitleaks with `.gitleaks.toml` over the commits the run brings: a pull request's from its merge base, the merge queue's from the group's base. A nightly or on-demand run on `dev` has no earlier commit and scans its head commit alone. A finding fails `plan`. |
+| `lint` | In `core/`: `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`. |
+| `rust-build` | One `cargo nextest archive --workspace --locked` of `core/`, uploaded and kept 1 day. |
+| `rust-test` (1/4 to 4/4) | The archive's tests, a quarter each (`--partition slice:k/4`), with `--profile ci --no-fail-fast`, bubblewrap and gitleaks set up. Each uploads its JUnit report, pass or fail, kept 14 days. |
+| `e2e` | `make e2e`: stub agents, against the oby-sphere commit in `e2e/oby-sphere.ref`. |
+| `control-plane` | In `cloud/control-plane/`: `pnpm test` and `pnpm check`. |
+| `electron` | In `apps/electron/`: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` (Node 22, with zsh installed: the ChatGPT gate's test runs `scripts/package.sh` with `/bin/zsh`). |
+| `tools` | `cargo test` in `tools/oby-check-blok/`, its own Cargo workspace, with the tool installed and gitleaks on `PATH`, since its tests run `scripts/oby-check.sh`. |
+| `Check` | Needs every job above. |
+
+**Modes.** Which jobs run depends on the event, then on the lanes:
+
+| Run | Jobs |
+| --- | --- |
+| A draft pull request without `full-ci` | none: every job is skipped, `Check` too |
+| A ready pull request into `dev` | `plan`, `lint` when the `rust` lane is reached, `Check`: no test job |
+| A pull request labelled `full-ci` (a draft too, from the next push after labelling) | `plan`, `Check`, and every job its lanes reach |
+| A pull request into `main` | the same as `full-ci` |
+| The merge queue (`merge_group`) | the same, over the group's whole diff (`merge_group.base_sha..head_sha`) |
+| Nightly at 03:17 UTC on `dev`, and on demand (`workflow_dispatch`) | every job: every lane is reached |
+
+A newer push to the same pull request cancels the run it supersedes; merge queue, nightly and on-demand runs always run to the end. A push to `dev` or `main` starts no run. On demand: `gh workflow run ci.yml --ref dev`.
+
+**Lanes.** `plan` reads `git diff --name-only` of the run's range and prints the lane set to its log. The first row a path matches decides:
+
+| Paths | Lanes |
+| --- | --- |
+| `.github/**`, `scripts/oby-check*`, `core/Cargo.lock`, `core/Cargo.toml`, `rust-toolchain*` | every lane |
+| `docs/api/**` | `rust` |
+| `core/**`, `e2e/**`, `Makefile` | `rust`, `e2e` |
+| `apps/electron/**` | `electron` |
+| `cloud/control-plane/**` | `control-plane` |
+| `tools/oby-check-blok/**` | `tools` |
+| `docs/**`, `factory/**`, `.claude/**`, `design/**`, `character/**`, `apps/ios/**`, `apps/watch/**`, `apps/shared/**`, `apps/Oby.xcodeproj/**`, `mcp/**`, `*.md` | none: `plan` and `Check` only |
+| any other path | every lane |
+| a diff that can't be read (a missing commit, `git diff` failing) | every lane |
+
+`lint`, `rust-build` and `rust-test` follow `rust`, and `e2e`, `electron`, `control-plane` and `tools` their own lanes.
+
+**`Check`'s rule.** It fails when `plan` didn't succeed (so skipped lanes can never pass over a broken plan), or when any job failed or was cancelled; a skipped job passes. Its step summary shows the mode, the lanes, each job's result, each failed shard with its failing tests (from that shard's JUnit), and under "Flaky" every test that passed only on its retry.
+
+**Shards and retries.** nextest runs each test in its own process. `core/.config/nextest.toml`'s `ci` profile retries a failed test once, writes `target/nextest/ci/junit.xml`, and stops a test after 5 minutes (60-second periods, 5 of them). A test that passes on its retry shows as `flakyFailure` in the JUnit and in `Check`'s "Flaky" list. The quarantine list (R01-13) goes in the same file.
+
+**Caches.** Only the nightly and on-demand runs save the Rust caches (`Swatinem/rust-cache`'s `save-if`), one `shared-key` per job kind: `lint`, `test-build`, `e2e`, `tools`. `rust-test` compiles nothing and has none. Every other run only restores them, because a pull request's caches are scoped to `refs/pull/<n>/merge` and no other pull request can read them. The pnpm and npm caches from `actions/setup-node` have no save switch and are left as they are, because they are small.
+
+**Billed minutes.** Measured on `ci.yml`'s green full run [43453425366](https://github.com/obi-ai-bot/oby/actions/runs/43453425366) (#2175 with `full-ci`, every lane reached because `.github/` changed, about 21 minutes from start to end), each job's duration from `gh run view <id> --json jobs` rounded up to the minute and summed: **66 billed minutes**. `plan` 1, `lint` 3, `rust-build` 8, `rust-test` 12 + 12 + 12 + 10, `e2e` 2, `control-plane` 1, `electron` 2, `tools` 2, `Check` 1. Each shard spends about 2 of its minutes downloading the 2.5 GB archive. A ready pull request into `dev` runs `plan`, `lint` and `Check`: **5 billed minutes**, taken from those three jobs of the same run, since no ready pull request without the label has run `ci.yml` yet.
 
 ## What the Mac runs
 
