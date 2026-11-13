@@ -2,7 +2,7 @@
 //! restarts, which request key got which answer, so the same request sent again gets the first
 //! answer, not a second job. One file per key, `home/receipts/<sha256 of the key>.json` (0600),
 //! holding the body's hash and the answer with the secrets obid knows taken out: never the body.
-//! No route uses them yet (R02-04 to R02-06).
+//! `POST /v1/jobs` uses them (R02-04); the other routes come with R02-05 and R02-06.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

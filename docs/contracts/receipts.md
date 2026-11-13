@@ -1,19 +1,19 @@
 # Receipts: a request sent twice gets the first answer
 
-The business behavior contract for obid's receipt store, from [the template](../business-contract-template.md). Roadmap task R02-03 (milestone R02, Commands that are safe to repeat).
+The business behavior contract for obid's receipt store, from [the template](../business-contract-template.md). Roadmap tasks R02-03 (the store) and R02-04 (`POST /v1/jobs`), milestone R02, Commands that are safe to repeat.
 
 ## Feature and status
 
 - **Outcome:** One place in obid remembers, for 24 hours and across restarts, which request key got which answer. A request that creates work, sent again with the same key (a phone that lost the answer, an app that retried), gets the first answer again instead of a second job. Every endpoint family that creates work uses this store instead of a rule of its own.
-- **Status:** The store is **built** (`core/crates/obid/src/receipts.rs`), and **no route uses it yet**: R02-04 to R02-06 wire the routes, and `docs/runner-api.md` gets the request key then. RECEIPTS-1 to 4 stay **proposed** until a route reaches people with them.
-- **Scope:** The store: its files, its lock per key, its 24-hour window and its sweep. Outside it: a request-key header or body field, any route, any change to `docs/runner-api.md`, how `POST /v1/plans` dedupes its turn id (`brain/mod.rs`, `begun.repeated`, unchanged), an API to list receipts, and a setting for the window.
+- **Status:** The store is **built** (`core/crates/obid/src/receipts.rs`), and **`POST /v1/jobs` uses it** (R02-04, `dispatch` in `core/crates/obid/src/routes.rs`; `docs/runner-api.md`, "A request key"). The other routes that create work do not yet: messages, the inbox, stop and move (R02-05), brain tool calls and Try again (R02-06). RECEIPTS-5 to 7 are **implemented**; RECEIPTS-1 to 4 stay **proposed** until a route reaches people with them.
+- **Scope:** The store: its files, its lock per key, its 24-hour window and its sweep; and `POST /v1/jobs`'s request key (`job.clientRequestId` or `Idempotency-Key`), the Job's `clientRequestId`, `receipts` on `GET /v1/status`, and the gateway forwarding `Idempotency-Key`. Outside it: the other routes (R02-05, R02-06), any client sending a key (R02-07, R02-08), keys kept apart per caller, how `POST /v1/plans` dedupes its turn id (`brain/mod.rs`, `begun.repeated`, unchanged), an API to list receipts, and a setting for the window.
 
 ## Behavior
 
 ### Actors and ownership
 
 - **obid** owns the receipts: it writes, reads, judges and sweeps them. No model call decides anything here.
-- **The apps** see nothing new, and send nothing new, until a route takes a request key.
+- **The apps** send nothing new yet: `POST /v1/jobs` takes a key, and the Electron app (R02-07), the iPhone and oby-mcp (R02-08) send one later. Any caller of that route may: the API token or a paired device through the gateway, all the owner's own, so keys aren't kept apart per caller.
 
 ### Rules
 
@@ -28,6 +28,18 @@ The business behavior contract for obid's receipt store, from [the template](../
 - **The lock.** The caller takes a lock per key (an async call that returns a guard) around its get, its work and its put: a second request with the same key waits until the first guard is dropped, then finds the first one's receipt. Requests with different keys don't wait for each other. A key's lock nobody holds is dropped from memory at the latest when the sweep runs.
 - **Sweep.** When obid starts and once an hour after that, every receipt 24 hours old or older is removed; the sweep says how many.
 
+#### `POST /v1/jobs` (R02-04)
+
+- **Reading the key.** Once the body is JSON with `job` an object, obid reads the key from `job.clientRequestId` and from the `Idempotency-Key` header. `"clientRequestId": null` is none. It answers `422` and makes nothing when `clientRequestId` isn't a string, either key is empty or longer than 128 characters, the header isn't visible ASCII or comes more than once, or both keys are sent and differ. This runs before the job is described and before its signed words are checked.
+- **No key.** Nothing changes: no receipt is read or written, and every answer and refusal is as before.
+- **The lock.** With a key and a store, obid takes the key's lock and holds it across the lookup, making the job, marking it unsigned and writing the receipt, under the route `POST /v1/jobs`. The body it judges is the parsed body with `job.clientRequestId` set to none, so a key in the header one time and in the body the next is still the same request.
+- **New.** No receipt: the job is made as before and answers `201`, carrying `clientRequestId`; then the receipt is written with `201`, that answer and the job's id.
+- **Repeat (RECEIPTS-5).** `200` with the job as it is now, or the receipt's answer when obid no longer has the job. Nothing is made: the repeat's `X-Oby-Words` aren't checked or used up, and the first job's signed or unsigned mark and mode stay as they were.
+- **Conflict (RECEIPTS-6).** `409` with an `{"error": …}` line, and nothing is made.
+- **At once (RECEIPTS-7).** Two requests with one key wait for each other on its lock: one job, a `201` and a `200` naming it.
+- **Refused requests keep no receipt.** A `400`, `410` or `422` (PUBLISHING-4's busy branch and `runsOn` included) writes none, so the corrected request can use the key.
+- **The Job's key.** The job's file and its JSON carry `clientRequestId`, add-only, set just after the job is made (under the lock, so a repeat never sees a job without it); the job's first `job` event leaves it out.
+
 ### Failures and recovery
 
 - **A file that doesn't read** (unreadable, or not a receipt): get logs it and counts it as none, so the request runs as new; the sweep logs it, leaves it and goes on.
@@ -35,6 +47,8 @@ The business behavior contract for obid's receipt store, from [the template](../
 - **A failed sweep** (the folder can't be read) is logged and never stops obid.
 - **`home/receipts/` can't be made** when obid starts: this is logged and obid starts anyway, with no receipt store.
 - **A restart** keeps every receipt: they are files, and a new store on the same home finds them.
+- **No store** (`home/receipts/` couldn't be made): a keyed `POST /v1/jobs` runs as one without a key, with no lookup and no receipt, and the job still carries its key; `receipts` on `GET /v1/status` is `false`.
+- **A receipt that can't be written** after the job is made: logged, and the answer is still `201`, since the job exists and failing the request would invite the duplicate this prevents.
 
 ### Invariants
 
@@ -46,7 +60,7 @@ The business behavior contract for obid's receipt store, from [the template](../
 ## Interfaces and dependencies
 
 - **Persistence:** `home/receipts/*.json`, obid's alone.
-- **API:** none yet. `api::Shared` carries the store as `receipts` (none when its folder couldn't be made) for the routes R02-04 to R02-06 wire.
+- **API:** `api::Shared` carries the store as `receipts` (none when its folder couldn't be made). `POST /v1/jobs` takes `job.clientRequestId` or `Idempotency-Key` and answers `200` on a repeat and `409` on another body; the Job gains `clientRequestId`; `GET /v1/status` gains `receipts`; the gateway forwards `Idempotency-Key` (`docs/runner-api.md`). The other routes that create work (R02-05, R02-06) don't use the store yet.
 
 ## Acceptance scenarios
 
@@ -54,3 +68,6 @@ The business behavior contract for obid's receipt store, from [the template](../
 - **RECEIPTS-2** (proposed). Given a receipt for key K, when a request with K has a different body, then the store says conflict; so it does for the same body on another route. Test: `receipts_2_another_body_is_a_conflict` (core/crates/obid/src/receipts.rs).
 - **RECEIPTS-3** (proposed). Given a receipt written before obid restarted, when obid starts, then the receipt is still found. Test: `receipts_3_a_restart_keeps_receipts` (core/crates/obid/src/receipts.rs).
 - **RECEIPTS-4** (proposed). Given a receipt older than 24 hours, when obid sweeps, then the file is gone and K is free. Test: `receipts_4_a_day_old_receipt_goes` (core/crates/obid/src/receipts.rs).
+- **RECEIPTS-5** (implemented). Given `POST /v1/jobs` answered `201` with key K, when the same body comes again with K, then obid answers `200` with the same job and makes none. Test: `receipts_5_a_repeated_job_request_makes_one_job` (core/crates/obid/tests/jobs_api.rs); through the gateway, `receipts_5_a_phones_repeated_job_request_makes_one_job` (core/crates/obid/tests/gateway_api.rs).
+- **RECEIPTS-6** (implemented). Given `POST /v1/jobs` answered with key K, when another body comes with K, then obid answers `409` and makes nothing. Test: `receipts_6_another_body_under_a_key_is_409` (core/crates/obid/tests/jobs_api.rs).
+- **RECEIPTS-7** (implemented). Given two `POST /v1/jobs` with key K at the same moment, then exactly one job is made and both answers name it. Test: `receipts_7_two_requests_at_once_make_one_job` (core/crates/obid/tests/jobs_api.rs).

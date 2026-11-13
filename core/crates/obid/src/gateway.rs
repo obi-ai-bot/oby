@@ -797,6 +797,10 @@ async fn forward(State(through): State<Through>, request: Request) -> Response {
     if let Some(signed) = parts.headers.get(crate::approval::WORDS) {
         upstream = upstream.header(crate::approval::WORDS, signed);
     }
+    // A request key (docs/contracts/receipts.md): a retried request gets its first answer.
+    if let Some(key) = parts.headers.get("idempotency-key") {
+        upstream = upstream.header("idempotency-key", key);
+    }
     let Ok(upstream) = upstream.body(Body::from(body)) else {
         return error(StatusCode::BAD_REQUEST, "That request can't be forwarded.");
     };
