@@ -57,7 +57,10 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/bin/gate                        runs checks.sh in a worktree → round-N/checks.md
 <repo>/factory/bin/route                       risk + surfaces → the job's agents
 <repo>/factory/bin/test-run                    runs a builder's own test, clippy or build run: one at a time, below the gates
+<repo>/factory/bin/check-lock                  the gate's lock holder for a check that builds Rust: stops its leftovers, passes its code
+<repo>/factory/bin/child_session.py            a command in a session of its own, its leftovers stopped; shared by check-lock and test-run
 <repo>/factory/tests/test_test_run.py          test-run's tests: python3 factory/tests/test_test_run.py
+<repo>/factory/tests/test_check_lock.py        check-lock's tests: python3 factory/tests/test_check_lock.py
 <repo>/factory/queue/README.md                 the roadmap: milestones, sprints, every task's line
 <repo>/factory/queue/tasks/<KEY>.md            an open task: SPRINT, ORDER, DEPENDS, FIXES, then its text
 <repo>/factory/queue/done/<KEY>.md             a finished task; its own PR moved it here

@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Hold the gate's check lock and run the check under it.
+
+Usage:
+  factory/bin/check-lock <lock file> <command> [args...]
+
+factory/checks.sh runs it for a change whose plan builds Rust, with the shared Cargo folder's
+.factory-check.lock and scripts/oby-check.sh: one check at a time on this Mac. A check that finds the
+lock held says so and waits. Inside the lock, every tracked file under core/ and tools/ gets the
+current time (touch -c), so this worktree's own code is what gets built. Then the command runs as a
+child in a session of its own; the lock's file isn't inherited, so nothing the check leaves behind (a
+test's obid server) can keep holding it.
+
+When the check ends, or check-lock gets SIGTERM or SIGINT (while waiting for the lock or starting the
+check too), everything still running in the check's session gets SIGTERM, and check-lock exits with
+the check's code (0 stays 0, 1 and 2 stay 1 and 2; 128 + signal when it or check-lock was stopped).
+The lock is released with check-lock.
+
+It finds child_session.py beside itself (Python puts a script's folder first on sys.path), never
+through the working directory, which is the job's worktree.
+"""
+
+import fcntl
+import subprocess
+import sys
+
+import child_session
+
+
+def main(argv):
+    if len(argv) < 3:
+        print(__doc__, file=sys.stderr)
+        return 2
+    child_session.handle_stops()
+    lock = open(argv[1], "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("factory/checks.sh: another check is running on this Mac; waiting for it", file=sys.stderr, flush=True)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    files = subprocess.run(["git", "ls-files", "-z", "--", "core", "tools"], capture_output=True, check=True).stdout
+    subprocess.run(["xargs", "-0", "touch", "-c"], input=files, check=True)
+    return child_session.run(argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
