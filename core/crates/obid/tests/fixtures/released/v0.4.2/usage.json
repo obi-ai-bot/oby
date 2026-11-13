@@ -1,0 +1,20 @@
+{
+  "personal": {
+    "fiveHour": 1.0,
+    "sevenDay": 0.86,
+    "fiveHourResets": 1792998000,
+    "sevenDayResets": 1793498400,
+    "fullUntil": 4102444800,
+    "reserveLiftedUntil": null,
+    "priced": "plan"
+  },
+  "9c1e44b0": {
+    "fiveHour": 1.0,
+    "sevenDay": 0.91,
+    "fiveHourResets": 1792998000,
+    "sevenDayResets": 1793498400,
+    "fullUntil": 4102444800,
+    "reserveLiftedUntil": null,
+    "priced": "plan"
+  }
+}

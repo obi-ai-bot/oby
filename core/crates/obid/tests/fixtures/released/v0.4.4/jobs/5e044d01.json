@@ -1,0 +1,65 @@
+{
+  "id": "5e044d01",
+  "request": "Add a dark mode toggle to the settings page",
+  "agent": "claude",
+  "account": "personal",
+  "repo": "example/app",
+  "branch": "oby/dark-mode-toggle",
+  "base": "main",
+  "pr": 7,
+  "kind": "fix",
+  "task": "Add a dark mode toggle to the settings page",
+  "title": "Dark mode toggle",
+  "status": "done",
+  "step": "",
+  "summary": "Added a dark mode toggle to Settings, saved per user. The check passes.",
+  "session": "00000000-0000-4000-8000-000000000001",
+  "created": 1792987200,
+  "started": 1792987205,
+  "finished": 1792988100,
+  "commits": 2,
+  "published": "https://github.com/example/app/pull/7",
+  "pushed": 2,
+  "publishError": null,
+  "outgoing": [
+    {
+      "action": "push",
+      "repo": "example/app",
+      "id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "branch": "oby/dark-mode-toggle",
+      "date": 1792988080
+    },
+    {
+      "action": "pullRequest",
+      "repo": "example/app",
+      "id": "https://github.com/example/app/pull/7",
+      "branch": null,
+      "date": 1792988090
+    }
+  ],
+  "pullRequest": null,
+  "pullRequestError": null,
+  "reviewError": null,
+  "summaries": [
+    "Added the toggle and its setting; npm test passes."
+  ],
+  "issue": null,
+  "rounds": 1,
+  "round": 1,
+  "check": "npm test",
+  "model": "claude-sonnet-5-5",
+  "effort": null,
+  "notes": [],
+  "files": [
+    "src/settings.tsx",
+    "src/theme.ts"
+  ],
+  "limit": null,
+  "startCommit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+  "mode": "bypass",
+  "waiting": null,
+  "phase": "publish",
+  "dismissed": null,
+  "worktree": "/var/oby/home/worktrees/5e044d01",
+  "obi": null
+}
