@@ -324,7 +324,7 @@ async fn dispatch(
             }
             // What couldn't start is said; what did start goes on.
             Err(refused) => {
-                let mut text = refused.0;
+                let mut text = refused.to_string();
                 if !started.is_empty() {
                     text = format!("{} {text}", started_line(shared, &started));
                 }
@@ -728,10 +728,7 @@ pub(super) fn follow_up(shared: &Arc<Shared>, job: &Job, new: NewJob) -> Outcome
     let name = job.short_title();
     match shared.jobs.create(new) {
         Ok(next) => Outcome::Started(follow_up_line(shared, job, &next), next.to_json()),
-        Err(refused) => Outcome::Failed(format!(
-            "Couldn't start a follow-up of {name}: {}",
-            refused.0
-        )),
+        Err(refused) => Outcome::Failed(format!("Couldn't start a follow-up of {name}: {refused}")),
     }
 }
 

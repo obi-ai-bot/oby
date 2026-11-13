@@ -323,7 +323,7 @@ async fn another_obys_review_keeps_the_weekly_reserve() {
     std::fs::write(home.join("usage.json"), usage.to_string()).unwrap();
     let jobs = Jobs::open(config, Events::new(), Err("unused".into())).unwrap();
     let refused = jobs.start_obi_review(request()).unwrap_err();
-    assert!(refused.0.contains("weekly reserve"), "{}", refused.0);
+    assert!(refused.to_string().contains("weekly reserve"), "{refused}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

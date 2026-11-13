@@ -13,6 +13,15 @@ impl Link {
     // -----------------------------------------------------------------------------------------
     // Decisions and the inbox
 
+    /// "That job is gone." (`409`), or the `500` of a job whose change obid couldn't save (HOME-1).
+    fn gone(&self, id: &str) -> ApiError {
+        crate::routes::unless_unkept(
+            &self.jobs,
+            id,
+            api(StatusCode::CONFLICT, "That job is gone."),
+        )
+    }
+
     /// `GET /v1/obid/decisions`, oldest first.
     pub fn decisions_json(&self) -> Value {
         Value::Array(
@@ -291,16 +300,13 @@ impl Link {
                 self.jobs
                     .set_mode(target, crate::permissions::Mode::Bypass)
                     .map(|_| ())
-                    .ok_or_else(|| api(StatusCode::CONFLICT, "That job is gone."))
+                    .ok_or_else(|| self.gone(target))
             }
             inbox::action::START_JOB => {
                 let new: crate::jobs::NewJob =
                     serde_json::from_value(confirmed.payload["job"].clone())
                         .map_err(|_| api(StatusCode::CONFLICT, "That job's plan was lost."))?;
-                self.jobs
-                    .create(new)
-                    .map(|_| ())
-                    .map_err(|e| api(StatusCode::UNPROCESSABLE_ENTITY, e.0))
+                self.jobs.create(new).map(|_| ()).map_err(ApiError::from)
             }
             // Made before 2026-10-18 for one more round: the words now start a follow-up, as any
             // words for a job that ended do.
@@ -330,13 +336,13 @@ impl Link {
                 ) {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(refused)) => Err(api(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
-                    None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
+                    None => Err(self.gone(target)),
                 }
             }
             inbox::action::DISMISS_JOB => match self.jobs.dismiss(target) {
                 Some(Ok(_)) => Ok(()),
                 Some(Err(refused)) => Err(api(StatusCode::CONFLICT, refused.0)),
-                None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
+                None => Err(self.gone(target)),
             },
             inbox::action::ADD_REPOSITORY => {
                 // obid's own words of the review request (crate::github_work's typed fields).
@@ -486,7 +492,7 @@ impl Link {
                 ) {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(refused)) => Err(api(StatusCode::UNPROCESSABLE_ENTITY, refused.0)),
-                    None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
+                    None => Err(self.gone(target)),
                 }
             }
             // Proposed against the job as it was: after another round, a move or a new mode,
@@ -515,7 +521,7 @@ impl Link {
                 ) {
                     Some(Ok(_)) => Ok(()),
                     Some(Err(refused)) => Err(api(StatusCode::CONFLICT, refused.0)),
-                    None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
+                    None => Err(self.gone(target)),
                 }
             }
             // Carried out by the route, which holds the conversations (crate::conversation::confirmed).
@@ -526,7 +532,7 @@ impl Link {
                     Ok(())
                 }
                 Some(Err(refused)) => Err(api(StatusCode::CONFLICT, refused.0)),
-                None => Err(api(StatusCode::CONFLICT, "That job is gone.")),
+                None => Err(self.gone(target)),
             },
             inbox::action::CHANGE_JOB => {
                 let text = |key: &str| confirmed.payload[key].as_str();
@@ -535,7 +541,7 @@ impl Link {
                         .ok_or_else(|| api(StatusCode::CONFLICT, "That mode isn't one."))?;
                     self.jobs
                         .set_mode(target, mode)
-                        .ok_or_else(|| api(StatusCode::CONFLICT, "That job is gone."))?;
+                        .ok_or_else(|| self.gone(target))?;
                     self.jobs.note_change(
                         target,
                         format!("Mode changed to {} on your Confirm", mode.title()),
@@ -551,7 +557,7 @@ impl Link {
                     match (self.jobs).change(target, &to, by, crate::jobs::Source::Confirmed) {
                         Some(Ok(_)) => {}
                         Some(Err(refused)) => return Err(api(StatusCode::CONFLICT, refused.0)),
-                        None => return Err(api(StatusCode::CONFLICT, "That job is gone.")),
+                        None => return Err(self.gone(target)),
                     }
                 }
                 Ok(())
@@ -966,12 +972,9 @@ impl Link {
                         ),
                     )));
                 }
-                None => return Err(open_again(api(StatusCode::CONFLICT, "That job is gone."))),
+                None => return Err(open_again(self.gone(&next.id))),
             },
-            None => self
-                .jobs
-                .create(new)
-                .map_err(|e| open_again(api(StatusCode::UNPROCESSABLE_ENTITY, e.0)))?,
+            None => self.jobs.create(new).map_err(|e| open_again(e.into()))?,
         };
         item.job = job.id;
         item.done = Some(time::now());
@@ -1514,14 +1517,14 @@ impl Link {
                 };
                 let refused = match carried {
                     Some(Ok(_)) => return Ok(item.to_json()),
-                    Some(Err(refused)) => refused.0,
-                    None => "That job is gone.".to_owned(),
+                    Some(Err(refused)) => api(StatusCode::CONFLICT, refused.0),
+                    None => self.gone(&item.job),
                 };
                 item.answer = None;
                 item.done = None;
                 self.lock().inbox.insert(item.id.clone(), item.clone());
                 self.save_item(&item);
-                return Err(api(StatusCode::CONFLICT, refused));
+                return Err(refused);
             }
             // A `start` item: every answer settles it under the lock, so of two at the same
             // moment only the first counts. A second Start finds it done and starts nothing
@@ -1594,14 +1597,14 @@ impl Link {
                 };
                 let refused = match carried {
                     Some(Ok(_)) => return Ok(item.to_json()),
-                    Some(Err(refused)) => refused.0,
-                    None => "That job is gone.".to_owned(),
+                    Some(Err(refused)) => api(StatusCode::CONFLICT, refused.0),
+                    None => self.gone(&item.job),
                 };
                 item.answer = None;
                 item.done = None;
                 self.lock().inbox.insert(item.id.clone(), item.clone());
                 self.save_item(&item);
-                return Err(api(StatusCode::CONFLICT, refused));
+                return Err(refused);
             }
             // A paused routine's card (ALERTS-5): Turn back on resumes it as `PATCH
             // /v1/routines/{id}` `{"enabled": true}` does (no signature, as there), Dismiss leaves
