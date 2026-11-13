@@ -13,14 +13,21 @@ bin/route       risk + surfaces → the job's reviewers and models
 bin/test-run    a builder's own test, clippy or build run: one at a time on its own lock, at nice 15, half the cores
 bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
                 it stops the check's leftovers and passes its exit code through
-bin/child_session.py  runs a command in a session of its own and stops its leftovers; shared by check-lock and test-run
+bin/child_session.py  runs a command in a session of its own and stops its leftovers; shared by check-lock, test-run
+                and nightly
+bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
+                jobs/nightly/<stamp>.md, and a fix task on a failure
 tests/          the factory's own tests, stdlib only, from the repository root: python3 factory/tests/test_test_run.py,
-                python3 factory/tests/test_check_lock.py
+                python3 factory/tests/test_check_lock.py, python3 factory/tests/test_nightly.py
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
 jobs/           runtime state, local to this Mac (gitignored)
 ```
+
+`jobs/nightly/` holds the nightly check's results, one `<stamp>.md` (`GATE: PASS|FAIL`, the commit, when it
+started, the log's last 80 lines) and its `<stamp>.log` per run, named by the UTC start time; the dashboard
+shows the newest.
 
 Builders' own test, clippy and build runs go through `bin/test-run`, so they don't slow a gate past the check's
 caps: one at a time on `~/Library/Caches/oby-factory/test-run.lock`, never the gate's lock, so a gate never
