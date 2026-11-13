@@ -1,0 +1,60 @@
+{
+  "listen": "127.0.0.1:7777",
+  "home": "/var/oby/home",
+  "owner": "owner",
+  "agents": {
+    "claude": {
+      "bin": "claude",
+      "accounts": [
+        {
+          "id": "personal",
+          "name": "Personal",
+          "configDir": null
+        },
+        {
+          "id": "9c1e44b0",
+          "name": "Work",
+          "configDir": "/var/oby/home/accounts/9c1e44b0",
+          "payer": "Example Inc"
+        }
+      ]
+    },
+    "codex": {
+      "bin": "codex",
+      "accounts": [
+        {
+          "id": "codex",
+          "name": "Codex",
+          "configDir": null
+        }
+      ]
+    }
+  },
+  "repos": [
+    {
+      "repo": "example/app",
+      "remote": "https://github.com/example/app.git",
+      "defaultBranch": "main",
+      "check": "npm test",
+      "pullRequests": true
+    },
+    {
+      "repo": "example/api",
+      "remote": "git@github.com:example/api.git",
+      "defaultBranch": "dev",
+      "check": null
+    }
+  ],
+  "telemetry": false,
+  "turnBudget": 110,
+  "orchestratorDelay": 30,
+  "stallAfter": 900,
+  "jobCeilingHours": 12,
+  "jobTokenBudget": 50000000,
+  "vault": {
+    "store": "file"
+  },
+  "claudeKeychain": false,
+  "cursorKeychain": false,
+  "guestRequestEvery": 900
+}
