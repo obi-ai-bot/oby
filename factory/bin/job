@@ -561,9 +561,12 @@ def advance(job, stage):
         job["round_limit"] = job["round"] + CONFIG["max_rounds"]
         next_round(job)
 
-    # A PR stays a draft until APPROVE, so no GitHub job runs on a round's pushes.
+    # A PR stays a draft until APPROVE, so no GitHub job runs on a round's pushes,
+    # and a round nobody has reviewed yet can't merge on auto-merge armed earlier.
     if stage == "build" and job["pr"]:
-        if not gh_json("pr", "view", str(job["pr"]), "--json", "isDraft")["isDraft"]:
+        pr = gh_json("pr", "view", str(job["pr"]), "--json", "isDraft,autoMergeRequest")
+        disarm(job, pr)
+        if not pr["isDraft"]:
             gh("pr", "ready", str(job["pr"]), "--undo")
 
     if stage == "needs-human" and job["pr"]:
@@ -788,6 +791,12 @@ def auto_merge(job, head):
     gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}", "--auto", "--match-head-commit", head)
 
 
+def disarm(job, pr):
+    """Turn auto-merge off, so a head nobody reviewed can't merge on it."""
+    if pr["autoMergeRequest"] is not None:
+        gh("pr", "merge", str(job["pr"]), "--disable-auto")
+
+
 def fail(job, why):
     escalate(job, why)
     save(advance(sync(job), "needs-human"))
@@ -864,8 +873,10 @@ def settle(job):
     elif pr["state"] == "CLOSED":
         fail(job, f"PR #{n} was closed while queued.")
     elif pr["headRefOid"] != q["head"]:
+        disarm(job, pr)
         fail(job, f"PR #{n}'s head moved while queued: {pr['headRefOid']} on GitHub, {q['head']} approved.")
     elif removed and (pr["mergeStateStatus"] == "DIRTY" or "conflict" in (removed["reason"] or "").lower()):
+        disarm(job, pr)
         builder_round(job, conflict_note(job, removed),
                       f"Removed from the merge queue for a conflict in round {r}, the last allowed round; "
                       f"see round-{r}/queue-failure.md.")
@@ -878,6 +889,7 @@ def settle(job):
         save(job)
         print(f"{job['id']}: removed from GitHub's merge queue once: queued PR #{n} again")
     elif removed:
+        disarm(job, pr)
         builder_round(job, failed_log(job, removed),
                       f"Removed from the merge queue twice in round {r}, the last allowed round; "
                       f"see round-{r}/queue-failure.md.")
