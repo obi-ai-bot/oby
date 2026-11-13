@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""Run one commit's Linux check groups on the gate VM, in one of four slots.
+
+Usage:
+  oby-remote-gate <commit> <base>
+
+  <commit>  the commit to check: its full 40-character SHA, which origin must have
+  <base>    what the check compares it with: origin/<branch>, or a full 40-character SHA
+
+e.g.
+  ssh oby-gate oby-remote-gate <commit> origin/dev
+
+Callers keep its standard input open, as ssh without -n does: standard input reaching
+end of file is how it learns the connection dropped (ssh with no terminal sends no
+signal then), and it stops the check and frees its slot. Nothing is read from it.
+
+Slots. Four, <root>/slot-1 to slot-4 (<root> is /srv/oby), each with its own lock
+file, git worktree and Cargo build folder (slot-N/target, the check's CARGO_TARGET_DIR)
+and the check's own cache (slot-N/cache, its OBY_CHECK_CACHE). It takes the first free
+one; with all four held it says so once and tries again every second. The lock stays
+in this process and isn't inherited by the check.
+
+Checkout. Under <root>/repo.lock, so two gates never fetch or add a worktree at once,
+it fetches the commit by its SHA from origin with no credential, and the base, into
+<root>/repo.git (factory/remote/setup.sh makes it). A commit origin doesn't have ends
+it with 2 and runs nothing. In the slot's worktree: checkout --force --detach, clean
+-ffd (ignored files such as node_modules stay), and every tracked file under core/ and
+tools/ gets the current time, as factory/checks.sh does.
+
+Check. The commit's own `OBY_CHECK_PLAN=1 scripts/oby-check.sh <base>` says which
+groups run; rust, electron and scan run here, in that order, each with OBY_CHECK_ONLY
+set and OBY_BUILD_JOBS at the cores / 4, every one to its end. swift is the Mac's and
+never runs here. Before rust, `cargo fetch --locked` (the check builds offline); before
+electron, `npm ci` in apps/electron. ~/.cargo/bin, where setup.sh's rustup puts cargo,
+comes first on PATH: a command over ssh reads no profile. The output is relayed as it
+comes, stderr in stdout.
+
+Exit. 1 when a group failed, else 2 when one couldn't judge (or its setup failed),
+else 0; the last line names the verdict, the slot and the seconds it took. 2 too for
+bad usage, a missing clone or a plan that can't run. Every step runs in a session of
+its own; when it ends, everything left in that session gets SIGTERM. On SIGHUP,
+SIGTERM or SIGINT, standard input's end, or output that can't be written, the step's
+session gets SIGTERM, then SIGKILL 10 seconds later if it hasn't ended, and this exits
+128 + the signal (SIGHUP's for the last two), freeing the slot.
+
+OBY_REMOTE_ROOT and OBY_REMOTE_URL point it at another root and origin, for the tests.
+"""
+
+import fcntl
+import os
+import re
+import select
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+NAME = "oby-remote-gate"
+ROOT = Path(os.environ.get("OBY_REMOTE_ROOT") or "/srv/oby")
+URL = os.environ.get("OBY_REMOTE_URL") or "https://github.com/obi-ai-bot/oby.git"
+SLOTS = 4
+LINUX_GROUPS = ("rust", "electron", "scan")
+VERDICTS = {0: "passed", 1: "failed", 2: "couldn't judge"}
+SHA = re.compile(r"[0-9a-f]{40}")
+BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
+GRACE = 10
+
+child = None
+starting = False
+stopped = 0
+
+
+def leftovers(signum=signal.SIGTERM):
+    if child is None:
+        return
+    try:
+        os.killpg(child.pid, signum)
+    except (ProcessLookupError, PermissionError):
+        # macOS answers EPERM, not ESRCH, when the group's last process has just ended.
+        pass
+
+
+def end(signum):
+    if child is not None:
+        leftovers()
+        deadline = time.monotonic() + GRACE
+        while child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        leftovers(signal.SIGKILL)
+    # No flush: the output may be what broke. The slot's lock goes with the process.
+    os._exit(128 + signum)
+
+
+def stop(signum, _=None):
+    global stopped
+    if stopped:
+        return
+    stopped = signum
+    if starting:
+        # The step is being started and isn't known yet: run() stops it once it is.
+        return
+    end(signum)
+
+
+def write(data):
+    try:
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    except OSError:
+        stop(signal.SIGHUP)
+
+
+def say(line):
+    write(f"{NAME}: {line}\n".encode())
+
+
+def watch_stdin():
+    try:
+        while os.read(0, 65536):
+            pass
+    except OSError:
+        pass
+    os.kill(os.getpid(), signal.SIGHUP)
+
+
+def run(command, cwd, env=None, capture=False):
+    """One step in a session of its own, its output relayed (or kept): its exit code and output."""
+    global child, starting
+    starting = True
+    child = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    starting = False
+    if stopped:
+        end(stopped)
+    kept = bytearray()
+    fd = child.stdout.fileno()
+    ended = None
+    while True:
+        if select.select([fd], [], [], 0.5)[0]:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            if capture:
+                kept += chunk
+            else:
+                write(chunk)
+        elif child.poll() is not None:
+            # The step ended but something it left still holds the output: stop it.
+            if ended is None:
+                leftovers()
+                ended = time.monotonic()
+            elif time.monotonic() - ended > GRACE:
+                break
+    while child.poll() is None:
+        time.sleep(0.05)
+    leftovers()
+    code = child.returncode
+    child.stdout.close()
+    child = None
+    return code, bytes(kept)
+
+
+def git(*args, cwd=None):
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    return run(["git", "-c", "credential.helper=", *args], cwd or ROOT, env)[0]
+
+
+def usage(why):
+    print(f"{NAME}: {why}\n\n{__doc__}", file=sys.stderr)
+    return 2
+
+
+def take_slot():
+    waiting = False
+    while True:
+        for n in range(1, SLOTS + 1):
+            folder = ROOT / f"slot-{n}"
+            folder.mkdir(exist_ok=True)
+            fd = os.open(folder / "lock", os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return n, fd
+            except BlockingIOError:
+                os.close(fd)
+        if not waiting:
+            say("all four slots are busy; waiting")
+            waiting = True
+        time.sleep(1)
+
+
+def check_out(commit, base, worktree):
+    """Fetch the commit and the base and make the slot's worktree: an error to say, or None."""
+    repo = str(ROOT / "repo.git")
+    fd = os.open(ROOT / "repo.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if git("--git-dir", repo, "fetch", "--quiet", "--no-tags", URL, commit) != 0:
+            return f"{commit} isn't on origin"
+        if base.startswith("origin/"):
+            branch = base.removeprefix("origin/")
+            refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+        else:
+            refspec = base
+        if git("--git-dir", repo, "fetch", "--quiet", "--no-tags", URL, refspec) != 0:
+            return f"can't fetch the base {base} from origin"
+        if not (worktree / ".git").exists():
+            git("--git-dir", repo, "worktree", "prune")
+            if git("--git-dir", repo, "worktree", "add", "--quiet", "--detach", str(worktree), commit) != 0:
+                return f"can't make the worktree {worktree}"
+    finally:
+        os.close(fd)
+    for step in (["checkout", "--quiet", "--force", "--detach", commit], ["clean", "-ffdq"]):
+        if git(*step, cwd=worktree) != 0:
+            return f"git {step[0]} failed in {worktree}"
+    files = subprocess.run(["git", "ls-files", "-z", "--", "core", "tools"], cwd=worktree, capture_output=True)
+    if files.returncode != 0:
+        return f"can't list the tracked files under core/ and tools/ in {worktree}"
+    for name in filter(None, files.stdout.split(b"\0")):
+        try:
+            os.utime(worktree / os.fsdecode(name))
+        except FileNotFoundError:
+            pass
+    return None
+
+
+def prepare(group, worktree, env):
+    """What a group needs before the check runs it offline: an error to say, or None."""
+    if group == "rust":
+        for manifest in ("core/Cargo.toml", "tools/oby-check-blok/Cargo.toml"):
+            if (worktree / manifest).is_file():
+                if run(["cargo", "fetch", "--locked", "--manifest-path", manifest], worktree, env)[0] != 0:
+                    return f"cargo fetch failed for {manifest}"
+    if group == "electron":
+        if run(["npm", "ci"], worktree / "apps" / "electron", env)[0] != 0:
+            return "npm ci failed in apps/electron"
+    return None
+
+
+def main(argv):
+    if len(argv) != 3:
+        return usage("takes a commit and a base")
+    commit, base = argv[1], argv[2]
+    if not SHA.fullmatch(commit):
+        return usage(f"the commit isn't a full 40-character SHA: {commit}")
+    branch = base.removeprefix("origin/")
+    if not (SHA.fullmatch(base) or (base.startswith("origin/") and BRANCH.fullmatch(branch) and ".." not in branch)):
+        return usage(f"the base is neither origin/<branch> nor a full 40-character SHA: {base}")
+    if not (ROOT / "repo.git").is_dir():
+        print(f"{NAME}: {ROOT / 'repo.git'} is missing: run factory/remote/setup.sh from the Mac first", file=sys.stderr)
+        return 2
+    started = time.monotonic()
+    for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, stop)
+    threading.Thread(target=watch_stdin, daemon=True).start()
+
+    slot, _lock = take_slot()
+    say(f"slot {slot}")
+    folder = ROOT / f"slot-{slot}"
+    worktree = folder / "worktree"
+    why = check_out(commit, base, worktree)
+    if why:
+        say(why)
+        return 2
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_CHECK_")}
+    env["CARGO_TARGET_DIR"] = str(folder / "target")
+    env["OBY_CHECK_CACHE"] = str(folder / "cache")
+    env["OBY_BUILD_JOBS"] = str(max(1, (os.cpu_count() or 1) // SLOTS))
+    env["PATH"] = f"{Path.home() / '.cargo' / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+    check = str(worktree / "scripts" / "oby-check.sh")
+    code, plan = run([check, base], worktree, dict(env, OBY_CHECK_PLAN="1"), capture=True)
+    planned = re.findall(r"^oby-check: group (\S+)$", plan.decode(errors="replace"), re.MULTILINE)
+    if code != 0:
+        write(plan)
+        say(f"the plan couldn't be run (it ended {code})")
+        return 2
+    groups = [g for g in LINUX_GROUPS if g in planned]
+    if "swift" in planned:
+        say("swift is the Mac's: it doesn't run here")
+    if not groups:
+        say("no Linux group planned: nothing to run here")
+    else:
+        say(f"groups {' '.join(groups)}")
+
+    results = []
+    for group in groups:
+        why = prepare(group, worktree, env)
+        if why:
+            say(f"{why}: {group} couldn't be judged")
+            results.append(2)
+            continue
+        say(f"group {group}")
+        code = run([check, base], worktree, dict(env, OBY_CHECK_ONLY=group))[0]
+        say(f"group {group} ended {code}")
+        results.append(code)
+
+    verdict = 1 if 1 in results else 2 if any(results) else 0
+    say(f"{VERDICTS[verdict]} in slot {slot} after {round(time.monotonic() - started)}s")
+    return verdict
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

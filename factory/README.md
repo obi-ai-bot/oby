@@ -17,8 +17,10 @@ bin/child_session.py  runs a command in a session of its own and stops its lefto
                 and nightly
 bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
                 jobs/nightly/<stamp>.md, and a fix task on a failure
+remote/         the gate VM's side: setup.sh provisions the gate VM over SSH; oby-remote-gate runs a commit's Linux check groups in one of four slots there
 tests/          the factory's own tests, stdlib only, from the repository root: python3 factory/tests/test_test_run.py,
-                python3 factory/tests/test_check_lock.py, python3 factory/tests/test_nightly.py
+                python3 factory/tests/test_check_lock.py, python3 factory/tests/test_nightly.py,
+                python3 factory/tests/test_remote_gate.py
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
@@ -36,6 +38,10 @@ waits on them; at `nice -n 15`, so a gate's check gets the CPU first when both w
 with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores. Commands that read
 none of those (`npm test`, `npm run typecheck`, `swift test`) are held only by the lock and the priority, and an
 explicit `-j` or `--test-threads` overrides them.
+
+Gates still run on the Mac: `bin/gate` doesn't use `remote/` yet, which a second task wires in
+(`docs/factory-remote-gate.md`, "Still to build"). The gate VM `oby-gate` is only started by hand
+(`az vm start`), and deallocated by hand when its work is done.
 
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks
