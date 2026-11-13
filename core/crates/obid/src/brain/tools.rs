@@ -350,17 +350,8 @@ async fn call(
                 &super::read::section(&job, &shared.config.home),
             ))
         }
-        "oby_dispatch" => dispatch(shared, session, args).await,
+        "oby_dispatch" | "oby_tell_job" => once(shared, session, name, args).await,
         "oby_offer" => offer(shared, session, args).await,
-        "oby_tell_job" => {
-            capped(
-                &session.told,
-                "tells jobs something",
-                owners_word(shared, session).is_some(),
-            )?;
-            let Tell { id, words, title } = parse(args)?;
-            tell(shared, session, id, &words, title).await
-        }
         "oby_stop_job" => {
             let One { id } = parse(args)?;
             let mut plan = Plan::of(Action::StopAgent, "");
@@ -1758,6 +1749,51 @@ fn outcome_answer(session: &Session, outcome: Outcome) -> Result<String, String>
 /// The most times one turn's tools start jobs, or tell them something: a plan's most dispatches.
 const MOST: usize = super::plan::MOST_DISPATCHES;
 
+/// oby_dispatch and oby_tell_job, once a turn for the same arguments (RECEIPTS-12, 14): a repeat
+/// answers the first answer and makes nothing. An event turn's, or one with no receipts, runs.
+async fn once(
+    shared: &Arc<Shared>,
+    session: &Session,
+    name: &str,
+    args: Value,
+) -> Result<String, String> {
+    let turn = &session.control.turn;
+    let body = json!({"turn": turn, "tool": name, "arguments": args});
+    let key = format!("tool:{}", crate::receipts::body_hash(&body)?);
+    let store = shared.receipts.as_deref().filter(|_| !turn.is_empty());
+    let repeat = |answer: String, _| Ok(serde_json::from_str(&answer).unwrap_or(answer));
+    crate::receipts::once(store, &key, name, &body, repeat, async {
+        let marks = store.map(|_| key.as_str());
+        let answer = match name {
+            "oby_dispatch" => dispatch(shared, session, args, marks).await,
+            _ => tell(shared, session, args, marks).await,
+        };
+        // The job it made, marked with the key: none for a dispatch that waits for a Confirm.
+        let made = session
+            .jobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|j| marks.is_some_and(|key| j["clientRequestId"] == key))
+            .and_then(|j| j["id"].as_str().map(str::to_owned));
+        let kept = made.is_some() || name == "oby_tell_job";
+        let kept = answer
+            .as_ref()
+            .ok()
+            .filter(|_| kept)
+            .map(|t| (json!(t), made));
+        (answer, kept)
+    })
+    .await
+}
+
+/// `job`'s JSON, marked with the request key `key` of the call that made it (RECEIPTS-12, 14).
+fn marked(shared: &Shared, job: Value, key: Option<&str>) -> Value {
+    let id = job["id"].as_str().unwrap_or_default();
+    let marked = key.and_then(|key| shared.jobs.mark_request_key(id, key));
+    marked.map_or(job, |job| job.to_json())
+}
+
 /// One more of what `count` counts this turn, or why not. The owner's own word sets no cap: they
 /// asked for as many as they named (TASKCONV-12).
 fn capped(count: &AtomicUsize, what: &str, owners_word: bool) -> Result<(), String> {
@@ -1788,11 +1824,16 @@ fn told(owner: &str, agent: &str, nonce: &str) -> String {
 async fn tell(
     shared: &Arc<Shared>,
     session: &Session,
-    id: String,
-    words: &str,
-    title: Option<String>,
+    args: Value,
+    key: Option<&str>,
 ) -> Result<String, String> {
-    let words = told(&session.said, words, &session.nonce);
+    capped(
+        &session.told,
+        "tells jobs something",
+        owners_word(shared, session).is_some(),
+    )?;
+    let Tell { id, words, title } = parse(args)?;
+    let words = told(&session.said, &words, &session.nonce);
     let mut plan = Plan::of(Action::MessageJob, "");
     plan.jobs = Some(vec![id.clone()]);
     plan.message = Some(words.clone());
@@ -1882,11 +1923,20 @@ async fn tell(
     new.untrusted = source(session) != crate::jobs::Source::Owner;
     new.turn = actions::started_by(&job, &session.conversation, &session.control.turn);
     let new = super::written_in(shared, &session.conversation, new);
-    outcome_answer(session, actions::follow_up(shared, &job, new))
+    let outcome = match actions::follow_up(shared, &job, new) {
+        Outcome::Started(text, next) => Outcome::Started(text, marked(shared, next, key)),
+        other => other,
+    };
+    outcome_answer(session, outcome)
 }
 
 /// oby_dispatch: a plan's dispatch of one job, linked to the conversation.
-async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Result<String, String> {
+async fn dispatch(
+    shared: &Arc<Shared>,
+    session: &Session,
+    args: Value,
+    key: Option<&str>,
+) -> Result<String, String> {
     capped(
         &session.dispatched,
         "starts jobs",
@@ -1913,6 +1963,7 @@ async fn dispatch(shared: &Arc<Shared>, session: &Session, args: Value) -> Resul
     if jobs.is_empty() && !bypass {
         return Err(text);
     }
+    let jobs: Vec<Value> = jobs.into_iter().map(|j| marked(shared, j, key)).collect();
     let cards: Vec<Value> = jobs
         .iter()
         .map(|j| json!({"id": j["id"], "title": j["title"], "status": j["status"], "repo": j["repo"], "branch": j["branch"]}))

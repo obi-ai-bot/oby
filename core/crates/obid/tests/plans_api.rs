@@ -118,8 +118,10 @@ fn plans_map_replies_cancellations_and_dispatched_jobs() {
     let none = post("stop");
     assert_eq!(none.body["kind"], "none");
     assert_eq!(none.body["conversation"], conversation);
+    // Two different jobs: the same `oby_dispatch` repeated in one turn makes one (R02-06,
+    // docs/contracts/receipts.md RECEIPTS-14).
     let dispatch = post(
-        r#"REPEAT 2 OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","task":"Fix the greeting"}"#,
+        r#"REPEAT 1 OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","task":"Fix the greeting"} THEN OBY oby_dispatch {"repo":"obi-e2e/fixture-app","kind":"fix","task":"Fix the farewell"}"#,
     );
     assert_eq!(dispatch.status, 200, "{}", dispatch.text);
     assert_eq!(dispatch.body["kind"], "reply");

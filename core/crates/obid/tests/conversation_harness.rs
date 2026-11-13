@@ -2634,6 +2634,75 @@ fn a_turn_starts_and_tells_at_most_ten() {
     }
 }
 
+/// RECEIPTS-12: the same oby_tell_job twice in one turn, to a job that ended, starts one follow-up
+/// and answers the first answer: the follow-up never hears the words a second time, and carries
+/// the call's key.
+#[test]
+fn receipts_12_a_repeated_tell_job_makes_one_follow_up() {
+    let (_folder, obid) = obid("harness-receipts-12", true);
+    let started = said(
+        &obid,
+        json!({"said": r#"OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+               "new": true}),
+    );
+    let conversation = started.body["conversation"].as_str().unwrap().to_owned();
+    let id = started.body["jobs"][0]["id"].as_str().unwrap().to_owned();
+    ended(&obid, &id);
+    let tell = format!(r#"REPEAT 2 OBY oby_tell_job {{"id": "{id}", "words": "AGENT-WORDS-12"}}"#);
+    let told = said(&obid, json!({"said": tell, "conversation": conversation}));
+    let text = told.body["text"].as_str().unwrap();
+    assert!(!text.contains("refused"), "{}", told.text);
+    assert!(text.contains("started a follow-up"), "{}", told.text);
+    let follow_ups: Vec<Value> = call(&obid, "GET", "/v1/jobs", None)
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["followUpOf"] == id.as_str())
+        .cloned()
+        .collect();
+    assert_eq!(follow_ups.len(), 1, "{follow_ups:?}");
+    let next = follow_ups[0]["id"].as_str().unwrap();
+    let cards = told.body["jobs"].as_array().unwrap();
+    assert_eq!(cards.len(), 1, "{}", told.text);
+    assert_eq!(cards[0]["id"], next, "{}", told.text);
+    let follow = call(&obid, "GET", &format!("/v1/jobs/{next}"), None).body;
+    assert!(
+        !follow["notes"].to_string().contains("AGENT-WORDS-12"),
+        "{follow}"
+    );
+    let key = follow["clientRequestId"].as_str().unwrap_or_default();
+    assert!(key.starts_with("tool:"), "{follow}");
+}
+
+/// RECEIPTS-14: the same oby_dispatch twice in one turn starts one job, which carries the call's
+/// key, and answers the first answer.
+#[test]
+fn receipts_14_a_repeated_dispatch_makes_one_job() {
+    let (_folder, obid) = obid("harness-receipts-14", true);
+    let started = said(
+        &obid,
+        json!({"said": r#"REPEAT 2 OBY oby_dispatch {"repo": "obi-e2e/fixture-app", "task": "Add a greeting", "kind": "build"}"#,
+               "new": true}),
+    );
+    let text = started.body["text"].as_str().unwrap();
+    assert!(!text.contains("refused"), "{}", started.text);
+    let cards = started.body["jobs"].as_array().unwrap();
+    assert_eq!(cards.len(), 1, "{}", started.text);
+    let conversation = started.body["conversation"].as_str().unwrap();
+    let jobs: Vec<Value> = call(&obid, "GET", "/v1/jobs", None)
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["conversation"] == conversation)
+        .cloned()
+        .collect();
+    assert_eq!(jobs.len(), 1, "{jobs:?}");
+    let key = jobs[0]["clientRequestId"].as_str().unwrap_or_default();
+    assert!(key.starts_with("tool:"), "{}", jobs[0]);
+}
+
 /// #858, TASKCONV-9: a job's agent's question is the owner's to answer: words that aren't their own
 /// signed word make a Confirm of the answer, and the question still waits; the owner's own words
 /// then answer it.
@@ -2716,9 +2785,11 @@ fn a_turn_starts_one_follow_up_of_a_job_within_its_ten() {
         full.text
     );
     assert_eq!(jobs(), 1);
+    // Other words for it: the same call again is one call (RECEIPTS-12).
+    let more = format!(r#"OBY oby_tell_job {{"id": "{id}", "words": "y"}}"#);
     let twice = said(
         &obid,
-        json!({"said": format!(r#"REPEAT 2 {tell}"#), "new": true}),
+        json!({"said": format!("REPEAT 1 {tell} THEN {more}"), "new": true}),
     );
     assert!(
         twice.body["text"]
