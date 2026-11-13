@@ -179,19 +179,10 @@ pub fn confirm_item(
         title,
         text,
         options: vec![CONFIRM.into(), CANCEL.into()],
-        recommended: None,
         created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(arrival()),
-        answered_by: None,
         confirm: Some(Box::new(confirmed)),
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 
@@ -381,7 +372,7 @@ fn fetches(check: &str) -> String {
 }
 
 /// An inbox item as obid keeps it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
     pub id: String,
@@ -668,11 +659,7 @@ pub fn review_request_item(
                 "Say no, and say no to {from_owner}'s requests on {repo} from now on without asking."
             ),
         ]),
-        recommended: None,
         created: now,
-        done: None,
-        later: None,
-        answer: None,
         obi: Some(json!({
             "correlationId": correlation_id,
             "from": from,
@@ -688,13 +675,7 @@ pub fn review_request_item(
                 "acceptance": quoted_acceptance,
             },
         })),
-        plugin: None,
-        arrived: None,
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 
@@ -766,11 +747,7 @@ pub fn question_item(
         ),
         options: QUESTION_OPTIONS.iter().map(|o| (*o).to_owned()).collect(),
         details: Some(vec!["Say no this time.".into(), never]),
-        recommended: None,
         created: now,
-        done: None,
-        later: None,
-        answer: None,
         obi: Some(json!({
             "correlationId": correlation_id,
             "from": from,
@@ -784,13 +761,8 @@ pub fn question_item(
                 "choices": body.get("choices").cloned().unwrap_or(Value::Null),
             },
         })),
-        plugin: None,
         arrived: Some(arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 
@@ -854,19 +826,8 @@ pub fn permission_item(
         text: permission.title.clone(),
         options,
         details,
-        recommended: None,
         created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
-        arrived: None,
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 
@@ -934,24 +895,15 @@ pub fn github_item(work: &crate::github_work::Item, known: bool, now: i64) -> It
             detail,
             "Leaves it for now. It stays in your GitHub work.".into(),
         ]),
-        recommended: None,
         created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
         github: Some(Box::new(json!({
             "id": work.id, "list": work.list, "repo": work.repo, "number": work.number,
             "author": work.author, "association": work.association, "trusted": work.trusted,
             "url": work.url, "known": known, "head": work.head,
             "quoted": {"title": work.title},
         }))),
-        watch: None,
+        ..Default::default()
     }
 }
 
@@ -990,19 +942,9 @@ pub fn crash_item(job: &crate::job::Job, now: i64) -> Item {
                 "Lets the task go. Its branch stays.".into(),
             ]
         }),
-        recommended: None,
         created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 
@@ -1025,19 +967,9 @@ pub fn routine_paused_item(routine: &str, name: &str, failures: u32, now: i64) -
             "Turns it back on: it runs at its next time.".into(),
             "Leaves it paused.".into(),
         ]),
-        recommended: None,
         created: now,
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 
@@ -1061,19 +993,9 @@ pub fn review_item(job: &crate::job::Job, review: &str, error: &str) -> Item {
         details: Some(vec![
             "Asks Oby to review it again, on the first reviewer that can.".into(),
         ]),
-        recommended: None,
         created: time::now(),
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
-        watch: None,
+        ..Default::default()
     }
 }
 

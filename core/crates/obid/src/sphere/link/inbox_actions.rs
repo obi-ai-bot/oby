@@ -914,17 +914,9 @@ impl Link {
             ]),
             recommended: Some(0),
             created: time::now(),
-            done: None,
-            later: None,
-            answer: None,
-            obi: None,
-            plugin: None,
             arrived: Some(inbox::arrival()),
-            answered_by: None,
-            confirm: None,
             start: Some(Box::new(start)),
-            github: None,
-            watch: None,
+            ..Default::default()
         };
         self.lock().inbox.insert(item.id.clone(), item.clone());
         self.save_item(&item);

@@ -372,10 +372,10 @@ pub async fn serve(
     // What the accounts API changed, over the configuration's accounts, before anything uses them;
     // and what sign-ins cut short by the last stop left behind.
     config.agents.open(&config.home);
-    accounts::sweep(&config.home);
+    accounts::sweep(&config.home, accounts::SCRATCH_PREFIX);
     // The tools' own logins on this Mac, listed as accounts unless the owner removed them.
     accounts::adopt_own_logins(&config.agents, &config.home);
-    github_login::sweep(&config.home);
+    accounts::sweep(&config.home, github_login::SCRATCH_PREFIX);
     // The reviewer's token, taken out of everything from the start.
     github_login::learn_reviewer(&github_login::reviewer_folder(&config.home));
     // What an older obid's boxes could have left in the accounts' folders (#655), said once.
