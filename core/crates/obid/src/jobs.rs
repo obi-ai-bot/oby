@@ -64,6 +64,8 @@ mod after_pr;
 mod authors;
 mod budget;
 mod by_github;
+mod keep;
+pub use keep::NotMade;
 mod lanes;
 pub(crate) use lanes::claude_place;
 use lanes::{own_codex_settings, own_run_env, owners_for};
@@ -650,6 +652,12 @@ pub struct NewJob {
     /// How each of `heard` came (#1661), for its `owners`. Never from the API.
     #[serde(skip)]
     pub owners: Vec<crate::job::OwnersWords>,
+    /// `POST /v1/jobs`'s words no app of the owner's signed ([`Job::unsigned`]) and request key:
+    /// on the job from its first save, so it never exists without them (HOME-2).
+    #[serde(skip)]
+    pub unsigned: bool,
+    #[serde(skip)]
+    pub client_request_id: Option<String>,
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
@@ -906,6 +914,8 @@ struct State {
     returning: std::collections::HashSet<String>,
     /// Keeps the Mac from idle sleep while `workers` isn't empty, idle ones too (RECOVERY-10).
     awake: crate::power::Awake,
+    /// Why each job's last save failed, until one succeeds ([`Jobs::keep`]).
+    unkept: HashMap<String, String>,
 }
 
 /// An account being signed in or removed ([`Jobs::begin_change`]), until this is dropped.
@@ -1291,6 +1301,7 @@ impl Jobs {
                 idle: std::collections::HashSet::new(),
                 returning: std::collections::HashSet::new(),
                 awake,
+                unkept: HashMap::new(),
             }),
             limit_decisions,
             limit_execution: tokio::sync::Mutex::new(()),
@@ -2188,10 +2199,10 @@ impl Jobs {
             let free = state.workers.contains_key(id)
                 && !state.wrapping.contains(id)
                 && state.asks.get(id).is_none_or(VecDeque::is_empty);
-            let job = state.jobs.get_mut(id)?;
+            let mut job = state.jobs.get(id)?.clone();
             (free && job.status == Status::Running && job.phase == Some(Phase::Work)).then(|| {
-                hear(job, text);
-                job.revised()
+                hear(&mut job, text);
+                self.keep(&mut state, id, job.revised()).ok()
             })
         };
         let Some(job) = taken else {
@@ -2200,9 +2211,7 @@ impl Jobs {
                     .into(),
             )));
         };
-        if let Err(e) = self.store.save(&job) {
-            tracing::error!("can't keep job {id}: {e}");
-        }
+        let job = job?;
         self.events.send("job", job.to_json());
         self.changed.notify_waiters();
         Some(Ok(job))
@@ -2742,25 +2751,20 @@ impl Jobs {
         let (job, before) = {
             let mut state = self.lock();
             let seen = see(&state.jobs);
-            let job = state.jobs.get_mut(id)?;
+            let mut job = state.jobs.get(id)?.clone();
             let before = job.status;
-            change(job, seen);
+            change(&mut job, seen);
             // Its stages' times, and its estimate again when a stage started or ended (#733).
             // ponytail: reads every job kept; an index by repository if that ever shows.
             if job.stamp(obi_protocol::time::now()) && job.status.is_active() {
-                let job = state.jobs.get(id)?;
                 let estimate =
-                    crate::facts::estimate(job, state.jobs.values(), job.estimate.as_ref());
-                let job = state.jobs.get_mut(id)?;
+                    crate::facts::estimate(&job, state.jobs.values(), job.estimate.as_ref());
                 if estimate.is_some() {
                     job.estimate = estimate;
                 }
             }
-            (state.jobs.get_mut(id)?.revised(), before)
+            (self.keep(&mut state, id, job.revised()).ok()?, before)
         };
-        if let Err(e) = self.store.save(&job) {
-            tracing::error!("can't keep job {id}: {e}");
-        }
         crate::failures::observe(&self.config.home, &job);
         self.events.send("job", job.to_json());
         self.changed.notify_waiters();
@@ -2771,17 +2775,6 @@ impl Jobs {
             link.job_moved(&job);
         }
         Some(job)
-    }
-
-    fn insert(&self, mut job: Job) -> Job {
-        job.revision += 1;
-        if let Err(e) = self.store.save(&job) {
-            tracing::error!("can't keep job {}: {e}", job.id);
-        }
-        self.lock().jobs.insert(job.id.clone(), job.clone());
-        self.events.send("job", job.to_json());
-        self.changed.notify_waiters();
-        job
     }
 
     fn new_id(&self) -> String {
@@ -3466,7 +3459,7 @@ impl Jobs {
         self.get(id).map(Ok)
     }
 
-    pub fn create(self: &Arc<Self>, new: NewJob) -> Result<Job, Refused> {
+    pub fn create(self: &Arc<Self>, new: NewJob) -> Result<Job, NotMade> {
         let (repo, tool, account, files, waiting) = self.vetted(&new)?;
         let id = self.new_id();
         let mut job = Job::new(
@@ -3527,7 +3520,8 @@ impl Jobs {
         job.follow_up_of = job.follow_up_of.map(|of| chain_tip(&self.lock().jobs, &of));
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
-        job.unsigned = of.as_ref().is_some_and(|of| of.unsigned);
+        job.unsigned = new.unsigned || of.as_ref().is_some_and(|of| of.unsigned);
+        job.client_request_id = new.client_request_id;
         job.memory_from_others = of.as_ref().is_some_and(|of| of.memory_from_others);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
         job.apart = match &of {
@@ -3584,7 +3578,9 @@ impl Jobs {
             .filter(|b| !b.is_empty())
         {
             Some(branch) if git::is_branch_name(&branch) && !git::is_ref_shaped(&branch) => branch,
-            Some(_) => return Err(Refused("That isn't a branch name obid can create.".into())),
+            Some(_) => {
+                return Err(Refused("That isn't a branch name obid can create.".into()).into());
+            }
             // A follow-up gets a branch of its own unless it carries the first job's on ([`follow_up`]).
             None => match new.pr.or(new.issue).filter(|_| job.follow_up_of.is_none()) {
                 Some(number) => format!("oby/{}-{number}", new.kind),
@@ -3612,10 +3608,11 @@ impl Jobs {
                     "{} (job {}) is following it up already: tell that one instead.",
                     other.short_title(),
                     other.id
-                )));
+                ))
+                .into());
             }
             if let Some(why) = branch_busy(&state.jobs, &job) {
-                return Err(Refused(why));
+                return Err(Refused(why).into());
             }
             state.jobs.insert(job.id.clone(), job.clone());
         }
@@ -3623,22 +3620,19 @@ impl Jobs {
         if let Err(why) = self.config.repos.keep(&repo) {
             tracing::warn!("{why}");
         }
-        let job = self.insert(job);
+        let job = self.insert(job).map_err(NotMade::Unkept)?;
         self.schedule();
         Ok(job)
     }
 
     /// Starts the review another Obi asked for (runner-api.md, "obid only: Obi-to-Obi review jobs",
     /// step 1): a `review` job on an account routing picks, titled from typed fields only.
-    pub fn start_obi_review(self: &Arc<Self>, request: ObiReview) -> Result<Job, Refused> {
+    pub fn start_obi_review(self: &Arc<Self>, request: ObiReview) -> Result<Job, NotMade> {
         let body: ReviewRequest = serde_json::from_value(request.body.clone())
             .map_err(|e| Refused(format!("The request isn't a review_request: {e}")))?;
         // Another Obi's request: only in a repository obid lists, never one of GitHub's it doesn't.
         if !self.config.repos.get().iter().any(|r| r.repo == body.repo) {
-            return Err(Refused(format!(
-                "{} isn't a repository obid knows.",
-                body.repo
-            )));
+            return Err(Refused(format!("{} isn't a repository obid knows.", body.repo)).into());
         }
         // Claude Code's: the review's answer is its structured output (`--json-schema`).
         let (_, account) = self.pick_for(Some(Tool::Claude.id()), None, true)?;
@@ -3683,7 +3677,7 @@ impl Jobs {
         }));
         job.phase = Some(Phase::Prepare);
         job.step = format!("Getting {repo_name} ready");
-        let job = self.insert(job);
+        let job = self.insert(job).map_err(NotMade::Unkept)?;
         self.schedule();
         Ok(job)
     }
@@ -4199,7 +4193,7 @@ impl Jobs {
                     if made.is_ok() && !job.heard.is_empty() {
                         self.take_heard(id);
                     }
-                    made
+                    made.map_err(|e| Refused(e.to_string()))
                 }
                 Source::Untrusted | Source::Event => Err(Refused(
                     "It ended, so these words would start a follow-up: only the owner's own words start one, where Oby read nothing untrusted.".into(),
@@ -4277,11 +4271,11 @@ impl Jobs {
             // not started yet with its first prompt, its step still saying what it waits for; one
             // wrapping up keeps the owner's own words for a round obid opens, else they start its
             // follow-up once it ends (#930, `Jobs::left_words`).
-            let taken = {
+            let job = {
                 let mut state = self.lock();
                 let worker = state.workers.contains_key(id);
                 let wrapping = state.wrapping.contains(id);
-                let job = state.jobs.get_mut(id)?;
+                let mut job = state.jobs.get(id)?.clone();
                 let starting = job.status == Status::Queued || job.phase == Some(Phase::Prepare);
                 // The owner's own are kept apart (#1661): unheard when it ends, those that came
                 // before it started or while it wrapped up start its follow-up (`left_words`).
@@ -4293,33 +4287,26 @@ impl Jobs {
                     })
                 };
                 if matches!(source, Source::Owner | Source::Confirmed) {
-                    owner_spoke(job);
+                    owner_spoke(&mut job);
                 }
                 if worker
                     && !wrapping
                     && job.status == Status::Running
                     && job.phase == Some(Phase::Work)
                 {
-                    heard(job);
+                    heard(&mut job);
                     job.owners.extend(owners(false));
-                    Some(job.revised())
                 } else if starting || (worker && source.direct()) {
                     job.notes.get_or_insert_with(Vec::new).push(text.to_owned());
                     job.heard.push(text.to_owned());
                     job.owners.extend(owners(true));
-                    Some(job.revised())
                 } else {
-                    None
+                    return Some(Err(Refused(format!(
+                        "{tool} is wrapping up: only the owner's own words wait for it now."
+                    ))));
                 }
+                self.keep(&mut state, id, job.revised()).ok()?
             };
-            let Some(job) = taken else {
-                return Some(Err(Refused(format!(
-                    "{tool} is wrapping up: only the owner's own words wait for it now."
-                ))));
-            };
-            if let Err(e) = self.store.save(&job) {
-                tracing::error!("can't keep job {id}: {e}");
-            }
             self.events.send("job", job.to_json());
             if matches!(source, Source::Owner | Source::Api) {
                 self.transcribed(id, self.transcripts.you(id, text));
@@ -4379,27 +4366,24 @@ impl Jobs {
             if let Some(why) = branch_busy(&state.jobs, state.jobs.get(id)?) {
                 return Some(Err(Refused(why)));
             }
-            let job = state.jobs.get_mut(id)?;
+            let mut job = state.jobs.get(id)?.clone();
             if job.account_limit_blocked && !source.approves_limit() {
                 return Some(Err(Refused(
                     "This account limit waits for the owner's signed choice, not an automatic retry.".into(),
                 )));
             }
-            heard(job);
+            heard(&mut job);
             if matches!(source, Source::Owner | Source::Confirmed) {
-                owner_spoke(job);
+                owner_spoke(&mut job);
             }
-            if past_safety(job) {
+            if past_safety(&job) {
                 job.ran_secs = None;
-                job.budget_from = Some(spent(job));
+                job.budget_from = Some(spent(&job));
             }
-            next_round(job);
+            next_round(&mut job);
             job.asked = true;
-            job.revised()
+            self.keep(&mut state, id, job.revised()).ok()?
         };
-        if let Err(e) = self.store.save(&resumed) {
-            tracing::error!("can't keep job {id}: {e}");
-        }
         self.events.send("job", resumed.to_json());
         if matches!(source, Source::Owner | Source::Api) {
             self.transcribed(id, self.transcripts.you(id, text));
@@ -4451,12 +4435,14 @@ impl Jobs {
                 return;
             };
             let words = job.owners[at].clone();
-            self.update(id, |job| {
+            // Taken only once kept: else the same words come round again, for ever.
+            let taken = self.update(id, |job| {
                 job.owners.remove(at);
                 if let Some(i) = job.heard.iter().position(|h| *h == words.text) {
                     job.heard.remove(i);
                 }
             });
+            let Some(_) = taken else { return };
             // Try again for a job that never started picks nothing up: the rest go on.
             let nothing_to_pick_up =
                 words.text.starts_with(crate::brain::actions::TRY_AGAIN) && job.session.is_none();
@@ -4491,7 +4477,7 @@ impl Jobs {
                         job.heard.remove(i);
                     }
                 }
-            });
+            })
         };
         take(first);
         while let Some(words) = self
@@ -4499,14 +4485,15 @@ impl Jobs {
             .and_then(|j| j.owners.first().map(|w| w.text.clone()))
         {
             match self.message_as(next, &words, Source::Confirmed, &[], true) {
-                Some(Ok(_)) => take(&words),
+                // Words that couldn't leave `id` aren't sent again.
+                Some(Ok(_)) if take(&words).is_some() => {}
                 Some(Err(why)) => {
                     if let Some(job) = self.get(id) {
                         self.unheard(&job, &words, &why.0);
                     }
                     return;
                 }
-                None => return,
+                _ => return,
             }
         }
     }
@@ -5969,9 +5956,9 @@ impl Jobs {
         let dismissed = {
             let mut state = self.lock();
             let publishing = state.publishing.contains(id);
-            let job = state.jobs.get_mut(id)?;
+            let mut job = state.jobs.get(id)?.clone();
             if job.dismissed.is_some() {
-                return Some(Ok(job.clone()));
+                return Some(Ok(job));
             }
             if publishing {
                 return Some(Err(Refused(
@@ -5986,11 +5973,8 @@ impl Jobs {
             job.dismissed = Some(obi_protocol::time::now());
             // Let go, it isn't tried again after its reset either.
             job.resumes_at = None;
-            job.revised()
+            self.keep(&mut state, id, job.revised()).ok()?
         };
-        if let Err(e) = self.store.save(&dismissed) {
-            tracing::error!("can't keep job {id}: {e}");
-        }
         self.events.send("job", dismissed.to_json());
         self.changed.notify_waiters();
         self.cleaning.notify_one();
@@ -6073,6 +6057,7 @@ impl Jobs {
             state.jobs.remove(id);
             state.asks.remove(id);
             state.followed.remove(id);
+            state.unkept.remove(id);
             (job, stays)
         };
         if let Err(e) = self.store.remove(id) {
@@ -8160,7 +8145,7 @@ impl Jobs {
             job.recovery.stalls = attempt;
             job.recovery.tries += 1;
             job.step = format!("Trying again now ({attempt} of {tries})");
-        });
+        })?;
         Some(continue_message(text, None))
     }
 
@@ -10738,7 +10723,8 @@ impl Jobs {
                         self.update(id, |job| {
                             job.recovery.errors = attempt;
                             job.recovery.tries += 1;
-                        });
+                        })
+                        .ok_or("the job couldn't be kept")?;
                         let ran_now = |job: &mut Job| job.ran_secs = Some(ran());
                         let of = (attempt, of);
                         if !self
@@ -11747,7 +11733,7 @@ impl Jobs {
         review.phase = Some(Phase::Prepare);
         review.step = format!("Getting {} ready", author.repo_name());
         // The review first: cut off between the two, it still runs, and its verdict still lands.
-        self.insert(review);
+        let Ok(_) = self.insert(review) else { return };
         self.update(id, |job| {
             // Its summary of the round it worked on the last review is its reply (MERGING-33).
             if let Some((_, reply)) = job.replies.last_mut().filter(|(_, r)| r.is_empty()) {
@@ -12441,7 +12427,7 @@ impl Jobs {
             publish_action_of(state.jobs.get(id)?, &state.jobs, by_hand)
         };
         if answer.is_ok() {
-            self.update(id, |job| job.offered(obi_protocol::time::now()));
+            self.update(id, |job| job.offered(obi_protocol::time::now()))?;
         }
         Some(answer)
     }
@@ -15172,6 +15158,8 @@ mod tests {
                 id.into(),
             );
             job.untrusted = id == "boxed";
+            // An own run starts only for a job obid keeps, its no-proxy mark saved (LANE-3a).
+            jobs.insert(job.clone()).unwrap();
             let [worktree, admin, common, temp] =
                 ["worktree", "admin", "common", "temp"].map(|d| root.join(id).join(d));
             for dir in [&worktree, &admin, &common, &temp] {
@@ -17989,13 +17977,13 @@ mod tests {
         )];
         author.reviewing = Some("r1".into());
         assert_eq!(author.pushed_head(), Some("abc"));
-        jobs.insert(author);
+        jobs.insert(author).unwrap();
         let mut review = on("r1", "review", "codex", "plan", status);
         review.review_of = Some("a".into());
         // (the head it reads is the job's: nothing else starts another review)
         review.start_commit = Some("abc".into());
         assert!(!review.read_another_head(jobs.get("a").as_ref().unwrap()));
-        jobs.insert(review);
+        jobs.insert(review).unwrap();
     }
 
     /// CHATGPT-23: a review running on the plan, its yes taken back, starts again on an account
@@ -18056,8 +18044,10 @@ mod tests {
     #[tokio::test]
     async fn chatgpt_23_a_job_queued_when_the_yes_goes_waits() {
         let jobs = jobs_on_a_plan(true, &[]);
-        jobs.insert(a_routines(on("q", "fix", "codex", "plan", Status::Queued)));
-        jobs.insert(on("mine", "fix", "codex", "plan", Status::Queued));
+        jobs.insert(a_routines(on("q", "fix", "codex", "plan", Status::Queued)))
+            .unwrap();
+        jobs.insert(on("mine", "fix", "codex", "plan", Status::Queued))
+            .unwrap();
         jobs.background_answered("plan", false);
         let queued = jobs.get("q").unwrap();
         assert!(!jobs.lock().workers.contains_key("q"));
@@ -18075,14 +18065,15 @@ mod tests {
         let jobs = jobs_on_a_plan(true, &["dev"]);
         let mut ran = a_routines(on("ran", "fix", "codex", "plan", Status::Queued));
         ran.session = Some("old-thread".into());
-        jobs.insert(ran);
+        jobs.insert(ran).unwrap();
         jobs.insert(a_routines(on(
             "new",
             "fix",
             "codex",
             "plan",
             Status::Queued,
-        )));
+        )))
+        .unwrap();
         let login = jobs.login_path("ran");
         std::fs::create_dir_all(&login).unwrap();
         std::fs::write(login.join("cli-config.json"), "{}").unwrap();
@@ -18133,7 +18124,8 @@ mod tests {
     #[tokio::test]
     async fn chatgpt_20_a_change_onto_the_login_is_refused() {
         let jobs = jobs_on_a_plan(true, &["dev"]);
-        jobs.insert(a_routines(on("j", "fix", "codex", "dev", Status::Stopped)));
+        jobs.insert(a_routines(on("j", "fix", "codex", "dev", Status::Stopped)))
+            .unwrap();
         let to = Moving {
             agent: Some("codex".into()),
             account: Some("plan".into()),
@@ -18146,7 +18138,8 @@ mod tests {
         assert!(refused.0.contains("work I run by myself"), "{}", refused.0);
         assert_eq!(jobs.get("j").unwrap().account, "dev");
         // The owner's own job moves there as it did.
-        jobs.insert(on("mine", "fix", "codex", "dev", Status::Stopped));
+        jobs.insert(on("mine", "fix", "codex", "dev", Status::Stopped))
+            .unwrap();
         let moved = jobs
             .change("mine", &to, "by Oby", Source::Event)
             .unwrap()
@@ -19344,7 +19337,7 @@ mod tests {
                 reserved: Some(Vec::new()),
                 tool: None,
             });
-            jobs.insert(job);
+            jobs.insert(job).unwrap();
             jobs.stop(id, by).unwrap()
         };
         let owners = stopped("aaaa1801", STOPPED_BY_API);
@@ -19399,6 +19392,181 @@ mod tests {
         drop(jobs);
         let reopened = jobs_with_kept(&home, &[]);
         assert_eq!(reopened.get("aaaa0001").unwrap().revision, 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Each change to a job is made on a copy and saved under the lock it read the job under: two
+    /// threads changing one job at once lose none of each other's changes, in memory or on disk.
+    #[test]
+    fn two_changes_to_one_job_both_land() {
+        let root = std::env::temp_dir().join(format!("obid-both-land-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut done = Job::new(
+            "aaaa0002".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        done.status = Status::Done;
+        let jobs = jobs_with_kept(&home, &[&done]);
+        let before = jobs.get("aaaa0002").unwrap().revision;
+        std::thread::scope(|threads| {
+            for thread in ["a", "b"] {
+                let jobs = &jobs;
+                threads.spawn(move || {
+                    for n in 0..50 {
+                        let changed =
+                            jobs.update("aaaa0002", |job| job.changed(format!("{thread}{n}")));
+                        assert!(changed.is_some());
+                    }
+                });
+            }
+        });
+        let kept: Job =
+            serde_json::from_slice(&std::fs::read(home.join("jobs/aaaa0002.json")).unwrap())
+                .unwrap();
+        for job in [jobs.get("aaaa0002").unwrap(), kept] {
+            let mut changes: Vec<String> = job.changes.iter().map(|c| c.what.clone()).collect();
+            changes.sort();
+            let mut all: Vec<String> = ["a", "b"]
+                .iter()
+                .flat_map(|t| (0..50).map(move |n| format!("{t}{n}")))
+                .collect();
+            all.sort();
+            assert_eq!(changes, all);
+            assert_eq!(job.revision, before + 100);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// HOME-1, HOME-2: a save that fails changes nothing, in memory or on the apps. A new job isn't
+    /// made, a change and a dismissal don't land, no `job` event is sent, and why is kept for the
+    /// routes until a save of that job succeeds.
+    #[tokio::test]
+    async fn a_failed_save_leaves_insert_update_and_dismiss_as_they_were() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-unkept-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let job = |id: &str, status| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            job.status = status;
+            job
+        };
+        let jobs = jobs_with_kept(
+            &home,
+            &[
+                &job("aaaa0003", Status::Done),
+                &job("aaaa0004", Status::Failed),
+            ],
+        );
+        let (done, failed) = (jobs.get("aaaa0003").unwrap(), jobs.get("aaaa0004").unwrap());
+        assert!(failed.needs_you());
+        let mut events = jobs.events.subscribe();
+        let kept = home.join("jobs");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        assert!(jobs.insert(job("aaaa0005", Status::Queued)).is_err());
+        assert!(jobs.get("aaaa0005").is_none());
+        assert!(
+            jobs.update("aaaa0003", |job| job.title = Some("New".into()))
+                .is_none()
+        );
+        assert_eq!(jobs.get("aaaa0003").unwrap().revision, done.revision);
+        assert_eq!(jobs.get("aaaa0003").unwrap().title, done.title);
+        assert!(jobs.unkept("aaaa0003").is_some());
+        assert!(jobs.dismiss("aaaa0004").is_none());
+        assert_eq!(jobs.get("aaaa0004").unwrap().dismissed, None);
+        assert_eq!(jobs.get("aaaa0004").unwrap().revision, failed.revision);
+        assert!(jobs.unkept("aaaa0004").is_some());
+        while let Ok(event) = events.try_recv() {
+            assert_ne!(event.name, "job", "{:?}", event.data);
+        }
+
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let renamed = jobs
+            .update("aaaa0003", |job| job.title = Some("New".into()))
+            .unwrap();
+        assert_eq!(renamed.revision, done.revision + 1);
+        assert!(jobs.unkept("aaaa0003").is_none());
+        assert_eq!(events.try_recv().unwrap().name, "job");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A mark that only restricts a job (someone else's code, unsigned words, no longer vetted)
+    /// stays on it though its save failed, and its next save keeps it: a job is never treated as
+    /// less marked than it was found to be (round-4 security review, finding 1).
+    #[test]
+    fn a_mark_whose_save_failed_stays_and_the_next_save_keeps_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-marks-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut job = Job::new(
+            "aaaa0006".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        (job.status, job.apart, job.vetted) = (Status::Running, true, true);
+        let jobs = jobs_with_kept(&home, &[&job]);
+        let kept = home.join("jobs");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o500)).unwrap();
+        jobs.mark("aaaa0006", "it reached example.com".into(), false);
+        assert!(jobs.mark_unsigned("aaaa0006").is_none());
+        assert!(jobs.unvet("aaaa0006", "a title no app signed").is_none());
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marked = |job: &Job| (job.foreign.clone(), job.unsigned, job.vetted);
+        let want = (Some("it reached example.com".to_owned()), true, false);
+        assert_eq!(marked(&jobs.get("aaaa0006").unwrap()), want);
+        jobs.update("aaaa0006", |job| job.step = "Working".into())
+            .unwrap();
+        let file: Job =
+            serde_json::from_slice(&std::fs::read(kept.join("aaaa0006.json")).unwrap()).unwrap();
+        assert_eq!(marked(&file), want);
+        assert_eq!(marked(&jobs.get("aaaa0006").unwrap()), want);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `POST /v1/jobs`'s unsigned words and request key are on the job from its first save, so no
+    /// job made from them ever exists, in memory or on disk, without them (round-4 security
+    /// review, finding 2).
+    #[tokio::test]
+    async fn an_unsigned_job_is_marked_from_its_first_save() {
+        let (jobs, _clone, root) = jobs_with_a_clone("origin").await;
+        let mut events = jobs.events.subscribe();
+        let made = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                unsigned: true,
+                client_request_id: Some("k-1".into()),
+                ..NewJob::default()
+            })
+            .unwrap();
+        let path = jobs.config.home.join(format!("jobs/{}.json", made.id));
+        let file: Job = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(file.revision, made.revision);
+        assert!(file.unsigned && made.unsigned);
+        assert_eq!(file.client_request_id.as_deref(), Some("k-1"));
+        let first = loop {
+            let event = events.try_recv().unwrap();
+            if event.name == "job" {
+                break event.data;
+            }
+        };
+        assert_eq!(first["id"], json!(made.id));
+        assert_eq!(first["clientRequestId"], json!("k-1"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -19498,7 +19666,7 @@ mod tests {
             note: String::new(),
             note_by: "obid".into(),
         });
-        jobs.insert(job);
+        jobs.insert(job).unwrap();
         let files = ["/attachments/app/a/shot.png".to_owned()];
         let told = jobs.message_attaching("eeee0001", "Use this", Source::Owner, &files);
         let Some(Err(refused)) = told else {
@@ -19553,7 +19721,7 @@ mod tests {
                 "c".into(),
             );
             job.branch = format!("oby/fix-{id}");
-            jobs.insert(job);
+            jobs.insert(job).unwrap();
         };
         let follow_ups = |id: &str| -> Vec<Job> {
             jobs.lock()
@@ -19694,7 +19862,7 @@ mod tests {
                     late: true,
                 })
                 .collect();
-            jobs.insert(job);
+            jobs.insert(job).unwrap();
         };
         ended("eeee0001", "oby/fix-eeee0001");
         jobs.left_words("eeee0001");
@@ -19723,7 +19891,7 @@ mod tests {
         busy.status = Status::Running;
         busy.follow_up_of = Some("eeee0002".into());
         busy.branch = "oby/fix-eeee0002".into();
-        jobs.insert(busy);
+        jobs.insert(busy).unwrap();
         jobs.left_words("eeee0002");
         assert_eq!(jobs.get("eeee0002").unwrap().heard.len(), 2);
         let items = items.lock().unwrap().clone();
@@ -19779,7 +19947,7 @@ mod tests {
         let jobs = jobs_with_kept(&home, &[&stopped, &limited]);
         let mut busy = on("aaaa0003", "oby/Fix-34");
         busy.status = Status::Running;
-        jobs.insert(busy);
+        jobs.insert(busy).unwrap();
         let refused = jobs
             .message("aaaa0001", crate::brain::actions::TRY_AGAIN, Source::Owner)
             .unwrap()
@@ -20732,7 +20900,7 @@ mod tests {
             "claude".into(),
             "a".into(),
         );
-        jobs.insert(job);
+        jobs.insert(job).unwrap();
         jobs.lock()
             .workers
             .insert("live".into(), watch::channel(Signal::Run).0);
@@ -20878,7 +21046,7 @@ mod tests {
                 "a".into(),
             );
             job.check = Some("make test".into());
-            jobs.insert(job);
+            jobs.insert(job).unwrap();
             jobs.lock()
                 .workers
                 .insert(id.into(), watch::channel(Signal::Run).0);
@@ -20950,7 +21118,7 @@ mod tests {
                 "a".into(),
             );
             job.check = Some("make test".into());
-            jobs.insert(job);
+            jobs.insert(job).unwrap();
             jobs.lock()
                 .workers
                 .insert(id.into(), watch::channel(Signal::Run).0);
@@ -21648,7 +21816,7 @@ mod tests {
             job.status = Status::Done;
             job.branch = format!("oby/fix-{id}");
             job.mode = Some("bypass".into());
-            jobs.insert(job);
+            jobs.insert(job).unwrap();
         };
         ended("ffff0001");
         let owners = jobs

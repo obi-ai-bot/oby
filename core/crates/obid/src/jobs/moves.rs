@@ -178,7 +178,7 @@ impl Jobs {
                     next_round(job);
                     (job.round, job.rounds) = (round, rounds);
                 }
-            });
+            })?;
         }
         self.schedule();
         Some(moved.map(|job| self.get(id).unwrap_or(job)))
@@ -350,7 +350,7 @@ mod tests {
             "claude".into(),
             "a".into(),
         );
-        jobs.insert(job);
+        jobs.insert(job).unwrap();
         (root, jobs)
     }
 
