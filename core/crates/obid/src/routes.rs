@@ -15,17 +15,14 @@ use serde_json::{Map, Value, json};
 
 use crate::api::{ApiError, Shared};
 use crate::jobs::{NewJob, NotMade};
+use crate::receipts::Found;
 
 const NO_JOB: &str = "There's no such job.";
 
-/// `404` for a job obid doesn't have, or the `500` of one whose change it couldn't save
-/// (docs/contracts/home.md, HOME-1).
+/// `404`, or the `500` of a job whose change obid couldn't save (docs/contracts/home.md, HOME-1).
 fn no_job(shared: &Shared, id: &str) -> ApiError {
-    unless_unkept(
-        &shared.jobs,
-        id,
-        ApiError::new(StatusCode::NOT_FOUND, NO_JOB),
-    )
+    let missing = ApiError::new(StatusCode::NOT_FOUND, NO_JOB);
+    unless_unkept(&shared.jobs, id, missing)
 }
 
 /// `missing`, or the `500` of a job whose last save failed ([`crate::jobs::Jobs::unkept`]).
@@ -320,9 +317,7 @@ pub async fn transcript_entry(
     let n = n
         .parse::<u64>()
         .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "n is a number."))?;
-    if shared.jobs.get(&id).is_none() {
-        return Err(no_job(&shared, &id));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let (entry, detail) = shared
         .jobs
         .transcript_entry(&id, n)
@@ -530,9 +525,7 @@ pub async fn wait(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(no_job(&shared, &id));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     enum Step {
         Waiting,
         Done,
@@ -690,6 +683,29 @@ pub async fn dispatch(
             "A job needs repo, kind and task.",
         ));
     }
+    let key = request_key(job, &headers)
+        .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    // A request key (docs/contracts/receipts.md): held from the lookup to the receipt, so the
+    // same request again, or at once, gets the first job (RECEIPTS-5 to 7).
+    let mut receipt = None;
+    if let (Some(key), Some(receipts)) = (&key, &shared.receipts) {
+        let guard = receipts.lock(key).await;
+        let mut keyed = value.clone();
+        keyed["job"]["clientRequestId"] = Value::Null; // as left out: the header's or the body's
+        let now = obi_protocol::time::now();
+        match receipts.get(key, JOBS_ROUTE, &keyed, now) {
+            Err(why) => return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why)),
+            Ok(Found::Conflict) => return Err(ApiError::new(StatusCode::CONFLICT, REUSED_KEY)),
+            Ok(Found::Repeat { answer, job, .. }) => {
+                let body = match job.and_then(|id| shared.jobs.get(&id)) {
+                    Some(job) => job.to_json(),
+                    None => serde_json::from_str(&answer).unwrap_or(Value::String(answer)),
+                };
+                return Ok(json(StatusCode::OK, body));
+            }
+            Ok(Found::None) => receipt = Some((receipts, keyed, guard)),
+        }
+    }
     let mut new =
         new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
     new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
@@ -712,11 +728,59 @@ pub async fn dispatch(
         None,
     )?;
     // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
+    // A mark obid couldn't save answers 500 and keeps no receipt (HOME-1).
+    let id = job.id.clone();
+    let kept = |marked: Option<crate::job::Job>| marked.ok_or_else(|| no_job(&shared, &id));
     let job = match unsigned {
-        true => shared.jobs.mark_unsigned(&job.id).unwrap_or(job),
+        true => kept(shared.jobs.mark_unsigned(&id))?,
         false => job,
     };
-    Ok(json(StatusCode::CREATED, job.to_json()))
+    let Some(key) = key else {
+        return Ok(json(StatusCode::CREATED, job.to_json()));
+    };
+    let job = kept(shared.jobs.mark_request_key(&id, &key))?;
+    let answer = job.to_json();
+    if let Some((receipts, keyed, _guard)) = receipt {
+        let now = obi_protocol::time::now();
+        let put = receipts.put(&key, JOBS_ROUTE, &keyed, 201, &answer, Some(&job.id), now);
+        if let Err(e) = put {
+            tracing::warn!("job {}: its request key's receipt wasn't kept: {e}", job.id);
+        }
+    }
+    Ok(json(StatusCode::CREATED, answer))
+}
+
+/// The receipt store's name for [`dispatch`]'s route.
+const JOBS_ROUTE: &str = "POST /v1/jobs";
+
+const REUSED_KEY: &str =
+    "That request key was used for another request: send this one with a new key.";
+
+/// The request's key: `job.clientRequestId` or the `Idempotency-Key` header, which mean the same.
+fn request_key(job: &Map<String, Value>, headers: &HeaderMap) -> Result<Option<String>, String> {
+    let body = match job.get("clientRequestId") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(key)) => Some(key.clone()),
+        Some(_) => return Err("clientRequestId is a string.".into()),
+    };
+    let mut sent = headers.get_all("idempotency-key").iter();
+    let header = match (sent.next(), sent.next()) {
+        (None, _) => None,
+        (Some(key), None) => Some(key.to_str().map_err(|_| "Idempotency-Key is plain text.")?),
+        _ => return Err("Send one Idempotency-Key.".into()),
+    };
+    let longest = crate::receipts::LONGEST;
+    for key in body.iter().map(String::as_str).chain(header) {
+        if key.is_empty() || key.chars().count() > longest {
+            return Err(format!("A request key is 1 to {longest} characters."));
+        }
+    }
+    match (body, header) {
+        (Some(body), Some(header)) if body != header => {
+            Err("clientRequestId and Idempotency-Key differ: send one key.".into())
+        }
+        (body, header) => Ok(body.or(header.map(str::to_owned))),
+    }
 }
 
 /// The body's fields, by type; what they mean is checked when the job is made.
@@ -1110,9 +1174,7 @@ pub async fn message(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(no_job(&shared, &id));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let bad = || ApiError::new(StatusCode::BAD_REQUEST, "The body is {\"text\": \"…\"}.");
     let value = serde_json::from_slice::<Value>(&body).map_err(|_| bad())?;
     let text = value.get("text").and_then(Value::as_str).ok_or_else(bad)?;
@@ -1231,9 +1293,7 @@ pub async fn publish_action(
     Path(id): Path<String>,
     axum::extract::Query(mut by_hand): axum::extract::Query<crate::publish::ByHand>,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(no_job(&shared, &id));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     // What the owner is shown, read now, never what the request says: the sentence they sign
     // names the commit Publish anyway sends and the one a force-push replaces.
     by_hand.head = None;
@@ -1324,9 +1384,7 @@ pub async fn permission(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(no_job(&shared, &id));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     // An answer's words, or a no's, that no app of the owner's signed (crate::secretspec). Checked
     // once: a signature counts once, so a second look would find the owner's own words used.
     let signed = std::cell::OnceCell::new();
@@ -1451,9 +1509,7 @@ pub async fn move_job(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if shared.jobs.get(&id).is_none() {
-        return Err(no_job(&shared, &id));
-    }
+    shared.jobs.get(&id).ok_or_else(|| no_job(&shared, &id))?;
     let shape = "The body is {\"agent\", \"account\", \"model\", \"why\"}, each a string or null, why up to 500 characters.";
     let mut to: crate::jobs::Moving = serde_json::from_slice(&body)
         .ok()

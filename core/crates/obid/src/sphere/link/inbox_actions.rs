@@ -15,11 +15,8 @@ impl Link {
 
     /// "That job is gone." (`409`), or the `500` of a job whose change obid couldn't save (HOME-1).
     fn gone(&self, id: &str) -> ApiError {
-        crate::routes::unless_unkept(
-            &self.jobs,
-            id,
-            api(StatusCode::CONFLICT, "That job is gone."),
-        )
+        let gone = api(StatusCode::CONFLICT, "That job is gone.");
+        crate::routes::unless_unkept(&self.jobs, id, gone)
     }
 
     /// `GET /v1/obid/decisions`, oldest first.

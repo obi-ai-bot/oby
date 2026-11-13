@@ -35,6 +35,18 @@ fn through(
     target: &str,
     body: Option<&Value>,
 ) -> Answer {
+    through_with(obid, token, method, target, body, "")
+}
+
+/// [`through`], with `extra` header lines as given.
+fn through_with(
+    obid: &Obid,
+    token: Option<&str>,
+    method: &str,
+    target: &str,
+    body: Option<&Value>,
+    extra: &str,
+) -> Answer {
     let body = body.map(Value::to_string);
     let mut stream = TcpStream::connect(("127.0.0.1", obid.gateway.expect("a gateway"))).unwrap();
     stream
@@ -46,6 +58,7 @@ fn through(
     if let Some(token) = token {
         text.push_str(&format!("Authorization: Bearer {token}\r\n"));
     }
+    text.push_str(extra);
     match &body {
         Some(body) => text.push_str(&format!(
             "Content-Type: application/json\r\nContent-Length: {}\r\n",
@@ -678,6 +691,33 @@ fn a_wait_through_the_gateway_starts_at_once() {
     );
     let (rest, _) = read_until(&mut wait, 20, |seen| seen.contains(&id));
     assert!(rest.contains(&id), "{rest}");
+}
+
+/// RECEIPTS-5 through the gateway: a paired phone's `POST /v1/jobs` sent again with its
+/// `Idempotency-Key` gets the first job back, so the gateway passes the key on.
+#[test]
+fn receipts_5_a_phones_repeated_job_request_makes_one_job() {
+    let folder = Folder::new("gateway-receipts");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let job =
+        json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}});
+    let send = || {
+        let key = "Idempotency-Key: phone-retry-1\r\n";
+        through_with(&obid, Some(&token), "POST", "/v1/jobs", Some(&job), key)
+    };
+    let first = send();
+    assert_eq!(first.status, 201, "{}", first.text);
+    assert_eq!(
+        first.body["clientRequestId"], "phone-retry-1",
+        "{}",
+        first.text
+    );
+    let again = send();
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(again.body["id"], first.body["id"]);
+    let jobs = call(&obid, "GET", "/v1/jobs", None).body;
+    assert_eq!(jobs.as_array().unwrap().len(), 1, "{jobs}");
 }
 
 /// A phone's FCM token is kept with the paired device that handed it over through the gateway,

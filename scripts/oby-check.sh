@@ -24,7 +24,8 @@
 #                         module, and the binaries that name a touched folder under tests/
 #                         (support, agents, plugins); tests/jobs_setup.rs for src/jobs/setup.rs,
 #                         sandbox.rs, egress.rs, process.rs or secretspec.rs, and, outside a job's
-#                         box, wherever tests/jobs_api.rs runs; every test of another touched crate
+#                         box, wherever tests/jobs_api.rs runs; tests/released_files.rs for
+#                         src/job.rs, config.rs or store.rs; every test of another touched crate
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   mcp/, Package.swift   swift test
@@ -326,6 +327,11 @@ while IFS= read -r file; do
         core/crates/obid/src/jobs/setup.rs | core/crates/obid/src/sandbox.rs | core/crates/obid/src/egress.rs | \
             core/crates/obid/src/process.rs | core/crates/obid/src/secretspec.rs)
             tests=$(add "$tests" core/crates/obid/tests/jobs_setup.rs) ;;
+    esac
+    case "$file" in
+        # What reads a released obid's job files and config.json (docs/contracts/released-files.md).
+        core/crates/obid/src/job.rs | core/crates/obid/src/config.rs | core/crates/obid/src/store.rs)
+            tests=$(add "$tests" core/crates/obid/tests/released_files.rs) ;;
     esac
     case "$file" in
         apps/ios/tests/*.swift) ios=1 ios_suites=$(add "$ios_suites" "$(suites iOSTests/ "$file")") ;;

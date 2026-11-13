@@ -319,6 +319,18 @@ if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/nu
     rm core/crates/obid/tests/jobs_api.rs
 fi
 rm core/crates/obid/tests/jobs_setup.rs "$main"
+# What reads a released obid's files plans tests/released_files.rs (docs/contracts/released-files.md).
+code core/crates/obid/tests/released_files.rs 1
+for module in job config store; do
+    said=$(OBY_CHECK_PATHS=core/crates/obid/src/$module.rs OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -q -- '--test released_files' <<<"$said" || {
+        echo "oby-check-test: a change to $module.rs didn't plan tests/released_files.rs:" >&2
+        # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+done
+rm core/crates/obid/tests/released_files.rs
 
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
 # its failure is named and comes last, each runs quietly, and a binary cargo didn't build fails the

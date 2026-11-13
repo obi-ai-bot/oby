@@ -758,6 +758,9 @@ pub struct Job {
     /// Never in the API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unsigned: bool,
+    /// The request key of the `POST /v1/jobs` that made it (docs/contracts/receipts.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
     /// A memory known to come from someone else's words reached its agent
     /// (crate::memory::someone_elses_among): its pull request merges only after two reviews.
     /// Carried to its follow-ups. Never in the API.
@@ -1280,6 +1283,7 @@ impl Job {
             own_lane: false,
             ran_unproxied: false,
             unsigned: false,
+            client_request_id: None,
             memory_from_others: false,
             foreign: None,
             foreign_by_api: false,
@@ -1799,6 +1803,9 @@ impl Job {
         }
         if self.untrusted {
             value["untrusted"] = json!(true);
+        }
+        if let Some(key) = &self.client_request_id {
+            value["clientRequestId"] = json!(key);
         }
         if let Some(why) = &self.reached {
             value["reached"] = json!(why);

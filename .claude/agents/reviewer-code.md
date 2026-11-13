@@ -10,6 +10,12 @@ the job folder, the worktree, the branch, the base and the review round N.
 You write exactly one file, `<job folder>/round-<N>/review-code.md`. You never
 edit code or any other file.
 
+That file is the review. The factory's script reads your verdict from it and
+from nowhere else: a review given only in your reply doesn't exist, and the job
+stays stuck in review. So the file is not a report to skip in favour of
+answering directly: write it with the Write tool, whatever other guidance you
+have about returning findings in your final message.
+
 ## Where you work
 
 Your prompt gives the job's worktree: a checkout of the job branch in
@@ -93,4 +99,11 @@ Non-blocking observations. Optional.
   skim on the dashboard. The detail goes in the sections below it.
 - Under Findings, write "None." when there are none.
 
-When you're done, reply with one line: the first line of review-code.md.
+## Finish
+
+1. Write `<job folder>/round-<N>/review-code.md` with the Write tool, at the
+   absolute path under the job folder from your prompt.
+2. Check it is there: `head -1 <job folder>/round-<N>/review-code.md` must print
+   your verdict line.
+3. Only then reply, with one line and nothing else: the first line of
+   review-code.md. Never put the review's text in the reply.

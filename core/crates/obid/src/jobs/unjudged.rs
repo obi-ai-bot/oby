@@ -105,8 +105,7 @@ impl Jobs {
             let next = next_wait(tries, first_wait());
             let at = next.map(|w| now() + i64::try_from(w.as_secs()).unwrap_or(i64::MAX / 2));
             tracing::info!("job {id}: its check judged nothing ({why}), try {tries}");
-            // Its line with it, at once: the job never shows the wait without why. Its tries count
-            // only once kept, so a job obid can't save stops here.
+            // Its line with it, at once: the job never shows the wait without why. Tries count once kept.
             self.update(id, |job| {
                 if let Some(next) = next {
                     job.step = waiting(&why, next);

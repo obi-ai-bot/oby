@@ -907,7 +907,7 @@ struct State {
     returning: std::collections::HashSet<String>,
     /// Keeps the Mac from idle sleep while `workers` isn't empty, idle ones too (RECOVERY-10).
     awake: crate::power::Awake,
-    /// Why each job's last save failed, until one succeeds ([`Jobs::keep`], HOME-1).
+    /// Why each job's last save failed, until one succeeds ([`Jobs::keep`]).
     unkept: HashMap<String, String>,
 }
 
@@ -2190,14 +2190,10 @@ impl Jobs {
                 && !state.wrapping.contains(id)
                 && state.asks.get(id).is_none_or(VecDeque::is_empty);
             let mut job = state.jobs.get(id)?.clone();
-            if free && job.status == Status::Running && job.phase == Some(Phase::Work) {
+            (free && job.status == Status::Running && job.phase == Some(Phase::Work)).then(|| {
                 hear(&mut job, text);
-                job.revision += 1;
-                self.keep(&mut state, id, &job).ok()?;
-                Some(job)
-            } else {
-                None
-            }
+                self.keep(&mut state, id, job.revised()).ok()
+            })
         };
         let Some(job) = taken else {
             return Some(Err(Refused(
@@ -2205,6 +2201,7 @@ impl Jobs {
                     .into(),
             )));
         };
+        let job = job?;
         self.events.send("job", job.to_json());
         self.changed.notify_waiters();
         Some(Ok(job))
@@ -2755,8 +2752,7 @@ impl Jobs {
             let mut job = state.jobs.get(id)?.clone();
             let before = job.status;
             change(&mut job, seen);
-            // Its stages' times, and its estimate again when a stage started or ended (#733): from
-            // the others ([`crate::facts::estimate`] skips its own id).
+            // Its stages' times, and its estimate again when a stage started or ended (#733).
             // ponytail: reads every job kept; an index by repository if that ever shows.
             if job.stamp(obi_protocol::time::now()) && job.status.is_active() {
                 let estimate =
@@ -2765,9 +2761,7 @@ impl Jobs {
                     job.estimate = estimate;
                 }
             }
-            job.revision += 1;
-            self.keep(&mut state, id, &job).ok()?;
-            (job, before)
+            (self.keep(&mut state, id, job.revised()).ok()?, before)
         };
         crate::failures::observe(&self.config.home, &job);
         self.events.send("job", job.to_json());
@@ -4308,9 +4302,7 @@ impl Jobs {
                         "{tool} is wrapping up: only the owner's own words wait for it now."
                     ))));
                 }
-                job.revision += 1;
-                self.keep(&mut state, id, &job).ok()?;
-                job
+                self.keep(&mut state, id, job.revised()).ok()?
             };
             self.events.send("job", job.to_json());
             if matches!(source, Source::Owner | Source::Api) {
@@ -4387,9 +4379,7 @@ impl Jobs {
             }
             next_round(&mut job);
             job.asked = true;
-            job.revision += 1;
-            self.keep(&mut state, id, &job).ok()?;
-            job
+            self.keep(&mut state, id, job.revised()).ok()?
         };
         self.events.send("job", resumed.to_json());
         if matches!(source, Source::Owner | Source::Api) {
@@ -4442,7 +4432,7 @@ impl Jobs {
                 return;
             };
             let words = job.owners[at].clone();
-            // Taken only once kept: else the same words would come round again, for ever.
+            // Taken only once kept: else the same words come round again, for ever.
             let taken = self.update(id, |job| {
                 job.owners.remove(at);
                 if let Some(i) = job.heard.iter().position(|h| *h == words.text) {
@@ -5980,9 +5970,7 @@ impl Jobs {
             job.dismissed = Some(obi_protocol::time::now());
             // Let go, it isn't tried again after its reset either.
             job.resumes_at = None;
-            job.revision += 1;
-            self.keep(&mut state, id, &job).ok()?;
-            job
+            self.keep(&mut state, id, job.revised()).ok()?
         };
         self.events.send("job", dismissed.to_json());
         self.changed.notify_waiters();

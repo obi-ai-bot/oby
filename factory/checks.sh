@@ -24,8 +24,10 @@ if ! command -v gitleaks >/dev/null; then
     exit 1
 fi
 
-# One Cargo build folder for every job's worktree: a folder each is about 15 GB,
-# and Cargo's own lock on a shared one runs the jobs' builds one after another.
+# One Cargo build folder for every job's worktree: a folder each is about 15 GB.
+# Cargo locks it only while it builds, so two checks at once would still clash:
+# one job's build replaces the obid binary another job's tests are running
+# (R02-01's gate saw it). So the whole check holds a lock on the folder, below.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/Library/Caches/oby-factory/core-target}"
 mkdir -p "$CARGO_TARGET_DIR"
 
@@ -36,4 +38,16 @@ if ! git diff --quiet "$base"...HEAD -- scripts/oby-check.sh scripts/oby-check-t
     echo "factory/checks.sh: this branch changes the check's own files; its copy of them runs below." >&2
 fi
 
-exec scripts/oby-check.sh "$base"
+# One check at a time on this Mac: the lock is held until oby-check.sh and
+# everything it starts have exited, and a second check waits for it.
+exec python3 -c '
+import fcntl, os, sys
+lock = open(sys.argv[1], "w")
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("factory/checks.sh: another check is running on this Mac; waiting for it", file=sys.stderr, flush=True)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+os.set_inheritable(lock.fileno(), True)
+os.execvp(sys.argv[2], sys.argv[2:])
+' "$CARGO_TARGET_DIR/.factory-check.lock" scripts/oby-check.sh "$base"
