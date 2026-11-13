@@ -43,6 +43,12 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 
+// Its version, as `cursor-agent --version` prints it (docs/contracts/cli-versions.md).
+if (process.argv[2] === "--version") {
+  process.stdout.write("2026.10.01-fake\n");
+  process.exit(0);
+}
+
 // Its own sign-in, as obid runs the tool's login (fake-login.mjs).
 if (process.argv[2] === "login") {
   await (await import(new URL("./fake-login.mjs", import.meta.url))).login("cursor");

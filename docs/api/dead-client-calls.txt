@@ -1,0 +1,14 @@
+# Client calls to paths obid doesn't serve, there before the route guard came (docs/contracts/ci.md,
+# CI-10): `<file> <path>`, one a line, sorted. This list only shrinks:
+# core/crates/obid/tests/routes_guard.rs fails for a dead call that isn't here, and for a line here
+# whose call is gone from its file or served again (delete that line).
+apps/shared/Runner.swift /v1/activities
+apps/shared/Runner.swift /v1/jobs/*/proposals/*/file
+apps/shared/Runner.swift /v1/obid/sharing/grants
+apps/shared/Runner.swift /v1/obid/sharing/mac
+apps/shared/Runner.swift /v1/obid/sharing/mac/stop
+apps/shared/Runner.swift /v1/obid/sharing/macs
+apps/shared/Runner.swift /v1/obid/sharing/shared
+apps/shared/Runner.swift /v1/watches
+apps/shared/Runner.swift /v1/watches/*
+mcp/server/Server.swift /v1/jobs/*/start-when

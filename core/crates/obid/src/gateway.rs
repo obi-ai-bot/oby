@@ -100,7 +100,6 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/v1/jobs/*/transcript"),
     ("GET", "/v1/jobs/*/transcript/*"),
     ("GET", "/v1/jobs/*/report"),
-    ("POST", "/v1/jobs/*/proposals/*/file"),
     ("POST", "/v1/jobs/*/stop"),
     ("POST", "/v1/stop-all"),
     ("POST", "/v1/jobs/*/dismiss"),
@@ -115,7 +114,6 @@ const ROUTES: &[(&str, &str)] = &[
     ("PUT", "/v1/settings/jobs"),
     ("POST", "/v1/jobs/*/move"),
     ("POST", "/v1/jobs/*/start"),
-    ("POST", "/v1/jobs/*/start-when"),
     ("POST", "/v1/jobs/*/mode"),
     ("POST", "/v1/jobs/*/permission"),
     ("POST", "/v1/jobs/*/messages"),
@@ -134,7 +132,6 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/failures/*/fix"),
     ("POST", "/v1/accounts/*/reserve"),
     ("GET", "/v1/settings/models"),
-    ("PUT", "/v1/settings/models"),
     ("GET", "/v1/settings/models/options"),
     ("GET", "/v1/settings/jobs"),
     ("GET", "/v1/settings/permissions"),
@@ -144,11 +141,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/devices"),
     ("GET", "/v1/devices/*/pairing"),
     ("POST", "/v1/devices/*/pairing"),
-    ("POST", "/v1/activities"),
     ("POST", "/v1/notifications"),
-    ("GET", "/v1/watches"),
-    ("POST", "/v1/watches"),
-    ("DELETE", "/v1/watches/*"),
 ];
 
 /// Whether a phone may `method` `path` through the gateway: `*` is one path segment.

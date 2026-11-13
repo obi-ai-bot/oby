@@ -1163,6 +1163,7 @@ mod tests {
             title: format!("Title of {job}"),
             what: what.into(),
             rounds,
+            agent_version: None,
             evidence: crate::failures::Evidence {
                 summary: summary.into(),
                 step: format!("Stage 2 of 5, Work: Round {rounds} of {rounds}"),
