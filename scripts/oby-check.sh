@@ -26,6 +26,8 @@
 #                         sandbox.rs, egress.rs, process.rs or secretspec.rs, and, outside a job's
 #                         box, wherever tests/jobs_api.rs runs; tests/released_files.rs for
 #                         src/job.rs, config.rs or store.rs; every test of another touched crate
+#   docs/api/, obid's src/ files with a `.route(`, apps/electron/src (not its tests or mock), apps/shared,
+#   mcp/server            the Rust group above with tests/routes_guard.rs (docs/contracts/ci.md)
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
 #   mcp/, Package.swift   swift test
@@ -333,6 +335,16 @@ while IFS= read -r file; do
         core/crates/obid/src/job.rs | core/crates/obid/src/config.rs | core/crates/obid/src/store.rs)
             tests=$(add "$tests" core/crates/obid/tests/released_files.rs) ;;
     esac
+    # The routes obid serves and the clients that call them (docs/contracts/ci.md, CI-9 to 11).
+    routes=''
+    case "$file" in
+        core/crates/obid/src/api.rs | core/crates/obid/src/gateway.rs | docs/api/* | apps/shared/*.swift | mcp/server/*.swift)
+            routes=1 ;;
+        core/crates/obid/src/*) [[ ! -f "$file" ]] || ! grep -qF '.route(' "$file" || routes=1 ;;
+        */test/* | *.test.ts | *.test.tsx | apps/electron/src/renderer/src/mock.ts) ;;
+        apps/electron/src/*.ts | apps/electron/src/*.tsx) routes=1 ;;
+    esac
+    if [[ -n "$routes" ]]; then rust=1 tests=$(add "$tests" core/crates/obid/tests/routes_guard.rs); fi
     case "$file" in
         apps/ios/tests/*.swift) ios=1 ios_suites=$(add "$ios_suites" "$(suites iOSTests/ "$file")") ;;
         apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) ios=1 ;;

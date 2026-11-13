@@ -331,6 +331,27 @@ for module in job config store; do
     }
 done
 rm core/crates/obid/tests/released_files.rs
+# The routes and the clients that call them plan tests/routes_guard.rs (docs/contracts/ci.md, CI-9 to 11),
+# an Electron test doesn't.
+code core/crates/obid/tests/routes_guard.rs 1
+for path in core/crates/obid/src/api.rs core/crates/obid/src/gateway.rs docs/api/routes.txt \
+    apps/electron/src/renderer/src/obid.ts apps/shared/Runner.swift mcp/server/Server.swift; do
+    said=$(OBY_CHECK_PATHS=$path OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+    grep -q -- '--test routes_guard' <<<"$said" || {
+        echo "oby-check-test: a change to $path didn't plan tests/routes_guard.rs:" >&2
+        # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+        sed 's/^/| /' <<<"$said" >&2
+        exit 1
+    }
+done
+said=$(OBY_CHECK_PATHS=apps/electron/src/renderer/src/test/x.test.ts OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
+! grep -q routes_guard <<<"$said" || {
+    echo "oby-check-test: a change to an Electron test planned tests/routes_guard.rs:" >&2
+    # Quoted, so no line of it starts as the check's own words would (PUBLISHING-22's sign).
+    sed 's/^/| /' <<<"$said" >&2
+    exit 1
+}
+rm core/crates/obid/tests/routes_guard.rs
 
 # obid's test binaries run side by side, each to its end: one that fails doesn't stop the others,
 # its failure is named and comes last, each runs quietly, and a binary cargo didn't build fails the
