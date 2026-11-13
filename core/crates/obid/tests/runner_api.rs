@@ -160,7 +160,8 @@ fn jobs_have_iso_dates_and_every_key() {
         for key in SWIFT_JOB_KEYS {
             assert!(keys.contains_key(key), "{key} is missing: {body}");
         }
-        // The job page's facts (#739) are there only once obid knows them.
+        // The job page's facts (#739) are there only once obid knows them, and so are its memory
+        // peaks, once obid's meter caught its agent running.
         let page = [
             "activity",
             "checks",
@@ -170,6 +171,9 @@ fn jobs_have_iso_dates_and_every_key() {
             "scan",
             "usage",
             "windowShare",
+            "peakRss",
+            "agentPeakRss",
+            "checkPeakRss",
         ];
         let mut extra: Vec<&str> = keys
             .keys()
@@ -182,6 +186,7 @@ fn jobs_have_iso_dates_and_every_key() {
             [
                 "accountLimit",
                 "addedTo",
+                "agentVersion",
                 "answered",
                 "answeredCount",
                 "approvals",
@@ -211,7 +216,7 @@ fn jobs_have_iso_dates_and_every_key() {
             "{body}"
         );
         let known = keys.keys().filter(|k| page.contains(&k.as_str())).count();
-        assert_eq!(keys.len(), 92 + known);
+        assert_eq!(keys.len(), 93 + known);
         // POST /v1/jobs: its own conversation, the owner's words its first turn (TASKCONV-1).
         assert!(body["conversation"].is_string(), "{body}");
         assert!(body["turn"].is_string(), "{body}");

@@ -658,6 +658,17 @@ pub struct Status {
     pub receipts: bool,
     /// The secret scanner publishing needs (crate::scan): `{gitleaks}`. Older obids don't send it.
     pub scanner: ScannerJson,
+    /// Each tool's binary and version (crate::cli_versions). Older obids don't send it.
+    pub tools: Vec<ToolJson>,
+}
+
+/// `status.tools[]`: the binary's absolute path and what its `--version` said, each null when
+/// it isn't found or can't be read.
+#[derive(Serialize)]
+pub struct ToolJson {
+    pub agent: &'static str,
+    pub path: Option<String>,
+    pub version: Option<String>,
 }
 
 /// `status.scanner`.
@@ -961,6 +972,13 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             .await
             .unwrap_or(None)
     };
+    // At most one `--version`'s 5 seconds, the three side by side (CLIVERSIONS-2).
+    let agents = shared.config.agents.get();
+    let tools = futures_util::future::join_all(crate::agent::Tool::ALL.map(|tool| {
+        let bin = crate::accounts::bin_of(&agents, tool).to_owned();
+        tokio::task::spawn_blocking(move || crate::cli_versions::read(tool, &bin, false))
+    }))
+    .await;
     let cleaned = shared.jobs.cleaned();
     Ok(axum::Json(Status {
         runner: RunnerJson {
@@ -1026,6 +1044,18 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                 .await
                 .unwrap_or(false),
         },
+        tools: crate::agent::Tool::ALL
+            .into_iter()
+            .zip(tools)
+            .map(|(tool, read)| {
+                let read = read.ok();
+                ToolJson {
+                    agent: tool.id(),
+                    path: read.as_ref().and_then(|r| Some(r.path.as_ref()?.display().to_string())),
+                    version: read.and_then(|r| r.version),
+                }
+            })
+            .collect(),
     }))
 }
 

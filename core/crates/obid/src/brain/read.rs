@@ -430,6 +430,7 @@ mod tests {
                 title: "Vault secrets".into(),
                 what: "Stopped at a limit: 3 rounds and `swift test` still fails".into(),
                 rounds: 3,
+                agent_version: None,
                 evidence: Evidence {
                     summary: "Nothing committed: VaultTests still fail.".into(),
                     step: "Stage 2 of 5, Work: Round 3 of 3".into(),
