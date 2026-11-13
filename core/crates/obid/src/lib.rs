@@ -473,6 +473,9 @@ pub async fn serve(
         .map(Arc::new)
         .inspect_err(|e| tracing::error!("can't keep request receipts: {e}"))
         .ok();
+    if let Some(receipts) = &receipts {
+        link.use_receipts(receipts.clone());
+    }
     let shared = Arc::new(api::Shared {
         config,
         token,
