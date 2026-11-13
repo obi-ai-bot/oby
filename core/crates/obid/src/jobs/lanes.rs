@@ -89,11 +89,11 @@ impl Jobs {
     /// the job's file before it starts, or it doesn't start.
     pub(super) fn launched(&self, id: &str, own: bool) -> Result<(), String> {
         let mark = |j: &mut Job| (j.own_lane, j.ran_unproxied) = (own, j.ran_unproxied || own);
-        self.update(id, mark);
-        // Saved with the change, or it changed nothing ([`Jobs::unkept`]) and an own run doesn't start.
-        let Some(e) = self.unkept(id).filter(|_| own) else {
+        // The job its update saved says so, or an own run doesn't start (gone, or unsaved: unkept).
+        if self.update(id, mark).is_some_and(|job| job.ran_unproxied) || !own {
             return Ok(());
-        };
+        }
+        let e = self.unkept(id).unwrap_or_else(|| "the job is gone".into());
         Err(format!(
             "obid couldn't save that this run has no proxy ({e}), so it didn't start."
         ))

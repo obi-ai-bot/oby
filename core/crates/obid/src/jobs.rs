@@ -652,6 +652,12 @@ pub struct NewJob {
     /// How each of `heard` came (#1661), for its `owners`. Never from the API.
     #[serde(skip)]
     pub owners: Vec<crate::job::OwnersWords>,
+    /// `POST /v1/jobs`'s words no app of the owner's signed ([`Job::unsigned`]) and request key:
+    /// on the job from its first save, so it never exists without them (HOME-2).
+    #[serde(skip)]
+    pub unsigned: bool,
+    #[serde(skip)]
+    pub client_request_id: Option<String>,
 }
 
 /// Who tells a job something, which decides what words for one that ended do (the owner's
@@ -3511,7 +3517,8 @@ impl Jobs {
         job.follow_up_of = job.follow_up_of.map(|of| chain_tip(&self.lock().jobs, &of));
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
-        job.unsigned = of.as_ref().is_some_and(|of| of.unsigned);
+        job.unsigned = new.unsigned || of.as_ref().is_some_and(|of| of.unsigned);
+        job.client_request_id = new.client_request_id;
         job.memory_from_others = of.as_ref().is_some_and(|of| of.memory_from_others);
         // Someone else's code from the start keeps to a clone apart; a follow-up to its job's.
         job.apart = match &of {
@@ -19486,6 +19493,75 @@ mod tests {
         assert_eq!(renamed.revision, done.revision + 1);
         assert!(jobs.unkept("aaaa0003").is_none());
         assert_eq!(events.try_recv().unwrap().name, "job");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A mark that only restricts a job (someone else's code, unsigned words, no longer vetted)
+    /// stays on it though its save failed, and its next save keeps it: a job is never treated as
+    /// less marked than it was found to be (round-4 security review, finding 1).
+    #[test]
+    fn a_mark_whose_save_failed_stays_and_the_next_save_keeps_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("obid-marks-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        let mut job = Job::new(
+            "aaaa0006".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "c".into(),
+        );
+        (job.status, job.apart, job.vetted) = (Status::Running, true, true);
+        let jobs = jobs_with_kept(&home, &[&job]);
+        let kept = home.join("jobs");
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o500)).unwrap();
+        jobs.mark("aaaa0006", "it reached example.com".into(), false);
+        assert!(jobs.mark_unsigned("aaaa0006").is_none());
+        assert!(jobs.unvet("aaaa0006", "a title no app signed").is_none());
+        std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marked = |job: &Job| (job.foreign.clone(), job.unsigned, job.vetted);
+        let want = (Some("it reached example.com".to_owned()), true, false);
+        assert_eq!(marked(&jobs.get("aaaa0006").unwrap()), want);
+        jobs.update("aaaa0006", |job| job.step = "Working".into())
+            .unwrap();
+        let file: Job =
+            serde_json::from_slice(&std::fs::read(kept.join("aaaa0006.json")).unwrap()).unwrap();
+        assert_eq!(marked(&file), want);
+        assert_eq!(marked(&jobs.get("aaaa0006").unwrap()), want);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `POST /v1/jobs`'s unsigned words and request key are on the job from its first save, so no
+    /// job made from them ever exists, in memory or on disk, without them (round-4 security
+    /// review, finding 2).
+    #[tokio::test]
+    async fn an_unsigned_job_is_marked_from_its_first_save() {
+        let (jobs, _clone, root) = jobs_with_a_clone("origin").await;
+        let mut events = jobs.events.subscribe();
+        let made = jobs
+            .create(NewJob {
+                repo: "o/r".into(),
+                kind: "fix".into(),
+                task: "Fix it".into(),
+                unsigned: true,
+                client_request_id: Some("k-1".into()),
+                ..NewJob::default()
+            })
+            .unwrap();
+        let path = jobs.config.home.join(format!("jobs/{}.json", made.id));
+        let file: Job = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(file.revision, made.revision);
+        assert!(file.unsigned && made.unsigned);
+        assert_eq!(file.client_request_id.as_deref(), Some("k-1"));
+        let first = loop {
+            let event = events.try_recv().unwrap();
+            if event.name == "job" {
+                break event.data;
+            }
+        };
+        assert_eq!(first["id"], json!(made.id));
+        assert_eq!(first["clientRequestId"], json!("k-1"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

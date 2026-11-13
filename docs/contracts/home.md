@@ -19,6 +19,8 @@ The business behavior contract for how a change to a job reaches obid's memory a
 
 - Two changes to one job never lose each other: each is read, made and saved under the same lock, one after the other.
 - A save that fails changes nothing: the job in memory keeps its content and its `revision`, no `job` event is sent, and nothing that would follow the change happens. obid logs `can't keep job <id>: <reason>`.
+- The one exception fails closed: a mark that only restricts a job (`foreign`, `reached`, `untrusted`, `unsigned`, `memoryFromOthers`, `ranUnproxied`, and `vetted` turned off) stays on the job in memory though its save failed, and the job's next save keeps it. A job is never treated as less marked than obid found it to be, so its check never gets the owner's declared secrets and its pull request never merges on one review because a save failed.
+- A job `POST /v1/jobs` makes from words no app of the owner's signed is `unsigned`, and carries its request key, from its first save: it never exists, in memory or on disk, without them.
 - A new job whose save fails doesn't exist: not in memory, not in `home/jobs`, not in `GET /v1/jobs`, and no event says it was made.
 - obid keeps, for each job, why its last save failed, until a later save of it succeeds or it's deleted. A route whose change didn't land answers `500` `The job couldn't be kept: <reason>`, never `404` "There's no such job.", `409` or `2xx`; an inbox answer that carries a change out answers the same.
 

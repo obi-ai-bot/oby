@@ -718,6 +718,8 @@ pub async fn dispatch(
     let words = new.task.clone();
     let unsigned = !new.vetted;
     let foreign = unsigned.then(|| "words no app of the owner's signed".to_owned());
+    // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
+    (new.unsigned, new.client_request_id) = (unsigned, key.clone());
     let job = crate::task_conversation::create(
         &shared,
         new,
@@ -727,18 +729,9 @@ pub async fn dispatch(
         }),
         None,
     )?;
-    // Words no app of the owner's signed: two reviews merge its pull request (MERGING-14).
-    // A mark obid couldn't save answers 500 and keeps no receipt (HOME-1).
-    let id = job.id.clone();
-    let kept = |marked: Option<crate::job::Job>| marked.ok_or_else(|| no_job(&shared, &id));
-    let job = match unsigned {
-        true => kept(shared.jobs.mark_unsigned(&id))?,
-        false => job,
-    };
     let Some(key) = key else {
         return Ok(json(StatusCode::CREATED, job.to_json()));
     };
-    let job = kept(shared.jobs.mark_request_key(&id, &key))?;
     let answer = job.to_json();
     if let Some((receipts, keyed, _guard)) = receipt {
         let now = obi_protocol::time::now();
@@ -861,6 +854,9 @@ fn new_job(job: &Map<String, Value>) -> Result<NewJob, String> {
         adding: None,
         heard: Vec::new(),
         owners: Vec::new(),
+        // Set by [`dispatch`] from how the request came, never from its body.
+        unsigned: false,
+        client_request_id: None,
     })
 }
 

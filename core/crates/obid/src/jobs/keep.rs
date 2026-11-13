@@ -13,11 +13,14 @@ pub enum NotMade {
 
 impl Jobs {
     /// Saves `next`, job `id` changed on a copy one revision on, then puts it in memory, all under
-    /// the state lock it was changed under. A failed save changes nothing; why is kept for
-    /// [`Jobs::unkept`] until a save of the job succeeds.
+    /// the state lock it was changed under. A failed save changes nothing but the marks that only
+    /// restrict the job ([`carry_marks`]); why is kept for [`Jobs::unkept`] until a save succeeds.
     pub(super) fn keep(&self, state: &mut State, id: &str, next: Job) -> Result<Job, String> {
         if let Err(e) = self.store.save(&next) {
             tracing::error!("can't keep job {id}: {e}");
+            if let Some(job) = state.jobs.get_mut(id) {
+                carry_marks(job, &next);
+            }
             state.unkept.insert(id.to_owned(), e.to_string());
             return Err(e.to_string());
         }
@@ -46,4 +49,21 @@ impl Jobs {
     pub fn unkept(&self, id: &str) -> Option<String> {
         self.lock().unkept.get(id).cloned()
     }
+}
+
+/// The marks that only restrict a job, from `next` onto `job` though `next` wasn't saved: a job is
+/// never treated as less marked than it was found to be, and its next save keeps them.
+fn carry_marks(job: &mut Job, next: &Job) {
+    if job.foreign.is_none() {
+        job.foreign_by_api = next.foreign_by_api;
+    } else if next.foreign.is_some() {
+        job.foreign_by_api &= next.foreign_by_api;
+    }
+    job.foreign = job.foreign.take().or_else(|| next.foreign.clone());
+    job.reached = job.reached.take().or_else(|| next.reached.clone());
+    job.untrusted |= next.untrusted;
+    job.unsigned |= next.unsigned;
+    job.memory_from_others |= next.memory_from_others;
+    job.ran_unproxied |= next.ran_unproxied;
+    job.vetted &= next.vetted;
 }
