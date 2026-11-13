@@ -13,7 +13,8 @@ GitHub issues; pull requests still go through `gh`.
 
 Usage:
   job queue                      what /factory run should do with each task in the active sprint; settles queued jobs;
-                                 a `nightly due<TAB><why>` line before the `#` line when factory/bin/nightly is due
+                                 a `nightly due<TAB><why>` line before the `#` line when factory/bin/nightly is due;
+                                 runs factory/bin/gate --idle, which may deallocate the gate VM, its words on stderr
   job create <task>              new job for an open task whose dependencies are done; prints the job id
   job add <title>                new task file from stdin (the task's text); prints its key
   job advance <job> <stage>      move a job to <stage>, or refuse
@@ -676,6 +677,18 @@ def nightly_due():
     return (res.stdout.strip() or None) if res.returncode == 0 else None
 
 
+def gate_idle():
+    """Let factory/bin/gate deallocate the gate VM once it is idle; the rule is the gate's own. What it says goes
+    to stderr, so the queue's rows stay as they are."""
+    try:
+        res = subprocess.run([str(BIN / "gate"), "--idle"], cwd=REPO, capture_output=True, text=True)
+    except OSError:
+        return
+    said = (res.stdout + res.stderr).strip()
+    if said:
+        print(said, file=sys.stderr)
+
+
 def cmd_queue():
     """Rows in the order to start them. `resume` and `new` rows fit in the
     concurrency slots; the rest show as `hold` until a running job finishes.
@@ -756,6 +769,7 @@ def cmd_queue():
                 rows.append(("hold",) + row[1:4] + (f"concurrency {CONCURRENCY} reached",))
     for row in rows + other_rows:
         print("\t".join(str(c) for c in row))
+    gate_idle()
     why = nightly_due()
     if why:
         print(f"nightly due\t{why}")
