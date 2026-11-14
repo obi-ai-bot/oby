@@ -308,6 +308,7 @@ pub fn dismissal_item(cid: &str, job: &str, repo: &str, number: u64, url: &str, 
         start: None,
         github: None,
         watch: None,
+        extra: Default::default(),
     }
 }
 

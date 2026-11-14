@@ -1647,6 +1647,46 @@ fn home_1_a_failed_save_sends_no_event() {
     assert_eq!(sent[0]["title"], "Renamed");
 }
 
+/// HOME-10 (docs/contracts/home.md): a key a newer obid wrote in a job's file stays there, with its
+/// value, when this obid changes the job and saves it, and the API never shows it.
+#[test]
+fn home_10_an_unknown_job_key_survives_a_save() {
+    let folder = Folder::new("home-10");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let mut job = obid::job::Job::new(
+        "aaaa1010".into(),
+        "obi-e2e/fixture-app".into(),
+        "research".into(),
+        "Look around".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.status = obid::job::Status::Done;
+    job.finished = Some(obi_protocol::time::now());
+    let mut kept = serde_json::to_value(&job).unwrap();
+    kept["fromANewerObid"] = json!({"a": 1});
+    let file = folder.0.join("home/jobs/aaaa1010.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, serde_json::to_vec(&kept).unwrap()).unwrap();
+    let obid = start(&folder.0, &config);
+
+    let path = "/v1/jobs/aaaa1010";
+    let renamed = request(&obid, "PATCH", path, Some(r#"{"title": "Renamed"}"#));
+    assert_eq!(renamed.status, 200, "{}", renamed.text);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(saved["title"], "Renamed", "{saved}");
+    assert_eq!(saved["fromANewerObid"], json!({"a": 1}), "{saved}");
+    let shown = request(&obid, "GET", path, None).body;
+    assert_eq!(shown["title"], "Renamed", "{shown}");
+    assert!(shown.get("fromANewerObid").is_none(), "{shown}");
+    assert!(
+        renamed.body.get("fromANewerObid").is_none(),
+        "{}",
+        renamed.text
+    );
+}
+
 /// HOME-2: a job obid couldn't save isn't made: `500` with why, no `job` event, the same jobs in
 /// `GET /v1/jobs`, and no new file in `home/jobs`.
 #[test]

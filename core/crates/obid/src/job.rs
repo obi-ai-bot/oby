@@ -865,6 +865,9 @@ pub struct Job {
     /// that head. Never in the API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_merge_refused: Option<(String, String)>,
+    /// Keys this obid doesn't know (a newer one's), kept as they were when it saves, never shown.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).
