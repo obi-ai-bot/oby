@@ -376,8 +376,8 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
     def test_remote_40_without_mac_worker_builder_slots_nothing_changes(self):
         self.write(SANDBOX, "// changed\n")
         today = f"factory/bin/test-run: on this Mac: the worktree's changes touch macOS-only code: {SANDBOX}\n"
-        # None: FACTORY_MAC_WORKER and FACTORY_REMOTE_GATE unset, so config.json's own settings are read (its
-        # mac_worker has no builder_slots, its remote_gate has builder slots).
+        # None: FACTORY_MAC_WORKER and FACTORY_REMOTE_GATE unset, so config.json's own settings are read (the
+        # harness seeds its mac_worker with no builder_slots; its remote_gate has builder slots).
         for worker, vm in (({"ssh_host": "oby-mac-pro"}, True), ({"ssh_host": "oby-mac-pro", "builder_slots": 0}, True),
                            ({"ssh_host": "oby-mac-pro"}, False), (None, None)):
             for name in ("mac-runs", "ssh.log"):
