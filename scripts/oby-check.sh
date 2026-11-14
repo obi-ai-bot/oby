@@ -9,6 +9,8 @@
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
 #                                  with OBY_CHECK_ALL=1, runs everything, whatever changed;
 #                                  with OBY_CHECK_ONLY=rust|electron|swift|factory|scan, runs only that group;
+#                                  with OBY_CHECK_ONLY=limits, only the line limits below, whatever
+#                                  changed (GitHub's `limits` job, docs/contracts/ci.md, CI-35);
 #                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
 #                                  obid sets it when it runs this on a job's base, which changed
 #                                  nothing, to see whether the base fails as the job does
@@ -272,7 +274,7 @@ flaky_retry() {
 
 failed=() unjudged=()
 case "${OBY_CHECK_ONLY:-}" in
-    ''|rust|electron|swift|factory|scan) ;;
+    ''|rust|electron|swift|factory|scan|limits) ;;
     *) echo 'oby-check: invalid OBY_CHECK_ONLY' >&2; exit 2 ;;
 esac
 group=rust
@@ -489,7 +491,8 @@ each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 group=rust
 if [[ -n "$check_script" ]]; then step bash scripts/oby-check-test.sh; fi
 
-if selected && [[ -n "$rust$check_script" ]]; then
+# OBY_CHECK_ONLY=limits runs this block alone, whatever changed (CI-35).
+if { selected && [[ -n "$rust$check_script" ]]; } || [[ "${OBY_CHECK_ONLY:-}" == limits ]]; then
     plan_group
     if ! git cat-file -e HEAD:scripts/oby-check.sh 2>/dev/null; then
         echo "oby-check: this commit has no scripts/oby-check.sh, this repository's check and its line limits: put it back" >&2

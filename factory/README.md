@@ -29,7 +29,7 @@ tests/          the factory's own tests, stdlib only, from the repository root: 
 queue/tasks/    open tasks, one file each (R01-02.md)
 queue/done/     finished tasks: a task's own pull request moves its file here
 dashboard.html  the board: cd factory && python3 -m http.server, then http://localhost:8000/dashboard.html
-jobs/           runtime state, local to this Mac (gitignored); jobs/remote-gate/state.json is the gate VM's last use
+jobs/           runtime state, local to this Mac (gitignored); jobs/remote-gate/state.json is the gate VM's uses
 ```
 
 `jobs/nightly/` holds the nightly check's results, one `<stamp>.md` (`GATE: PASS|FAIL`, the commit, when it
@@ -56,9 +56,11 @@ Gates run on the Mac until the owner adds `remote_gate` to `config.json` (`docs/
 owner's steps"). With it, `bin/gate` reads the check's plan, starts the gate VM `oby-gate` when it is stopped
 (`az vm start`), runs the Linux groups there with `ssh oby-gate oby-remote-gate <commit> origin/dev`, and runs
 swift, and rust when the diff touches a macOS-only path, on the Mac. It runs the whole check on the Mac when the
-VM can't be reached in 3 minutes, couldn't judge, or the commit isn't on origin. `FACTORY_REMOTE_GATE` (the same
-JSON) turns it on for one run. Each remote use stamps `jobs/remote-gate/state.json`, and `bin/job queue` runs
-`bin/gate --idle`, which deallocates the VM 30 minutes after its last use when no job is in `gate` or `merging`.
+VM can't be reached in 3 minutes, couldn't judge, or the commit isn't on origin; before that, when SSH doesn't
+answer, it moves the VM's SSH rule to this Mac's current public IP (`/32`) if it changed and tries once more.
+`FACTORY_REMOTE_GATE` (the same JSON) turns it on for one run. Each use of the VM is recorded in
+`jobs/remote-gate/state.json`, and `bin/job queue` runs `bin/gate --idle`, which deallocates the VM once no use is
+open and the last one ended 30 minutes ago, whatever stage any job is in.
 With `mac_worker` (`{"ssh_host": "oby-mac-pro"}`, or `FACTORY_MAC_WORKER` for one run) also set, the Mac's part
 runs on that second Mac, set up by `remote/setup-mac.sh`, once the VM's part passed: in one call, `ssh
 oby-mac-pro oby-worker/bin/oby-remote-gate --mac <commit> origin/dev <group>...`. When it doesn't answer within

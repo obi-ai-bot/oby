@@ -85,6 +85,9 @@ const q = (params: Record<string, string | number | boolean | undefined>) => {
   return text ? `?${text}` : '';
 };
 const id = encodeURIComponent;
+// A request key (docs/contracts/receipts.md): with one, obid takes the request once however often
+// it's sent; without, the body is as it always was
+const keyed = <B extends object>(body: B, key?: string) => (key ? { ...body, clientRequestId: key } : body);
 // obid's largest file (POST /v1/attachments)
 const UPLOAD_MAX = 25_000_000;
 
@@ -92,7 +95,7 @@ export const api = {
   status: () => call<Status>('GET', '/v1/status'),
   jobs: (limit = 50) => call<Job[]>('GET', `/v1/jobs${q({ limit })}`),
   job: (j: string) => call<Job>('GET', `/v1/jobs/${id(j)}`),
-  stop: (j: string) => call<Job>('POST', `/v1/jobs/${id(j)}/stop`),
+  stop: (j: string, key?: string) => call<Job>('POST', `/v1/jobs/${id(j)}/stop`, key ? { clientRequestId: key } : undefined),
   dismiss: (j: string) => call<Job>('POST', `/v1/jobs/${id(j)}/dismiss`),
   // obid only, the task's menu: rename (whatever it's doing), archive or unarchive (ended, needing
   // nothing), delete (ended, for good: obid's 409 says why not); a job with commits that aren't
@@ -105,14 +108,15 @@ export const api = {
   transcript: (j: string, after?: number) => call<{ next: number | null; entries: TranscriptEntry[] }>('GET', `/v1/jobs/${id(j)}/transcript${q({ after })}`),
   // conversation: the words go into the task's conversation too, made now if it has none (a task
   // page's box: docs/contracts/task-conversations.md, TASKCONV-4)
-  message: (j: string, text: string, attachments?: string[], conversation = false) => call<Job>('POST', `/v1/jobs/${id(j)}/messages`, { text, ...(attachments?.length ? { attachments } : {}), ...(conversation ? { conversation: true } : {}) }),
+  message: (j: string, text: string, attachments?: string[], conversation = false, key?: string) =>
+    call<Job>('POST', `/v1/jobs/${id(j)}/messages`, keyed({ text, ...(attachments?.length ? { attachments } : {}), ...(conversation ? { conversation: true } : {}) }, key)),
   // a job's waiting permission (POST /v1/jobs/{id}/permission)
   permission: (j: string, body: { id: string; decision: 'allow' | 'always' | 'deny'; message?: string }) =>
     call<Job>('POST', `/v1/jobs/${id(j)}/permission`, body),
   // how much it asks from now on (a task's Mode menu)
   mode: (j: string, mode: string) => call<Job>('POST', `/v1/jobs/${id(j)}/mode`, { mode }),
   inbox: () => call<InboxItem[]>('GET', '/v1/inbox'),
-  answer: (i: string, body: { answer: string } | { later: string }) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, body),
+  answer: (i: string, body: { answer: string } | { later: string }, key?: string) => call<InboxItem>('POST', `/v1/inbox/${id(i)}/answer`, keyed(body, key)),
   // Publish by hand (PUBLISHING-9 to 11, 14): the sentence for the owner's choices, then main signs
   // exactly that on their click
   publishAction: (j: string, c: PublishChoices = {}) => call<PublishAction>('GET', `/v1/jobs/${id(j)}/publish${q(c)}`),

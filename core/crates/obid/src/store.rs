@@ -56,14 +56,23 @@ impl Store {
 
 /// A folder only its owner can reach (0700), with its parents.
 pub fn make_private_dir(dir: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+/// A folder (0700) or file (0600, `mode`) its group or others can reach is made its owner's alone
+/// again, and the log says so.
+pub fn keep_private(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let was = std::fs::metadata(path)?.permissions().mode() & 0o777;
+    if was & 0o077 != 0 {
+        tracing::warn!("{} was mode {was:o}: making it 0{mode:o}", path.display());
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
     }
-    builder.create(dir)
+    Ok(())
 }
 
 /// Writes `bytes` to `path` (0600) through a temporary file renamed into place.
@@ -72,13 +81,9 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temporary = path.with_extension(format!("tmp-{}-{n}", std::process::id()));
     {
+        use std::os::unix::fs::OpenOptionsExt;
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+        options.write(true).create(true).truncate(true).mode(0o600);
         let mut file = options.open(&temporary)?;
         std::io::Write::write_all(&mut file, bytes)?;
         file.sync_all()?;

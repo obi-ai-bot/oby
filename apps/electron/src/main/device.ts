@@ -1,10 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron';
-import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { HOME, obid, type Answer, type Trusted } from './obid';
+import { HOME, obid, takesKeys, type Answer, type Trusted } from './obid';
 import { mayConfirm, takeInput, wordsHeader } from './words';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
@@ -113,14 +113,34 @@ export async function notificationWords(method: string, path: string, body: unkn
   return obid(method, path, body, words ?? undefined);
 }
 
-export async function ownersWords(method: string, path: string, body: unknown): Promise<Answer> {
+// A keyed request main signed on the owner's input that obid didn't answer (WORDS-16): the very
+// same request sent again (its method, path and body byte for byte, its key included) is signed
+// again, with a fresh time and no input, while main's own read says obid takes keys, so obid,
+// which takes a key once, sees it signed as the first was. Kept until obid answers it, 10 s after
+// its first signature, or 2 signatures again, whichever comes first; a few at most. Each signature
+// again is counted before main waits on obid, so copies arriving together get 2 at most too.
+const AGAIN_MS = 10_000, AGAIN = 2, KEPT = 8;
+let unanswered: { request: string; at: number; again: number }[] = [];
+const keyOf = (body: unknown) => typeof (body as { clientRequestId?: unknown } | null)?.clientRequestId === 'string';
+
+// owners: the preload saw the owner's own keystroke or click hold its words
+export async function ownersWords(method: string, path: string, body: unknown, owners = true): Promise<Answer> {
+  const at = Date.now();
+  unanswered = unanswered.filter((u) => at - u.at < AGAIN_MS && u.again < AGAIN);
+  const request = keyOf(body) ? `${method} ${path}\n${JSON.stringify(body)}` : null;
+  const kept = request === null ? undefined : unanswered.find((u) => u.request === request && u.again < AGAIN);
+  if (kept) kept.again++;
   let words: string | null = null;
   try {
-    if (takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    if (kept && await takesKeys()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    else if (owners && takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
   } catch (err) {
     console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return obid(method, path, body, words ?? undefined);
+  const r = await obid(method, path, body, words ?? undefined);
+  if (r.status !== 0) unanswered = unanswered.filter((u) => u !== kept);
+  else if (words && request !== null && !kept) unanswered = [...unanswered, { request, at, again: 0 }].slice(-KEPT);
+  return r;
 }
 
 // Fetch and verify the current options before signing; the revision and destination are covered.
@@ -168,7 +188,9 @@ export function confirming(trusted: Trusted) {
       if (!mayConfirm(item, clicked === true)) return { status: 403, text: JSON.stringify({ error: 'That takes your own click.' }) };
       const device = await register(), signedAt = now();
       const signature = signed(`oby-confirm\n${item.id}\n${item.title}\n${signedAt}`);
-      return obid('POST', `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: 'Confirm', approval: { device, action: item.title, signedAt, signature } });
+      // main's own key, once obid takes keys (RECEIPTS-16): a Confirm is sent once, never again
+      const key = await takesKeys() ? { clientRequestId: randomUUID() } : {};
+      return obid('POST', `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: 'Confirm', approval: { device, action: item.title, signedAt, signature }, ...key });
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }

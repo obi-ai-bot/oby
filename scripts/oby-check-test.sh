@@ -844,4 +844,77 @@ wait "$flipper" 2>/dev/null || true
 }
 rm -r rel planted
 
+# CI-35: OBY_CHECK_ONLY=limits, GitHub's `limits` job, judges the line limits alone on the commit,
+# whatever changed since its base: committed here, measured against HEAD, the diff is empty. On the
+# commit's own copy of the script (the base's copy a job's check installs may predate the mode).
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+limit=$(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh)
+jobs_limit=$(sed -n 's/^jobs_rs_limit=//p' scripts/oby-check.sh)
+sleep_limit=$(sed -n 's/^tests_sleep_limit=//p' scripts/oby-check.sh)
+jobs=core/crates/obid/src/jobs.rs
+limits_commit() { # message: what the cases wrote, committed
+    git add scripts core >/dev/null && git -c user.name=check -c user.email=check@example.invalid -c commit.gpgsign=false commit --quiet --allow-empty -m "$1"
+}
+limits() { # base, then settings: the mode's run, outside oby-check-blok and with none on PATH
+    local base=$1
+    shift
+    env -u OBY_CHECK_PLAN -u OBY_CHECK_PATHS -u OBY_CHECK_INNER PATH="$bare" OBY_CHECK_ONLY=limits "$@" \
+        scripts/oby-check.sh "$base" 2>&1
+}
+limits_fails() { # what it's about, the failure it names, then limits' arguments
+    local about=$1 named=$2
+    shift 2
+    if ran=$(limits "$@"); then wrong "CI-35: $about passed"; fi
+    grep -qF "oby-check: failed: $named" <<<"$ran" || wrong "CI-35: $about didn't fail naming \"$named\""
+    ! grep -q "^==> \|oby-check-blok can't judge this" <<<"$ran" || wrong "CI-35: $about ran a step or asked for oby-check-blok"
+}
+limits_passes() { # what it's about, then limits' arguments
+    local about=$1
+    shift
+    ran=$(limits "$@") || wrong "CI-35: $about failed"
+    grep -qx 'oby-check: passed' <<<"$ran" && ! grep -q '^==> ' <<<"$ran" || wrong "CI-35: $about didn't pass on the limits alone"
+}
+code "$main" "$((limit + 1))"
+sleeps "$sleepy" "$sleep_limit"
+limits_commit 'one line past'
+[[ -z "$(git status --porcelain -- core scripts)" ]] || wrong 'CI-35: the commit left something uncommitted'
+limits_fails 'one line past the line limit, nothing changed since the base' "the Rust core's line limit" HEAD
+grep -q "has $((limit + 1)) production lines outside the Sphere, past its limit of $limit" <<<"$ran" ||
+    wrong "CI-35: one line past the line limit didn't say its count and limit"
+# The rust group, by contrast, judges nothing here: nothing changed since the base.
+ran=$(env -u OBY_CHECK_PLAN OBY_CHECK_ONLY=rust scripts/oby-check.sh HEAD 2>&1) && ! grep -q 'Rust core has' <<<"$ran" ||
+    wrong 'CI-35: the rust group judged the limits with nothing changed: the case proves nothing'
+# Under oby-check-blok (OBY_CHECK_INNER) or not, the same: the mode never needs the tool.
+limits_fails 'one line past the line limit, under oby-check-blok' "the Rust core's line limit" HEAD OBY_CHECK_INNER=1
+code "$main" "$limit"
+limits_commit 'at the limit'
+limits_passes 'at the line limit' HEAD
+limits_passes 'at the line limit, under oby-check-blok' HEAD OBY_CHECK_INNER=1
+code "$main" "$((limit - jobs_limit - 1))"
+code "$jobs" "$((jobs_limit + 1))"
+limits_commit 'jobs.rs past'
+limits_fails "one line past jobs.rs's limit" "jobs.rs's line limit" HEAD
+rm "$jobs"
+code "$main" "$limit"
+sleeps "$sleepy" "$((sleep_limit + 1))"
+limits_commit 'one sleep past'
+limits_fails "one sleep past the tests' limit" "obid's tests' sleep limit" HEAD
+sleeps "$sleepy" "$sleep_limit"
+limits_commit 'back within'
+limits_passes 'back within every limit' HEAD
+# A commit that lowered the line limit since an earlier base, run by that base's copy with its higher
+# limit: from that base, the commit is held to its own lower limit; from itself, it isn't.
+set_limit obid_lines_limit "$((limit - 100))"
+code "$main" "$((limit - 50))"
+limits_commit 'a cut that lowers the limit'
+git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
+limits_fails "a commit's lower limit, from an earlier base" "the Rust core's line limit" HEAD~1
+grep -q "past its limit of $((limit - 100))" <<<"$ran" || wrong "CI-35: from an earlier base, the commit's lower limit didn't hold"
+limits_passes "the running copy's limit, from the commit itself" HEAD
+git checkout --quiet -- scripts/oby-check.sh
+# An unknown value is still refused.
+said=$(env -u OBY_CHECK_PLAN OBY_CHECK_ONLY=nolimits scripts/oby-check.sh HEAD 2>&1) && status=0 || status=$?
+[[ $status == 2 ]] && grep -qx 'oby-check: invalid OBY_CHECK_ONLY' <<<"$said" ||
+    { ran=$said; wrong "CI-35: an unknown OBY_CHECK_ONLY exited $status"; }
+
 echo 'oby-check-test: passed'

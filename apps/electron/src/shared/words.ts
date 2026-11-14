@@ -10,6 +10,8 @@ type Body = Record<string, unknown>;
 const isBody = (v: unknown): v is Body => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown): v is string => typeof v === 'string';
 const strings = (v: unknown) => Array.isArray(v) && v.every(text);
+// a request key (docs/contracts/receipts.md): signed with the body, never one of its words
+const requestKey = (v: unknown) => text(v) && v.length >= 1 && v.length <= 128;
 // only these keys, each of the kind it must be: anything else and nothing is signed
 const shaped = (body: Body, keys: Record<string, (v: unknown) => boolean>) =>
   Object.entries(body).every(([k, v]) => keys[k]?.(v) ?? false);
@@ -48,7 +50,7 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
     return ok ? [body.said as string, ...(isBody(answer) ? [answer.option as string] : [])] : null;
   }
   if (method === 'POST' && MESSAGES.test(p)) {
-    return text(body.text) && shaped(body, { text, attachments: strings, conversation: flag }) ? [body.text as string] : null;
+    return text(body.text) && shaped(body, { text, attachments: strings, conversation: flag, clientRequestId: requestKey }) ? [body.text as string] : null;
   }
   // the owner's `say` in the Sphere's room: its words alone (the app sends no about or replyTo)
   if (method === 'POST' && ROOM.test(p)) return text(body.text) && shaped(body, { text }) ? [body.text as string] : null;
@@ -57,7 +59,7 @@ export function wordsOf(method: string, path: string, body: unknown): string[] |
   // the yes alone: a no needs no signature (obid keeps it either way)
   if (method === 'POST' && /^\/v1\/accounts\/[^/]+\/background$/.test(p)) return body.given === true && shaped(body, { given: flag }) ? [BACKGROUND_YES] : null;
   if (method === 'PATCH' && /^\/v1\/jobs\/[^/]+$/.test(p)) return text(body.title) && shaped(body, { title: text }) ? [body.title] : null;
-  if (method === 'POST' && /^\/v1\/inbox\/[^/]+\/answer$/.test(p)) return text(body.answer) && shaped(body, { answer: text }) ? [body.answer] : null;
+  if (method === 'POST' && /^\/v1\/inbox\/[^/]+\/answer$/.test(p)) return text(body.answer) && shaped(body, { answer: text, clientRequestId: requestKey }) ? [body.answer] : null;
   if (method === 'POST' && /^\/v1\/jobs\/[^/]+\/permission$/.test(p)) {
     const label = DECISIONS[body.decision as string];
     return label && shaped(body, { id, decision: text, message: text }) ? [label, ...(text(body.message) ? [body.message] : [])] : null;
@@ -90,6 +92,7 @@ export function owners(method: string, path: string, body: unknown, held: string
 }
 
 // How long a keystroke or click holds its text (preload) and its one signature (main): the words
-// go at once. A send obid didn't answer, sent again later, or words that wait for their files to
-// upload, go unsigned (files mark them anyway).
+// go at once. A keyed send obid didn't answer, sent again byte for byte, main signs again, within
+// 10 s of its first signature and at most twice (main/device.ts, WORDS-16); any other send that
+// goes again later, or words that wait for their files to upload, go unsigned (files mark them anyway).
 export const WITHIN_MS = 2_000;

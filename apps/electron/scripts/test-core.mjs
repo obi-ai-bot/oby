@@ -21,6 +21,11 @@
 //  10. The yes to work nobody's watching on a ChatGPT login, on a stand-in account with no sign-in:
 //      the page's script alone gets 403; a real click on its button comes back 200, signed by this
 //      Mac's key (docs/contracts/chatgpt-sign-in.md, CHATGPT-24).
+//  11. A Send on an ended task's page goes with a request key
+//      (docs/contracts/receipts.md, RECEIPTS-16): the one follow-up it starts is the owner's and
+//      carries it, and that exact request sent again by the page's script, with no input, is one
+//      obid already answered: main doesn't sign it again, obid answers 409, and there's still one
+//      follow-up.
 // Screenshots of each step go to OBY_CORE_SHOTS (a folder), when it's set.
 // Run: cargo build -p obid (or OBY_TEST_OBID=<obid>), npm run build, then npm run test:core.
 import assert from 'node:assert/strict';
@@ -204,6 +209,32 @@ async function main() {
   assert.equal(kept(s, more.id).vetted, true, 'WORDS-6: the follow-up the owner’s words start is theirs');
   assert.ok(!s.logs.join('').includes('not words the owner typed'), 'every signature obid was given checked out');
 
+  // 11. Send on an ended task's page with no conversation (as step 4's, so the words go to
+  // POST /v1/jobs/{id}/messages) carries the click's request key (RECEIPTS-16): its one follow-up
+  // is the owner's and carries it. The same request again from the page's script, with no input:
+  // obid answered it already, so main doesn't sign it again, and obid refuses it (409)
+  assert.equal((await s.call('GET', '/v1/status')).receipts, true, 'this obid takes request keys');
+  // (the words go to the end of the task's chain of follow-ups: one that ended starts another)
+  await until('the follow-up ends', async () => ended(await s.call('GET', `/v1/jobs/${more.id}`)), 120_000);
+  await s.call('DELETE', `/v1/conversations/${first.conversation}`);
+  const before = new Set((await jobs(s)).map((j) => j.id));
+  // (another task's page first, so the first's opens again without the conversation it had)
+  await page.evaluate((id) => dispatchEvent(new CustomEvent('oby:open', { detail: { kind: 'task', id }, cancelable: true })), old.id);
+  await page.evaluate((id) => dispatchEvent(new CustomEvent('oby:open', { detail: { kind: 'task', id }, cancelable: true })), first.id);
+  await until('the first task’s page again', async () => (await page.locator('[aria-placeholder="Tell Oby about this task…"]').count()) > 0);
+  await send(page, 'Tell Oby about this task…', 'Look around one last time');
+  const keyed = await until('the follow-up the Send starts', async () => (await jobs(s)).find((j) => !before.has(j.id)));
+  assert.ok(keyed.followUpOf, `a follow-up: ${JSON.stringify(keyed)}`);
+  assert.equal(kept(s, keyed.id).vetted, true, 'RECEIPTS-16: the follow-up the owner’s Send starts is theirs');
+  // (set just after the follow-up is made)
+  const key = await until('the follow-up’s key', async () => kept(s, keyed.id).clientRequestId, 10_000).catch(() => undefined);
+  assert.match(key ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, `RECEIPTS-16: the follow-up carries the click's key: ${key}`);
+  await sleep(2500);
+  const resent = await page.evaluate(([id, clientRequestId]) => window.app.obid.call('POST', `/v1/jobs/${id}/messages`, { text: 'Look around one last time', conversation: true, clientRequestId }), [first.id, key]);
+  assert.equal(resent.status, 409, `RECEIPTS-16: obid answered it already, and main signs it no more: ${resent.text}`);
+  assert.deepEqual((await jobs(s)).filter((j) => !before.has(j.id)).map((j) => j.id), [keyed.id], 'RECEIPTS-16: still one follow-up');
+  await until('that follow-up ends', async () => ended(await s.call('GET', `/v1/jobs/${keyed.id}`)), 120_000);
+
   // 6. Words the page's script sends with no keystroke or click of the owner's go unsigned
   // (WORDS-7): the follow-up they start isn't the owner's
   await until('the follow-up ends', async () => ended(await s.call('GET', `/v1/jobs/${more.id}`)), 120_000);
@@ -241,7 +272,9 @@ async function main() {
 
   // 9. Publish by hand (PUBLISHING-14): a check that keeps failing stops the task; its page offers
   // the owner's word, shows obid's sentence, and goes out on the click, signed in main.
-  const { id: stopped } = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'build', title: 'Stopped task', task: 'COMMIT: stopped.txt', check: 'exit 1', rounds: 1 } })
+  // The check passes on the base and fails only once the agent's stopped.txt is there: a round-1
+  // failure the base shares ends the job done, with Publish by hand (PUBLISHING-18), not interrupted.
+  const { id: stopped } = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'build', title: 'Stopped task', task: 'COMMIT: stopped.txt', check: 'test ! -f stopped.txt', rounds: 1 } })
     .then((a) => a.job ?? a);
   const stoppedJob = await until('it stops at its limit', async () => {
     const j = await s.call('GET', `/v1/jobs/${stopped}`);
