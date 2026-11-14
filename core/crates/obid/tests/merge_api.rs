@@ -3396,19 +3396,19 @@ fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
             .into_iter()
             .find(|c| c["id"] == format!("merge-ready-{FOLLOW_UP}-{pushed}"))
     });
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // The task's card is settled, with no answer.
+    let settled = within(30, "the task's card is kept, settled", || {
+        call(&obid, "GET", "/v1/inbox?state=done", None)
+            .body
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["id"] == first["id"])
+            .cloned()
+    });
     let open = open_merge_cards(&obid);
     assert_eq!(open.len(), 1, "{open:?}");
     assert_eq!(open[0]["id"], card["id"]);
-    // The task's card is settled, with no answer.
-    let done = call(&obid, "GET", "/v1/inbox?state=done", None).body;
-    let settled = done
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|c| c["id"] == first["id"])
-        .cloned()
-        .unwrap_or_else(|| panic!("the task's card is kept, settled: {done}"));
     assert!(!settled["done"].is_null(), "{settled}");
     assert!(settled["answer"].is_null(), "{settled}");
     let task = job(&obid);
