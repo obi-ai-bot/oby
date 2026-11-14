@@ -3,4 +3,3 @@
 # core/crates/obid/tests/routes_guard.rs fails for a dead call that isn't here, and for a line here
 # whose call is gone from its file or served again (delete that line).
 apps/shared/Runner.swift /v1/jobs/*/proposals/*/file
-mcp/server/Server.swift /v1/jobs/*/start-when
