@@ -12666,7 +12666,10 @@ impl Jobs {
                             let reviews = merging.as_ref().ok().map(|m| m.reviews.as_slice());
                             crate::merge::closed(job, &pull_request, reviews);
                         }
-                        job.pull_request = Some(pull_request.clone());
+                        // A read from before obid's own merge doesn't undo it (MERGING-2).
+                        if !crate::merge::keep_read(job, &pull_request) {
+                            return;
+                        }
                         job.pull_request_error = None;
                         // What a merge needs, when it read: else nothing carries on this time.
                         carried = merging.ok().map(|merging| (pull_request, merging));
@@ -13045,8 +13048,8 @@ impl Jobs {
     }
 
     /// Right before obid sends `action` for the job `id` about `head` (crate::merge): whether the
-    /// job is still one to carry on at that head, and if so its mark (`Job::sending`), saved
-    /// before it's sent.
+    /// job is still one to carry on at that head, not merged already, and if so its mark
+    /// (`Job::sending`), saved before it's sent.
     fn about_to_send(
         &self,
         id: &str,
@@ -13066,7 +13069,7 @@ impl Jobs {
                 && job.obi.is_none()
                 && !(action == "branchDelete" && job.status.is_active());
             if (carries(job) && job.pushed_head() == Some(head)) || owners {
-                crate::merge::mark(
+                going = crate::merge::mark(
                     job,
                     crate::job::Sending {
                         action: action.into(),
@@ -13075,7 +13078,6 @@ impl Jobs {
                         login,
                     },
                 );
-                going = true;
             }
         });
         going
