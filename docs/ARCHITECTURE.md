@@ -18,7 +18,6 @@ obi/
 │   ├── watch/       Swift thin client: removed 2026-11-13, not built
 │   └── android/     Kotlin thin client, later
 ├── character/       The three.js mascot, unchanged
-├── mcp/             The Oby MCP server
 ├── e2e/             The end-to-end scenario: SCENARIO.md, the harness, the stub agent, fixtures
 ├── docs/            Documentation
 └── Makefile         make e2e, make e2e-live
@@ -28,7 +27,7 @@ Where today's folders go. Moves happen with `git mv`, so history follows:
 
 | Today | Target | Note |
 |---|---|---|
-| `Engine/`, `Runner/`, `RunnerTests/` | deleted | The specification `core/` was ported from; deleted with the Swift Mac app by the owner's decision of 2026-11-02 (git history has them). `Package.swift` stays, for `oby-mcp`. |
+| `Engine/`, `Runner/`, `RunnerTests/` | deleted | The specification `core/` was ported from; deleted with the Swift Mac app by the owner's decision of 2026-11-02 (git history has them). `Package.swift` and `mcp/` (oby-mcp) were deleted by R03-05, the owner's decision of 2026-11-13. |
 | `Mac/`, `MacTests/` | deleted | The Swift Mac app, deleted by the owner's decision of 2026-11-02: the Mac's app is `apps/electron/`. |
 | `iOS/`, `iOSTests/`, `LiveActivity/` | `apps/ios/` | |
 | `Watch/` | `apps/watch/`, removed | Not built since the Watch app was removed on 2026-11-13 (git history has it). |
@@ -44,9 +43,9 @@ Where today's folders go. Moves happen with `git mv`, so history follows:
 ## 2. The boundary: obid and the shells
 
 ```
- apps/electron  apps/ios     mcp/   (apps/watch: removed 2026-11-13)
-     │             │          │
-     └─────────────┴──────────┤
+ apps/electron  apps/ios   (apps/watch: removed 2026-11-13)
+     │             │
+     └─────────────┴──────────┐
                               │  HTTP + SSE: docs/runner-api.md
                             obid  ── Obi-to-Obi client ──►  Sphere (obi-sphere/server)
                               │
