@@ -117,7 +117,8 @@ export async function notificationWords(method: string, path: string, body: unkn
 // same request sent again (its method, path and body byte for byte, its key included) is signed
 // again, with a fresh time and no input, while main's own read says obid takes keys, so obid,
 // which takes a key once, sees it signed as the first was. Kept until obid answers it, 10 s after
-// its first signature, or 2 signatures again, whichever comes first; a few at most.
+// its first signature, or 2 signatures again, whichever comes first; a few at most. Each signature
+// again is counted before main waits on obid, so copies arriving together get 2 at most too.
 const AGAIN_MS = 10_000, AGAIN = 2, KEPT = 8;
 let unanswered: { request: string; at: number; again: number }[] = [];
 const keyOf = (body: unknown) => typeof (body as { clientRequestId?: unknown } | null)?.clientRequestId === 'string';
@@ -127,13 +128,12 @@ export async function ownersWords(method: string, path: string, body: unknown, o
   const at = Date.now();
   unanswered = unanswered.filter((u) => at - u.at < AGAIN_MS && u.again < AGAIN);
   const request = keyOf(body) ? `${method} ${path}\n${JSON.stringify(body)}` : null;
-  const kept = request === null ? undefined : unanswered.find((u) => u.request === request);
+  const kept = request === null ? undefined : unanswered.find((u) => u.request === request && u.again < AGAIN);
+  if (kept) kept.again++;
   let words: string | null = null;
   try {
-    if (kept && await takesKeys()) {
-      kept.again++;
-      words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
-    } else if (owners && takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    if (kept && await takesKeys()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    else if (owners && takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
   } catch (err) {
     console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }
