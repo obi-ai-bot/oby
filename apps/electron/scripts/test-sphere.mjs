@@ -1,9 +1,11 @@
 // SPHERE-5 (docs/contracts/obysphere.md): two Obys on one Obysphere, joined by private links with
 // the Electron app's own join (src/shared/sphere.ts, what main runs on the owner's Join click).
-// A local Obysphere from an obi-sphere checkout plays Dmytro's: its admin creates it, writes a
-// policy and makes an open link and a named one, with the spec's own calls. Two real obids (stand-in
-// agents, homes of their own) join, see each other, one asks the other a question across it, and
-// one leaves. Nothing here reaches a network beyond 127.0.0.1.
+// A local Obysphere from an obi-sphere checkout plays Dmytro's: its admin creates it, with policy []
+// at version 0, and makes an open link and a named one, with the spec's own calls. Two real obids
+// (stand-in agents, homes of their own) join, see each other, one asks the other a question across
+// it, and one leaves. POLICY-1 and 3 (docs/contracts/sphere-policy.md): Dmytro makes Wellington an
+// admin, whose app adds the members rule that lets the question cross, then writes at a version
+// that's gone stale. Nothing here reaches a network beyond 127.0.0.1.
 //
 //   OBI_SPHERE_DIR=<obi-sphere checkout, `pnpm install` run in server/> \
 //   OBY_TEST_OBID=<obid binary> npm run test:sphere
@@ -17,7 +19,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertion, join as joinSphere, keepMembership, leave, parseInvite, publicOf } from '../src/shared/sphere.ts';
+import { addStarterRule, assertion, join as joinSphere, keepMembership, leave, parseInvite, publicOf, starterRule, writePolicy } from '../src/shared/sphere.ts';
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(appRoot, '../..');
@@ -101,8 +103,8 @@ async function obid(name, owner) {
 
 let failed = false;
 try {
-  // 1. The Obysphere "demo", Dmytro its admin, a policy that lets anyone ask anyone a question,
-  //    an open link for the team and a named one for Ernesto
+  // 1. The Obysphere "demo", Dmytro its admin, its policy [] (nobody may ask anyone yet), an open
+  //    link for the team and a named one for Ernesto
   start('sphere', process.execPath, ['scripts/local.mjs', '--port', String(sphere.port), '--persist-to', join(run, 'sphere-state')], {
     cwd: join(sphereDir, 'server'),
     env: { SPHERE_OPERATOR_TOKEN: sphere.token, HOME: run, TMPDIR: tmpdir(), PATH: process.env.PATH, WRANGLER_SEND_METRICS: 'false' },
@@ -117,8 +119,6 @@ try {
   } });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const adminToken = r.body.access_token;
-  r = await api('/spheres/demo/policy', { method: 'PUT', token: adminToken, body: { expected_version: 0, rules: [{ id: 'everyone', from_owner: '*', to_owner: '*', actions: ['question', 'review_request'], repos: ['*'] }] } });
-  assert.equal(r.status, 200, JSON.stringify(r.body));
   const link = async (body, extra = '') => {
     const i = await api('/spheres/demo/invitations', { method: 'POST', token: adminToken, body: { expires_in: 3600, ...body } });
     assert.equal(i.status, 201, JSON.stringify(i.body));
@@ -137,6 +137,17 @@ try {
   assert.equal(jb.state, 'joined');
   assert.equal(jb.obiId, 'obi-ernesto');
   step(`SPHERE-5: both joined (${ja.obiId}, ${jb.obiId})`);
+
+  // 2b. POLICY-1: Dmytro makes Wellington an admin; Wellington's app adds the members rule to the
+  //     policy it read, [] at version 0, with Wellington's own admin token (main's sphere-set-policy)
+  r = await api('/spheres/demo/admins/wellington', { method: 'PUT', token: adminToken });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const added = await addStarterRule(a.call, () => a.key, 0);
+  assert.equal(added.refused, null, added.why);
+  assert.equal(added.policy.version, 1);
+  const listed = await api('/spheres/demo/policy', { token: adminToken });
+  assert.deepEqual(listed.body.rules.map((rule) => rule.id), ['members-ask'], JSON.stringify(listed.body));
+  step('policy_1_the_starter_rule_lets_members_ask: Wellington, an admin, added members-ask at version 1');
 
   // 3. Each sees the other in its side panel's members (GET /v1/obid/sphere/members), sealed
   const seen = async (o, other) => until(`${o.name} seeing ${other}`, async () => (await o.get('/v1/obid/sphere/members')).find((m) => m.owner === other));
@@ -168,6 +179,22 @@ try {
   assert.equal(got.type, 'question');
   assert.equal(got.peer, ja.obiId);
   step(`SPHERE-5: a question crossed it (${got.state} on Ernesto's side)`);
+  assert.notEqual(got.state, 'policy_denied');
+  step('policy_1_the_starter_rule_lets_members_ask: the members rule let the question cross');
+
+  // 4b. POLICY-3: Dmytro writes the same rules (version 2); Wellington's write at version 1 replaces
+  //     nothing and gets the policy as it is now
+  r = await api('/spheres/demo/policy', { method: 'PUT', token: adminToken, body: { expected_version: 1, rules: listed.body.rules } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.version, 2);
+  const stale = await writePolicy(a.call, () => a.key, [starterRule()], 1);
+  assert.equal(stale.refused, 'changed', stale.why);
+  assert.equal(stale.policy.version, 2);
+  assert.match(stale.why, /changed meanwhile/);
+  const after = await api('/spheres/demo/policy', { token: adminToken });
+  assert.equal(after.body.version, 2);
+  assert.deepEqual(after.body.rules, listed.body.rules);
+  step('policy_3_a_stale_version_replaces_nothing: the write at version 1 answered changed, the policy still at version 2');
 
   // 5. Wellington's Oby leaves: the Obysphere takes it out, and obid forgets it
   const left = await leave(a.call, () => a.key);
@@ -176,7 +203,7 @@ try {
   r = await api(`/spheres/demo/members/${ja.obiId}`, { token: adminToken });
   assert.equal(r.body?.status, 'revoked', JSON.stringify(r.body));
   step('SPHERE-5: one left, and the Obysphere lists it revoked');
-  console.log('\nSPHERE-5 passed.');
+  console.log('\nSPHERE-5, SPHERE-6, POLICY-1 and POLICY-3 passed.');
 } catch (e) {
   failed = true;
   console.error(`FAIL ${e.stack ?? e}`);

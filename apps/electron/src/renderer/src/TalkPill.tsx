@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Plus } from 'lucide-react';
-import { BRANDS, BrandMark, type Brand } from './brands';
+import { BrandMark } from './brands';
 import { Menu } from './Menu';
 import { everything } from './lean';
 import { useAccounts, useModels, useTalkDefault, type Account } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
-import { AUTO, PILL_TOOL_NAME, accountModels, chosenOf, dot, list, menuModels, modelChoice, modelUsage, percent, rowTitle, shownAccount, usageLines } from './talk';
+import { AUTO, PILL_TOOL_NAME, accountModels, chosenOf, dot, list, menuModels, modelChoice, modelUsage, percent, rowTitle, shownAccount, toolName, usageLines } from './talk';
 import { agentOf, type Agent } from './mock';
+import { isAgent } from '../../shared/obid-wire';
 
-const MARKS: Record<Agent, Brand> = { claude: BRANDS.claude, codex: BRANDS.openai, cursor: BRANDS.cursor };
 // Claude's mark in its own colour; OpenAI's and Cursor's are one colour, drawn in the text's (a tool
-// this build doesn't know: agentOf's, docs/contracts/wire.md)
-const Mark = ({ agent, size }: { agent: string; size: number }) => <BrandMark brand={MARKS[agent as Agent] ?? agentOf(agent).brand} size={size} mono={agent !== 'claude'} />;
+// this build doesn't know: agentOf's, gray with its letter, docs/contracts/providers.md)
+const Mark = ({ agent, size }: { agent: string; size: number }) => <BrandMark brand={agentOf(agent).brand} size={size} mono={agent !== 'claude'} />;
 
 // The message box's account and model picker (CONVERSATION-AGENT-19 to 21). obid keeps
 // models per account; choosing one also chooses who the conversation talks through next.
@@ -41,6 +41,8 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const modelsOf = (a: Account) => accountModels(a, options[a.agent as Agent]?.models);
   const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent as Agent]?.model ?? 'auto', modelsOf(a), !!(a.modelsRead || a.models?.length));
   const menuOf = (a: Account) => menuModels(modelsOf(a), modelOf(a).id, options[a.agent as Agent]?.groups);
+  // its model, after its name: none for a tool this build doesn't know, which it has no list of
+  const modelWords = (a: Account) => (isAgent(a.agent) ? ` · ${modelOf(a).name}` : '');
   const pick = async (account: string, model?: string) => {
     if (saving) return;
     setSaving(true);
@@ -59,7 +61,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
     setSub({ account: a, button, row: button.parentElement?.offsetTop ?? 0, top: Math.min(-8, innerHeight - 12 - tall - button.getBoundingClientRect().top), maxHeight: tall });
   };
   useEffect(() => {
-    if (at) (menu.current?.querySelector<HTMLButtonElement>(':scope > button[aria-checked="true"], :scope > .menu-sub-anchor > button[aria-checked="true"]') ?? menu.current?.querySelector('button'))?.focus();
+    if (at) (menu.current?.querySelector<HTMLButtonElement>(':scope > button[aria-checked="true"], :scope > .menu-sub-anchor > button[aria-checked="true"]:not(:disabled)') ?? menu.current?.querySelector('button'))?.focus();
   }, [at]);
   useEffect(() => {
     if (sub) (models.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? models.current?.querySelector('button'))?.focus();
@@ -68,7 +70,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
     if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); if (sub) closeSub(); return; }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault(); e.stopPropagation();
-    const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>(nested ? 'button' : ':scope > button, :scope > .menu-sub-anchor > button'));
+    const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>(nested ? 'button' : ':scope > button, :scope > .menu-sub-anchor > button:not(:disabled)'));
     const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
     buttons[(index + (e.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
   };
@@ -85,14 +87,14 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
         className={`talk-pick${at ? ' is-on' : ''}`}
         aria-haspopup="menu"
         aria-expanded={!!at}
-        title={on ? `${chosen ? '' : 'Auto · '}${rowTitle(on, accounts)} · ${modelOf(on).name} · ${usageLines(on).map((l) => l.words).join(' · ')}` : 'Add an account'}
-        aria-label={on ? `Talking through ${rowTitle(on, accounts)} · ${modelOf(on).name}${on.full ? ', full' : used == null ? '' : `, ${used}% used`}. Change` : 'Choose who Oby talks through'}
+        title={on ? `${chosen ? '' : 'Auto · '}${rowTitle(on, accounts)}${modelWords(on)} · ${usageLines(on).map((l) => l.words).join(' · ')}` : 'Add an account'}
+        aria-label={on ? `Talking through ${rowTitle(on, accounts)}${modelWords(on)}${on.full ? ', full' : used == null ? '' : `, ${used}% used`}. Change` : 'Choose who Oby talks through'}
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => { if (at) close(); else setAt(e.currentTarget.getBoundingClientRect()); }}
       >
         {on ? <>
           {chosen ? <Mark agent={on.agent} size={16} /> : <span className="talk-pick-auto">Auto</span>}
-          {chosen && <span>{PILL_TOOL_NAME[on.agent as Agent] ?? on.agent} · {modelOf(on).name}</span>}
+          {chosen && <span>{toolName(on.agent, PILL_TOOL_NAME)}{modelWords(on)}</span>}
           {full && <span className={`usage-dot ${full}`} aria-hidden="true" />}
         </> : <Plus size={16} strokeWidth={1.6} />}
         <ChevronDown size={13} strokeWidth={1.8} />
@@ -109,7 +111,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
               </span>
               {!chosen && <Check size={15} strokeWidth={1.8} className="talk-choice-check" />}
             </button>
-            {rows.map((a) => (
+            {rows.map((a) => (isAgent(a.agent) ? (
               <span key={a.id} className="menu-sub-anchor">
               <button role="menuitemradio" aria-checked={chosen === a.id} aria-haspopup="menu" aria-expanded={sub?.account.id === a.id} className="talk-choice"
                 onFocus={() => { if (sub?.account.id !== a.id) setSub(null); }}
@@ -125,7 +127,19 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
                 <ChevronRight size={13} strokeWidth={1.8} />
               </button>
               </span>
-            ))}
+            ) : (
+              // a tool this build doesn't know: listed, but nothing to choose (docs/contracts/providers.md, PROVIDERS-6)
+              <span key={a.id} className="menu-sub-anchor">
+              <button role="menuitemradio" aria-checked={chosen === a.id} disabled aria-disabled="true" className="talk-choice">
+                <span className="talk-choice-mark"><Mark agent={a.agent} size={18} /></span>
+                <span className="talk-choice-text">
+                  <span className="talk-choice-name">{rowTitle(a, accounts)}</span>
+                  <span className="talk-choice-about" style={{ whiteSpace: 'normal' }}>{modelUsage(a)}</span>
+                </span>
+                {chosen === a.id && <Check size={15} strokeWidth={1.8} className="talk-choice-check" />}
+              </button>
+              </span>
+            )))}
             <hr />
             {error && <span role="alert" className="talk-choice-about">{error}</span>}
             <button role="menuitem" className="talk-choice is-add" onFocus={() => setSub(null)} onClick={() => { close(); dispatchEvent(new CustomEvent('oby:open-setting', { detail: everything ? 'accounts' : 'agents' })); }}>

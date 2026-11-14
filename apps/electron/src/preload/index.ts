@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { WITHIN_MS, owners } from '../shared/words';
+import type { PolicyAnswer } from '../shared/sphere';
 
 type Point = { x: number; y: number };
 // obid's answer: its status and body, or (status 0) why it didn't answer (main/obid.ts, reason)
@@ -126,6 +127,11 @@ contextBridge.exposeInMainWorld('app', {
     return () => { ipcRenderer.off('sphere', listener); };
   },
   sphereLeave: () => ipcRenderer.invoke('sphere-leave') as Promise<string | null>,
+  // the Obysphere's rules (main/sphere.ts, docs/contracts/sphere-policy.md): read, and the members
+  // rule added, right after the owner's click. The page sends only the version it read; main decides
+  // what it signs. null: refused
+  spherePolicy: () => ipcRenderer.invoke('sphere-policy') as Promise<PolicyAnswer | null>,
+  sphereSetPolicy: (version: number) => ipcRenderer.invoke('sphere-set-policy', version) as Promise<PolicyAnswer | null>,
   // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's
   // text as it comes, then how it ended. Following again replaces the stream before.
   obid: {

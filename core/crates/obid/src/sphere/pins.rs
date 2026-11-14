@@ -257,6 +257,11 @@ impl Pins {
             .get(owner)
             .is_some_and(|p| p.verified)
     }
+
+    /// Every owner pinned, sorted: whoever obid ever trusted, members who left too.
+    pub fn owners(&self) -> Vec<String> {
+        self.pins.lock().unwrap().owners.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]

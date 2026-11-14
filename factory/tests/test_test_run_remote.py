@@ -33,6 +33,7 @@ FACTORY = Path(__file__).resolve().parents[1]
 REPO = FACTORY.parent
 OBY_REMOTE_GATE = FACTORY / "remote" / "oby-remote-gate"
 KEYS = {"ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate"}
+NO_BUILDERS = {"ssh_host": "oby-mac-pro"}  # a Mac worker with no builder slots
 IP = "8.8.4.4"
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
 # Words a builder's command can hold that a quoting fish and bash read differently could change (REMOTE-46).
@@ -150,6 +151,9 @@ class RemoteHarness:
             FACTORY_REMOTE_IP_URL=(self.fake / "ip").as_uri(),
         )
         self.settings(builder_slots=2)
+        # A Mac worker with no builder slots, whatever config.json says: these runs' only other place is this Mac
+        # (REMOTE-40), and test_test_run_mac_worker.py gives it builder slots.
+        self.env["FACTORY_MAC_WORKER"] = json.dumps(NO_BUILDERS)
         (self.fake / "states").write_text("PowerState/running\n")
         (self.fake / "rule-source").write_text(f"{IP}/32\n")
         (self.fake / "ip").write_text(f"{IP}\n")
@@ -161,7 +165,11 @@ class RemoteHarness:
         self.git(self.dir, "init", "-q", "-b", "dev", str(seed))
         for name in ("gate", "test-run", "child_session.py"):
             self.put(seed / "factory" / "bin" / name, (FACTORY / "bin" / name).read_text(), 0o755)
-        self.put(seed / "factory" / "config.json", (FACTORY / "config.json").read_text())
+        # The real settings, but its Mac worker's with no builder slots, so a run that reads config.json's own (with
+        # FACTORY_MAC_WORKER unset) never depends on, or reaches, the real one's.
+        config = json.loads((FACTORY / "config.json").read_text())
+        config["mac_worker"] = NO_BUILDERS
+        self.put(seed / "factory" / "config.json", json.dumps(config, indent=2) + "\n")
         self.put(seed / ".gitleaks.toml", (REPO / ".gitleaks.toml").read_text())
         self.put(seed / ".gitignore", "ignored/\n")
         self.put(seed / "scripts" / "oby-check.sh", FAKE_CHECK, 0o755)
@@ -377,6 +385,31 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
     def test_remote_24_a_macos_only_test_binary_stays_on_this_mac(self):
         self.assert_on_this_mac(self.run_test_run("cargo", "test", "-p", "obid", "--test", "sandbox"),
                                 "on this Mac: its test is macOS-only: core/crates/obid/tests/sandbox.rs")
+
+    # ---- REMOTE-48 -------------------------------------------------------------------------------
+
+    def test_remote_48_a_kani_run_with_macos_only_changes_goes_to_the_vm(self):
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "kani", "-p", "obid", "--tests", "--harness", "h")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(shlex.split(call["argv"][-1])[-8:],
+                         ["--", "cargo", "kani", "-p", "obid", "--tests", "--harness", "h"])
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["kani", "-p", "obid", "--tests", "--harness", "h"])
+        self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertNotIn("on this Mac:", err)
+        self.assertEqual(self.lines("mac-runs"), [])
+
+    def test_remote_48_a_kani_run_after_another_command_stays_on_this_mac(self):
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("sh", "-c", "cargo kani && cargo test")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("factory/bin/test-run: on this Mac: the worktree's changes touch macOS-only code: "
+                      "core/crates/obid/src/sandbox.rs", err.splitlines())
+        self.assertEqual([run.split(" | ", 1)[0] for run in self.lines("mac-runs")], ["cargo kani", "cargo test"])
+        self.assertEqual(self.run_calls(), [])
+        self.assertEqual(self.vm_runs(), [])
 
     # ---- REMOTE-25 -------------------------------------------------------------------------------
 

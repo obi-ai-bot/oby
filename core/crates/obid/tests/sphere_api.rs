@@ -3216,6 +3216,30 @@ async fn a_token_that_isnt_bearer_is_no_token() {
     assert!(said.contains("not Bearer"), "{said}");
 }
 
+/// ASK-35: the members list and a member's thread name the owner ids that look like theirs, and say
+/// nothing of one that looks like no one's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_35_members_list_their_lookalikes() {
+    let folder = Folder::new("ask-35");
+    let (sphere, obid, _ernesto) = setup(&folder, &stub_agent(), None).await;
+    let _dima = TestObi::join(&sphere, "obi-dima", "dima").await;
+    let _dirna = TestObi::join(&sphere, "obi-dirna", "dirna").await;
+    tokio::task::block_in_place(|| {
+        let members = get(&obid, "/v1/obid/sphere/members");
+        let of = |owner: &str| {
+            let mut members = members.as_array().unwrap().iter();
+            members.find(|m| m["owner"] == owner).unwrap().clone()
+        };
+        assert_eq!(of("dima")["lookalike"], json!(["dirna"]), "{members}");
+        assert_eq!(of("dirna")["lookalike"], json!(["dima"]), "{members}");
+        assert!(of("ernesto").get("lookalike").is_none(), "{members}");
+        let thread = get(&obid, "/v1/obid/sphere/peers/dirna");
+        assert_eq!(thread["lookalike"], json!(["dima"]), "{thread}");
+        let thread = get(&obid, "/v1/obid/sphere/peers/ernesto");
+        assert!(thread.get("lookalike").is_none(), "{thread}");
+    });
+}
+
 /// RECEIPTS-10: a `failed` item's Try again sent again with its key answers what the first did, and
 /// the job runs one more round, not two.
 #[test]
