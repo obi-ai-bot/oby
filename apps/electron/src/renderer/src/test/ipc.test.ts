@@ -121,8 +121,15 @@ beforeAll(async () => {
   the.userData = mkdtempSync(join(tmpdir(), 'oby-ipc-'));
   vi.useFakeTimers({ toFake: ['setInterval'] });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  await import('../../../main/index');
-  await new Promise((r) => setImmediate(r));
+  // main as on a Mac, wherever the test runs: index.ts loads the window style only on macOS
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+  try {
+    await import('../../../main/index');
+    await new Promise((r) => setImmediate(r));
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
 });
 
 describe('IPC-1', () => {
