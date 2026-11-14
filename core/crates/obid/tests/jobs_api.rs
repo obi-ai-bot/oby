@@ -2077,6 +2077,64 @@ fn tasks_18_a_stopped_job_says_who_stopped_it() {
     assert!(gone["reason"].is_null(), "{gone}");
 }
 
+/// TASKS-22: a job stopped while its worker wraps up, then tried again, runs its round 2: the old
+/// worker's end, once its wrap-up is let go, leaves the new round alone, and only its own run ends
+/// it. The worker is held in its teammates' read (`gh pr list`, tests/agents/gh's `hold`).
+#[test]
+fn tasks_22_an_old_worker_cannot_end_a_new_round() {
+    let folder = Folder::new("tasks-22");
+    let remote = fixture(&folder.0.join("fixture"));
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&agents));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("hold"), "").unwrap();
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+               "task": "COMMIT: notes.txt AGAIN: Tried again."}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    support::within(30, "the worker reads teammates' pull requests", || {
+        let calls = std::fs::read_to_string(gh.join("calls")).unwrap_or_default();
+        calls.lines().any(|l| l == "pr list").then_some(())
+    });
+    let held = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(held["status"], "running", "{held}");
+    assert_eq!(held["round"], 1, "{held}");
+
+    let stopped = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(stopped.body["status"], "stopped", "{}", stopped.text);
+    let more = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(
+            &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."})
+                .to_string(),
+        ),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    assert_eq!(more.body["round"], 2, "{}", more.text);
+    assert_eq!(more.body["status"], "queued", "{}", more.text);
+    std::fs::remove_file(gh.join("hold")).unwrap();
+
+    let job = until(&obid, &id, |j| {
+        j["round"] == 2 && j["status"] != "queued" && j["status"] != "running"
+    });
+    assert_eq!(job["status"], "done", "{job}");
+    // Round 2's agent ran and its run ended the job: its reply is the job's last summary.
+    assert_eq!(job["summary"], "Tried again.", "{job}");
+    assert_eq!(
+        job["summaries"],
+        json!(["Added notes.txt.", "Tried again."]),
+        "{job}"
+    );
+}
+
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:
 /// it needs you, with One more round, its branch kept. Dismiss lets it go.
 #[test]

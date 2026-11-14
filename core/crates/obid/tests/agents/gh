@@ -13,6 +13,8 @@
 #   no-board    when it exists, a query that reads boards fails as GitHub does when gh's login
 #               lacks read:project
 #   slow        when it exists, `gh issue view` and `gh pr view` take a second
+#   hold        while it exists, `gh pr list` waits (a job's wrap-up held in its teammates' read,
+#               TASKS-22); after it, as without it
 #   view.json   what `gh issue view` and `gh pr view` answer
 #   who.json    what `gh api graphql` answers for who wrote, edited and renamed an issue
 #   user, orgs  what `gh api user` and `gh api user/orgs` answer (after gh's --jq); without
@@ -59,6 +61,7 @@ if [ -d "$work" ]; then
       if [ -f "$work/flaky-view" ]; then rm -f "$work/flaky-view"; echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2; exit 1; fi
       if [ -f "$work/slow" ]; then sleep 1; fi
       cat "$work/view.json"; exit 0 ;;
+    "pr list") while [ -f "$work/hold" ]; do sleep 0.1; done ;;
     "repo view") cat "$work/repo.json"; exit 0 ;;
     "api user") cat "$work/user"; exit $? ;;
     "api user/orgs") cat "$work/orgs"; exit $? ;;
