@@ -1284,7 +1284,8 @@ async fn ask_21_an_app_without_the_card_keeps_the_quoted_turns() {
             true
         )
     );
-    // Every key but `asks` is one the phones already had.
+    // Every key but `asks` and the owner's `delivery` (docs/contracts/deliveries.md) is one the
+    // phones already had: `RunnerTurn` decodes only the keys it knows.
     for turn in &turns {
         for key in turn.as_object().unwrap().keys() {
             assert!(
@@ -1297,7 +1298,8 @@ async fn ask_21_an_app_without_the_card_keeps_the_quoted_turns() {
                     "conversation",
                     "relayed",
                     "asks",
-                    "attachments"
+                    "attachments",
+                    "delivery"
                 ]
                 .contains(&key.as_str()),
                 "{key}"
