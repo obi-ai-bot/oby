@@ -38,10 +38,10 @@ describe('the files Oby couldn’t read', () => {
       { path: '/home/unreadable/jobs/a-1731571200.json' },
       { path: '/home/unreadable/conversations/b-1731574800.json' },
     ]);
-    expect(html).toContain('Files Oby couldn&#x27;t read');
+    expect(html).toContain('Files Oby couldn’t read');
     expect(html).toContain('<span class="tok tok-path">/home/unreadable/jobs/a-1731571200.json</span>');
     expect(html).toContain('<span class="tok tok-path">/home/unreadable/conversations/b-1731574800.json</span>');
-    expect(html).toContain('Oby kept these files aside and didn&#x27;t load them. Nothing was deleted.');
+    expect(html).toContain('Oby kept these files aside and didn’t load them. Nothing was deleted.');
     expect(html).not.toContain('<button');
   });
 
@@ -52,7 +52,7 @@ describe('the files Oby couldn’t read', () => {
     expect(plain).not.toContain('tok-path');
     vi.resetModules();
     const all = await general('?everything');
-    const title = all.indexOf('Files Oby couldn\'t read');
+    const title = all.indexOf('Files Oby couldn’t read');
     expect(title).toBeGreaterThan(-1);
     expect(title).toBeLessThan(all.indexOf('Open at login'));
     expect(all.match(/class="tok tok-path"/g)).toHaveLength(2);

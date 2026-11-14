@@ -161,7 +161,7 @@ function General() {
 export function UnreadableFiles({ files }: { files: readonly { path: string }[] }) {
   if (files.length === 0) return null;
   return (
-    <Group i={0} title="Files Oby couldn't read" footer="Oby kept these files aside and didn't load them. Nothing was deleted.">
+    <Group i={0} title="Files Oby couldn’t read" footer="Oby kept these files aside and didn’t load them. Nothing was deleted.">
       {files.map((f) => <Row key={f.path} label={<span className="tok tok-path">{f.path}</span>} />)}
     </Group>
   );
