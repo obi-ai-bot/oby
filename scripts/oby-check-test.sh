@@ -335,6 +335,105 @@ grep -qF 'failed: AGENTS.md is gone' <<<"$ran" && ! grep -q 'AGENTS.md has 0 byt
 git reset --quiet --hard HEAD~2
 unset OBY_CHECK_PATHS
 
+# A raise of a line limit names its payback and comes alone (docs/contracts/ci.md, CI-39 to 41), on
+# the commit's own copy of the script, committed here as the base within every limit, with a stand-in
+# for this test, which the check runs when the script changes. Each case is a commit on it.
+printf '%s\n' "$committed_script" >scripts/oby-check.sh
+agents_md_at_limit
+raise_limit=$(sed -n 's/^obid_lines_limit=//p' scripts/oby-check.sh)
+raise_jobs=$(sed -n 's/^jobs_rs_limit=//p' scripts/oby-check.sh)
+code "$main" "$((raise_limit - 500))"
+printf '#!/bin/bash\n' >scripts/oby-check-test.sh
+git add "$main"
+commit_scripts 'the raise rules'
+since=HEAD~1
+payback() { # name line [line]: the line directly above the name's limit in the working copy, the third between them
+    awk -v n="$1" -v l="$2" -v b="${3:-}" '$0 ~ "^" n "=" { print l; if (b != "") print b } { print }' scripts/oby-check.sh >scripts/edited
+    cat scripts/edited >scripts/oby-check.sh
+    rm scripts/edited
+}
+raise() { # name value [payback line [line between]]: committed, with what else is staged
+    set_limit "$1" "$2"
+    [[ -z "${3:-}" ]] || payback "$1" "$3" "${4:-}"
+    commit_scripts "a raise of $1"
+}
+raise_run() { ran=$(env -u OBY_CHECK_PLAN OBY_CHECK_ONLY=rust scripts/oby-check.sh "$since" 2>&1); }
+raise_fails() { # what it's about, the failure it names
+    if raise_run; then wrong "$1 passed"; fi
+    grep -qxF "oby-check: failed: $2" <<<"$ran" || wrong "$1 didn't fail naming \"$2\""
+}
+raise_passes() { # what it's about
+    raise_run || wrong "$1 failed"
+    grep -qx 'oby-check: passed' <<<"$ran" && ! grep -q "payback line\|in a pull request of its own" <<<"$ran" ||
+        wrong "$1 didn't pass"
+}
+raise obid_lines_limit "$((raise_limit + 100))"
+expect "raises obid_lines_limit from $raise_limit to $((raise_limit + 100)) with no payback line" 'CI-39: a raise of obid_lines_limit with no payback line says so'
+raise_fails 'CI-39: a raise of obid_lines_limit with no payback line' "obid_lines_limit's payback line"
+grep -qF "directly above \"obid_lines_limit=$((raise_limit + 100))\"" <<<"$ran" && ! grep -q 'in a pull request of its own' <<<"$ran" ||
+    wrong "CI-39: a raise alone with no payback line didn't say where the line goes, or was told to come alone"
+git reset --quiet --hard HEAD~1
+raise jobs_rs_limit "$((raise_jobs + 10))"
+raise_fails 'CI-39: a raise of jobs_rs_limit with no payback line' "jobs_rs_limit's payback line"
+git reset --quiet --hard HEAD~1
+raise obid_lines_limit "$((raise_limit + 100))" '# payback: #2131'
+raise_passes 'CI-39: a raise alone with "# payback: #2131" directly above it'
+[[ $(grep -A1 '^oby-check: the Rust core has' <<<"$ran" | sed -n 2p) == "oby-check: obid_lines_limit's payback: #2131" ]] ||
+    wrong "CI-41: a payback line above obid_lines_limit wasn't printed after its message"
+git reset --quiet --hard HEAD~1
+raise obid_lines_limit "$((raise_limit + 100))" '# payback: R05-02 until oby_shell goes'
+raise_passes 'CI-39: a raise alone with a task key as its payback'
+git reset --quiet --hard HEAD~1
+raise obid_lines_limit "$((raise_limit + 100))" '# payback: R05-02' '# the limit'
+raise_fails 'CI-39: a raise whose payback line is one line higher' "obid_lines_limit's payback line"
+git reset --quiet --hard HEAD~1
+raise obid_lines_limit "$((raise_limit + 100))" '# payback: soon'
+raise_fails 'CI-39: a raise whose payback line names no issue or task' "obid_lines_limit's payback line"
+git reset --quiet --hard HEAD~1
+raise obid_lines_limit "$((raise_limit - 100))"
+raise_passes 'CI-39: a cut with no payback line'
+git reset --quiet --hard HEAD~1
+echo '# another rule' >>scripts/oby-check.sh
+code README.md 1
+git add README.md
+commit_scripts 'the limits unchanged'
+raise_passes 'CI-39: an unchanged limit, with another file'
+git reset --quiet --hard HEAD~1
+code README.md 1
+git add README.md
+raise obid_lines_limit "$((raise_limit + 100))" '# payback: #2131'
+expect 'raises obid_lines_limit .* and changes README.md too' 'CI-40: a raise with another file names it'
+raise_fails 'CI-40: a raise with another file' "obid_lines_limit's raise in a pull request of its own"
+! grep -q 'failed: .*payback line' <<<"$ran" || wrong 'CI-40: a raise with its payback line was told to add one'
+git reset --quiet --hard HEAD~1
+for n in 1 2 3 4 5 6; do code "docs/n$n.md" 1; done
+git add docs
+raise jobs_rs_limit "$((raise_jobs + 10))" '# payback: R05-02'
+expect 'changes docs/n1.md, docs/n2.md, docs/n3.md, docs/n4.md, docs/n5.md and 1 more too' 'CI-40: a raise with six other files names five and counts the rest'
+git reset --quiet --hard HEAD~1
+# Uncommitted: the base's copy installed over the commit's, a tracked file changed, an untracked one.
+raise obid_lines_limit "$((raise_limit + 100))" '# payback: #2131'
+git show HEAD~1:scripts/oby-check.sh >scripts/oby-check.sh
+echo '# changed' >>scripts/oby-check-test.sh
+code README.md 1
+raise_passes 'CI-40: a raise alone next to uncommitted and untracked files'
+git reset --quiet --hard HEAD~1
+rm README.md
+# CI-41: GitHub's `limits` job judges neither rule on combined code, and prints each payback line.
+code README.md 1
+git add README.md
+payback tests_sleep_limit "# payback: R05-02 a sleep's cut"
+raise obid_lines_limit "$((raise_limit + 100))"
+raise_fails 'CI-41: the rust group, by contrast, on a raise with no payback line and another file' "obid_lines_limit's raise in a pull request of its own"
+ran=$(env -u OBY_CHECK_PLAN -u OBY_CHECK_PATHS OBY_CHECK_ONLY=limits scripts/oby-check.sh "$since" 2>&1) ||
+    wrong 'CI-41: under OBY_CHECK_ONLY=limits, a raise with no payback line and another file failed'
+grep -qx 'oby-check: passed' <<<"$ran" && ! grep -q "payback line\|in a pull request of its own" <<<"$ran" ||
+    wrong 'CI-41: under OBY_CHECK_ONLY=limits, the raise rules were judged'
+grep -qxF "oby-check: tests_sleep_limit's payback: R05-02 a sleep's cut" <<<"$ran" ||
+    wrong "CI-41: under OBY_CHECK_ONLY=limits, a payback line wasn't printed"
+git reset --quiet --hard HEAD~2
+since=
+
 # Nested in a job's sandbox, the tests that make a sandbox of their own aren't run, and a change
 # they'd test ends the check couldn't judge (PUBLISHING-22).
 # Here the check runs in a sandbox of this test's where its own sandbox-exec fails, as in a job's,

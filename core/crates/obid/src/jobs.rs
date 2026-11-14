@@ -24,6 +24,7 @@ use crate::agent::{self, Answer, Event as AgentEvent, Launch, Ruling, Tool};
 use crate::config::{Config, Repo};
 use crate::events::Events;
 use crate::job::{Job, JobArtifact, ObiRef, Phase, Status, Waiting};
+use crate::limits::holds::Work;
 use crate::permissions::{self, Call, Decision, Mode, Permission, Rule};
 use crate::process::{self, Signal};
 use crate::sandbox::{self, Sandbox, Spec};
@@ -1366,6 +1367,18 @@ impl Jobs {
         }
         for decision in made.limit_decisions.list() {
             made.sync_limit_answer(&decision);
+        }
+        // An older file's holds of one model's limit go to the hold table, and the file drops them
+        // (LIMITS-23).
+        for job in made.lock().jobs.values_mut() {
+            let older = std::mem::take(&mut job.recovery.scoped_holds);
+            let work = Work::new(None, Some(&job.id), false);
+            for (account, until) in older.iter().filter(|(_, at)| *at > now) {
+                made.holds().apply(account, Some(*until), Some(&work), now);
+            }
+            if !older.is_empty() {
+                let _ = made.store.save(job);
+            }
         }
         if github && let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(github_email(Arc::downgrade(&made)));
@@ -2842,12 +2855,10 @@ impl Jobs {
             .collect()
     }
 
-    /// Whether `account` takes `background` work now ([`crate::usage::Usage::held_for`]).
+    /// Whether `account` takes `background` work now (crate::limits::holds).
     pub fn has_room(&self, account: &str, background: bool) -> bool {
-        self.usage
-            .get(account)
-            .held_for(obi_protocol::time::now(), background)
-            .is_none()
+        let work = Work::new(None, None, background);
+        (self.holds().held(account, &work, obi_protocol::time::now())).is_none()
     }
 
     /// Whether `account` takes work nobody's watching ([`Job::background`], CHATGPT-20): any login
@@ -2950,17 +2961,17 @@ impl Jobs {
         agent: Option<&str>,
         named: Option<&str>,
     ) -> Result<(Tool, crate::config::Account), Refused> {
-        self.pick_for(agent, named, false)
+        self.pick_for(agent, named, &Work::new(None, None, false))
     }
 
-    /// [`Jobs::pick`] for a job, `background` when nobody's watching it: routing then passes over a
-    /// login that doesn't take that ([`Jobs::takes_background`]), as it does one without room. An
-    /// account named is the caller's to look at.
+    /// [`Jobs::pick`] for `work`, `background` when nobody's watching it: routing then passes over a
+    /// login that doesn't take that ([`Jobs::takes_background`]), as it does one without room for
+    /// it (LIMITS-21). An account named is the caller's to look at.
     fn pick_for(
         &self,
         agent: Option<&str>,
         named: Option<&str>,
-        background: bool,
+        work: &Work,
     ) -> Result<(Tool, crate::config::Account), Refused> {
         let tools: Vec<Tool> = match agent
             .map(str::trim)
@@ -3024,12 +3035,11 @@ impl Jobs {
                 // Routing skips an account that isn't signed in (#626), and one without room.
                 None => {
                     for account in accounts {
-                        let usage = self.usage.get(&account.id);
                         if !signed_in(*tool, &account, home.as_deref()) {
                             first.get_or_insert((*tool, account));
-                        } else if background && !self.takes_background(&account) {
+                        } else if work.background && !self.takes_background(&account) {
                             not_yet.get_or_insert(account.name);
-                        } else if let Some(why) = usage.held_for(now, background) {
+                        } else if let Some((why, _)) = self.holds().held(&account.id, work, now) {
                             held.push(format!("{} {why}", account.name));
                         } else {
                             ready.push((*tool, account));
@@ -3081,29 +3091,9 @@ impl Jobs {
     }
 
     /// `account` hit its usage limit: it's marked full until `reset` (an hour, when its tool named
-    /// none), whatever the tool said, so routing passes it by until then. A reset already gone by
-    /// marks nothing (a stale one); a later mark already kept stays.
+    /// none), whatever the tool said, so routing passes it by until then ([`Holds::apply`]).
     pub(crate) fn mark_full(&self, account: &str, reset: Option<i64>, now: i64) {
-        let until = match reset {
-            Some(at) if at <= now => return,
-            Some(at) => at,
-            None => now + crate::usage::UNKNOWN_RESET,
-        };
-        if self
-            .usage
-            .get(account)
-            .full_until_at(now)
-            .is_some_and(|at| at >= until)
-        {
-            return;
-        }
-        let full = crate::usage::Usage {
-            full_until: Some(until),
-            full_until_inferred: reset.is_none(),
-            ..Default::default()
-        };
-        self.usage.record(account, &full);
-        self.usage_changed.notify_one();
+        self.holds().apply(account, reset, None, now);
     }
 
     /// The tool and account a job was made for.
@@ -3165,11 +3155,12 @@ impl Jobs {
             .as_deref()
             .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
         let background = new.unattended || new.routine.is_some();
+        let work = Work::new(new.model.as_deref(), None, background);
         // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872); by
         // limits, as a limit's job waits (LIMITS-18); by a ChatGPT login the owner hasn't said yes
         // to alone, for their yes (CHATGPT-20).
         let (tool, account, waiting) =
-            match self.pick_for(new.agent.as_deref(), new.account.as_deref(), background) {
+            match self.pick_for(new.agent.as_deref(), new.account.as_deref(), &work) {
                 Ok((tool, account)) if background && self.waits_for_yes(tool, &account) => {
                     let wait = consent_wait(&account, new.agent.as_deref());
                     (tool, account, Some(wait))
@@ -3177,7 +3168,7 @@ impl Jobs {
                 Ok((tool, account)) => (tool, account, None),
                 Err(refused) if !named => match self
                     .in_reserve(new.agent.as_deref(), background)
-                    .or_else(|| self.no_room(new.agent.as_deref(), background))
+                    .or_else(|| self.no_room(new.agent.as_deref(), &work))
                     .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
                 {
                     Some(held) => held,
@@ -3355,7 +3346,7 @@ impl Jobs {
                     !self.being_changed(&account.id) && !self.waits_for_yes(*tool, account)
                 })
             } else {
-                lifted.or_else(|| self.pick_for(asked.as_deref(), None, background).ok())
+                lifted.or_else(|| self.pick_for(asked.as_deref(), None, &Work::of(&job)).ok())
             };
             let Some((tool, account)) = found else {
                 // What it waited on is gone, and nothing else takes it: nothing would ever start it.
@@ -3628,7 +3619,8 @@ impl Jobs {
             return Err(Refused(format!("{} isn't a repository obid knows.", body.repo)).into());
         }
         // Claude Code's: the review's answer is its structured output (`--json-schema`).
-        let (_, account) = self.pick_for(Some(Tool::Claude.id()), None, true)?;
+        let (_, account) =
+            self.pick_for(Some(Tool::Claude.id()), None, &Work::new(None, None, true))?;
         let id = self.new_id();
         let repo_name = body
             .repo
@@ -7129,7 +7121,7 @@ impl Jobs {
                 };
                 let resume_at = match &end {
                     End::AccountLimit { reset, .. } if failover.is_none() => {
-                        Some(self.limit_wait_until(&job.account, *reset, job.background()))
+                        Some(self.limit_wait_until(&job.account, *reset, &Work::of(&job)))
                     }
                     _ => None,
                 };
@@ -10772,7 +10764,7 @@ impl Jobs {
                     // The account is full whatever the tool said, but for one model's (USAGE-13), so
                     // nothing else goes there until it resets; the job goes on where there's room.
                     if limited {
-                        self.limit_reached(id, &account.id, reset, turn.scoped);
+                        self.limit_reached(id, &account.id, reset, &turn);
                     }
                     if limited && job.obi.is_none() {
                         return Err(End::AccountLimit {

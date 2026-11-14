@@ -26,6 +26,7 @@ pub mod connections;
 pub mod conversation;
 pub mod cursor_usage;
 pub mod decisions;
+pub mod delivery;
 pub mod detail;
 pub mod devices;
 pub mod egress;

@@ -121,7 +121,10 @@ def gone(pid, seconds=15):
     return False
 
 
-class TestRunRemote(unittest.TestCase):
+class RemoteHarness:
+    """The throwaway repository, fake hosts and helpers, for a unittest.TestCase that mixes it in: this file's and
+    test_test_run_mac_worker.py's, which imports it without running these tests again."""
+
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp()).resolve()
         self.fake = self.dir / "fake"
@@ -287,6 +290,8 @@ class TestRunRemote(unittest.TestCase):
         self.assertEqual(len(self.run_calls()), tried)
         self.assertEqual(self.vm_runs(), [])
 
+
+class TestRunRemote(RemoteHarness, unittest.TestCase):
     # ---- REMOTE-22 -------------------------------------------------------------------------------
 
     def test_remote_22_a_test_run_lands_on_the_vm_in_a_builder_slot(self):
@@ -371,9 +376,9 @@ class TestRunRemote(unittest.TestCase):
         self.assert_on_this_mac(self.run_test_run("cargo", "test", "-p", "obid", "--test", "sandbox"),
                                 "on this Mac: its test is macOS-only: core/crates/obid/tests/sandbox.rs")
 
-    # ---- REMOTE-36 -------------------------------------------------------------------------------
+    # ---- REMOTE-44 -------------------------------------------------------------------------------
 
-    def test_remote_36_a_kani_run_with_macos_only_changes_goes_to_the_vm(self):
+    def test_remote_44_a_kani_run_with_macos_only_changes_goes_to_the_vm(self):
         self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
         code, out, err, _ = self.run_test_run("cargo", "kani", "-p", "obid", "--tests", "--harness", "h")
         self.assertEqual(code, 0, out + err)
@@ -386,7 +391,7 @@ class TestRunRemote(unittest.TestCase):
         self.assertNotIn("on this Mac:", err)
         self.assertEqual(self.lines("mac-runs"), [])
 
-    def test_remote_36_a_kani_run_after_another_command_stays_on_this_mac(self):
+    def test_remote_44_a_kani_run_after_another_command_stays_on_this_mac(self):
         self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
         code, out, err, _ = self.run_test_run("sh", "-c", "cargo kani && cargo test")
         self.assertEqual(code, 0, out + err)

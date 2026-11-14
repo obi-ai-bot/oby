@@ -10,7 +10,9 @@ the owner's MacBook Pro, for the macOS part ("The second Mac", below), off until
 Task A00-19 made the VM's SSH rule follow the Mac's IP and its idle stop count only the VM's uses. Task A00-31
 sent builders' heavy Rust runs to the VM, in builder slots of their own ("Builders' runs", below), off until
 the owner sets `builder_slots`; A00-33 kept a builder run from holding a gate's lock, keeping a login or
-steering a later run. The scenarios are [REMOTE-1 to 34](contracts/remote-gate.md).
+steering a later run. Task A00-34 sent builders' macOS-only runs to the second Mac, in builder slots apart
+from its gates', off until the owner sets `builder_slots` in `mac_worker`. The scenarios are [REMOTE-1 to
+42](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -27,7 +29,7 @@ steering a later run. The scenarios are [REMOTE-1 to 34](contracts/remote-gate.m
   which runs `scripts/package.sh` with `/bin/zsh`), [REMOTE-12](contracts/remote-gate.md).
 - For `oby-builder` only, setup also installs Kani at `setup.sh`'s own pin (not ci.yml's; `--pins` leaves it
   out), root's like its toolchain: `cargo-kani` in its `.cargo`, the bundle in its `.kani`, Kani's nightly in
-  its `.rustup`, then proves a scratch harness offline as `oby-builder` ([REMOTE-35](contracts/remote-gate.md)).
+  its `.rustup`, then proves a scratch harness offline as `oby-builder` ([REMOTE-43](contracts/remote-gate.md)).
   Gates don't need Kani.
 - Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
   host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
@@ -301,7 +303,8 @@ with the builder's command line unchanged (REMOTE-22 to 34):
   whole-check run, a worktree whose changes against its base touch a file in `MACOS_ONLY` or naming
   `target_os = "macos"`, or a `--test` that is such a file, stays here under the lock, with one `on this Mac:`
   line. A run whose first two words are `cargo kani` isn't held to the worktree's macOS-only rule
-  ([REMOTE-36](contracts/remote-gate.md)): its proof covers obid's Linux build only.
+  ([REMOTE-44](contracts/remote-gate.md)), so it goes to the VM, never the Mac worker: its proof covers obid's Linux
+  build only.
 - **What goes.** The merge-base with `origin/dev` (on origin, so the VM fetches it with no credential), the
   SHA of the worktree's tree written from an index of its own (nothing gitignored), and on ssh's standard input
   `git diff --binary --full-index` between them, after gitleaks with the main checkout's `.gitleaks.toml`
@@ -327,11 +330,22 @@ with the builder's command line unchanged (REMOTE-22 to 34):
   run going: it makes `/srv/oby` `0700` and reinstalls `oby-builder`'s toolchain as root; and after A00-35 merges, with no builder run going, so
   builders have Kani), then add `"slots": 4, "builder_slots": 8`
   (on the 64-core VM) to `remote_gate` in `factory/config.json`. Until then nothing changes.
+- **On the Mac worker (REMOTE-35 to 42).** A run that stays here only because it needs macOS (macOS-only code,
+  or a macOS-only `--test`) goes to the Pro instead when `mac_worker` has `builder_slots`: test-run says `to the
+  Mac worker oby-mac-pro: <why>` and sends the same tree and scanned diff with `ssh oby-mac-pro
+  oby-worker/bin/oby-remote-gate --mac --run --slots 2 --builder-slots <m> …`, with no use, `az` or probe
+  first. There it runs as the gates' own user, in `~/oby-worker/builders/builder-N` with a clone of its own,
+  never a gate's `slot-1` or `slot-2`, each run in a slot emptied of all but its lock and `target`, at nice 15
+  with `cores / (2 + builder_slots)` jobs. The same fallbacks apply (ssh's 255, no `builders/repo.git`, every
+  builder slot busy for 10 minutes), and a fallback from either host runs here, never on the other. Swift,
+  Xcode and whole-check runs stay here, as does a run started with `test-run --here -- …`, for one that needs
+  this Mac itself (its Keychain, the owner's real home). Builders there can do what that user can (the
+  contract's "Known limits on the Mac worker"): accepted with the count. To turn it on, run
+  `factory/remote/setup-mac.sh oby-mac-pro` again, then set `"mac_worker": {"ssh_host": "oby-mac-pro",
+  "builder_slots": 2}`.
 
 ## Still to build
 
-- **Builders' macOS-only runs on the Pro:** `factory/bin/test-run` sending a builder's macOS-only run to the
-  Pro when the builder lock here is taken and the Pro has a free slot (its Linux-able runs go to the VM).
 - **The nightly check on the Pro:** `factory/bin/nightly` running there when it's free, so the nightly full
   check doesn't hold this Mac's lock for an hour.
 - **Whole checks on the Pro:** a change to the check's own files, a gate with no Linux group planned, and a

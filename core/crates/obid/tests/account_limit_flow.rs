@@ -1881,3 +1881,79 @@ fn receipts_15_a_move_with_used_words_is_409() {
     let again = send(&words_header(&obid, "POST", &path, Some(&body)));
     assert_eq!((again.status, &again.text), (first.status, &first.text));
 }
+
+/// A job on Claude Code that Routing picks, on `model`.
+fn post_on_model(obid: &Obid, task: &str, model: &str) -> String {
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": task,
+        "agent": "claude", "model": model});
+    let answer = call(obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    answer.body["id"].as_str().unwrap().to_owned()
+}
+
+/// Claude Code's refusal of the Opus week (USAGE-13), until `reset`, as a stand-in's task.
+fn opus_refused(reset: i64) -> String {
+    let usage = json!({"status": "rejected", "resetsAt": reset, "rateLimitType": "seven_day_opus",
+        "overageStatus": "rejected", "isUsingOverage": false});
+    format!("USAGE: {usage} LIMITED NO EVENT")
+}
+
+/// When job `job` (its API answer) resumes, in seconds since the epoch.
+fn resumes_at(job: &Value) -> i64 {
+    obi_protocol::time::parse(job["resumesAt"].as_str().unwrap()).unwrap()
+}
+
+/// LIMITS-21: after an Opus refusal on `stub`, a Sonnet job routes to it and runs, and an Opus job
+/// passes it by, here waiting with no card until the reset plus 90 seconds at the latest; the
+/// account itself isn't marked full.
+#[test]
+fn limits_21_a_model_hold_passes_only_that_family_by() {
+    let (_folder, _config, obid) = on_stub("limits-21");
+    let reset = obi_protocol::time::now() + 86_400;
+    let refused = post_unnamed(&obid, &opus_refused(reset));
+    waiting_for_reset(&obid, &refused);
+    let accounts = call(&obid, "GET", "/v1/status", None).body["accounts"].clone();
+    assert!(
+        (accounts.as_array().unwrap().iter()).all(|a| a["fullUntil"].is_null()),
+        "{accounts}"
+    );
+    let opus = post_on_model(&obid, "Look around", "claude-opus-5-5");
+    let sonnet = post_on_model(&obid, "Look around", "claude-sonnet-5");
+    let ran = ended(&obid, &sonnet);
+    assert_eq!(ran["status"], "done", "{ran}");
+    assert_eq!(ran["account"], "stub", "{ran}");
+    let held = job_now(&obid, &opus);
+    assert_eq!(held["status"], "queued", "{held}");
+    assert!(resumes_at(&held) <= reset + 90, "{held}");
+    assert!(held["accountLimit"].is_null(), "{held}");
+    assert!(pending_decisions(&obid).is_empty());
+}
+
+/// LIMITS-22: a wait on a model's hold survives a restart from `usage.json`: the same time, no
+/// card, and a new job of that family posted after it still passes the account by.
+#[test]
+fn limits_22_a_wait_survives_a_restart_from_the_hold_table() {
+    let (folder, config, mut obid) = on_stub("limits-22");
+    let reset = obi_protocol::time::now() + 86_400;
+    let id = post_on_model(&obid, &opus_refused(reset), "claude-opus-5-5");
+    let waits = waiting_for_reset(&obid, &id);
+    assert!(resumes_at(&waits) <= reset + 90, "{waits}");
+    let usage_file = folder.0.join("home/usage.json");
+    let kept =
+        || -> Value { serde_json::from_slice(&std::fs::read(&usage_file).unwrap()).unwrap() };
+    within(10, "the hold is kept", || {
+        (kept()["stub"]["holds"]["family:opus"] == reset).then_some(())
+    });
+    obid.stop();
+    let obid = start(&folder.0, &config, None);
+    let again = post_on_model(&obid, "Look around", "claude-opus-5-5");
+    let held = waiting_for_reset(&obid, &again);
+    assert_eq!(held["account"], "stub", "{held}");
+    assert!(resumes_at(&held) <= reset + 90, "{held}");
+    let still = job_now(&obid, &id);
+    assert_eq!(still["status"], "queued", "{still}");
+    assert_eq!(still["resumesAt"], waits["resumesAt"], "{still}");
+    assert!(still["accountLimit"].is_null(), "{still}");
+    assert!(pending_decisions(&obid).is_empty());
+    assert_eq!(kept()["stub"]["holds"]["family:opus"], reset);
+}

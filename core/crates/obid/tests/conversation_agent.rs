@@ -956,3 +956,27 @@ fn conversation_agent_11_a_removed_account_is_no_choice() {
     assert!(text(&answer).starts_with("resume="), "{}", answer.text);
     assert_eq!(listed(&obid, &id)["talkedOn"], CLAUDE);
 }
+
+/// LIMITS-24: a turn refused for its account's limit leaves the hold a job reads (`fullUntil`): the
+/// next turn's account choice doesn't pick that account, and a job routed meanwhile passes it by.
+#[test]
+fn limits_24_a_conversation_reads_the_same_hold() {
+    let (_folder, obid) = obid("limits-24");
+    let id = conversation(&said(&obid, json!({"said": "REMEMBER", "new": true})));
+    choose(&obid, &id, json!(CLAUDE));
+    let moved = said(&obid, json!({"said": "FULL ON stub", "conversation": id}));
+    assert!(
+        text(&moved).ends_with("Stub hit its limit, so I moved to Codex · Codex stub."),
+        "{}",
+        moved.text
+    );
+    let accounts = call(&obid, "GET", "/v1/status", None).body["accounts"].clone();
+    let stub = (accounts.as_array().unwrap().iter()).find(|a| a["id"] == CLAUDE);
+    assert!(!stub.unwrap()["fullUntil"].is_null(), "{accounts}");
+    let next = conversation(&said(&obid, json!({"said": "HELLO", "new": true})));
+    assert_ne!(listed(&obid, &next)["talkedOn"], CLAUDE);
+    let task = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
+    let routed = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": task })));
+    assert_eq!(routed.status, 201, "{}", routed.text);
+    assert_ne!(routed.body["account"], CLAUDE, "{}", routed.text);
+}

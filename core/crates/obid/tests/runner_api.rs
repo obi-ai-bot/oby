@@ -2301,14 +2301,115 @@ fn caps_1_status_lists_capabilities() {
     assert!(folders);
 }
 
-/// CAPS-2: every name obid serves has a row in docs/runner-api.md's Capabilities table, under
-/// `GET /v1/status`, and every row's name is served.
+/// docs/runner-api.md and every docs/api/*.md, sorted, each with its path in the repository.
+fn api_docs() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let mut areas: Vec<String> = std::fs::read_dir(root.join("docs/api"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".md"))
+        .map(|name| format!("docs/api/{name}"))
+        .collect();
+    areas.sort();
+    std::iter::once("docs/runner-api.md".to_owned())
+        .chain(areas)
+        .filter_map(|file| {
+            let text = std::fs::read_to_string(root.join(&file)).ok()?;
+            Some((file, text))
+        })
+        .collect()
+}
+
+/// CAPS-2: the `GET /v1/status` section of the one doc that holds it (the heading's line and a
+/// `| Name |` table before the next `### ` heading), with that doc's path. None, or more than one,
+/// is an error naming the docs read, or each doc that holds it.
+fn status_section(docs: &[(String, String)]) -> Result<(String, String), String> {
+    let holding: Vec<(String, String)> = docs
+        .iter()
+        .filter_map(|(file, text)| {
+            let text = format!("\n{text}");
+            let section = text.split("\n### `GET /v1/status`\n").nth(1)?;
+            let section = section.split("\n### ").next().unwrap();
+            section
+                .lines()
+                .any(|line| line.starts_with("| Name |"))
+                .then(|| (file.clone(), section.to_owned()))
+        })
+        .collect();
+    match holding.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(format!(
+            "no API doc has a Capabilities table under GET /v1/status; read: {}",
+            docs.iter()
+                .map(|(file, _)| file.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        many => Err(format!(
+            "{} API docs have a Capabilities table under GET /v1/status: {}",
+            many.len(),
+            many.iter()
+                .map(|(file, _)| file.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// CAPS-2's search: an index line or a heading with no table doesn't hold the section.
+#[test]
+fn caps_2_the_status_section_is_in_exactly_one_api_doc() {
+    let docs = [
+        ("docs/runner-api.md", "# Index\n- [`GET /v1/status`](api/status.md)\n"),
+        ("docs/api/old.md", "## Status\n\n### `GET /v1/status`\n\nNo table.\n"),
+        (
+            "docs/api/status.md",
+            "### `GET /v1/status`\n\n| Name | What |\n|---|---|\n| `a` | b |\n\n### Next\n| Name |\n",
+        ),
+    ]
+    .map(|(file, text)| (file.to_owned(), text.to_owned()));
+    let (file, section) = status_section(&docs).unwrap();
+    assert_eq!(file, "docs/api/status.md");
+    assert_eq!(section, "\n| Name | What |\n|---|---|\n| `a` | b |\n");
+}
+
+#[test]
+fn caps_2_no_api_doc_with_the_status_section_names_the_docs_read() {
+    let docs = [
+        ("docs/runner-api.md", "### `GET /v1/status`\n\nNo table.\n"),
+        ("docs/api/jobs.md", "### `GET /v1/jobs`\n\n| Name |\n"),
+    ]
+    .map(|(file, text)| (file.to_owned(), text.to_owned()));
+    let error = status_section(&docs).unwrap_err();
+    assert!(
+        error.contains("docs/runner-api.md, docs/api/jobs.md"),
+        "{error}"
+    );
+}
+
+#[test]
+fn caps_2_two_api_docs_with_the_status_section_name_both() {
+    let doc = "### `GET /v1/status`\n\n| Name | What |\n|---|---|\n";
+    let docs = [
+        ("docs/runner-api.md", doc),
+        ("docs/api/jobs.md", "### `GET /v1/jobs`\n"),
+        ("docs/api/status.md", doc),
+    ]
+    .map(|(file, text)| (file.to_owned(), text.to_owned()));
+    let error = status_section(&docs).unwrap_err();
+    assert!(
+        error.contains("2 API docs") && error.contains("docs/runner-api.md, docs/api/status.md"),
+        "{error}"
+    );
+}
+
+/// CAPS-2: every name obid serves has a row in the Capabilities table under `GET /v1/status`, in
+/// docs/runner-api.md or the one docs/api/*.md that holds it, and every row's name is served.
 #[test]
 fn caps_2_every_capability_is_documented() {
-    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runner-api.md");
-    let docs = std::fs::read_to_string(docs).unwrap();
-    let section = docs.split("\n### `GET /v1/status`\n").nth(1).unwrap();
-    let section = section.split("\n### ").next().unwrap();
+    let (file, section) = status_section(&api_docs()).unwrap_or_else(|error| panic!("{error}"));
     let table = section
         .lines()
         .skip_while(|line| !line.starts_with("| Name |"));
@@ -2334,13 +2435,13 @@ fn caps_2_every_capability_is_documented() {
     for name in &served {
         assert!(
             documented.contains(name),
-            "`{name}` is served but has no row in docs/runner-api.md"
+            "`{name}` is served but has no row in {file}"
         );
     }
     for name in &documented {
         assert!(
             served.contains(name),
-            "`{name}` has a row in docs/runner-api.md but isn't served"
+            "`{name}` has a row in {file} but isn't served"
         );
     }
 }

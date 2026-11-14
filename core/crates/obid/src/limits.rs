@@ -2,6 +2,8 @@
 //! Code's `rate_limit_event`, Codex's `account/rateLimits/updated`), or from its words ("…usage
 //! limit reached|1760000000", "try again in 2 hours").
 
+pub mod holds;
+
 use std::sync::LazyLock;
 
 use regex::Regex;

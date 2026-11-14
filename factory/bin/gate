@@ -49,7 +49,10 @@ once the VM's part passed on that second Mac, in one call: `ssh <host> oby-worke
 <commit> origin/<base> <group>...`, after `ssh <host> true` answers within 60 seconds. Its 0 or 1 is the
 verdict. When it doesn't answer, both its slots are busy, it couldn't judge or was cut off, or the settings
 are invalid, that part runs on this Mac as without it, and checks.md says `Fell back from <host> to this
-Mac: <why>`. No az, stamp or lock is ever used for it. Without `mac_worker` nothing here changes.
+Mac: <why>`. No az, stamp or lock is ever used for it. Without `mac_worker` nothing here changes. Its optional
+`builder_slots` (0 to 64, by default 0) is how many builder slots factory/bin/test-run may use on it for
+builders' macOS-only runs (REMOTE-35 to 42), with or without `remote_gate`; a wrong type or count makes the
+settings invalid, and the gate's macOS part falls back saying why. The gate's own call and slots don't change.
 """
 
 import fcntl
@@ -268,7 +271,11 @@ def mac_worker_config():
     if not isinstance(worker, dict) or not (isinstance(worker.get("ssh_host"), str)
                                             and NAME.fullmatch(worker["ssh_host"])):
         return None, f"{where} needs ssh_host, matching {NAME.pattern}"
-    return worker, None
+    low, high, default = SIZES["builder_slots"]
+    if not ("builder_slots" not in worker or type(worker["builder_slots"]) is int
+            and low <= worker["builder_slots"] <= high):
+        return None, f"{where}'s builder_slots must be a whole number from {low} to {high}, when set"
+    return {"builder_slots": default, **worker}, None
 
 
 def utc(when=None):

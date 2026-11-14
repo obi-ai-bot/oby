@@ -677,7 +677,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertLess(removed, next(i for i, c in enumerate(calls) if "rustup toolchain install" in c), calls)
         self.assertIn(f"removing {home}/.cargo, {home}/.rustup and {home}/.kani: not all root's", done.stdout)
 
-    def test_remote_35_setup_installs_kani_for_the_builder_as_root(self):
+    def test_remote_43_setup_installs_kani_for_the_builder_as_root(self):
         done = self.builder()
         self.assertEqual(done.returncode, 0, done.stdout)
         home = self.dir / "builder-home"
@@ -706,7 +706,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn(f"setup.sh: oby-builder is set up: no sudo, /srv/oby-builder, rust ", done.stdout)
         self.assertIn(f", kani {kani}, its home, keys and toolchain root's", done.stdout)
 
-    def test_remote_35_setup_stops_when_kani_fails_for_the_builder(self):
+    def test_remote_43_setup_stops_when_kani_fails_for_the_builder(self):
         (self.dir / "proof-fails").touch()
         done = self.builder()
         self.assertNotEqual(done.returncode, 0, done.stdout)
