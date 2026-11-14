@@ -133,7 +133,7 @@ Where the job lifecycle is written today (test modules left out):
 
 Where `follow_up_of` is compared with a branch today (test modules left out):
 
-- `job/chain.rs`: `branch_carrier` (through `holds`, which decides it for each case of `Holds`, at any depth), `chain_tip`, `place` (a follow-up's branch, `start_from` and `follow_up_of`, through `start`), `refreshed`, `line`, `moved` and `mark_carried`, with the helpers `follows_up` and `same_branch`.
+- `job/chain.rs`: `branch_carrier` (through `holds`, which decides it for each case of `Holds`, at any depth), `chain_tip`, `place` (a follow-up's branch, `start_from` and `follow_up_of`, through `start`), `refreshed`, `line`, `moved`, `mark_carried` and `marked` (a follow-up's marks, every job's of its chain, read by `create`), with the helpers `follows_up` and `same_branch`.
 - `jobs.rs`: `create` (a branch of its own unless it carries one on, through `chain_tip`), `message_as` (through `place`); `branch_carrier`'s callers `message_as`, `review_round_again`, `reviewed`, `review_left_to_owner`, `publish_action_of`, `undeletable_in` and `done_with`; and the function `carries`, which says whether a job still carries its pull request.
 - `jobs/account_limits.rs`: `apply_limit_job` (through `branch_carrier`).
 - `jobs/after_pr.rs`: `may_round` (through `branch_carrier`).
