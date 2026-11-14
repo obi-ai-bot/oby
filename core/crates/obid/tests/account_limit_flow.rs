@@ -1852,3 +1852,32 @@ fn limits_18_several_held_accounts_pick_the_soonest_reset() {
         "{waits}"
     );
 }
+
+/// RECEIPTS-15: a move retried with its key and its used signed words isn't as signed as the
+/// first (q067): `409`, and it moves nothing; signed again, it gets the first answer.
+#[test]
+fn receipts_15_a_move_with_used_words_is_409() {
+    let folder = Folder::new("receipts-15-move");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let id = post(&obid, "Look around");
+    ended(&obid, &id);
+    let path = format!("/v1/jobs/{id}/move");
+    let body = json!({"agent": "codex", "model": "gpt-6-astra", "clientRequestId": "move-15"});
+    let send = |words: &str| {
+        let headers = [("X-Oby-Words", words)];
+        call_with_headers(&obid, TOKEN, "POST", &path, Some(&body), &headers)
+    };
+    // Once it's done publishing what it did: until then it can't move (`422`, which keeps no receipt).
+    let (first, used) = within(60, "it moves once it's published", || {
+        let words = words_header(&obid, "POST", &path, Some(&body));
+        let moved = send(&words);
+        (moved.status != 422 || !moved.text.contains("publishing")).then_some((moved, words))
+    });
+    assert_eq!(first.status, 200, "{}", first.text);
+    let retry = send(&used);
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    assert_eq!(job_now(&obid, &id)["moves"].as_array().unwrap().len(), 1);
+    let again = send(&words_header(&obid, "POST", &path, Some(&body)));
+    assert_eq!((again.status, &again.text), (first.status, &first.text));
+}

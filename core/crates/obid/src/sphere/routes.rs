@@ -258,109 +258,145 @@ pub async fn answer(
     {
         return Err(crate::routes::needs_the_owners_app());
     }
-    // Who answered stays on the item, and in the log: a merge can be traced afterwards (#1825).
-    let by = signer.or_else(|| device.as_ref().map(|d| d.0.0.clone()));
-    tracing::info!(
-        "inbox {id}: answered by {}",
-        by.as_deref().unwrap_or("nothing signed")
-    );
-    shared.link.note_answered_by(&id, by);
-    // Words for a job's agent (its question's answer, a no's words) that no app of the owner's
-    // signed: the job is no longer the owner's own words alone (crate::secretspec), before it
-    // hears them.
-    if let Some(item) = shared.link.item(&id).filter(|i| {
-        i.done.is_none()
-            && !i.job.is_empty()
-            && matches!(
-                i.kind.as_str(),
-                "permission" | "plan" | super::inbox::QUESTION_KIND
-            )
-    }) && let Some(answer) = serde_json::from_slice::<Value>(&body)
-        .ok()
-        .and_then(|b| b["answer"].as_str().map(str::to_owned))
-        && (item.kind == super::inbox::QUESTION_KIND
-            || crate::permissions::inbox_decision(&answer).1.is_some())
-        && !typed
-    {
-        shared.jobs.unvet(
-            &item.job,
-            "an inbox answer no app of the owner's signed reached it",
+    // A request key (docs/contracts/receipts.md, RECEIPTS-10 and 15): the same answer again, as
+    // signed as the first, gets the first one's answer and does nothing. A Confirm's approval is its
+    // signature (#776): it's checked, and used up, here, as signed words are, and whether it held
+    // is compared, never the approval itself; so a retry with a used one is `409` (q067).
+    let sent = serde_json::from_slice::<Value>(&body).unwrap_or_default();
+    let key = crate::routes::request_key(&sent, &headers)
+        .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let confirming = sent["answer"].as_str() == Some(super::inbox::CONFIRM);
+    // On an item done since too: a retry re-signed after the first Confirm settled it.
+    let item = shared.link.item(&id).filter(|i| i.kind == "confirm");
+    let approval = sent.get("approval").cloned();
+    let approval =
+        approval.and_then(|a| serde_json::from_value::<crate::approval::Approval>(a).ok());
+    let checked = item
+        .filter(|_| confirming)
+        .zip(approval)
+        .map(|(item, approval)| {
+            let key = shared.devices.public_key(&approval.device);
+            let now = obi_protocol::time::now();
+            let confirms = shared.jobs.approvals();
+            let held = confirms.check_confirm(&approval, &id, &item.title, key.as_deref(), now);
+            (item, held)
+        });
+    let mut judged = sent;
+    if let Some(map) = judged.as_object_mut() {
+        map.remove("clientRequestId");
+        map.remove("approval");
+    }
+    let approved = checked.as_ref().map(|(_, held)| held.is_ok());
+    let judged = serde_json::json!({"body": judged, "signed": typed, "approved": approved});
+    let route = format!("POST /v1/inbox/{id}/answer");
+    let work = async {
+        // Who answered stays on the item, and in the log: a merge can be traced afterwards (#1825).
+        let by = signer.or_else(|| device.as_ref().map(|d| d.0.0.clone()));
+        tracing::info!(
+            "inbox {id}: answered by {}",
+            by.as_deref().unwrap_or("nothing signed")
         );
-    }
-    // A phone (through the gateway) can't Approve a channel listener's review, which it doesn't
-    // show yet: by the item itself, found by its decoded id, so no spelling of the path gets by.
-    if device.is_some()
-        && let Some(why) = crate::review::phone_refuses(shared.link.item(&id).as_ref(), &body)
-    {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, why));
-    }
-    // A tap is the owner back (#594): after a while away, it gets a recap.
-    crate::brain::recap::tapped(&shared);
-    // Only the owner's tap confirms (#776): a Confirm on a `confirm` item carries a registered
-    // device's signature over `oby-confirm\n<id>\n<title>\n<signedAt>`. Cancel, done and later
-    // need none. A refusal names the title to sign, as connections do.
-    let mut map: serde_json::Map<String, Value> = match serde_json::from_slice(&body) {
-        Ok(Value::Object(map)) => map,
-        _ => {
-            return Ok(json(
-                StatusCode::OK,
-                shared.link.answer_typed(&id, &body, typed).await?,
+        shared.link.note_answered_by(&id, by);
+        // Words for a job's agent (its question's answer, a no's words) that no app of the owner's
+        // signed: the job is no longer the owner's own words alone (crate::secretspec), before it
+        // hears them.
+        if let Some(item) = shared.link.item(&id).filter(|i| {
+            i.done.is_none()
+                && !i.job.is_empty()
+                && matches!(
+                    i.kind.as_str(),
+                    "permission" | "plan" | super::inbox::QUESTION_KIND
+                )
+        }) && let Some(answer) = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|b| b["answer"].as_str().map(str::to_owned))
+            && (item.kind == super::inbox::QUESTION_KIND
+                || crate::permissions::inbox_decision(&answer).1.is_some())
+            && !typed
+        {
+            shared.jobs.unvet(
+                &item.job,
+                "an inbox answer no app of the owner's signed reached it",
+            );
+        }
+        // A phone (through the gateway) can't Approve a channel listener's review, which it doesn't
+        // show yet: by the item itself, found by its decoded id, so no spelling of the path gets by.
+        if device.is_some()
+            && let Some(why) = crate::review::phone_refuses(shared.link.item(&id).as_ref(), &body)
+        {
+            return Err(ApiError::new(StatusCode::FORBIDDEN, why));
+        }
+        // A tap is the owner back (#594): after a while away, it gets a recap.
+        crate::brain::recap::tapped(&shared);
+        // Only the owner's tap confirms (#776): a Confirm on a `confirm` item carries a registered
+        // device's signature over `oby-confirm\n<id>\n<title>\n<signedAt>`. Cancel, done and later
+        // need none. A refusal names the title to sign, as connections do.
+        let mut map: serde_json::Map<String, Value> = match serde_json::from_slice(&body) {
+            Ok(Value::Object(map)) => map,
+            _ => {
+                let answered = shared.link.answer_typed(&id, &body, typed).await?;
+                return Ok((StatusCode::OK, answered, None));
+            }
+        };
+        let approval = map.remove("approval");
+        map.remove("clientRequestId");
+        let rest = serde_json::to_vec(&Value::Object(map.clone())).unwrap_or_default();
+        let confirming = map.get("answer").and_then(Value::as_str) == Some(super::inbox::CONFIRM);
+        let confirm_item = shared.link.item(&id).filter(|i| i.kind == "confirm");
+        if approval.is_some() && !(confirming && confirm_item.is_some()) {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "An approval goes only with Confirm on a confirm item.",
             ));
         }
+        // Not a Confirm of an open confirm item: answered as before (one already done says so).
+        let Some(live) = confirm_item.filter(|i| confirming && i.done.is_none()) else {
+            let answered = shared.link.answer_typed(&id, &rest, typed).await?;
+            return Ok((StatusCode::OK, answered, None));
+        };
+        let (item, checked) = as_checked(checked, live);
+        // Refused: a 403, so no receipt is kept.
+        let refuse = |why: &str| {
+            let refused = serde_json::json!({"error": why, "action": item.title});
+            Ok((StatusCode::FORBIDDEN, refused, None))
+        };
+        let Some(approval) = approval else {
+            return refuse(super::link::NEEDS_YOUR_TAP);
+        };
+        let Ok(approval) = serde_json::from_value::<crate::approval::Approval>(approval) else {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "An approval is {\"device\", \"action\", \"signedAt\", \"signature\"}.",
+            ));
+        };
+        let signed_at = obi_protocol::time::parse(&approval.signed_at).unwrap_or_default();
+        if let Err(why) = checked {
+            return refuse(&why);
+        }
+        let answered = shared
+            .link
+            .answer_confirmed(&id, &rest, &item.title, signed_at)
+            .await;
+        if let Err(why) = &answered {
+            crate::brain::ask::refused_after_the_click(&shared, &item, why);
+        } else {
+            crate::conversation::confirmed(&shared, &item).await;
+        }
+        Ok((StatusCode::OK, answered?, None))
     };
-    let approval = map.remove("approval");
-    let rest = serde_json::to_vec(&Value::Object(map.clone())).unwrap_or_default();
-    let confirming = map.get("answer").and_then(Value::as_str) == Some(super::inbox::CONFIRM);
-    let confirm_item = shared.link.item(&id).filter(|i| i.kind == "confirm");
-    if approval.is_some() && !(confirming && confirm_item.is_some()) {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "An approval goes only with Confirm on a confirm item.",
-        ));
-    }
-    // Not a Confirm of an open confirm item: answered as before (one already done says so).
-    let Some(item) = confirm_item.filter(|i| confirming && i.done.is_none()) else {
-        return Ok(json(
-            StatusCode::OK,
-            shared.link.answer_typed(&id, &rest, typed).await?,
-        ));
-    };
-    let refuse = |why: &str| {
-        json(
-            StatusCode::FORBIDDEN,
-            serde_json::json!({"error": why, "action": item.title}),
-        )
-    };
-    let Some(approval) = approval else {
-        return Ok(refuse(super::link::NEEDS_YOUR_TAP));
-    };
-    let Ok(approval) = serde_json::from_value::<crate::approval::Approval>(approval) else {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "An approval is {\"device\", \"action\", \"signedAt\", \"signature\"}.",
-        ));
-    };
-    let key = shared.devices.public_key(&approval.device);
-    let signed_at = obi_protocol::time::parse(&approval.signed_at).unwrap_or_default();
-    if let Err(why) = shared.jobs.approvals().check_confirm(
-        &approval,
-        &id,
-        &item.title,
-        key.as_deref(),
-        obi_protocol::time::now(),
-    ) {
-        return Ok(refuse(&why));
-    }
-    let answered = shared
-        .link
-        .answer_confirmed(&id, &rest, &item.title, signed_at)
-        .await;
-    if let Err(why) = &answered {
-        crate::brain::ask::refused_after_the_click(&shared, &item, why);
-    } else {
-        crate::conversation::confirmed(&shared, &item).await;
-    }
-    Ok(json(StatusCode::OK, answered?))
+    let stored = crate::routes::stored;
+    crate::routes::keyed(&shared, key.as_deref(), &route, &judged, stored, work).await
+}
+
+/// What a Confirm confirms (#776): the item as its approval was checked before the lookup, never as
+/// read again since, so a title changed in between (`inbox::tick_repos` on the sharing card) is
+/// refused by `answer_as` and the signature counts only for what was signed. One that wasn't a
+/// confirm item then (`checked` none) needs the owner's tap.
+pub(super) fn as_checked(
+    checked: Option<(super::inbox::Item, Result<(), String>)>,
+    live: super::inbox::Item,
+) -> (super::inbox::Item, Result<(), String>) {
+    checked.unwrap_or_else(|| (live, Err(super::link::NEEDS_YOUR_TAP.to_owned())))
 }
 
 #[derive(serde::Deserialize)]

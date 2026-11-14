@@ -4397,4 +4397,53 @@ mod tests {
         );
         assert_eq!(dead_confirm(&check, &[]), None);
     }
+
+    /// A Confirm confirms the card as its approval was checked before the request key's lookup
+    /// (#776, RECEIPTS-15): ticked again in between (`offer_again` needs no signed words), the
+    /// sharing card's new title is refused, the card stays open, and nothing the owner's app didn't
+    /// sign is carried out.
+    #[tokio::test]
+    async fn receipts_15_a_confirm_confirms_only_the_title_it_checked() {
+        let home = std::env::temp_dir().join(format!("obid-link-retick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Arc::new(Link::open(config, jobs, events, stopping));
+        let offered = vec!["o/a".to_owned(), "o/b".to_owned()];
+        let card = inbox::share_item(time::now(), offered.clone(), vec!["o/a".to_owned()]);
+        link.lock().inbox.insert(card.id.clone(), card.clone());
+        // The owner's app signed the card as it was, and the approval held.
+        let checked = Some((card.clone(), Ok(())));
+        // Then the card is ticked again, before the work reads it.
+        let live = {
+            let mut state = link.lock();
+            let open = state.inbox.get_mut(&card.id).unwrap();
+            inbox::tick_repos(open, offered, vec!["o/b".to_owned()]);
+            open.clone()
+        };
+        assert_ne!(live.title, card.title);
+        let (item, held) = crate::sphere::routes::as_checked(checked, live);
+        assert_eq!(held, Ok(()));
+        let answered = link
+            .answer_confirmed(
+                &card.id,
+                br#"{"answer": "Confirm"}"#,
+                &item.title,
+                time::now(),
+            )
+            .await
+            .err()
+            .map(|e| (e.status, e.message));
+        assert_eq!(
+            answered,
+            Some((StatusCode::FORBIDDEN, NEEDS_YOUR_TAP.to_owned()))
+        );
+        assert_eq!(link.item(&card.id).unwrap().done, None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
