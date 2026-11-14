@@ -32,6 +32,7 @@ spec-writer (opus) → spec.md
 builder (opus)     → commits; moves the task file to factory/queue/done; the first push opens a draft PR
 gate (script)      → checks.sh (scripts/oby-check.sh); FAIL → builder gets the log, no reviewers spawned
 prove (script)     → factory/bin/prove, for jobs with the proofs surface; PASS | ADVISORY-FAIL | SKIPPED → reviewers; FAIL | TIMEOUT → builder
+mutants (script)   → factory/bin/mutants, every job after a passing gate; advisory: round-N/mutants.md for reviewer-code and the approver
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers
 approver (opus)    → APPROVE: PR ready, gh pr merge --squash --auto --match-head-commit <gated head>
                      ESCALATE: decision as PR comment, the PR stays a draft, the job waits for the owner
@@ -58,6 +59,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/bin/gate                        runs checks.sh in a worktree → round-N/checks.md
 <repo>/factory/bin/route                       risk + surfaces → the job's agents
 <repo>/factory/bin/prove                       re-runs a proofs job's Kani harnesses on the gated commit → round-N/proofs.md
+<repo>/factory/bin/mutants                     cargo-mutants on the gated commit's core/crates/ Rust diff → round-N/mutants.md; advisory
 <repo>/factory/bin/test-run                    runs a builder's or approver's own test, clippy or build run: one at a time, below the gates; refuses the shared Cargo folder
 <repo>/factory/bin/check-lock                  the gate's lock holder for a check that builds Rust: stops its leftovers, passes its code
 <repo>/factory/bin/child_session.py            a command in a session of its own, its leftovers stopped; shared by check-lock, test-run, nightly
@@ -77,6 +79,8 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/round-<N>/checks.md        the gate's verdict for round N
 <repo>/factory/jobs/<job-id>/round-<N>/proofs.md        prove's verdict for round N
 <repo>/factory/jobs/<job-id>/round-<N>/proofs.log       prove's Kani runs for round N
+<repo>/factory/jobs/<job-id>/round-<N>/mutants.md       mutants' advisory result for round N: the missed mutants
+<repo>/factory/jobs/<job-id>/round-<N>/mutants.log      mutants' cargo-mutants run for round N
 <repo>/factory/jobs/<job-id>/round-<N>/review-<r>.md    one per routed reviewer
 <repo>/factory/jobs/<job-id>/round-<N>/queue-failure.md why GitHub's merge queue removed the PR, quoted data
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
@@ -155,6 +159,11 @@ tests Rust, and can take many minutes. It prints `GATE: PASS` or `GATE: FAIL`.
 - PASS: a job whose `job.json` `intake.surfaces` holds `proofs` goes
   `factory/bin/job advance <id> prove`, then to **prove**. Every other job goes
   `factory/bin/job advance <id> review`, then to **review**.
+- PASS, for every job, with no intake surface: run `factory/bin/mutants <id>`
+  in the background at once, beside prove for a `proofs` job. The job's moves
+  stay as they are, but spawn the reviewers only once mutants has ended. It
+  prints `MUTANTS: <value> (<id> round <N>)`, and that line never moves the
+  job. On exit 2, tell the user what it said and go on without it.
 - FAIL: `factory/bin/job advance <id> build`. If it refuses because this was the
   last round, `factory/bin/job advance <id> needs-human` instead. Otherwise
   resume the builder for the next round with
@@ -291,7 +300,7 @@ then moves the job to `merged`; stop any agents still running for it.
 stopped. For a `resume` job, run its stage's step again: `intake` and `spec`
 respawn their agent; `build` spawns a new builder told it is resuming (it reads
 `build.md` and `git log` to see how far the last one got); `gate` runs the
-gate; `prove` runs `factory/bin/prove` again; `review` spawns only the reviewers whose `review-<r>.md` is missing in
+gate; `prove` runs `factory/bin/prove` again; `review` runs `factory/bin/mutants` first when the round has no `mutants.md`, then spawns only the reviewers whose `review-<r>.md` is missing in
 the current round; `approve` respawns the approver; `merging` runs
 `factory/bin/job merge <id>`. A `queued` job needs no agent: `factory/bin/job
 queue` settles it.
