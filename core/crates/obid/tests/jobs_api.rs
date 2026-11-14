@@ -2077,6 +2077,112 @@ fn tasks_18_a_stopped_job_says_who_stopped_it() {
     assert!(gone["reason"].is_null(), "{gone}");
 }
 
+/// obid with a second repository, `obi-e2e/gone`, whose remote doesn't exist: a job on it fails
+/// before its agent starts, so it never has a session.
+fn start_with_gone(folder: &Path) -> Obid {
+    let remote = fixture(&folder.join("fixture"));
+    let mut config = config(folder, &remote);
+    config["repos"].as_array_mut().unwrap().push(json!({"repo": "obi-e2e/gone",
+        "remote": format!("file://{}", folder.join("nowhere.git").display()), "defaultBranch": "main"}));
+    start(folder, &config)
+}
+
+/// `POST /v1/jobs/{id}/messages` with Try again's words.
+fn press_try_again(obid: &Obid, id: &str) -> Answer {
+    let text = json!({"text": obid::brain::actions::TRY_AGAIN}).to_string();
+    request(
+        obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&text),
+    )
+}
+
+/// The jobs obid lists that are `id`'s follow-ups.
+fn follow_ups(obid: &Obid, id: &str) -> Vec<Value> {
+    let jobs = request(obid, "GET", "/v1/jobs", None).body;
+    let jobs = jobs.as_array().unwrap().iter();
+    jobs.filter(|job| job["followUpOf"] == id)
+        .cloned()
+        .collect()
+}
+
+/// TASKS-20 (#1851): Try again on a task that ended before its agent started (no session) runs
+/// that same task again, another round launched from its own task, and makes no follow-up.
+#[test]
+fn tasks_20_try_again_reruns_a_task_that_never_started() {
+    let folder = Folder::new("tasks-20");
+    let obid = start_with_gone(&folder.0);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/gone", "kind": "investigate", "task": "Look around"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let failed = wait(&obid, &id);
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert!(failed["session"].is_null(), "{failed}");
+
+    let again = press_try_again(&obid, &id);
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(again.body["id"], id.as_str(), "{}", again.text);
+    assert!(
+        matches!(again.body["status"].as_str(), Some("queued" | "running")),
+        "{}",
+        again.text
+    );
+    assert_eq!(
+        again.body["round"],
+        failed["round"].as_u64().unwrap() + 1,
+        "{}",
+        again.text
+    );
+    assert_eq!(follow_ups(&obid, &id), Vec::<Value>::new());
+
+    // Launched from its task again, it went through prepare again, and failed there the same way.
+    let refailed = wait(&obid, &id);
+    assert_eq!(refailed["status"], "failed", "{refailed}");
+    assert_eq!(refailed["reason"], failed["reason"], "{refailed}");
+    assert!(refailed["session"].is_null(), "{refailed}");
+    assert_eq!(follow_ups(&obid, &id), Vec::<Value>::new());
+}
+
+/// TASKS-21 (#1851): a review that never starts, tried again three times after three failures,
+/// stays one job in its fourth round, with no follow-up.
+#[test]
+fn tasks_21_a_failing_never_started_task_makes_no_follow_ups() {
+    let folder = Folder::new("tasks-21");
+    let obid = start_with_gone(&folder.0);
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/gone", "kind": "review", "pr": 90, "task": "Review it"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for _ in 0..3 {
+        let failed = wait(&obid, &id);
+        assert_eq!(failed["status"], "failed", "{failed}");
+        let again = press_try_again(&obid, &id);
+        assert_eq!(again.status, 200, "{}", again.text);
+        assert_eq!(again.body["id"], id.as_str(), "{}", again.text);
+    }
+    let last = wait(&obid, &id);
+    assert_eq!(last["status"], "failed", "{last}");
+    assert_eq!(last["round"], 4, "{last}");
+    let jobs = request(&obid, "GET", "/v1/jobs", None).body;
+    let on_gone = jobs.as_array().unwrap().iter();
+    assert_eq!(
+        on_gone.filter(|j| j["repo"] == "obi-e2e/gone").count(),
+        1,
+        "{jobs}"
+    );
+    assert_eq!(follow_ups(&obid, &id), Vec::<Value>::new());
+}
+
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:
 /// it needs you, with One more round, its branch kept. Dismiss lets it go.
 #[test]
