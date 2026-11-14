@@ -15,6 +15,7 @@
     "proofs": { "proofs": "opus" }
   },
   "proofs": { "mode": "advisory", "timeout_s": 600 },
+  "mutants": { "budget_s": 600 },
   "protected_paths": [
     "factory/checks.sh",
     "factory/config.json"
