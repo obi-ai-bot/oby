@@ -12,7 +12,8 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 the gate VM and the macOS-only part on the Mac, falling back to the Mac; `gate --idle` deallocates the
                 idle VM (job queue runs it)
 bin/route       risk + surfaces → the job's reviewers and models
-bin/test-run    a builder's own test, clippy or build run: one at a time on its own lock, at nice 15, half the cores
+bin/test-run    a builder's own test, clippy or build run at nice 15, half the cores; only runs that can build Rust or
+                Xcode code take turns on its own lock, other runs start at once
 bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
                 it stops the check's leftovers and passes its exit code through
 bin/child_session.py  runs a command in a session of its own and stops its leftovers; shared by check-lock, test-run
@@ -33,12 +34,16 @@ started, the log's last 80 lines) and its `<stamp>.log` per run, named by the UT
 shows the newest.
 
 Builders' own test, clippy and build runs go through `bin/test-run`, so they don't slow a gate past the check's
-caps: one at a time on `~/Library/Caches/oby-factory/test-run.lock`, never the gate's lock, so a gate never
-waits on them; at `nice -n 15`, so a gate's check gets the CPU first when both want it, and not
-`taskpolicy -b`, which also throttles disk I/O and keeps the run on the efficiency cores even when no gate runs;
-with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores. Commands that read
-none of those (`npm test`, `npm run typecheck`, `swift test`) are held only by the lock and the priority, and an
-explicit `-j` or `--test-threads` overrides them.
+caps. Only runs that can build Rust or Xcode code (a command naming `cargo`, `cargo-nextest`, `nextest`, `rustc`,
+`xcodebuild`, `oby-check.sh`, `oby-check-blok`, or `swift` with `build` or `test`) take turns, one at a time on
+`~/Library/Caches/oby-factory/test-run.lock`, never the gate's lock, so a gate never waits on them; the holder
+line records its pid, when it took the lock, its folder and its command, and a run still waiting says who holds
+it every 5 minutes. Other runs (`python3 -m unittest`, `npm test`, `npx vitest`) start at once. Every run is at
+`nice -n 15`, so a gate's check gets the CPU first when both want it, and not `taskpolicy -b`, which also
+throttles disk I/O and keeps the run on the efficiency cores even when no gate runs; with `CARGO_BUILD_JOBS`,
+`RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores. Commands that read none of those (`npm test`,
+`npm run typecheck`, `swift test`) are held only by the priority (and `swift test` by the lock), and an explicit
+`-j` or `--test-threads` overrides them.
 
 Gates run on the Mac until the owner adds `remote_gate` to `config.json` (`docs/factory-remote-gate.md`, "The
 owner's steps"). With it, `bin/gate` reads the check's plan, starts the gate VM `oby-gate` when it is stopped
