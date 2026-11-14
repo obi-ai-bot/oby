@@ -4,6 +4,8 @@
 #   plan            which lanes the change reaches, from the paths it changed, and gitleaks (with
 #                   .gitleaks.toml) over the commits it brings
 #   lint            in core/: cargo fmt --check, clippy -D warnings on every target
+#   limits          obid's line limits on the checked commit, from the run's base: the script's
+#                   own (OBY_CHECK_ONLY=limits scripts/oby-check.sh, docs/contracts/ci.md, CI-35)
 #   rust-build      in core/: one cargo nextest archive of the workspace, kept 1 day
 #   rust-test       the archive's tests in 4 nextest shards (core/.config/nextest.toml's ci
 #                   profile: one retry), each keeping its JUnit report 14 days
@@ -25,7 +27,8 @@
 #     test job. The Mac check (scripts/oby-check.sh) runs the tests each change reaches.
 #   - A pull request labelled `full-ci` or into main, the merge queue (merge_group), the nightly
 #     run on dev and a run on demand (workflow_dispatch) run every job their lanes reach. The
-#     nightly and on-demand runs reach every lane.
+#     nightly and on-demand runs reach every lane. limits follows the rust lane, so the queue
+#     judges obid's line limits on the group's combined code, which no branch's own check sees.
 #   - Only the nightly and on-demand runs save caches: a pull request's caches can't be read by
 #     any other pull request (they're scoped to refs/pull/<n>/merge), so they only churned the
 #     repository's 10 GB.
@@ -204,6 +207,26 @@ jobs:
 
       - name: cargo clippy -D warnings
         run: cargo clippy --manifest-path core/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+  limits:
+    # The script's own counting and judging, on the checked commit (the merge group's combined
+    # code in the queue), measured from the run's base so a limit the commit lowered holds.
+    name: limits
+    needs: plan
+    if: needs.plan.outputs.rust == 'true' && needs.plan.outputs.tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Nightly and on demand have no base: the commit is measured against itself.
+      - name: obid's line limits
+        env:
+          BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: OBY_CHECK_ONLY=limits scripts/oby-check.sh "${BASE:-HEAD}"
 
   rust-build:
     # The suite compiled once: rust-test's 4 shards run it from this archive and compile nothing.
@@ -509,7 +532,7 @@ jobs:
   check:
     # The run's one status: the merge queue requires it (R01-03).
     name: Check
-    needs: [plan, lint, rust-build, rust-test, control-plane, e2e, electron, tools]
+    needs: [plan, lint, limits, rust-build, rust-test, control-plane, e2e, electron, tools]
     if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'full-ci'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
