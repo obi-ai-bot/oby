@@ -1,12 +1,12 @@
 //! Jobs: made, queued, run side by side (at most `maxRunning` at once), stopped, waited on and
-//! kept across restarts. Each runs in its own worktree, `home/worktrees/<job id>`, with its agent
-//! and the repository's check in the job sandbox (`sandbox`).
+//! kept across restarts, each in its own worktree, `home/worktrees/<job id>`. The owner's own
+//! Claude Code jobs (and Codex's in Bypass, on macOS) run in the own lane under the CLI's sandbox;
+//! another Obi's work, untrusted work and the rest stay in Oby's box (docs/contracts/lanes.md).
 //!
-//! Two kinds of job run here. The owner's own work (`POST /v1/jobs`): a branch from the base, rounds
-//! of the agent and the check, commits counted, then published (crate::publish) and its pull
-//! request followed (crate::github). And a review another Obi asked for
-//! ([`Jobs::start_obi_review`]): a fresh worktree detached at the request's commit, the request
-//! quoted as data, the agent reading only, the check in the sandbox, a typed result body.
+//! It owns each job's status and side fields, its task chain and the in-memory `State` sets, and
+//! saves jobs through crate::store; it never writes a conversation, the vault or the inbox's files
+//! (docs/ARCHITECTURE.md, "State ownership"). Two kinds of job: the owner's own (`POST /v1/jobs`),
+//! and a review another Obi asked for ([`Jobs::start_obi_review`]), its agent reading only.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;

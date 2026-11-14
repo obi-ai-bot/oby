@@ -1,6 +1,8 @@
 //! A job: one piece of work, where it runs and how it went (docs/runner-api.md, "Job"), as obid
 //! keeps it and as the apps read it. The JSON carries every key the Swift runner's does
 //! (Runner/API.swift, `JobJSON`), null where nothing is known, plus obid's own `obi` and `worktree`.
+//! It owns the `Job` type and what a job decides from itself alone (`Job::note_mark`); it never
+//! saves a job, sets its status or runs anything (docs/ARCHITECTURE.md, "State ownership").
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

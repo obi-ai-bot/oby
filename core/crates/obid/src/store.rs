@@ -1,5 +1,7 @@
 //! Where obid keeps its jobs: one JSON file per job in `home/jobs/` (0600), written whole and
-//! renamed into place, so a crash leaves the old version or the new one, never half of one.
+//! renamed into place, so a crash leaves the old version or the new one, never half of one. It owns
+//! the files, never what's in them: it decides no status and changes no field of the job it's
+//! handed (docs/ARCHITECTURE.md, "State ownership").
 
 use std::path::{Path, PathBuf};
 

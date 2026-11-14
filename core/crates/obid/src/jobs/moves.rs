@@ -1,6 +1,8 @@
 //! Moving a job to another tool, account or model: `POST /v1/jobs/{id}/move` (LIMITS-16,
 //! docs/contracts/account-limits.md) and `oby_change_job`. The worktree and branch stay; a job that
-//! has run goes on in a new session there, told what it's taking over ([`carry_over`]).
+//! has run goes on in a new session there, told what it's taking over ([`carry_over`]). It owns a
+//! job's tool, account and model, its `moves` and its handoff, and ends a limit wait; it never
+//! writes the job's branch, worktree or status (docs/ARCHITECTURE.md, "State ownership").
 
 use super::*;
 
