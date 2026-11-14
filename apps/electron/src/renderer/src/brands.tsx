@@ -8,7 +8,8 @@
 // are drawn in white.
 
 type Part = { d: string; fill: string; transform?: string };
-export type Brand = { viewBox: string; parts: Part[] };
+// letter: drawn on the mark in white (lettered, below)
+export type Brand = { viewBox: string; parts: Part[]; letter?: string };
 
 const WHITE = '#f4f4f2';
 
@@ -61,16 +62,23 @@ export const BRANDS = {
       { fill: '#ffffff', d: 'M6.6 8h6.8A2.1 2.1 0 0 1 15.5 10.1v3.8A2.1 2.1 0 0 1 13.4 16H6.6A2.1 2.1 0 0 1 4.5 13.9v-3.8A2.1 2.1 0 0 1 6.6 8ZM16.3 11.1l2.6-1.9c.4-.3.9 0 .9.5v4.6c0 .5-.5.8-.9.5l-2.6-1.9Z' },
     ],
   },
-  // an agent this build doesn't know (mock.ts, agentOf): a plain gray circle
+  // an agent this build doesn't know (mock.ts, agentOf): a plain gray circle, under its letter (lettered)
   circle: { viewBox: '0 0 24 24', parts: [{ fill: '#6e6e74', d: 'M12 4a8 8 0 1 1 0 16a8 8 0 1 1 0-16Z' }] },
   deskree: { viewBox: '0 2.5 24.546 18', parts: [{ fill: WHITE, d: "M15.5459 2.5C20.5163 2.50021 24.5459 6.52957 24.5459 11.5C24.5459 16.4704 20.5163 20.4998 15.5459 20.5H7.6416C7.03638 20.5 6.54609 20.0095 6.5459 19.4043V18.0049L13.9092 11.4609L6.5459 4.91504V3.5957C6.54609 2.99053 7.03638 2.5 7.6416 2.5H15.5459ZM6.54492 6.07031V17.0039L6.00586 17.543L0 11.5371L6.00586 5.53125L6.54492 6.07031Z" }] },
 } satisfies Record<string, Brand>;
 
-// mono: drawn in the surrounding text colour instead of the brand's own
+// An agent this build doesn't know (mock.ts, agentOf): the gray circle with its id's first letter
+// (the owner's answer q022, docs/contracts/providers.md, PROVIDERS-5); an empty or missing id, none
+export const lettered = (id: string | undefined): Brand => ({ ...BRANDS.circle, letter: (id ?? '').charAt(0).toUpperCase() });
+
+// mono: drawn in the surrounding text colour instead of the brand's own (a lettered mark keeps its
+// gray, or its letter wouldn't show)
 export function BrandMark({ brand, size = 24, mono = false }: { brand: Brand; size?: number; mono?: boolean }) {
+  const own = !mono || brand.letter != null;
   return (
     <svg width={size} height={size} viewBox={brand.viewBox} aria-hidden="true">
-      {brand.parts.map((p, i) => <path key={i} d={p.d} fill={mono ? 'currentColor' : p.fill} transform={p.transform} />)}
+      {brand.parts.map((p, i) => <path key={i} d={p.d} fill={own ? p.fill : 'currentColor'} transform={p.transform} />)}
+      {brand.letter && <text x="12" y="12" textAnchor="middle" dominantBaseline="central" fontSize="14" fontWeight="600" fill={WHITE}>{brand.letter}</text>}
     </svg>
   );
 }
