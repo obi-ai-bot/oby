@@ -23,7 +23,7 @@ use tokio::sync::{Notify, watch};
 use crate::agent::{self, Answer, Event as AgentEvent, Launch, Ruling, Tool};
 use crate::config::{Config, Repo};
 use crate::events::Events;
-use crate::job::{Job, JobArtifact, ObiRef, Phase, Status, Waiting};
+use crate::job::{EndKind, Ended, Job, JobArtifact, ObiRef, Phase, Status, Waiting, transition};
 use crate::limits::holds::Work;
 use crate::permissions::{self, Call, Decision, Mode, Permission, Rule};
 use crate::process::{self, Signal};
@@ -509,6 +509,57 @@ enum End {
     Asked(permissions::QuestionCall),
 }
 
+impl End {
+    /// This end as the lifecycle hears it ([`crate::job::Command::RunEnded`]), with `review` as
+    /// another Obi's review result and `at` when it ended.
+    fn ended(&self, review: Option<Value>, at: i64) -> Ended {
+        let (kind, reason, next, resumes) = match self {
+            End::Failed(why) => {
+                let next = Some(crate::job::TRY_AGAIN);
+                (EndKind::Failed, why.clone(), next, None)
+            }
+            End::NeedsYou {
+                reason,
+                next,
+                resumes,
+            } => (EndKind::NeedsYou, reason.clone(), *next, *resumes),
+            End::AccountLimit { reason, .. } => (EndKind::AccountLimit, reason.clone(), None, None),
+            End::Asked(_) => (EndKind::Asked, String::new(), None, None),
+        };
+        Ended {
+            kind,
+            reason,
+            next,
+            resumes,
+            review,
+            at,
+        }
+    }
+}
+
+/// [`Jobs::apply`], where `Command` is the lifecycle's rather than `std::process`'s.
+mod lifecycle {
+    use super::Jobs;
+    use crate::job::{Command, Job, Refused, transition};
+
+    impl Jobs {
+        /// Runs the lifecycle's `cmd` on job `id` and keeps what it decided, as [`Jobs::update`]
+        /// does. `None` for a job obid doesn't have.
+        pub(super) fn apply(&self, id: &str, cmd: Command) -> Option<Result<Job, Refused>> {
+            let mut refused = None;
+            let job = self.update_after(
+                id,
+                |_| (),
+                |job, ()| match transition(job, &cmd) {
+                    Ok(change) => change.apply(job),
+                    Err(why) => refused = Some(why),
+                },
+            )?;
+            Some(refused.map_or(Ok(job), Err))
+        }
+    }
+}
+
 impl From<String> for End {
     fn from(why: String) -> End {
         End::Failed(why)
@@ -871,10 +922,7 @@ pub enum SettingsError {
     Unkept(std::io::Error),
 }
 
-/// Why a job couldn't be made: a person can read it (`422`).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct Refused(pub String);
+pub use crate::job::Refused;
 
 struct State {
     jobs: HashMap<String, Job>,
@@ -4359,7 +4407,9 @@ impl Jobs {
                 job.ran_secs = None;
                 job.budget_from = Some(spent(&job));
             }
-            next_round(&mut job);
+            if let Ok(change) = transition(&job, &crate::job::Command::NextRound) {
+                change.apply(&mut job);
+            }
             job.asked = true;
             self.keep(&mut state, id, job.revised()).ok()?
         };
@@ -7125,65 +7175,18 @@ impl Jobs {
                     }
                     _ => None,
                 };
-                self.update(id, |job| {
-                    if let Some(failover) = failover.as_ref().filter(|_| job.status.is_active()) {
-                        return failover.apply(job, self);
-                    }
-                    if let Some(at) = resume_at {
-                        account_limits::start_wait(job, at);
-                        return;
-                    }
-                    let (reason, next, resumes) = match &end {
+                if let End::AccountLimit { reason, .. } = &end {
+                    self.update(id, |job| match (&failover, resume_at) {
+                        (Some(failover), _) if job.status.is_active() => failover.apply(job, self),
+                        (_, Some(at)) => account_limits::start_wait(job, at),
                         // It moved or waits (LIMITS-15), or Stop came as it ended (LIMITS-6).
-                        End::AccountLimit { reason, .. } => {
-                            return tracing::info!("job {id}: {reason}");
-                        }
-                        End::Failed(why) => (why.clone(), Some(crate::job::TRY_AGAIN), None),
-                        End::NeedsYou {
-                            reason,
-                            next,
-                            resumes,
-                        } => (reason.clone(), *next, *resumes),
-                        // Only a stop or a shutdown ends a run that moved on, and one that asked
-                        // waits: both handled above.
-                        End::Asked(_) => (
-                            "It stopped while moving to another account.".into(),
-                            Some(crate::job::TRY_AGAIN),
-                            None,
-                        ),
-                    };
-                    // Needing the owner, with a session to pick up, at the cap or with its handoff
-                    // to write (LIMITS-17): the agent's summary stays (`summaries` has every round's),
-                    // and why it stopped is said apart. Else failed, its summary why; with a
-                    // session, a failure keeps Try again (RECOVERY-14).
-                    let owners_failed = matches!(end, End::Failed(_)) && job.obi.is_none();
-                    let needs_you = matches!(end, End::AccountLimit { .. })
-                        || moves::hands_over(job)
-                        || (matches!(end, End::NeedsYou { .. })
-                            && (job.session.is_some() || job.recovery.spent()))
-                        || (owners_failed && job.session.is_some());
-                    if needs_you {
-                        job.status = Status::Interrupted;
-                        if job.summary.trim().is_empty() {
-                            job.summary = reason.clone();
-                        }
-                        job.next_step = next.map(str::to_owned);
-                        job.resumes_at = resumes;
-                    } else {
-                        job.status = Status::Failed;
-                        job.summary = reason.clone();
-                        job.next_step = None;
-                        job.resumes_at = None;
-                    }
-                    job.reason = Some(reason);
-                    job.asked = false;
-                    job.publish_step = None;
-                    job.step = String::new();
-                    job.finished = Some(obi_protocol::time::now());
-                    if job.obi.is_some() {
-                        job.review_result = review;
-                    }
-                });
+                        _ => tracing::info!("job {id}: {reason}"),
+                    });
+                } else {
+                    use crate::job::Command;
+                    let at = obi_protocol::time::now();
+                    self.apply(id, Command::RunEnded(end.ended(review, at)));
+                }
                 // The `stalled` event (docs/runner-api.md): the job stays on its own card.
                 if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
                     self.events.send("stalled", job.to_json());
@@ -11780,7 +11783,9 @@ impl Jobs {
         self.update(id, |job| {
             job.heard.push(review::round_prompt(review.round));
             job.replies.push((review.round, String::new()));
-            next_round(job);
+            if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                change.apply(job);
+            }
             job.step = "Working on Oby's review".into();
         });
         self.review_items(id, None);
@@ -12049,7 +12054,9 @@ impl Jobs {
             if matches!(quoted, Some(Ok(()))) && job.status == Status::Done {
                 job.heard.push(review::round_prompt(round));
                 job.replies.push((round, String::new()));
-                next_round(job);
+                if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                    change.apply(job);
+                }
                 job.step = "Working on Oby's review".into();
             }
         });
@@ -14129,32 +14136,6 @@ fn without_project_instructions(
         }
         Tool::Cursor => {}
     }
-}
-
-/// One more round of an ended job's session: queued for its work again, the round counted, and
-/// how it last ended gone (Try again, and Oby's review asking for changes).
-fn next_round(job: &mut Job) {
-    job.status = Status::Queued;
-    job.phase = Some(Phase::Work);
-    job.round = Some(job.current_round() + 1);
-    if let Some(rounds) = job.rounds.filter(|r| *r > 1) {
-        job.rounds = Some(rounds + 1);
-    }
-    job.finished = None;
-    job.dismissed = None;
-    job.archived = None;
-    job.limit = None;
-    job.reason = None;
-    job.stopped_by = None;
-    job.next_step = None;
-    (job.resumes_at, job.unjudged) = (None, None);
-    job.account_limit_blocked = false;
-    job.account_limit_episode = None;
-    job.account_limit_nonce = None;
-    job.account_limit_reset = None;
-    job.account_limit_choice = None;
-    job.stalled = None;
-    job.waiting = None;
 }
 
 /// A question its agent asked the owner and their answer, as [`Job::said`] keeps them.
@@ -22826,5 +22807,272 @@ mod tests {
             "{:?}",
             author.review_error
         );
+    }
+
+    /// A job at work for JOBSTATE-3: running, with a step, a publish step and an ask under way.
+    fn at_work(session: Option<&str>) -> Job {
+        let mut job = Job::new(
+            "j".into(),
+            "o/r".into(),
+            "fix".into(),
+            "Fix it".into(),
+            "claude".into(),
+            "a".into(),
+        );
+        job.status = Status::Running;
+        job.step = "Working".into();
+        job.summary = "Did half of it.".into();
+        job.session = session.map(str::to_owned);
+        job.publish_step = Some(crate::publish::Step::Push);
+        job.asked = true;
+        job.next_step = Some("stale".into());
+        job.resumes_at = Some(1);
+        job
+    }
+
+    /// What JOBSTATE-3 expects of a job an end settled: its status, summary, next step and resume.
+    type Settled = (Status, String, Option<&'static str>, Option<i64>);
+
+    /// JOBSTATE-3 (docs/contracts/job-state.md): how a run that didn't end done leaves its job, by
+    /// its end's kind; every other field stays as it was.
+    #[test]
+    fn jobstate_3_end_state_by_end_kind() {
+        let why = "It broke.";
+        let failed = || End::Failed(why.into());
+        let needs_you = || End::NeedsYou {
+            reason: why.into(),
+            next: Some(crate::job::ONE_MORE_ROUND),
+            resumes: Some(42),
+        };
+        let asked = "It stopped while moving to another account.";
+        let handing = |mut job: Job| {
+            job.heard.push(format!("{}Oby.", moves::TAKING_OVER));
+            job
+        };
+        let spent = |mut job: Job| {
+            job.recovery.tries = crate::job::Recovery::ALL_TRIES;
+            job
+        };
+        let theirs = |mut job: Job| {
+            job.obi = Some(ObiRef {
+                correlation_id: "c".into(),
+                from: "f".into(),
+                from_owner: "o".into(),
+                request_id: "r".into(),
+            });
+            job
+        };
+        let review = Some(json!({"verdict": "failed"}));
+        let interrupted = |summary: &str, next: Option<&'static str>, resumes: Option<i64>| {
+            (Status::Interrupted, summary.to_owned(), next, resumes)
+        };
+        let failed_end = || (Status::Failed, why.to_owned(), None, None);
+        #[rustfmt::skip]
+        let cases: Vec<(&str, Job, End, Settled)> = vec![
+            ("failed with a session", at_work(Some("s")), failed(),
+                interrupted("Did half of it.", Some(crate::job::TRY_AGAIN), None)),
+            ("failed with no session", at_work(None), failed(), failed_end()),
+            ("needs you with a session", at_work(Some("s")), needs_you(),
+                interrupted("Did half of it.", Some(crate::job::ONE_MORE_ROUND), Some(42))),
+            ("needs you with no session and tries left", at_work(None), needs_you(), failed_end()),
+            ("needs you with no session and its tries spent", spent(at_work(None)), needs_you(),
+                interrupted("Did half of it.", Some(crate::job::ONE_MORE_ROUND), Some(42))),
+            ("asked", at_work(Some("s")), End::Asked(Default::default()),
+                (Status::Failed, asked.to_owned(), None, None)),
+            ("asked while handing over", handing(at_work(None)), End::Asked(Default::default()),
+                interrupted("Did half of it.", Some(crate::job::TRY_AGAIN), None)),
+            ("failed with no session while handing over", handing(at_work(None)), failed(),
+                interrupted("Did half of it.", Some(crate::job::TRY_AGAIN), None)),
+            ("another Oby's, failed with a session", theirs(at_work(Some("s"))), failed(), failed_end()),
+        ];
+        for (case, before, end, (status, summary, next, resumes)) in cases {
+            let mut job = before.clone();
+            transition(
+                &job,
+                &crate::job::Command::RunEnded(
+                    end.ended(review.clone(), obi_protocol::time::now()),
+                ),
+            )
+            .unwrap()
+            .apply(&mut job);
+            assert!(job.finished.is_some(), "{case}: {job:?}");
+            let reason = match &end {
+                End::Asked(_) => asked,
+                _ => why,
+            };
+            let mut expected = before.clone();
+            expected.status = status;
+            expected.summary = summary;
+            expected.next_step = next.map(str::to_owned);
+            expected.resumes_at = resumes;
+            expected.reason = Some(reason.into());
+            expected.asked = false;
+            expected.publish_step = None;
+            expected.step = String::new();
+            expected.finished = job.finished;
+            if before.obi.is_some() {
+                expected.review_result = review.clone();
+            }
+            assert_eq!(job, expected, "{case}");
+        }
+        // An empty summary takes the reason, needing the owner too.
+        let mut job = at_work(Some("s"));
+        job.summary = " ".into();
+        transition(
+            &job,
+            &crate::job::Command::RunEnded(failed().ended(None, obi_protocol::time::now())),
+        )
+        .unwrap()
+        .apply(&mut job);
+        assert_eq!(
+            (job.status, job.summary.as_str()),
+            (Status::Interrupted, why)
+        );
+        // A limit's end leaves the job as it was: it moved or waits.
+        let before = at_work(Some("s"));
+        let mut job = before.clone();
+        let limit = End::AccountLimit {
+            reason: "Full.".into(),
+            reset: Some(7),
+        };
+        transition(
+            &job,
+            &crate::job::Command::RunEnded(limit.ended(review.clone(), obi_protocol::time::now())),
+        )
+        .unwrap()
+        .apply(&mut job);
+        assert_eq!(job, before);
+    }
+
+    /// JOBSTATE-7 (docs/contracts/job-state.md): `next_round` sets and clears exactly its fields,
+    /// and leaves the rest of the job, its session and branch among them, alone.
+    #[test]
+    fn jobstate_7_next_round_sets_and_clears_exactly_its_fields() {
+        for (rounds, counted) in [(None, None), (Some(1), Some(1)), (Some(2), Some(3))] {
+            let mut before = Job::new(
+                "j".into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            before.status = Status::Failed;
+            before.phase = Some(Phase::Check);
+            before.round = Some(4);
+            before.rounds = rounds;
+            before.finished = Some(10);
+            before.dismissed = Some(11);
+            before.archived = Some(12);
+            before.limit = Some("The turn limit.".into());
+            before.reason = Some("It broke.".into());
+            before.stopped_by = Some("you".into());
+            before.next_step = Some(crate::job::TRY_AGAIN.into());
+            before.resumes_at = Some(13);
+            before.unjudged = Some(crate::job::Unjudged {
+                tries: 1,
+                next: Some(14),
+                why: "No runner.".into(),
+            });
+            before.account_limit_blocked = true;
+            before.account_limit_episode = Some("e".into());
+            before.account_limit_nonce = Some("n".into());
+            before.account_limit_reset = Some(15);
+            before.account_limit_choice = Some(crate::account_limits::Choice::Pending);
+            before.stalled = Some(crate::job::Stalled {
+                why: "quiet".into(),
+                text: "Quiet.".into(),
+                at: 16,
+                round: 4,
+                branch: "oby/fix".into(),
+                commit: None,
+                commits: 1,
+                session: true,
+                note: "Note.".into(),
+                note_by: "obid".into(),
+            });
+            before.waiting = Some(Waiting {
+                kind: "room".into(),
+                text: "Waiting.".into(),
+                reserved: None,
+                tool: None,
+            });
+            // Fields it must leave alone.
+            before.session = Some("s".into());
+            before.branch = "oby/fix".into();
+            before.summary = "Did half of it.".into();
+            before.heard = vec!["Go on.".into()];
+            before.commits = Some(2);
+            before.step = "Working".into();
+            before.asked = true;
+            before.recovery.tries = 3;
+            before.recovery.cut = Some("went down".into());
+            let mut job = before.clone();
+            transition(&job, &crate::job::Command::NextRound)
+                .unwrap()
+                .apply(&mut job);
+            let mut expected = before.clone();
+            expected.status = Status::Queued;
+            expected.phase = Some(Phase::Work);
+            expected.round = Some(5);
+            expected.rounds = counted;
+            expected.finished = None;
+            expected.dismissed = None;
+            expected.archived = None;
+            expected.limit = None;
+            expected.reason = None;
+            expected.stopped_by = None;
+            expected.next_step = None;
+            expected.resumes_at = None;
+            expected.unjudged = None;
+            expected.account_limit_blocked = false;
+            expected.account_limit_episode = None;
+            expected.account_limit_nonce = None;
+            expected.account_limit_reset = None;
+            expected.account_limit_choice = None;
+            expected.stalled = None;
+            expected.waiting = None;
+            assert_eq!(job, expected, "rounds {rounds:?}");
+        }
+    }
+
+    /// JOBSTATE-8 (docs/contracts/job-state.md): `end_done` leaves a job that is no longer at work,
+    /// or whose round moved past the worker's, as it was, and doesn't run its change.
+    #[test]
+    fn jobstate_8_end_done_leaves_an_inactive_job() {
+        let root = std::env::temp_dir().join(format!("obid-end-done-{}", uuid::Uuid::new_v4()));
+        let make = |id: &str, status: Status, round: u32| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "a".into(),
+            );
+            job.status = status;
+            job.round = Some(round);
+            job.step = "Working".into();
+            job.commits = Some(1);
+            job.finished = Some(10);
+            job
+        };
+        let stopped = make("stopped", Status::Stopped, 1);
+        let moved_on = make("moved", Status::Done, 2);
+        let jobs = jobs_with_kept(&root.join("home"), &[&stopped, &moved_on]);
+        jobs.update("moved", |job| job.status = Status::Queued);
+        for id in ["stopped", "moved"] {
+            let before = jobs.get(id).unwrap();
+            let mut ran = false;
+            jobs.end_done(id, 1, 5, Some(5), |_| ran = true);
+            let after = jobs.get(id).unwrap();
+            assert!(!ran, "{id}");
+            assert_eq!(
+                (after.status, after.commits, after.finished, &after.step),
+                (before.status, before.commits, before.finished, &before.step),
+                "{id}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

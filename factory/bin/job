@@ -23,7 +23,7 @@ Usage:
   job feedback <job>             needs-human → build, with your feedback (stdin) as feedback-<k>.md
   job reject <job>               needs-info or needs-human → rejected, with your reason (stdin) as rejection.md
   job agents <job> <json>        record the routed agent set (called by factory/bin/route)
-  job sync <job>                 refresh reviews, gate and cost from the job's files
+  job sync <job>                 refresh reviews, gate, proofs and cost from the job's files
   job summary [<job>...]         table of jobs: task, stage, PR, cost, time
   job clean                      free disk: remove finished jobs' worktrees, prune the shared Cargo folder
 
@@ -31,6 +31,7 @@ Usage:
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -59,7 +60,8 @@ TRANSITIONS = {
     "needs-info": {"intake", "rejected"},
     "spec": {"build"},
     "build": {"gate", "needs-human"},
-    "gate": {"review", "build", "needs-human"},
+    "gate": {"prove", "review", "build", "needs-human"},
+    "prove": {"review", "build", "needs-human"},
     "review": {"approve", "build", "needs-human"},
     "approve": {"merging", "needs-human"},
     "merging": {"needs-human", "queued"},
@@ -189,8 +191,19 @@ def section(path, heading):
     return m.group(1).strip() if m else None
 
 
+def proofs_hash(spec):
+    """The sha256 of spec.md's `## Proofs` section, or `none` without one: factory/bin/prove checks it is the one
+    recorded when the job left spec."""
+    body = section(spec, "Proofs") if spec.exists() else None
+    return hashlib.sha256(body.encode()).hexdigest() if body is not None else "none"
+
+
 def round_dir(job, n=None):
     return job_dir(job["id"]) / f"round-{n or job['round']}"
+
+
+def surfaces(job):
+    return (job.get("intake") or {}).get("surfaces") or []
 
 
 def reviewers(job):
@@ -381,6 +394,7 @@ def sync(job):
         rd = round_dir(job)
         gate = header(rd / "checks.md").get("GATE") if (rd / "checks.md").exists() else None
         job["gate"] = gate
+        job["proofs"] = header(rd / "proofs.md").get("PROOFS") if (rd / "proofs.md").exists() else None
         if job["agents"] and job["stage"] in {"review", "approve", "merging", "merged", "needs-human"}:
             job["reviews"] = {}
             for r in reviewers(job):
@@ -437,6 +451,7 @@ def next_round(job):
     job["round"] += 1
     round_dir(job).mkdir(exist_ok=True)
     job["gate"] = None
+    job["proofs"] = None
     job["reviews"] = {}
 
 
@@ -479,6 +494,7 @@ def advance(job, stage):
 
     elif old == "spec":
         require((d / "spec.md").exists(), "spec.md doesn't exist")
+        job["proofs_hash"] = proofs_hash(d / "spec.md")
         next_round(job)
 
     elif old == "build" and stage == "gate":
@@ -509,9 +525,13 @@ def advance(job, stage):
         h = header(checks)
         require(h.get("COMMIT") == git(job, "rev-parse", "HEAD").stdout.strip(),
                 "checks.md was written for another commit; run the gate again")
-        if stage == "review":
+        if stage in {"prove", "review"}:
             require(h.get("GATE") == "PASS", "the gate didn't pass")
-            job["reviews"] = {r: "pending" for r in reviewers(job)}
+            require(stage == "prove" or "proofs" not in surfaces(job),
+                    f"{job['id']} has the proofs surface: `job advance {job['id']} prove`, "
+                    f"then factory/bin/prove {job['id']}")
+            if stage == "review":
+                job["reviews"] = {r: "pending" for r in reviewers(job)}
         else:
             require(h.get("GATE") == "FAIL", "the gate passed")
             last = job["round"] >= job["round_limit"]
@@ -520,6 +540,29 @@ def advance(job, stage):
             if last:
                 escalate(job, f"The gate failed in round {job['round']}, the last allowed round. "
                               f"See round-{job['round']}/checks.md.")
+            else:
+                next_round(job)
+
+    elif old == "prove":
+        checks, proofs = round_dir(job) / "checks.md", round_dir(job) / "proofs.md"
+        commit = header(proofs).get("COMMIT") if proofs.exists() else None
+        require(commit and commit == (header(checks).get("COMMIT") if checks.exists() else None)
+                and commit == git(job, "rev-parse", "HEAD").stdout.strip(),
+                f"round-{job['round']}/proofs.md is missing or for another commit: "
+                f"run factory/bin/prove {job['id']} again")
+        verdict = header(proofs).get("PROOFS")
+        if stage == "review":
+            passed = {"PASS", "ADVISORY-FAIL"} | ({"SKIPPED"} if "proofs" not in surfaces(job) else set())
+            require(verdict in passed, f"proofs.md says PROOFS: {verdict}, not {' or '.join(sorted(passed))}")
+            job["reviews"] = {r: "pending" for r in reviewers(job)}
+        else:
+            require(verdict in {"FAIL", "TIMEOUT"}, f"proofs.md says PROOFS: {verdict}, not FAIL or TIMEOUT")
+            last = job["round"] >= job["round_limit"]
+            require(last == (stage == "needs-human"),
+                    f"round {job['round']} of {job['round_limit']}: go to {'needs-human' if last else 'build'}")
+            if last:
+                escalate(job, f"Proofs failed in round {job['round']}, the last allowed round. "
+                              f"See round-{job['round']}/proofs.md.")
             else:
                 next_round(job)
 
@@ -1191,7 +1234,8 @@ def main(argv):
             job = sync(resolve(args[0]))
             save(job)
             reviews = " ".join(f"{k}:{v}" for k, v in job["reviews"].items())
-            print(f"{job['id']}: {job['stage']} round {job['round']} gate {job['gate'] or '-'} {reviews}".rstrip())
+            print(f"{job['id']}: {job['stage']} round {job['round']} gate {job['gate'] or '-'} "
+                  f"proofs {job.get('proofs') or '-'} {reviews}".rstrip())
         elif cmd == "summary":
             cmd_summary(args)
         elif cmd == "clean" and not args:

@@ -3,11 +3,13 @@ import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { keptKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
-import { NotThisKey, join, joinWarning, keepMembership, leave, parseInvite } from '../shared/sphere';
+import { takeInput } from './words';
+import { safeInteger } from '../shared/decode';
+import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, parseInvite, readPolicy, type PolicyAnswer } from '../shared/sphere';
 
 // Joining an Obysphere by a private link (docs/contracts/obysphere.md). The owner key, Ed25519, is
 // made here in main and kept as the device key is (device.ts): it never leaves main, and the page
-// can't ask it to sign anything. A link joins only on the owner's click in this app's own dialog;
+// can't hand it anything to sign. A link joins only on the owner's click in this app's own dialog;
 // the Obysphere's join page's Open in Oby (oby://join/<host>#…) is how one arrives.
 // ponytail: one owner key per Mac, as the Swift app's; the same person on a second Mac is
 // another key, which a Sphere refuses for the same owner (SPHERE-2's words say so).
@@ -81,4 +83,16 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       return why;
     }
   }, 'Not this app’s page.');
+
+  // The Obysphere's rules (docs/contracts/sphere-policy.md): read, and the members rule added at the
+  // version the page read. The page sends only that version; main reads the rules again, signs and
+  // writes. It answers a PolicyAnswer, never a token, and opens no dialog: the page says why.
+  const failed = (why: string): PolicyAnswer => ({ sphere: null, policy: null, admin: false, refused: 'failed', why });
+  const policy = (f: () => Promise<PolicyAnswer>) => f().catch((e) => failed(e instanceof Error ? e.message : String(e)));
+  ipc(trusted).handle('sphere-policy', [], () => policy(() => readPolicy(obid, ownerKey)), null);
+  // A write, with the owner key's admin token, only right after a click or key main saw itself
+  // (words.ts, takeInput), one write each, as Publish: a script that took the page over can't add
+  // the rule by itself (POLICY-4)
+  ipc(trusted).handle('sphere-set-policy', [safeInteger], async (_e, version) => (
+    takeInput() ? policy(() => addStarterRule(obid, ownerKey, version)) : failed('Adding the rule takes your own click.')), null);
 }

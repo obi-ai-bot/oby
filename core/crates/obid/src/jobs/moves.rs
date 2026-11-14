@@ -2,21 +2,18 @@
 //! docs/contracts/account-limits.md) and `oby_change_job`. The worktree and branch stay; a job that
 //! has run goes on in a new session there, told what it's taking over ([`carry_over`]). It owns a
 //! job's tool, account and model, its `moves` and its handoff, and ends a limit wait; it never
-//! writes the job's branch or worktree, and queues a running job it moves only through `next_round`
-//! (jobs.rs; docs/ARCHITECTURE.md, "State ownership").
+//! writes the job's branch or worktree, and queues a running job it moves only through the
+//! lifecycle's `Command::NextRound` (job/lifecycle.rs; docs/ARCHITECTURE.md, "State ownership").
 
 use super::*;
 
 /// Who stopped a running job to move it: its run starts over on the new choice.
 const MOVING: &str = "Moved to another account";
 
-/// How the note a new session hears first begins ([`handoff`]): its handoff is written then.
-pub(super) const TAKING_OVER: &str = "You are taking over this task from ";
-
-/// Whether `job` waits to hand its work to a new session ([`handoff`]) whose handoff isn't written.
-pub(super) fn hands_over(job: &Job) -> bool {
-    job.heard.iter().any(|w| w.starts_with(TAKING_OVER))
-}
+/// Where jobs.rs's tests still find it.
+#[cfg(test)]
+pub(super) use crate::job::TAKING_OVER;
+use crate::job::hands_over;
 
 /// At most this many of the old session's entries, and bytes of them, go in a handoff (LIMITS-17).
 const HANDOFF_ENTRIES: usize = 200;
@@ -178,7 +175,9 @@ impl Jobs {
                 if job.stopped_by.as_deref() == Some(MOVING) {
                     let (round, rounds) = (job.round, job.rounds);
                     hear(job, crate::brain::actions::TRY_AGAIN);
-                    next_round(job);
+                    if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                        change.apply(job);
+                    }
                     (job.round, job.rounds) = (round, rounds);
                 }
             })?;

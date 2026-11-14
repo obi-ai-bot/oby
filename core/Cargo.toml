@@ -71,6 +71,7 @@ strip = true
 # Denied, and allowed on one function only: `process::may_write`, macOS's `sandbox_check`, which
 # no safe binding has (LANES-16, the owner's decision UNSAFE-1).
 unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

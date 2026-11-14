@@ -60,6 +60,20 @@ a command to run, a page and what it should show, or a file that should contain
 something. The builder tests against this list and the approver checks it, so
 every item must be checkable by someone who only has the repo.
 
+## Proofs
+Only for a job whose intake.md `SURFACES` holds `proofs`. One entry per property:
+
+### PROOF-<n>
+- Property: <one sentence>
+- Scenario: <AREA-n>
+- Crate: `<crate>`
+- Harness: `<harness fn name>`
+- Assumes: none | `<expr>` `<expr>` ...
+- Unwind: none | <positive integer>
+- Broken file: `<path from the repository root>`
+- Broken old: `<one existing line of that file>`
+- Broken new: `<the line that replaces it>`
+
 ## Out of scope
 What a reasonable builder might be tempted to do but must not, including
 everything intake left out.
@@ -96,5 +110,25 @@ The approver escalates to a human when one of these is a product decision.
   runner and the behaviour can be tested.
 - Never require a change to a file matching `protected_paths` in
   `factory/config.json`: the gate fails any branch that modifies one.
+- A job whose intake.md `SURFACES` holds `proofs` gets a `## Proofs` section,
+  one `### PROOF-<n>` entry per property, in exactly the shape above; its
+  parsing rules are in `docs/contracts/factory.md`, "The `## Proofs` format",
+  and `factory/bin/prove` reads it. Each entry names the acceptance scenario
+  it restates (`Scenario`), the crate and harness, the only `kani::assume`s
+  allowed (`Assumes`), the one unwind bound allowed (`Unwind`), and the broken
+  rule: a one-line change (`Broken file`, `Broken old`, `Broken new`) that
+  must turn the harness red. A job without the surface gets no `## Proofs`.
+- `Broken old` is a line the gated commit will hold exactly once: one that
+  exists at the base and that the Requirements keep, or one the Requirements
+  state verbatim.
+- Propose a property only on a function whose inputs and outputs are small
+  `Copy` types (enums, integers, bools). Where the decision is tangled with
+  `serde_json::Value`, a map, a `String` or a `Vec` (Kani doesn't end on
+  those), require splitting the decision from that payload first, as a
+  Requirement, or mark the property "not provable as designed" with the
+  reason under `## Assumptions`, with no `### PROOF` entry for it.
+- The section is fixed once the spec is written: `factory/bin/job` hashes it
+  when the job leaves `spec`, and `factory/bin/prove` fails a branch whose
+  section changed.
 
 When you're done, reply with one line: `SPEC: <short title>`.

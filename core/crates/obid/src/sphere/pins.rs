@@ -53,6 +53,9 @@ struct Kept {
     keys: BTreeMap<String, BTreeMap<String, String>>,
     /// The Obis known to seal.
     seals: BTreeSet<String>,
+    /// The owners whose changed key's card this owner cancelled: no card for them again until they
+    /// leave the Sphere and come back (SPHERE-8).
+    declined: BTreeSet<String>,
 }
 
 pub struct Pins {
@@ -256,6 +259,49 @@ impl Pins {
             .owners
             .get(owner)
             .is_some_and(|p| p.verified)
+    }
+
+    /// The fingerprint of `owner`'s changed key waiting for this owner's OK, if one does.
+    pub fn waiting(&self, owner: &str) -> Option<String> {
+        self.pins
+            .lock()
+            .unwrap()
+            .owners
+            .get(owner)
+            .and_then(|p| p.changed_to.as_deref().map(fingerprint))
+    }
+
+    /// Keeps that this owner cancelled `owner`'s changed key's card.
+    pub fn decline(&self, owner: &str) {
+        let mut kept = self.pins.lock().unwrap();
+        if kept.declined.insert(owner.to_owned()) {
+            let copy = kept.clone();
+            drop(kept);
+            self.save(&copy);
+        }
+    }
+
+    /// Whether this owner cancelled `owner`'s card since `owner` last left the Sphere.
+    pub fn declined(&self, owner: &str) -> bool {
+        self.pins.lock().unwrap().declined.contains(owner)
+    }
+
+    /// Forgets the cancels of the owners `left` says left the Sphere: a card can come again once
+    /// they're back.
+    pub fn forget_declined(&self, left: impl Fn(&str) -> bool) {
+        let mut kept = self.pins.lock().unwrap();
+        let before = kept.declined.len();
+        kept.declined.retain(|owner| !left(owner));
+        if kept.declined.len() != before {
+            let copy = kept.clone();
+            drop(kept);
+            self.save(&copy);
+        }
+    }
+
+    /// Every owner pinned, sorted: whoever obid ever trusted, members who left too.
+    pub fn owners(&self) -> Vec<String> {
+        self.pins.lock().unwrap().owners.keys().cloned().collect()
     }
 }
 

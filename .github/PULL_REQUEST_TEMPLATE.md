@@ -15,7 +15,7 @@
 - [ ] obid (`core/`)
 - [ ] the Electron app (`apps/electron`)
 - [ ] the iPhone and Watch apps, and what they decode from obid's API (add-only)
-- [ ] `docs/runner-api.md`
+- [ ] the API docs, `docs/api/<area>.md` (index `docs/runner-api.md`)
 - [ ] contracts in `docs/contracts/`
 - [ ] stored job and config files on disk
 - [ ] the check (`scripts/oby-check.sh`, `tools/oby-check-blok`, `factory/checks.sh`)

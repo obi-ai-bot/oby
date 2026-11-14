@@ -24,7 +24,6 @@ pub const KEPT_USES: usize = 500;
 /// How large the use log grows before it starts again, the one before kept as `uses.1.jsonl`.
 const USES_LOG_MAX: u64 = 4 << 20;
 const LONGEST: usize = 256 * 1024;
-pub(crate) const MCP_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_SESSION_EXPIRED: &str = "The connected server forgot this MCP session.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -327,22 +326,14 @@ impl Connections {
     }
 
     async fn handle(&self, id: &str, body: Value) -> Option<Value> {
-        let method = body.get("method")?.as_str()?;
-        let rpc_id = body.get("id").cloned().filter(|id| !id.is_null())?;
-        let params = body
-            .get("params")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        let (method, rpc_id, params) = crate::mcp::read(&body)?;
         let result = match method {
-            "initialize" => {
-                let asked = params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                json!({"protocolVersion": if MCP_VERSIONS.contains(&asked) { asked } else { MCP_VERSIONS[0] }, "capabilities":{"tools":{"listChanged":false}}, "serverInfo":{"name":"oby","version":crate::api::API_VERSION}, "instructions":"Oby's own server: oby_ask_owner, when listed, asks your user a question."})
-            }
-            "ping" => json!({}),
+            "initialize" => crate::mcp::hello(
+                &params,
+                "oby",
+                "Oby's own server: oby_ask_owner, when listed, asks your user a question.",
+            ),
+            "ping" => crate::mcp::ping(),
             "tools/list" => json!({"tools": self.tools(id).await}),
             "tools/call" => {
                 self.call(
@@ -355,13 +346,9 @@ impl Connections {
                 )
                 .await
             }
-            _ => {
-                return Some(
-                    json!({"jsonrpc":"2.0","id":rpc_id,"error":{"code":-32601,"message":format!("Oby's broker doesn't answer {method}.")}}),
-                );
-            }
+            _ => return Some(crate::mcp::unknown(rpc_id, method, "Oby's broker")),
         };
-        Some(json!({"jsonrpc":"2.0","id":rpc_id,"result":self.clean(result)}))
+        Some(crate::mcp::ok(rpc_id, result))
     }
 
     async fn tools(&self, id: &str) -> Vec<Value> {
@@ -455,14 +442,14 @@ impl Connections {
                 job,
                 c,
                 "initialize",
-                Some(json!({"jsonrpc":"2.0","id":self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),"method":"initialize","params":{"protocolVersion":MCP_VERSIONS[0],"capabilities":{},"clientInfo":{"name":"oby","version":crate::api::API_VERSION}}})),
+                Some(json!({"jsonrpc":"2.0","id":self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),"method":"initialize","params":{"protocolVersion":crate::mcp::VERSIONS[0],"capabilities":{},"clientInfo":{"name":"oby","version":crate::api::API_VERSION}}})),
             )
             .await?
             .ok_or_else(|| format!("{} didn't answer.", c.name))?;
         let version = init
             .get("protocolVersion")
             .and_then(Value::as_str)
-            .unwrap_or(MCP_VERSIONS[0])
+            .unwrap_or(crate::mcp::VERSIONS[0])
             .to_owned();
         {
             let mut upstreams = self.upstreams.lock().await;
@@ -685,24 +672,6 @@ impl Connections {
         failure(format!(
             "There's no tool named {name}: connected apps went with the strip to a dispatcher."
         ))
-    }
-
-    pub(crate) fn clean(&self, value: Value) -> Value {
-        fn scrub(value: Value, secrets: &crate::secrets::Secrets) -> Value {
-            match value {
-                Value::String(s) => Value::String(secrets.redact(&s)),
-                Value::Array(xs) => {
-                    Value::Array(xs.into_iter().map(|x| scrub(x, secrets)).collect())
-                }
-                Value::Object(xs) => Value::Object(
-                    xs.into_iter()
-                        .map(|(k, v)| (secrets.redact(&k), scrub(v, secrets)))
-                        .collect(),
-                ),
-                x => x,
-            }
-        }
-        scrub(value, &crate::secrets::known())
     }
 }
 

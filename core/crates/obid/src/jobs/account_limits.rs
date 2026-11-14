@@ -108,7 +108,9 @@ impl Failover {
         carry_over(job, *tool, account, &tuning, &offered, from, said);
         let (round, rounds) = (job.round, job.rounds);
         hear(job, crate::brain::actions::TRY_AGAIN);
-        next_round(job);
+        if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+            change.apply(job);
+        }
         (job.round, job.rounds, job.publish_step) = (round, rounds, None);
         job.step = line.clone();
         jobs.forget_moved_login(&job.id);
@@ -180,7 +182,9 @@ impl Jobs {
                         waits = waits_on(job, decision) && job.account_limit_episode.is_some();
                         if waits {
                             let (round, rounds) = (job.round, job.rounds);
-                            next_round(job);
+                            if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                                change.apply(job);
+                            }
                             (job.round, job.rounds) = (round, rounds);
                             wait_for_reset(job, at);
                         }
@@ -327,7 +331,9 @@ impl Jobs {
                 if waits(job) {
                     // The same round going on, as after a restart (RECOVERY-2).
                     let (round, rounds) = (job.round, job.rounds);
-                    next_round(job);
+                    if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                        change.apply(job);
+                    }
                     (job.round, job.rounds) = (round, rounds);
                     job.step = "Starting".into();
                     // A job that never started has no session to tell: it gets its first prompt.
@@ -884,7 +890,9 @@ impl Jobs {
             }
             if failover.is_none() {
                 hear(&mut next, crate::brain::actions::TRY_AGAIN);
-                next_round(&mut next);
+                if let Ok(change) = transition(&next, &crate::job::Command::NextRound) {
+                    change.apply(&mut next);
+                }
                 next.asked = true;
             }
             self.store

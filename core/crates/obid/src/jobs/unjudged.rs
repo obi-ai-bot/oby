@@ -373,7 +373,9 @@ mod tests {
             next: Some(obi_protocol::time::now() + 4800),
             why: "the check ran past its limit of 2 hours".into(),
         });
-        next_round(&mut job);
+        transition(&job, &crate::job::Command::NextRound)
+            .unwrap()
+            .apply(&mut job);
         assert_eq!(job.unjudged, None);
     }
 }

@@ -8,6 +8,7 @@ pub mod decisions;
 pub mod exchange;
 pub mod inbox;
 pub mod link;
+pub mod lookalike;
 pub mod membership;
 pub mod pins;
 pub mod room;

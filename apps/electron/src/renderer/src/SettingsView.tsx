@@ -16,7 +16,8 @@ import { BACKGROUND_LABEL, CONTINUE, LIMIT_REACHED, USING_PLAN, accountNow, adds
 import { BackgroundConsent, ChatGptLogo, ManageUsage } from './ChatGptPlan';
 import { Menu } from './Menu';
 import { liveState, lookAtUsage, patchStatus, say, useLive } from './live';
-import { AUTO, TALK_DEFAULT, talkChoices } from './talk';
+import { AUTO, TALK_DEFAULT, talkChoices, tools } from './talk';
+import { isAgent } from '../../shared/obid-wire';
 import { version } from '../../../package.json';
 import type { Update } from '../../shared/updates';
 
@@ -480,13 +481,14 @@ function Accounts() {
     <Group i={1} title="Accounts on this Mac">
       <Row label={roomiest ? <span className="set-plain">Most room: {roomiest.name} on {agentOf(roomiest.agent).name}, {100 - roomiest.used!}% left this week</span> : <span className="set-none">None yet</span>} />
     </Group>
-    {(['claude', 'codex', 'cursor'] as const).filter((g) => accounts.some((a) => a.agent === g)).map((g, k) => (
-      <Group key={g} i={2 + k} title={AGENTS[g].name}>
+    {/* a tool this build doesn't know after them, under its id, with Remove only (docs/contracts/providers.md, PROVIDERS-5 and 6) */}
+    {tools(accounts).filter((g) => accounts.some((a) => a.agent === g)).map((g, k) => (
+      <Group key={g} i={2 + k} title={agentOf(g).name}>
         {accounts.filter((a) => a.agent === g).map((a) => {
-          const s = signing[a.id], tool = AGENTS[g].name, own = ownLogin(a);
+          const s = signing[a.id], tool = agentOf(g).name, own = ownLogin(a);
           return (
             <div key={a.id} className="set-row set-usage">
-              <BrandMark brand={AGENTS[g].brand} size={16} mono />
+              <BrandMark brand={agentOf(g).brand} size={16} mono />
               <span className="set-label">
                 {a.name}
                 <span className="set-about">{!s ? `Paid by ${a.payer} · ${a.resets}${own && a.signedIn === false && !a.label ? `: sign in with ${tool} itself on this Mac` : ''}`
@@ -502,7 +504,7 @@ function Accounts() {
               <span className="set-control set-control-top">
                 {a.used != null && <span className="set-value">{a.used}% used</span>}
                 {/* (obid signs in only accounts with a folder of their own) */}
-                {a.signedIn === false && !own && (s && s !== 'opening' && s.code !== 'sending'
+                {a.signedIn === false && !own && isAgent(g) && (s && s !== 'opening' && s.code !== 'sending'
                   ? <button className="set-button" onClick={() => cancel(a.id)}>Cancel</button>
                   : <button className="set-button" disabled={!!s} onClick={() => signIn(a.id)}>{s ? 'Waiting…' : 'Sign In'}</button>)}
                 <button className="set-button is-danger" onClick={() => remove(a)}>Remove</button>
@@ -830,16 +832,16 @@ export function Agents() {
     if (onObid) void api.setBackgroundConsent(x.id, given).catch(say);
     else setAccounts(accounts.map((y) => (y.id === x.id ? { ...y, background: given } : y)));
   };
-  const ids = Object.keys(AGENTS) as Agent[];
-  // one card per agent you added, in the providers' order
-  const agents = ids.flatMap((a) => accounts.filter((x) => x.agent === a));
+  // one card per agent you added, in the providers' order, then a tool this build doesn't know's in
+  // obid's (docs/contracts/providers.md, PROVIDERS-5)
+  const agents = tools(accounts).flatMap((a) => accounts.filter((x) => x.agent === a));
   const ready = agents.filter((x) => x.signedIn !== false);
   const fallback = ready.find((x) => x.id === chosen) ?? ready[0];
   return <>
     <Group i={1} title="Default agent">
       {fallback
         ? <Row label="New tasks go to">
-            <Select wide value={fallback.id} onChange={(v) => void setChosen(v).catch(say)} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${agentOf(x.agent).name}`] as const)} />
+            <Select wide value={fallback.id} onChange={(v) => void setChosen(v).catch(say)} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${agentOf(x.agent).name}`, !isAgent(x.agent)] as const)} />
           </Row>
         : <Row label={<span className="set-none">No agents yet</span>} />}
       {fallback && (
@@ -855,10 +857,10 @@ export function Agents() {
       </div>
     </Group>
     {agents.map((x, k) => {
-      // (one of AGENTS' own tools: agents holds no other)
-      const a = x.agent as Agent, t = tuning(x), o = options[a];
+      // a tool this build doesn't know: its usage and Remove, nothing to choose or sign in to (PROVIDERS-6)
+      const known = isAgent(x.agent), a = x.agent as Agent, t = tuning(x), o = options[a];
       const efforts = a === 'codex' ? o?.models.find((m) => m.id === t.model)?.efforts : o?.efforts;
-      const out = x.signedIn === false, sign = signing[x.id], tool = AGENTS[a].name, own = ownLogin(x);
+      const out = x.signedIn === false, sign = signing[x.id], tool = agentOf(x.agent).name, own = ownLogin(x);
       // Codex with no login on this Mac, or a ChatGPT one that ended
       const plan = a === 'codex' && out && (x.chatgpt || (offersChatGpt(status) && !x.label));
       // the bar: the 5-hour session; the week, in words under it
@@ -866,7 +868,7 @@ export function Agents() {
       return (
         <Group key={x.id} i={3 + k} title={x.name}>
           <div className="set-row set-usage">
-            <BrandMark brand={AGENTS[a].brand} size={16} mono />
+            <BrandMark brand={agentOf(x.agent).brand} size={16} mono />
             <span className="set-label">
               <span className="set-usage-name">
                 {tool}
@@ -889,7 +891,7 @@ export function Agents() {
               {problems[x.id] && <span className="set-about set-problem" role="alert">{problems[x.id]}</span>}
             </span>
             {/* (obid signs in only the accounts with a folder of their own: not the tool's own login) */}
-            {out && (!own || plan) && <span className="set-control set-control-top">
+            {out && known && (!own || plan) && <span className="set-control set-control-top">
               {sign && sign !== 'opening' && sign.code !== 'sending'
                 ? <button className="set-button" onClick={() => cancel(x.id)}>Cancel</button>
                 : plan
@@ -901,16 +903,16 @@ export function Agents() {
             </span>}
           </div>
           {/* the model and, after it in grey, how hard it thinks (one menu for both); complex tasks get an effort of their own */}
-          {a === 'cursor' && o?.groups
+          {!known ? null : a === 'cursor' && o?.groups
             ? <CursorModel name={x.name} groups={o.groups} model={t.model} onModel={(v) => void tune(x.id, { model: v }).catch(say)} />
             : <Row label="Model">
                 <ModelPicker label={`${x.name} model and effort`} models={choices(o?.models ?? [], t.model)} model={t.model} onModel={(v) => void tune(x.id, { model: v }).catch(say)}
                   efforts={a === 'cursor' ? [] : effortChoices(efforts, t.effort)} effort={t.effort} onEffort={(v) => void tune(x.id, { effort: v }).catch(say)} />
               </Row>}
-          {a !== 'cursor' && <Row label="Effort on complex tasks">
+          {known && a !== 'cursor' && <Row label="Effort on complex tasks">
             <Select wide value={t.complexEffort ?? ''} onChange={(v) => void tune(x.id, { complexEffort: v }).catch(say)} label={`${x.name} complex task effort`} options={effortChoices(o?.complexEfforts, t.complexEffort)} />
           </Row>}
-          {x.chatgpt && !out && <Row label={BACKGROUND_LABEL}>
+          {x.chatgpt && !out && known && <Row label={BACKGROUND_LABEL}>
             <Switch on={!!x.background} label={`${x.name}: ${BACKGROUND_LABEL}`} onChange={(on) => (on ? setAsking(x) : background(x, false))} />
           </Row>}
           {/* the card's own action, on the left; red: it can't be undone (its sign-in goes with it) */}
@@ -1309,12 +1311,12 @@ export function Switch({ on, onChange, label }: { on: boolean; onChange: (on: bo
 }
 
 // A pop-up menu: the system's own (a native select)
-// wide: 240px, as every control on Settings › Agents is
-export function Select({ value, options, onChange, label, wide = false }: { value: string; options: readonly (readonly [string, string])[]; onChange: (v: string) => void; label: string; wide?: boolean }) {
+// wide: 240px, as every control on Settings › Agents is; an option's third, true: listed, not chosen
+export function Select({ value, options, onChange, label, wide = false }: { value: string; options: readonly (readonly [string, string, boolean?])[]; onChange: (v: string) => void; label: string; wide?: boolean }) {
   return (
     <span className={`set-select${wide ? ' is-wide' : ''}`}>
       <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}>
-        {options.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        {options.map(([id, name, off]) => <option key={id} value={id} disabled={off || undefined}>{name}</option>)}
       </select>
       <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 4 5 6.5 7.5 4" /></svg>
     </span>
