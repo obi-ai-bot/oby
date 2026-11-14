@@ -11,6 +11,7 @@ import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders }
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
+import { has } from '../../shared/capabilities';
 import { answer, apply as applyToJobs, type ObidState } from '../../shared/live-state';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
@@ -121,7 +122,7 @@ nameFoldersBy(realId);
 // once obid takes folders, a conversation's go to it (one not yet named keeps its own meanwhile)
 sendFoldersBy((shown, folders) => {
   const c = realId(shown);
-  if (!state.status?.folders || c.startsWith('new:')) return undefined;
+  if (!has(state.status, 'folders-v1') || c.startsWith('new:')) return undefined;
   return api.editConversation(c, { folders }).then((conversation) => take({ kind: 'conversation', conversation }));
 }, say);
 let aliasSeen: Live['alias'] | undefined;
@@ -519,7 +520,7 @@ let accountsFrom: Status | null = null;
 let sessionTurn: ReturnType<typeof setTimeout> | undefined;
 function publish() {
   if (state.alias !== aliasSeen) { aliasSeen = state.alias; saveFolders(); }
-  if (state.status?.folders) takeFolders(Object.fromEntries(state.conversations.map((c) => [shownId(c.id), c.folders ?? []])));
+  if (has(state.status, 'folders-v1')) takeFolders(Object.fromEntries(state.conversations.map((c) => [shownId(c.id), c.folders ?? []])));
   replaceChats(chatsOf(state));
   replaceTasks(tasksOf(state), { asks: asksOf(state), work: workOf(state.github), error: state.github?.error ?? undefined });
   // what's put off comes back when its time comes, which obid sends no event for: look again then
@@ -899,7 +900,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       // the working folders go with words that start a conversation, once obid takes them (an
       // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
-        state.status?.folders && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
+        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
       const where = a.conversation ?? c;
       // the plan's answer is the one: it replaces a guess from the words' turn
       const alias = !c && a.conversation ? { ...Object.fromEntries(Object.entries(state.alias).filter(([, v]) => v !== id)), [a.conversation]: id } : state.alias;
