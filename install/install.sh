@@ -464,6 +464,12 @@ RestartSec=5
 # obid exits within 10 seconds of SIGTERM; stopping ends everything it started.
 TimeoutStopSec=15
 KillMode=control-group
+# obid and everything it started share at most 90% of the machine's memory.
+MemoryMax=90%
+# The kernel killing one of its processes (an agent's runaway build) doesn't stop the service.
+OOMPolicy=continue
+# obid is the kernel's last choice, where the user manager allows it; its agents start at 500.
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=default.target

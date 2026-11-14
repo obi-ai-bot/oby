@@ -1706,6 +1706,7 @@ exec sleep 30
         std::fs::write(
             &bin,
             r#"#!/bin/sh
+echo $$ > pid
 read l; echo '{"id":1,"result":{}}'
 read l
 read l; echo '{"id":2,"result":{"thread":{"id":"t1"}}}'
@@ -1748,7 +1749,18 @@ exec sleep 30
                 "Codex ran a command (cat x), which a conversation never does, so obid stopped it"
             )
         );
-        assert!(took < Duration::from_millis(1500), "{took:?}");
+        // The stand-in would otherwise sleep 30 s: the bound only tells "ended at once" from
+        // "waited out the stand-in", whatever the Mac's load.
+        assert!(took < Duration::from_secs(15), "{took:?}");
+        let pid: i32 = std::fs::read_to_string(root.join("pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err(),
+            "the stand-in's process {pid} is still alive"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

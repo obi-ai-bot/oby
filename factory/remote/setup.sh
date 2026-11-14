@@ -6,7 +6,8 @@
 #
 # The pins are .github/workflows/ci.yml's, read from this checkout and never copied here:
 # RUSTUP_TOOLCHAIN, GITLEAKS_VERSION with GITLEAKS_SHA256, node-version, and its bwrap line. A pin
-# that's missing, or whose copies in ci.yml disagree, stops it before it touches the host.
+# that's missing, or whose copies in ci.yml disagree, stops it before it touches the host. The Kani pin is
+# setup.sh's own, not ci.yml's: Kani is for builders' runs only (A00-35), and --pins leaves it out.
 #
 # On the host, with sudo where it needs it: git, curl and the build tools; rustup with the pinned
 # toolchain as the default, rustfmt and clippy; the newest Node of the pinned major; gitleaks at its
@@ -20,11 +21,12 @@
 # asks); and, for builders' factory/bin/test-run runs, the user oby-builder, with /bin/bash, in no sudo
 # or admin group and with no sudoers entry (setup stops when `sudo -n -l -U oby-builder` shows it may
 # run anything), its own /srv/oby-builder with a bare clone (gc.auto 0; oby-remote-gate --run makes its
-# builder-N slots), and a home that is root's (0755) and holds only .ssh, .cargo and .rustup: .ssh made
-# afresh by root (0755) with a root-owned copy of the ssh user's authorized_keys (0644), and rustup
+# builder-N slots), and a home that is root's (0755) and holds only .ssh, .cargo, .rustup and .kani: .ssh
+# made afresh by root (0755) with a root-owned copy of the ssh user's authorized_keys (0644), rustup
 # with the pinned toolchain, rustfmt and clippy installed by root (--no-modify-path; a toolchain the
-# builder owned any part of is installed afresh), tightened with tighten.sh's rule and proven to run for
-# the builder; setup stops naming any of its home, keys or toolchain the builder can still write, and
+# builder owned any part of is installed afresh), and Kani at its pin (cargo-kani in .cargo, its bundle in
+# .kani, its nightly in .rustup) installed by root and given to root, tightened with tighten.sh's rule and
+# proven to run for the builder, Kani offline on a scratch harness; setup stops naming any of its home, keys or toolchain the builder can still write, and
 # it can't write /srv/oby. Run it again whenever: what is already at its pin is left as it is. It
 # writes no secret, token, key or login to the host, and changes no sshd setting, firewall or network
 # rule (the builder's authorized_keys holds public keys only). The host part runs under umask 022, and
@@ -61,6 +63,7 @@ rust=$(pin RUSTUP_TOOLCHAIN)
 node=$(pin node-version)
 gitleaks=$(pin GITLEAKS_VERSION)
 gitleaks_sha=$(pin GITLEAKS_SHA256)
+kani=0.68.0
 bwrap=$(sed -nE 's/^[[:space:]]*(bwrap .*[^[:space:]])[[:space:]]*$/\1/p' "$ci" | sort -u)
 if [[ -z "$bwrap" || "$bwrap" == *$'\n'* ]]; then
     echo "setup.sh: $ci needs exactly one bwrap line, the proof bubblewrap works" >&2
@@ -88,7 +91,7 @@ fi' <"$here/oby-remote-gate"
 # The rest runs there as one function, read whole before it starts, with no standard input, so
 # nothing it runs reads the script.
 {
-    printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap"
+    printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap" KANI "$kani"
     cat "$here/tighten.sh"
     cat <<'REMOTE'
 # The gates' root (REMOTE-32): the ssh user's alone, 0700 even when it already exists, so no builder run can open
@@ -123,11 +126,11 @@ builder() {
     sudo -n rm -rf "$home/.ssh"
     sudo -n install -d -o root -g root -m 755 "$home/.ssh"
     sudo -n install -o root -g root -m 644 "$HOME/.ssh/authorized_keys" "$home/.ssh/authorized_keys"
-    sudo -n find "$home" -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup -exec rm -rf {} +
+    sudo -n find "$home" -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup ! -name .kani -exec rm -rf {} +
     # A toolchain the builder owned any part of (A00-31 installed it as the builder) is installed afresh.
     if [[ -n "$(sudo -n find "$home" ! -user root -print -quit)" ]]; then
-        printf 'setup.sh: %s\n' "removing $home/.cargo and $home/.rustup: not all root's"
-        sudo -n rm -rf "$home/.cargo" "$home/.rustup"
+        printf 'setup.sh: %s\n' "removing $home/.cargo, $home/.rustup and $home/.kani: not all root's"
+        sudo -n rm -rf "$home/.cargo" "$home/.rustup" "$home/.kani"
     fi
     sudo -n install -d -o "$name" -g "$name" -m 755 "$root"
     if ! as_builder test -d "$root/repo.git"; then
@@ -143,27 +146,68 @@ if [[ ! -x "$CARGO_HOME/bin/rustup" ]]; then
 fi
 rustup toolchain install "$1" --profile minimal --component rustfmt,clippy
 rustup default "$1"' _ "$RUST"
+    # Kani for builders' proofs (R04-03, 04), installed as root: its bundle in .kani, its nightly in .rustup, so a
+    # builder run, offline, downloads nothing. Left as it is at its pin, with no download left half done.
+    sudo -n env RUSTUP_HOME="$home/.rustup" CARGO_HOME="$home/.cargo" KANI_HOME="$home/.kani" bash -c 'set -euo pipefail
+export PATH="$CARGO_HOME/bin:$PATH"
+installed=$(cargo install --list)
+if grep -qx "kani-verifier v$1:" <<<"$installed" && [[ -d "$KANI_HOME/kani-$1" ]] &&
+    [[ -z "$(find "$KANI_HOME" -maxdepth 1 -name "*.tar.gz" -print -quit)" ]]; then
+    echo "setup.sh: kani $1 already installed"
+    exit 0
+fi
+echo "setup.sh: installing kani $1"
+rm -rf "$KANI_HOME"
+cargo install --locked kani-verifier --version "$1"
+cargo kani setup' _ "$KANI"
+    # tar, run as root, keeps the owners the bundle's archive names: all of it is root's.
+    sudo -n chown -R -h root:root "$home/.kani"
     # tighten.sh's own rule for what group or others may write, on its home's toolchain and its root.
     sudo -n bash -c "$(declare -f tighten_writable)"'
 tighten_writable "$1" "$2" | xargs -0 -r chmod go-w
 left=$(tighten_writable "$1" "$2" | tr "\0" " ")
 if [[ -n "$left" ]]; then echo "setup.sh: still writable by others: $left"; exit 1; fi' _ "$home" "$root"
-    # The toolchain works for the builder with a Cargo home of its own, as oby-remote-gate --run gives it.
+    # The toolchain and Kani work for the builder with a Cargo home of its own, as oby-remote-gate --run gives it:
+    # Kani proves a one-harness scratch crate offline.
     as_builder bash -c 'set -euo pipefail
 scratch=$(mktemp -d)
 trap "rm -rf \"\$scratch\"" EXIT
 cd "$scratch"
 export CARGO_HOME="$scratch/cargo" PATH="$HOME/.cargo/bin:$PATH"
 cargo --version
-rustc --version'
-    for path in "$home" "$home/.ssh" "$home/.ssh/authorized_keys" "$home/.cargo" "$home/.cargo/bin" "$home/.rustup"; do
+rustc --version
+kani=$(cargo kani --version)
+printf "%s\n" "$kani"
+[[ "$kani" == *" $1 "* ]] || { echo "setup.sh: cargo kani is not at $1"; exit 1; }
+mkdir -p proof/src
+cat >proof/Cargo.toml <<EOF
+[package]
+name = "proof"
+version = "0.1.0"
+edition = "2021"
+EOF
+cat >proof/src/lib.rs <<EOF
+#[cfg(kani)]
+#[kani::proof]
+fn adds_and_takes_back() {
+    let x: u8 = kani::any();
+    assert_eq!(x.wrapping_add(1).wrapping_sub(1), x);
+}
+EOF
+proved=$(cd proof && CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="$scratch/target" cargo kani 2>&1) || true
+if ! grep "VERIFICATION:- SUCCESSFUL" <<<"$proved"; then
+    printf "%s\n" "$proved" "setup.sh: cargo kani did not prove the scratch harness"
+    exit 1
+fi' _ "$KANI"
+    for path in "$home" "$home/.ssh" "$home/.ssh/authorized_keys" "$home/.cargo" "$home/.cargo/bin" "$home/.rustup" \
+        "$home/.kani" "$home/.kani/kani-$KANI" "$home/.kani/kani-$KANI/bin"; do
         if as_builder test -w "$path"; then writable+=("$path"); fi
     done
     if ((${#writable[@]})); then
         for path in "${writable[@]}"; do printf 'setup.sh: %s\n' "$name can still write $path"; done
         return 1
     fi
-    printf 'setup.sh: %s\n' "$name is set up: no sudo, $root, rust $RUST, its home, keys and toolchain root's"
+    printf 'setup.sh: %s\n' "$name is set up: no sudo, $root, rust $RUST, kani $KANI, its home, keys and toolchain root's"
 }
 
 setup() {

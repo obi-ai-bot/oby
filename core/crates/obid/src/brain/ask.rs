@@ -112,8 +112,16 @@ pub(super) async fn ask(
     // A name the owner taught Oby means that member, as their own owner id does.
     let taught = shared.link.known_as(&to);
     let (member, shown) = match pick(&members, taught.as_deref().unwrap_or(&to)) {
-        // An exact owner id, with no one else claiming it: the owner's word is enough.
-        Picked::Owner(member) => (member, None),
+        // An exact owner id, with no one else claiming it: the owner's word is enough, unless it
+        // looks like someone else's (ASK-34). Asked again every time.
+        Picked::Owner(member) => {
+            let alike = shared.link.lookalikes(&member.owner);
+            let title = (!alike.is_empty()).then(|| {
+                let not = crate::sphere::lookalike::not_them(&alike);
+                format!("Ask {}'s Oby, not {not}", member.owner)
+            });
+            (member, title)
+        }
         // A name proves nothing: the owner sees who it means before anything goes.
         Picked::Name(member) => {
             let title = format!("Ask {}'s Oby ({})", member.name, member.owner);

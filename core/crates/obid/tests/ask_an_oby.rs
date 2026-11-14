@@ -813,6 +813,62 @@ async fn ask_17_only_an_exact_owner_id_goes_without_the_owner_seeing_who() {
     );
 }
 
+/// ASK-34: an exact owner id that looks like another member's waits, on the owner's own word too, for
+/// a Confirm that names both; the model hears neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_34_a_lookalike_waits_for_a_confirm_naming_both() {
+    let folder = Folder::new("ask-34");
+    let (sphere, obid, _ernesto) = setup(&folder).await;
+    let dima = TestObi::join_named(&sphere, "obi-dima", "dima", "dima's Oby").await;
+    let dirna = TestObi::join_named(&sphere, "obi-dirna", "dirna", "dirna's Oby").await;
+    let (_, said) = tokio::task::block_in_place(|| {
+        typed(
+            &obid,
+            "oby_ask",
+            json!({"to": "dirna", "question": QUESTION}),
+        )
+    });
+    assert!(said.contains("waits for the owner's OK"), "{said}");
+    assert!(!said.contains("dima"), "{said}");
+    let item = tokio::task::block_in_place(|| {
+        let inbox = call(&obid, "GET", "/v1/inbox", None);
+        let items = inbox.body.as_array().unwrap().clone();
+        items.into_iter().find(|i| i["kind"] == "confirm").unwrap()
+    });
+    assert_eq!(item["title"], "Ask dirna's Oby, not dima's");
+    assert!(
+        sphere
+            .lock()
+            .sends
+            .iter()
+            .all(|(_, text, _)| !text.contains("\"question\"")),
+        "nothing goes before the click"
+    );
+    let id = item["id"].as_str().unwrap();
+    tokio::task::block_in_place(|| {
+        let confirmed = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{id}/answer"),
+            Some(&json!({"answer": "Confirm", "approval": confirm_approval(&obid, id)})),
+        );
+        assert_eq!(confirmed.status, 200, "{}", confirmed.text);
+    });
+    let got = dirna.receive(1, 20).await;
+    assert_eq!(got[0]["body"]["text"], QUESTION);
+    // To dirna only.
+    let to: Vec<String> = sphere
+        .lock()
+        .sends
+        .iter()
+        .filter_map(|(_, text, _)| serde_json::from_str::<Value>(text).ok())
+        .filter(|send| send["type"] == "question")
+        .map(|send| send["to"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(to, ["obi-dirna"]);
+    assert!(dima.receive(0, 1).await.is_empty());
+}
+
 /// A refusal names what the brain gave, never what the member chose: here an Obi id written to steer
 /// the brain, in the words obid has for a card that dropped its seal key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

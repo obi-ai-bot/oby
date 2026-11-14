@@ -488,11 +488,7 @@ fn implicit(tool: Tool) -> Vec<Account> {
 
 /// The binary a tool the configuration doesn't name runs as, found on the login shell's `PATH`.
 fn default_bin(tool: Tool) -> &'static str {
-    match tool {
-        Tool::Claude => "claude",
-        Tool::Codex => "codex",
-        Tool::Cursor => "cursor-agent",
-    }
+    tool.row().bin
 }
 
 /// The binary `tool` runs as: the configuration's `bin`, else [`default_bin`].

@@ -66,8 +66,10 @@ class TestRun(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items() if k not in (*CORE_VARS, "CARGO_TARGET_DIR")}
         self.env["OBY_TEST_RUN_LOCK"] = str(self.lock)
         self.env["CARGO_TARGET_DIR_FACTORY"] = str(self.dir / "core-target")
-        # These are this Mac's runs: no builder path to the gate VM (test_test_run_remote.py has those).
+        # These are this Mac's runs: no builder path to the gate VM or the Mac worker (test_test_run_remote.py and
+        # test_test_run_mac_worker.py have those), whatever config.json says, so no run reaches a real host.
         self.env["FACTORY_REMOTE_GATE"] = "null"
+        self.env["FACTORY_MAC_WORKER"] = "null"
         bin_dir = self.dir / "bin"
         bin_dir.mkdir()
         cargo = bin_dir / "cargo"

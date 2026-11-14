@@ -14,7 +14,7 @@ The business behavior contract for the Electron app joining an Obysphere someone
 
 - **The Obysphere's admin** (Dmytro) creates it on the Obysphere server, writes its policy and makes the invitations: an open link for a team, or a named one for one person's Oby.
 - **The owner** opens the link and clicks Join, or Cancel; later, Leave in the Obysphere's settings.
-- **The Electron app's main process** holds the owner key (Ed25519, made once, kept encrypted with safeStorage in the app's folder as `owner-key`, like the device key), signs the Oby's card and its delegation, and calls obid. The page can't ask it to sign anything: it can only ask to leave.
+- **The Electron app's main process** holds the owner key (Ed25519, made once, kept encrypted with safeStorage in the app's folder as `owner-key`, like the device key), signs the Oby's card and its delegation, and calls obid. The page never hands it anything to sign: it can ask to leave, and to read the Obysphere's policy and add the members rule ([sphere-policy.md](sphere-policy.md)), sending only the version it read.
 - **obid** holds the Oby's own key and seal key, redeems the invitation, gets its tokens, follows the Obysphere, seals and checks every message (docs/runner-api.md). It never holds the owner key.
 
 ### Triggers and prerequisites

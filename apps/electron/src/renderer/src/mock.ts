@@ -1,4 +1,4 @@
-import { BRANDS, type Brand } from './brands';
+import { BRANDS, lettered, type Brand } from './brands';
 import { everything, onObid } from './lean';
 import { isAgent, type AskMark, type RoomPost } from '../../shared/obid-wire';
 
@@ -14,8 +14,8 @@ export const AGENTS: Record<Agent, { name: string; brand: Brand }> = {
   cursor: { name: 'Cursor', brand: BRANDS.cursor },
 };
 // An agent by obid's id: one this build doesn't know (docs/contracts/wire.md, WIRE-4) by that id,
-// with a plain gray circle
-export const agentOf = (id: string): { name: string; brand: Brand } => (isAgent(id) ? AGENTS[id] : { name: id, brand: BRANDS.circle });
+// with the gray circle lettered with it (docs/contracts/providers.md, PROVIDERS-5)
+export const agentOf = (id: string): { name: string; brand: Brand } => (isAgent(id) ? AGENTS[id] : { name: id, brand: lettered(id) });
 
 // Job.status on the Mac. queued and running show as running here; a job
 // with an ask needs you whatever its status.

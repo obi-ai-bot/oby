@@ -212,6 +212,20 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
         except ValueError:
             pass
 
+    # ---- REMOTE-48 -------------------------------------------------------------------------------
+
+    def test_remote_48_a_kani_run_goes_to_the_vm_not_the_mac_worker(self):
+        self.write(SANDBOX, "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "kani", "-p", "obid", "--tests", "--harness", "h")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(call["argv"][-4:-1], ["-l", "oby-builder", "oby-gate"])
+        self.assertNotIn("oby-mac-pro", json.dumps(self.ssh_calls()))
+        self.assertNotIn("Mac worker", err)
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["kani", "-p", "obid", "--tests", "--harness", "h"])
+        self.assertFalse(list(self.builders.glob("builder-*")))
+
     # ---- REMOTE-36 -------------------------------------------------------------------------------
 
     def test_remote_36_two_builders_run_at_once_on_the_mac_worker_and_a_gate_still_gets_a_slot(self):
@@ -362,8 +376,8 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
     def test_remote_40_without_mac_worker_builder_slots_nothing_changes(self):
         self.write(SANDBOX, "// changed\n")
         today = f"factory/bin/test-run: on this Mac: the worktree's changes touch macOS-only code: {SANDBOX}\n"
-        # None: FACTORY_MAC_WORKER and FACTORY_REMOTE_GATE unset, so config.json's own settings are read (its
-        # mac_worker has no builder_slots, its remote_gate has builder slots).
+        # None: FACTORY_MAC_WORKER and FACTORY_REMOTE_GATE unset, so config.json's own settings are read (the
+        # harness seeds its mac_worker with no builder_slots; its remote_gate has builder slots).
         for worker, vm in (({"ssh_host": "oby-mac-pro"}, True), ({"ssh_host": "oby-mac-pro", "builder_slots": 0}, True),
                            ({"ssh_host": "oby-mac-pro"}, False), (None, None)):
             for name in ("mac-runs", "ssh.log"):

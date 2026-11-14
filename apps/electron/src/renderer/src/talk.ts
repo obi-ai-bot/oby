@@ -1,6 +1,7 @@
 // Which account a conversation talks through (docs/contracts/conversation-agent.md), as the chat
 // window's pill and its menu show it: what obid says, in words. obid decides; this only reads.
 import { agentOf, type Agent } from './mock';
+import { isAgent } from '../../shared/obid-wire';
 import { cursorCompose, cursorPick, fullness, type Account } from './SettingsView';
 import type { CursorGroup } from './obid';
 
@@ -9,6 +10,9 @@ export const AUTO = 'auto';
 // where the mock keeps Settings' choice for new conversations; obid keeps its own
 export const TALK_DEFAULT = 'talk.default';
 const TOOLS: Agent[] = ['claude', 'codex', 'cursor'];
+// Each tool its accounts are on: the ones this build knows, then any other in obid's order
+// (docs/contracts/providers.md, PROVIDERS-5)
+export const tools = (accounts: Account[]): string[] => [...new Set<string>([...TOOLS, ...accounts.map((a) => a.agent)])];
 
 // the fuller of its week and its 5-hour session, the limit that hits first; none: it reports none,
 // and no number is made up
@@ -21,6 +25,8 @@ export const usageWords = (a: Account) => {
 // What a person calls the tool, in the message box's picker
 export const TOOL_NAME: Record<Agent, string> = { claude: 'Claude', codex: 'Codex', cursor: 'Cursor' };
 export const PILL_TOOL_NAME: Record<Agent, string> = { ...TOOL_NAME, claude: 'Claude Code' };
+// a tool this build doesn't know: obid's id for it (docs/contracts/wire.md)
+export const toolName = (agent: string, names = TOOL_NAME) => (isAgent(agent) ? names[agent] : agent);
 // Until obid has read the account's own list (`read`, AGENTS-6) a saved model isn't judged: it runs,
 // as obid runs it, so the row doesn't call it unavailable.
 export function modelChoice(saved: string, fallback: string, options: readonly { id: string; name: string }[], read = true) {
@@ -57,7 +63,7 @@ export function modelUsage(a: Account) {
 // An account by its tool; by its name too once its tool has more than one
 // (a tool this build doesn't know: obid's id for it, docs/contracts/wire.md)
 export const rowTitle = (a: Account, accounts: Account[]) => {
-  const tool = TOOL_NAME[a.agent as Agent] ?? a.agent;
+  const tool = toolName(a.agent);
   return accounts.filter((x) => x.agent === a.agent && x.signedIn !== false).length > 1 ? `${tool} · ${a.name}` : tool;
 };
 // What the picker's list says of an account: each window it has, the 5-hour session and the week
@@ -89,16 +95,20 @@ export function shownAccount(accounts: Account[], chosen: string | null, talkedO
 }
 
 // The picker's rows: every connected account, tool by tool
-export const list = (accounts: Account[]) => TOOLS.flatMap((agent) => accounts.filter((a) => a.agent === agent && a.signedIn !== false));
+export const list = (accounts: Account[]) => tools(accounts).flatMap((agent) => accounts.filter((a) => a.agent === agent && a.signedIn !== false));
 
 // Settings' list: every connected account under its tool
-export const groups = (accounts: Account[]) => TOOLS
+export const groups = (accounts: Account[]) => tools(accounts)
   .map((agent) => ({ agent, accounts: accounts.filter((a) => a.agent === agent && a.signedIn !== false) }))
   .filter((g) => g.accounts.length);
 
-// Settings' choice of who a new conversation talks through: the menu's, in a Select's shape. The
-// words are proposed: Sangam's to change.
+// Settings' choice of who a new conversation talks through: the menu's, in a Select's shape, an
+// account of a tool this build doesn't know listed but disabled (PROVIDERS-6). The words are
+// proposed: Sangam's to change.
 export const talkChoices = (accounts: Account[]) => [
   [AUTO, 'Auto · Whichever has room'] as const,
-  ...groups(accounts).flatMap((g) => g.accounts.map((a) => [a.id, `${a.name} · ${agentOf(g.agent).name}`] as const)),
+  ...groups(accounts).flatMap((g) => g.accounts.map((a) => {
+    const choice = [a.id, `${a.name} · ${agentOf(g.agent).name}`] as const;
+    return isAgent(g.agent) ? choice : [...choice, true] as const;
+  })),
 ];

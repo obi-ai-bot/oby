@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { PolicyAnswer } from '../../shared/sphere';
 import type { Update } from '../../shared/updates';
 
 type Point = { x: number; y: number };
@@ -25,6 +26,9 @@ declare global {
       // an Obysphere joined by its invite link, and Leave (preload, main/sphere.ts)
       onSphere?(fn: (joined: { sphere: string; name: string }) => void): () => void;
       sphereLeave?(): Promise<string | null>;
+      // the Obysphere's rules, and the members rule added at the version read (preload, main/sphere.ts)
+      spherePolicy?(): Promise<PolicyAnswer | null>;
+      sphereSetPolicy?(version: number): Promise<PolicyAnswer | null>;
       // obid, through main (preload, main/obid.ts)
       obid: {
         call(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;

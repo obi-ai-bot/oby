@@ -1025,6 +1025,114 @@ fn recovery_2_the_run_after_a_panic_hears_of_it() {
     assert!(told[0].contains("End of Oby's note"), "{told:?}");
 }
 
+/// Job `id` as obid keeps it in its file: `recovery` and `cut` are never in the API.
+fn kept_file(obid: &Obid, id: &str) -> Value {
+    let file = obid.home.join(format!("jobs/{id}.json"));
+    serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()
+}
+
+/// How many restarts cut job `id`'s runs, as its file keeps them (RECOVERY-2).
+fn restarts(obid: &Obid, id: &str) -> u64 {
+    kept_file(obid, id)["recovery"]["restarts"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// JOBSTATE-4 (docs/contracts/job-state.md): a job left `running` with a session and no cut
+/// continues in its session when obid starts, told its run was cut. An unclean stop counts one
+/// more restart; a clean one (`home/stopped-cleanly`) none.
+#[test]
+fn jobstate_4_restart_continues_a_running_job() {
+    let mut job = stored("aaaa0004", "KEEP PROMPTS");
+    job.recovery.restarts = 1;
+    let (_unclean, went_down) = obid_with("jobstate-4", json!({}), &[job]);
+    assert_eq!(restarts(&went_down, "aaaa0004"), 2);
+    let job = wait(&went_down, "aaaa0004");
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("Your run was cut"), "{told:?}");
+    assert!(told[0].contains("went down"), "{told:?}");
+
+    let (folder, mut stopped) = obid("jobstate-4-clean");
+    stopped.stop();
+    assert!(folder.0.join("home/stopped-cleanly").exists());
+    let mut job = stored("bbbb0004", "KEEP PROMPTS");
+    job.recovery.restarts = 1;
+    std::fs::write(
+        folder.0.join("home/jobs/bbbb0004.json"),
+        serde_json::to_vec(&job).unwrap(),
+    )
+    .unwrap();
+    let settings = std::fs::read_to_string(folder.0.join("config.json")).unwrap();
+    let obid = start(&folder.0, &serde_json::from_str(&settings).unwrap(), None);
+    assert_eq!(restarts(&obid, "bbbb0004"), 1);
+    let job = wait(&obid, "bbbb0004");
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("Your run was cut"), "{told:?}");
+    assert!(told[0].contains("was stopped"), "{told:?}");
+}
+
+/// JOBSTATE-15 (docs/contracts/job-state.md): a job left `running` with no session starts again
+/// from its task: no word of a cut, and no restart counted.
+#[test]
+fn jobstate_15_restart_starts_a_job_with_no_session_again() {
+    let mut job = stored("aaaa0015", "KEEP PROMPTS");
+    job.session = None;
+    job.recovery.restarts = 1;
+    let (_folder, obid) = obid_with("jobstate-15", json!({}), &[job]);
+    assert_eq!(restarts(&obid, "aaaa0015"), 1);
+    let job = wait(&obid, "aaaa0015");
+    assert_eq!(job["status"], "done", "{job}");
+    let told = prompts(&job);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(!told[0].contains("Your run was cut"), "{told:?}");
+    assert_eq!(restarts(&obid, "aaaa0015"), 1);
+}
+
+/// Whether job `id`'s agent got any prompt: KEEP PROMPTS writes them all.
+fn prompted(job: &Value) -> bool {
+    Path::new(job["worktree"].as_str().unwrap())
+        .join(".obi/prompts.log")
+        .exists()
+}
+
+/// JOBSTATE-16 (docs/contracts/job-state.md): a job left `running` with a cut from an earlier
+/// restart keeps that cut: it doesn't continue in its session, no restart counts, and it picks up
+/// at its cut with no agent turn.
+#[test]
+fn jobstate_16_restart_keeps_a_jobs_cut() {
+    let mut job = stored("aaaa0016", "KEEP PROMPTS");
+    job.phase = Some(obid::job::Phase::Work);
+    job.cut = Some(obid::job::Phase::Check);
+    job.recovery.restarts = 1;
+    let (_folder, obid) = obid_with("jobstate-16", json!({}), &[job]);
+    let kept = kept_file(&obid, "aaaa0016");
+    assert_eq!(kept["cut"], "check", "{kept}");
+    assert_eq!(kept["recovery"]["restarts"], 1, "{kept}");
+    let job = wait(&obid, "aaaa0016");
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(!prompted(&job), "{job}");
+}
+
+/// JOBSTATE-17 (docs/contracts/job-state.md): a job left `running` in its check picks up at its
+/// check when obid starts (`cut` is Check), with no agent turn and no restart counted.
+#[test]
+fn jobstate_17_restart_picks_up_at_the_check() {
+    let mut job = stored("aaaa0017", "KEEP PROMPTS");
+    job.phase = Some(obid::job::Phase::Check);
+    job.recovery.restarts = 1;
+    let (_folder, obid) = obid_with("jobstate-17", json!({}), &[job]);
+    let kept = kept_file(&obid, "aaaa0017");
+    assert_eq!(kept["cut"], "check", "{kept}");
+    assert_eq!(kept["recovery"]["restarts"], 1, "{kept}");
+    let job = wait(&obid, "aaaa0017");
+    assert_eq!(job["status"], "done", "{job}");
+    assert!(!prompted(&job), "{job}");
+}
+
 /// RECOVERY-3: a job gone quiet is stopped and continued in its session, with no model asked.
 #[test]
 fn recovery_3_a_quiet_job_continues_in_its_session() {
