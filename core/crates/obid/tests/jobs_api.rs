@@ -782,6 +782,187 @@ fn receipts_7_two_requests_at_once_make_one_job() {
     assert_eq!(job_ids(&obid), vec![id]);
 }
 
+/// `POST target` with `body`, its request key in an `Idempotency-Key` header, and `words` as its
+/// `X-Oby-Words` when the owner's app signed it.
+fn post_with_key(
+    obid: &Obid,
+    target: &str,
+    body: &Value,
+    key: &str,
+    words: Option<&str>,
+) -> Answer {
+    let mut headers = vec![("Idempotency-Key", key)];
+    headers.extend(words.map(|words| ("X-Oby-Words", words)));
+    request_headers(obid, "POST", target, Some(&body.to_string()), &headers)
+}
+
+/// A job the owner's app started (its words signed) with `task`, once it ended done.
+fn ended(obid: &Obid, task: &str) -> String {
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": task});
+    let made = typed(obid, "POST", "/v1/jobs", &json!({ "job": job }));
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    assert_eq!(wait(obid, &id)["status"], "done");
+    id
+}
+
+/// RECEIPTS-8: the same words sent again with their key to a job that ended make one follow-up:
+/// both answers are 201 with it, and it carries the key.
+#[test]
+fn receipts_8_repeated_words_make_one_follow_up() {
+    let folder = Folder::new("receipts-8");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = ended(&obid, "Look around");
+    let target = format!("/v1/jobs/{id}/messages");
+    let words = json!({"text": "Look around once more"});
+    let first = post_with_key(&obid, &target, &words, "words-8", None);
+    assert_eq!(first.status, 201, "{}", first.text);
+    assert_eq!(first.body["clientRequestId"], "words-8", "{}", first.text);
+    let again = post_with_key(&obid, &target, &words, "words-8", None);
+    assert_eq!(again.status, 201, "{}", again.text);
+    assert_eq!(again.body["id"], first.body["id"]);
+    assert_eq!(again.body["clientRequestId"], "words-8");
+    assert_eq!(job_ids(&obid).len(), 2, "the job and one follow-up");
+}
+
+/// RECEIPTS-8: a byte-identical retry of signed words, whose single-use signature is spent, isn't
+/// as signed as the first: `409`, and nothing happens to the follow-up the first made.
+#[test]
+fn receipts_8_a_retry_with_used_words_changes_nothing() {
+    let folder = Folder::new("receipts-8-signed");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = ended(&obid, "Look around");
+    let target = format!("/v1/jobs/{id}/messages");
+    let words = json!({"text": "Look around once more"});
+    let signed = support::words_header(&obid, "POST", &target, Some(&words));
+    let first = post_with_key(&obid, &target, &words, "signed-8", Some(&signed));
+    assert_eq!(first.status, 201, "{}", first.text);
+    let follow_up = first.body["id"].as_str().unwrap().to_owned();
+    let file = obid.home.join(format!("jobs/{follow_up}.json"));
+    let vetted = || {
+        let kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        kept["vetted"].clone()
+    };
+    assert_eq!(vetted(), json!(true), "the owner's signed words");
+    let retry = post_with_key(&obid, &target, &words, "signed-8", Some(&signed));
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    assert_eq!(vetted(), json!(true), "unchanged by the retry");
+    assert_eq!(job_ids(&obid).len(), 2, "the job and one follow-up");
+}
+
+/// RECEIPTS-9: the same words sent again with their key to a job at work answer the same, and its
+/// agent hears them once.
+#[test]
+fn receipts_9_repeated_words_are_heard_once() {
+    let folder = Folder::new("receipts-9");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    // At work for 5 seconds: words for it are its next turn.
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "KEEP PROMPTS HOG: 1 5"});
+    let id = post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    support::within(30, "the agent at work", || {
+        (prompts(&obid, &id).len() == 1).then_some(())
+    });
+    let target = format!("/v1/jobs/{id}/messages");
+    let words = json!({"text": "Also read the README."});
+    let first = post_with_key(&obid, &target, &words, "words-9", None);
+    assert_eq!(first.status, 200, "{}", first.text);
+    let again = post_with_key(&obid, &target, &words, "words-9", None);
+    assert_eq!((again.status, &again.body), (first.status, &first.body));
+    assert_eq!(wait(&obid, &id)["status"], "done");
+    let asked = prompts(&obid, &id);
+    let heard = asked.concat().matches("Also read the README.").count();
+    assert_eq!(heard, 1, "{asked:?}");
+    assert_eq!(job_ids(&obid), vec![id]);
+}
+
+/// RECEIPTS-11: a stop sent again with its key answers what the first did, byte for byte, though
+/// the job changed since, and its `stoppedBy` stays.
+#[test]
+fn receipts_11_a_repeated_stop_answers_the_same() {
+    let folder = Folder::new("receipts-11");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"});
+    let id = post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    beat(&obid, &id);
+    let stop = || {
+        let target = format!("/v1/jobs/{id}/stop");
+        request_headers(
+            &obid,
+            "POST",
+            &target,
+            None,
+            &[("Idempotency-Key", "stop-11")],
+        )
+    };
+    let first = stop();
+    assert_eq!(first.status, 200, "{}", first.text);
+    assert_eq!(first.body["status"], "stopped", "{}", first.text);
+    let narrower = json!({"mode": "ask"}).to_string();
+    let changed = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/mode"),
+        Some(&narrower),
+    );
+    assert_eq!(changed.status, 200, "{}", changed.text);
+    assert_ne!(changed.body, first.body, "the job is another now");
+    let again = stop();
+    assert_eq!((again.status, &again.text), (first.status, &first.text));
+    let now = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(now["stoppedBy"], first.body["stoppedBy"], "{now}");
+}
+
+/// RECEIPTS-15: `POST /v1/jobs` retried with its key and its used signed words, or unsigned, isn't
+/// as signed as the first (q067): `409`, and nothing is made; signed again, it gets the first job.
+#[test]
+fn receipts_15_a_job_request_with_used_words_is_409() {
+    let folder = Folder::new("receipts-15-jobs");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
+    let body = json!({ "job": job });
+    let sign = || support::words_header(&obid, "POST", "/v1/jobs", Some(&body));
+    let used = sign();
+    let first = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", Some(&used));
+    assert_eq!(first.status, 201, "{}", first.text);
+    let retry = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", Some(&used));
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    let unsigned = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", None);
+    assert_eq!(unsigned.status, 409, "{}", unsigned.text);
+    let again = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", Some(&sign()));
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(again.body["id"], first.body["id"]);
+    assert_eq!(job_ids(&obid).len(), 1);
+}
+
+/// RECEIPTS-15: a stop retried with its key (in its body this time) and its used signed words isn't
+/// as signed as the first (q067): `409`; signed again, it gets the first answer.
+#[test]
+fn receipts_15_a_stop_with_used_words_is_409() {
+    let folder = Folder::new("receipts-15-stop");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"});
+    let id = post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    beat(&obid, &id);
+    let target = format!("/v1/jobs/{id}/stop");
+    let body = json!({"clientRequestId": "stop-15"});
+    let sign = || support::words_header(&obid, "POST", &target, Some(&body));
+    let send =
+        |words: &str| request_with(&obid, "POST", &target, Some(&body.to_string()), Some(words));
+    let used = sign();
+    let first = send(&used);
+    assert_eq!(first.status, 200, "{}", first.text);
+    let retry = send(&used);
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    let again = send(&sign());
+    assert_eq!((again.status, &again.text), (first.status, &first.text));
+}
+
 /// A stand-in `gh` in `folder/bin` that keeps its arguments (`folder/gh-calls`) and environment
 /// (`folder/gh-env`), opens pull request 7, and answers `gh pr view` with `folder/pr-view.json`
 /// when there's one.
@@ -2181,6 +2362,64 @@ fn tasks_21_a_failing_never_started_task_makes_no_follow_ups() {
         "{jobs}"
     );
     assert_eq!(follow_ups(&obid, &id), Vec::<Value>::new());
+}
+
+/// TASKS-22: a job stopped while its worker wraps up, then tried again, runs its round 2: the old
+/// worker's end, once its wrap-up is let go, leaves the new round alone, and only its own run ends
+/// it. The worker is held in its teammates' read (`gh pr list`, tests/agents/gh's `hold`).
+#[test]
+fn tasks_22_an_old_worker_cannot_end_a_new_round() {
+    let folder = Folder::new("tasks-22");
+    let remote = fixture(&folder.0.join("fixture"));
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let obid = start_with(&folder.0, &config(&folder.0, &remote), Some(&agents));
+    let gh = folder.0.join("env-home/github");
+    std::fs::create_dir_all(&gh).unwrap();
+    std::fs::write(gh.join("hold"), "").unwrap();
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "research",
+               "task": "COMMIT: notes.txt AGAIN: Tried again."}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    support::within(30, "the worker reads teammates' pull requests", || {
+        let calls = std::fs::read_to_string(gh.join("calls")).unwrap_or_default();
+        calls.lines().any(|l| l == "pr list").then_some(())
+    });
+    let held = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(held["status"], "running", "{held}");
+    assert_eq!(held["round"], 1, "{held}");
+
+    let stopped = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(stopped.body["status"], "stopped", "{}", stopped.text);
+    let more = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(
+            &json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked."})
+                .to_string(),
+        ),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    assert_eq!(more.body["round"], 2, "{}", more.text);
+    assert_eq!(more.body["status"], "queued", "{}", more.text);
+    std::fs::remove_file(gh.join("hold")).unwrap();
+
+    let job = until(&obid, &id, |j| {
+        j["round"] == 2 && j["status"] != "queued" && j["status"] != "running"
+    });
+    assert_eq!(job["status"], "done", "{job}");
+    // Round 2's agent ran and its run ended the job: its reply is the job's last summary.
+    assert_eq!(job["summary"], "Tried again.", "{job}");
+    assert_eq!(
+        job["summaries"],
+        json!(["Added notes.txt.", "Tried again."]),
+        "{job}"
+    );
 }
 
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:
