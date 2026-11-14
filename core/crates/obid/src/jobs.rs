@@ -10915,9 +10915,7 @@ impl Jobs {
                         if words.is_empty() {
                             break;
                         }
-                        message = words.join("\n\n");
-                        noted = true;
-                        steered = owners;
+                        (message, noted, steered) = (words.join("\n\n"), true, owners);
                         continue;
                     }
                     message =
@@ -10936,9 +10934,7 @@ impl Jobs {
                         if words.is_empty() {
                             break;
                         }
-                        message = words.join("\n\n");
-                        noted = true;
-                        steered = owners;
+                        (message, noted, steered) = (words.join("\n\n"), true, owners);
                         // Their words decide: the reply to them says the goal again.
                         goal = None;
                         continue;
@@ -10956,9 +10952,7 @@ impl Jobs {
                     if words.is_empty() {
                         break;
                     }
-                    message = words.join("\n\n");
-                    noted = true;
-                    steered = owners;
+                    (message, noted, steered) = (words.join("\n\n"), true, owners);
                     continue;
                 }
                 // What obid declined last round, for a tool whose answers carry no words (ACP).
@@ -14860,19 +14854,11 @@ pub async fn run_check(
 ) -> std::io::Result<CheckRun> {
     let (reader, writer) = std::io::pipe()?;
     clear_recorded_exit(env);
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| std::io::Error::other("nothing to run"))?;
-    let mut command = tokio::process::Command::new(program);
+    let mut command = crate::process::command(argv, env, cwd)?;
     command
-        .args(args)
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(writer.try_clone()?)
-        .stderr(writer)
-        .kill_on_drop(true);
+        .stderr(writer);
     if let Some(group) = group {
         crate::groups::take(group)
             .await
