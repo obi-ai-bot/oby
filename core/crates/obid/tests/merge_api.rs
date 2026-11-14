@@ -2484,10 +2484,10 @@ fn merging_40_rounds_stay_within_reviews() {
             },
         );
         rounded(&obid, &id);
-        let pushed = head_of(&remote);
+        let pushed = pushed_over(&remote, &head);
         assert_ne!(pushed, head, "{name}");
         asks_changes(&folder, (53, "sangam", "MEMBER"), &pushed, "");
-        let card = changes_card(&obid);
+        let card = changes_card_on(&obid, Some(&pushed));
         assert!(card["id"].as_str().unwrap().contains(&pushed), "{card}");
         no_second_round(&obid, &id);
         let all: Vec<&str> = changes.iter().copied().chain([head.as_str()]).collect();
