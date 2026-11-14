@@ -1,5 +1,5 @@
 import { BRANDS, type Brand } from './brands';
-import { onObid } from './lean';
+import { everything, onObid } from './lean';
 import type { AskMark, RoomPost } from '../../shared/obid-wire';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
@@ -728,6 +728,11 @@ export function convoTitle(j: Job) {
 // On obid (lean.ts), none of these three: obid has no Obysphere members, shared Macs or shared
 // usage to list yet (all hidden for launch), so the screens show none rather than the demo's.
 export type Peer = { name: string };
+// Files obid kept aside, unread (Settings › General, HOME-14): two samples, with ?everything only
+export const UNREADABLE_FILES: { path: string; error: string; since: string }[] = everything ? [
+  { path: '/Users/you/Library/Application Support/Oby/Runner/unreadable/jobs/4f1c2a9e-1731571200.json', error: 'not valid JSON at line 1 column 2', since: '2024-11-14T08:00:00Z' },
+  { path: '/Users/you/Library/Application Support/Oby/Runner/unreadable/conversations/7b0e5d31-1731574800.json', error: 'not what obid expects at line 3 column 9', since: '2024-11-14T09:00:00Z' },
+] : [];
 export const OBYS: Peer[] = onObid ? [] : [
   { name: 'Wellington' },
   { name: 'Ernesto' },

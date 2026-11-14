@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'rea
 import { Check } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { AGENTS, type Agent } from './mock';
+import { AGENTS, UNREADABLE_FILES, type Agent } from './mock';
 import { MODES, SANDBOX } from './modes';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
@@ -137,7 +137,10 @@ export function SettingsPage({ title, label = title, leaving, covered = false, o
 function General() {
   const [login, setLogin] = useSetting('login', true);
   const [speaks, setSpeaks] = useSetting('voice.speaks', true);
+  const [unreadable, setUnreadable] = useState(onObid ? [] : UNREADABLE_FILES);
+  useEffect(() => { if (onObid) api.status().then((s) => setUnreadable(s.unreadable ?? []), () => {}); }, []);
   return <>
+    <UnreadableFiles files={unreadable} />
     <Group i={1}>
       <Row label="Open at login"><Switch on={login} onChange={setLogin} label="Open at login" /></Row>
     </Group>
@@ -151,6 +154,17 @@ function General() {
     </Group>}
     <Notifications />
   </>;
+}
+
+// The files obid kept aside, never loaded (docs/contracts/home.md, HOME-14), only when there are
+// some: proposed words, until Sangam designs the screen
+export function UnreadableFiles({ files }: { files: readonly { path: string }[] }) {
+  if (files.length === 0) return null;
+  return (
+    <Group i={0} title="Files Oby couldn't read" footer="Oby kept these files aside and didn't load them. Nothing was deleted.">
+      {files.map((f) => <Row key={f.path} label={<span className="tok tok-path">{f.path}</span>} />)}
+    </Group>
+  );
 }
 
 // On obid, its own: the mode new jobs get, and the rules Always allow saved; Remove forgets one
