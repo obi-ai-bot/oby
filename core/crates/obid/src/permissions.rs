@@ -3803,22 +3803,7 @@ pub fn load(home: &Path) -> Kept {
 /// Bypass.
 pub fn save(home: &Path, kept: &Kept) -> std::io::Result<()> {
     let file = path(home);
-    let reads = match std::fs::read(&file) {
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-        Ok(bytes) => serde_json::from_slice::<Kept>(&bytes).is_ok(),
-    };
-    if !reads {
-        let aside = home.join(format!(
-            "permissions.json.unreadable-{}",
-            obi_protocol::time::now()
-        ));
-        std::fs::copy(&file, &aside)?;
-        tracing::warn!(
-            "{} didn't read: kept as {}",
-            file.display(),
-            aside.display()
-        );
-    }
+    crate::store::keep_aside_unless(&file, |b| serde_json::from_slice::<Kept>(b).is_ok())?;
     let text = serde_json::to_vec_pretty(kept).map_err(std::io::Error::other)?;
     crate::store::write_private(&file, &text)
 }

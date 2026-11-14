@@ -11,7 +11,9 @@
 #      `rustc --version` and `xcodebuild -version` match this Mac's: a missing tool or a Rust or Xcode
 #      mismatch stops it, naming each, before anything is written. A Node or gitleaks difference is only
 #      said: the worker runs no electron or scan group;
-#   b. ~/oby-worker, with a full bare clone (repo.git, gc.auto 0) and slot-1, slot-2;
+#   b. ~/oby-worker, with a full bare clone (repo.git, gc.auto 0) and slot-1, slot-2, and the builders'
+#      own root ~/oby-worker/builders, with a full bare clone of its own (builders/repo.git, gc.auto 0),
+#      where factory/bin/test-run's macOS-only runs take builder-N slots (REMOTE-35 to 42);
 #   c. this checkout's oby-remote-gate as ~/oby-worker/bin/oby-remote-gate, 0755, compared with the
 #      installed copy first;
 #   d. oby-check-blok, built from origin/dev's commit (git archive in the clone), never from one being
@@ -86,6 +88,13 @@ setup() {
     fi
     git -C "$root/repo.git" config gc.auto 0
     mkdir -p "$root/slot-1" "$root/slot-2"
+    # Builders' macOS-only runs (oby-remote-gate --mac --run): a root and a clone of their own, apart from the gates'.
+    mkdir -p "$root/builders"
+    if [[ ! -d "$root/builders/repo.git" ]]; then
+        say "cloning $url into $root/builders/repo.git"
+        git clone --bare --quiet "$url" "$root/builders/repo.git"
+    fi
+    git -C "$root/builders/repo.git" config gc.auto 0
 
     printf '%s' "$GATE_B64" | base64 --decode >"$tmp/oby-remote-gate"
     if cmp -s "$tmp/oby-remote-gate" "$root/bin/oby-remote-gate" && [[ -x "$root/bin/oby-remote-gate" ]]; then

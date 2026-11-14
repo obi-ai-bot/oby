@@ -4,7 +4,8 @@ import { deleteTask, remove, stop, type Task } from './tasks';
 // A task's menu, from its side panel row (⋮ or right-click) or its page's title
 // bar: its page (where it isn't already showing), its conversation, rename;
 // then stop it while it's going, or archive it once it's done (out of Home,
-// into Archive); last, set apart, delete it.
+// into Archive); last, set apart, delete it. A status this build doesn't know offers
+// neither (docs/contracts/wire.md, WIRE-3).
 export default function TaskMenu({ task, at, align = 'right', onClose, onViewDetails, onOpenChat, onRename }: {
   task: Task;
   at: DOMRect;
@@ -20,7 +21,7 @@ export default function TaskMenu({ task, at, align = 'right', onClose, onViewDet
       {onViewDetails && <button role="menuitem" onClick={pick(onViewDetails)}>View details</button>}
       <button role="menuitem" onClick={pick(onOpenChat)}>Open conversation</button>
       <button role="menuitem" onClick={pick(onRename)}>Rename</button>
-      {task.status === 'done'
+      {task.unknown ? null : task.status === 'done'
         ? <button role="menuitem" onClick={pick(() => remove(task.id))}>Archive task</button>
         : <button role="menuitem" onClick={pick(() => stop(task.id))}>Stop task</button>}
       <hr />

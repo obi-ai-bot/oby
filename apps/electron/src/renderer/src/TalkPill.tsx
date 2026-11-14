@@ -6,11 +6,12 @@ import { everything } from './lean';
 import { useAccounts, useModels, useTalkDefault, type Account } from './SettingsView';
 import { chooseTalk, lookAtUsage, useTalkSetting, type Chat } from './chats';
 import { AUTO, PILL_TOOL_NAME, accountModels, chosenOf, dot, list, menuModels, modelChoice, modelUsage, percent, rowTitle, shownAccount, usageLines } from './talk';
-import type { Agent } from './mock';
+import { agentOf, type Agent } from './mock';
 
 const MARKS: Record<Agent, Brand> = { claude: BRANDS.claude, codex: BRANDS.openai, cursor: BRANDS.cursor };
-// Claude's mark in its own colour; OpenAI's and Cursor's are one colour, drawn in the text's
-const Mark = ({ agent, size }: { agent: Agent; size: number }) => <BrandMark brand={MARKS[agent]} size={size} mono={agent !== 'claude'} />;
+// Claude's mark in its own colour; OpenAI's and Cursor's are one colour, drawn in the text's (a tool
+// this build doesn't know: agentOf's, docs/contracts/wire.md)
+const Mark = ({ agent, size }: { agent: string; size: number }) => <BrandMark brand={MARKS[agent as Agent] ?? agentOf(agent).brand} size={size} mono={agent !== 'claude'} />;
 
 // The message box's account and model picker (CONVERSATION-AGENT-19 to 21). obid keeps
 // models per account; choosing one also chooses who the conversation talks through next.
@@ -37,9 +38,9 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
   const subAccount = sub && rows.find((a) => a.id === sub.account.id);
   const close = () => { setAt(null); setSub(null); setScrolled(0); setError(''); pill.current?.focus(); };
   const closeSub = () => { sub?.button.focus(); setSub(null); };
-  const modelsOf = (a: Account) => accountModels(a, options[a.agent]?.models);
-  const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent]?.model ?? 'auto', modelsOf(a), !!(a.modelsRead || a.models?.length));
-  const menuOf = (a: Account) => menuModels(modelsOf(a), modelOf(a).id, options[a.agent]?.groups);
+  const modelsOf = (a: Account) => accountModels(a, options[a.agent as Agent]?.models);
+  const modelOf = (a: Account) => modelChoice(tuning(a).model, defaults[a.agent as Agent]?.model ?? 'auto', modelsOf(a), !!(a.modelsRead || a.models?.length));
+  const menuOf = (a: Account) => menuModels(modelsOf(a), modelOf(a).id, options[a.agent as Agent]?.groups);
   const pick = async (account: string, model?: string) => {
     if (saving) return;
     setSaving(true);
@@ -91,7 +92,7 @@ export default function TalkPill({ chat }: { chat?: Chat }) {
       >
         {on ? <>
           {chosen ? <Mark agent={on.agent} size={16} /> : <span className="talk-pick-auto">Auto</span>}
-          {chosen && <span>{PILL_TOOL_NAME[on.agent]} · {modelOf(on).name}</span>}
+          {chosen && <span>{PILL_TOOL_NAME[on.agent as Agent] ?? on.agent} · {modelOf(on).name}</span>}
           {full && <span className={`usage-dot ${full}`} aria-hidden="true" />}
         </> : <Plus size={16} strokeWidth={1.6} />}
         <ChevronDown size={13} strokeWidth={1.8} />

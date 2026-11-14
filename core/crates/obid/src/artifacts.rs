@@ -60,9 +60,9 @@ const TITLE: usize = 100;
 /// What every file obid serves from an artifact carries: its scripts run, but it loads and
 /// fetches nothing past its own files (`connect-src 'none'`, no plug-in, no `<base>`, no form, no
 /// frame of it in another page), and `sandbox allow-scripts` gives it an origin of its own, so it
-/// can't read what obid's other pages keep on this origin (the web app's token in session
-/// storage) or open windows. A CSP can't stop it navigating itself, WebRTC, DNS prefetch or a
-/// meta refresh: the apps deny navigation (docs/conversation-harness.md, section 4).
+/// can't read what obid's other pages keep on this origin or open windows. A CSP can't stop it
+/// navigating itself, WebRTC, DNS prefetch or a meta refresh: the apps deny navigation
+/// (docs/conversation-harness.md, section 4).
 pub const POLICY: &str = "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' data: blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

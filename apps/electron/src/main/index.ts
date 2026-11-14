@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, screen, shell } from 'electron';
 import { createRequire } from 'node:module';
 import { lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -7,8 +7,12 @@ import { confirming, ownersWords } from './device';
 import { input, space, picked } from './words';
 import { notifying, windowLeft, windowSeen } from './notify';
 import { updating } from './updates';
+import { localSettings } from './settings';
 import { menu } from '../shared/menu';
 import { sphering } from './sphere';
+import { ipc } from './ipc';
+import { childGone, quit, quitting, rendererGone, started, windowLoaded } from './runMarker';
+import { flag, https } from '../shared/decode';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
 // the cursor's position wherever it is on screen, so Oby can watch it outside
@@ -62,47 +66,47 @@ let chrome: Chrome | null = null;
 let tracker: ReturnType<typeof setInterval> | null = null;
 let last = '';
 
-// the page asks for both before it draws, to lay its title bar out around the lights
-ipcMain.on('window-chrome', (e) => { e.returnValue = chrome; });
-ipcMain.on('full-screen', (e) => { e.returnValue = win?.isFullScreen() ?? false; });
 // obid, through main (obid.ts): only for the window's own page, never a frame in it; and its
 // Confirm and the owner's words, signed with this Mac's device key (device.ts)
 const trusted: Trusted = (e) => !!win && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame;
 bridge(trusted, ownersWords);
 confirming(trusted);
+const channels = ipc(trusted);
+// the page asks for both before it draws, to lay its title bar out around the lights
+channels.on('window-chrome', [], () => chrome, null);
+channels.on('full-screen', [], () => win?.isFullScreen() ?? false, false);
 // setting up, or not: the page says so (synchronously, before the window first shows) and the
 // window takes the setup's size, held there (no resizing, zooming or full screen), or its own back.
 // The answer: the width it's on its way to, so the page knows when it's there (null: it's there)
-ipcMain.on('setup-window', (e, on: unknown) => {
-  e.returnValue = null;
-  if (!trusted(e) || !win || win.isDestroyed() || win.isFullScreen()) return;
-  const setup = on === true;
+channels.on('setup-window', [flag], (_e, setup): number | null => {
+  if (!win || win.isDestroyed() || win.isFullScreen()) return null;
   const b = win.getBounds(), width = setup ? SETUP_WIDTH : WIDTH;
+  let answer: number | null = null;
   win.setResizable(true);
   if (b.width !== width) {
     win.setBounds({ x: Math.round(b.x + (b.width - width) / 2), y: b.y, width, height: b.height }, win.isVisible());
-    e.returnValue = width;
+    answer = width;
   }
   win.setResizable(!setup);
   win.setMaximizable(!setup);
   win.setFullScreenable(!setup);
-});
+  return answer;
+}, null);
 // a sign-in page (an agent's, GitHub's, Tetrix's) in the person's browser: https only
-ipcMain.on('open-external', (e, url: unknown) => {
-  if (trusted(e) && typeof url === 'string' && url.startsWith('https://')) void shell.openExternal(url);
-});
+channels.on('open-external', [https], (_e, url) => { void shell.openExternal(url); });
 // the folders the work is in (the message box's Select working folder…): the Mac's own folder
 // picker over the window, several at once; the paths picked, none when it's cancelled
-// (from: where it opens, the folder the last one was picked in)
-ipcMain.handle('pick-folders', async (e, from: unknown) => {
-  if (!trusted(e) || !win || win.isDestroyed()) return [];
+// (from: where it opens, the folder the last one was picked in, when it's an absolute path)
+const folder = (from: unknown) => ({ value: typeof from === 'string' && from.startsWith('/') ? from : undefined });
+channels.handle('pick-folders', [folder], async (_e, from) => {
+  if (!win || win.isDestroyed()) return [];
   const r = await dialog.showOpenDialog(win, {
     properties: ['openDirectory', 'multiSelections', 'createDirectory'], buttonLabel: 'Select', message: 'Choose the folders the work is in',
-    ...(typeof from === 'string' && from.startsWith('/') ? { defaultPath: from } : {}),
+    ...(from !== undefined ? { defaultPath: from } : {}),
   });
   if (!r.canceled) picked(r.filePaths);
   return r.canceled ? [] : r.filePaths;
-});
+}, []);
 
 function track(on: boolean) {
   if (tracker) clearInterval(tracker);
@@ -166,6 +170,8 @@ function createWindow() {
     if (!dev || new URL(url).origin !== new URL(win!.webContents.getURL()).origin) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // its page loaded: this start counts as a good one (runMarker.ts)
+  win.webContents.on('did-finish-load', windowLoaded);
   // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign
   // one request of the owner's words right after it (words.ts, device.ts)
   win.webContents.on('before-input-event', (_, i) => {
@@ -188,6 +194,8 @@ app.whenReady().then(() => {
   // the Dock icon while developing (a packaged app takes apps/icon/AppIcon.icon, electron-builder.yml)
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../../icon/exports/oby-1024.png'));
   if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate(menu));
+  // the app's own run records (runMarker.ts): how the last run ended, and this start
+  started(process.argv.includes('--background'));
   startObid();
   // the window, opened again if it was closed, in front
   const front = () => {
@@ -201,6 +209,8 @@ app.whenReady().then(() => {
   notifying(trusted, () => win, front);
   // Oby's own updates (updates.ts), told to About while the window is there
   updating(trusted, () => win);
+  // Settings rows obid has no setting for yet, kept in settings.json (settings.ts)
+  localSettings(trusted);
   // The window opens only while Oby is the active app (ALERTS-3). obid's `open -g -j … --background`
   // starts it with none, and a running Oby that `open` reaches gets activate (a reopen) without
   // becoming active: neither opens it. The owner's Dock click or app switch makes Oby active, which
@@ -216,3 +226,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+// a gone process is a crash line; the window's renderer is reloaded once (runMarker.ts)
+app.on('render-process-gone', (_e, contents, details) => rendererGone(details, win && contents === win.webContents ? contents : null));
+app.on('child-process-gone', (_e, details) => childGone(details));
+// a quit ends within 30 s, Oby's update's too (updates.ts)
+app.on('before-quit', quitting);
+app.on('quit', quit);

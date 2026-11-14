@@ -1,6 +1,9 @@
 //! Moving a job to another tool, account or model: `POST /v1/jobs/{id}/move` (LIMITS-16,
 //! docs/contracts/account-limits.md) and `oby_change_job`. The worktree and branch stay; a job that
-//! has run goes on in a new session there, told what it's taking over ([`carry_over`]).
+//! has run goes on in a new session there, told what it's taking over ([`carry_over`]). It owns a
+//! job's tool, account and model, its `moves` and its handoff, and ends a limit wait; it never
+//! writes the job's branch or worktree, and queues a running job it moves only through `next_round`
+//! (jobs.rs; docs/ARCHITECTURE.md, "State ownership").
 
 use super::*;
 
@@ -213,7 +216,7 @@ impl Jobs {
         let background = job.background();
         let (tool, chosen) = match crate::accounts::find(&self.config.agents.get(), &job.account) {
             Some(own) if account.is_none() && agent == Some(own.0.id()) => own,
-            _ => self.pick_for(agent, account, background)?,
+            _ => self.pick_for(agent, account, &Work::of(job))?,
         };
         if background && self.waits_for_yes(tool, &chosen) {
             return refused(format!("I need {}.", consent_words(&chosen.name)));

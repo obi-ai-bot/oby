@@ -57,7 +57,6 @@ The Mac app is Electron: `cd apps/electron && npm install && npm run dev`, with 
 apps/        the Mac app (Electron), the iPhone and Apple Watch apps (SwiftUI), Android and web clients
 core/        obid, Oby's server (Rust): plans, runs and tracks jobs
 character/   Oby, the 3D character (three.js)
-mcp/         Oby's MCP server
 docs/        architecture, runner API and install guides
 ```
 

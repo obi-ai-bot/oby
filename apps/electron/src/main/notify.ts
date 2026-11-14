@@ -1,8 +1,12 @@
-import { app, ipcMain, Notification, powerMonitor, shell, type BrowserWindow } from 'electron';
+import { app, Notification, powerMonitor, shell, type BrowserWindow } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { closeSync, constants, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { obid, send, type Answer, type Trusted } from './obid';
+import { obid, send, takesKeys, type Answer, type Trusted } from './obid';
 import { answerLimit, notificationWords, writeOwn } from './device';
+import { ipc } from './ipc';
+import { settings, writeSettings } from './settings';
+import { boolean, orUndefined, type Decoder } from '../shared/decode';
 import { parseEvent, plainId, sseReader, type Conversation, type Event, type InboxItem, type LimitDecision, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac (docs/contracts/alerts.md). What waits on the owner is obid's one list,
@@ -101,7 +105,18 @@ const titles = new Map<string, string>();
 const lastAnswer = new Map<string, Turn>();
 const answers = new Map<string, string>();
 
-const call = (path: string, body: unknown) => () => obid('POST', path, body);
+// One press of an inbox item's button (RECEIPTS-16): once main's own read says obid takes keys,
+// the press's own key goes with its answer, and an answer obid didn't answer goes again, the same
+// body and key, a few times a second apart, as the window's do (live.ts, sent). Allow and Deny are
+// signed afresh each time; any answer of obid's is final.
+async function pressed(path: string, words: string, signs: boolean, tries = 3, pause = 1000): Promise<Answer> {
+  const body = await takesKeys() ? { answer: words, clientRequestId: randomUUID() } : { answer: words };
+  for (let n = 1; ; n++) {
+    const r = await (signs ? notificationWords('POST', path, body) : obid('POST', path, body));
+    if (r.status !== 0 || !('clientRequestId' in body) || n >= tries) return r;
+    await sleep(pause);
+  }
+}
 // Another Oby's question: who by their owner id as its card shows it, and their words as plain text,
 // since obid's own say they're "quoted below", and here nothing is. Answered on its card, where the
 // click signs it, so no button (PEER-33).
@@ -132,10 +147,7 @@ function buttonsOf(a: Served): Button[] {
   }
   if (!a.item) return [];
   const path = `/v1/inbox/${id(a.item)}/answer`;
-  return a.answers.map((words) => {
-    const body = { answer: words };
-    return { text: words, does: words === 'Allow' || words === 'Deny' ? () => notificationWords('POST', path, body) : call(path, body) };
-  });
+  return a.answers.map((words) => ({ text: words, does: () => pressed(path, words, words === 'Allow' || words === 'Deny') }));
 }
 
 // One alert of obid's as the Mac draws it: obid's words as plain text, another Oby's question as
@@ -349,6 +361,8 @@ const json = <T>(a: Answer): T | null => { try { return a.status === 200 ? JSON.
 // conversations' titles. A list obid couldn't serve (its vault unreadable) changes nothing, and is
 // read again (`again`).
 async function sync(): Promise<boolean> {
+  // whether obid takes keys, read again whenever obid's stream starts (pressed, device.ts)
+  void takesKeys();
   const limitVersion = ++limitsRequest, servedVersion = ++servedRequest;
   const [list, [items, cs, decisions]] = await Promise.all([readServed(), Promise.all(['/v1/inbox', '/v1/conversations?limit=200', '/v1/limit-decisions'].map((p) => obid('GET', p)))]);
   const open = json<InboxItem[]>(items);
@@ -416,13 +430,17 @@ export function windowSeen() {
   for (const [key, s] of shown) if (looking(s.place)) withdraw(key);
 }
 
-// Oby's own settings in the app's own folder: Settings › Notifications' alerts here, About's Update
-// automatically (updates.ts)
-export const SETTINGS = () => join(app.getPath('userData'), 'settings.json');
-export const settings = (): Record<string, unknown> => { try { return JSON.parse(readFileSync(SETTINGS(), 'utf8')); } catch { return {}; } };
 // macOS's own settings for Oby's alerts (allowed, banners, sounds, Focus). ponytail: the packaged
 // app's bundle id, electron-builder.yml's appId; in development, the list
 const SYSTEM = `x-apple.systempreferences:com.apple.Notifications-Settings.extension${app.isPackaged ? '?id=com.deskree.oby.electron' : ''}`;
+
+// What the window shows, as the page says: a job's or a conversation's (anything else in it
+// dropped), or nothing; never refused
+const place: Decoder<Place | null> = (p) => {
+  const s = p && typeof p === 'object' ? p as Record<string, unknown> : null;
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  return { value: s && { job: str(s.job), conversation: str(s.conversation) } };
+};
 
 export function notifying(trusted: Trusted, window: () => BrowserWindow | null, bringUp: () => BrowserWindow) {
   current = window;
@@ -431,29 +449,25 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
   said = keptSaid();
   powerMonitor.on('lock-screen', () => { locked = true; });
   powerMonitor.on('unlock-screen', () => { locked = false; });
-  ipcMain.on('showing', (e, p: unknown) => {
-    if (!trusted(e)) return;
-    const s = p && typeof p === 'object' ? p as Record<string, unknown> : null;
-    const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-    showing = s && { job: str(s.job), conversation: str(s.conversation) };
+  const channels = ipc(trusted);
+  channels.on('showing', [place], (_e, p) => {
+    showing = p;
     windowSeen();
   });
-  ipcMain.handle('opened', (e) => {
-    if (!trusted(e)) return null;
+  channels.handle('opened', [], () => {
     const place = opening;
     opening = null;
     return place;
-  });
-  ipcMain.handle('notifications', (e, turn?: unknown) => {
-    if (!trusted(e)) return null;
-    if (typeof turn === 'boolean' && turn !== on) {
+  }, null);
+  channels.handle('notifications', [orUndefined(boolean)], (_e, turn) => {
+    if (turn !== undefined && turn !== on) {
       on = turn;
-      writeOwn(SETTINGS(), JSON.stringify({ ...settings(), notifications: on }), constants.O_TRUNC);
+      writeSettings({ notifications: on });
       if (!on) [...shown.keys()].forEach(withdraw);
     }
     return on;
-  });
-  ipcMain.on('open-notification-settings', (e) => { if (trusted(e)) void shell.openExternal(SYSTEM); });
+  }, null);
+  channels.on('open-notification-settings', [], () => { void shell.openExternal(SYSTEM); });
   setInterval(() => { if (ready) void refreshLimits(); }, 15_000);
   void follow();
 }

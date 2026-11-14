@@ -1,6 +1,6 @@
 // Which account a conversation talks through (docs/contracts/conversation-agent.md), as the chat
 // window's pill and its menu show it: what obid says, in words. obid decides; this only reads.
-import { AGENTS, type Agent } from './mock';
+import { agentOf, type Agent } from './mock';
 import { cursorCompose, cursorPick, fullness, type Account } from './SettingsView';
 import type { CursorGroup } from './obid';
 
@@ -55,8 +55,11 @@ export function modelUsage(a: Account) {
   return lines.join(' · ') || 'No usage';
 }
 // An account by its tool; by its name too once its tool has more than one
-export const rowTitle = (a: Account, accounts: Account[]) =>
-  accounts.filter((x) => x.agent === a.agent && x.signedIn !== false).length > 1 ? `${TOOL_NAME[a.agent]} · ${a.name}` : TOOL_NAME[a.agent];
+// (a tool this build doesn't know: obid's id for it, docs/contracts/wire.md)
+export const rowTitle = (a: Account, accounts: Account[]) => {
+  const tool = TOOL_NAME[a.agent as Agent] ?? a.agent;
+  return accounts.filter((x) => x.agent === a.agent && x.signedIn !== false).length > 1 ? `${tool} · ${a.name}` : tool;
+};
 // What the picker's list says of an account: each window it has, the 5-hour session and the week
 // (an Ultra plan has only the week; Cursor's period may not be a week, so its figure has no name).
 // Full when obid holds it full; "No usage" with no figure, never a made-up one.
@@ -97,5 +100,5 @@ export const groups = (accounts: Account[]) => TOOLS
 // words are proposed: Sangam's to change.
 export const talkChoices = (accounts: Account[]) => [
   [AUTO, 'Auto · Whichever has room'] as const,
-  ...groups(accounts).flatMap((g) => g.accounts.map((a) => [a.id, `${a.name} · ${AGENTS[g.agent].name}`] as const)),
+  ...groups(accounts).flatMap((g) => g.accounts.map((a) => [a.id, `${a.name} · ${agentOf(g.agent).name}`] as const)),
 ];

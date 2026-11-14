@@ -1,0 +1,5 @@
+# The byte budget checked by prompt_budget_holds in src/brain/harness.rs: any change to it is a reviewed edit.
+orientation 3758
+tetrix 845
+oby_tools 23052
+owner_prompt 263

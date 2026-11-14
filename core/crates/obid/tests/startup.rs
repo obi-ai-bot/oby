@@ -334,3 +334,130 @@ async fn an_agent_route_waits_for_the_api() {
     let _ = stop.send(());
     assert!(serving.await.unwrap().is_ok());
 }
+
+/// `home/schema.json`, read as JSON.
+fn schema(home: &Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(home.join("schema.json")).unwrap()).unwrap()
+}
+
+/// HOME-5: a home with no `schema.json` gets this obid's format and version (0600) at start.
+#[tokio::test(flavor = "multi_thread")]
+async fn home_5_a_new_home_gets_a_format() {
+    let folder = Folder::new("home-5");
+    let config = config(&folder.0);
+    let home = config.home.clone();
+    assert!(!home.exists());
+    let result = obid::serve(config, "t".repeat(64), std::future::ready(()), |_| {}).await;
+    assert!(result.is_ok(), "{result:?}");
+    let written = schema(&home);
+    assert_eq!(written["format"], 1, "{written}");
+    assert_eq!(written["writtenBy"], env!("CARGO_PKG_VERSION"), "{written}");
+    assert_eq!(written.as_object().unwrap().len(), 2, "{written}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(home.join("schema.json"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+/// Every path under `dir`, `dir` itself included and `last-start-error` left out: its bytes (a
+/// file's), modification time and mode.
+fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>, std::time::SystemTime, u32)> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut all = Vec::new();
+    let mut left = vec![dir.to_path_buf()];
+    while let Some(path) = left.pop() {
+        if path
+            .file_name()
+            .is_some_and(|name| name == "last-start-error")
+        {
+            continue;
+        }
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        let bytes = if meta.is_file() {
+            std::fs::read(&path).unwrap()
+        } else {
+            Vec::new()
+        };
+        if meta.is_dir() {
+            left.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+        }
+        let mode = meta.permissions().mode();
+        all.push((path, bytes, meta.modified().unwrap(), mode));
+    }
+    all.sort();
+    all
+}
+
+/// HOME-6: a home a newer obid wrote, or whose `schema.json` obid can't read, stops obid with
+/// exit 3 before it changes anything in the home but `last-start-error`, which names the version.
+/// `listen` is held here, so an obid that went on would fail at bind rather than serve.
+#[test]
+fn home_6_a_newer_home_stops_obid() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = Folder::new("home-6");
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::write(home.join("jobs/job-1.json"), r#"{"id":"job-1"}"#).unwrap();
+    std::fs::write(home.join("api-token"), format!("{}\n", "t".repeat(64))).unwrap();
+    std::fs::set_permissions(home.join("api-token"), PermissionsExt::from_mode(0o644)).unwrap();
+    std::fs::write(home.join("last-start-error"), "an older start\n").unwrap();
+    std::fs::set_permissions(&home, PermissionsExt::from_mode(0o755)).unwrap();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let config_path = folder.0.join("config.json");
+    let config = serde_json::json!({
+        "listen": held.local_addr().unwrap().to_string(),
+        "home": home,
+        "owner": "wellington",
+        "claudeKeychain": false,
+    });
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    std::fs::create_dir_all(folder.0.join("env-home")).unwrap();
+    for (written, says) in [
+        (r#"{"format": 2, "writtenBy": "9.9.9"}"#, "9.9.9"),
+        ("not json", "can't read"),
+    ] {
+        std::fs::write(home.join("schema.json"), written).unwrap();
+        let before = snapshot(&home);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_obid"))
+            .args(["serve", "--config"])
+            .arg(&config_path)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", folder.0.join("env-home"))
+            .env("TMPDIR", &folder.0)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(3), "{written}: {stderr}");
+        assert!(stderr.contains(says), "{written}: {stderr}");
+        let reason = std::fs::read_to_string(home.join("last-start-error")).unwrap();
+        assert!(reason.contains(says), "{written}: {reason}");
+        assert!(reason.contains("schema.json"), "{written}: {reason}");
+        assert_eq!(snapshot(&home), before, "{written}: the home changed");
+        assert_eq!(
+            std::fs::read(home.join("schema.json")).unwrap(),
+            written.as_bytes()
+        );
+    }
+}
+
+/// HOME-7: a home an older obid wrote is raised to this obid's format, and obid goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn home_7_an_older_home_is_raised() {
+    let folder = Folder::new("home-7");
+    let config = config(&folder.0);
+    let home = config.home.clone();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("schema.json"),
+        r#"{"format": 0, "writtenBy": "0.0.0"}"#,
+    )
+    .unwrap();
+    let result = obid::serve(config, "t".repeat(64), std::future::ready(()), |_| {}).await;
+    assert!(result.is_ok(), "{result:?}");
+    let raised = schema(&home);
+    assert_eq!(raised["format"], 1, "{raised}");
+    assert_eq!(raised["writtenBy"], env!("CARGO_PKG_VERSION"), "{raised}");
+}

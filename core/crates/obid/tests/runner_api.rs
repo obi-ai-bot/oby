@@ -600,6 +600,7 @@ fn admission_4_a_job_waiting_on_a_check_takes_no_slot_and_a_retry_keeps_its_own(
 /// waits for one. With `maxRunning` 2, one job checks, two wait for that check, one runs and a fifth
 /// is queued: when the first ends, the fifth starts and the second checks with no slot; once its
 /// check ends it waits for a free slot while the third checks, and at no time do more than 2 run.
+/// Each check waits for the test to release it, so the order is set by state, never by the clock.
 #[test]
 fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     let folder = Folder::new("idle-back");
@@ -613,6 +614,14 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     assert_eq!(two.status, 200, "{}", two.text);
     let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
     let checking = |id: &str| job(&obid, id)["checks"][0]["steps"][0]["running"] == true;
+    let held = r#"i=0; until [ -e "$HOME/go" ] || [ $i -ge 1800 ]; do sleep 0.1; i=$((i+1)); done"#;
+    // A check with no declared secrets keeps its job's temporary folder, `<home>/tmp/<id>`, as its
+    // `HOME`, which its box lets it read where it hides the test's own folder: a `go` there ends
+    // it. Released only once that check runs.
+    let release = |id: &str| {
+        let go = obid.home.join("tmp").join(id).join("go");
+        std::fs::write(go, "").unwrap();
+    };
     let for_the_check = |id: &str| {
         within(60, "it waits for the check", || {
             (job(&obid, id)["step"] == "Waiting for another job's check to finish").then_some(())
@@ -624,13 +633,13 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
                   "check": check}),
         )
     };
-    let first = committing("a.txt", "sleep 15");
+    let first = committing("a.txt", held);
     within(60, "the first check runs", || {
         checking(&first).then_some(())
     });
-    let second = committing("b.txt", "sleep 3");
+    let second = committing("b.txt", held);
     for_the_check(&second);
-    let third = committing("c.txt", "sleep 60");
+    let third = committing("c.txt", held);
     for_the_check(&third);
     let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
     within(60, "the fourth runs", || {
@@ -647,15 +656,22 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
             .unwrap();
         most = most.max(running);
     };
-    within(90, "the second waits for a free slot", || {
-        count();
-        let body = job(&obid, &second);
-        (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
-    });
+    release(&first);
     // The first ended and gave its slot to the fifth: on Linux's box it may still be publishing.
     within(60, "the fifth runs", || {
         count();
         (job(&obid, &fifth)["status"] == "running").then_some(())
+    });
+    within(60, "the second checks", || {
+        count();
+        checking(&second).then_some(())
+    });
+    // Only now, with both slots taken, so the second can't take the first's freed one.
+    release(&second);
+    within(90, "the second waits for a free slot", || {
+        count();
+        let body = job(&obid, &second);
+        (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
     });
     // It gave the check's turn up first: the third checks meanwhile.
     within(30, "the third checks", || {
@@ -1363,6 +1379,28 @@ fn agents_8_the_choices_are_listed() {
         call(&obid, "GET", "/v1/settings/models", None).body,
         call(&obid, "GET", "/v1/status", None).body["models"]
     );
+}
+
+/// PROVIDERS-3 (docs/contracts/providers.md): each tool's efforts, read from its row, are the
+/// answer AGENTS-5 and AGENTS-8 promise, on the tool and on every model it lists.
+#[test]
+fn providers_3_effort_choices_are_unchanged() {
+    let folder = Folder::new("provider-efforts");
+    let (obid, _) = obid(&folder);
+    let options = call(&obid, "GET", "/v1/settings/models/options", None);
+    assert_eq!(options.status, 200, "{}", options.text);
+    for (tool, efforts) in [
+        ("claude", json!(["low", "medium", "high", "xhigh", "max"])),
+        ("codex", json!(["low", "medium", "high", "xhigh"])),
+        ("cursor", json!([])),
+    ] {
+        let options = &options.body[tool];
+        assert_eq!(options["efforts"], efforts, "{tool}");
+        assert_eq!(options["complexEfforts"], efforts, "{tool}");
+        for model in options["models"].as_array().unwrap() {
+            assert_eq!(model["efforts"], efforts, "{tool} {model}");
+        }
+    }
 }
 
 /// With the cap lowered to one, a second job waits for the slot, and raising the cap starts it at
@@ -2146,6 +2184,203 @@ fn an_event_stream_that_falls_behind_ends() {
     assert!(heard < sent, "heard all {heard} events");
 }
 
+/// One frame of `GET /v1/events`: its name, its `id:` line and its data.
+type Frame = (String, Option<String>, Value);
+
+/// Follows `GET /v1/events` at `target` with `header` (`Name: value\r\n` lines, or none): every
+/// frame as it comes. obid has subscribed once it answers, so what's sent after this returns
+/// comes live.
+fn events_at(obid: &Obid, target: &str, header: &str) -> std::sync::mpsc::Receiver<Frame> {
+    use std::io::{BufRead, BufReader};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    stream
+        .write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n{header}\r\n").as_bytes())
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    let (sender, frames) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut name, mut id, mut data) = (String::new(), None, None);
+        loop {
+            line.clear();
+            if !matches!(reader.read_line(&mut line), Ok(read) if read > 0) {
+                return;
+            }
+            let text = line.trim();
+            if let Some(value) = text.strip_prefix("event: ") {
+                name = value.to_owned();
+            } else if let Some(value) = text.strip_prefix("id: ") {
+                id = Some(value.to_owned());
+            } else if let Some(value) = text.strip_prefix("data: ") {
+                data = serde_json::from_str(value).ok();
+            } else if text.is_empty()
+                && let Some(data) = data.take()
+                && sender
+                    .send((std::mem::take(&mut name), id.take(), data))
+                    .is_err()
+            {
+                return;
+            }
+        }
+    });
+    frames
+}
+
+/// The frames `frames` brings until `enough` says so, failing the test after 20 seconds.
+fn frames_until(
+    frames: &std::sync::mpsc::Receiver<Frame>,
+    mut enough: impl FnMut(&[Frame]) -> bool,
+) -> Vec<Frame> {
+    let give_up_at = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut got = Vec::new();
+    while !enough(&got) {
+        let left = give_up_at.saturating_duration_since(std::time::Instant::now());
+        match frames.recv_timeout(left) {
+            Ok(frame) => got.push(frame),
+            Err(_) => panic!("within 20 seconds, the events were {got:?}"),
+        }
+    }
+    got
+}
+
+/// The frames `frames` brings up to the one numbered `id`, that one included.
+fn frames_to(frames: &std::sync::mpsc::Receiver<Frame>, id: &str) -> Vec<Frame> {
+    frames_until(frames, |got| {
+        got.last()
+            .is_some_and(|frame| frame.1.as_deref() == Some(id))
+    })
+}
+
+/// Clears (`POST /v1/clear`, a numbered `clear` event) and answers the id `watching` hears it with.
+fn cleared(obid: &Obid, watching: &std::sync::mpsc::Receiver<Frame>) -> String {
+    assert_eq!(call(obid, "POST", "/v1/clear", None).status, 200);
+    let got = frames_until(watching, |got| {
+        got.last().is_some_and(|frame| frame.0 == "clear")
+    });
+    got.last().unwrap().1.clone().expect("a clear with no id")
+}
+
+/// The ids of the `clear` frames among `frames`.
+fn clears(frames: &[Frame]) -> Vec<String> {
+    frames
+        .iter()
+        .filter(|frame| frame.0 == "clear")
+        .map(|frame| frame.1.clone().unwrap())
+        .collect()
+}
+
+/// EVENTS-2: an app that saw E-n and reconnects with `?after=E-n` gets the five events it missed
+/// in order, then live ones, and none twice (docs/contracts/events.md).
+#[test]
+fn events_2_reconnect_replays_what_was_missed() {
+    let folder = Folder::new("events-2");
+    let (obid, _) = obid(&folder);
+    let client = events_at(&obid, "/v1/events", "");
+    let seen = cleared(&obid, &client);
+    drop(client);
+
+    let watching = events_at(&obid, "/v1/events", "");
+    let missed: Vec<String> = (0..5).map(|_| cleared(&obid, &watching)).collect();
+    let resumed = events_at(&obid, &format!("/v1/events?after={seen}"), "");
+    let live = cleared(&obid, &watching);
+    let got = frames_to(&resumed, &live);
+    assert_eq!(clears(&got), [missed, vec![live]].concat(), "{got:?}");
+    let ids: Vec<&String> = got.iter().filter_map(|frame| frame.1.as_ref()).collect();
+    let mut once = ids.clone();
+    once.sort();
+    once.dedup();
+    assert_eq!(once.len(), ids.len(), "an event came twice: {got:?}");
+    assert!(!ids.contains(&&seen), "{got:?}");
+    assert!(got.iter().all(|frame| frame.0 != "resync"), "{got:?}");
+}
+
+/// EVENTS-3: an `after` from another run of obid, or one that isn't an id, gets one `resync`
+/// with this run's epoch first, then live events and nothing replayed.
+#[test]
+fn events_3_unknown_epoch_or_too_old_gets_resync() {
+    let folder = Folder::new("events-3");
+    let (obid, _) = obid(&folder);
+    let watching = events_at(&obid, "/v1/events", "");
+    let before = cleared(&obid, &watching);
+    let epoch = before.split_once('-').unwrap().0.to_owned();
+    let other = events_at(
+        &obid,
+        "/v1/events?after=0123456789abcdef0123456789abcdef-1",
+        "",
+    );
+    let garbage = events_at(&obid, "/v1/events?after=garbage", "");
+    let live = cleared(&obid, &watching);
+    for resumed in [other, garbage] {
+        let got = frames_to(&resumed, &live);
+        assert_eq!(
+            got[0],
+            ("resync".to_owned(), None, json!({"epoch": epoch})),
+            "{got:?}"
+        );
+        assert_eq!(
+            got.iter().filter(|frame| frame.0 == "resync").count(),
+            1,
+            "{got:?}"
+        );
+        assert_eq!(clears(&got), std::slice::from_ref(&live), "{got:?}");
+    }
+}
+
+/// EVENTS-4: `Last-Event-ID` with no query replays as `?after=` does; with both, the query wins.
+#[test]
+fn events_4_last_event_id_header_resumes() {
+    let folder = Folder::new("events-4");
+    let (obid, _) = obid(&folder);
+    let watching = events_at(&obid, "/v1/events", "");
+    let seen = cleared(&obid, &watching);
+    let first = cleared(&obid, &watching);
+    let second = cleared(&obid, &watching);
+    let header = format!("Last-Event-ID: {seen}\r\n");
+    let by_header = events_at(&obid, "/v1/events", &header);
+    let by_query = events_at(&obid, &format!("/v1/events?after={seen}"), "");
+    let by_both = events_at(&obid, &format!("/v1/events?after={first}"), &header);
+    let live = cleared(&obid, &watching);
+
+    let got = frames_to(&by_header, &live);
+    assert_eq!(
+        clears(&got),
+        [first, second.clone(), live.clone()],
+        "{got:?}"
+    );
+    let ids = |frames: &[Frame]| -> Vec<Option<String>> {
+        frames.iter().map(|frame| frame.1.clone()).collect()
+    };
+    assert_eq!(ids(&got), ids(&frames_to(&by_query, &live)));
+    let got = frames_to(&by_both, &live);
+    assert_eq!(clears(&got), [second, live], "{got:?}");
+    assert!(got.iter().all(|frame| frame.0 != "resync"), "{got:?}");
+}
+
+/// EVENTS-5: an app that names no event gets nothing sent before it followed and no `resync`,
+/// only live events, each with its `id:` line.
+#[test]
+fn events_5_no_id_no_replay() {
+    let folder = Folder::new("events-5");
+    let (obid, _) = obid(&folder);
+    let watching = events_at(&obid, "/v1/events", "");
+    let before = cleared(&obid, &watching);
+    let plain = events_at(&obid, "/v1/events", "");
+    let blank = events_at(&obid, "/v1/events?after=", "Last-Event-ID: \r\n");
+    let live = cleared(&obid, &watching);
+    for followed in [plain, blank] {
+        let got = frames_to(&followed, &live);
+        assert_eq!(clears(&got), std::slice::from_ref(&live), "{got:?}");
+        assert!(got.iter().all(|frame| frame.0 != "resync"), "{got:?}");
+        assert!(
+            got.iter()
+                .all(|frame| frame.1.as_ref().is_some_and(|id| *id != before)),
+            "{got:?}"
+        );
+    }
+}
+
 /// A job titled "Alerts as data" whose agent asks for each of `calls` in turn, in `ask` mode.
 fn titled_asking(obid: &Obid, calls: Value) -> String {
     dispatch(
@@ -2252,4 +2487,261 @@ fn alerts_1_a_long_permission_gets_no_answers() {
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(listed[0]["title"], "Needs your OK: Alerts as data");
     assert_eq!(listed[0]["answers"], json!([]));
+}
+
+/// The names `GET /v1/status` serves in `capabilities`, each a string.
+fn served_capabilities(status: &Value) -> Vec<String> {
+    let list = status["capabilities"].as_array();
+    let list = list.unwrap_or_else(|| panic!("capabilities isn't a list: {status}"));
+    let names = list.iter().map(|name| name.as_str().map(str::to_owned));
+    let names = names.collect::<Option<Vec<_>>>();
+    names.unwrap_or_else(|| panic!("capabilities isn't all strings: {list:?}"))
+}
+
+/// CAPS-1: `capabilities` is a sorted list of strings with no duplicate, and holds `folders-v1`
+/// exactly when `folders` is `true`.
+#[test]
+fn caps_1_status_lists_capabilities() {
+    let folder = Folder::new("caps-1");
+    let (obid, _) = obid(&folder);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    let names = served_capabilities(&status);
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "capabilities isn't sorted");
+    sorted.dedup();
+    assert_eq!(names, sorted, "capabilities has a duplicate");
+    let folders = status["folders"].as_bool().unwrap();
+    assert_eq!(
+        names.iter().any(|name| name == "folders-v1"),
+        folders,
+        "{status}"
+    );
+    assert!(folders);
+}
+
+/// docs/runner-api.md and every docs/api/*.md, sorted, each with its path in the repository.
+fn api_docs() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let mut areas: Vec<String> = std::fs::read_dir(root.join("docs/api"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".md"))
+        .map(|name| format!("docs/api/{name}"))
+        .collect();
+    areas.sort();
+    std::iter::once("docs/runner-api.md".to_owned())
+        .chain(areas)
+        .filter_map(|file| {
+            let text = std::fs::read_to_string(root.join(&file)).ok()?;
+            Some((file, text))
+        })
+        .collect()
+}
+
+/// CAPS-2: the `GET /v1/status` section of the one doc that holds it (the heading's line and a
+/// `| Name |` table before the next `### ` heading), with that doc's path. None, or more than one,
+/// is an error naming the docs read, or each doc that holds it.
+fn status_section(docs: &[(String, String)]) -> Result<(String, String), String> {
+    let holding: Vec<(String, String)> = docs
+        .iter()
+        .filter_map(|(file, text)| {
+            let text = format!("\n{text}");
+            let section = text.split("\n### `GET /v1/status`\n").nth(1)?;
+            let section = section.split("\n### ").next().unwrap();
+            section
+                .lines()
+                .any(|line| line.starts_with("| Name |"))
+                .then(|| (file.clone(), section.to_owned()))
+        })
+        .collect();
+    match holding.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(format!(
+            "no API doc has a Capabilities table under GET /v1/status; read: {}",
+            docs.iter()
+                .map(|(file, _)| file.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        many => Err(format!(
+            "{} API docs have a Capabilities table under GET /v1/status: {}",
+            many.len(),
+            many.iter()
+                .map(|(file, _)| file.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// CAPS-2's search: an index line or a heading with no table doesn't hold the section.
+#[test]
+fn caps_2_the_status_section_is_in_exactly_one_api_doc() {
+    let docs = [
+        ("docs/runner-api.md", "# Index\n- [`GET /v1/status`](api/status.md)\n"),
+        ("docs/api/old.md", "## Status\n\n### `GET /v1/status`\n\nNo table.\n"),
+        (
+            "docs/api/status.md",
+            "### `GET /v1/status`\n\n| Name | What |\n|---|---|\n| `a` | b |\n\n### Next\n| Name |\n",
+        ),
+    ]
+    .map(|(file, text)| (file.to_owned(), text.to_owned()));
+    let (file, section) = status_section(&docs).unwrap();
+    assert_eq!(file, "docs/api/status.md");
+    assert_eq!(section, "\n| Name | What |\n|---|---|\n| `a` | b |\n");
+}
+
+#[test]
+fn caps_2_no_api_doc_with_the_status_section_names_the_docs_read() {
+    let docs = [
+        ("docs/runner-api.md", "### `GET /v1/status`\n\nNo table.\n"),
+        ("docs/api/jobs.md", "### `GET /v1/jobs`\n\n| Name |\n"),
+    ]
+    .map(|(file, text)| (file.to_owned(), text.to_owned()));
+    let error = status_section(&docs).unwrap_err();
+    assert!(
+        error.contains("docs/runner-api.md, docs/api/jobs.md"),
+        "{error}"
+    );
+}
+
+#[test]
+fn caps_2_two_api_docs_with_the_status_section_name_both() {
+    let doc = "### `GET /v1/status`\n\n| Name | What |\n|---|---|\n";
+    let docs = [
+        ("docs/runner-api.md", doc),
+        ("docs/api/jobs.md", "### `GET /v1/jobs`\n"),
+        ("docs/api/status.md", doc),
+    ]
+    .map(|(file, text)| (file.to_owned(), text.to_owned()));
+    let error = status_section(&docs).unwrap_err();
+    assert!(
+        error.contains("2 API docs") && error.contains("docs/runner-api.md, docs/api/status.md"),
+        "{error}"
+    );
+}
+
+/// CAPS-2: every name obid serves has a row in the Capabilities table under `GET /v1/status`, in
+/// docs/runner-api.md or the one docs/api/*.md that holds it, and every row's name is served.
+#[test]
+fn caps_2_every_capability_is_documented() {
+    let (file, section) = status_section(&api_docs()).unwrap_or_else(|error| panic!("{error}"));
+    let table = section
+        .lines()
+        .skip_while(|line| !line.starts_with("| Name |"));
+    let rows = table.skip(2).take_while(|line| line.starts_with('|'));
+    let documented: Vec<String> = rows
+        .map(|row| {
+            let cell = row.split('|').nth(1).unwrap().trim();
+            let name = cell
+                .strip_prefix('`')
+                .and_then(|cell| cell.strip_suffix('`'));
+            name.unwrap_or_else(|| panic!("a row's name isn't in backticks: {row}"))
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        !documented.is_empty(),
+        "no Capabilities table with rows under GET /v1/status"
+    );
+
+    let folder = Folder::new("caps-2");
+    let (obid, _) = obid(&folder);
+    let served = served_capabilities(&call(&obid, "GET", "/v1/status", None).body);
+    for name in &served {
+        assert!(
+            documented.contains(name),
+            "`{name}` is served but has no row in {file}"
+        );
+    }
+    for name in &documented {
+        assert!(
+            served.contains(name),
+            "`{name}` has a row in {file} but isn't served"
+        );
+    }
+}
+
+/// The keys of `GET /v1/status` a client from before CAPS decodes, with no `capabilities`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OldStatus {
+    runner: OldRunner,
+    accounts: Vec<Value>,
+    models: serde_json::Map<String, Value>,
+    max_running: u32,
+    running: u32,
+    cleared_at: Option<String>,
+    github: String,
+    checks: String,
+    permissions: serde_json::Map<String, Value>,
+    folders: bool,
+    receipts: bool,
+    scanner: serde_json::Map<String, Value>,
+    tools: Vec<Value>,
+    unreadable: Vec<Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct OldRunner {
+    version: String,
+    host: String,
+}
+
+/// CAPS-3: every key an older client decodes is still there with its old JSON type, and a decoder
+/// that doesn't know `capabilities` reads the status as before. swift_client.rs covers the Swift
+/// side (the phones' own `RunnerStatus`).
+#[test]
+fn caps_3_old_status_decoders_still_read() {
+    let folder = Folder::new("caps-3");
+    let (obid, _) = obid(&folder);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    assert!(status["runner"]["version"].is_string(), "{status}");
+    assert!(status["runner"]["host"].is_string(), "{status}");
+    for key in ["accounts", "tools", "unreadable"] {
+        assert!(status[key].is_array(), "{key}: {status}");
+    }
+    for key in ["models", "permissions", "scanner"] {
+        assert!(status[key].is_object(), "{key}: {status}");
+    }
+    for key in ["maxRunning", "running"] {
+        assert!(status[key].is_number(), "{key}: {status}");
+    }
+    for key in ["github", "checks"] {
+        assert!(status[key].is_string(), "{key}: {status}");
+    }
+    let cleared = status.get("clearedAt");
+    assert!(
+        cleared.is_some_and(|at| at.is_null() || at.is_string()),
+        "{status}"
+    );
+    assert_eq!(status["folders"], true);
+    assert!(status["receipts"].is_boolean(), "{status}");
+
+    let old: OldStatus = serde_json::from_value(status.clone()).unwrap();
+    assert_eq!(old.runner.version, status["runner"]["version"]);
+    assert_eq!(old.runner.host, status["runner"]["host"]);
+    assert_eq!(
+        old.accounts.len(),
+        status["accounts"].as_array().unwrap().len()
+    );
+    assert!(!old.models.is_empty() && old.permissions.contains_key("mode"));
+    assert_eq!(old.max_running, status["maxRunning"]);
+    assert_eq!(old.running, status["running"]);
+    assert_eq!(old.cleared_at.as_deref(), status["clearedAt"].as_str());
+    assert_eq!(
+        (old.github, old.checks),
+        ("owner".to_owned(), "no app".to_owned())
+    );
+    assert!(old.folders);
+    assert_eq!(old.receipts, status["receipts"]);
+    assert!(old.scanner.contains_key("gitleaks"));
+    assert_eq!(old.tools.len(), 3);
+    assert_eq!(
+        old.unreadable.len(),
+        status["unreadable"].as_array().unwrap().len()
+    );
 }

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Search } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { AGENTS, ago } from './mock';
+import { agentOf, ago } from './mock';
 import { TYPES, archivedTasks, useTasks } from './tasks';
 
 // how long the way out takes (the sink animation in app.css)
@@ -25,7 +25,7 @@ export default function ArchiveView({ leaving, covered = false, onClose, onGone,
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
   const all = archivedTasks();
-  const shown = all.filter((a) => !q || [a.who ?? '', a.title, typeLabel(a.type), AGENTS[a.agent].name].join(' ').toLowerCase().includes(q));
+  const shown = all.filter((a) => !q || [a.who ?? '', a.title, typeLabel(a.type), agentOf(a.agent).name].join(' ').toLowerCase().includes(q));
 
   // a timer, not animationend: animations don't run while the window is hidden
   useEffect(() => {
@@ -55,10 +55,10 @@ export default function ArchiveView({ leaving, covered = false, onClose, onGone,
             {shown.map((a) => {
               const inApp = tasks.some((t) => t.id === a.id);
               const body = <>
-                <BrandMark brand={AGENTS[a.agent].brand} size={16} mono />
+                <BrandMark brand={agentOf(a.agent).brand} size={16} mono />
                 <span className="archive-text">
                   <span className="archive-title">{a.who && <span className="archive-who">{a.who}</span>}{a.title}</span>
-                  <span className="archive-about">{typeLabel(a.type)} · {AGENTS[a.agent].name}</span>
+                  <span className="archive-about">{typeLabel(a.type)} · {agentOf(a.agent).name}</span>
                 </span>
                 <span className="archive-ago">{ago(a.finished)}</span>
               </>;

@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { config } from '../brain.config.js';
-import { generateBrain, normPath, patternMatches, readApiDoc } from '../generator/index.js';
+import { generateBrain, normPath, patternMatches, readApiDoc, readApiDocs } from '../generator/index.js';
 
 const brain = generateBrain(config);
 const lineAt = (file: string, line: number) => readFileSync(join(config.root, file), 'utf8').split('\n')[line - 1] ?? '';
@@ -44,10 +44,10 @@ describe('retired routes', () => {
     expect(count('doc-without-route').map(c => c.message)).toEqual([]);
     expect(count('gone-but-routed').map(c => c.message)).toEqual([]);
     const text = [
-      'A phone once paired a Watch with `POST /v1/watches`, and `GET /v1/nowhere` was promised.',
+      'A phone once sent its speech to `POST /v1/speech`, and `GET /v1/nowhere` was promised.',
       'A turn reaches `POST /v1/agent/mcp/conversation-<id>`.',
       '## Routes obid does not serve',
-      '- `POST /v1/watches` (gone 2026-11-02): the Swift runner\'s.',
+      '- `POST /v1/speech` (gone 2026-11-02): the Swift runner\'s.',
       '- `GET /v1/status` (gone 2026-11-02): listed by mistake.',
       '## After the list',
       'Then `PATCH /v1/elsewhere`.',
@@ -61,11 +61,39 @@ describe('retired routes', () => {
     expect([...doc.documented]).toEqual(['POST /v1/agent/mcp/{}']);
   });
 
+  it('retired_8_reads_every_api_doc', () => {
+    const first = [
+      'Status: `GET /v1/status`, and a phone once sent its speech to `POST /v1/speech`.',
+      'Promised: `GET /v1/nowhere`.',
+    ].join('\n');
+    const second = [
+      'Jobs: `GET /v1/jobs`.',
+      '## Routes obid does not serve',
+      '- `POST /v1/speech` (gone 2026-11-02): the Swift runner\'s.',
+      '## After the list',
+      'Then `PATCH /v1/elsewhere`.',
+    ].join('\n');
+    const doc = readApiDocs(
+      [{ file: 'runner-api.md', text: first }, { file: 'api/jobs.md', text: second }],
+      new Set(['GET /v1/status', 'GET /v1/jobs', 'POST /v1/speech']), 'Routes obid does not serve',
+    );
+    // documented in the second file only, and gone in the second file for a mention in the first
+    expect([...doc.documented]).toEqual(['GET /v1/status', 'GET /v1/jobs']);
+    expect(doc.checks.map(c => `${c.kind} ${c.ref} ${c.source!.file}:${c.source!.line}`)).toEqual([
+      'doc-without-route GET /v1/nowhere runner-api.md:2',
+      'doc-without-route PATCH /v1/elsewhere api/jobs.md:5',
+      'gone-but-routed POST /v1/speech api/jobs.md:3',
+    ]);
+    expect(doc.docRoutes.map(d => `${d.id} ${d.file}`)).toEqual([
+      'GET /v1/status runner-api.md', 'GET /v1/nowhere runner-api.md', 'GET /v1/jobs api/jobs.md', 'PATCH /v1/elsewhere api/jobs.md',
+    ]);
+    // the real docs: a list that reads nothing can't pass
+    expect(brain.docRoutes.length).toBeGreaterThan(0);
+    expect(brain.docRoutes.filter(d => d.file !== 'docs/runner-api.md')).toEqual([]);
+  });
+
   it('retired_9_the_swift_client_calls_only_served_routes', () => {
     const exceptions = [
-      'GET /v1/watches', // R03-07, the Watch's pairing
-      'POST /v1/watches', // R03-07, the Watch's pairing
-      'DELETE /v1/watches/{}', // R03-07, the Watch's pairing
       'POST /v1/jobs/{}/proposals/{}/file', // the task page's file-a-proposal button: removing it changes a screen, its own task
     ];
     const swift = count('call-without-route').filter(c => config.swiftClient.some(d => c.source?.file.startsWith(`${d}/`)) && c.source!.file.endsWith('.swift'));

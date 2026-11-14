@@ -21,10 +21,10 @@ export type Entry = { n?: number } & (
   // running: still thinking. text: only what the tool gives (Claude Code gives none, only how long)
   | { kind: 'thought'; text: string; seconds: number; running?: boolean }
   | { kind: 'you'; text: string; at: string }
-  | { kind: 'plan'; todos: { text: string; state: 'done' | 'running' | 'pending' }[] }
+  | { kind: 'plan'; todos: { text: string; state: 'done' | 'running' | 'pending' | (string & {}) }[] }
   | { kind: 'asked'; text: string; answer: string }
   // its detail is fetched by n when it opens on obid; the mock's come with theirs
-  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; summary?: string; state: 'done' | 'running' | 'failed' | 'declined'; seconds: number; meta?: string; detail?: Detail }
+  | { kind: 'tool'; tool: ToolKind; verb: string; target: string; summary?: string; state: 'done' | 'running' | 'failed' | 'declined' | (string & {}); seconds: number; meta?: string; detail?: Detail }
 );
 
 export const SESSIONS: Record<string, Entry[]> = {

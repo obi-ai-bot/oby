@@ -4,6 +4,7 @@
 //! whole. The single thread obid kept before (`home/conversation.json`) becomes the first one.
 
 use crate::api::{ApiError, Shared};
+use crate::delivery::{Delivery, Move, Replay};
 use crate::events::Events;
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
@@ -11,6 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -70,6 +72,20 @@ pub struct Turn {
     /// relayed turns that tell of it; one that doesn't reads `text`, as ever. Left out when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<Value>,
+    /// On the owner's words sent by `POST /v1/plans`: where they stand (crate::delivery).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+}
+
+impl Turn {
+    /// `who`'s turn saying `text`, with nothing else on it yet.
+    pub fn of(who: &str, text: String) -> Turn {
+        Turn {
+            who: who.into(),
+            text,
+            ..Turn::default()
+        }
+    }
 }
 
 /// The question an Oby turn asked, and its options.
@@ -134,6 +150,12 @@ struct Thread {
     /// The account its turns have moved off and said so ([`Conversations::moved_off`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     moved_off: Option<String>,
+    /// What its queued words need to be sent again, by their turn's id: never served.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    replays: BTreeMap<String, Replay>,
+    /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 /// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
@@ -170,7 +192,6 @@ pub const TASK_STATUSES: [&str; 5] = [
 /// One task of a conversation's own list (docs/runner-api.md, "obid only: the conversation
 /// manages its own work").
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Task {
     #[serde(default)]
     pub id: String,
@@ -180,6 +201,10 @@ pub struct Task {
     pub job: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Keys a newer obid wrote in the conversation's file, kept when it saves: never shown, and
+    /// never taken from an agent ([`checked_tasks`]).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 impl Task {
@@ -189,6 +214,13 @@ impl Task {
     }
 }
 
+/// `tasks` as an app or an agent sees them: without [`Task::extra`].
+fn shown(tasks: &[Task]) -> Vec<Task> {
+    let mut tasks = tasks.to_vec();
+    tasks.iter_mut().for_each(|t| t.extra.clear());
+    tasks
+}
+
 /// `tasks` as a list may hold them, ids given to those without (`t1`, `t2`, …, never one taken),
 /// or why not.
 pub fn checked_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>, String> {
@@ -196,6 +228,9 @@ pub fn checked_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>, String> {
         return Err(format!("A task list holds at most {TASKS} tasks."));
     }
     for task in &mut tasks {
+        if !task.extra.is_empty() {
+            return Err("A task holds only id, title, status, job and note.".into());
+        }
         task.title = task.title.trim().to_owned();
         if task.title.is_empty()
             || task.title.chars().count() > 200
@@ -265,7 +300,7 @@ impl Thread {
             "created": self.created,
             "lastActivity": self.last_activity(),
             "cursor": self.key().to_string(),
-            "tasks": self.tasks,
+            "tasks": shown(&self.tasks),
             "folders": self.folders,
         });
         // Only once there's something to say.
@@ -596,7 +631,8 @@ impl Conversations {
     /// those it has, or why they were refused. Words that are a repeat are `repeated` whatever
     /// their folders were, and add none; otherwise a refusal is `Folder`, and nothing is added.
     /// `attachments`: the files' paths (checked: crate::brain::validate_attachments), kept with the
-    /// conversation; the turn shows their names.
+    /// conversation; the turn shows their names. The turn is `queued`, and what a replay needs
+    /// (the paths, `signed`) is kept with it in the same write (crate::delivery).
     #[allow(clippy::too_many_arguments)]
     pub fn begin(
         &self,
@@ -607,6 +643,7 @@ impl Conversations {
         id: Option<String>,
         foreign: Option<String>,
         folders: Result<Vec<String>, String>,
+        signed: bool,
     ) -> Result<Begun, Error> {
         let mut threads = self.lock();
         if let Some(id) = id.as_deref()
@@ -637,12 +674,7 @@ impl Conversations {
         }
         let folders = folders.map_err(Error::Folder)?;
         let found = match target {
-            Target::Id(id) => Some(
-                threads
-                    .iter()
-                    .position(|t| t.id == id)
-                    .ok_or(Error::NoConversation)?,
-            ),
+            Target::Id(id) => Some(index_of(&threads, &id)?),
             Target::Latest => latest(&threads),
             Target::New => None,
         };
@@ -669,8 +701,8 @@ impl Conversations {
             });
             threads.len() - 1
         });
-        let had = threads[index].folders.clone();
-        let mut more = had.clone();
+        let kept = threads[index].clone();
+        let mut more = kept.folders.clone();
         for folder in folders {
             if !more.iter().any(|f| crate::folders::same(f, &folder)) {
                 more.push(folder);
@@ -683,36 +715,27 @@ impl Conversations {
             return Err(Error::TooManyFolders);
         }
         threads[index].folders = more;
-        let kept_uploads = threads[index].uploads.clone();
         for path in &attachments {
             if !threads[index].uploads.contains(path) {
                 threads[index].uploads.push(path.clone());
             }
         }
-        let added = self.add_asking(
-            &mut threads,
-            index,
-            "user",
-            said,
-            jobs,
-            false,
-            vec![],
-            id,
-            None,
-            foreign,
-            None,
-            names,
-            false,
-            vec![],
-        );
-        let turn = match added {
+        let id = id.unwrap_or_else(new_id);
+        let replay = threads[index].replays.entry(id.clone()).or_default();
+        (replay.attachments, replay.signed) = (attachments, signed);
+        let queued = Delivery {
+            status: "queued".into(),
+            ..Delivery::default()
+        };
+        let mut turn = Turn::of("user", said);
+        (turn.id, turn.jobs, turn.attachments, turn.delivery) = (id, jobs, names, Some(queued));
+        let turn = match self.add(&mut threads, index, turn, foreign) {
             Ok(turn) => turn.id,
             Err(e) => {
                 if found.is_none() {
                     threads.remove(index);
                 } else {
-                    threads[index].folders = had;
-                    threads[index].uploads = kept_uploads;
+                    threads[index] = kept;
                 }
                 return Err(e);
             }
@@ -751,7 +774,9 @@ impl Conversations {
         jobs: Vec<String>,
         foreign: Option<String>,
     ) -> Result<Turn, Error> {
-        self.append_as(id, who, text, jobs, false, vec![], None, foreign)
+        let mut turn = Turn::of(who, text);
+        turn.jobs = jobs;
+        self.append_as(id, turn, foreign)
     }
 
     /// Oby's turn in the conversation `id`, with the artifacts it made (`{id, version}` each): its
@@ -765,27 +790,9 @@ impl Conversations {
         artifacts: Vec<Value>,
         asked: Option<Asked>,
     ) -> Result<Turn, Error> {
-        let mut threads = self.lock();
-        let index = threads
-            .iter()
-            .position(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
-        self.add_asking(
-            &mut threads,
-            index,
-            "oby",
-            text,
-            jobs,
-            false,
-            artifacts,
-            None,
-            None,
-            None,
-            asked,
-            vec![],
-            false,
-            vec![],
-        )
+        let mut turn = Turn::of("oby", text);
+        (turn.jobs, turn.artifacts, turn.asked) = (jobs, artifacts, asked);
+        self.append_as(id, turn, None)
     }
 
     /// Oby's turn in the conversation `id` about another Oby, which never reaches a model
@@ -797,27 +804,9 @@ impl Conversations {
         foreign: Option<String>,
         asks: Vec<Value>,
     ) -> Result<Turn, Error> {
-        let mut threads = self.lock();
-        let index = threads
-            .iter()
-            .position(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
-        self.add_asking(
-            &mut threads,
-            index,
-            "oby",
-            text,
-            vec![],
-            false,
-            vec![],
-            None,
-            None,
-            foreign,
-            None,
-            vec![],
-            true,
-            asks,
-        )
+        let mut turn = Turn::of("oby", text);
+        (turn.relayed, turn.asks) = (true, asks);
+        self.append_as(id, turn, foreign)
     }
 
     /// A question's first card in the conversation `id`, on its latest turn that isn't relayed. No
@@ -826,10 +815,8 @@ impl Conversations {
     /// app with the card reads: a `turn` again would alert a phone.
     pub fn add_ask(&self, id: &str, card: Value) -> Result<(), Error> {
         let mut threads = self.lock();
-        let thread = threads
-            .iter_mut()
-            .find(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
+        let index = index_of(&threads, id)?;
+        let thread = &mut threads[index];
         let kept = thread.clone();
         let Some(turn) = thread.turns.iter_mut().rev().find(|t| !t.relayed) else {
             return Ok(());
@@ -845,6 +832,41 @@ impl Conversations {
         Ok(())
     }
 
+    /// Makes `change` on the delivery of each of `turns`, the owner's words in the conversation
+    /// `id` (crate::delivery), in one write; a refused move leaves its turn as it was, and a turn
+    /// with none (kept before deliveries) is left alone. Each turn moved goes out on a
+    /// `turnDelivery`, never a `turn` again, which would take back the answer's alert.
+    pub fn deliver(&self, id: &str, turns: &[String], change: &Move) {
+        let mut threads = self.lock();
+        let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        let kept = thread.clone();
+        let mut moved = vec![];
+        for turn in thread.turns.iter_mut().filter(|t| turns.contains(&t.id)) {
+            let Some(delivery) = turn.delivery.as_mut() else {
+                continue;
+            };
+            if delivery.apply(change) {
+                moved.push(serde_json::to_value(&*turn).unwrap_or_default());
+            } else {
+                let (turn, status) = (&turn.id, &delivery.status);
+                tracing::warn!("conversation {id}: turn {turn}: {status}, {change:?} refused");
+            }
+        }
+        if moved.is_empty() {
+            return;
+        }
+        if let Err(e) = self.write(thread) {
+            *thread = kept;
+            tracing::warn!("conversation {id}: its words' delivery wasn't kept: {e}");
+            return;
+        }
+        for turn in moved {
+            self.events.send("turnDelivery", turn);
+        }
+    }
+
     /// Oby's turn telling the conversation `id` how the job `job` ended ([`job_report`], #351).
     /// `foreign`: why the job's summary isn't on obid's allowlist (the job's own reason).
     pub fn job_ended(
@@ -854,7 +876,9 @@ impl Conversations {
         job: String,
         foreign: Option<String>,
     ) -> Result<Turn, Error> {
-        self.append_as(id, "oby", text, vec![job], true, vec![], None, foreign)
+        let mut turn = Turn::of("oby", text);
+        (turn.jobs, turn.ended) = (vec![job], true);
+        self.append_as(id, turn, foreign)
     }
 
     /// A new conversation titled `title`, with no turn yet: the one a routine's runs go to
@@ -920,7 +944,9 @@ impl Conversations {
         routine: Value,
     ) -> Result<Turn, Error> {
         let foreign = Some("a routine's run, in obid's words and its outcome".to_owned());
-        self.append_as(id, "oby", text, jobs, false, vec![], Some(routine), foreign)
+        let mut turn = Turn::of("oby", text);
+        (turn.jobs, turn.routine) = (jobs, Some(routine));
+        self.append_as(id, turn, foreign)
     }
 
     /// Whether Oby asked `question` in the conversation `id`, `option` one of its options, word
@@ -1034,88 +1060,21 @@ impl Conversations {
         self.lock().iter().any(|t| t.id == id)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn append_as(
-        &self,
-        id: &str,
-        who: &str,
-        text: String,
-        jobs: Vec<String>,
-        ended: bool,
-        artifacts: Vec<Value>,
-        routine: Option<Value>,
-        foreign: Option<String>,
-    ) -> Result<Turn, Error> {
+    /// [`Self::add`] in the conversation `id`.
+    fn append_as(&self, id: &str, turn: Turn, foreign: Option<String>) -> Result<Turn, Error> {
         let mut threads = self.lock();
-        let index = threads
-            .iter()
-            .position(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
-        self.add(
-            &mut threads,
-            index,
-            who,
-            text,
-            jobs,
-            ended,
-            artifacts,
-            None,
-            routine,
-            foreign,
-        )
+        let index = index_of(&threads, id)?;
+        self.add(&mut threads, index, turn, foreign)
     }
 
-    /// The turn, kept, written and announced: the conversation as it is now, then the turn.
-    #[allow(clippy::too_many_arguments)]
+    /// The turn, kept, written and announced: the conversation as it is now, then the turn. It's
+    /// stamped now, in its conversation, with a new id unless it has one.
     fn add(
         &self,
         threads: &mut [Thread],
         index: usize,
-        who: &str,
-        text: String,
-        jobs: Vec<String>,
-        ended: bool,
-        artifacts: Vec<Value>,
-        id: Option<String>,
-        routine: Option<Value>,
+        mut turn: Turn,
         foreign: Option<String>,
-    ) -> Result<Turn, Error> {
-        self.add_asking(
-            threads,
-            index,
-            who,
-            text,
-            jobs,
-            ended,
-            artifacts,
-            id,
-            routine,
-            foreign,
-            None,
-            vec![],
-            false,
-            vec![],
-        )
-    }
-
-    /// [`Self::add`], with the question the turn asks.
-    #[allow(clippy::too_many_arguments)]
-    fn add_asking(
-        &self,
-        threads: &mut [Thread],
-        index: usize,
-        who: &str,
-        text: String,
-        jobs: Vec<String>,
-        ended: bool,
-        artifacts: Vec<Value>,
-        id: Option<String>,
-        routine: Option<Value>,
-        foreign: Option<String>,
-        asked: Option<Asked>,
-        attachments: Vec<String>,
-        relayed: bool,
-        asks: Vec<Value>,
     ) -> Result<Turn, Error> {
         let sequence = next_sequence(threads);
         let thread = &mut threads[index];
@@ -1129,24 +1088,16 @@ impl Conversations {
             );
             thread.foreign = Some(why);
         }
-        let turn = Turn {
-            id: id.unwrap_or_else(new_id),
-            who: who.into(),
-            text,
-            at: obi_protocol::time::format(obi_protocol::time::now()),
-            jobs,
-            conversation: thread.id.clone(),
-            ended,
-            artifacts,
-            routine,
-            asked,
-            attachments,
-            relayed,
-            asks,
-        };
+        if turn.id.is_empty() {
+            turn.id = new_id();
+        }
+        turn.at = obi_protocol::time::format(obi_protocol::time::now());
+        turn.conversation = thread.id.clone();
         thread.turns.push(turn.clone());
         let excess = thread.turns.len().saturating_sub(KEPT);
-        thread.turns.drain(..excess);
+        for gone in thread.turns.drain(..excess) {
+            thread.replays.remove(&gone.id);
+        }
         thread.sequence = sequence;
         if let Err(error) = self.write(thread) {
             *thread = kept;
@@ -1194,10 +1145,7 @@ impl Conversations {
     ) -> Result<Vec<Turn>, Error> {
         let threads = self.lock();
         let thread = match (id, before) {
-            (Some(id), _) => threads
-                .iter()
-                .find(|t| t.id == id)
-                .ok_or(Error::NoConversation)?,
+            (Some(id), _) => &threads[index_of(&threads, id)?],
             (None, Some(turn)) => threads
                 .iter()
                 .find(|t| t.turns.iter().any(|t| t.id == turn))
@@ -1286,10 +1234,8 @@ impl Conversations {
         talk_account: Option<Option<String>>,
     ) -> Result<Value, Error> {
         let mut threads = self.lock();
-        let thread = threads
-            .iter_mut()
-            .find(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
+        let index = index_of(&threads, id)?;
+        let thread = &mut threads[index];
         let folders = folders.map(|f| f.apply(&thread.folders)).transpose()?;
         let kept = thread.clone();
         if let Some(title) = title {
@@ -1319,21 +1265,16 @@ impl Conversations {
     /// wrote it.
     pub fn tasks(&self, id: &str) -> Result<(Vec<Task>, bool), Error> {
         let threads = self.lock();
-        let thread = threads
-            .iter()
-            .find(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
-        Ok((thread.tasks.clone(), thread.tasks_tainted))
+        let thread = &threads[index_of(&threads, id)?];
+        Ok((shown(&thread.tasks), thread.tasks_tainted))
     }
 
     /// Replaces the task list of the conversation `id` (`tainted`: written in a turn that read
     /// something untrusted), kept, written and announced.
     pub fn set_tasks(&self, id: &str, tasks: Vec<Task>, tainted: bool) -> Result<(), Error> {
         let mut threads = self.lock();
-        let thread = threads
-            .iter_mut()
-            .find(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
+        let index = index_of(&threads, id)?;
+        let thread = &mut threads[index];
         let kept = (
             std::mem::replace(&mut thread.tasks, tasks),
             std::mem::replace(&mut thread.tasks_tainted, tainted),
@@ -1395,10 +1336,7 @@ impl Conversations {
     /// the files attached to its words, for the caller to remove ([`crate::brain::drop_uploads`]).
     pub fn delete(&self, id: &str) -> Result<Vec<String>, Error> {
         let mut threads = self.lock();
-        let index = threads
-            .iter()
-            .position(|t| t.id == id)
-            .ok_or(Error::NoConversation)?;
+        let index = index_of(&threads, id)?;
         let gone = self.forget(&mut threads, index);
         drop(threads);
         self.end_forgotten();
@@ -1807,6 +1745,14 @@ pub fn excerpt(text: &str, words: &[String]) -> String {
     cut
 }
 
+/// Where the conversation `id` is in `threads`.
+fn index_of(threads: &[Thread], id: &str) -> Result<usize, Error> {
+    threads
+        .iter()
+        .position(|t| t.id == id)
+        .ok_or(Error::NoConversation)
+}
+
 /// The conversation with the latest turn.
 fn latest(threads: &[Thread]) -> Option<usize> {
     (0..threads.len())
@@ -2107,6 +2053,7 @@ mod tests {
                 .send(crate::events::Event {
                     name: "job",
                     data: serde_json::json!({"id": id, "status": status}),
+                    id: None,
                 })
                 .unwrap();
         }
@@ -2183,6 +2130,7 @@ mod tests {
             status: status.into(),
             job: None,
             note: None,
+            extra: Default::default(),
         };
         let checked = checked_tasks(vec![
             task("", " Fix it ", "pending"),
@@ -2201,6 +2149,13 @@ mod tests {
         let mut noted = task("", "x", "blocked");
         noted.note = Some("n".repeat(501));
         assert!(checked_tasks(vec![noted]).is_err());
+        // An agent's task holds only the keys obid knows: one more is refused, never kept.
+        let mut more = task("", "x", "pending");
+        more.extra.insert("fromAnAgent".into(), json!(1));
+        assert_eq!(
+            checked_tasks(vec![more]).unwrap_err(),
+            "A task holds only id, title, status, job and note."
+        );
         assert!(!task("", "x", "cancelled").open() && task("", "x", "blocked").open());
     }
 
@@ -2611,6 +2566,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// HOME-10 (docs/contracts/home.md): keys a newer obid wrote on a conversation and on a task of
+    /// its list stay in its file when this obid saves it, and no summary or task list shows them.
+    #[test]
+    fn home_10_a_conversations_unknown_keys_survive_a_save() {
+        let home = std::env::temp_dir().join(format!("obid-newer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let conversations = super::Conversations::open(&home, crate::events::Events::new());
+        let id = conversations.start_for("Newer").unwrap();
+        let task = super::Task {
+            id: "t1".into(),
+            title: "Fix it".into(),
+            status: "pending".into(),
+            job: None,
+            note: None,
+            extra: Default::default(),
+        };
+        conversations.set_tasks(&id, vec![task], false).unwrap();
+        drop(conversations);
+        let file = home.join("conversations").join(format!("{id}.json"));
+        let mut kept: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        kept["fromANewerObid"] = json!({"a": 1});
+        kept["tasks"][0]["dueBy"] = json!("friday");
+        std::fs::write(&file, kept.to_string()).unwrap();
+        let conversations = super::Conversations::open(&home, crate::events::Events::new());
+        let summary = conversations
+            .change(&id, None, Some(true), None, None)
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved["pinned"], true);
+        assert_eq!(saved["fromANewerObid"], json!({"a": 1}));
+        assert_eq!(saved["tasks"][0]["dueBy"], "friday");
+        assert_eq!(summary["fromANewerObid"], serde_json::Value::Null);
+        let shown =
+            json!({"id": "t1", "title": "Fix it", "status": "pending", "job": null, "note": null});
+        assert_eq!(summary["tasks"][0], shown);
+        let (tasks, _) = conversations.tasks(&id).unwrap();
+        assert!(tasks[0].extra.is_empty(), "an agent never reads them");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// MERGING-30: a job whose own check went without the declared secrets because it reached
     /// chatgpt.com ends into its conversation (`tell`) without marking it; one that isn't the
     /// owner's own still does.
@@ -2628,6 +2625,7 @@ mod tests {
                     None,
                     None,
                     Ok(vec![]),
+                    false,
                 )
                 .unwrap()
                 .conversation
@@ -2683,6 +2681,7 @@ mod tests {
                 None,
                 None,
                 Ok(vec![]),
+                false,
             )
             .unwrap()
             .conversation;
@@ -2722,6 +2721,7 @@ mod tests {
                 None,
                 Some("words no app of the owner's signed".into()),
                 Ok(vec![]),
+                false,
             )
             .unwrap()
             .conversation;
@@ -2800,6 +2800,7 @@ mod tests {
                 None,
                 None,
                 Ok(vec![]),
+                false,
             )
             .unwrap()
             .conversation;
@@ -2844,6 +2845,91 @@ mod tests {
         assert_eq!(threads[0].turns.last().unwrap().text, "accepted");
         assert!(!threads[0].turns.iter().any(|turn| turn.text == "rejected"));
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// DELIVERY-1: the owner's words are written `queued`, and in the same file what a replay
+    /// needs (the attachments' paths, `signed`), which nothing serves; a replay that doesn't say
+    /// `signed` reads as unsigned.
+    #[test]
+    fn delivery_1_queued_words_keep_what_a_replay_needs() {
+        let home = std::env::temp_dir().join(format!("obid-delivery-{}", uuid::Uuid::new_v4()));
+        let conversations = super::Conversations::open(&home, crate::events::Events::new());
+        let paths = vec![
+            "attachments/a/notes.md".to_owned(),
+            "attachments/b/shot.png".into(),
+        ];
+        let begun = conversations
+            .begin(
+                super::Target::New,
+                "Look at these".into(),
+                vec!["j1".into(), "j2".into()],
+                paths.clone(),
+                None,
+                None,
+                Ok(vec![]),
+                true,
+            )
+            .unwrap();
+        let file = conversations
+            .dir
+            .join(format!("{}.json", begun.conversation));
+        let kept: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let turn = &kept["turns"][0];
+        assert_eq!(turn["id"], begun.turn.as_str());
+        assert_eq!(turn["delivery"], json!({"status": "queued"}));
+        assert_eq!(turn["jobs"], json!(["j1", "j2"]));
+        assert_eq!(turn["attachments"], json!(["notes.md", "shot.png"]));
+        assert_eq!(
+            kept["replays"],
+            json!({ begun.turn.as_str(): {"attachments": paths, "signed": true} })
+        );
+        let served = conversations
+            .page(Some(&begun.conversation), None, 10)
+            .unwrap();
+        for shown in [serde_json::to_value(&served[0]).unwrap(), json!(served)] {
+            let text = shown.to_string();
+            assert!(
+                !text.contains("signed") && !text.contains("attachments/a"),
+                "{text}"
+            );
+        }
+        let unsaid: super::Replay = serde_json::from_value(json!({"attachments": []})).unwrap();
+        assert!(!unsaid.signed);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// DELIVERY-5: a conversation kept before deliveries reads as it did, and a move asked of its
+    /// words changes nothing, sends nothing and writes nothing.
+    #[test]
+    fn delivery_5_an_old_conversation_file_reads_as_before() {
+        let home = std::env::temp_dir().join(format!("obid-delivery-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let dir = home.join("conversations");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("{id}.json"));
+        let old = json!({"id": id, "title": "Old", "pinned": false,
+            "created": "2026-01-01T00:00:00Z", "sequence": 1, "foreign": null,
+            "turns": [{"id": "t1", "who": "user", "text": "Fix it",
+                       "at": "2026-01-01T00:00:00Z", "conversation": id}]});
+        std::fs::write(&file, old.to_string()).unwrap();
+        let events = crate::events::Events::new();
+        let conversations = super::Conversations::open(&home, events.clone());
+        let turns = conversations.page(Some(&id), None, 10).unwrap();
+        assert!(turns[0].delivery.is_none());
+        assert!(
+            serde_json::to_value(&turns[0])
+                .unwrap()
+                .get("delivery")
+                .is_none()
+        );
+        let mut received = events.subscribe();
+        for change in [super::Move::Start, super::Move::Cancel] {
+            conversations.deliver(&id, &["t1".into()], &change);
+        }
+        assert!(received.try_recv().is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), old.to_string().into_bytes());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// HOME-3: a conversation whose removed account couldn't be forgotten on disk keeps its

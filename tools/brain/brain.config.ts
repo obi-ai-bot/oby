@@ -10,7 +10,7 @@ const APP = 'apps/electron/src';
 export const config: BrainConfig = {
   name: 'Oby',
   root: resolve(fileURLToPath(new URL('.', import.meta.url)), '../..'),
-  obid: { extractor: 'tools/brain/obid-extract', crate: 'core/crates/obid', apiDoc: 'docs/runner-api.md', goneSection: 'Routes obid does not serve' },
+  obid: { extractor: 'tools/brain/obid-extract', crate: 'core/crates/obid', apiDocs: ['docs/runner-api.md', 'docs/api/*.md'], goneSection: 'Routes obid does not serve' },
   app: {
     renderer: `${APP}/renderer/src`,
     main: [`${APP}/main`, `${APP}/preload`],
@@ -126,7 +126,7 @@ export const config: BrainConfig = {
     },
   ],
   internalHosts: ['34-45-0-97.sslip.io', 'tail8de49b'],
-  hostScan: ['core/crates', 'apps/electron/src', 'apps/ios', 'apps/shared', 'mcp', 'docs', 'scripts', 'install', 'README.md', 'AGENTS.md'],
+  hostScan: ['core/crates', 'apps/electron/src', 'apps/ios', 'apps/shared', 'docs', 'scripts', 'install', 'README.md', 'AGENTS.md'],
   // The iPhone's client (Runner.swift, shared with the Watch) and the iPhone app beside it
   swiftClient: ['apps/shared', 'apps/ios'],
 };

@@ -3197,6 +3197,61 @@ mod tests {
         }
     }
 
+    /// Every byte obid adds to a session's fixed prompt is a reviewed edit of prompt-budget.txt.
+    #[test]
+    fn prompt_budget_holds() {
+        let job = crate::job::Job::new(
+            String::new(),
+            String::new(),
+            "build".into(),
+            String::new(),
+            "claude".into(),
+            String::new(),
+        );
+        let measured = BTreeMap::from([
+            ("orientation", ORIENTATION.len()),
+            ("tetrix", TETRIX.len()),
+            (
+                "oby_tools",
+                serde_json::to_vec(&super::super::tools::list())
+                    .unwrap()
+                    .len(),
+            ),
+            ("owner_prompt", crate::jobs::owner_prompt(&job).len()),
+        ]);
+        let mut budget = BTreeMap::new();
+        for line in include_str!("../../prompt-budget.txt").lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (name, bytes) = line
+                .split_once(' ')
+                .and_then(|(name, bytes)| Some((name, bytes.parse::<usize>().ok()?)))
+                .unwrap_or_else(|| panic!("prompt-budget.txt: can't read the line {line:?}"));
+            assert!(
+                measured.contains_key(name),
+                "prompt-budget.txt: {name} isn't a text prompt_budget_holds measures"
+            );
+            assert!(
+                budget.insert(name, bytes).is_none(),
+                "prompt-budget.txt: {name} is there twice"
+            );
+        }
+        for (name, size) in measured {
+            let Some(&allowed) = budget.get(name) else {
+                panic!("prompt-budget.txt has no line for {name}: add `{name} {size}`");
+            };
+            assert!(
+                size <= allowed,
+                "{name} grew to {size} bytes, over its budget of {allowed}: raise it to {size} in prompt-budget.txt in a reviewed edit"
+            );
+            assert!(
+                size >= allowed,
+                "{name} is {size} bytes, under its budget of {allowed}: write {size} in prompt-budget.txt"
+            );
+        }
+    }
+
     /// A stand-in for a waiting Claude Code (`cat`, which waits on its stdin), kept for `account`
     /// on `config_dir` with `session`.
     async fn waiting(account: &str, config_dir: Option<&str>, session: &str) -> Warm {

@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
 import { MODES } from './modes';
-import { AGENTS, ASK_LABEL, STEER, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './mock';
+import { ASK_LABEL, agentOf, STEER, TELL, ago, type CheckRow, type Job, type Page, type Stage, type ToolGroup } from './mock';
 import { api, type PublishChoices } from './obid';
 import { answer, changeCheck, changeMode, markSeen, openOnGitHub, type Task } from './tasks';
 import { prName, prUrl } from './jobPage';
@@ -41,7 +41,9 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
   // top right: how long an open task has been going; when a done one finished
   const done = task.status === 'done';
   const when = done ? `${ago(j.finished ?? j.created)} ago` : ago(j.created);
-  const result = done ? resultLine(task) : null;
+  // a status this build doesn't know has no result to tell (docs/contracts/wire.md, WIRE-3)
+  const ended = done && !task.unknown;
+  const result = ended ? resultLine(task) : null;
 
   return (
     <article
@@ -68,7 +70,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
         <span className="tc-ago">{when}</span>
       </header>
       <p className="tc-meta">
-        {AGENTS[j.agent].name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
+        {agentOf(j.agent).name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
         {/* on its page, how much the agent may do on its own; a click changes it */}
         {page?.mode && !done && (
           <button className="tc-mode" aria-haspopup="menu" aria-expanded={!!modeAt}
@@ -108,7 +110,7 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
       {alone && <div className="tc-more">
         <div>
           {/* done: what it produced first; how it got there after */}
-          {done && (j.summary || result) && (
+          {ended && (j.summary || result) && (
             <Section title="Result">
               {j.summary && <p className="tc-report">{j.summary}</p>}
               {result}
@@ -224,7 +226,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
 // On the card a pick shows as a check line; in the conversation it shows as
 // your reply, and the block just loses its buttons. onAnswer: told after a
 // pick (Home's stack, to send the card away). A check's Edit opens the command
-// in a field, in place of the choices: Use it keeps what's typed.
+// in a field, in place of the choices: Use it keeps what's typed. A kind this build doesn't know
+// is a gray label with no choices, not even Later (docs/contracts/wire.md, WIRE-2).
 export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 'id' | 'answer'> & { job: Pick<Task['job'], 'ask'> }; inChat?: boolean; onAnswer?: (option: string) => void }) {
   const ask = task.job.ask!;
   // a click before its words have shown answers nothing: on Home, a double-click on the card
@@ -235,7 +238,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
   const pick = (o: string, words?: string) => { if (performance.now() - shownAt < 500) return; answer(task.id, o, words); onAnswer?.(o); };
   return (
     <div className={`tc-ask${ask.fullText ? ' is-full' : ''}${ask.steer ? ' is-steer' : ''}`}>
-      <span className={`tc-ask-kind is-${ask.kind}`}>{ask.label ?? ASK_LABEL[ask.kind] ?? ask.kind}</span>
+      <span className={`tc-ask-kind is-${ask.unknown ? 'unknown' : ask.kind}`}>{ask.label ?? ASK_LABEL[ask.kind] ?? ask.kind}</span>
       <p className="tc-ask-head">{ask.headline}</p>
       <p className="tc-ask-text">{ask.text}</p>
       {ask.detail && editing === null && <pre className="tc-code">{ask.detail}</pre>}
@@ -247,7 +250,7 @@ export function AskBlock({ task, inChat = false, onAnswer }: { task: Pick<Task, 
           // Tell it something: the owner's own words, as the agent's answer
           ? <CheckField initial="" label="Your answer" use="Send" max={2000} onUse={(words) => words && pick(TELL, words)} onCancel={() => setEditing(null)} />
           : <CheckField initial={editing} onUse={(check) => check && pick('Edit', check)} onCancel={() => setEditing(null)} />
-      ) : (
+      ) : ask.unknown ? null : (
         <>
           {ask.steer && (
             // Oby's escalation: the box that steers the task, as its page's (TASKS-17); Done stays
@@ -404,7 +407,7 @@ function Activity({ counts, groups }: { counts: [number, string][]; groups: Tool
 }
 const GroupMark = ({ state }: { state: ToolGroup['state'] }) => (
   <span className="tc-group-mark">
-    {state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${state === 'running' ? 'is-working' : 'is-failed'}`} />}
+    {state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${state === 'running' ? 'is-working' : state === 'failed' ? 'is-failed' : 'is-queued'}`} />}
   </span>
 );
 
@@ -486,19 +489,21 @@ function Progress({ stages }: { stages: Stage[] }) {
 // you, a grey ring still to come, a short grey dash if skipped (it didn't
 // apply), a red dot if it failed;
 // done, though, a filled green circle with a check, as on the Mac's job screen.
+// A state this build doesn't know: the ring still to come, named as obid names it
+// (docs/contracts/wire.md, WIRE-5).
 type StageMark = Stage['state'] | 'needs';
-const STAGE_DOT: Record<Exclude<StageMark, 'done' | 'skipped'>, string> = {
+const STAGE_DOT: Partial<Record<StageMark, string>> = {
   current: 'is-working', needs: 'is-needs', upcoming: 'is-queued', failed: 'is-failed',
 };
-const STAGE_LABEL: Record<StageMark, string> = {
+const STAGE_LABEL: Partial<Record<StageMark, string>> = {
   done: 'Done', current: 'Working', needs: 'Needs you', upcoming: 'To come', skipped: 'Skipped', failed: 'Failed',
 };
 function StageIcon({ state }: { state: StageMark }) {
   return (
-    <span className="tc-mark" role="img" aria-label={STAGE_LABEL[state]}>
+    <span className="tc-mark" role="img" aria-label={STAGE_LABEL[state] ?? state}>
       {state === 'done' ? <span className="tc-mark-done"><Check size={9} strokeWidth={3.2} /></span>
         : state === 'skipped' ? <span className="tc-mark-skip" />
-          : <span className={`status-dot ${STAGE_DOT[state]}`} />}
+          : <span className={`status-dot ${STAGE_DOT[state] ?? 'is-queued'}`} />}
     </span>
   );
 }

@@ -2,7 +2,8 @@ import { useSyncExternalStore } from 'react';
 
 // The working folders a conversation's work is in (the message box's Select working folder…,
 // the Mac's own picker: main's pick-folders), by conversation. Once obid takes them (its status
-// says folders: true, docs/contracts/folders.md) they're obid's: shown from its conversations
+// lists `folders-v1`, or says folders: true when it lists nothing: shared/capabilities.ts,
+// docs/contracts/folders.md) they're obid's: shown from its conversations
 // (live.ts: takeFolders) and changed there (PATCH, sendFoldersBy). An older obid takes none, and
 // the app keeps them itself, remembered across launches.
 const KEY = 'oby.folders';

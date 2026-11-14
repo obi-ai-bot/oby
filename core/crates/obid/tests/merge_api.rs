@@ -2703,7 +2703,7 @@ fn merging_41_obids_own_push_turns_it_off_at_once() {
         &folder,
         PERSON,
         &["person", "running"],
-        |_| {},
+        |remote| pushes_into_calls(&folder, remote),
         |_| {},
         "3600",
     );
@@ -2713,7 +2713,6 @@ fn merging_41_obids_own_push_turns_it_off_at_once() {
     });
     std::thread::sleep(std::time::Duration::from_secs(1));
     assert_eq!(disarms(&folder), 0);
-    let reads = calls(&folder.0).matches("pr view 7").count();
     let told = call(
         &obid,
         "POST",
@@ -2731,7 +2730,39 @@ fn merging_41_obids_own_push_turns_it_off_at_once() {
     assert_eq!(disarms(&folder), 1);
     let sent = off["outgoing"].as_array().unwrap();
     assert!(sent.iter().any(|o| o["action"] == "autoMergeOff"), "{off}");
-    assert_eq!(calls(&folder.0).matches("pr view 7").count(), reads);
+    // No read of the pull request from obid's push to the disarm: the reads before the push are
+    // the armed pull request's own, every 30 seconds.
+    let disable = format!("|pr merge 7 --repo {REPO} --disable-auto");
+    let (calls, pushed, disarmed) = within(30, "the push and the disarm in gh's calls", || {
+        let calls = calls(&folder.0);
+        let lines: Vec<&str> = calls.lines().collect();
+        let pushed = lines
+            .iter()
+            .position(|l| l.starts_with("|push refs/heads/oby/fix-7 "))?;
+        let disarmed = lines.iter().position(|l| l.ends_with(&disable))?;
+        Some((calls.clone(), pushed, disarmed))
+    });
+    assert!(pushed < disarmed, "{calls}");
+    let lines: Vec<&str> = calls.lines().collect();
+    let read = lines[pushed..disarmed]
+        .iter()
+        .any(|l| l.contains("pr view 7"));
+    assert!(!read, "{calls}");
+}
+
+/// Has `remote` write each push it takes into gh's `calls`, as a `|push <ref> <commit>` line, so a
+/// test can place gh's calls around obid's push.
+fn pushes_into_calls(folder: &Folder, remote: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = remote.join("hooks/post-receive");
+    std::fs::create_dir_all(remote.join("hooks")).unwrap();
+    let calls = folder.0.join("gh/calls");
+    let script = format!(
+        "#!/bin/sh\nwhile read old new ref; do printf '|push %s %s\\n' \"$ref\" \"$new\" >> '{}'; done\n",
+        calls.display()
+    );
+    std::fs::write(&hook, script).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// MERGING-41: only optional checks running (`UNSTABLE`) isn't GitHub's alone to hold: gh's
@@ -3396,19 +3427,19 @@ fn merging_24_a_follow_ups_push_settles_the_tasks_open_card() {
             .into_iter()
             .find(|c| c["id"] == format!("merge-ready-{FOLLOW_UP}-{pushed}"))
     });
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // The task's card is settled, with no answer.
+    let settled = within(30, "the task's card is kept, settled", || {
+        call(&obid, "GET", "/v1/inbox?state=done", None)
+            .body
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["id"] == first["id"])
+            .cloned()
+    });
     let open = open_merge_cards(&obid);
     assert_eq!(open.len(), 1, "{open:?}");
     assert_eq!(open[0]["id"], card["id"]);
-    // The task's card is settled, with no answer.
-    let done = call(&obid, "GET", "/v1/inbox?state=done", None).body;
-    let settled = done
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|c| c["id"] == first["id"])
-        .cloned()
-        .unwrap_or_else(|| panic!("the task's card is kept, settled: {done}"));
     assert!(!settled["done"].is_null(), "{settled}");
     assert!(settled["answer"].is_null(), "{settled}");
     let task = job(&obid);

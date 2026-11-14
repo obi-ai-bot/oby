@@ -43,8 +43,6 @@ final class Notifications: NSObject, UIApplicationDelegate, UNUserNotificationCe
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories(Self.categories)
-        // The watch's line to the runner goes through this phone, even while Oby is in the background.
-        WatchRelay.shared.start(phone)
         return true
     }
 

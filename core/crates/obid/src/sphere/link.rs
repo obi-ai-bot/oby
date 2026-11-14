@@ -3481,6 +3481,7 @@ mod tests {
             start: None,
             github: None,
             watch: None,
+            extra: Default::default(),
         };
         link.lock().inbox.insert(legacy.id.clone(), legacy.clone());
         let accept = json!({"answer": inbox::ACCEPT}).to_string();

@@ -2873,3 +2873,265 @@ fn taskconv_5_a_task_from_a_conversation_keeps_it() {
     let listed = call(&obid, "GET", "/v1/conversations", None).body;
     assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Where the owner's words stand (docs/contracts/deliveries.md).
+
+/// The owner's turn of `words` in the conversation `id`, as `GET /v1/conversation` serves it.
+fn user_turn(obid: &Obid, id: &str, words: &str) -> serde_json::Value {
+    conversation_turns(obid, id)
+        .into_iter()
+        .find(|t| t["who"] == "user" && t["text"] == words)
+        .unwrap_or_else(|| panic!("no turn says {words}"))
+}
+
+/// Waits until the owner's turn of `words` in `id` reads `status`, and gives it.
+fn reads(obid: &Obid, id: &str, words: &str, status: &str) -> serde_json::Value {
+    within(15, &format!("{words} reads {status}"), || {
+        conversation_turns(obid, id)
+            .into_iter()
+            .find(|t| t["who"] == "user" && t["text"] == words)
+            .filter(|t| t["delivery"]["status"] == status)
+    })
+}
+
+/// Every event that came, in order, until `enough` says so.
+fn seen_until(
+    events: &std::sync::mpsc::Receiver<(String, serde_json::Value)>,
+    mut enough: impl FnMut(&[(String, serde_json::Value)]) -> bool,
+) -> Vec<(String, serde_json::Value)> {
+    let mut seen = vec![];
+    while !enough(&seen) {
+        match events.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(event) => seen.push(event),
+            Err(_) => panic!("within 30 seconds, the events were {seen:?}"),
+        }
+    }
+    seen
+}
+
+/// The statuses the `turnDelivery` events in `seen` gave the turn `id`, each with its `by`.
+fn moves_of(seen: &[(String, serde_json::Value)], id: &str) -> Vec<String> {
+    seen.iter()
+        .filter(|(name, data)| name == "turnDelivery" && data["id"] == id)
+        .map(|(_, data)| {
+            let delivery = &data["delivery"];
+            match delivery["by"].as_str() {
+                Some(by) => format!("{}:{by}", delivery["status"].as_str().unwrap()),
+                None => delivery["status"].as_str().unwrap().to_owned(),
+            }
+        })
+        .collect()
+}
+
+/// DELIVERY-1: the owner's words are on disk `queued` before the agent starts, then `starting`,
+/// `running` in their own turn, and `answered` once Oby's answer is kept; only their first change
+/// is a `turn` event.
+#[test]
+fn delivery_1_words_are_queued_then_running_then_answered() {
+    let folder = Folder::new("delivery-1");
+    let obid = started_harness(&folder);
+    let events = follow_events(&obid);
+    let answer = said_anew(&obid, "SAY Fine.");
+    assert_eq!(answer["text"], "Fine.", "{answer}");
+    let id = answer["conversation"].as_str().unwrap();
+    let own = user_turn(&obid, id, "SAY Fine.")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let seen = seen_until(&events, |seen| {
+        moves_of(seen, &own)
+            .last()
+            .is_some_and(|m| m.starts_with("answered"))
+    });
+    let turns: Vec<&serde_json::Value> = seen
+        .iter()
+        .filter(|(name, _)| name == "turn")
+        .map(|(_, data)| data)
+        .collect();
+    let mine: Vec<_> = turns.iter().filter(|t| t["id"] == own.as_str()).collect();
+    assert_eq!(mine.len(), 1, "{seen:?}");
+    assert_eq!(mine[0]["delivery"], json!({"status": "queued"}));
+    assert_eq!(
+        moves_of(&seen, &own),
+        [
+            "starting".to_owned(),
+            format!("running:{own}"),
+            format!("answered:{own}")
+        ]
+    );
+    let at =
+        |found: &dyn Fn(&(String, serde_json::Value)) -> bool| seen.iter().position(found).unwrap();
+    let obys = at(&|(name, data)| name == "turn" && data["who"] == "oby");
+    let answered =
+        at(&|(name, data)| name == "turnDelivery" && data["delivery"]["status"] == "answered");
+    assert!(obys < answered, "{seen:?}");
+    let delivered = json!({"status": "answered", "by": own});
+    assert_eq!(user_turn(&obid, id, "SAY Fine.")["delivery"], delivered);
+    let file: serde_json::Value =
+        serde_json::from_str(&read(obid.home.join(format!("conversations/{id}.json")))).unwrap();
+    let kept = file["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == own.as_str())
+        .unwrap();
+    assert_eq!(kept["delivery"], delivered);
+}
+
+/// DELIVERY-2: words said while a turn is under way stay `queued`; the next turn takes them all,
+/// `running` and then `answered` by the latest's turn, and only the latest's request carries the
+/// reply.
+#[test]
+fn delivery_2_words_said_meanwhile_are_answered_by_one_turn() {
+    let folder = Folder::new("delivery-2");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let events = follow_events(&obid);
+    let send = |words: &str| {
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": words, "conversation": id})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        answer.body
+    };
+    let (first, one, two) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| send("LINGER 5000"));
+        reads(&obid, &id, "LINGER 5000", "running");
+        let one = scope.spawn(|| send("SAY one"));
+        reads(&obid, &id, "SAY one", "queued");
+        let two = scope.spawn(|| send("SAY two"));
+        reads(&obid, &id, "SAY two", "queued");
+        assert_eq!(
+            user_turn(&obid, &id, "SAY one")["delivery"]["status"],
+            "queued"
+        );
+        assert_eq!(
+            user_turn(&obid, &id, "LINGER 5000")["delivery"]["status"],
+            "running"
+        );
+        (
+            first.join().unwrap(),
+            one.join().unwrap(),
+            two.join().unwrap(),
+        )
+    });
+    assert_eq!(first["text"], "waited", "{first}");
+    assert_eq!(one["kind"], "none", "{one}");
+    assert_eq!(two["text"], "two", "{two}");
+    let (linger, one, two) = (
+        user_turn(&obid, &id, "LINGER 5000")["id"].clone(),
+        user_turn(&obid, &id, "SAY one")["id"].clone(),
+        user_turn(&obid, &id, "SAY two")["id"].clone(),
+    );
+    let (one, two) = (one.as_str().unwrap(), two.as_str().unwrap());
+    let seen = seen_until(&events, |seen| {
+        [one, two].iter().all(|turn| {
+            moves_of(seen, turn)
+                .last()
+                .is_some_and(|m| m.starts_with("answered"))
+        })
+    });
+    for turn in [one, two] {
+        assert_eq!(
+            moves_of(&seen, turn),
+            [
+                "starting".to_owned(),
+                format!("running:{two}"),
+                format!("answered:{two}")
+            ]
+        );
+        let delivery = &user_turn_by_id(&obid, &id, turn)["delivery"];
+        assert_eq!(*delivery, json!({"status": "answered", "by": two}));
+    }
+    let linger = linger.as_str().unwrap();
+    let delivery = &user_turn_by_id(&obid, &id, linger)["delivery"];
+    assert_eq!(*delivery, json!({"status": "answered", "by": linger}));
+}
+
+/// The turn `turn` of the conversation `id`.
+fn user_turn_by_id(obid: &Obid, id: &str, turn: &str) -> serde_json::Value {
+    conversation_turns(obid, id)
+        .into_iter()
+        .find(|t| t["id"] == turn)
+        .unwrap()
+}
+
+/// DELIVERY-3: cancel marks the words of the turn under way and the words waiting behind it
+/// `cancelled`; their requests answer `none` as ever, and nothing moves them after.
+#[test]
+fn delivery_3_cancel_marks_running_and_waiting_words_cancelled() {
+    let folder = Folder::new("delivery-3");
+    let obid = started_harness(&folder);
+    let id = said_anew(&obid, "SAY Ready.")["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let send = |words: &str| {
+        call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": words, "conversation": id})),
+        )
+        .body
+    };
+    let (running, waiting) = std::thread::scope(|scope| {
+        let running = scope.spawn(|| send("LINGER 10000"));
+        reads(&obid, &id, "LINGER 10000", "running");
+        let waiting = scope.spawn(|| send("SAY later"));
+        reads(&obid, &id, "SAY later", "queued");
+        let cancelled = call(
+            &obid,
+            "POST",
+            "/v1/plans/cancel",
+            Some(&json!({"conversation": id})),
+        );
+        assert_eq!(cancelled.body, json!({"cancelled": true}));
+        (running.join().unwrap(), waiting.join().unwrap())
+    });
+    assert_eq!(running["kind"], "none", "{running}");
+    assert_eq!(waiting["kind"], "none", "{waiting}");
+    for words in ["LINGER 10000", "SAY later"] {
+        let status = &user_turn(&obid, &id, words)["delivery"]["status"];
+        assert_eq!(status, "cancelled", "{words}");
+    }
+    assert_eq!(send("SAY after")["text"], "after");
+    for words in ["LINGER 10000", "SAY later"] {
+        let status = &user_turn(&obid, &id, words)["delivery"]["status"];
+        assert_eq!(status, "cancelled", "{words}");
+    }
+    assert_eq!(
+        user_turn(&obid, &id, "SAY after")["delivery"]["status"],
+        "answered"
+    );
+}
+
+/// DELIVERY-4: words no agent session could answer read `failed`, with why, and every secret
+/// obid knows taken out of it. The vault holds words of obid's own answer that the harness's own
+/// redaction never sees, so only the delivery's takes them out.
+#[test]
+fn delivery_4_a_failed_turn_says_why_with_no_secret() {
+    let folder = Folder::new("delivery-4");
+    let obid = started_harness(&folder);
+    vault_holds(&obid, "I couldn't answer");
+    let answer = said_anew(&obid, "FAIL");
+    assert!(
+        answer["text"].as_str().unwrap().contains("failed twice"),
+        "{answer}"
+    );
+    let id = answer["conversation"].as_str().unwrap();
+    let delivery = &user_turn(&obid, id, "FAIL")["delivery"];
+    assert_eq!(delivery["status"], "failed", "{delivery}");
+    let error = delivery["error"].as_str().unwrap();
+    assert!(!error.is_empty());
+    assert!(!error.contains("it broke"), "{error}");
+    assert!(!error.contains("I couldn't answer"), "{error}");
+    assert!(error.contains("[redacted:"), "{error}");
+}

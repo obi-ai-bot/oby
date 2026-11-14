@@ -14,9 +14,6 @@ final class PhoneSpeech {
     private let input: AsyncStream<AnalyzerInput>.Continuation
     private var results: Task<String, Error>?
     private var expiry: Task<Void, Never>?
-    private var background = UIBackgroundTaskIdentifier.invalid
-    private var nextSequence = 0
-    private var frames = 0
     private var ending = false
     private var onCancel: (() -> Void)?
     private(set) var cancelled = false
@@ -32,7 +29,7 @@ final class PhoneSpeech {
         self.input = input
     }
 
-    /// English only, for the iPhone and the Watch alike (the owner's decision of 2026-11-01).
+    /// English only (the owner's decision of 2026-11-01).
     static var locale: Locale { VoiceSettings.locale }
 
     static func context(repos: [String]) -> [String] {
@@ -58,7 +55,7 @@ final class PhoneSpeech {
                 downloading = true
                 Task {
                     defer { downloading = false }
-                    // Give a model download time to continue if a Watch request wakes the phone.
+                    // Give a model download time to continue if the phone goes to the background.
                     nonisolated(unsafe) var background = UIBackgroundTaskIdentifier.invalid
                     background = UIApplication.shared.beginBackgroundTask(withName: "speech model") {
                         UIApplication.shared.endBackgroundTask(background)
@@ -73,49 +70,23 @@ final class PhoneSpeech {
         return transcriber
     }
 
-    /// Older Watch recordings use the same on-device model and recognition context as live holds.
-    static func transcribe(_ audio: Data, context: [String]) async throws -> String {
-        let file = FileManager.default.temporaryDirectory.appending(path: "watch-\(UUID().uuidString).m4a")
-        try audio.write(to: file)
-        defer { try? FileManager.default.removeItem(at: file) }
-        let transcriber = try await transcriber()
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
-        let hints = AnalysisContext()
-        hints.contextualStrings[.general] = context
-        try await analyzer.setContext(hints)
-        let recording = try AVAudioFile(forReading: file)
-        async let text = try transcriber.results.reduce(into: AttributedString()) { result, next in
-            if next.isFinal { result += next.text }
-        }
-        do {
-            if let last = try await analyzer.analyzeSequence(from: recording) {
-                try await analyzer.finalizeAndFinish(through: last)
-            } else { await analyzer.cancelAndFinishNow() }
-            let written = try await text
-            return String(written.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch { await analyzer.cancelAndFinishNow(); throw error }
-    }
-
     static let phoneTapFrames: AVAudioFrameCount = 2048
 
-    /// Tap size is ~43 ms at 48 kHz, much smaller than the Watch's 250 ms packets.
-    /// Use a duration budget for phone buffers, rather than reuse the Watch's packet count.
+    /// Tap size is ~43 ms at 48 kHz: phone buffers get a duration budget.
     static func phoneBufferCapacity(sampleRate: Double) -> Int {
         max(128, Int(ceil(sampleRate * 8 / Double(phoneTapFrames))))
     }
 
-    static func make(request: String, sampleRate: Double, sourceFormat: AVAudioFormat? = nil, context: [String] = [], onCancel: (() -> Void)? = nil, partial: @escaping (String) -> Void) async throws -> PhoneSpeech {
+    static func make(request: String, sourceFormat source: AVAudioFormat, context: [String] = [], onCancel: (() -> Void)? = nil, partial: @escaping (String) -> Void) async throws -> PhoneSpeech {
         let transcriber = try await transcriber()
-        guard let source = sourceFormat ?? AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate,
-                                                          channels: 1, interleaved: false),
-              let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]),
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]),
               let converter = AVAudioConverter(from: source, to: format) else {
             throw RunnerError(message: "Your iPhone can't use this audio format.")
         }
         converter.primeMethod = .none
         // Phone conversion can yield more than one analyzer buffer per tap; allow twice
-        // the capture queue's budget. Watch packets keep their separate 64-chunk (~16 s) bound.
-        let capacity = sourceFormat == nil ? 64 : phoneBufferCapacity(sampleRate: source.sampleRate) * 2
+        // the capture queue's budget.
+        let capacity = phoneBufferCapacity(sampleRate: source.sampleRate) * 2
         let (stream, input) = AsyncStream.makeStream(of: AnalyzerInput.self, bufferingPolicy: .bufferingOldest(capacity))
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let hints = AnalysisContext()
@@ -137,27 +108,12 @@ final class PhoneSpeech {
         }
         do { try await analyzer.start(inputSequence: stream) }
         catch { live.cancel(); throw error }
-        if sourceFormat == nil {
-            // UIKit requires the expired task ended inside this callback, before async cleanup.
-            // Hand off ownership synchronously to avoid ending the id twice.
-            nonisolated(unsafe) var background = UIBackgroundTaskIdentifier.invalid
-            live.background = UIApplication.shared.beginBackgroundTask(withName: "watch live speech") { [weak live] in
-                UIApplication.shared.endBackgroundTask(background)
-                background = .invalid
-                Task { @MainActor in
-                    live?.background = .invalid
-                    live?.cancel()
-                }
-            }
-            background = live.background
-        }
         live.armExpiry()
         return live
     }
 
-    /// Closes the stream if the watch vanishes without an end/cancel packet: 30 seconds with no
-    /// new chunk, counted again on each one, so a slow connection doesn't cut a long hold.
-    /// Finalization gets its own 30 seconds.
+    /// Closes the stream when no audio comes: 30 seconds with no new buffer, counted again on each
+    /// one. Finalization gets its own 30 seconds.
     private func armExpiry() {
         expiry?.cancel()
         expiry = Task { [weak self] in
@@ -167,37 +123,18 @@ final class PhoneSpeech {
         }
     }
 
-    func append(_ audio: Data, sequence: Int) throws {
-        guard !cancelled, !ending, sequence == nextSequence, !audio.isEmpty,
-              audio.count <= WatchWire.chunkLimit, audio.count.isMultiple(of: WatchWire.voiceSampleBytes) else {
-            throw RunnerError(message: "The watch's audio stream was interrupted. Try again.")
-        }
-        let count = audio.count / WatchWire.voiceSampleBytes
-        guard frames + count <= Int(sourceFormat.sampleRate * Double(WatchWire.voiceSeconds + 1)),
-              let buffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(count)),
-              let samples = buffer.int16ChannelData?[0] else {
-            throw RunnerError(message: "The watch's audio stream was too long.")
-        }
-        buffer.frameLength = AVAudioFrameCount(count)
-        audio.copyBytes(to: UnsafeMutableRawBufferPointer(start: samples, count: audio.count))
-        try convert(buffer)
-        frames += count
-        nextSequence += 1
-        armExpiry()
-    }
-
     func append(_ buffer: AVAudioPCMBuffer) throws {
         guard !cancelled, !ending else { throw CancellationError() }
         try convert(buffer)
         armExpiry()
     }
 
-    /// Phone input has no Watch packet sequence, and reports interruptions as phone listening errors.
+    /// Reports interruptions as phone listening errors.
     func finish() async throws -> String {
         guard !cancelled, !ending else {
             throw RunnerError(message: "Listening was interrupted. Tap the mic to try again.")
         }
-        do { return try await finish(sequence: nextSequence) }
+        do { return try await finalize() }
         catch is CancellationError {
             throw RunnerError(message: "Listening was interrupted. Tap the mic to try again.")
         }
@@ -230,11 +167,7 @@ final class PhoneSpeech {
         }
     }
 
-    func finish(sequence: Int) async throws -> String {
-        guard !cancelled, !ending, sequence == nextSequence else {
-            cancel()
-            throw RunnerError(message: "The watch's audio stream was interrupted. Try again.")
-        }
+    private func finalize() async throws -> String {
         ending = true
         armExpiry()
         defer { cleanup() }
@@ -263,9 +196,5 @@ final class PhoneSpeech {
     private func cleanup() {
         expiry?.cancel()
         expiry = nil
-        if background != .invalid {
-            UIApplication.shared.endBackgroundTask(background)
-            background = .invalid
-        }
     }
 }

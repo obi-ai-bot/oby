@@ -1,12 +1,12 @@
 //! Jobs: made, queued, run side by side (at most `maxRunning` at once), stopped, waited on and
-//! kept across restarts. Each runs in its own worktree, `home/worktrees/<job id>`, with its agent
-//! and the repository's check in the job sandbox (`sandbox`).
+//! kept across restarts, each in its own worktree, `home/worktrees/<job id>`. The owner's own
+//! Claude Code jobs (and Codex's in Bypass, on macOS) run in the own lane under the CLI's sandbox;
+//! another Obi's work, untrusted work and the rest stay in Oby's box (docs/contracts/lanes.md).
 //!
-//! Two kinds of job run here. The owner's own work (`POST /v1/jobs`): a branch from the base, rounds
-//! of the agent and the check, commits counted, then published (crate::publish) and its pull
-//! request followed (crate::github). And a review another Obi asked for
-//! ([`Jobs::start_obi_review`]): a fresh worktree detached at the request's commit, the request
-//! quoted as data, the agent reading only, the check in the sandbox, a typed result body.
+//! It owns each job's status and side fields, its task chain and the in-memory `State` sets, and
+//! saves jobs through crate::store; it hands inbox items to the Sphere link, which writes them, and
+//! never writes a conversation or the vault (docs/ARCHITECTURE.md, "State ownership"). Two kinds:
+//! the owner's own (`POST /v1/jobs`), and another Obi's review ([`Jobs::start_obi_review`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -24,6 +24,7 @@ use crate::agent::{self, Answer, Event as AgentEvent, Launch, Ruling, Tool};
 use crate::config::{Config, Repo};
 use crate::events::Events;
 use crate::job::{Job, JobArtifact, ObiRef, Phase, Status, Waiting};
+use crate::limits::holds::Work;
 use crate::permissions::{self, Call, Decision, Mode, Permission, Rule};
 use crate::process::{self, Signal};
 use crate::sandbox::{self, Sandbox, Spec};
@@ -1366,6 +1367,18 @@ impl Jobs {
         }
         for decision in made.limit_decisions.list() {
             made.sync_limit_answer(&decision);
+        }
+        // An older file's holds of one model's limit go to the hold table, and the file drops them
+        // (LIMITS-23).
+        for job in made.lock().jobs.values_mut() {
+            let older = std::mem::take(&mut job.recovery.scoped_holds);
+            let work = Work::new(None, Some(&job.id), false);
+            for (account, until) in older.iter().filter(|(_, at)| *at > now) {
+                made.holds().apply(account, Some(*until), Some(&work), now);
+            }
+            if !older.is_empty() {
+                let _ = made.store.save(job);
+            }
         }
         if github && let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(github_email(Arc::downgrade(&made)));
@@ -2842,12 +2855,10 @@ impl Jobs {
             .collect()
     }
 
-    /// Whether `account` takes `background` work now ([`crate::usage::Usage::held_for`]).
+    /// Whether `account` takes `background` work now (crate::limits::holds).
     pub fn has_room(&self, account: &str, background: bool) -> bool {
-        self.usage
-            .get(account)
-            .held_for(obi_protocol::time::now(), background)
-            .is_none()
+        let work = Work::new(None, None, background);
+        (self.holds().held(account, &work, obi_protocol::time::now())).is_none()
     }
 
     /// Whether `account` takes work nobody's watching ([`Job::background`], CHATGPT-20): any login
@@ -2950,17 +2961,17 @@ impl Jobs {
         agent: Option<&str>,
         named: Option<&str>,
     ) -> Result<(Tool, crate::config::Account), Refused> {
-        self.pick_for(agent, named, false)
+        self.pick_for(agent, named, &Work::new(None, None, false))
     }
 
-    /// [`Jobs::pick`] for a job, `background` when nobody's watching it: routing then passes over a
-    /// login that doesn't take that ([`Jobs::takes_background`]), as it does one without room. An
-    /// account named is the caller's to look at.
+    /// [`Jobs::pick`] for `work`, `background` when nobody's watching it: routing then passes over a
+    /// login that doesn't take that ([`Jobs::takes_background`]), as it does one without room for
+    /// it (LIMITS-21). An account named is the caller's to look at.
     fn pick_for(
         &self,
         agent: Option<&str>,
         named: Option<&str>,
-        background: bool,
+        work: &Work,
     ) -> Result<(Tool, crate::config::Account), Refused> {
         let tools: Vec<Tool> = match agent
             .map(str::trim)
@@ -3024,12 +3035,11 @@ impl Jobs {
                 // Routing skips an account that isn't signed in (#626), and one without room.
                 None => {
                     for account in accounts {
-                        let usage = self.usage.get(&account.id);
                         if !signed_in(*tool, &account, home.as_deref()) {
                             first.get_or_insert((*tool, account));
-                        } else if background && !self.takes_background(&account) {
+                        } else if work.background && !self.takes_background(&account) {
                             not_yet.get_or_insert(account.name);
-                        } else if let Some(why) = usage.held_for(now, background) {
+                        } else if let Some((why, _)) = self.holds().held(&account.id, work, now) {
                             held.push(format!("{} {why}", account.name));
                         } else {
                             ready.push((*tool, account));
@@ -3081,29 +3091,9 @@ impl Jobs {
     }
 
     /// `account` hit its usage limit: it's marked full until `reset` (an hour, when its tool named
-    /// none), whatever the tool said, so routing passes it by until then. A reset already gone by
-    /// marks nothing (a stale one); a later mark already kept stays.
+    /// none), whatever the tool said, so routing passes it by until then ([`Holds::apply`]).
     pub(crate) fn mark_full(&self, account: &str, reset: Option<i64>, now: i64) {
-        let until = match reset {
-            Some(at) if at <= now => return,
-            Some(at) => at,
-            None => now + crate::usage::UNKNOWN_RESET,
-        };
-        if self
-            .usage
-            .get(account)
-            .full_until_at(now)
-            .is_some_and(|at| at >= until)
-        {
-            return;
-        }
-        let full = crate::usage::Usage {
-            full_until: Some(until),
-            full_until_inferred: reset.is_none(),
-            ..Default::default()
-        };
-        self.usage.record(account, &full);
-        self.usage_changed.notify_one();
+        self.holds().apply(account, reset, None, now);
     }
 
     /// The tool and account a job was made for.
@@ -3165,11 +3155,12 @@ impl Jobs {
             .as_deref()
             .is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("auto"));
         let background = new.unattended || new.routine.is_some();
+        let work = Work::new(new.model.as_deref(), None, background);
         // Held back by weekly reserves alone, it waits for one to be lifted, or for room (#872); by
         // limits, as a limit's job waits (LIMITS-18); by a ChatGPT login the owner hasn't said yes
         // to alone, for their yes (CHATGPT-20).
         let (tool, account, waiting) =
-            match self.pick_for(new.agent.as_deref(), new.account.as_deref(), background) {
+            match self.pick_for(new.agent.as_deref(), new.account.as_deref(), &work) {
                 Ok((tool, account)) if background && self.waits_for_yes(tool, &account) => {
                     let wait = consent_wait(&account, new.agent.as_deref());
                     (tool, account, Some(wait))
@@ -3177,7 +3168,7 @@ impl Jobs {
                 Ok((tool, account)) => (tool, account, None),
                 Err(refused) if !named => match self
                     .in_reserve(new.agent.as_deref(), background)
-                    .or_else(|| self.no_room(new.agent.as_deref(), background))
+                    .or_else(|| self.no_room(new.agent.as_deref(), &work))
                     .or_else(|| background.then(|| self.first_not_yet(new.agent.as_deref()))?)
                 {
                     Some(held) => held,
@@ -3355,7 +3346,7 @@ impl Jobs {
                     !self.being_changed(&account.id) && !self.waits_for_yes(*tool, account)
                 })
             } else {
-                lifted.or_else(|| self.pick_for(asked.as_deref(), None, background).ok())
+                lifted.or_else(|| self.pick_for(asked.as_deref(), None, &Work::of(&job)).ok())
             };
             let Some((tool, account)) = found else {
                 // What it waited on is gone, and nothing else takes it: nothing would ever start it.
@@ -3628,7 +3619,8 @@ impl Jobs {
             return Err(Refused(format!("{} isn't a repository obid knows.", body.repo)).into());
         }
         // Claude Code's: the review's answer is its structured output (`--json-schema`).
-        let (_, account) = self.pick_for(Some(Tool::Claude.id()), None, true)?;
+        let (_, account) =
+            self.pick_for(Some(Tool::Claude.id()), None, &Work::new(None, None, true))?;
         let id = self.new_id();
         let repo_name = body
             .repo
@@ -7129,7 +7121,7 @@ impl Jobs {
                 };
                 let resume_at = match &end {
                     End::AccountLimit { reset, .. } if failover.is_none() => {
-                        Some(self.limit_wait_until(&job.account, *reset, job.background()))
+                        Some(self.limit_wait_until(&job.account, *reset, &Work::of(&job)))
                     }
                     _ => None,
                 };
@@ -10772,7 +10764,7 @@ impl Jobs {
                     // The account is full whatever the tool said, but for one model's (USAGE-13), so
                     // nothing else goes there until it resets; the job goes on where there's room.
                     if limited {
-                        self.limit_reached(id, &account.id, reset, turn.scoped);
+                        self.limit_reached(id, &account.id, reset, &turn);
                     }
                     if limited && job.obi.is_none() {
                         return Err(End::AccountLimit {
@@ -12666,7 +12658,10 @@ impl Jobs {
                             let reviews = merging.as_ref().ok().map(|m| m.reviews.as_slice());
                             crate::merge::closed(job, &pull_request, reviews);
                         }
-                        job.pull_request = Some(pull_request.clone());
+                        // A read from before obid's own merge doesn't undo it (MERGING-2).
+                        if !crate::merge::keep_read(job, &pull_request) {
+                            return;
+                        }
                         job.pull_request_error = None;
                         // What a merge needs, when it read: else nothing carries on this time.
                         carried = merging.ok().map(|merging| (pull_request, merging));
@@ -13045,8 +13040,8 @@ impl Jobs {
     }
 
     /// Right before obid sends `action` for the job `id` about `head` (crate::merge): whether the
-    /// job is still one to carry on at that head, and if so its mark (`Job::sending`), saved
-    /// before it's sent.
+    /// job is still one to carry on at that head, not merged already, and if so its mark
+    /// (`Job::sending`), saved before it's sent.
     fn about_to_send(
         &self,
         id: &str,
@@ -13066,7 +13061,7 @@ impl Jobs {
                 && job.obi.is_none()
                 && !(action == "branchDelete" && job.status.is_active());
             if (carries(job) && job.pushed_head() == Some(head)) || owners {
-                crate::merge::mark(
+                going = crate::merge::mark(
                     job,
                     crate::job::Sending {
                         action: action.into(),
@@ -13075,7 +13070,6 @@ impl Jobs {
                         login,
                     },
                 );
-                going = true;
             }
         });
         going
@@ -14587,7 +14581,7 @@ fn tetrix_line(job: &Job) -> &'static str {
     }
 }
 
-fn owner_prompt(job: &Job) -> String {
+pub(crate) fn owner_prompt(job: &Job) -> String {
     let base = job
         .base
         .clone()
@@ -15048,18 +15042,8 @@ pub fn owner_review_item(
         text,
         options,
         details: Some(details),
-        recommended: None,
         created: obi_protocol::time::now(),
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(crate::sphere::inbox::arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
         watch: Some(Box::new(serde_json::json!({
             "source": "github",
             "url": format!("https://github.com/{repo}/pull/{number}"),
@@ -15072,6 +15056,7 @@ pub fn owner_review_item(
             "review": clean.then_some(summary),
             "verdict": verdict,
         }))),
+        ..Default::default()
     }
 }
 

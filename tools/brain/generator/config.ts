@@ -12,9 +12,12 @@ export interface BrainConfig {
     extractor: string;
     /** obid's crate, for the file watcher. */
     crate: string;
-    /** The API doc whose `METHOD /path` mentions count as documenting a route. */
-    apiDoc: string;
-    /** The heading of the API doc's section that lists the routes obid stopped serving. */
+    /**
+     * The API docs whose `METHOD /path` mentions count as documenting a route: each a file or a `<folder>/*.md` pattern
+     * (that folder's `.md` files, sorted), relative to root. One that doesn't exist is skipped.
+     */
+    apiDocs: string[];
+    /** The heading of the section, in whichever API doc holds it, that lists the routes obid stopped serving. */
     goneSection: string;
   };
   app: {

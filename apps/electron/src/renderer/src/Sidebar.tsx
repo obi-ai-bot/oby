@@ -556,12 +556,13 @@ export default function Sidebar({ open, atHome, onClose, onNewChat, onHome, onOp
                 <div className="sidebar-group-body">
                   <div>
                     {shownOf(t).rows.map((k) => (
-                      // a row with its own menu button, so the row itself isn't a <button>
+                      // a row with its own menu button, so the row itself isn't a <button>; dimmed once
+                      // done, but not for a status this build doesn't know (docs/contracts/wire.md, WIRE-3)
                       <div
                         key={k.id}
                         role="button"
                         tabIndex={0}
-                        className={`task-row${k.status === 'done' ? ' is-done' : ''}${active === k.id ? ' is-active' : ''}${taskMenu?.id === k.id ? ' is-menu-open' : ''}`}
+                        className={`task-row${k.status === 'done' && !k.unknown ? ' is-done' : ''}${active === k.id ? ' is-active' : ''}${taskMenu?.id === k.id ? ' is-menu-open' : ''}`}
                         aria-current={active === k.id || undefined}
                         onClick={() => { markSeen(k.id); onOpenTask(k.id); }}
                         onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); e.currentTarget.click(); } }}

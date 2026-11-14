@@ -45,6 +45,7 @@ use tokio::process::Command;
 
 use crate::api::{ApiError, Shared};
 use crate::conversation::{Target, Turn};
+use crate::delivery::Move;
 use actions::{Asked, Talk};
 use plan::Context;
 
@@ -216,6 +217,7 @@ pub async fn plan(
         id,
         foreign,
         folders,
+        signed,
     )?;
     drop_uploads(&shared, begun.forgotten.clone()).await;
     // An answer to a question Oby asked elsewhere (the Watch answers in the latest conversation)
@@ -260,11 +262,15 @@ pub async fn plan(
             }
             return respond(&shared, &conversation, Talk::None, None, None, vec![]);
         };
+        // Every word this turn answers moves with it (crate::delivery).
+        let conversations = &shared.conversations;
+        let deliver = |change| conversations.deliver(&conversation, &next.turns, &change);
+        deliver(Move::Start);
         let said = &next.words.said;
         // The conversation as it is now, Oby's answer to the turn they waited for included.
-        let given =
-            turns.unwrap_or_else(|| shared.conversations.turns_but(&conversation, &next.turns));
+        let given = turns.unwrap_or_else(|| conversations.turns_but(&conversation, &next.turns));
         let control = shared.turns.begin(&next.words.turn, &conversation);
+        deliver(Move::Confirm(next.words.turn.clone()));
         control.set_signed(next.words.signed);
         let asked = Asked {
             said,
@@ -281,16 +287,19 @@ pub async fn plan(
             recap::back(&shared, back, now)
         );
         shared.turns.end(&control);
+        let change = match &answered.talk {
+            _ if control.cancelled() => Move::Cancel,
+            Talk::Reply { text, .. } if answered.end == turn::End::BrainFailed => {
+                Move::Failed(crate::secrets::known().redact(text))
+            }
+            _ => Move::Answered,
+        };
         let recap = recap.or_else(|| shared.presence.take());
         let made = shared.harness.take_made(&control.turn);
-        respond(
-            &shared,
-            &conversation,
-            answered.talk,
-            answered.details,
-            recap,
-            made,
-        )
+        let (talk, details) = (answered.talk, answered.details);
+        let answer = respond(&shared, &conversation, talk, details, recap, made);
+        deliver(change);
+        answer
     });
     turn.await.map_err(|_| {
         ApiError::new(
@@ -367,11 +376,12 @@ pub async fn stop(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Resp
 }
 
 /// `POST /v1/plans/cancel`: the turn under way in one conversation is dropped: what its plan
-/// would do doesn't happen, and its answer is `none`, as is the answer to words waiting for it.
-/// What it did already stays done.
+/// would do doesn't happen, and its answer is `none`, as is the answer to words waiting for it,
+/// which read `cancelled` (the turn's own words do once it ends). What it did already stays done.
 pub async fn cancel(State(shared): State<Arc<Shared>>, body: Bytes) -> Result<Response, ApiError> {
     if let Some(id) = underway(&shared, &body)? {
-        shared.turns.cancel(Some(&id));
+        let dropped = shared.turns.cancel(Some(&id));
+        shared.conversations.deliver(&id, &dropped, &Move::Cancel);
     }
     Ok((StatusCode::OK, axum::Json(json!({"cancelled": true}))).into_response())
 }
@@ -427,31 +437,27 @@ fn respond(
     {
         body["details"] = json!(details);
     }
-    let text = match &talk {
+    let said = match &talk {
         Talk::None => None,
-        Talk::Reply { text, .. } => Some(text.clone()),
-        // A question keeps only its own words in the conversation: the recap goes before them.
-        Talk::Question { question, .. } => Some(match &recap {
-            Some(recap) => format!("{recap}\n\n{}", question.text),
-            None => question.text.clone(),
-        }),
-    };
-    if let Some(text) = text {
-        let jobs = match &talk {
-            Talk::Reply { jobs, .. } => jobs
-                .iter()
-                .filter_map(|j| j["id"].as_str().map(str::to_owned))
-                .collect(),
-            _ => vec![],
-        };
-        // A question keeps what it asked, so an answer's words are known to be this one's.
-        let asked = match &talk {
-            Talk::Question { question, .. } => Some(crate::conversation::Asked {
-                question: question.text.clone(),
+        Talk::Reply { text, jobs } => {
+            let jobs = jobs.iter().filter_map(|j| j["id"].as_str());
+            Some((text.clone(), jobs.map(str::to_owned).collect(), None))
+        }
+        // A question keeps only its own words in the conversation, the recap before them, and what
+        // it asked, so an answer's words are known to be this one's.
+        Talk::Question { question, .. } => {
+            let text = &question.text;
+            let asked = crate::conversation::Asked {
+                question: text.clone(),
                 options: question.options.clone(),
-            }),
-            _ => None,
-        };
+            };
+            let said = recap
+                .as_ref()
+                .map_or(text.clone(), |r| format!("{r}\n\n{text}"));
+            Some((said, vec![], Some(asked)))
+        }
+    };
+    if let Some((text, jobs, asked)) = said {
         match shared
             .conversations
             .append_asking(conversation, text, jobs, artifacts.clone(), asked)
@@ -750,11 +756,7 @@ fn validate_turns(input: Option<Vec<InputTurn>>) -> Result<Option<Vec<Turn>>, Ap
                 "Each turn needs who user or oby and some text.",
             ));
         }
-        out.push(Turn {
-            who: t.who,
-            text: t.text,
-            ..Turn::default()
-        });
+        out.push(Turn::of(&t.who, t.text));
     }
     Ok(Some(out))
 }

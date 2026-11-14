@@ -1,11 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron';
-import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { app, BrowserWindow, dialog, safeStorage } from 'electron';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { HOME, obid, type Answer, type Trusted } from './obid';
+import { HOME, obid, takesKeys, type Answer, type Trusted } from './obid';
 import { mayConfirm, takeInput, wordsHeader } from './words';
+import { ipc } from './ipc';
+import { flag, oneOf, optional, safeInteger, string, type Decoder } from '../shared/decode';
 
 // This Mac's device key for obid (docs/runner-api.md, "POST /v1/devices"), which makes a Confirm
 // the owner's (#776). A P-256 key made here in main, kept encrypted by safeStorage (macOS: a key
@@ -113,14 +115,34 @@ export async function notificationWords(method: string, path: string, body: unkn
   return obid(method, path, body, words ?? undefined);
 }
 
-export async function ownersWords(method: string, path: string, body: unknown): Promise<Answer> {
+// A keyed request main signed on the owner's input that obid didn't answer (WORDS-16): the very
+// same request sent again (its method, path and body byte for byte, its key included) is signed
+// again, with a fresh time and no input, while main's own read says obid takes keys, so obid,
+// which takes a key once, sees it signed as the first was. Kept until obid answers it, 10 s after
+// its first signature, or 2 signatures again, whichever comes first; a few at most. Each signature
+// again is counted before main waits on obid, so copies arriving together get 2 at most too.
+const AGAIN_MS = 10_000, AGAIN = 2, KEPT = 8;
+let unanswered: { request: string; at: number; again: number }[] = [];
+const keyOf = (body: unknown) => typeof (body as { clientRequestId?: unknown } | null)?.clientRequestId === 'string';
+
+// owners: the preload saw the owner's own keystroke or click hold its words
+export async function ownersWords(method: string, path: string, body: unknown, owners = true): Promise<Answer> {
+  const at = Date.now();
+  unanswered = unanswered.filter((u) => at - u.at < AGAIN_MS && u.again < AGAIN);
+  const request = keyOf(body) ? `${method} ${path}\n${JSON.stringify(body)}` : null;
+  const kept = request === null ? undefined : unanswered.find((u) => u.request === request && u.again < AGAIN);
+  if (kept) kept.again++;
   let words: string | null = null;
   try {
-    if (takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    if (kept && await takesKeys()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
+    else if (owners && takeInput()) words = wordsHeader(deviceKey(), (device ??= await register()), method, path, body);
   } catch (err) {
     console.error(`Oby couldn’t sign the owner’s words, so they go unsigned: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return obid(method, path, body, words ?? undefined);
+  const r = await obid(method, path, body, words ?? undefined);
+  if (r.status !== 0) unanswered = unanswered.filter((u) => u !== kept);
+  else if (words && request !== null && !kept) unanswered = [...unanswered, { request, at, again: 0 }].slice(-KEPT);
+  return r;
 }
 
 // Fetch and verify the current options before signing; the revision and destination are covered.
@@ -145,9 +167,10 @@ export async function answerLimit(id: string, revision: number, choice: string, 
 
 // The owner's own choices on a Publish (docs/runner-api.md, `GET /v1/jobs/{id}/publish`), nothing else.
 type PublishChoices = { anyway?: boolean; force?: boolean; to?: string };
-const publishChoices = (c: unknown): c is PublishChoices => {
-  if (typeof c !== 'object' || c === null || Array.isArray(c)) return false;
-  return Object.entries(c).every(([k, v]) => (k === 'anyway' || k === 'force' ? v === true : k === 'to' && typeof v === 'string' && v.length > 0));
+const publishChoices: Decoder<PublishChoices> = (c) => {
+  if (typeof c !== 'object' || c === null || Array.isArray(c)) return undefined;
+  return Object.entries(c).every(([k, v]) => (k === 'anyway' || k === 'force' ? v === true : k === 'to' && typeof v === 'string' && v.length > 0))
+    ? { value: c } : undefined;
 };
 const publishQuery = (c: PublishChoices) => {
   const q = new URLSearchParams(Object.entries(c).map(([k, v]) => [k, String(v)])).toString();
@@ -157,30 +180,32 @@ const publishQuery = (c: PublishChoices) => {
 // Confirm, on the owner's click in the window: the open `confirm` item, by its id, with this
 // device's signature over obid's sentence for it (POST /v1/inbox/{id}/answer, "Confirm takes the
 // owner's tap")
+const REFUSED: Answer = { status: 403, text: '' };
 export function confirming(trusted: Trusted) {
-  ipcMain.handle('obid-confirm', async (e, id: unknown, clicked: unknown): Promise<Answer> => {
-    if (!trusted(e) || typeof id !== 'string') return { status: 403, text: '' };
+  const channels = ipc(trusted);
+  channels.handle('obid-confirm', [string, flag], async (_e, id, clicked): Promise<Answer> => {
     try {
       const inbox = await obid('GET', '/v1/inbox');
       if (inbox.status !== 200) return inbox;
       const item = (JSON.parse(inbox.text) as Item[]).find((i) => i.id === id && i.kind === 'confirm' && i.state !== 'done');
       if (!item) return { status: 409, text: JSON.stringify({ error: 'That isn’t waiting for a Confirm anymore.' }) };
-      if (!mayConfirm(item, clicked === true)) return { status: 403, text: JSON.stringify({ error: 'That takes your own click.' }) };
+      if (!mayConfirm(item, clicked)) return { status: 403, text: JSON.stringify({ error: 'That takes your own click.' }) };
       const device = await register(), signedAt = now();
       const signature = signed(`oby-confirm\n${item.id}\n${item.title}\n${signedAt}`);
-      return obid('POST', `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: 'Confirm', approval: { device, action: item.title, signedAt, signature } });
+      // main's own key, once obid takes keys (RECEIPTS-16): a Confirm is sent once, never again
+      const key = await takesKeys() ? { clientRequestId: randomUUID() } : {};
+      return obid('POST', `/v1/inbox/${encodeURIComponent(item.id)}/answer`, { answer: 'Confirm', approval: { device, action: item.title, signedAt, signature }, ...key });
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }
-  });
+  }, REFUSED);
 
   // Pair a device, from Settings › Remote access: an invitation (POST /v1/pairing/invite) with this Mac's
   // signature over obid's sentence for it, so the phone it pairs may add its own key and approve
   // (docs/runner-api.md, "obid only: the gateway"). Only once the owner clicked Pair in main's own
   // dialog, which the page can't click: a phone that can approve is for good (PAIRING-2). The name
   // is this Mac's.
-  ipcMain.handle('obid-pair-invite', async (e): Promise<Answer> => {
-    if (!trusted(e)) return { status: 403, text: '' };
+  channels.handle('obid-pair-invite', [], async (e): Promise<Answer> => {
     const w = BrowserWindow.fromWebContents(e.sender);
     const asked = { type: 'question' as const, message: 'Pair a new device with this Mac?', detail: 'The phone that scans its code can see and answer your tasks, and approve for you, until you revoke it.', buttons: ['Pair', 'Cancel'], defaultId: 1, cancelId: 1 };
     const { response } = await (w ? dialog.showMessageBox(w, asked) : dialog.showMessageBox(asked));
@@ -191,15 +216,14 @@ export function confirming(trusted: Trusted) {
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }
-  });
+  }, REFUSED);
 
   // Publish by hand, on the owner's click (PUBLISHING-9 to 11, 14). A push can't rest on the page,
   // which a script could have taken over: main reads obid's own sentence for those choices itself,
   // shows it in main's own dialog, which the page can't click or word (as Pair a device's), and signs
   // only on Publish there. Asked only right after an input main saw, and for the sentence the page
   // showed, so a script can't raise dialogs by itself, and one that changed isn't sprung on the owner.
-  ipcMain.handle('obid-publish', async (e, id: unknown, action: unknown, choices: unknown): Promise<Answer> => {
-    if (!trusted(e) || typeof id !== 'string' || typeof action !== 'string' || !publishChoices(choices)) return { status: 403, text: '' };
+  channels.handle('obid-publish', [string, string, publishChoices], async (e, id, action, choices): Promise<Answer> => {
     if (!takeInput()) return { status: 403, text: JSON.stringify({ error: 'Publish takes your own click.' }) };
     try {
       const path = `/v1/jobs/${encodeURIComponent(id)}/publish`;
@@ -222,15 +246,10 @@ export function confirming(trusted: Trusted) {
     } catch (err) {
       return { status: 500, text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) };
     }
-  });
+  }, REFUSED);
 
   // A usage-limit answer is bound to the exact decision revision, option and destination.
   // Read the options from obid in main; never sign an arbitrary renderer-provided sentence.
-  ipcMain.handle('obid-limit-answer', async (e, id: unknown, revision: unknown, choice: unknown, account: unknown): Promise<Answer> => {
-    if (!trusted(e) || typeof id !== 'string' || !Number.isSafeInteger(revision) || typeof choice !== 'string' ||
-      !['move', 'resume', 'stop'].includes(choice) || (account !== undefined && typeof account !== 'string')) {
-      return { status: 403, text: '' };
-    }
-    return answerLimit(id, revision as number, choice, account as string | undefined);
-  });
+  channels.handle('obid-limit-answer', [string, safeInteger, oneOf('move', 'resume', 'stop'), optional(string)],
+    (_e, id, revision, choice, account) => answerLimit(id, revision, choice, account), REFUSED);
 }

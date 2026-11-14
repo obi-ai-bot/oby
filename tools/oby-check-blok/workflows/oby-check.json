@@ -14,7 +14,7 @@
     {
       "id": "swift-tests",
       "use": "runtime.rust:swift-tests",
-      "description": "The Apple apps' touched suites and swift test. In a job's box the script skips them, as it says, and passes.",
+      "description": "The Apple apps' touched suites, else their build. In a job's box the script skips them, as it says, and passes.",
       "maxDuration": "45m"
     },
     {

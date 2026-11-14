@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16), with a fake `az` and `ssh`, never the
-VM or the Mac worker.
+"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16, 19 to 21, 28, 43, 44), with a fake `az`,
+`ssh` and IP lookup, never the VM, its network rule, the Mac worker or the network.
 
 Run from the repository root: python3 factory/tests/test_gate_remote.py
 Each test builds a throwaway repository: a bare `origin` with a `dev` branch whose scripts/oby-check.sh is a
 stand-in, a clone holding copies of factory/bin/gate and factory/bin/job, the real factory/config.json and a
 stand-in factory/checks.sh, and a job whose worktree is another clone on a pushed branch. The fake `az` and
-`ssh` come first on PATH: each records its arguments and acts from files the test writes.
+`ssh` come first on PATH: each records its arguments and acts from files the test writes. This Mac's IP is read
+from a file:// URL (FACTORY_REMOTE_IP_URL).
 """
 
+import hashlib
 import json
 import os
 import re
@@ -23,7 +25,9 @@ from pathlib import Path
 FACTORY = Path(__file__).resolve().parents[1]
 REMOTE = json.dumps({"ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate"})
 PRO = json.dumps({"ssh_host": "oby-mac-pro"})
+CHECK = "/usr/bin/shasum -a 256 oby-worker/bin/oby-remote-gate"  # the gate's check of the Mac worker's runner
 JOB_ID = "001-a00-01-something"
+OLD_IP, NEW_IP = "8.8.4.4", "1.1.1.1"  # this Mac's IP before and after it changes: global, but no one's home
 
 # The stand-in check: its plan prints $FAKE/groups' groups and exits with $FAKE/plan-exit's code.
 FAKE_CHECK = """#!/bin/sh
@@ -43,13 +47,26 @@ exit $(cat "$FAKE/mac-exit-$part" 2>/dev/null || echo 0)
 """
 
 # get-instance-view prints $FAKE/states' first line and drops it while more follow; start and deallocate exit
-# with $FAKE/az-<action>-exit's code.
+# with $FAKE/az-<action>-exit's code. `network nsg rule show` prints $FAKE/rule-source as the rule's source and
+# `update` writes its new source there; each exits with $FAKE/az-rule-<action>-exit's code first.
 FAKE_AZ = """#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
 fake = Path(os.environ["FAKE"])
 with open(fake / "az.log", "a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1] == "network":
+    action = sys.argv[4]
+    code = fake / f"az-rule-{action}-exit"
+    if code.exists():
+        sys.exit(int(code.read_text()))
+    if action == "show":
+        print(json.dumps({"name": "ssh-from-owner", "sourceAddressPrefix": (fake / "rule-source").read_text().strip(),
+                          "sourceAddressPrefixes": []}))
+    else:
+        new = sys.argv[sys.argv.index("--source-address-prefixes") + 1]
+        (fake / "rule-source").write_text(new + "\\n")
+    sys.exit(0)
 if sys.argv[2] == "get-instance-view":
     states = (fake / "states").read_text().splitlines()
     print(states[0])
@@ -60,11 +77,14 @@ code = fake / f"az-{sys.argv[2]}-exit"
 sys.exit(int(code.read_text()) if code.exists() else 0)
 """
 
-# oby-gate: `ssh ... true` exits with $FAKE/ssh-reach's code; the remote gate prints a slot and exits with
-# $FAKE/remote-exit's. oby-mac-pro: `true` exits with $FAKE/pro-reach's code; with $FAKE/pro-busy its gate says
-# both slots are busy and exits 2, else it prints slot 1 and exits with $FAKE/pro-exit's code.
+# oby-gate: `ssh ... true` exits 255 while $FAKE/rule-source isn't $FAKE/ip (as /32 or bare), else with
+# $FAKE/ssh-reach's code; the remote gate copies $FAKE_STATE to $FAKE/state-during-run, prints a slot and exits with
+# $FAKE/remote-exit's. oby-mac-pro: `true` exits with $FAKE/pro-reach's code; a command starting /usr/bin/shasum
+# runs through sh in $FAKE/pro-home (its cwd and HOME), its output and exit code passed through; with
+# $FAKE/pro-busy its gate says both slots are busy and exits 2, else it prints slot 1 and exits with
+# $FAKE/pro-exit's code.
 FAKE_SSH = """#!/usr/bin/env python3
-import json, os, stat, sys
+import json, os, shutil, stat, subprocess, sys
 from pathlib import Path
 fake = Path(os.environ["FAKE"])
 with open(fake / "ssh.log", "a") as log:
@@ -74,6 +94,9 @@ def read(name, default):
 if sys.argv[-2] == "oby-mac-pro":
     if sys.argv[-1] == "true":
         sys.exit(read("pro-reach", 0))
+    if sys.argv[-1].startswith("/usr/bin/shasum"):
+        home = fake / "pro-home"
+        sys.exit(subprocess.run(["sh", "-c", sys.argv[-1]], cwd=home, env=dict(os.environ, HOME=str(home))).returncode)
     if (fake / "pro-busy").exists():
         print("oby-remote-gate: both slots are busy")
         sys.exit(2)
@@ -85,7 +108,11 @@ if sys.argv[-2] == "oby-mac-pro":
         print(f"oby-remote-gate: {verdict} in slot 1 after 1s")
     sys.exit(code)
 if sys.argv[-1] == "true":
+    ip = (fake / "ip").read_text().strip() if (fake / "ip").exists() else None
+    if (fake / "rule-source").read_text().strip().removesuffix("/32") != ip:
+        sys.exit(255)
     sys.exit(read("ssh-reach", 0))
+shutil.copy(os.environ["FAKE_STATE"], fake / "state-during-run")
 code = read("remote-exit", 0)
 print("oby-remote-gate: slot 2")
 print("the VM's output")
@@ -138,6 +165,12 @@ class GateRemote(unittest.TestCase):
             shutil.copy2(FACTORY / "bin" / name, self.repo / "factory" / "bin" / name)
         shutil.copy2(FACTORY / "config.json", self.repo / "factory" / "config.json")
         (self.repo / "factory" / "checks.sh").write_text(STAND_IN)
+        # The runner the gate checks the Mac worker's against (REMOTE-43), and the worker's copy of it.
+        self.runner = self.repo / "factory" / "remote" / "oby-remote-gate"
+        self.pro_runner = self.fake / "pro-home" / "oby-worker" / "bin" / "oby-remote-gate"
+        for copy in (self.runner, self.pro_runner):
+            copy.parent.mkdir(parents=True)
+            shutil.copy2(FACTORY / "remote" / "oby-remote-gate", copy)
         # The job's worktree, on a branch pushed to origin.
         self.worktree = self.dir / "worktree"
         self.git(self.dir, "clone", "-q", "-b", "dev", str(origin), str(self.worktree))
@@ -150,6 +183,10 @@ class GateRemote(unittest.TestCase):
         self.state = self.repo / "factory" / "jobs" / "remote-gate" / "state.json"
         self.groups("rust", "scan")
         (self.fake / "states").write_text("PowerState/running\n")
+        # This Mac's IP, read from a file: no test reaches the network. By default it is the rule's source.
+        self.env.update(FACTORY_REMOTE_IP_URL=(self.fake / "ip").as_uri(), FAKE_STATE=str(self.state))
+        self.rule_source(f"{OLD_IP}/32")
+        self.ip(OLD_IP)
 
     def tearDown(self):
         shutil.rmtree(self.dir)
@@ -176,6 +213,12 @@ class GateRemote(unittest.TestCase):
 
     def groups(self, *names):
         (self.fake / "groups").write_text(" ".join(names) + "\n")
+
+    def rule_source(self, source):
+        (self.fake / "rule-source").write_text(source + "\n")
+
+    def ip(self, answer):
+        (self.fake / "ip").write_text(answer + "\n")
 
     def run_bin(self, name, *args, remote=True, **env):
         # Off is FACTORY_REMOTE_GATE=null, so the test doesn't depend on config.json's own remote_gate; the Mac
@@ -208,8 +251,29 @@ class GateRemote(unittest.TestCase):
     def remote_calls(self):
         return [call for call in self.ssh_calls() if call["argv"][-1] != "true"]
 
+    def updates(self):
+        return [call for call in self.az_calls() if call[:4] == ["network", "nsg", "rule", "update"]]
+
+    def fallback(self):
+        return self.checks().split("\nFell back to the Mac: ", 1)[1].split("\n", 1)[0]
+
+    def forget(self):
+        """A fresh start for the fakes' logs, between gates in one test."""
+        for name in ("az.log", "ssh.log", "mac-runs"):
+            (self.fake / name).unlink(missing_ok=True)
+
+    def assert_fell_back(self, code, out, err):
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("PASS", "mac"))
+        self.assertEqual(self.lines("mac-runs"), ["all"])
+        self.assertEqual(self.remote_calls(), [])
+
     def pro_calls(self):
         return [call for call in self.ssh_calls() if "oby-mac-pro" in call["argv"]]
+
+    def pro_gate_calls(self):
+        """The Mac worker's calls but its `true` probe and its runner check."""
+        return [call for call in self.pro_calls() if call["argv"][-1] not in ("true", CHECK)]
 
     def config(self, **keys):
         """The test's config.json: the real one, with these keys set, or dropped when None."""
@@ -261,8 +325,12 @@ class GateRemote(unittest.TestCase):
         self.assertEqual(self.remote_calls(), [])
         self.assertGreater(len(self.ssh_calls()), 0)
         self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("PASS", "mac"))
-        self.assertIn("- Fell back to the Mac: ssh oby-gate didn't answer within 1s\n", self.checks())
-        self.assertIn("\nFell back to the Mac: ssh oby-gate didn't answer within 1s\n", self.checks())
+        # This Mac's IP is already the rule's source (REMOTE-20): nothing moves, and the reason says so.
+        why = (f"ssh oby-gate didn't answer within 1s, and this Mac's IP {OLD_IP} is already "
+               "oby-gateNSG/ssh-from-owner's source")
+        self.assertIn(f"- Fell back to the Mac: {why}\n", self.checks())
+        self.assertIn(f"\nFell back to the Mac: {why}\n", self.checks())
+        self.assertEqual(self.updates(), [])
         self.assertIn("fell back to the Mac", out)
 
     def test_remote_3_couldnt_judge_falls_back_to_the_mac(self):
@@ -408,7 +476,7 @@ class GateRemote(unittest.TestCase):
         commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
         code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
         self.assertEqual(code, 0, out + err)
-        [call] = [call for call in self.pro_calls() if call["argv"][-1] != "true"]
+        [call] = self.pro_gate_calls()
         self.assertEqual(call["argv"][-2:],
                          ["oby-mac-pro", f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust"])
         for option in ("BatchMode=yes", "ForwardAgent=no", "ConnectTimeout=10"):
@@ -431,7 +499,7 @@ class GateRemote(unittest.TestCase):
         self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("FAIL", "oby-gate, oby-mac-pro"))
         self.assertIn(f"- oby-mac-pro: {self.SANDBOX} in slot 1: failed with exit 1 in", self.checks())
         self.assertEqual(self.lines("mac-runs"), [], "this Mac ran the part again after the Mac worker's failure")
-        self.assertEqual(len([call for call in self.pro_calls() if call["argv"][-1] != "true"]), 1)
+        self.assertEqual(len(self.pro_gate_calls()), 1)
         self.assertNotIn("Fell back", self.checks())
 
     def test_remote_13_swift_and_factory_run_on_the_mac_worker(self):
@@ -441,7 +509,7 @@ class GateRemote(unittest.TestCase):
         commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
         code, out, err = self.gate(FACTORY_MAC_WORKER=None)
         self.assertEqual(code, 0, out + err)
-        [call] = [call for call in self.pro_calls() if call["argv"][-1] != "true"]
+        [call] = self.pro_gate_calls()
         self.assertEqual(call["argv"][-1],
                          f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust swift factory")
         self.assertEqual(self.lines("mac-runs"), [])
@@ -486,7 +554,7 @@ class GateRemote(unittest.TestCase):
         (self.fake / "pro-reach").write_text("255\n")
         self.assert_the_macos_part_fell_back("ssh oby-mac-pro didn't answer within 1s",
                                              FACTORY_REMOTE_REACH_SECONDS="1")
-        self.assertEqual([call for call in self.pro_calls() if call["argv"][-1] != "true"], [])
+        self.assertEqual(self.pro_gate_calls(), [])
         self.assertGreater(len(self.pro_calls()), 0)
 
     def test_remote_14_a_busy_mac_worker_falls_back_to_this_mac(self):
@@ -565,6 +633,70 @@ class GateRemote(unittest.TestCase):
             self.assertIn(f"\n- Fell back from the Mac worker to this Mac: {why}\n", self.checks())
             self.assertEqual([call["argv"][-2] for call in self.ssh_calls()], ["oby-gate"] * len(self.ssh_calls()))
 
+    # ---- REMOTE-43 ------------------------------------------------------------------------------
+
+    def changed_runner(self):
+        """The fallback's reason when the worker's runner and this checkout's differ, from their sha256."""
+        there, here = (hashlib.sha256(path.read_bytes()).hexdigest()[:12] for path in (self.pro_runner, self.runner))
+        self.assertNotEqual(there, here)
+        return (f"its oby-worker/bin/oby-remote-gate isn't this checkout's factory/remote/oby-remote-gate (sha256 "
+                f"{there} there, {here} here): run factory/remote/setup-mac.sh oby-mac-pro to put it back")
+
+    def test_remote_43_a_rewritten_runner_is_refused_and_the_gate_falls_back(self):
+        with open(self.pro_runner, "a") as runner:
+            runner.write('print("oby-remote-gate: passed in slot 1 after 1s")\n')
+        self.assert_the_macos_part_fell_back(self.changed_runner())
+        self.assertEqual([call["argv"][-1] for call in self.pro_calls()], ["true", CHECK] * 2)
+        self.assertEqual(self.pro_gate_calls(), [])
+
+    def test_remote_43_an_untouched_runner_runs_the_macos_part_there(self):
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([call["argv"][-1] for call in self.pro_calls()],
+                         ["true", CHECK, f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust"])
+        check = self.pro_calls()[1]
+        for option in ("BatchMode=yes", "ForwardAgent=no", "ConnectTimeout=10"):
+            self.assertIn(option, check["argv"])
+        self.assertFalse(check["stdin_pipe"], "the runner check's standard input isn't /dev/null")
+        self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+        self.assertEqual(self.lines("mac-runs"), [])
+        self.assertNotIn("Fell back", self.checks())
+
+    def test_remote_43_a_runner_dev_moved_on_from_falls_back_until_setup_runs_again(self):
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        with open(self.runner, "a") as runner:
+            runner.write("# dev moved on\n")
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.header()["HOST"], "oby-gate, mac")
+        self.assertIn(f"\n- Fell back from oby-mac-pro to this Mac: {self.changed_runner()}\n", self.checks())
+        self.assertEqual(self.pro_gate_calls(), [])
+        self.assertEqual(self.lines("mac-runs"), ["rust"])
+        # setup-mac.sh puts this checkout's runner there: the part runs there again.
+        shutil.copy2(self.runner, self.pro_runner)
+        self.forget()
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([call["argv"][-1] for call in self.pro_gate_calls()],
+                         [f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust"])
+        self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+        self.assertEqual(self.lines("mac-runs"), [])
+
+    # ---- REMOTE-44 ------------------------------------------------------------------------------
+
+    def test_remote_44_an_unreadable_runner_falls_back_to_this_mac(self):
+        self.pro_runner.unlink()
+        self.assert_the_macos_part_fell_back("couldn't read the sha256 of its oby-worker/bin/oby-remote-gate (ssh "
+                                             "ended 1): run factory/remote/setup-mac.sh oby-mac-pro to put it back")
+        self.assertEqual(self.pro_gate_calls(), [])
+
+    def test_remote_44_no_runner_in_this_checkout_falls_back_to_this_mac(self):
+        self.runner.unlink()
+        self.assert_the_macos_part_fell_back("this checkout has no factory/remote/oby-remote-gate to check its runner "
+                                             "against")
+        self.assertEqual(self.pro_gate_calls(), [])
+
     # ---- REMOTE-5 --------------------------------------------------------------------------------
 
     def write_state(self, minutes):
@@ -575,16 +707,12 @@ class GateRemote(unittest.TestCase):
         return [call for call in self.az_calls() if call[1] == "deallocate"]
 
     def test_remote_5_deallocates_only_after_30_idle_minutes(self):
-        self.write_job("review")
+        # An old state.json, with `used` only: no use open. A job's stage counts for nothing.
+        self.write_job("merging")
         self.write_state(29)
         self.assertEqual(self.run_bin("gate", "--idle"), (0, "", ""))
         self.assertEqual(self.az_calls(), [])
-        for stage in ("gate", "merging"):
-            self.write_job(stage)
-            self.write_state(31)
-            self.assertEqual(self.run_bin("gate", "--idle"), (0, "", ""))
-            self.assertEqual(self.az_calls(), [], stage)
-        self.write_job("review")
+        self.write_state(31)
         # az fails: the next run tries again.
         (self.fake / "az-deallocate-exit").write_text("1\n")
         code, out, _ = self.run_bin("gate", "--idle")
@@ -624,6 +752,187 @@ class GateRemote(unittest.TestCase):
         self.assertTrue(after.splitlines()[-1].startswith("# sprint"), after)
         self.assertIn("gate --idle: deallocating oby-gate", err)
         self.assertEqual(len(self.deallocations()), 1)
+
+    def test_remote_5_a_mac_only_gate_doesnt_keep_the_vm_up(self):
+        # A job gating on the Mac (stage `gate`) with no use of the VM open.
+        self.write_job("gate")
+        self.write_state(31)
+        code, out, err = self.run_bin("gate", "--idle")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith("gate --idle: deallocating oby-gate"), out)
+        self.assertEqual(self.deallocations(),
+                         [["vm", "deallocate", "--resource-group", "oby-factory", "--name", "oby-gate", "--no-wait"]])
+
+    # ---- REMOTE-19 -------------------------------------------------------------------------------
+
+    def test_remote_19_a_changed_ip_moves_the_rule_and_the_gate_uses_the_vm(self):
+        self.ip(NEW_IP)  # the rule still allows OLD_IP/32, so SSH fails until it moves
+        code, out, err = self.gate(FACTORY_REMOTE_REACH_SECONDS="1")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("PASS", "oby-gate"))
+        self.assertEqual(self.updates(), [["network", "nsg", "rule", "update", "--resource-group", "oby-factory",
+                                           "--nsg-name", "oby-gateNSG", "--name", "ssh-from-owner",
+                                           "--source-address-prefixes", f"{NEW_IP}/32"]])
+        self.assertIn(["network", "nsg", "rule", "show", "--resource-group", "oby-factory", "--nsg-name",
+                       "oby-gateNSG", "--name", "ssh-from-owner", "--output", "json"], self.az_calls())
+        self.assertEqual([call[:4] for call in self.az_calls() if call[0] == "network"],
+                         [["network", "nsg", "rule", "show"], ["network", "nsg", "rule", "update"]])
+        where = self.checks().split("## Where it ran\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn(f"- Moved oby-gateNSG/ssh-from-owner's source from {OLD_IP}/32 to {NEW_IP}/32: this Mac's IP "
+                      "changed; the VM answered", where)
+        self.assertNotIn("Fell back", self.checks())
+        self.assertEqual(self.lines("mac-runs"), [], "the Mac ran a part with nothing for it")
+        self.assertEqual(len(self.remote_calls()), 1)
+
+    def test_remote_19_a_moved_rule_that_still_cant_reach_falls_back(self):
+        self.ip(NEW_IP)
+        (self.fake / "ssh-reach").write_text("255\n")
+        self.assert_fell_back(*self.gate(FACTORY_REMOTE_REACH_SECONDS="1"))
+        self.assertEqual(len(self.updates()), 1)
+        self.assertIn(f"- Moved oby-gateNSG/ssh-from-owner's source from {OLD_IP}/32 to {NEW_IP}/32: this Mac's IP "
+                      "changed; ssh still didn't answer within 1s", self.checks())
+        self.assertEqual(self.fallback(), "ssh oby-gate didn't answer within 1s, nor within 1s after moving "
+                                          f"oby-gateNSG/ssh-from-owner's source to {NEW_IP}/32")
+
+    def test_remote_19_nsg_and_rule_names_come_from_the_settings(self):
+        self.ip(NEW_IP)
+        names = {**json.loads(REMOTE), "nsg": "other-nsg", "nsg_rule": "ssh-x"}
+        code, out, err = self.gate(FACTORY_REMOTE_GATE=json.dumps(names), FACTORY_REMOTE_REACH_SECONDS="1")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.header()["HOST"], "oby-gate")
+        self.assertEqual(self.updates(), [["network", "nsg", "rule", "update", "--resource-group", "oby-factory",
+                                           "--nsg-name", "other-nsg", "--name", "ssh-x",
+                                           "--source-address-prefixes", f"{NEW_IP}/32"]])
+        self.assertIn("other-nsg/ssh-x's source", self.checks())
+        # An invalid name makes the settings invalid: the whole check runs on the Mac, with no az or ssh.
+        self.forget()
+        self.rule_source(f"{OLD_IP}/32")
+        self.assert_fell_back(*self.gate(FACTORY_REMOTE_GATE=json.dumps({**names, "nsg": "bad name"})))
+        self.assertEqual((self.az_calls(), self.ssh_calls()), ([], []))
+        self.assertTrue(self.fallback().startswith("FACTORY_REMOTE_GATE needs ssh_host, resource_group, vm"),
+                        self.fallback())
+
+    # ---- REMOTE-20 -------------------------------------------------------------------------------
+
+    def test_remote_20_an_unchanged_ip_falls_back_without_an_update(self):
+        (self.fake / "ssh-reach").write_text("255\n")
+        for source in (f"{OLD_IP}/32", OLD_IP):
+            self.forget()
+            self.rule_source(source)
+            self.assert_fell_back(*self.gate(FACTORY_REMOTE_REACH_SECONDS="1"))
+            self.assertEqual(self.updates(), [], source)
+            self.assertTrue(self.fallback().startswith("ssh oby-gate didn't answer within 1s"), self.fallback())
+            self.assertIn(f"this Mac's IP {OLD_IP} is already oby-gateNSG/ssh-from-owner's source", self.fallback())
+            self.assertNotIn("Moved", self.checks())
+
+    def test_remote_20_a_refused_or_malformed_ip_answer_updates_nothing(self):
+        for answer in (None, "<html><body>1.1.1.1</body></html>", "::1", "10.0.0.5", "127.0.0.1", "0.0.0.0",
+                       "224.0.0.1", "1.2.3.4\n5.6.7.8", "1.2.3.4/24"):
+            self.forget()
+            if answer is None:  # refused: nothing to read
+                (self.fake / "ip").unlink(missing_ok=True)
+            else:
+                self.ip(answer)
+            self.assert_fell_back(*self.gate(FACTORY_REMOTE_REACH_SECONDS="1"))
+            self.assertEqual([call for call in self.az_calls() if call[0] == "network"], [], answer)
+            self.assertTrue(self.fallback().startswith("ssh oby-gate didn't answer within 1s, and this Mac's public "
+                                                       "IP couldn't be read"), self.fallback())
+            self.assertEqual((self.fake / "rule-source").read_text(), f"{OLD_IP}/32\n")
+
+    def test_remote_20_az_failing_on_the_rule_falls_back(self):
+        self.ip(NEW_IP)
+        for action in ("show", "update"):
+            self.forget()
+            exit_file = self.fake / f"az-rule-{action}-exit"
+            exit_file.write_text("1\n")
+            self.assert_fell_back(*self.gate(FACTORY_REMOTE_REACH_SECONDS="1"))
+            verb = "read" if action == "show" else "update"
+            self.assertIn(f"az couldn't {verb} oby-gateNSG/ssh-from-owner", self.fallback())
+            self.assertEqual([call[3] for call in self.az_calls() if call[0] == "network"],
+                             ["show"] if action == "show" else ["show", "update"])
+            self.assertEqual((self.fake / "rule-source").read_text(), f"{OLD_IP}/32\n")
+            self.assertNotIn("Moved", self.checks())
+            exit_file.unlink()
+
+    # ---- REMOTE-21 -------------------------------------------------------------------------------
+
+    def test_remote_21_a_gate_records_its_vm_use(self):
+        before = ago(0)
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        during = json.loads((self.fake / "state-during-run").read_text())
+        [use] = during["open"].values()
+        self.assertIsInstance(use["pid"], int)
+        self.assertGreaterEqual(use["started"], before)
+        after = json.loads(self.state.read_text())
+        self.assertEqual(after["open"], {})
+        self.assertGreaterEqual(after["used"], before)
+
+    def write_uses(self, used_minutes, **uses):
+        self.state.parent.mkdir(parents=True, exist_ok=True)
+        self.state.write_text(json.dumps({"used": ago(used_minutes), "open": {
+            use: {"pid": pid, "started": ago(minutes)} for use, (pid, minutes) in uses.items()}}))
+
+    def a_process(self, ended):
+        proc = subprocess.Popen(["sleep", "60"] if not ended else ["true"])
+        if ended:
+            proc.wait()
+        else:
+            self.addCleanup(proc.wait)
+            self.addCleanup(proc.kill)
+        return proc.pid
+
+    def test_remote_21_an_open_vm_use_keeps_the_vm_up(self):
+        self.write_job("review")
+        self.write_uses(31, live=(self.a_process(ended=False), 31))
+        self.assertEqual(self.run_bin("gate", "--idle"), (0, "", ""))
+        self.assertEqual(self.az_calls(), [])
+        self.assertIn("live", json.loads(self.state.read_text())["open"])
+
+    def test_remote_21_a_dead_gates_open_use_stops_counting(self):
+        self.write_job("review")
+        dead = self.a_process(ended=True)
+        # It started 31 minutes ago: it counts as ended then, so the VM is deallocated once.
+        self.write_uses(31, dead=(dead, 31))
+        code, out, err = self.run_bin("gate", "--idle")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith("gate --idle: deallocating oby-gate"), out)
+        self.assertEqual(len(self.deallocations()), 1)
+        self.assertEqual(json.loads(self.state.read_text())["open"], {})
+        # It started 5 minutes ago: it counts as ended then, which isn't 30 minutes yet.
+        self.write_uses(31, dead=(dead, 5))
+        started = json.loads(self.state.read_text())["open"]["dead"]["started"]
+        self.assertEqual(self.run_bin("gate", "--idle"), (0, "", ""))
+        self.assertEqual(len(self.deallocations()), 1)
+        state = json.loads(self.state.read_text())
+        self.assertEqual((state["open"], state["used"]), ({}, started))
+
+    # ---- REMOTE-28 -------------------------------------------------------------------------------
+
+    def test_remote_28_slot_counts_reach_the_vm_only_when_set(self):
+        commit = self.git(self.worktree, "rev-parse", "HEAD")
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        [call] = self.remote_calls()
+        self.assertEqual(call["argv"][-2:], ["oby-gate", f"oby-remote-gate {commit} origin/dev"])
+        for keys, words in (({"slots": 6}, "--slots 6 --builder-slots 0"),
+                            ({"builder_slots": 8}, "--slots 4 --builder-slots 8"),
+                            ({"slots": 4, "builder_slots": 8, "builder_user": "oby-builder"},
+                             "--slots 4 --builder-slots 8")):
+            self.forget()
+            code, out, err = self.gate(FACTORY_REMOTE_GATE=json.dumps({**json.loads(REMOTE), **keys}))
+            self.assertEqual(code, 0, out + err)
+            [call] = self.remote_calls()
+            self.assertEqual(call["argv"][-1], f"oby-remote-gate {words} {commit} origin/dev")
+        # An invalid count or user makes the settings invalid: the whole check runs on the Mac, with no az or ssh.
+        for keys in ({"slots": 0}, {"slots": 65}, {"slots": "4"}, {"slots": True}, {"builder_slots": -1},
+                     {"builder_slots": 65}, {"builder_slots": 1.5}, {"builder_user": "bad name"},
+                     {"builder_user": 7}):
+            self.forget()
+            self.assert_fell_back(*self.gate(FACTORY_REMOTE_GATE=json.dumps({**json.loads(REMOTE), **keys})))
+            self.assertEqual((self.az_calls(), self.ssh_calls()), ([], []), keys)
+            self.assertTrue(self.fallback().startswith("FACTORY_REMOTE_GATE's slots must be a whole number from 1 "
+                                                       "to 64"), self.fallback())
 
     # ---- REMOTE-6 --------------------------------------------------------------------------------
 

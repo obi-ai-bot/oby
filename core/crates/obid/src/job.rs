@@ -1,6 +1,8 @@
 //! A job: one piece of work, where it runs and how it went (docs/runner-api.md, "Job"), as obid
 //! keeps it and as the apps read it. The JSON carries every key the Swift runner's does
 //! (Runner/API.swift, `JobJSON`), null where nothing is known, plus obid's own `obi` and `worktree`.
+//! It owns the `Job` type and what a job decides from itself alone (`Job::note_mark`); it never
+//! saves a job, sets its status or runs anything (docs/ARCHITECTURE.md, "State ownership").
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -86,9 +88,9 @@ pub struct Recovery {
     pub limit_resumes: usize,
     /// New sessions it got because its last grew too long for its model (RECOVERY-8).
     pub renewed: usize,
-    /// The accounts that refused it one model's limit, and until when (USAGE-13): unmarked for
-    /// other work, but its moves pass them by until then, so it waits rather than hop between them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// An older file's accounts that refused it one model's limit, and until when (USAGE-13): read
+    /// only to move them into the hold table at start (crate::limits::holds, LIMITS-23).
+    #[serde(skip_serializing)]
     pub scoped_holds: Vec<(String, i64)>,
     /// What cut its run, for the next run's marked message; taken when that run starts.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -865,6 +867,9 @@ pub struct Job {
     /// that head. Never in the API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_merge_refused: Option<(String, String)>,
+    /// Keys this obid doesn't know (a newer one's), kept as they were when it saves, never shown.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Something obid sends for a job's merge, kept until it knows how it went (`Job::sending`).

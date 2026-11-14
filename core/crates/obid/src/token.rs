@@ -59,7 +59,7 @@ pub fn load(home: &Path) -> Result<String, TokenError> {
             if !usable(&token) {
                 return Err(TokenError::WeakFile { path });
             }
-            keep_private(&path).map_err(io)?;
+            crate::store::keep_private(&path, 0o600).map_err(io)?;
             Ok(token)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -85,32 +85,13 @@ fn make() -> Result<String, TokenError> {
 
 /// Writes a file only its owner can read, failing if it exists.
 fn write_new(path: &Path, token: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    options.write(true).create_new(true).mode(0o600);
     let mut file = options.open(path)?;
     file.write_all(token.as_bytes())?;
     file.write_all(b"\n")?;
     file.sync_all()
-}
-
-/// A token file others could read is made the owner's alone again.
-fn keep_private(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(path)?.permissions().mode();
-        if mode & 0o077 != 0 {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
 }
 
 /// Whether `given` is `token`, in time that doesn't depend on where they differ.

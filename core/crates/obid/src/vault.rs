@@ -905,10 +905,9 @@ fn unreadable_for_agents(why: &str) -> String {
 /// every string of a JSON answer, and every other text answer, has the vault's secrets taken
 /// out. An answer with a length is scrubbed whole; a streamed one (the event stream, `/wait`) a
 /// frame at a time, and it ends at the first frame the vault can't be read for. Files that
-/// aren't text (a check's bundle) go as they are, and so do the web app's files under `/app/`,
-/// which hold no data. `GET /v1/status` answers even then, so the apps can say why
-/// (`status.vaultProblem`), and so does `GET /v1/events` once obid has read the vault, scrubbed of
-/// the secrets it last read: neither starts any work.
+/// aren't text (a check's bundle) go as they are. `GET /v1/status` answers even then, so the apps
+/// can say why (`status.vaultProblem`), and so does `GET /v1/events` once obid has read the vault,
+/// scrubbed of the secrets it last read: neither starts any work.
 pub async fn answers(request: Request, next: Next) -> Response {
     if !request.uri().path().starts_with("/v1/") {
         return next.run(request).await;

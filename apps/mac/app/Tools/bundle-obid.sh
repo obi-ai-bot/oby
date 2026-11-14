@@ -1,8 +1,8 @@
 #!/bin/zsh
 # Bundles obid, Oby's engine, with Oby (the owner's decision of 2026-10-18): Contents/Helpers/obid,
-# signed with the app's identity and the hardened runtime, and its plug-ins (and, in a full build, its
-# web app) at Contents/Resources/obid, where obid finds them from inside the app
-# (core/crates/obid/src/app.rs). Run by the Electron app's packaging (apps/electron/scripts/helpers.sh).
+# signed with the app's identity and the hardened runtime, and clears an older build's folders from
+# Contents/Resources/obid (core/crates/obid/src/app.rs). Run by the Electron app's packaging
+# (apps/electron/scripts/helpers.sh).
 set -euo pipefail
 
 root="$SRCROOT/.."
@@ -45,17 +45,6 @@ chmod 755 "$helpers/obid"
 
 # obid has no plug-ins any more (the strip to a dispatcher): an older build's folder goes.
 rm -rf "$resources/plugins" "$resources/web"
-# The web app obid serves at /app/, only in a full build (OBY_FULL_BUILD=1; the
-# launch build leaves it out, AGENTS.md, "The launch build"): a full release builds it, a full debug
-# build when it isn't built yet, and either fails if it can't. Without it obid answers 404 there.
-if [[ "${OBY_FULL_BUILD:-}" == 1 ]]; then
-  if [[ "${CONFIGURATION:-Debug}" == Release || ! -f "$root/apps/web/dist/index.html" ]]; then
-    env -i HOME="$HOME" PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-      zsh -c 'cd "$1" && npm ci --silent && npm run build --silent' zsh "$root/apps/web" \
-      || { echo "error: a full build of Oby needs obid's web app: npm ci && npm run build in apps/web failed" >&2; exit 1; }
-  fi
-  cp -R "$root/apps/web/dist" "$resources/web"
-fi
 
 # Signed like the app: the hardened runtime for notarization, and a secure timestamp on release
 # builds (it needs the network).

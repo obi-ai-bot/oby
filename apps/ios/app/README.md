@@ -22,7 +22,6 @@ Before the redesign, in three tabs (Home, Chat, Settings); all of it still works
 - Settings, its own tab: the Mac's accounts, each tool's model and effort. Speech is English only (the owner's decision of 2026-11-01). Oby answers in writing, never aloud.
 - Clear done: hides finished jobs from Home, and from the Mac's window too. obid records when you pressed it (`POST /v1/clear`) and keeps every job; the list is in the same groups on both: working, waiting (each saying what for), needs you, in review, done.
 - A Live Activity while agents work: Oby, the job, its step and a clock, on the Lock Screen and in the Dynamic Island, ending with how the last job finished. The app updates it while it's open (the `ObyActivity` extension in `apps/ios/live-activity/` draws it), and nothing pushes it in the background. While the app is suspended the step stays where it was (the clock keeps ticking), after a minute it says "Open Oby for the latest", and obid's `GET /v1/jobs/{id}/wait` wakes the app when the job ends so the card says "Done" or "Failed".
-- Stands between the Apple Watch and the Mac: the watch app ships inside this one, and `apps/ios/app/WatchRelay.swift` keeps the jobs on it and carries out what it asks, signing a publish with this phone's key (`apps/watch/README.md`).
 - Notifications when a job needs you, and only then: "Ready to publish: <job>" with **Publish** (it opens the job and publishes) and **Open**, or a failed or interrupted job with its reason. Tapping one opens the job. Oby asks for permission the first time you dispatch a job, hands obid its device token (`POST /v1/notifications`), and the notification goes away once the job is published, from the iPhone or the Mac (`apps/ios/app/Notifications.swift`).
 
 ## Run it
@@ -39,7 +38,7 @@ Before the redesign, in three tabs (Home, Chat, Settings); all of it still works
 
 ## Signing and TestFlight
 
-The iPhone app signs with Deskree's team (`3UV9W5SV7W`) as `com.deskree.oby.ios`, an App ID of its own: the Swift Mac app was `com.deskree.oby`, and sharing one made Xcode see a single "Oby (iOS, macOS)" product, which Xcode Cloud couldn't tie to the iOS-only App Store Connect record (2026-10-23). The Live Activity extension is `com.deskree.oby.ios.activity`, the Watch app `com.deskree.oby.ios.watchkitapp` (and `.watchkitapp.widget`), and the App Group they share `group.com.deskree.oby.ios.watch`. Builds 432 and 458 went to the earlier record, "Oby by Deskree" (`com.deskree.oby`), which gets no new ones. Both the team (`OBY_TEAM_ID`) and the bundle ID (`OBY_IPHONE_BUNDLE_ID`) are set once, in `apps/config/Signing.xcconfig` ([docs/release.md](../../../docs/release.md)).
+The iPhone app signs with Deskree's team (`3UV9W5SV7W`) as `com.deskree.oby.ios`, an App ID of its own: the Swift Mac app was `com.deskree.oby`, and sharing one made Xcode see a single "Oby (iOS, macOS)" product, which Xcode Cloud couldn't tie to the iOS-only App Store Connect record (2026-10-23). The Live Activity extension is `com.deskree.oby.ios.activity`. The Watch app (`com.deskree.oby.ios.watchkitapp` and `.watchkitapp.widget`) and its App Group `group.com.deskree.oby.ios.watch` are no longer built: the Watch app was removed on 2026-11-13. Builds 432 and 458 went to the earlier record, "Oby by Deskree" (`com.deskree.oby`), which gets no new ones. Both the team (`OBY_TEAM_ID`) and the bundle ID (`OBY_IPHONE_BUNDLE_ID`) are set once, in `apps/config/Signing.xcconfig` ([docs/release.md](../../../docs/release.md)).
 
 Until 2026-10-20 the beta signed with Wellington's personal team (`PQKAL8E36D`) as `dev.wellprado.oby`, "Oby Beta" in App Store Connect. That record stays on his account (an app record's bundle ID belongs to its account) and gets no new builds; testers install the Deskree app as a new app, and Face ID keys register again on their own.
 
@@ -62,14 +61,14 @@ Tap the mic beside Send to dictate (`apps/ios/app/Composer.swift`, the same comp
 
 Typing while it listens or writes down stops it there: the words already in the field stay, and later ones can't overwrite your edits. The same goes for the field being filled from elsewhere (Edit on a plan card or a failed message). Going to the background stops listening and writes down the final words. Leaving the tab, opening a job, a call, Siri or a lost audio route stop it with the words already in the field. The microphone and speech recognition prompts don't stop it while the microphone is being prepared; anything else that takes the app out of the front then (Control Center, a notification, the background) stops it, and Stop during preparation means the microphone never opens. The mic shows Stop and the meter only while it really listens; “Getting ready…” and “Writing down…” show above the field before and after. The first tap asks for microphone and speech recognition access, separately; refused, typing still works. SpeechAnalyzer runs on the iPhone; a speech model that isn't there yet downloads first.
 
-A draft with dictated words in it is a spoken request when you send it, even after edits or more typing, so the thread says "You, by voice"; clearing the field makes it a typed one again. Oby's reply is written, never spoken. Cancel waiting stays in sight while Oby plans. It stops the phone waiting for the reply; obid can still carry out a request it already took, such as starting jobs for a roadmap goal, and those jobs show on Home where they can be stopped. The Apple Watch dictates the same way (`apps/watch/README.md`).
+A draft with dictated words in it is a spoken request when you send it, even after edits or more typing, so the thread says "You, by voice"; clearing the field makes it a typed one again. Oby's reply is written, never spoken. Cancel waiting stays in sight while Oby plans. It stops the phone waiting for the reply; obid can still carry out a request it already took, such as starting jobs for a roadmap goal, and those jobs show on Home where they can be stopped.
 
-`PhoneSpeech.swift` owns recognition, volatile/final results, context, model installation, conversion and finalization. The phone capture queue holds at least eight seconds of 2048-frame tap audio; the analyzer queue allows twice that buffer count. The Watch keeps its separate 64-chunk queue. Both remain bounded while tolerating brief slowdowns. The phone’s microphone and both Watch relay paths use it. Recognition context includes product names and repositories present in the phone’s job list (there is no repository inventory endpoint). It listens in US English, whatever the phone’s language (the owner’s decision of 2026-11-01).
+`PhoneSpeech.swift` owns recognition, volatile/final results, context, model installation, conversion and finalization. The phone capture queue holds at least eight seconds of 2048-frame tap audio; the analyzer queue allows twice that buffer count. Both remain bounded while tolerating brief slowdowns. The phone’s microphone uses it. Recognition context includes product names and repositories present in the phone’s job list (there is no repository inventory endpoint). It listens in US English, whatever the phone’s language (the owner’s decision of 2026-11-01).
 
 The iPhone target generates its Info.plist from project build settings. Both Debug and Release include these separate permission reasons:
 
 - `INFOPLIST_KEY_NSMicrophoneUsageDescription`: “Oby listens when you tap the mic to dictate, until you tap stop or for up to 60 seconds.” Oby is English only (the owner's decision of 2026-11-01): there are no other languages' strings.
-- `INFOPLIST_KEY_NSSpeechRecognitionUsageDescription`: “Oby writes down your iPhone and Apple Watch speech on this iPhone to plan your request.”
+- `INFOPLIST_KEY_NSSpeechRecognitionUsageDescription`: “Oby writes down your iPhone speech on this iPhone to plan your request.”
 
 A build without either reason refuses voice input safely and leaves typing available.
 
@@ -82,10 +81,5 @@ On a Mac, build the ObyPhone scheme and test on a real phone, on Home and in Cha
 - Background and back, switching tabs, opening a job, calls, Siri and unplugging headphones: the words heard stay.
 - A fresh install's permission prompts with the new reasons in English, both refused, Stop during each prompt and during model preparation, Control Center pulled down during “Getting ready…” (the microphone must not open), and quick repeated taps.
 - A reply arriving while dictating stays silent and doesn't break the recording; tapping the mic while Oby talks stops it; music resumes after.
-- Both Watch relay paths, unchanged.
 
 None of these can run on Linux.
-
-Watch capture, sender backlog and the phone’s accepted stream length share the 60-second limit in `apps/shared/WatchWire.swift`. Watch networking implementation is unchanged.
-
-A 60-second Watch capture is a maximum, not a guarantee of iPhone background execution. When the paired iPhone is locked or Oby is suspended, iOS may expire the relay’s background allowance sooner and cancel transcription. Verify long locked holds on a real Watch and locked iPhone before shipping; try a shorter hold if the phone reports an interrupted stream.

@@ -1333,6 +1333,7 @@ mod tests {
             start: None,
             github: None,
             watch: None,
+            extra: Default::default(),
         }
     }
 

@@ -5,6 +5,7 @@ import { Group, Row, SettingsPage, Value } from './SettingsView';
 import SphereTile from './SphereTile';
 import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
+import { keyed } from './live';
 import type { InboxItem } from '../../shared/obid-wire';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
@@ -235,7 +236,7 @@ export function ShareModal({ card: opened, onClose, onAnswered }: { card: InboxI
         {ticks && <RepoTicks {...ticks} onCard={setCard} onHold={setHold} />}
         {problem && <p className="set-problem">{problem}</p>}
         <div className="modal-actions">
-          <button type="button" className="set-button" autoFocus onClick={() => answer(api.answer(card.id, { answer: 'Cancel' }))}>Cancel</button>
+          <button type="button" className="set-button" autoFocus onClick={() => answer(keyed((key) => api.answer(card.id, { answer: 'Cancel' }, key)))}>Cancel</button>
           <button type="button" className="modal-primary" disabled={confirmIsOff(ticks, hold)} onClick={() => answer(api.confirm(card.id))}>Confirm</button>
         </div>
       </div>
