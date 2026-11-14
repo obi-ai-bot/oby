@@ -57,7 +57,7 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 
 ## The CLI canary
 
-`.github/workflows/cli-canary.yml` (the `CLI canary` workflow, docs/contracts/ci.md, CI-14 to 16) runs the newest Claude Code, Codex and cursor-agent through obid's real adapters every 6 hours (at minute 41) and on demand, so a release that breaks obid is found before the owner's first job is. It runs on GitHub's `ubuntu-latest`, never on a self-hosted runner, with no login, no real key and no secret. Each CLI comes from its vendor's own package into the run's `$RUNNER_TEMP` (`docs/cli-canary.md`, "Install commands"); one that fails to install leaves only that CLI `not installed`.
+`.github/workflows/cli-canary.yml` (the `CLI canary` workflow, docs/contracts/ci.md, CI-14 to 16) runs the newest Claude Code, Codex and cursor-agent through obid's real adapters every 6 hours (at minute 41) and on demand, so a release that breaks obid is found before the owner's first job is. It runs on GitHub's `ubuntu-latest`, never on a self-hosted runner, with no login, no real key and no secret. Each CLI comes from its vendor's own package (`docs/cli-canary.md`, "Install commands"): Claude Code and Codex into `/opt/cli-canary`, cursor-agent into a throwaway `HOME` in `$RUNNER_TEMP`. One that fails to install leaves only that CLI `not installed`. Not the home or `/tmp` for the first two: obid's box hides both, and a boxed Codex then can't find its platform package beside its own (`Missing optional dependency @openai/codex-linux-…`).
 
 On demand: `gh workflow run cli-canary.yml --ref dev`. Its one input, `force_fail` (`<cli>/<case>`, such as `codex/start`), makes that case fail with the why `forced`, for the proof runs; it reaches the cases only through an environment variable.
 
@@ -84,12 +84,12 @@ A version is the first word of the CLI's `--version` that starts with a digit, k
 
 **Permissions.** The workflow's own `permissions` are `{}`. `canary`, which installs and runs code nobody here reviewed, gets `contents: read` and no secret, and checks out with `persist-credentials: false`. `drift` gets `actions: read` (the previous run's artifact), `contents: read` and `issues: write`, and runs nothing from the CLIs. Every action is pinned by the same SHAs as `ci.yml`.
 
-**By hand**, on a Mac or a Linux machine with bubblewrap and socat, with the CLIs in a folder of your own:
+**By hand**, on a Linux machine with bubblewrap and socat, with the CLIs in a folder of your own outside your home and the temporary folders (the box hides those, as above):
 
 ```sh
-npm install --prefix /tmp/cc @anthropic-ai/claude-code@latest @openai/codex@latest
+npm install --prefix /opt/cc @anthropic-ai/claude-code@latest @openai/codex@latest
 cd core
-CLI_CANARY_CLAUDE=/tmp/cc/node_modules/.bin/claude CLI_CANARY_CODEX=/tmp/cc/node_modules/.bin/codex \
+CLI_CANARY_CLAUDE=/opt/cc/node_modules/.bin/claude CLI_CANARY_CODEX=/opt/cc/node_modules/.bin/codex \
   cargo test -p obid --test cli_canary -- --include-ignored --test-threads=1
 ```
 

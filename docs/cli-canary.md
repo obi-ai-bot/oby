@@ -226,6 +226,8 @@ The canary itself (docs/ci.md, "The CLI canary"; docs/contracts/ci.md, CI-14 to 
 
 Codex doesn't reach the fake through a `-c` model provider, as the spike's driver did. Through obid, a Codex job on Linux is boxed and gets no model provider of the test's choosing, so the canary signs a Codex account in with ChatGPT and goes through obid's own ChatGPT relay to the stand-in OpenAI the ChatGPT tests use (`core/crates/obid/tests/support/stand_in_openai.rs`), which is both the sign-in issuer and the model. Claude Code reaches the fake model through an own job's login-shell environment (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY=dummy`). cursor-agent gets only the signed-out check.
 
+The workflow installs Claude Code and Codex into `/opt/cli-canary`, not the temporary prefix above: obid's box hides the home and `/tmp`, and a boxed Codex installed there fails with "Missing optional dependency @openai/codex-linux-arm64" (measured on Linux, codex-cli 0.169.0), since the box shows its own package's folder but not the platform package beside it.
+
 ## Open risks
 
 - **Claude Code's usage and limits need a real account.** No `rate_limit_event` came with a dummy key or token. obid's limit handling for Claude Code (LIMITS, USAGE) can't be checked on a runner, and it stays on the owner's Mac (#1099).

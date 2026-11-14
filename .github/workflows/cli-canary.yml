@@ -3,7 +3,7 @@
 # release that breaks obid is found before the owner's first job is (docs/ci.md, "The CLI canary";
 # docs/contracts/ci.md, CI-14 to 16; what each CLI is checked for is docs/cli-canary.md's).
 #
-#   canary   installs each CLI's newest release from its vendor into $RUNNER_TEMP, runs
+#   canary   installs each CLI's newest release from its vendor into a folder of this run's, runs
 #            core/crates/obid/tests/cli_canary.rs's ignored cases (Claude Code against
 #            tests/agents/fake-model-server, Codex through obid's ChatGPT relay to the stand-in
 #            OpenAI) and cursor-agent's signed-out check (adapters.rs), then uploads
@@ -97,14 +97,21 @@ jobs:
           echo "CLI_CANARY_RESULTS=$RUNNER_TEMP/cli-canary-results" >> "$GITHUB_ENV"
 
       # Each CLI from its vendor's own package, the newest, into a folder of this run's: one that
-      # fails to install leaves only that CLI `not installed`.
+      # fails to install leaves only that CLI `not installed`. Claude Code and Codex go in /opt,
+      # not $RUNNER_TEMP: obid's box hides the home ($RUNNER_TEMP is in it) and /tmp, and a boxed
+      # Codex finds its platform package beside its own only where the box shows both.
+      - name: A folder for the CLIs
+        run: |
+          sudo mkdir -p /opt/cli-canary
+          sudo chown "$(id -u):$(id -g)" /opt/cli-canary
+
       - name: Install Claude Code
         continue-on-error: true
-        run: npm install --no-fund --no-audit --prefix "$RUNNER_TEMP/cli-canary/claude" @anthropic-ai/claude-code@latest
+        run: npm install --no-fund --no-audit --prefix /opt/cli-canary/claude @anthropic-ai/claude-code@latest
 
       - name: Install Codex
         continue-on-error: true
-        run: npm install --no-fund --no-audit --prefix "$RUNNER_TEMP/cli-canary/codex" @openai/codex@latest
+        run: npm install --no-fund --no-audit --prefix /opt/cli-canary/codex @openai/codex@latest
 
       # Cursor's installer writes under HOME: a throwaway one is its prefix.
       - name: Install cursor-agent
@@ -124,8 +131,8 @@ jobs:
             echo "$1: $(head -c 200 "$CLI_CANARY_RESULTS/$1.version")"
             [ -z "$3" ] || echo "$3=$2" >> "$GITHUB_ENV"
           }
-          version claude-code "$RUNNER_TEMP/cli-canary/claude/node_modules/.bin/claude" CLI_CANARY_CLAUDE
-          version codex "$RUNNER_TEMP/cli-canary/codex/node_modules/.bin/codex" CLI_CANARY_CODEX
+          version claude-code /opt/cli-canary/claude/node_modules/.bin/claude CLI_CANARY_CLAUDE
+          version codex /opt/cli-canary/codex/node_modules/.bin/codex CLI_CANARY_CODEX
           version cursor-agent "$RUNNER_TEMP/cursor-home/.local/bin/cursor-agent" ""
 
       # A debug build: only that reads OBID_TEST_CHATGPT_ORIGIN, which points obid's relay at the
