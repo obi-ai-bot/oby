@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Run one commit's Linux check groups on the gate VM, in one of four slots.
+"""Run one commit's Linux check groups on the gate VM, in one of four slots, or the macOS groups it is
+given on the factory's second Mac, in one of two.
 
 Usage:
   oby-remote-gate <commit> <base>
+  oby-remote-gate --mac <commit> <base> <group>...
 
   <commit>  the commit to check: its full 40-character SHA, which origin must have
   <base>    what the check compares it with: origin/<branch>, or a full 40-character SHA
+  <group>   with --mac, one or more of rust, swift and factory, run in the order given
 
 e.g.
   ssh oby-gate oby-remote-gate <commit> origin/dev
+  ssh oby-mac-pro oby-worker/bin/oby-remote-gate --mac <commit> origin/dev rust swift
 
 Callers keep its standard input open, as ssh without -n does: standard input reaching
 end of file is how it learns the connection dropped (ssh with no terminal sends no
@@ -45,6 +49,13 @@ SIGTERM or SIGINT, standard input's end, or output that can't be written, the st
 session gets SIGTERM, then SIGKILL 10 seconds later if it hasn't ended, and this exits
 128 + the signal (SIGHUP's for the last two), freeing the slot.
 
+Mac mode (--mac, docs/contracts/remote-gate.md, REMOTE-17). The same slots, checkout, steps, stop
+and verdict, with these differences: <root> is ~/oby-worker (factory/remote/setup-mac.sh makes it)
+and there are two slots; with both held it says `both slots are busy` and exits 2 at once, with no
+wait, no fetch and nothing run, so the gate runs that part on its own Mac. It reads no plan: it runs
+exactly the groups given, each with OBY_CHECK_ONLY, offline, and OBY_BUILD_JOBS at the cores / 2.
+/opt/homebrew/bin and /usr/local/bin follow ~/.cargo/bin on PATH, ahead of the inherited one.
+
 OBY_REMOTE_ROOT and OBY_REMOTE_URL point it at another root and origin, for the tests.
 """
 
@@ -64,6 +75,9 @@ ROOT = Path(os.environ.get("OBY_REMOTE_ROOT") or "/srv/oby")
 URL = os.environ.get("OBY_REMOTE_URL") or "https://github.com/obi-ai-bot/oby.git"
 SLOTS = 4
 LINUX_GROUPS = ("rust", "electron", "scan")
+MAC_ROOT = Path(os.environ.get("OBY_REMOTE_ROOT") or Path.home() / "oby-worker")
+MAC_SLOTS = 2
+MAC_GROUPS = ("rust", "swift", "factory")
 VERDICTS = {0: "passed", 1: "failed", 2: "couldn't judge"}
 SHA = re.compile(r"[0-9a-f]{40}")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
@@ -183,7 +197,8 @@ def usage(why):
     return 2
 
 
-def take_slot():
+def take_slot(wait=True):
+    """The first free slot and its lock, waiting for one; (None, None) when none is free and not wait."""
     waiting = False
     while True:
         for n in range(1, SLOTS + 1):
@@ -195,6 +210,8 @@ def take_slot():
                 return n, fd
             except BlockingIOError:
                 os.close(fd)
+        if not wait:
+            return None, None
         if not waiting:
             say("all four slots are busy; waiting")
             waiting = True
@@ -250,23 +267,38 @@ def prepare(group, worktree, env):
 
 
 def main(argv):
-    if len(argv) != 3:
+    global ROOT, SLOTS
+    mac = argv[1:2] == ["--mac"]
+    if mac:
+        ROOT, SLOTS = MAC_ROOT, MAC_SLOTS
+        if len(argv) < 5:
+            return usage("--mac takes a commit, a base and one or more groups")
+        commit, base, given = argv[2], argv[3], argv[4:]
+        unknown = [g for g in given if g not in MAC_GROUPS]
+        if unknown:
+            return usage(f"--mac runs only {', '.join(MAC_GROUPS)}, not {' '.join(unknown)}")
+    elif len(argv) != 3:
         return usage("takes a commit and a base")
-    commit, base = argv[1], argv[2]
+    else:
+        commit, base = argv[1], argv[2]
     if not SHA.fullmatch(commit):
         return usage(f"the commit isn't a full 40-character SHA: {commit}")
     branch = base.removeprefix("origin/")
     if not (SHA.fullmatch(base) or (base.startswith("origin/") and BRANCH.fullmatch(branch) and ".." not in branch)):
         return usage(f"the base is neither origin/<branch> nor a full 40-character SHA: {base}")
     if not (ROOT / "repo.git").is_dir():
-        print(f"{NAME}: {ROOT / 'repo.git'} is missing: run factory/remote/setup.sh from the Mac first", file=sys.stderr)
+        setup = "setup-mac.sh" if mac else "setup.sh"
+        print(f"{NAME}: {ROOT / 'repo.git'} is missing: run factory/remote/{setup} from the Mac first", file=sys.stderr)
         return 2
     started = time.monotonic()
     for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, stop)
     threading.Thread(target=watch_stdin, daemon=True).start()
 
-    slot, _lock = take_slot()
+    slot, _lock = take_slot(wait=not mac)
+    if slot is None:
+        say("both slots are busy")
+        return 2
     say(f"slot {slot}")
     folder = ROOT / f"slot-{slot}"
     worktree = folder / "worktree"
@@ -279,17 +311,22 @@ def main(argv):
     env["CARGO_TARGET_DIR"] = str(folder / "target")
     env["OBY_CHECK_CACHE"] = str(folder / "cache")
     env["OBY_BUILD_JOBS"] = str(max(1, (os.cpu_count() or 1) // SLOTS))
-    env["PATH"] = f"{Path.home() / '.cargo' / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+    # A command over ssh reads no profile: on a Mac, Homebrew's folders too.
+    first = [Path.home() / ".cargo" / "bin", *(["/opt/homebrew/bin", "/usr/local/bin"] if mac else [])]
+    env["PATH"] = os.pathsep.join([*map(str, first), env.get("PATH", "")])
     check = str(worktree / "scripts" / "oby-check.sh")
-    code, plan = run([check, base], worktree, dict(env, OBY_CHECK_PLAN="1"), capture=True)
-    planned = re.findall(r"^oby-check: group (\S+)$", plan.decode(errors="replace"), re.MULTILINE)
-    if code != 0:
-        write(plan)
-        say(f"the plan couldn't be run (it ended {code})")
-        return 2
-    groups = [g for g in LINUX_GROUPS if g in planned]
-    if "swift" in planned:
-        say("swift is the Mac's: it doesn't run here")
+    if mac:
+        groups = given
+    else:
+        code, plan = run([check, base], worktree, dict(env, OBY_CHECK_PLAN="1"), capture=True)
+        planned = re.findall(r"^oby-check: group (\S+)$", plan.decode(errors="replace"), re.MULTILINE)
+        if code != 0:
+            write(plan)
+            say(f"the plan couldn't be run (it ended {code})")
+            return 2
+        groups = [g for g in LINUX_GROUPS if g in planned]
+        if "swift" in planned:
+            say("swift is the Mac's: it doesn't run here")
     if not groups:
         say("no Linux group planned: nothing to run here")
     else:

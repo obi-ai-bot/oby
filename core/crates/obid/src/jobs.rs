@@ -434,11 +434,6 @@ fn clean_note(text: &str) -> Option<String> {
     (!flagged).then(|| crate::brain::read::clamp(&text, NOTE_MAX))
 }
 
-/// Whether obid's own bug ended `job` (a panic in its task), or obid kept going down with it.
-fn crashed(job: &Job) -> bool {
-    job.reason.as_deref().is_some_and(crate::job::obids_doing)
-}
-
 /// What [`Jobs::onto_base`] did: nothing to do; rebased, its commits starting at this base commit
 /// now; or the files whose conflicts stopped the rebase.
 enum Onto {
@@ -4325,12 +4320,6 @@ impl Jobs {
                 next.short_title()
             ))));
         }
-        // A job moved since its last round starts a new session on its new choice.
-        if job.session.is_none() && job.moves.is_empty() && !crashed(&job) {
-            return Some(Err(Refused(
-                "This job never started, so there's no session to pick up.".into(),
-            )));
-        }
         // Past its safety ceiling or budget, only the owner's Confirm carries it on, and gives it
         // a new one: the owner's words anywhere else ask for that Confirm.
         if past_safety(&job) && source != Source::Confirmed {
@@ -4441,7 +4430,8 @@ impl Jobs {
                 }
             });
             let Some(_) = taken else { return };
-            // Try again for a job that never started picks nothing up: the rest go on.
+            // Try again for a job that never started picks nothing up: the run it queued answered
+            // it, and running it again after a failed prepare is #1943's. The rest go on.
             let nothing_to_pick_up =
                 words.text.starts_with(crate::brain::actions::TRY_AGAIN) && job.session.is_none();
             let Some(source) = Source::named(&words.source).filter(|_| !nothing_to_pick_up) else {
@@ -10915,9 +10905,7 @@ impl Jobs {
                         if words.is_empty() {
                             break;
                         }
-                        message = words.join("\n\n");
-                        noted = true;
-                        steered = owners;
+                        (message, noted, steered) = (words.join("\n\n"), true, owners);
                         continue;
                     }
                     message =
@@ -10936,9 +10924,7 @@ impl Jobs {
                         if words.is_empty() {
                             break;
                         }
-                        message = words.join("\n\n");
-                        noted = true;
-                        steered = owners;
+                        (message, noted, steered) = (words.join("\n\n"), true, owners);
                         // Their words decide: the reply to them says the goal again.
                         goal = None;
                         continue;
@@ -10956,9 +10942,7 @@ impl Jobs {
                     if words.is_empty() {
                         break;
                     }
-                    message = words.join("\n\n");
-                    noted = true;
-                    steered = owners;
+                    (message, noted, steered) = (words.join("\n\n"), true, owners);
                     continue;
                 }
                 // What obid declined last round, for a tool whose answers carry no words (ACP).
@@ -14860,19 +14844,11 @@ pub async fn run_check(
 ) -> std::io::Result<CheckRun> {
     let (reader, writer) = std::io::pipe()?;
     clear_recorded_exit(env);
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| std::io::Error::other("nothing to run"))?;
-    let mut command = tokio::process::Command::new(program);
+    let mut command = crate::process::command(argv, env, cwd)?;
     command
-        .args(args)
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(writer.try_clone()?)
-        .stderr(writer)
-        .kill_on_drop(true);
+        .stderr(writer);
     if let Some(group) = group {
         crate::groups::take(group)
             .await

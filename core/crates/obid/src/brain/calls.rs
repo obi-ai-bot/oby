@@ -379,20 +379,11 @@ async fn run(
     input: &[u8],
     limit: Duration,
 ) -> std::io::Result<Output> {
-    let (program, args) = launch
-        .argv
-        .split_first()
-        .ok_or_else(|| std::io::Error::other("nothing to run"))?;
-    let mut command = tokio::process::Command::new(program);
+    let mut command = crate::process::command(&launch.argv, &launch.env, &launch.cwd)?;
     command
-        .args(args)
-        .env_clear()
-        .envs(launch.env.iter().map(|(k, v)| (k, v)))
-        .current_dir(&launch.cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(std::process::Stdio::piped());
     // A boxed command starts a session of its own, so a process group whose id is the child's.
     if own_group {
         command.process_group(0);

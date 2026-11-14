@@ -29,6 +29,14 @@ was cut off; checks.md says where each part ran (HOST, "## Where it ran") and
 why it fell back. Each remote use stamps `used` in jobs/remote-gate/state.json;
 `gate --idle` deallocates the VM once that stamp is 30 minutes old and no job
 is in `gate` or `merging`. Without `remote_gate` nothing here changes.
+
+The Mac worker (REMOTE-13 to 16). With `remote_gate` on and config.json's `mac_worker` ({"ssh_host": ...}),
+or the same JSON in FACTORY_MAC_WORKER for one run, the Mac's part above (its rust, swift and factory) runs
+once the VM's part passed on that second Mac, in one call: `ssh <host> oby-worker/bin/oby-remote-gate --mac
+<commit> origin/<base> <group>...`, after `ssh <host> true` answers within 60 seconds. Its 0 or 1 is the
+verdict. When it doesn't answer, both its slots are busy, it couldn't judge or was cut off, or the settings
+are invalid, that part runs on this Mac as without it, and checks.md says `Fell back from <host> to this
+Mac: <why>`. No az, stamp or lock is ever used for it. Without `mac_worker` nothing here changes.
 """
 
 import fnmatch
@@ -96,6 +104,8 @@ SSH = ["-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=10"
 POWER = "instanceView.statuses[?starts_with(code, 'PowerState/')].code | [0]"
 STOPPED = {"PowerState/deallocated", "PowerState/stopped"}
 REACH = min(180.0, float(os.environ.get("FACTORY_REMOTE_REACH_SECONDS") or 180))  # shorter only in the tests
+MAC_REACH = min(60.0, REACH)
+MAC_GATE = "oby-worker/bin/oby-remote-gate"  # home-relative: the same words in fish and bash
 STATE = FACTORY / "jobs" / "remote-gate" / "state.json"
 IDLE = timedelta(minutes=30)
 BUSY = {"gate", "merging"}  # a job whose check, or merge, may still want the VM
@@ -193,6 +203,24 @@ def remote_config():
     return remote, None
 
 
+def mac_worker_config():
+    """The Mac worker's settings, as remote_config's: FACTORY_MAC_WORKER takes the place of `mac_worker`."""
+    if "FACTORY_MAC_WORKER" in os.environ:
+        where = "FACTORY_MAC_WORKER"
+        try:
+            worker = json.loads(os.environ[where])
+        except ValueError:
+            return None, f"{where} isn't JSON"
+    else:
+        where, worker = "mac_worker", CONFIG.get("mac_worker")
+    if worker is None:
+        return None, None
+    if not isinstance(worker, dict) or not (isinstance(worker.get("ssh_host"), str)
+                                            and NAME.fullmatch(worker["ssh_host"])):
+        return None, f"{where} needs ssh_host, matching {NAME.pattern}"
+    return worker, None
+
+
 def utc(when=None):
     return (when or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -281,46 +309,69 @@ def reach(remote, log):
         if time.monotonic() >= deadline:
             raise Fallback(f"{remote['vm']} was still {state or 'in no power state'} after {REACH:.0f}s")
         time.sleep(min(5.0, max(0.0, deadline - time.monotonic())))
+    answers(remote, deadline, REACH)
+
+
+def answers(remote, deadline, seconds):
+    """Return once `ssh <host> true` succeeds, trying until deadline, or Fallback."""
     while True:
         try:
             if subprocess.run(ssh(remote, "true"), stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=left()).returncode == 0:
+                              timeout=max(1.0, deadline - time.monotonic())).returncode == 0:
                 return
         except (OSError, subprocess.TimeoutExpired):
             pass
         if time.monotonic() >= deadline:
-            raise Fallback(f"ssh {remote['ssh_host']} didn't answer within {REACH:.0f}s")
+            raise Fallback(f"ssh {remote['ssh_host']} didn't answer within {seconds:.0f}s")
         time.sleep(min(5.0, max(0.0, deadline - time.monotonic())))
+
+
+def remote_gate(remote, words, groups, heading, log):
+    """oby-remote-gate on a host: a part that ended 0 or 1, or Fallback, its output before it in the log."""
+    host = remote["ssh_host"]
+    start = time.monotonic()
+    # Standard input stays an open pipe, never written: its end is how oby-remote-gate learns the
+    # connection dropped (REMOTE-7).
+    try:
+        proc = subprocess.Popen(ssh(remote, shlex.join(words)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, errors="replace")
+    except OSError as e:
+        raise Fallback(f"ssh couldn't run: {e}")
+    out = proc.stdout.read()
+    code = proc.wait()
+    proc.stdin.close()
+    seconds = int(time.monotonic() - start)
+    slot = re.search(r"^oby-remote-gate: slot (\d+)$", out, re.M)
+    if code not in (0, 1):
+        log.append(f"==== {host}: its output before the fallback, not part of the verdict ====\n{out}")
+        if code == 2 and re.search(r"^oby-remote-gate: both slots are busy$", out, re.M):
+            raise Fallback("both of its slots are busy")
+        what = "couldn't judge" if code == 2 else "was cut off"
+        raise Fallback(f"oby-remote-gate {what} (exit {code})")
+    log.append(f"==== {host}: {heading} ====\n{out}")
+    return {"host": host, "groups": groups, "slot": slot and slot.group(1), "seconds": seconds, "code": code}
 
 
 def vm_part(remote, commit, base, groups, log):
     """The Linux groups on the VM: a part that ended 0 or 1, or Fallback. Stamps `used` before and after."""
-    host = remote["ssh_host"]
     write_state(used=utc())
     try:
         reach(remote, log)
-        start = time.monotonic()
-        # Standard input stays an open pipe, never written: its end is how oby-remote-gate learns the
-        # connection dropped (REMOTE-7).
-        try:
-            proc = subprocess.Popen(ssh(remote, shlex.join(["oby-remote-gate", commit, base])),
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, errors="replace")
-        except OSError as e:
-            raise Fallback(f"ssh couldn't run: {e}")
-        out = proc.stdout.read()
-        code = proc.wait()
-        proc.stdin.close()
-        seconds = int(time.monotonic() - start)
+        return remote_gate(remote, ["oby-remote-gate", commit, base], groups, " ".join(groups), log)
     finally:
         write_state(used=utc())
-    slot = re.search(r"^oby-remote-gate: slot (\d+)$", out, re.M)
-    if code not in (0, 1):
-        log.append(f"==== {host}: its output before the fallback, not part of the verdict ====\n{out}")
-        what = "couldn't judge" if code == 2 else "was cut off"
-        raise Fallback(f"oby-remote-gate {what} (exit {code})")
-    log.append(f"==== {host}: {' '.join(groups)} ====\n{out}")
-    return {"host": host, "groups": groups, "slot": slot and slot.group(1), "seconds": seconds, "code": code}
+
+
+def mac_worker_part(worker, invalid, commit, base, groups, labels, log):
+    """The macOS groups on the Mac worker, in one call: (a part that ended 0 or 1, None), or (None, the line
+    saying why they run on this Mac). Never az, a stamp or this Mac's lock."""
+    if invalid:
+        return None, f"Fell back from the Mac worker to this Mac: {invalid}"
+    try:
+        answers(worker, time.monotonic() + MAC_REACH, MAC_REACH)
+        return remote_gate(worker, [MAC_GATE, "--mac", commit, base, *groups], labels, ", ".join(labels), log), None
+    except Fallback as e:
+        return None, f"Fell back from {worker['ssh_host']} to this Mac: {e}"
 
 
 def touched_files(worktree, base):
@@ -347,7 +398,7 @@ def macos_only(worktree, base, touched):
 
 
 def remote_parts(remote, invalid, job, worktree, commit):
-    """The check's parts where they belong: (parts, why it fell back to the Mac or None, log)."""
+    """The check's parts where they belong: (parts, the lines saying why a part fell back, log)."""
     base = f"origin/{CONFIG['base_branch']}"
     log = []
     try:
@@ -361,25 +412,32 @@ def remote_parts(remote, invalid, job, worktree, commit):
             why = f"the diff touches the check's own files: {named(own)}" if own else "no Linux group planned"
             code, out, seconds = run_checks(worktree)
             return [{"host": "mac", "groups": [f"the whole check ({why})"], "seconds": seconds,
-                     "code": code}], None, out
+                     "code": code}], [], out
         on_origin(job.get("branch"), worktree, commit, base)
         parts = [vm_part(remote, commit, base, linux, log)]
     except Fallback as e:
         code, out, seconds = run_checks(worktree)
         log.append(f"==== mac: the whole check, after falling back: {e} ====\n{out}")
-        return [{"host": "mac", "groups": ["the whole check"], "seconds": seconds, "code": code}], str(e), \
-            "\n".join(log)
+        return [{"host": "mac", "groups": ["the whole check"], "seconds": seconds, "code": code}], \
+            [f"Fell back to the Mac: {e}"], "\n".join(log)
     macos = macos_only(worktree, base, touched) if "rust" in planned else []
     mac = (["rust"] if macos else []) + [g for g in ("swift", "factory") if g in planned]
-    for group in mac:
-        why = f" (the diff touches macOS-only code: {named(macos)})" if group == "rust" else ""
+    labels = [g + (f" (the diff touches macOS-only code: {named(macos)})" if g == "rust" else "") for g in mac]
+    notes = []
+    worker, worker_invalid = mac_worker_config() if mac and parts[0]["code"] == 0 else (None, None)
+    if worker or worker_invalid:
+        part, note = mac_worker_part(worker, worker_invalid, commit, base, mac, labels, log)
+        if part:
+            return parts + [part], [], "\n".join(log)
+        notes = [note]
+    for group, label in zip(mac, labels):
         if parts[0]["code"] != 0:
-            parts.append({"host": "mac", "groups": [group + why], "note": "not run: the VM's part failed"})
+            parts.append({"host": "mac", "groups": [label], "note": "not run: the VM's part failed"})
             continue
         code, out, seconds = run_checks(worktree, group)
-        log.append(f"==== mac: OBY_CHECK_ONLY={group}{why} ====\n{out}")
-        parts.append({"host": "mac", "groups": [group + why], "seconds": seconds, "code": code})
-    return parts, None, "\n".join(log)
+        log.append(f"==== mac: OBY_CHECK_ONLY={label} ====\n{out}")
+        parts.append({"host": "mac", "groups": [label], "seconds": seconds, "code": code})
+    return parts, notes, "\n".join(log)
 
 
 def describe(part):
@@ -416,9 +474,9 @@ def gate(job_id, merge):
     (round_dir / f"{name}.log").write_text(log)
     tail = "\n".join(log.rstrip().splitlines()[-TAIL:])
     if remote or invalid:
-        checked = [describe(p) for p in parts] + ([f"Fell back to the Mac: {fell_back}"] if fell_back else [])
+        checked = [describe(p) for p in parts] + fell_back
         where = ("## Where it ran\n" + "\n".join(f"- {describe(p)}" for p in parts)
-                 + (f"\n\nFell back to the Mac: {fell_back}" if fell_back else "") + "\n\n")
+                 + "".join(f"\n\n{line}" for line in fell_back) + "\n\n")
     else:
         checked = [f"checks.sh {'passed' if code == 0 else f'failed with exit {code}'} in {seconds}s"]
         where = ""
@@ -435,7 +493,7 @@ def gate(job_id, merge):
         + f"\n\n## checks.sh\nExit {code} in {seconds}s. Last {TAIL} lines of {name}.log:\n\n```\n{tail}\n```\n"
     )
     print(f"GATE: {verdict} ({job_id} round {job['round']}, "
-          + (f"on {host}, exit {code} in {seconds}s" + (f", fell back to the Mac: {fell_back}" if fell_back else "")
+          + (f"on {host}, exit {code} in {seconds}s" + "".join(f", {line[0].lower()}{line[1:]}" for line in fell_back)
              if remote or invalid else f"checks.sh exit {code} in {seconds}s")
           + (f", protected paths changed: {', '.join(protected)}" if protected else "") + ")")
     sys.exit(0 if verdict == "PASS" else 1)

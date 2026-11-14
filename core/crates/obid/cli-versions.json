@@ -1,0 +1,5 @@
+{
+  "claude": {"tested": {"from": "2.1.296", "to": "2.1.302"}, "knownBad": []},
+  "codex": {"tested": {"from": "0.162.1", "to": "0.162.1"}, "knownBad": []},
+  "cursor": {"tested": {"from": "2026.10.01", "to": "2026.10.01"}, "knownBad": []}
+}

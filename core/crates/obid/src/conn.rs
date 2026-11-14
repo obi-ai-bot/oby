@@ -169,20 +169,11 @@ impl Conn {
             .append(true)
             .open(&launch.stderr)
             .await?;
-        let (program, args) = launch
-            .argv
-            .split_first()
-            .ok_or_else(|| std::io::Error::other("nothing to run"))?;
-        let mut command = tokio::process::Command::new(program);
+        let mut command = process::command(&launch.argv, &launch.env, &launch.cwd)?;
         command
-            .args(args)
-            .env_clear()
-            .envs(launch.env.iter().map(|(k, v)| (k, v)))
-            .current_dir(&launch.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
         if let Some(group) = &launch.group {
             crate::groups::take(group)
                 .await

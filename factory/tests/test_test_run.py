@@ -6,18 +6,45 @@ Run it directly, not through test-run: the priority test measures test-run's own
 """
 
 import fcntl
+import importlib.machinery
+import importlib.util
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 
 TEST_RUN = Path(__file__).resolve().parents[1] / "bin" / "test-run"
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
+STARTED = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
+# A stand-in cargo: `cargo sleep`, `cargo record <file>` (start and end times, a second apart),
+# `cargo pid <file>` (its pid, then sleeps), `cargo test <file>` (writes a marker).
+FAKE_CARGO = """#!/bin/sh
+case "$1" in
+sleep) exec sleep 300 ;;
+record) python3 -c 'import sys, time; f = open(sys.argv[1], "w"); f.write(repr(time.time()) + " "); f.flush(); time.sleep(1); f.write(repr(time.time()))' "$2" ;;
+pid) echo $$ > "$2"; exec sleep 300 ;;
+test) echo ran > "$2" ;;
+esac
+"""
+
+
+def load_test_run():
+    loader = importlib.machinery.SourceFileLoader("test_run", str(TEST_RUN))
+    spec = importlib.util.spec_from_loader("test_run", loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(TEST_RUN.parent))
+    try:
+        loader.exec_module(module)
+    finally:
+        sys.path.remove(str(TEST_RUN.parent))
+    return module
 
 
 def gone(pid, seconds=5):
@@ -35,8 +62,16 @@ class TestRun(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         self.lock = self.dir / "test-run.lock"
-        self.env = {k: v for k, v in os.environ.items() if k not in CORE_VARS}
+        # The gate runs these tests with CARGO_TARGET_DIR at the shared folder, which test-run refuses.
+        self.env = {k: v for k, v in os.environ.items() if k not in (*CORE_VARS, "CARGO_TARGET_DIR")}
         self.env["OBY_TEST_RUN_LOCK"] = str(self.lock)
+        self.env["CARGO_TARGET_DIR_FACTORY"] = str(self.dir / "core-target")
+        bin_dir = self.dir / "bin"
+        bin_dir.mkdir()
+        cargo = bin_dir / "cargo"
+        cargo.write_text(FAKE_CARGO)
+        cargo.chmod(0o755)
+        self.env["PATH"] = f"{bin_dir}{os.pathsep}{self.env.get('PATH', '')}"
         self.started = []
         self.pids = []
 
@@ -45,6 +80,8 @@ class TestRun(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            proc.stdout.close()
+            proc.stderr.close()
         for pid in self.pids:
             try:
                 os.kill(pid, signal.SIGKILL)
@@ -77,13 +114,9 @@ class TestRun(unittest.TestCase):
         self.fail(f"test-run {proc.pid} never wrote its holder line")
 
     def test_overlapping_runs_take_turns(self):
-        record = (
-            "import sys, time; f = open(sys.argv[1], 'w'); f.write(repr(time.time()) + ' ');"
-            " f.flush(); time.sleep(1); f.write(repr(time.time()))"
-        )
-        a = self.start("python3", "-c", record, str(self.dir / "a"))
+        a = self.start("cargo", "record", str(self.dir / "a"))
         self.wait_for_holder(a)
-        b = self.start("python3", "-c", record, str(self.dir / "b"))
+        b = self.start("cargo", "record", str(self.dir / "b"))
         _, a_err = a.communicate(timeout=30)
         _, b_err = b.communicate(timeout=30)
         self.assertEqual((a.returncode, b.returncode), (0, 0), a_err + b_err)
@@ -107,7 +140,7 @@ class TestRun(unittest.TestCase):
 
     def test_lock_is_free_after_a_stop(self):
         pidfile = self.dir / "sleep.pid"
-        proc = self.start("sh", "-c", f"echo $$ > {pidfile}; exec sleep 300")
+        proc = self.start("cargo", "pid", str(pidfile))
         self.wait_for_holder(proc)
         deadline = time.monotonic() + 5
         while not (pidfile.exists() and pidfile.read_text().strip()) and time.monotonic() < deadline:
@@ -136,7 +169,7 @@ class TestRun(unittest.TestCase):
 
     def test_gate_lock_is_not_used(self):
         self.assertFalse("factory-check.lock" in TEST_RUN.read_text(), "test-run names the gate's lock")
-        proc = self.start("sleep", "300")
+        proc = self.start("cargo", "sleep")
         self.wait_for_holder(proc)
         gate_lock = self.dir / "core-target" / ".factory-check.lock"
         gate_lock.parent.mkdir()
@@ -147,6 +180,99 @@ class TestRun(unittest.TestCase):
             os.close(fd)
         proc.send_signal(signal.SIGTERM)
         proc.communicate(timeout=10)
+
+    def test_shared_cargo_folder_is_refused(self):
+        shared = self.dir / "core-target"
+        shared.mkdir()
+        marker = self.dir / "marker"
+        for target in (str(shared), f"{shared}/"):
+            self.env["CARGO_TARGET_DIR"] = target
+            code, _, err = self.run_test_run("cargo", "test", str(marker))
+            self.assertEqual(code, 2, err)
+            self.assertFalse(marker.exists(), f"cargo test ran with CARGO_TARGET_DIR={target}")
+            self.assertIn("core/target", err)
+            self.assertEqual(self.lock.read_text() if self.lock.exists() else "", "", "test-run wrote a holder line")
+        other = self.dir / "own-target"
+        other.mkdir()
+        self.env["CARGO_TARGET_DIR"] = str(other)
+        code, _, err = self.run_test_run("cargo", "test", str(marker))
+        self.assertEqual(code, 0, err)
+        self.assertTrue(marker.exists())
+
+    def test_light_run_does_not_wait_for_the_lock(self):
+        holder = self.start("cargo", "sleep")
+        self.wait_for_holder(holder)
+        light = self.start("python3", "-c", "print('ran')")
+        out, err = light.communicate(timeout=15)
+        self.assertEqual(light.returncode, 0, err)
+        self.assertEqual(out.strip(), "ran")
+        self.assertNotIn("waiting for it", err)
+        self.assertTrue(self.lock.read_text().startswith(f"{holder.pid} "))
+
+    def test_cargo_test_waits_for_the_lock(self):
+        holder = self.start("cargo", "sleep")
+        self.wait_for_holder(holder)
+        marker = self.dir / "marker"
+        waiter = self.start("cargo", "test", str(marker))
+        time.sleep(1)
+        self.assertFalse(marker.exists(), "cargo test ran while another run held the lock")
+        self.assertIsNone(waiter.poll())
+        holder.send_signal(signal.SIGTERM)
+        holder.communicate(timeout=10)
+        _, err = waiter.communicate(timeout=15)
+        self.assertEqual(waiter.returncode, 0, err)
+        self.assertIn("waiting for it", err)
+        self.assertTrue(marker.exists())
+
+    def test_long_wait_names_the_holder_and_since_when(self):
+        self.env["OBY_TEST_RUN_REPORT_SECONDS"] = "1"
+        holder = self.start("cargo", "sleep")
+        self.wait_for_holder(holder)
+        waiter = self.start("cargo", "sleep")
+        err = []
+        threading.Thread(target=lambda: err.extend(waiter.stderr), daemon=True).start()
+        deadline = time.monotonic() + 6
+        lines = []
+        while len(lines) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+            lines = [line for line in list(err) if "still waiting for the lock" in line]
+        waiter.send_signal(signal.SIGTERM)
+        holder.send_signal(signal.SIGTERM)
+        self.assertEqual(waiter.wait(timeout=10), 143)
+        holder.wait(timeout=10)
+        self.assertGreaterEqual(len(lines), 2, err)
+        for line in lines:
+            self.assertIn(f"({holder.pid} ", line)
+            self.assertRegex(line, STARTED)
+
+
+class Heavy(unittest.TestCase):
+    def test_heavy_and_light_commands(self):
+        heavy = load_test_run().heavy
+        for command in (
+            ["sh", "-c", "cargo test -p obid"],
+            ["env", "X=1", "cargo", "test"],
+            ["/Users/x/.cargo/bin/cargo", "clippy"],
+            ["swift", "test", "--package-path", "mcp"],
+            ["swift", "build"],
+            ["xcodebuild", "-scheme", "ObyPhone", "test"],
+            ["rustc", "--version"],
+            ["cargo-nextest", "run"],
+            ["sh", "-c", "true;nextest run"],
+            ["scripts/oby-check.sh", "origin/dev"],
+            ["oby-check-blok"],
+        ):
+            self.assertTrue(heavy(command), command)
+        for command in (
+            ["python3", "-m", "unittest"],
+            ["npm", "test"],
+            ["npx", "vitest"],
+            ["npm", "run", "typecheck"],
+            ["cat", "Cargo.toml"],
+            ["swift", "--version"],
+            ["sh", "-c", "test -f core/cargo-config"],
+        ):
+            self.assertFalse(heavy(command), command)
 
 
 if __name__ == "__main__":

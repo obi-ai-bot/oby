@@ -20,16 +20,6 @@ path = "junit.xml"
 # shrinks: a new entry comes with its task, factory/queue/tasks/<key>.md, in the same change, and
 # the fix takes its entry out.
 
-# R01-15: its card is the first red one, which can still be the earlier head's (merge_api.rs:2108)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::merge_api) & test(=merging_39_a_second_red_head_asks_the_owner)'
-retries = 2
-
-# R01-15: its card is the first change request's, which can still be the earlier head's (merge_api.rs:2310)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::merge_api) & test(=merging_40_a_members_change_request_starts_one_round)'
-retries = 2
-
 # R01-16: a fixed 3-second sleep before it reads the settled card (merge_api.rs:3376)
 [[profile.ci.overrides]]
 filter = 'binary_id(obid::merge_api) & test(=merging_24_a_follow_ups_push_settles_the_tasks_open_card)'

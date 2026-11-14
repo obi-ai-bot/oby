@@ -668,12 +668,16 @@ pub struct Status {
 }
 
 /// `status.tools[]`: the binary's absolute path and what its `--version` said, each null when
-/// it isn't found or can't be read.
+/// it isn't found or can't be read, and that version's status in the table (CLIVERSIONS-7).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolJson {
     pub agent: &'static str,
     pub path: Option<String>,
     pub version: Option<String>,
+    pub version_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub known_bad_reason: Option<String>,
 }
 
 /// `status.scanner`.
@@ -1054,10 +1058,15 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
             .zip(tools)
             .map(|(tool, read)| {
                 let read = read.ok();
+                let version = read.as_ref().and_then(|r| r.version.clone());
+                let (version_status, known_bad_reason) =
+                    crate::cli_versions::status(tool, version.as_deref());
                 ToolJson {
                     agent: tool.id(),
-                    path: read.as_ref().and_then(|r| Some(r.path.as_ref()?.display().to_string())),
-                    version: read.and_then(|r| r.version),
+                    path: read.and_then(|r| Some(r.path?.display().to_string())),
+                    version,
+                    version_status,
+                    known_bad_reason,
                 }
             })
             .collect(),

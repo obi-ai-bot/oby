@@ -1417,7 +1417,8 @@ fn raising_the_cap_starts_a_waiting_job_at_once() {
 /// and conversation, on a branch and worktree of its own, `followUpOf` the first job, the words
 /// its request; the first job stays as it ended, even one that never started. Only the exact
 /// Try-again words pick a job's session up again in its own worktree for one more round (and one
-/// more on a loop's limit), as Try again does, and a job that never started has none to pick up.
+/// more on a loop's limit), as Try again does; a job that never started runs again from its own
+/// task, the same job in another round (TASKS-20).
 #[test]
 fn messages_reach_only_jobs_that_can_take_them() {
     let folder = Folder::new("talk");
@@ -1447,16 +1448,10 @@ fn messages_reach_only_jobs_that_can_take_them() {
         .unwrap()
         .to_owned();
     assert_eq!(ended(&obid, &never)["status"], "failed");
-    let refused = post(&never, json!({"text": TRY_AGAIN}));
-    assert_eq!(refused.status, 422, "{}", refused.text);
-    assert!(
-        refused.body["error"]
-            .as_str()
-            .unwrap()
-            .contains("never started"),
-        "{}",
-        refused.text
-    );
+    let rerun = post(&never, json!({"text": TRY_AGAIN}));
+    assert_eq!(rerun.status, 200, "{}", rerun.text);
+    assert_eq!(rerun.body["id"], never.as_str());
+    assert_eq!(ended(&obid, &never)["status"], "failed");
     let after_never = post(&never, json!({"text": "hi"}));
     assert_eq!(after_never.status, 201, "{}", after_never.text);
     assert_eq!(after_never.body["followUpOf"], never.as_str());
