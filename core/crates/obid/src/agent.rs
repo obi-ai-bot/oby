@@ -177,6 +177,9 @@ pub struct Turn {
     /// Claude Code refused this turn one model's own limit, never the whole account's (USAGE-13):
     /// the job moves or waits as at any limit, and no account is marked full.
     pub scoped: bool,
+    /// The model family that limit was for (`opus`, `sonnet`), when it names one: its work passes
+    /// the account by until the reset (crate::limits::holds, LIMITS-21).
+    pub family: Option<String>,
     /// The last words the agent wrote this turn: its `result` carries none when its last message
     /// was a tool call (#764).
     pub last_words: String,
@@ -732,15 +735,19 @@ pub async fn turn_on(
             Some("rate_limit_event") => {
                 if let Some(at) = crate::limits::claude_full_until(&message) {
                     turn.resets = Some(at);
-                    turn.scoped = false;
+                    (turn.scoped, turn.family) = (false, None);
                 } else if crate::usage::claude_overage(&message["rate_limit_info"]) {
                     // USAGE-12: overage carries it now, whatever an earlier event said.
-                    (turn.resets, turn.scoped) = (None, false);
+                    (turn.resets, turn.scoped, turn.family) = (None, false, None);
                 } else if crate::usage::claude_scoped(&message["rate_limit_info"])
                     && (turn.resets.is_none() || turn.scoped)
                 {
-                    let at = crate::limits::epoch(&message["rate_limit_info"]["resetsAt"]);
-                    (turn.resets, turn.scoped) = (at, true);
+                    let info = &message["rate_limit_info"];
+                    let at = crate::limits::epoch(&info["resetsAt"]);
+                    let family = info["rateLimitType"]
+                        .as_str()
+                        .and_then(crate::limits::holds::family);
+                    (turn.resets, turn.scoped, turn.family) = (at, true, family.map(Into::into));
                 }
             }
             Some("result") => {
@@ -1156,6 +1163,7 @@ mod tests {
         let scoped = include_str!("../tests/fixtures/claude-rate-limit-scoped.json").trim();
         let (turn, _, root) = fake_turn_saying("usage-13-scoped", &[scoped, limit], "").await;
         assert!(turn.scoped);
+        assert_eq!(turn.family.as_deref(), Some("opus"));
         assert_eq!(turn.resets, Some(1_763_290_800));
         assert_eq!(turn.cause(), Some(Cause::Limit));
         assert!(turn.says_limit(turn.error()));
@@ -1164,6 +1172,7 @@ mod tests {
         let whole = scoped.replace("seven_day_opus", "five_hour");
         let (turn, _, root) = fake_turn_saying("usage-13-whole", &[&whole, limit], "").await;
         assert!(!turn.scoped);
+        assert_eq!(turn.family, None);
         assert_eq!(turn.resets, Some(1_763_290_800));
         assert!(turn.says_limit(turn.error()));
         let _ = std::fs::remove_dir_all(&root);

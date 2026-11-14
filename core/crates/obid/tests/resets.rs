@@ -233,3 +233,84 @@ fn ended(obid: &Obid, id: &str) -> Value {
         (job["status"] != "queued" && job["status"] != "running").then_some(job)
     })
 }
+
+/// LIMITS-23: a job file as dev 952bc03d wrote it, waiting on `second` with `scopedHolds` keeping
+/// it off `stub`, loads with the same hold in the hold table: it waits until the same time, isn't
+/// moved back onto `stub` (as the same job without the hold is), and its file loses the key.
+#[test]
+fn limits_23_an_older_job_files_holds_are_kept() {
+    let folder = Folder::new("limits-23");
+    let remote = fixture(&folder.0.join("fixture"));
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let mut config = config(&folder.0, &remote, &agent);
+    let home = folder.0.join("home");
+    let now = obi_protocol::time::now();
+    let login = json!({"claudeAiOauth": {"accessToken": "fake-claude", "expiresAt": (now + 86_400) * 1000}});
+    for account in ["stub", "second"] {
+        let dir = home.join("accounts").join(account);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".credentials.json"), login.to_string()).unwrap();
+    }
+    (config["agents"]["claude"]["accounts"]
+        .as_array_mut()
+        .unwrap())
+    .push(json!({"id": "second", "name": "Second", "configDir": home.join("accounts/second")}));
+    std::fs::write(
+        home.join("usage.json"),
+        json!({"second": {"fullUntil": now + 7200}}).to_string(),
+    )
+    .unwrap();
+    let (held_until, resumes) = (now + 3600, now + 7200 + 90);
+    let waiting = |id: &str| {
+        let mut job = Job::new(
+            id.into(),
+            "obi-e2e/fixture-app".into(),
+            "investigate".into(),
+            "Look around".into(),
+            "claude".into(),
+            "second".into(),
+        );
+        let line = "Every account is at its limit: resuming when one has room".to_owned();
+        job.branch = format!("oby/investigate-{id}");
+        job.status = Status::Queued;
+        job.round = Some(1);
+        job.resumes_at = Some(resumes);
+        job.step = line.clone();
+        job.waiting = Some(obid::job::Waiting {
+            kind: "cap".into(),
+            text: line,
+            reserved: None,
+            tool: None,
+        });
+        job
+    };
+    let (older, plain) = (waiting("cccc0023"), waiting("cccc0024"));
+    put(&folder.0, &[&plain]);
+    let mut file = serde_json::to_value(&older).unwrap();
+    file["recovery"]["scopedHolds"] = json!([["stub", held_until]]);
+    let path = home.join("jobs/cccc0023.json");
+    std::fs::write(&path, file.to_string()).unwrap();
+    let obid = start(&folder.0, &config, None);
+    // The same job without the hold moves onto stub, which has room, and runs there.
+    let moved = ended(&obid, &plain.id);
+    assert_eq!(
+        (&moved["account"], &moved["status"]),
+        (&json!("stub"), &json!("done"))
+    );
+    let kept = job(&obid, &older.id);
+    assert_eq!(kept["status"], "queued", "{kept}");
+    assert_eq!(kept["account"], "second", "{kept}");
+    assert_eq!(
+        kept["resumesAt"],
+        obi_protocol::time::format(resumes),
+        "{kept}"
+    );
+    let file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(file["recovery"].get("scopedHolds").is_none(), "{file}");
+    let usage: Value =
+        serde_json::from_slice(&std::fs::read(home.join("usage.json")).unwrap()).unwrap();
+    assert_eq!(
+        usage["stub"]["holds"]["job:cccc0023"], held_until,
+        "{usage}"
+    );
+}
