@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""Re-run a job's Kani proofs on the commit its gate passed: round-N/proofs.md (docs/contracts/factory.md, PROVE).
+
+Usage:
+  prove <job-id>    write round-N/proofs.md; exit 0 on PASS, ADVISORY-FAIL or SKIPPED, 1 on FAIL or TIMEOUT,
+                    2 when it can't judge (no round, no passing checks.md, invalid settings)
+
+It reads the job's job.json (never writing it or taking its lock), spec.md, round-N/checks.md and config.json
+beside it, and stops at the first step that decides the verdict:
+
+  a. a job without `proofs` in its intake's surfaces is SKIPPED, with nothing run;
+  b. spec.md's `## Proofs` section differs from the one hashed when the job left spec: FAIL;
+  c. the section is missing, has no `### PROOF-<n>` entry, or an entry misses a key or has an invalid value: FAIL;
+  d. the branch's added `.rs` lines (git diff origin/<base>...<commit>) hold a construct that games a proof: FAIL;
+  e. in one scratch worktree at the commit, each entry's harness runs as `test-run -- cargo kani -p <crate> --tests
+     --harness <name>` from its core/; once it is SUCCESSFUL, its broken rule is applied, the harness runs again and
+     must end VERIFICATION:- FAILED, and the file is restored.
+
+Settings are config.json's `proofs`: `mode` (`advisory`, the default, or `blocking`) and `timeout_s` (a positive
+integer, by default 600, for each run). In advisory mode FAIL and TIMEOUT are written as ADVISORY-FAIL, with
+`RESULT:` keeping which. Each run's output is appended to round-N/proofs.log. SIGTERM or SIGINT stops the test-run
+it started, by its PID, removes the scratch copy and exits 128 + signal, with no proofs.md.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+KEYS = ("property", "scenario", "crate", "harness", "assumes", "unwind", "broken file", "broken old", "broken new")
+CRATE = re.compile(r"[A-Za-z0-9_-]+")
+HARNESS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+SCENARIO = re.compile(r"[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-[0-9]+")
+SUCCESSFUL, FAILED = "VERIFICATION:- SUCCESSFUL", "VERIFICATION:- FAILED"
+KILL_AFTER = 30  # seconds between the SIGTERM and the SIGKILL of a run that timed out
+
+
+def load_job():
+    """factory/bin/job beside this file, as a module: its config, files and proofs_hash are the ones it checks."""
+    loader = importlib.machinery.SourceFileLoader("job", str(BIN / "job"))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("job", loader))
+    loader.exec_module(module)
+    return module
+
+
+JOB = load_job()
+
+
+class Stopped(BaseException):
+    """SIGTERM or SIGINT arrived."""
+
+
+def stop(signum, _):
+    raise Stopped(signum)
+
+
+def die(msg):
+    print(f"prove: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def git(cwd, *args):
+    res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if res.returncode != 0:
+        die(f"`git {' '.join(args)}` failed: {res.stderr.strip()}")
+    return res.stdout
+
+
+def settings():
+    """(mode, timeout_s) from config.json's `proofs`, or exit 2 naming the field that is wrong."""
+    proofs = JOB.CONFIG.get("proofs", {})
+    if not isinstance(proofs, dict):
+        die(f"config.json's proofs must be an object, not {json.dumps(proofs)}")
+    mode = proofs.get("mode", "advisory")
+    if mode not in {"advisory", "blocking"}:
+        die(f"config.json's proofs.mode must be advisory or blocking, not {json.dumps(mode)}")
+    timeout = proofs.get("timeout_s", 600)
+    if type(timeout) is not int or timeout < 1:
+        die(f"config.json's proofs.timeout_s must be a positive integer, not {json.dumps(timeout)}")
+    return mode, timeout
+
+
+# ---- The `## Proofs` section -----------------------------------------------
+
+
+def backticked(value):
+    """The text between the first and last backtick, or None without two."""
+    first, last = value.find("`"), value.rfind("`")
+    return value[first + 1:last] if first != last else None
+
+
+def squash(text):
+    return re.sub(r"\s", "", text)
+
+
+def entries(spec):
+    """The `### PROOF-<n>` entries of spec.md's `## Proofs`, and the problems that make them unusable."""
+    body = JOB.section(spec, "Proofs") if spec.exists() else None
+    if body is None:
+        return [], ["spec.md has no `## Proofs` section"]
+    parts = re.split(r"^###[ \t]+(PROOF-[0-9]+)[ \t]*$", body, flags=re.M)
+    if len(parts) < 3:
+        return [], ["spec.md's `## Proofs` has no `### PROOF-<n>` entry"]
+    found, problems = [], []
+    for name, text in zip(parts[1::2], parts[2::2]):
+        raw = {}
+        for line in text.splitlines():
+            m = re.match(r"\s*[-*]\s+([A-Za-z ]+?)\s*:(.*)$", line)
+            if m and m.group(1).lower() in KEYS:
+                raw.setdefault(m.group(1).lower(), m.group(2).strip())
+        entry, bad = {"name": name}, []
+        for key in KEYS:
+            if key not in raw:
+                bad.append(f"{name}: {key.capitalize()} is missing")
+                continue
+            value = raw[key]
+            if key in {"property", "scenario"}:
+                ok = bool(value) and (key == "property" or SCENARIO.fullmatch(value))
+            elif key == "assumes":
+                exprs = re.findall(r"`([^`]*)`", value)
+                ok = value.lower() == "none" or (exprs and all(e.strip() for e in exprs)
+                                                 and not re.sub(r"`[^`]*`|[\s,]", "", value))
+                value = [] if value.lower() == "none" else [squash(e) for e in exprs]
+            elif key == "unwind":
+                ok = value.lower() == "none" or re.fullmatch(r"[1-9][0-9]*", value)
+                value = None if value.lower() == "none" else value
+            else:
+                inner = backticked(value)
+                ok = inner is not None and {
+                    "crate": lambda v: CRATE.fullmatch(v),
+                    "harness": lambda v: HARNESS.fullmatch(v),
+                    "broken file": lambda v: v.strip(),
+                    "broken old": lambda v: v.strip(),
+                    "broken new": lambda v: True,
+                }[key](inner)
+                value = inner
+            if not ok:
+                bad.append(f"{name}: {key.capitalize()} has an invalid value: {raw[key]!r}")
+            entry[key] = value
+        problems += bad
+        found.append(entry)
+    return found, problems
+
+
+# ---- The forbidden-construct scan --------------------------------------------
+
+
+def added_lines(worktree, base, commit):
+    """{path: [added line numbers]} for the `.rs` files the branch changes."""
+    names = git(worktree, "diff", "--name-only", "--no-renames", "--diff-filter=d", "-z",
+                f"{base}...{commit}", "--", "*.rs").split("\0")
+    added = {}
+    for path in filter(None, names):
+        numbers, n = [], None
+        for line in git(worktree, "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff",
+                        f"{base}...{commit}", "--", path).splitlines():
+            hunk = re.match(r"@@ -\S+ \+(\d+)", line)
+            if hunk:
+                n = int(hunk.group(1))
+            elif line.startswith("+") and n is not None:
+                numbers.append(n)
+                n += 1
+        added[path] = numbers
+    return added
+
+
+def in_test_module(lines):
+    """For each line, whether its first `cfg(` (else its start) sits inside a module declared `#[cfg(test)]`, on
+    its `mod` line or the attribute lines directly above it. Braces are counted with no regard to strings or
+    comments."""
+    stack, inside, attrs = [], [], []
+    for line in lines:
+        test_mod = re.match(r"\s*(#\[.*\]\s*)*(pub(\([^)]*\))?\s+)?mod\s+\w+\s*\{", line) and (
+            "#[cfg(test)]" in squash(line) or any(a.startswith("#[cfg(test)]") for a in attrs))
+        at, here = line.find("cfg("), None
+        for i, ch in enumerate(line):
+            if i == at:
+                here = any(stack)
+            if ch == "{":
+                stack.append(bool(test_mod))
+                test_mod = False
+            elif ch == "}" and stack:
+                stack.pop()
+        inside.append(any(stack) if here is None else here)
+        attrs = attrs + [squash(line)] if line.strip().startswith("#[") else []
+    return inside
+
+
+def closed_argument(text):
+    """The text up to the parenthesis that closes the one before it, or None when it doesn't close."""
+    depth = 1
+    for i, ch in enumerate(text):
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if depth == 0:
+            return text[:i]
+    return None
+
+
+def proof_attributes(lines, i):
+    """The attribute lines directly above and below line i, i included, up to the next line that isn't one."""
+    def attr(k):
+        return lines[k].strip().startswith("#[")
+    top = i
+    while top > 0 and attr(top - 1):
+        top -= 1
+    end = i
+    while end + 1 < len(lines) and attr(end + 1):
+        end += 1
+    return lines[top:end + 1]
+
+
+def forbidden(worktree, base, commit, found):
+    """file:line and why, for each added line that games a proof."""
+    assumes = {a for e in found for a in e["assumes"]}
+    unwinds = {e["unwind"] for e in found if e["unwind"]}
+    hits = []
+    for path, numbers in added_lines(worktree, base, commit).items():
+        lines = git(worktree, "show", f"{commit}:{path}").splitlines()
+        tests_dir = re.search(r"(^|/)tests/", path)
+        inside = in_test_module(lines)
+        for n in numbers:
+            line = lines[n - 1] if n <= len(lines) else ""
+            where = f"{path}:{n}"
+            if "kani::stub" in line:
+                hits.append(f"{where}: kani::stub")
+            if "kani::should_panic" in line:
+                hits.append(f"{where}: kani::should_panic")
+            elif "should_panic" in line and line.strip().startswith("#[") and any(
+                    "kani::proof" in a for a in proof_attributes(lines, n - 1)):
+                hits.append(f"{where}: should_panic on a #[kani::proof] harness")
+            if "cfg(" in line and re.search(r"\bkani\b", line) and not tests_dir and not inside[n - 1]:
+                hits.append(f"{where}: cfg(kani) outside a #[cfg(test)] module")
+            for m in re.finditer(r"kani::assume\s*\(", line):
+                arg = closed_argument(line[m.end():])
+                if arg is None:
+                    hits.append(f"{where}: kani::assume whose parenthesis doesn't close on its line")
+                elif squash(arg) not in assumes:
+                    hits.append(f"{where}: kani::assume({arg.strip()}) isn't in any entry's Assumes")
+            for m in re.finditer(r"kani::unwind\s*\(([^)]*)\)", line):
+                if m.group(1).strip() not in unwinds:
+                    hits.append(f"{where}: kani::unwind({m.group(1).strip()}) isn't any entry's Unwind")
+    return hits
+
+
+# ---- Harnesses and broken rules ------------------------------------------------
+
+
+class Run:
+    """One test-run call: its result word, exit code, output and seconds."""
+
+    current = None  # the test-run running now, for a stop
+
+    def __init__(self, scratch, entry, timeout, log, label):
+        self.command = ["cargo", "kani", "-p", entry["crate"], "--tests", "--harness", entry["harness"]]
+        out = Path(tempfile.mkstemp(prefix="prove-", suffix=".out")[1])
+        start, self.timed_out, self.code = time.monotonic(), False, None
+        try:
+            with out.open("w") as sink:
+                env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "core" / "target"))
+                try:
+                    Run.current = subprocess.Popen([str(BIN / "test-run"), "--", *self.command], cwd=scratch / "core",
+                                                   env=env, stdin=subprocess.DEVNULL, stdout=sink,
+                                                   stderr=subprocess.STDOUT)
+                except OSError as e:
+                    self.error = f"couldn't start: {e}"
+                else:
+                    self.error = None
+                    try:
+                        self.code = Run.current.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        self.timed_out = True
+                        self.code = end(Run.current)
+                    Run.current = None
+            self.output = out.read_text(errors="replace")
+        finally:
+            out.unlink(missing_ok=True)
+        self.seconds = time.monotonic() - start
+        self.code = 128 - self.code if self.code is not None and self.code < 0 else self.code
+        lines = {line.strip() for line in self.output.splitlines()}
+        if self.code == 0 and SUCCESSFUL in lines and FAILED not in lines:
+            self.result = "SUCCESSFUL"
+        elif self.timed_out:
+            self.result = "TIMEOUT"
+        elif FAILED in lines:
+            self.result = "FAILED"
+        else:
+            self.result = f"NO VERDICT ({self.error or f'exit {self.code}'})"
+        times = re.findall(r"Verification Time:\s*([0-9.]+)s", self.output)
+        self.verification = times[-1] if times else "-"
+        with log.open("a") as f:
+            f.write(f"==== {label}: {' '.join(self.command)} ({self.result}, {self.seconds:.1f}s) ====\n"
+                    f"{self.output}\n")
+
+
+def end(proc):
+    """SIGTERM to the run by its PID, SIGKILL KILL_AFTER seconds later: its exit code."""
+    proc.send_signal(signal.SIGTERM)
+    try:
+        return proc.wait(timeout=KILL_AFTER)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return proc.wait()
+
+
+def broken_rule(scratch, entry, timeout, log):
+    """The broken rule's result word, applied in the scratch copy and restored there, and its run, or None."""
+    rel = entry["broken file"].strip()
+    target = Path(os.path.realpath(scratch / rel))
+    if os.path.isabs(rel) or {"..", ".git"} & set(Path(rel).parts) or not target.is_relative_to(scratch):
+        return f"OUTSIDE THE REPOSITORY: `{rel}`", None
+    if not target.is_file():
+        return f"DID NOT APPLY: there is no file `{rel}`", None
+    text = target.read_text()
+    lines = text.splitlines(keepends=True)
+    old = entry["broken old"].strip()
+    matches = [i for i, line in enumerate(lines) if line.strip() == old]
+    if len(matches) != 1:
+        return f"DID NOT APPLY: Broken old matches {len(matches)} lines of `{rel}`", None
+    line = lines[matches[0]]
+    indent = line[:len(line) - len(line.lstrip())]
+    eol = line[len(line.rstrip("\r\n")):]
+    new = entry["broken new"].strip()
+    lines[matches[0]] = (indent + new if new else "") + eol
+    target.write_text("".join(lines))
+    try:
+        run = Run(scratch, entry, timeout, log, f"{entry['name']} broken rule")
+    finally:
+        git(scratch, "checkout", "--", str(target.relative_to(scratch)))
+    left = git(scratch, "status", "--porcelain").strip()
+    if left:
+        die(f"the scratch copy isn't clean after {entry['name']}'s broken rule: {left}")
+    word = {"FAILED": "RED", "SUCCESSFUL": "GREEN"}.get(run.result, run.result)
+    return word, run
+
+
+def harnesses(worktree, commit, found, timeout, log):
+    """Each entry run in one scratch copy at the commit: its proofs.md section and its reasons."""
+    holder = Path(tempfile.mkdtemp(prefix="prove-")).resolve()
+    scratch = holder / "scratch"
+    sections, reasons = [], []
+    try:
+        git(worktree, "worktree", "add", "--detach", str(scratch), commit)
+        for entry in found:
+            name = f"{entry['name']} `{entry['harness']}`"
+            run = Run(scratch, entry, timeout, log, entry["name"])
+            if run.result == "SUCCESSFUL":
+                broken, broken_run = broken_rule(scratch, entry, timeout, log)
+            else:
+                broken, broken_run = f"not run: the harness was {run.result}", None
+                reasons.append(("TIMEOUT" if run.timed_out else "FAIL",
+                                f"{name}: {run.result}" + (f" after {timeout}s" if run.timed_out else "")))
+            if broken_run and broken == "GREEN":
+                reasons.append(("FAIL", f"{name}: vacuous: still SUCCESSFUL with its broken rule"))
+            elif broken_run and broken == "TIMEOUT":
+                reasons.append(("TIMEOUT", f"{name}: its broken rule's run timed out after {timeout}s"))
+            elif run.result == "SUCCESSFUL" and broken != "RED":
+                reasons.append(("FAIL", f"{name}: broken rule {broken}"))
+            sections.append(
+                f"## {entry['name']} {entry['harness']}\n"
+                f"- Command: `{BIN / 'test-run'} -- {' '.join(run.command)}`, from core/ in a scratch copy of the "
+                f"commit, with CARGO_TARGET_DIR=core/target there\n"
+                f"- Result: {run.result}\n"
+                f"- Verification seconds: {run.verification}\n"
+                f"- VM seconds: {run.seconds:.1f}\n"
+                f"- Broken rule: {broken}"
+                + (f" (verification seconds {broken_run.verification}, VM seconds {broken_run.seconds:.1f})"
+                   if broken_run else "") + "\n")
+    except Stopped:
+        if Run.current is not None and Run.current.poll() is None:
+            end(Run.current)
+        raise
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(scratch)], cwd=worktree, capture_output=True)
+        subprocess.run(["git", "worktree", "prune"], cwd=worktree, capture_output=True)
+        shutil.rmtree(holder, ignore_errors=True)
+    return sections, reasons
+
+
+# ---- The verdict -------------------------------------------------------------
+
+
+def judge(job, spec, commit, timeout, log):
+    """Steps b to e, stopping at the first that finds a reason: proofs.md's PROOF sections and the reasons."""
+    if JOB.proofs_hash(spec) != job.get("proofs_hash", "none"):
+        return [], [("FAIL", "properties changed after spec: spec.md's `## Proofs` isn't the section hashed when "
+                             "the job left spec")]
+    found, problems = entries(spec)
+    if problems:
+        return [], [("FAIL", p) for p in problems]
+    hits = forbidden(job["worktree"], f"origin/{JOB.BASE}", commit, found)
+    if hits:
+        return [], [("FAIL", f"forbidden construct: {hit}") for hit in hits]
+    return harnesses(job["worktree"], commit, found, timeout, log)
+
+
+def prove(job_id):
+    mode, timeout = settings()
+    job_path = JOB.job_dir(job_id) / "job.json"
+    if not job_path.exists():
+        die(f"no job {job_id}")
+    job = json.loads(job_path.read_text())
+    if job["round"] < 1:
+        die(f"{job_id} hasn't started a build round")
+    rd = JOB.round_dir(job)
+    checks = rd / "checks.md"
+    if not checks.exists() or JOB.header(checks).get("GATE") != "PASS":
+        die(f"round-{job['round']}/checks.md doesn't say GATE: PASS: run factory/bin/gate {job_id} first")
+    commit = JOB.header(checks).get("COMMIT", "")
+    spec = JOB.job_dir(job_id) / "spec.md"
+    (rd / "proofs.md").unlink(missing_ok=True)
+    log = rd / "proofs.log"
+    log.write_text("")
+
+    sections, reasons = [], []
+    if "proofs" not in JOB.surfaces(job):
+        verdict = "SKIPPED"
+    else:
+        sections, reasons = judge(job, spec, commit, timeout, log)
+        levels = {level for level, _ in reasons}
+        verdict = "FAIL" if "FAIL" in levels else "TIMEOUT" if "TIMEOUT" in levels else "PASS"
+    result = verdict if verdict in {"FAIL", "TIMEOUT"} else None
+    if result and mode == "advisory":
+        verdict = "ADVISORY-FAIL"
+    (rd / "proofs.md").write_text(
+        f"PROOFS: {verdict}\nCOMMIT: {commit}\nMODE: {mode}\n"
+        + (f"RESULT: {result}\n" if verdict == "ADVISORY-FAIL" else "") + "\n"
+        + ("## Why\n" + "".join(f"- {why}\n" for _, why in reasons) + "\n" if reasons else "")
+        + "\n".join(sections))
+    print(f"PROOFS: {verdict} ({job_id} round {job['round']})")
+    return 1 if verdict in {"FAIL", "TIMEOUT"} else 0
+
+
+def main(argv):
+    if len(argv) != 1 or argv[0].startswith("-"):
+        die(__doc__.strip())
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        return prove(argv[0])
+    except Stopped as e:
+        return 128 + e.args[0]
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
