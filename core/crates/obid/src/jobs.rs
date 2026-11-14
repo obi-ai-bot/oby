@@ -97,9 +97,6 @@ const WIP_MESSAGE: &str = "wip: work left uncommitted when the job ended\n\nobid
 const FAILS_AS_ASKED: &str = "FAILS AS ASKED";
 /// Claude Code's own turn limit for a round.
 const MAX_TURNS: &str = "200";
-/// How long after a usage limit's reset obid tries a job again: the tool's clock and the Mac's
-/// may differ.
-const RESET_SLACK: i64 = 60;
 /// How often obid looks for a job whose reset came.
 const RESET_TICK: Duration = Duration::from_secs(15);
 /// What obid's stop leaves in its home when every worker ended in time (#915).
@@ -1018,8 +1015,6 @@ pub struct Jobs {
     events: Events,
     sandbox: Result<Sandbox, String>,
     state: Mutex<State>,
-    limit_decisions: crate::account_limits::Decisions,
-    limit_execution: tokio::sync::Mutex<()>,
     changed: Notify,
     /// Each job's transcript (`home/jobs/<id>/transcript.jsonl`).
     transcripts: crate::transcript::Transcripts,
@@ -1114,8 +1109,6 @@ struct UsageReads {
     asked: HashMap<String, std::time::Instant>,
     /// Accounts not asked again until obid restarts: their Claude Code asked a model for `/usage`.
     never: HashSet<String>,
-    /// Decisions for which the first post-reset refresh was requested.
-    limit_refreshed: HashSet<String>,
     /// Reads are under way.
     reading: bool,
 }
@@ -1195,7 +1188,6 @@ impl Jobs {
         sandbox: Result<Sandbox, String>,
     ) -> std::io::Result<Arc<Jobs>> {
         let store = Store::open(&config.home)?;
-        let limit_decisions = crate::account_limits::Decisions::open(&config.home)?;
         // obid's last stop ended every worker in time ([`Jobs::shutdown`]): else it went down
         // some other way (a crash, a kill, a stop that didn't finish), and a job it ran counts it.
         let clean = config.home.join(STOPPED_CLEANLY);
@@ -1346,8 +1338,6 @@ impl Jobs {
                 awake,
                 unkept: HashMap::new(),
             }),
-            limit_decisions,
-            limit_execution: tokio::sync::Mutex::new(()),
             changed: Notify::new(),
             transcripts,
             max_running: std::sync::atomic::AtomicUsize::new(max_running),
@@ -1380,43 +1370,6 @@ impl Jobs {
             measured: Mutex::new(Measured::default()),
             metering: Notify::new(),
         });
-        let legacy: Vec<String> = made
-            .lock()
-            .jobs
-            .values()
-            .filter(|j| j.resumes_at.is_some() && j.status == Status::Interrupted)
-            .map(|j| j.id.clone())
-            .collect();
-        for id in legacy {
-            let followed = made
-                .lock()
-                .jobs
-                .values()
-                .any(|j| j.follow_up_of.as_deref() == Some(&id));
-            made.update(&id, |job| {
-                if job.dismissed.is_none() && !followed {
-                    job.account_limit_blocked = true;
-                    job.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
-                    job.account_limit_reset = None; // Older waits may have used a guessed reset.
-                }
-                job.resumes_at = None;
-            });
-        }
-        let blocked: Vec<String> = made
-            .lock()
-            .jobs
-            .values()
-            .filter(|j| {
-                j.account_limit_blocked && j.dismissed.is_none() && j.status == Status::Interrupted
-            })
-            .map(|j| j.id.clone())
-            .collect();
-        for id in blocked {
-            made.record_account_limit(&id);
-        }
-        for decision in made.limit_decisions.list() {
-            made.sync_limit_answer(&decision);
-        }
         // An older file's holds of one model's limit go to the hold table, and the file drops them
         // (LIMITS-23).
         for job in made.lock().jobs.values_mut() {
@@ -1429,6 +1382,8 @@ impl Jobs {
                 let _ = made.store.save(job);
             }
         }
+        // What an older release left at a limit moves or waits on those holds (LIMITS-26).
+        made.settle_older_limits();
         if github && let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(github_email(Arc::downgrade(&made)));
         }
@@ -1738,7 +1693,7 @@ impl Jobs {
                 self.schedule();
             }
             self.resume_limit_waits();
-            self.run_approved_limit_decisions().await;
+            self.fail_over_waits().await;
         }
     }
 
@@ -11868,8 +11823,8 @@ impl Jobs {
             return;
         };
         let Some(author) = self.get(&of) else { return };
-        // A review its account's limit stopped waits for the owner's one decision (#1563), still
-        // the author's review: never let go and retried on another account by itself.
+        // A review the owner kept stopped at its account's limit (LIMITS-26) is still the
+        // author's review: never let go and retried on another account by itself.
         let waits_on_limit = review.account_limit_blocked
             && review.dismissed.is_none()
             && review.status == Status::Interrupted;
@@ -16560,7 +16515,7 @@ mod tests {
             job.account_limit_blocked = true;
             job.account_limit_episode = Some("owner-decision".into());
             job.account_limit_nonce = Some("one-limit".into());
-            job.account_limit_choice = Some(crate::account_limits::Choice::Stop);
+            job.account_limit_choice = Some(crate::limits::legacy::Choice::Stop);
         });
         for source in [Source::Event, Source::Untrusted, Source::Api] {
             let retry = jobs
@@ -19831,9 +19786,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// PUBLISHING-4, run again: an ended job takes no Try again, and the owner's account-limit
-    /// choice neither resumes nor moves it, while another job works on its branch, whatever the
-    /// letter case of its name. It stays as it was.
+    /// PUBLISHING-4, run again: an ended job takes no Try again while another job works on its
+    /// branch, whatever the letter case of its name. It stays as it was.
     #[tokio::test]
     async fn publishing_4_an_ended_job_runs_again_only_off_a_busy_branch() {
         let root = std::env::temp_dir().join(format!("obid-busy-{}", uuid::Uuid::new_v4()));
@@ -19854,11 +19808,7 @@ mod tests {
         };
         let mut stopped = on("aaaa0001", "oby/fix-34");
         stopped.status = Status::Stopped;
-        let mut limited = on("aaaa0002", "oby/fix-34");
-        limited.status = Status::Interrupted;
-        limited.account_limit_blocked = true;
-        limited.account_limit_episode = Some("e1".into());
-        let jobs = jobs_with_kept(&home, &[&stopped, &limited]);
+        let jobs = jobs_with_kept(&home, &[&stopped]);
         let mut busy = on("aaaa0003", "oby/Fix-34");
         busy.status = Status::Running;
         jobs.insert(busy).unwrap();
@@ -19874,23 +19824,6 @@ mod tests {
             refused.0
         );
         assert_eq!(jobs.get("aaaa0001").unwrap().status, Status::Stopped);
-        let decision: crate::account_limits::Decision = serde_json::from_value(json!({
-            "id": "e1", "revision": 1, "agent": "claude", "account": "c", "jobs": ["aaaa0002"],
-            "choice": "move", "destination": null, "applied": []}))
-        .unwrap();
-        let elsewhere = crate::config::Account {
-            id: "d".into(),
-            name: "D".into(),
-            config_dir: None,
-            payer: None,
-        };
-        let why = jobs
-            .apply_limit_job(&decision, "aaaa0002", Some((Tool::Claude, elsewhere)), None)
-            .unwrap_err();
-        assert!(why.contains("(job aaaa0003) is working on"), "{why}");
-        let limited = jobs.get("aaaa0002").unwrap();
-        assert_eq!(limited.status, Status::Interrupted);
-        assert_eq!(limited.account, "c");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -22902,7 +22835,7 @@ mod tests {
             before.account_limit_episode = Some("e".into());
             before.account_limit_nonce = Some("n".into());
             before.account_limit_reset = Some(15);
-            before.account_limit_choice = Some(crate::account_limits::Choice::Pending);
+            before.account_limit_choice = Some(crate::limits::legacy::Choice::Pending);
             before.stalled = Some(crate::job::Stalled {
                 why: "quiet".into(),
                 text: "Quiet.".into(),

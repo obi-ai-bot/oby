@@ -38,9 +38,11 @@ fn job(obid: &Obid, id: &str) -> Value {
     call(obid, "GET", &format!("/v1/jobs/{id}"), None).body
 }
 
-/// Old scheduled retries migrate to an owner decision instead of running without consent.
+/// LIMITS-13: waits an older release left (`interrupted` with a `resumesAt`) settle when obid
+/// starts: the due ones wait for their account's reset or room, in their round, with no card; the
+/// ones the owner dismissed or a follow-up took over are let go.
 #[test]
-fn old_automatic_retries_become_one_pending_decision_after_restart() {
+fn limits_13_older_retries_wait_after_restart() {
     let folder = Folder::new("resets");
     let remote = fixture(&folder.0.join("fixture"));
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
@@ -59,27 +61,126 @@ fn old_automatic_retries_become_one_pending_decision_after_restart() {
         &[&due, &second, &dismissed, &followed, &follow_up],
     );
     let obid = start(&folder.0, &config, None);
-    for j in [&due, &second, &dismissed, &followed] {
+    for j in [&due, &second] {
+        let current = job(&obid, &j.id);
+        assert_eq!(current["status"], "queued", "{current}");
+        assert_eq!(current["round"], 1, "{current}");
+        assert!(!current["resumesAt"].is_null(), "{current}");
+        assert!(current["accountLimit"].is_null(), "{current}");
+    }
+    for j in [&dismissed, &followed] {
         let current = job(&obid, &j.id);
         assert_eq!(current["status"], "interrupted", "{current}");
-        assert_eq!(current["round"], 1, "{current}");
         assert!(current["resumesAt"].is_null(), "{current}");
     }
     let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
-    let decisions = decisions.as_array().unwrap();
-    assert_eq!(decisions.len(), 1, "{decisions:?}");
-    let ids: Vec<_> = decisions[0]["jobs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|j| j["id"].as_str().unwrap())
-        .collect();
-    assert!(
-        ids.contains(&due.id.as_str()) && ids.contains(&second.id.as_str()),
-        "{ids:?}"
-    );
-    assert_eq!(ids.len(), 2);
-    assert!(decisions[0]["resetAt"].is_null());
+    assert_eq!(decisions, json!([]));
+}
+
+/// A job an older release stopped at `stub`'s limit, waiting on the owner's #1563 decision.
+fn blocked(id: &str) -> Job {
+    let mut job = limited(id);
+    job.resumes_at = None;
+    job.worktree = Some(format!("/nonexistent/worktrees/{id}"));
+    job.account_limit_blocked = true;
+    job.account_limit_nonce = Some(format!("nonce-{id}"));
+    job.account_limit_reset = Some(obi_protocol::time::now() + 3600);
+    job
+}
+
+/// LIMITS-26: an older release's decisions settle when obid starts. A pending card, an approved
+/// Resume or Move and an older wait wait on the hold table, in their round, branch and worktree,
+/// with no card, and a later tick moves one where there's room; a kept Stop stays stopped, its
+/// choice copied from the file; a dismissed job stays as it was; and the file goes.
+#[test]
+fn limits_26_an_older_pending_decision_resolves_into_holds() {
+    for codex in [false, true] {
+        let folder = Folder::new(&format!("limits-26-{codex}"));
+        let config = limit_config(&folder.0, "fake-claude", codex);
+        let (a, b, c, d) = (
+            blocked("dddd0001"),
+            blocked("dddd0002"),
+            blocked("dddd0003"),
+            blocked("dddd0004"),
+        );
+        let mut e = blocked("dddd0005");
+        e.dismissed = Some(obi_protocol::time::now() - 30);
+        let mut f = limited("dddd0006");
+        f.resumes_at = Some(obi_protocol::time::now() + 600);
+        put(&folder.0, &[&a, &b, &c, &d, &e, &f]);
+        older_limit_decisions(
+            &folder.0,
+            &[
+                ("d-pending", &["dddd0001"], "pending"),
+                ("d-resume", &["dddd0002"], "resume"),
+                ("d-move", &["dddd0003"], "move"),
+                ("d-stop", &["dddd0004"], "stop"),
+                ("d-dismissed", &["dddd0005"], "pending"),
+            ],
+        );
+        let file = folder.0.join("home/limit-decisions.json");
+        let mut obid = start(&folder.0, &config, None);
+        let settled = |obid: &Obid| {
+            let stopped = job(obid, &d.id);
+            assert_eq!(stopped["status"], "interrupted", "{stopped}");
+            assert_eq!(stopped["accountLimit"]["state"], "stop", "{stopped}");
+            let let_be = job(obid, &e.id);
+            assert_eq!(let_be["status"], "interrupted", "{let_be}");
+            assert!(!let_be["dismissed"].is_null(), "{let_be}");
+            assert!(let_be["accountLimit"].is_null(), "{let_be}");
+            let decisions = call(obid, "GET", "/v1/limit-decisions", None).body;
+            assert_eq!(decisions, json!([]));
+            assert!(!file.exists());
+        };
+        settled(&obid);
+        if codex {
+            within(45, "the job moves to the Codex account with room", || {
+                (job(&obid, &a.id)["agent"] == "codex").then_some(())
+            });
+            continue;
+        }
+        let waits = |obid: &Obid| {
+            for j in [&a, &b, &c, &f] {
+                let current = job(obid, &j.id);
+                assert_eq!(current["status"], "queued", "{current}");
+                assert!(!current["resumesAt"].is_null(), "{current}");
+                assert!(current["accountLimit"].is_null(), "{current}");
+                assert_eq!(current["round"], 1, "{current}");
+                assert_eq!(current["branch"], j.branch.as_str(), "{current}");
+                assert_eq!(current["worktree"], json!(j.worktree), "{current}");
+            }
+        };
+        waits(&obid);
+        obid.stop();
+        let obid = start(&folder.0, &config, None);
+        settled(&obid);
+        waits(&obid);
+    }
+}
+
+/// LIMITS-26: a decision file obid can't read keeps obid starting and drops no job: each goes by
+/// its own kept choice, and the file stays.
+#[test]
+fn limits_26_an_unreadable_decision_file_keeps_obid_starting() {
+    let folder = Folder::new("limits-26-unreadable");
+    let config = limit_config(&folder.0, "fake-claude", false);
+    let mut kept = blocked("dddd0101");
+    kept.account_limit_episode = Some("d-stop".into());
+    kept.account_limit_choice = Some(serde_json::from_value(json!("stop")).unwrap());
+    let other = blocked("dddd0102");
+    put(&folder.0, &[&kept, &other]);
+    let file = folder.0.join("home/limit-decisions.json");
+    std::fs::write(&file, "not json").unwrap();
+    let obid = start(&folder.0, &config, None);
+    let jobs = call(&obid, "GET", "/v1/jobs", None);
+    assert_eq!(jobs.status, 200, "{}", jobs.text);
+    let stopped = job(&obid, &kept.id);
+    assert_eq!(stopped["status"], "interrupted", "{stopped}");
+    assert_eq!(stopped["accountLimit"]["state"], "stop", "{stopped}");
+    let waits = job(&obid, &other.id);
+    assert_eq!(waits["status"], "queued", "{waits}");
+    assert!(!waits["resumesAt"].is_null(), "{waits}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
 }
 
 /// A job a restart cut short while it ran its check picks up at that phase ("After any restart"):

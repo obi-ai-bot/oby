@@ -73,17 +73,27 @@ fn limit_answers_require_the_exact_owner_device_signature() {
     );
 }
 
+/// LIMITS-25: `GET /v1/limit-decisions` is always `[]`, on a fresh home and on one an older
+/// release left with a pending and a kept-Stop decision; a signed answer to one is `409`, and its
+/// spent signature can't be sent again.
 #[test]
-fn only_one_signed_answer_wins_for_a_real_pending_group() {
+fn limits_25_decisions_list_is_empty() {
     use obid::job::{Job, Status};
-    let folder = Folder::new("limit-answer-race");
+    let folder = Folder::new("limits-25");
     let remote = fixture(&folder.0.join("fixture"));
     let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
     let config = config(&folder.0, &remote, &agent);
-    let home = folder.0.join("home");
-    let dir = home.join("jobs");
-    std::fs::create_dir_all(&dir).unwrap();
-    for id in ["aaaa0001", "aaaa0002"] {
+    let mut obid = start(&folder.0, &config, None);
+    let fresh = call(&obid, "GET", "/v1/limit-decisions", None);
+    assert_eq!(
+        (fresh.status, &fresh.body),
+        (200, &json!([])),
+        "{}",
+        fresh.text
+    );
+    obid.stop();
+    let dir = folder.0.join("home/jobs");
+    for (id, episode) in [("aaaa0001", "d-pending"), ("aaaa0002", "d-stop")] {
         let mut job = Job::new(
             id.into(),
             "obi-e2e/fixture-app".into(),
@@ -93,91 +103,46 @@ fn only_one_signed_answer_wins_for_a_real_pending_group() {
             "stub".into(),
         );
         job.status = Status::Interrupted;
-        job.session = Some(format!("{id}-0000-4000-8000-000000000000"));
         job.account_limit_blocked = true;
+        job.account_limit_episode = Some(episode.into());
         job.account_limit_nonce = Some(format!("nonce-{id}"));
         job.account_limit_reset = Some(obi_protocol::time::now() + 3600);
-        job.reason = Some("Usage limit reached".into());
         std::fs::write(
             dir.join(format!("{id}.json")),
             serde_json::to_vec(&job).unwrap(),
         )
         .unwrap();
     }
-    let account = home.join("accounts/stub");
-    std::fs::create_dir_all(&account).unwrap();
-    std::fs::write(account.join(".credentials.json"), json!({"claudeAiOauth":{"accessToken":"test-limit-login","expiresAt":(obi_protocol::time::now()+86400)*1000}}).to_string()).unwrap();
+    older_limit_decisions(
+        &folder.0,
+        &[
+            ("d-pending", &["aaaa0001"], "pending"),
+            ("d-stop", &["aaaa0002"], "stop"),
+        ],
+    );
     let obid = start(&folder.0, &config, None);
-    let unsigned_retry = call(
-        &obid,
-        "POST",
-        "/v1/jobs/aaaa0001/messages",
-        Some(&json!({"text": obid::job::TRY_AGAIN})),
-    );
-    assert_eq!(unsigned_retry.status, 403, "{}", unsigned_retry.text);
-    let pending = call(&obid, "GET", "/v1/limit-decisions", None);
-    assert_eq!(pending.status, 200, "{}", pending.text);
-    // A storage failure keeps the group visible, but exposes no executable choices.
-    let file = home.join("limit-decisions.json");
-    let saved = std::fs::read(&file).unwrap();
-    std::fs::remove_file(&file).unwrap();
-    std::fs::create_dir(&file).unwrap();
-    let blocked = call(&obid, "GET", "/v1/limit-decisions", None);
-    assert_eq!(blocked.status, 200, "{}", blocked.text);
-    assert_eq!(blocked.body[0]["jobs"].as_array().unwrap().len(), 2);
-    assert!(blocked.body[0]["options"].as_array().unwrap().is_empty());
-    assert!(
-        blocked.body[0]["problem"]
-            .as_str()
-            .unwrap()
-            .contains("remain stopped")
-    );
-    std::fs::remove_dir(&file).unwrap();
-    std::fs::write(&file, saved).unwrap();
-    assert!(call(&obid, "GET", "/v1/limit-decisions", None).body[0]["problem"].is_null());
-    let list = pending.body.as_array().unwrap();
-    assert_eq!(list.len(), 1, "{}", pending.text);
-    let decision = &list[0];
-    assert_eq!(decision["jobs"].as_array().unwrap().len(), 2);
-    let id = decision["id"].as_str().unwrap();
-    let revision = decision["revision"].as_u64().unwrap();
-    assert!(
-        decision["options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|o| o["kind"] == "resume")
+    let listed = call(&obid, "GET", "/v1/limit-decisions", None);
+    assert_eq!(
+        (listed.status, &listed.body),
+        (200, &json!([])),
+        "{}",
+        listed.text
     );
     let signed_at = obi_protocol::time::format(obi_protocol::time::now());
     let mut approval = owner_signs(
         &obid,
-        &format!("oby-limit-decision\n{id}\n{revision}\nstop\n\n{signed_at}"),
+        &format!("oby-limit-decision\nd-pending\n3\nresume\n\n{signed_at}"),
         &signed_at,
     );
-    approval["action"] = json!("stop");
-    let later = obi_protocol::time::format(obi_protocol::time::now() + 1);
-    let mut other = owner_signs(
-        &obid,
-        &format!("oby-limit-decision\n{id}\n{revision}\nresume\n\n{later}"),
-        &later,
-    );
-    other["action"] = json!("resume");
-    let path = format!("/v1/limit-decisions/{id}/answer");
-    let stop = json!({"revision":revision,"choice":"stop","approval":approval});
-    let resume = json!({"revision":revision,"choice":"resume","approval":other});
-    let (a, b) = std::thread::scope(|s| {
-        let a = s.spawn(|| call(&obid, "POST", &path, Some(&stop)));
-        let b = s.spawn(|| call(&obid, "POST", &path, Some(&resume)));
-        (a.join().unwrap(), b.join().unwrap())
-    });
-    let mut codes = [a.status, b.status];
-    codes.sort();
-    assert_eq!(codes, [200, 409], "{} / {}", a.text, b.text);
-    assert!(
-        call(&obid, "GET", "/v1/limit-decisions", None)
-            .body
-            .as_array()
-            .unwrap()
-            .is_empty()
+    approval["action"] = json!("resume");
+    let body = json!({"revision": 3, "choice": "resume", "approval": approval});
+    let target = "/v1/limit-decisions/d-pending/answer";
+    let answered = call(&obid, "POST", target, Some(&body));
+    assert_eq!(answered.status, 409, "{}", answered.text);
+    let again = call(&obid, "POST", target, Some(&body));
+    assert_eq!(
+        again.status, 403,
+        "a spent signature can't be sent again: {}",
+        again.text
     );
 }

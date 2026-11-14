@@ -643,14 +643,15 @@ pub struct Job {
     pub next_step: Option<String>,
     /// When a job a five-hour limit stopped resumes by itself (`queued`, LIMITS-5), in seconds since
     /// the epoch: 90 seconds after the reset its tool named. None otherwise. On an `interrupted`
-    /// job, an older release's wait, made a pending decision when obid starts.
+    /// job, an older release's wait, settled when obid starts (LIMITS-13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes_at: Option<i64>,
     /// Its check judged nothing, so obid runs it again by itself (PUBLISHING-31). Kept on a job
     /// that ended once obid stopped trying: its Publish raises no card or alert.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unjudged: Option<Unjudged>,
-    /// This job stopped at an account limit and awaits an owner decision (#1563).
+    /// An older release stopped this job at an account limit (#1563), and the owner kept it
+    /// stopped (LIMITS-26): only their signed words take it on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub account_limit_blocked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -659,9 +660,9 @@ pub struct Job {
     pub account_limit_nonce: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_limit_reset: Option<i64>,
-    /// The owner's durable choice, mirrored from the decision store for truthful client display.
+    /// The owner's answer an older release kept for it, shown as `accountLimit`'s `state`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_limit_choice: Option<crate::account_limits::Choice>,
+    pub account_limit_choice: Option<crate::limits::legacy::Choice>,
     /// What the job it follows up did, for its first prompt, quoted there. Never in the API's job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub earlier: Option<String>,
@@ -1719,7 +1720,7 @@ impl Job {
             && self.account_limit_episode.is_some()
         {
             json!({"decision": self.account_limit_episode,
-                "state": self.account_limit_choice.unwrap_or(crate::account_limits::Choice::Pending),
+                "state": self.account_limit_choice.unwrap_or(crate::limits::legacy::Choice::Pending),
                 "resetAt": date(self.account_limit_reset)})
         } else {
             Value::Null

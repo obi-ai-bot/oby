@@ -1,142 +1,10 @@
-//! Account-limit decisions exercise the real daemon and stand-in agents (#1563).
+//! Jobs at an account's limit, and what an older release's #1563 decisions left, on the real
+//! daemon and stand-in agents (docs/contracts/account-limits.md).
 mod support;
 
 use serde_json::{Value, json};
 use std::path::Path;
 use support::*;
-
-#[test]
-fn owner_opt_in_survives_restart_and_resumes_once_when_fresh_usage_shows_room() {
-    after_restart("limit-resume-restart", true, Some("resume"), false);
-}
-
-#[test]
-fn unknown_reset_resumes_after_a_fresh_zero_usage_report_without_reset_times() {
-    after_restart("limit-resume-unknown", false, Some("resume"), false);
-}
-
-#[test]
-fn keeping_the_group_stopped_survives_restart_without_another_prompt() {
-    after_restart("limit-keep-stopped", true, Some("stop"), false);
-}
-
-/// LIMITS-15: an approved Resume from before whose account went away moves or waits by itself,
-/// with no new question: no `limitDecision`, and no decision recorded but the one answered.
-#[test]
-fn limits_15_a_resume_whose_account_left_asks_no_one_again() {
-    after_restart("limit-disconnected", true, Some("resume"), true);
-}
-
-fn after_restart(name: &str, known_reset: bool, choice: Option<&str>, disconnect: bool) {
-    use obid::job::{Job, Status};
-    let folder = Folder::new(name);
-    let remote = fixture(&folder.0.join("fixture"));
-    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
-    let config = config(&folder.0, &remote, &agent);
-    let home = folder.0.join("home");
-    let source = home.join("accounts/stub");
-    let jobs = home.join("jobs");
-    std::fs::create_dir_all(&source).unwrap();
-    std::fs::create_dir_all(&jobs).unwrap();
-    std::fs::write(source.join(".credentials.json"), json!({"claudeAiOauth":{"accessToken":if known_reset { "fake-claude" } else { "zero-no-reset" },"expiresAt":(obi_protocol::time::now()+86400)*1000}}).to_string()).unwrap();
-    let now = obi_protocol::time::now();
-    let mut job = Job::new(
-        "aaaa0123".into(),
-        "obi-e2e/fixture-app".into(),
-        "research".into(),
-        "Look around".into(),
-        "claude".into(),
-        "stub".into(),
-    );
-    job.status = Status::Interrupted;
-    job.account_limit_blocked = true;
-    job.account_limit_nonce = Some("reset-one".into());
-    job.account_limit_reset = known_reset.then_some(now - 120);
-    job.branch = "oby/research-aaaa0123".into();
-    job.round = Some(1);
-    std::fs::write(
-        jobs.join("aaaa0123.json"),
-        serde_json::to_vec(&job).unwrap(),
-    )
-    .unwrap();
-    let usage = if known_reset {
-        json!({"stub":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now}})
-    } else {
-        json!({"stub":{"fiveHour":1.0,"sevenDay":0.2,"fullUntil":now+3600,"fullUntilInferred":true,"fiveHourObservedAt":now-120,"sevenDayObservedAt":now-120}})
-    };
-    std::fs::write(home.join("usage.json"), usage.to_string()).unwrap();
-    let mut obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
-    let decision = &decisions.as_array().unwrap()[0];
-    let id = decision["id"].as_str().unwrap();
-    let revision = decision["revision"].as_u64().unwrap();
-    if let Some(choice) = choice {
-        let signed_at = obi_protocol::time::format(obi_protocol::time::now());
-        let mut approval = owner_signs(
-            &obid,
-            &format!("oby-limit-decision\n{id}\n{revision}\n{choice}\n\n{signed_at}"),
-            &signed_at,
-        );
-        approval["action"] = json!(choice);
-        let answer = call(
-            &obid,
-            "POST",
-            &format!("/v1/limit-decisions/{id}/answer"),
-            Some(&json!({"revision":revision,"choice":choice,"approval":approval})),
-        );
-        assert_eq!(answer.status, 200, "{}", answer.text);
-    }
-    obid.stop();
-    if disconnect {
-        std::fs::remove_file(source.join(".credentials.json")).unwrap();
-    }
-    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    if disconnect {
-        // The approved Resume can't run there, and nobody is asked again: it waits (LIMITS-15).
-        let waits = within(45, "the job waits for an account with room", || {
-            let job = call(&obid, "GET", "/v1/jobs/aaaa0123", None).body;
-            (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
-        });
-        assert_eq!(waits["round"], 1, "{waits}");
-        assert!(waits["accountLimit"].is_null(), "{waits}");
-        let pending = call(&obid, "GET", "/v1/limit-decisions", None).body;
-        assert_eq!(pending, json!([]));
-        // A question asked again would have been recorded before it resolved itself.
-        let kept: Value =
-            serde_json::from_slice(&std::fs::read(home.join("limit-decisions.json")).unwrap())
-                .unwrap();
-        let ids: Vec<&str> = (kept.as_array().unwrap().iter())
-            .map(|d| d["id"].as_str().unwrap())
-            .collect();
-        // The answered one alone, or none once it's forgotten (USAGE-1).
-        assert!(ids.iter().all(|i| *i == id), "{kept}");
-        return;
-    }
-    if choice != Some("resume") {
-        // Cross a scheduler tick with fresh room: neither a pending nor a declined group starts.
-        std::thread::sleep(std::time::Duration::from_secs(17));
-        let stopped = call(&obid, "GET", "/v1/jobs/aaaa0123", None).body;
-        assert_eq!(stopped["status"], "interrupted", "{stopped}");
-        assert_eq!(stopped["round"], 1, "{stopped}");
-        assert_eq!(
-            stopped["accountLimit"]["state"],
-            choice.unwrap_or("pending"),
-            "{stopped}"
-        );
-        let pending = call(&obid, "GET", "/v1/limit-decisions", None).body;
-        assert_eq!(
-            pending.as_array().unwrap().len(),
-            usize::from(choice.is_none())
-        );
-        return;
-    }
-    let resumed = within(45, "approved reset resumes after restart", || {
-        let j = call(&obid, "GET", "/v1/jobs/aaaa0123", None).body;
-        (j["status"] == "done").then_some(j)
-    });
-    assert_eq!(resumed["round"], 2, "{resumed}");
-    assert!(resumed["moves"].as_array().unwrap().is_empty());
-}
 
 /// A job its account's limit stopped, as obid keeps it, on the Claude account `stub`.
 fn blocked_job(jobs: &Path, id: &str, kind: &str, reset: Option<i64>) {
@@ -163,248 +31,70 @@ fn blocked_job(jobs: &Path, id: &str, kind: &str, reset: Option<i64>) {
     .unwrap();
 }
 
-/// The Claude account `stub`, signed in with `token`, and a Codex account `codex` with room (by
-/// `home/usage.json`), when `codex`.
-fn limit_config(folder: &Path, token: &str, codex: bool) -> Value {
-    let remote = fixture(&folder.join("fixture"));
-    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
-    let mut config = config(folder, &remote, &agents.join("fake-claude"));
-    let home = folder.join("home");
-    let claude = home.join("accounts/stub");
-    std::fs::create_dir_all(&claude).unwrap();
-    std::fs::write(claude.join(".credentials.json"), json!({"claudeAiOauth":{"accessToken":token,"expiresAt":(obi_protocol::time::now()+86400)*1000}}).to_string()).unwrap();
-    let now = obi_protocol::time::now();
-    if codex {
-        let dir = home.join("accounts/codex");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("auth.json"),
-            json!({"OPENAI_API_KEY":"fake-codex"}).to_string(),
-        )
-        .unwrap();
-        config["agents"]["codex"] = json!({"bin":agents.join("fake-codex"),"accounts":[{"id":"codex","name":"Codex account","configDir":dir}]});
-        std::fs::write(home.join("usage.json"), json!({"codex":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now}}).to_string()).unwrap();
-    }
-    config
-}
-
-/// The owner's signed answer to `decision` at `revision`.
-fn answer(
-    obid: &Obid,
-    decision: &str,
-    revision: u64,
-    choice: &str,
-    account: Option<&str>,
-) -> Answer {
-    let signed_at = obi_protocol::time::format(obi_protocol::time::now());
-    let mut approval = owner_signs(
-        obid,
-        &format!(
-            "oby-limit-decision\n{decision}\n{revision}\n{choice}\n{}\n{signed_at}",
-            account.unwrap_or_default()
-        ),
-        &signed_at,
-    );
-    approval["action"] = json!(choice);
-    let mut body = json!({"revision": revision, "choice": choice, "approval": approval});
-    if let Some(account) = account {
-        body["account"] = json!(account);
-    }
-    call(
-        obid,
-        "POST",
-        &format!("/v1/limit-decisions/{decision}/answer"),
-        Some(&body),
-    )
-}
-
-/// LIMITS-1 (#1645): an approved Resume on an account that has reported no usage since its reset (Cursor, an
-/// API key, a read that says nothing) runs again 30 minutes after the reset, instead of waiting
-/// for a reading that never comes.
+/// LIMITS-26: a job the owner kept stopped in an older release stays stopped, across a tick and a
+/// restart: only their own words take it on. Unsigned words are refused.
 #[test]
-fn limits_1_a_resume_on_an_account_that_reports_no_usage_runs_again_on_time() {
-    let folder = Folder::new("limit-resume-unread");
-    let config = limit_config(&folder.0, "silent", false);
+fn limits_26_a_kept_stop_stays_stopped() {
+    let folder = Folder::new("limits-26-stop");
+    let config = limit_config(&folder.0, "fake-claude", false);
     let now = obi_protocol::time::now();
     blocked_job(
         &folder.0.join("home/jobs"),
-        "cccc0001",
-        "research",
-        Some(now - 31 * 60),
-    );
-    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
-    let decision = &decisions[0];
-    let id = decision["id"].as_str().unwrap();
-    let answered = answer(
-        &obid,
-        id,
-        decision["revision"].as_u64().unwrap(),
-        "resume",
-        None,
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let resumed = within(45, "the Resume runs on time", || {
-        let j = call(&obid, "GET", "/v1/jobs/cccc0001", None).body;
-        (j["status"] == "done").then_some(j)
-    });
-    assert_eq!(resumed["round"], 2, "{resumed}");
-}
-
-/// LIMITS-1: an account that reports one window (a plan with no 5-hour window, USAGE-10) shows
-/// room by that window alone: its approved Resume runs once a fresh read shows it, not on time.
-#[test]
-fn limits_1_a_one_window_account_resumes_once_its_window_reads_room() {
-    let folder = Folder::new("limit-resume-one-window");
-    let config = limit_config(&folder.0, "week-only", false);
-    let now = obi_protocol::time::now();
-    blocked_job(
-        &folder.0.join("home/jobs"),
-        "cccc0005",
+        "aaaa0123",
         "research",
         Some(now - 120),
     );
-    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
-    let id = decision["id"].as_str().unwrap();
-    let revision = decision["revision"].as_u64().unwrap();
-    let answered = answer(&obid, id, revision, "resume", None);
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let resumed = within(45, "the Resume runs on its week's room", || {
-        let j = job_now(&obid, "cccc0005");
-        (j["status"] == "done").then_some(j)
-    });
-    assert_eq!(resumed["round"], 2, "{resumed}");
-}
-
-/// USAGE-1: once an approved Resume ran its job, it reads no account's usage again while no app
-/// looks: the decision no job waits on is forgotten.
-#[test]
-fn usage_1_an_applied_resume_reads_no_more_usage() {
-    let folder = Folder::new("limit-resume-reads");
-    let config = limit_config(&folder.0, "silent", false);
-    let now = obi_protocol::time::now();
-    let jobs = folder.0.join("home/jobs");
-    blocked_job(&jobs, "cccc0002", "research", Some(now - 31 * 60));
-    let env = [
-        ("OBID_USAGE_READS", "on"),
-        ("OBID_USAGE_EVERY_SECONDS", "1"),
-    ];
-    let obid = start_with(&folder.0, &config, None, &env);
-    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
-    let id = decision["id"].as_str().unwrap();
-    let revision = decision["revision"].as_u64().unwrap();
-    let answered = answer(&obid, id, revision, "resume", None);
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    within(45, "the Resume runs", || {
-        (job_now(&obid, "cccc0002")["status"] == "done").then_some(())
-    });
-    let reads = || obid.log().matches("account stub reports no usage").count();
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    let before = reads();
-    assert!(before > 0, "{}", obid.log());
-    // Two of obid's 15-second ticks, with no app looking.
-    std::thread::sleep(std::time::Duration::from_secs(32));
-    assert_eq!(reads(), before, "{}", obid.log());
-}
-
-/// LIMITS-1: before those 30 minutes, or while the week obid last read is at its reserve, it
-/// waits.
-#[test]
-fn limits_1_a_resume_with_no_usage_waits_its_30_minutes_and_a_known_hold() {
-    let folder = Folder::new("limit-resume-unread-wait");
-    let config = limit_config(&folder.0, "silent", false);
-    let now = obi_protocol::time::now();
-    let home = folder.0.join("home");
-    blocked_job(
-        &home.join("jobs"),
-        "cccc0003",
-        "research",
-        Some(now - 5 * 60),
-    );
-    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
-    let id = decision["id"].as_str().unwrap();
-    let answered = answer(
-        &obid,
-        id,
-        decision["revision"].as_u64().unwrap(),
-        "resume",
-        None,
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
+    // It ran: Try again picks its session up, in its round 2.
+    let mut job = read_job(&folder, "aaaa0123");
+    job.session = Some("aaaa0123-0000-4000-8000-000000000000".into());
+    write_job(&folder, &job);
+    older_limit_decisions(&folder.0, &[("d-stop", &["aaaa0123"], "stop")]);
+    let stopped = |obid: &Obid| {
+        let job = job_now(obid, "aaaa0123");
+        assert_eq!(job["status"], "interrupted", "{job}");
+        assert_eq!(job["round"], 1, "{job}");
+        assert_eq!(job["accountLimit"]["state"], "stop", "{job}");
+    };
+    let mut obid = start(&folder.0, &config, None);
+    // Cross a scheduler tick: a kept Stop doesn't start.
     std::thread::sleep(std::time::Duration::from_secs(17));
-    let waiting = call(&obid, "GET", "/v1/jobs/cccc0003", None).body;
-    assert_eq!(waiting["status"], "interrupted", "{waiting}");
-    assert_eq!(waiting["round"], 1, "{waiting}");
-    drop(obid);
-
-    let folder = Folder::new("limit-resume-unread-reserve");
-    let config = limit_config(&folder.0, "silent", false);
-    let home = folder.0.join("home");
-    blocked_job(
-        &home.join("jobs"),
-        "cccc0004",
-        "research",
-        Some(now - 31 * 60),
-    );
-    // The week read before the limit, at its reserve and not reset: it still holds.
-    std::fs::write(home.join("usage.json"), json!({"stub":{"fiveHour":0.1,"sevenDay":0.85,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now-3600,"sevenDayObservedAt":now-3600}}).to_string()).unwrap();
-    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    let decision = &call(&obid, "GET", "/v1/limit-decisions", None).body[0];
-    let id = decision["id"].as_str().unwrap();
-    let answered = answer(
-        &obid,
-        id,
-        decision["revision"].as_u64().unwrap(),
-        "resume",
-        None,
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let held = within(45, "the wait names the reserve", || {
-        let j = call(&obid, "GET", "/v1/jobs/cccc0004", None).body;
-        j["reason"]
-            .as_str()?
-            .contains("weekly reserve")
-            .then_some(j)
+    stopped(&obid);
+    assert!(pending_decisions(&obid).is_empty());
+    obid.stop();
+    let obid = start(&folder.0, &config, None);
+    stopped(&obid);
+    let target = "/v1/jobs/aaaa0123/messages";
+    let retry = json!({"text": obid::brain::actions::TRY_AGAIN});
+    let unsigned = call(&obid, "POST", target, Some(&retry));
+    assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+    stopped(&obid);
+    let typed = call_typed(&obid, "POST", target, &retry);
+    assert_eq!(typed.status, 200, "{}", typed.text);
+    within(10, "the owner's Try again takes it on", || {
+        (job_now(&obid, "aaaa0123")["round"] == 2).then_some(())
     });
-    assert_eq!(held["status"], "interrupted", "{held}");
-    assert_eq!(held["round"], 1, "{held}");
 }
 
-/// LIMITS-2 (#1645): an approved Resume its account's weekly reserve alone holds says so, and waits.
+/// LIMITS-15: an approved Resume from before whose account went away moves or waits by itself,
+/// with no new question, and the older file goes (LIMITS-26).
 #[test]
-fn limits_2_a_resume_held_by_the_weekly_reserve_says_so() {
-    let folder = Folder::new("limit-resume-reserve");
-    let config = limit_config(&folder.0, "reserved", false);
+fn limits_15_a_resume_whose_account_left_asks_no_one_again() {
+    let folder = Folder::new("limit-disconnected");
+    let config = limit_config(&folder.0, "fake-claude", false);
+    let home = folder.0.join("home");
     let now = obi_protocol::time::now();
-    blocked_job(
-        &folder.0.join("home/jobs"),
-        "cccc0002",
-        "research",
-        Some(now - 120),
-    );
-    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    let decisions = call(&obid, "GET", "/v1/limit-decisions", None).body;
-    let decision = &decisions[0];
-    let id = decision["id"].as_str().unwrap();
-    let answered = answer(
-        &obid,
-        id,
-        decision["revision"].as_u64().unwrap(),
-        "resume",
-        None,
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    let waiting = within(45, "the wait names the reserve", || {
-        let j = call(&obid, "GET", "/v1/jobs/cccc0002", None).body;
-        j["reason"]
-            .as_str()?
-            .contains("weekly reserve")
-            .then_some(j)
+    blocked_job(&home.join("jobs"), "aaaa0123", "research", Some(now - 120));
+    older_limit_decisions(&folder.0, &[("d-resume", &["aaaa0123"], "resume")]);
+    std::fs::remove_file(home.join("accounts/stub/.credentials.json")).unwrap();
+    let obid = start(&folder.0, &config, None);
+    let waits = within(45, "the job waits for an account with room", || {
+        let job = job_now(&obid, "aaaa0123");
+        (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
     });
-    assert_eq!(waiting["status"], "interrupted", "{waiting}");
-    assert_eq!(waiting["round"], 1, "{waiting}");
+    assert_eq!(waits["round"], 1, "{waits}");
+    assert!(waits["accountLimit"].is_null(), "{waits}");
+    assert!(pending_decisions(&obid).is_empty());
+    assert!(!home.join("limit-decisions.json").exists());
 }
 
 /// A folder and config with the Claude account `stub` signed in, and its obid.
@@ -728,15 +418,10 @@ fn limits_9_it_waits_as_many_times_as_it_takes() {
     assert!(pending_decisions(&obid).is_empty());
 }
 
-/// Job `id`, of `kind` and asked `task`, its account's limit stopped it `tries` waits in, and the owner's signed
-/// Resume of it: the decision they answered, and obid running it.
-fn signed_resume(
-    folder: &Folder,
-    id: &str,
-    kind: &str,
-    task: &str,
-    tries: usize,
-) -> (String, Value, Obid) {
+/// Job `id`, of `kind` and asked `task` in a round the owner asked for, its account's limit
+/// stopped it `tries` waits in, and the owner's signed Resume of it an older release kept: obid
+/// started on it.
+fn signed_resume(folder: &Folder, id: &str, kind: &str, task: &str, tries: usize) -> (Value, Obid) {
     let config = limit_config(&folder.0, "silent", false);
     blocked_job(
         &folder.0.join("home/jobs"),
@@ -746,39 +431,32 @@ fn signed_resume(
     );
     let mut job = read_job(folder, id);
     job.task = task.into();
+    job.asked = true;
     job.recovery.limit_resumes = tries;
     write_job(folder, &job);
-    let obid = start_with(&folder.0, &config, None, &[("OBID_USAGE_READS", "on")]);
-    let decision = pending_decisions(&obid).remove(0);
-    let first = decision["id"].as_str().unwrap().to_owned();
-    let answered = answer(
-        &obid,
-        &first,
-        decision["revision"].as_u64().unwrap(),
-        "resume",
-        None,
-    );
-    assert_eq!(answered.status, 200, "{}", answered.text);
-    (first, config, obid)
+    older_limit_decisions(&folder.0, &[("d-resume", &[id], "resume")]);
+    let obid = start(&folder.0, &config, None);
+    (config, obid)
 }
 
-/// LIMITS-9: a signed Resume from before LIMITS-15 carries the job on, and starts no count again:
+/// LIMITS-9: a signed Resume from before LIMITS-15 settles into a wait and starts no count again:
 /// its next limit waits, counted on, with no card.
 #[test]
 fn limits_9_a_signed_resume_gives_no_new_tries() {
     let folder = Folder::new("limits-9-signed");
-    let (_first, _config, obid) =
-        signed_resume(&folder, "cccc0901", "investigate", "LIMITED AGAIN: 300", 3);
-    let waits = within(90, "its next limit waits", || {
-        let job = job_now(&obid, "cccc0901");
-        (job["status"] == "queued" && !job["resumesAt"].is_null()).then_some(job)
-    });
+    let id = "cccc0901";
+    let (config, obid) = signed_resume(&folder, id, "investigate", "LIMITED AGAIN: 300", 3);
+    let waits = waiting_for_reset(&obid, id);
     assert!(waits["accountLimit"].is_null(), "{waits}");
-    let counted = within(30, "its wait is counted on", || {
-        let tries = read_job(&folder, "cccc0901").recovery.limit_resumes;
+    assert_eq!(read_job(&folder, id).recovery.limit_resumes, 3);
+    assert!(pending_decisions(&obid).is_empty());
+    let obid = its_time_comes(&folder, &config, obid, id, Some(json!({})));
+    let counted = within(90, "its next limit waits, counted on", || {
+        let tries = read_job(&folder, id).recovery.limit_resumes;
         (tries > 3).then_some(tries)
     });
     assert_eq!(counted, 4);
+    assert!(job_now(&obid, id)["accountLimit"].is_null());
     assert!(pending_decisions(&obid).is_empty());
 }
 
@@ -993,8 +671,12 @@ fn limits_12_a_resumed_run_ends_as_its_round_would() {
 
     let folder = Folder::new("limits-12-asked");
     let id = "cccc1201";
-    let (_, config, obid) = signed_resume(&folder, id, "build", "LIMITED ONCE: 300", 0);
+    let (config, obid) = signed_resume(&folder, id, "build", "LIMITED ONCE: 300", 0);
     waiting_for_reset(&obid, id);
+    let obid = its_time_comes(&folder, &config, obid, id, Some(json!({})));
+    within(90, "its round's limit waits", || {
+        (read_job(&folder, id).recovery.limit_resumes == 1).then_some(())
+    });
     let obid = its_time_comes(&folder, &config, obid, id, None);
     let done = ended(&obid, id);
     assert_eq!(done["status"], "done", "{done}");
@@ -1075,8 +757,8 @@ fn limits_14_a_wait_on_an_ended_pull_request_doesnt_run() {
     assert!(!told["resumesAt"].is_null(), "{told}");
 }
 
-/// LIMITS-13: a wait an older release still older left (`interrupted` with a `resumesAt`) becomes a
-/// decision when obid starts, which resolves itself: with no other account, the job waits.
+/// LIMITS-13: a wait an older release still older left (`interrupted` with a `resumesAt`) settles
+/// when obid starts (LIMITS-26): with no other account, the job waits.
 #[test]
 fn limits_13_an_older_wait_resolves_itself() {
     let folder = Folder::new("limits-13");

@@ -1,30 +1,15 @@
 //! Jobs at an account's usage limit (docs/contracts/account-limits.md): it owns a job's limit wait
-//! (`resumes_at`, `waiting`, the `account_limit_*` fields) and joins the owner's decisions to jobs,
-//! usage and the scheduler. The decisions are `crate::account_limits`'s, which alone writes them,
-//! and this module never writes a job's branch (docs/ARCHITECTURE.md, "State ownership").
+//! (`resumes_at`, `waiting`, the `account_limit_*` fields), joins it to usage and the scheduler,
+//! and settles what an older release left at a limit when obid loads it (LIMITS-26, the rule
+//! `crate::limits::legacy`'s). It never writes a job's branch (docs/ARCHITECTURE.md, "State
+//! ownership").
 
 use super::*;
 use crate::limits::holds::{self, Holds};
-
-/// How long after its reset (or its question, with none known) an approved Resume on an account
-/// that has reported no usage since waits before it runs again anyway (#1645).
-const UNREAD_RESUME: i64 = 30 * 60;
-
-/// An approved Resume waiting for room.
-const RESUME_WAIT: &str = "Waiting for the account's usage limit. Oby resumes this job once fresh usage confirms room, or 30 minutes after the reset when the account reports none.";
-
-/// An approved Resume on a ChatGPT login: OpenAI's limit names no time, and neither does Oby.
-const RESUME_WAIT_NO_TIME: &str = "Waiting for ChatGPT's usage limit. It doesn't say when it ends, so Oby tries again by itself, and you can check Manage usage.";
-
-/// An approved Resume its account's weekly reserve alone holds.
-const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 80% of its week. Lift its reserve to resume now.";
+use crate::limits::legacy::{Choice, Decisions, Left, Upgrade, upgrade};
 
 /// What cut its run, as the session that resumes hears it (`continue_message`).
 const RESET_CAME: &str = "your account hit its usage limit, and that limit has reset";
-
-/// What a card from before LIMITS-15 asked, while it's still shown.
-const LIMIT_QUESTION: &str =
-    "This account reached its usage limit. Choose what Oby should do with the affected jobs.";
 
 /// A job's line while it waits for room (LIMITS-15), saying when its own account's limit ends.
 /// Proposed words: Sangam's to change.
@@ -65,17 +50,6 @@ pub(super) fn start_wait(job: &mut Job, at: i64) {
     job.publish_step = None;
     wait_for_reset(job, at);
     job.changed(format!("A usage limit stopped it. {}", job.step));
-}
-
-/// Whether `job` still waits on `decision`: stopped by its account's limit, neither dismissed nor
-/// handled by it yet, and in its episode, or in none yet (between the decision's record and the
-/// job's, `record_account_limit`). Acting on it needs the episode set too.
-fn waits_on(job: &Job, decision: &crate::account_limits::Decision) -> bool {
-    job.account_limit_blocked
-        && job.status == Status::Interrupted
-        && job.dismissed.is_none()
-        && !decision.applied.contains(&job.id)
-        && (job.account_limit_episode.as_ref()).is_none_or(|e| *e == decision.id)
 }
 
 /// Where a job a limit stopped goes by itself (LIMITS-15): the tool and account, where it was, and
@@ -158,50 +132,88 @@ impl Jobs {
         (self.holds()).apply(on, reset, turn.scoped.then_some(&refused), now);
     }
 
-    /// A card from before LIMITS-15, pending or a Resume its account can't carry out, resolves
-    /// itself: each job moves where there's room, or else waits as a job a limit stops now does,
-    /// with no question asked.
-    async fn settle(self: &Arc<Self>, decision: &crate::account_limits::Decision) {
-        let _execution = self.limit_execution.lock().await;
-        for id in decision
-            .jobs
-            .iter()
-            .filter(|id| !decision.applied.contains(id))
-        {
-            let settled = match self.failover_for(id).await {
-                Some(failover) => self.apply_limit_job(decision, id, None, Some(&failover)),
-                None => {
-                    let Some(job) = self.get(id) else { continue };
-                    let at = self.limit_wait_until(
-                        &job.account,
-                        job.account_limit_reset,
-                        &Work::of(&job),
-                    );
-                    let mut waits = false;
-                    self.update(id, |job| {
-                        waits = waits_on(job, decision) && job.account_limit_episode.is_some();
-                        if waits {
-                            let (round, rounds) = (job.round, job.rounds);
-                            if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
-                                change.apply(job);
-                            }
-                            (job.round, job.rounds) = (round, rounds);
-                            wait_for_reset(job, at);
+    /// What an older release left at a limit, settled once as obid loads its jobs, after their
+    /// holds (LIMITS-13, LIMITS-26, [`upgrade`]): a kept Stop stays stopped, a wait dismissed or
+    /// taken over is forgotten, and every other job waits as a limit's job does now, for the tick
+    /// to move it where there's room ([`Jobs::fail_over_waits`]). Its decision file goes once every
+    /// job is saved; one obid can't read stays, and its jobs go by their own `account_limit_choice`.
+    pub(super) fn settle_older_limits(&self) {
+        let path = Decisions::path(&self.config.home);
+        let file = Decisions::read(&path).unwrap_or_else(|error| {
+            tracing::error!("can't read an older release's {}: {error}", path.display());
+            None
+        });
+        let left: Vec<(String, Upgrade, Option<String>)> = {
+            let state = self.lock();
+            let followed: HashSet<&str> = (state.jobs.values())
+                .filter_map(|j| j.follow_up_of.as_deref())
+                .collect();
+            (state.jobs.values())
+                .map(|job| {
+                    let episode = job.account_limit_episode.as_deref();
+                    let kept = file.as_ref().and_then(|f| f.of(&job.id, episode));
+                    let left = Left {
+                        interrupted: job.status == Status::Interrupted,
+                        blocked: job.account_limit_blocked,
+                        dismissed: job.dismissed.is_some(),
+                        older_wait: job.resumes_at.is_some(),
+                        followed: followed.contains(job.id.as_str()),
+                        choice: kept.map(|(_, choice)| choice).or(job.account_limit_choice),
+                    };
+                    let decision = kept.map(|(id, _)| id.to_owned());
+                    (job.id.clone(), upgrade(left), decision)
+                })
+                .filter(|(_, outcome, _)| *outcome != Upgrade::Untouched)
+                .collect()
+        };
+        let mut saved = true;
+        for (id, outcome, decision) in left {
+            let Some(job) = self.get(&id) else { continue };
+            let kept = match outcome {
+                Upgrade::Untouched => continue,
+                Upgrade::ForgetWait => self.update(&id, |job| job.resumes_at = None),
+                Upgrade::KeepStopped => {
+                    let episode = job.account_limit_episode.clone().or(decision);
+                    if (job.account_limit_choice, &job.account_limit_episode)
+                        == (Some(Choice::Stop), &episode)
+                    {
+                        continue;
+                    }
+                    self.update(&id, |job| {
+                        (job.account_limit_choice, job.account_limit_episode) =
+                            (Some(Choice::Stop), episode);
+                    })
+                }
+                Upgrade::Settle => {
+                    let reset = job
+                        .account_limit_reset
+                        .filter(|_| job.account_limit_blocked);
+                    let at = self.limit_wait_until(&job.account, reset, &Work::of(&job));
+                    self.update(&id, |job| {
+                        let (round, rounds) = (job.round, job.rounds);
+                        if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                            change.apply(job);
                         }
-                    });
-                    waits.then_some(()).ok_or(String::new())
+                        (job.round, job.rounds) = (round, rounds);
+                        wait_for_reset(job, at);
+                    })
                 }
             };
-            if settled.is_ok()
-                && let Err(error) = self.limit_decisions.applied(&decision.id, id)
-            {
-                tracing::error!("can't keep account-limit receipt for {id}: {error}");
-            }
+            saved &= kept.is_some();
+        }
+        if file.is_some()
+            && saved
+            && let Err(error) = std::fs::remove_file(&path)
+        {
+            tracing::error!(
+                "can't remove an older release's {}: {error}",
+                path.display()
+            );
         }
     }
 
     /// Jobs waiting for room take an account that has it now, by itself (LIMITS-15).
-    async fn fail_over_waits(self: &Arc<Self>) {
+    pub(super) async fn fail_over_waits(self: &Arc<Self>) {
         let waiting: Vec<String> = (self.lock().jobs.values())
             .filter(|j| j.status == Status::Queued && j.resumes_at.is_some())
             .map(|j| j.id.clone())
@@ -349,140 +361,6 @@ impl Jobs {
         }
     }
 
-    /// A persisted answer remains visible after its question closes, including after a restart
-    /// between saving the answer and updating its jobs. This mirror never authorizes execution.
-    pub(super) fn sync_limit_answer(&self, decision: &crate::account_limits::Decision) {
-        use crate::account_limits::Choice;
-        for id in &decision.jobs {
-            let Some(job) = self.get(id).filter(|job| {
-                waits_on(job, decision)
-                    && job.account_limit_episode.is_some()
-                    && job.account_limit_choice != Some(decision.choice)
-            }) else {
-                continue;
-            };
-            let reason = match decision.choice {
-                Choice::Pending => job.reason.clone().unwrap_or_else(|| LIMIT_QUESTION.into()),
-                Choice::Resume => self.resume_wait(&decision.account).into(),
-                Choice::Stop => {
-                    "You kept this job stopped after its account reached its usage limit.".into()
-                }
-                Choice::Move => {
-                    "You chose another account. Oby is moving this job with its work and context."
-                        .into()
-                }
-            };
-            self.update(id, |job| {
-                if job.account_limit_episode.as_deref() == Some(&decision.id) {
-                    job.account_limit_choice = Some(decision.choice);
-                    job.reason = Some(reason);
-                    job.next_step = None;
-                }
-            });
-        }
-    }
-
-    pub(super) async fn run_approved_limit_decisions(self: &Arc<Self>) {
-        let now = obi_protocol::time::now();
-        self.fail_over_waits().await;
-        // A decision none of its jobs waits on any more is forgotten: it reads no usage (USAGE-1).
-        // A job between its decision's record and its episode's has none yet: it still waits.
-        let (live, done): (Vec<_>, Vec<_>) =
-            self.limit_decisions.list().into_iter().partition(|d| {
-                (d.jobs.iter()).any(|id| self.get(id).is_some_and(|j| waits_on(&j, d)))
-            });
-        if !done.is_empty()
-            && let Err(error) = self.limit_decisions.prune(&done)
-        {
-            tracing::error!("can't forget finished account-limit decisions: {error}");
-        }
-        (self.usage_reads().limit_refreshed).retain(|id| live.iter().any(|d| &d.id == id));
-        for decision in live {
-            self.sync_limit_answer(&decision);
-            if decision.choice == crate::account_limits::Choice::Pending {
-                self.settle(&decision).await;
-            }
-            if decision.choice == crate::account_limits::Choice::Move {
-                self.apply_limit_move(&decision).await;
-                continue;
-            }
-            if decision.choice != crate::account_limits::Choice::Resume {
-                continue;
-            }
-            // A disconnected source cannot produce a fresh usage report: its jobs move or wait
-            // as LIMITS-15 says, asking no one, rather than waiting for one indefinitely.
-            if !self.limit_source_is_connected(&decision.agent, &decision.account) {
-                self.settle(&decision).await;
-                continue;
-            }
-            if decision
-                .reset_at
-                .is_some_and(|at| now < at.saturating_add(RESET_SLACK))
-            {
-                continue;
-            }
-            {
-                let mut reads = self.usage_reads();
-                if reads.limit_refreshed.insert(decision.id.clone()) {
-                    reads.asked.remove(&decision.account);
-                }
-            }
-            self.want_usage();
-            let since = decision.reset_at.unwrap_or(decision.created_at);
-            if !self.verified_limit_room(&decision.account, now, since) {
-                // #1645: an account with no fresh reading (Cursor and API keys never report, a
-                // read can fail) resumes on time instead of waiting forever, unless what obid last
-                // read of it still holds it (a week at its reserve). A wait says why.
-                let usage = self.usage.get(&decision.account);
-                let fresh = [usage.five_hour_observed_at, usage.seven_day_observed_at]
-                    .into_iter()
-                    .flatten()
-                    .any(|at| at >= since && now.saturating_sub(at) <= 600);
-                let on_time = !fresh
-                    && usage.held(now).is_none()
-                    && now >= since.saturating_add(UNREAD_RESUME);
-                if !on_time {
-                    let why = if usage.only_reserved(now) {
-                        RESERVE_WAIT
-                    } else {
-                        self.resume_wait(&decision.account)
-                    };
-                    self.say_limit_wait(&decision, why);
-                    continue;
-                }
-            }
-            for id in &decision.jobs {
-                if !self.get(id).is_some_and(|job| waits_on(&job, &decision)) {
-                    continue;
-                }
-                match self.apply_limit_job(&decision, id, None, None) {
-                    Ok(()) => {
-                        if let Err(error) = self.limit_decisions.applied(&decision.id, id) {
-                            tracing::error!("can't keep account-limit receipt for {id}: {error}");
-                        }
-                    }
-                    Err(why) => self.reask_limit_job(&decision, id, &why),
-                }
-            }
-        }
-    }
-
-    /// Says why an approved Resume still waits, on each of its jobs whose words differ.
-    fn say_limit_wait(&self, decision: &crate::account_limits::Decision, why: &str) {
-        for id in &decision.jobs {
-            if self.get(id).is_some_and(|job| {
-                job.account_limit_episode.as_deref() == Some(&decision.id)
-                    && job.account_limit_blocked
-                    && job.account_limit_choice == Some(crate::account_limits::Choice::Resume)
-                    && job.dismissed.is_none()
-                    && job.status == Status::Interrupted
-                    && job.reason.as_deref() != Some(why)
-            }) {
-                self.update(id, |job| job.reason = Some(why.to_owned()));
-            }
-        }
-    }
-
     fn limit_source_is_connected(&self, agent: &str, id: &str) -> bool {
         let home = login_home();
         Tool::from_id(agent).is_some_and(|tool| {
@@ -490,95 +368,6 @@ impl Jobs {
                 .iter()
                 .any(|account| account.id == id && signed_in(tool, account, home.as_deref()))
         })
-    }
-
-    /// Record a stopped job's durable decision. A failed write leaves it stopped and is retried
-    /// from the per-job marker on the next reconciliation or restart.
-    pub(super) fn record_account_limit(&self, id: &str) {
-        let Some(job) = self
-            .get(id)
-            .filter(|j| j.account_limit_blocked && j.dismissed.is_none())
-        else {
-            return;
-        };
-        if job.account_limit_episode.as_ref().is_some_and(|episode| {
-            self.limit_decisions
-                .list()
-                .iter()
-                .any(|d| &d.id == episode && d.jobs.contains(&job.id))
-        }) {
-            return;
-        }
-        let Some(nonce) = job.account_limit_nonce.as_deref() else {
-            return;
-        };
-        match self.limit_decisions.record(
-            &job.agent,
-            &job.account,
-            job.account_limit_reset,
-            id,
-            nonce,
-        ) {
-            Ok(decision) => {
-                self.update(id, |j| j.account_limit_episode = Some(decision.id.clone()));
-                self.events
-                    .send("limitDecision", json!({"id": decision.id}));
-            }
-            Err(error) => {
-                tracing::error!("can't keep account limit decision for {id}: {error}");
-                self.update(id, |j| j.reason = Some("Oby could not save your account-limit decision. The job remains stopped; restart Oby after resolving its storage problem.".into()));
-            }
-        }
-    }
-
-    /// What an approved Resume on `account` says while it waits.
-    fn resume_wait(&self, account: &str) -> &'static str {
-        let on_chatgpt = Tool::ALL
-            .into_iter()
-            .flat_map(|tool| self.accounts(tool))
-            .find(|a| a.id == account)
-            .is_some_and(|a| crate::chatgpt::marker_of(&a).is_some());
-        if on_chatgpt {
-            RESUME_WAIT_NO_TIME
-        } else {
-            RESUME_WAIT
-        }
-    }
-
-    /// Only current, provider-reported windows constitute evidence that an account has room: each
-    /// window the account reports, at least one (Cursor reports its week alone, `usage::cursor`, as
-    /// does a plan with no 5-hour window, USAGE-10), read since `since` and showing room.
-    fn verified_limit_room(&self, account: &str, now: i64, since: i64) -> bool {
-        use crate::usage::{NEARLY_FULL, RESERVE};
-        let usage = self.usage.get(account);
-        let lifted = usage.lifted_until(now).is_some();
-        let room = |used: Option<f64>, at: Option<i64>, reserve: bool| {
-            used.is_none_or(|used| {
-                used < NEARLY_FULL
-                    && (!reserve || used < RESERVE || lifted)
-                    && at.is_some_and(|at| at >= since && at <= now && now - at <= 600)
-            })
-        };
-        (usage.five_hour.is_some() || usage.seven_day.is_some())
-            && room(usage.five_hour, usage.five_hour_observed_at, false)
-            && room(usage.seven_day, usage.seven_day_observed_at, true)
-            && usage.full_until_at(now).is_none()
-    }
-
-    async fn limit_destinations(
-        &self,
-        decision: &crate::account_limits::Decision,
-    ) -> Vec<(Tool, crate::config::Account)> {
-        let jobs: Vec<Job> = decision
-            .jobs
-            .iter()
-            .filter_map(|id| self.get(id))
-            .filter(|j| {
-                j.account_limit_blocked && j.dismissed.is_none() && j.status == Status::Interrupted
-            })
-            .collect();
-        self.destinations(&decision.agent, &decision.account, &jobs)
-            .await
     }
 
     /// Where `jobs`, stopped on `agent`'s account `from`, may move: a signed-in account of any
@@ -591,8 +380,7 @@ impl Jobs {
         from: &str,
         jobs: &[Job],
     ) -> Vec<(Tool, crate::config::Account)> {
-        // A review can't change accounts, but it doesn't take Move away from the tasks beside it
-        // (#1645): a Move asks again about the review alone (`apply_limit_move`).
+        // A review can't change accounts.
         if jobs.iter().all(|j| j.obi.is_some() || j.read_only()) {
             return Vec::new();
         }
@@ -663,323 +451,12 @@ impl Jobs {
         accounts
     }
 
-    pub async fn limit_decisions(self: &Arc<Self>) -> Vec<Value> {
-        self.want_usage();
-        // Recover a job persisted just before the decision file was written.
-        let blocked: Vec<String> = self
-            .lock()
-            .jobs
-            .values()
-            .filter(|j| {
-                j.account_limit_blocked && j.dismissed.is_none() && j.status == Status::Interrupted
-            })
-            .map(|j| j.id.clone())
-            .collect();
-        for id in blocked {
-            self.record_account_limit(&id);
-        }
-        for decision in self.limit_decisions.list() {
-            self.sync_limit_answer(&decision);
-        }
-        let mut result = Vec::new();
-        for decision in self
-            .limit_decisions
-            .list()
-            .into_iter()
-            .filter(|d| d.choice == crate::account_limits::Choice::Pending)
-        {
-            let jobs: Vec<Value> = decision
-                .jobs
-                .iter()
-                .filter_map(|id| self.get(id))
-                .filter(|j| {
-                    j.account_limit_blocked
-                        && j.dismissed.is_none()
-                        && j.status == Status::Interrupted
-                })
-                .map(|j| json!({"id":j.id,"title":j.title}))
-                .collect();
-            if jobs.is_empty() {
-                continue;
-            }
-            let mut options: Vec<Value> = (self.limit_destinations(&decision).await)
-                .into_iter()
-                .map(|(tool, a)| json!({"kind":"move", "account":a.id, "agent":tool.id(), "name": a.name}))
-                .collect();
-            let source_connected =
-                self.limit_source_is_connected(&decision.agent, &decision.account);
-            if options.is_empty() && source_connected {
-                options.push(json!({"kind":"resume"}));
-            }
-            options.push(json!({"kind":"stop"}));
-            // The revision the owner signs follows the jobs shown, not the options (#1645): a
-            // usage read landing after they looked changes the options, and their answer is
-            // refused only when the option they chose is gone (`answer_limit_decision`).
-            let snapshot = json!({"jobs":jobs}).to_string();
-            let (decision, problem) = match self.limit_decisions.refresh(&decision.id, &snapshot) {
-                Ok(saved) => (saved, (!source_connected).then_some("The original account isn't connected. Connect it or choose another available account.")),
-                Err(error) => {
-                    tracing::error!("can't keep account-limit options: {error}");
-                    // Fail closed while retaining the visible question. No option may be
-                    // approved until its exact scope can be kept durably.
-                    options.clear();
-                    (
-                        decision,
-                        Some(
-                            "Oby couldn't save this decision. Your jobs remain stopped. Restore disk space or access and try again.",
-                        ),
-                    )
-                }
-            };
-            result.push(json!({"id":decision.id,"revision":decision.revision,"account":decision.account,"agent":decision.agent,"resetAt":decision.reset_at,"jobs":jobs,"options":options,"problem":problem}));
-        }
-        result
-    }
-
-    pub async fn answer_limit_decision(
-        self: &Arc<Self>,
-        id: &str,
-        revision: u64,
-        choice: &str,
-        account: Option<&str>,
-    ) -> Result<Value, String> {
-        let view = self
-            .limit_decisions()
-            .await
-            .into_iter()
-            .find(|v| v["id"] == id)
-            .ok_or("Decision not found or no longer pending.")?;
-        if view["revision"].as_u64() != Some(revision) {
-            return Err("The decision changed; refresh and choose again.".into());
-        }
-        let offered = view["options"].as_array().is_some_and(|options| {
-            options.iter().any(|option| {
-                option["kind"] == choice
-                    && (choice != "move" || option["account"].as_str() == account)
-            })
-        });
-        if !offered || (choice != "move" && account.is_some()) {
-            return Err("That option is no longer available; refresh and choose again.".into());
-        }
-        // A limit can arrive or a job can be dismissed between rendering and answering. Check
-        // the exact scope under the job lock while claiming the decision revision.
-        let decision = {
-            let state = self.lock();
-            let decision = self
-                .limit_decisions
-                .list()
-                .into_iter()
-                .find(|d| d.id == id)
-                .ok_or("Decision not found.")?;
-            let mut actual: Vec<String> = state
-                .jobs
-                .values()
-                .filter(|j| {
-                    j.account_limit_blocked
-                        && j.status == Status::Interrupted
-                        && j.dismissed.is_none()
-                        && j.agent == decision.agent
-                        && j.account == decision.account
-                        && (j.account_limit_episode.as_deref() == Some(id)
-                            || j.account_limit_episode.is_none())
-                })
-                .map(|j| j.id.clone())
-                .collect();
-            let mut shown: Vec<String> = view["jobs"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|j| j["id"].as_str().map(str::to_owned))
-                .collect();
-            actual.sort();
-            shown.sort();
-            if actual != shown {
-                return Err("The affected jobs changed; refresh and choose again.".into());
-            }
-            self.limit_decisions.answer(id, revision, choice, account)?
-        };
-        self.sync_limit_answer(&decision);
-        self.events.send("limitDecision", json!({"id":id}));
-        if choice == "move" {
-            self.apply_limit_move(&decision).await;
-        }
-        Ok(json!({"id":id,"choice":choice,"revision":decision.revision}))
-    }
-
-    /// Apply a decision to one job in one persisted state transition. In particular the handoff,
-    /// new account and queued status cannot be separated by an obid crash.
-    pub(super) fn apply_limit_job(
-        self: &Arc<Self>,
-        decision: &crate::account_limits::Decision,
-        id: &str,
-        target: Option<(Tool, crate::config::Account)>,
-        failover: Option<&Failover>,
-    ) -> Result<(), String> {
-        let from_tool = Tool::from_id(&decision.agent).ok_or("The old tool is unavailable.")?;
-        let from_name = self
-            .accounts(from_tool)
-            .into_iter()
-            .find(|a| a.id == decision.account)
-            .map_or_else(|| decision.account.clone(), |a| a.name);
-        if target.is_some()
-            && from_tool == Tool::Claude
-            && self.config.claude_own_sandbox.contains(&decision.account)
-        {
-            return Err(
-                "This job uses its account's own sandbox and cannot be moved safely.".into(),
-            );
-        }
-        if target.is_none()
-            && failover.is_none()
-            && (self.being_changed(&decision.account)
-                || !self.limit_source_is_connected(&decision.agent, &decision.account))
-        {
-            return Err("The original account is no longer connected.".into());
-        }
-        let tuning = crate::settings::load(&self.config.home).tuning;
-        let offered = target
-            .as_ref()
-            .map(|(tool, account)| self.model_lists.to_check(*tool, &account.id));
-        let changed = {
-            let mut state = self.lock();
-            if state.publishing.contains(id) {
-                return Err("The job is publishing.".into());
-            }
-            let job = state.jobs.get(id).ok_or("The job no longer exists.")?;
-            if !waits_on(job, decision) || job.account_limit_episode.is_none() {
-                return Err("The job changed or was dismissed.".into());
-            }
-            if past_safety(job) {
-                return Err("The job needs a separate safety confirmation.".into());
-            }
-            if chain::branch_carrier(&state.jobs, job, chain::Holds::Any).is_some() {
-                return Err("A follow-up now carries the job's branch.".into());
-            }
-            // Resumed, it would move a branch another job works on now (PUBLISHING-4).
-            if let Some(why) = branch_busy(&state.jobs, job) {
-                return Err(why);
-            }
-            let mut next = job.clone();
-            next.revision += 1;
-            if let Some(failover) = failover {
-                failover.apply(&mut next, self);
-            } else if let Some((tool, account)) = target {
-                if next.obi.is_some() || next.read_only() {
-                    return Err("This review cannot change accounts.".into());
-                }
-                let from = format!("{} · {}", from_tool.name(), from_name);
-                carry_over(
-                    &mut next,
-                    tool,
-                    &account,
-                    &tuning,
-                    offered.as_deref().unwrap_or(&[]),
-                    &from,
-                    Carried {
-                        because: "which reached its limit",
-                        why: "Your account-limit choice".into(),
-                        by: "by your account-limit choice".into(),
-                    },
-                );
-                next.named = true;
-                self.forget_moved_login(id);
-            }
-            if failover.is_none() {
-                hear(&mut next, crate::brain::actions::TRY_AGAIN);
-                if let Ok(change) = transition(&next, &crate::job::Command::NextRound) {
-                    change.apply(&mut next);
-                }
-                next.asked = true;
-            }
-            self.store
-                .save(&next)
-                .map_err(|e| format!("Couldn't save the job: {e}"))?;
-            state.jobs.insert(id.to_owned(), next.clone());
-            next
-        };
-        self.events.send("job", changed.to_json());
-        self.changed.notify_waiters();
-        self.schedule();
-        Ok(())
-    }
-
     /// What a job leaves behind of its old account's login when it moves ([`carry_over`]).
     pub(super) fn forget_moved_login(&self, id: &str) {
         let login = self.login_path(id);
         forget_login_secrets(&login);
         remove_inside(&login, ".claude.json");
         remove_inside(&login, "cli-config.json");
-    }
-
-    /// Persist the failed job's fresh episode first. A crash before the old receipt is saved can
-    /// then recover the new question from the job instead of hiding it forever.
-    fn reask_limit_job(&self, decision: &crate::account_limits::Decision, id: &str, why: &str) {
-        let changed = {
-            let mut state = self.lock();
-            let Some(job) = state.jobs.get(id) else {
-                return;
-            };
-            if job.account_limit_episode.as_deref() != Some(&decision.id)
-                || job.status != Status::Interrupted
-                || job.dismissed.is_some()
-            {
-                return;
-            }
-            let mut next = job.clone();
-            next.revision += 1;
-            next.reason = Some(format!("{why} Choose what Oby should do with this job."));
-            next.account_limit_episode = None;
-            next.account_limit_nonce = Some(uuid::Uuid::new_v4().to_string());
-            next.account_limit_choice = None;
-            if let Err(error) = self.store.save(&next) {
-                tracing::error!("can't keep account-limit failure for {id}: {error}");
-                return;
-            }
-            state.jobs.insert(id.to_owned(), next.clone());
-            next
-        };
-        self.events.send("job", changed.to_json());
-        self.record_account_limit(id);
-        if let Err(error) = self.limit_decisions.applied(&decision.id, id) {
-            tracing::error!("can't keep account-limit failure receipt for {id}: {error}");
-        }
-    }
-
-    async fn apply_limit_move(self: &Arc<Self>, decision: &crate::account_limits::Decision) {
-        let _execution = self.limit_execution.lock().await;
-        let Some(target) = decision.destination.as_deref() else {
-            return;
-        };
-        for id in &decision.jobs {
-            if decision.applied.contains(id) {
-                continue;
-            }
-            let Some(job) = self.get(id) else { continue };
-            if !waits_on(&job, decision) || job.account_limit_episode.is_none() {
-                let _ = self.limit_decisions.applied(&decision.id, id);
-                continue;
-            }
-            if job.obi.is_some() || job.read_only() {
-                self.reask_limit_job(decision, id, "A review stays on its account.");
-                continue;
-            }
-            let destinations = self.limit_destinations(decision).await;
-            let target_account = destinations.into_iter().find(|(_, a)| a.id == target);
-            let result = match target_account {
-                Some(to) => self.apply_limit_job(decision, id, Some(to), None),
-                None => Err("The chosen account is no longer available.".into()),
-            };
-            match result {
-                Ok(()) => {
-                    if let Err(error) = self.limit_decisions.applied(&decision.id, id) {
-                        tracing::error!("can't keep account-limit receipt for {id}: {error}");
-                    }
-                }
-                Err(why) => {
-                    self.reask_limit_job(decision, id, &why);
-                }
-            }
-        }
     }
 }
 

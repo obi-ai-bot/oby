@@ -277,7 +277,7 @@ mod tests {
                 Field::AccountLimitNonce => job.account_limit_nonce = Some("n".into()),
                 Field::AccountLimitReset => job.account_limit_reset = Some(15),
                 Field::AccountLimitChoice => {
-                    job.account_limit_choice = Some(crate::account_limits::Choice::Pending)
+                    job.account_limit_choice = Some(crate::limits::legacy::Choice::Pending)
                 }
                 Field::Stalled => {
                     job.stalled = Some(Stalled {

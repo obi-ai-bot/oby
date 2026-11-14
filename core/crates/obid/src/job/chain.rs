@@ -11,8 +11,8 @@ use super::{Job, Status};
 /// Which follow-ups hold a job's branch, as each place that asks needs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Holds {
-    /// Any, whatever its status: Try again (`message_as`), `reviewed`, Delete (`undeletable_in`),
-    /// `apply_limit_job` and `may_round`.
+    /// Any, whatever its status: Try again (`message_as`), `reviewed`, Delete (`undeletable_in`)
+    /// and `may_round`.
     Any,
     /// Queued or running: `review_round_again` and `review_left_to_owner`.
     AtWork,

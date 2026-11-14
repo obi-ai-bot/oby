@@ -3,6 +3,7 @@
 //! limit reached|1760000000", "try again in 2 hours").
 
 pub mod holds;
+pub mod legacy;
 
 use std::sync::LazyLock;
 

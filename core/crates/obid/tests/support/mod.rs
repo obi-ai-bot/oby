@@ -175,6 +175,52 @@ pub fn config(folder: &Path, remote: &Path, agent: &Path) -> Value {
     })
 }
 
+/// The Claude account `stub`, signed in with `token`, and a Codex account `codex` with room (by
+/// `home/usage.json`), when `codex`.
+pub fn limit_config(folder: &Path, token: &str, codex: bool) -> Value {
+    let remote = fixture(&folder.join("fixture"));
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents");
+    let mut config = config(folder, &remote, &agents.join("fake-claude"));
+    let home = folder.join("home");
+    let claude = home.join("accounts/stub");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(claude.join(".credentials.json"), json!({"claudeAiOauth":{"accessToken":token,"expiresAt":(obi_protocol::time::now()+86400)*1000}}).to_string()).unwrap();
+    let now = obi_protocol::time::now();
+    if codex {
+        let dir = home.join("accounts/codex");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("auth.json"),
+            json!({"OPENAI_API_KEY":"fake-codex"}).to_string(),
+        )
+        .unwrap();
+        config["agents"]["codex"] = json!({"bin":agents.join("fake-codex"),"accounts":[{"id":"codex","name":"Codex account","configDir":dir}]});
+        std::fs::write(home.join("usage.json"), json!({"codex":{"fiveHour":0.1,"sevenDay":0.2,"fiveHourResets":now+3600,"sevenDayResets":now+86400,"fiveHourObservedAt":now,"sevenDayObservedAt":now}}).to_string()).unwrap();
+    }
+    config
+}
+
+/// The `home/limit-decisions.json` an older release (#1563) left under `folder`: each decision its
+/// id, the jobs it names and its choice (`pending`, `resume`, `stop`, or `move`, to `codex`), on
+/// the Claude account `stub`, none applied yet, with every key that release wrote (LIMITS-26).
+pub fn older_limit_decisions(folder: &Path, decisions: &[(&str, &[&str], &str)]) {
+    let now = obi_protocol::time::now();
+    let kept: Vec<Value> = (decisions.iter())
+        .map(|(id, jobs, choice)| {
+            let nonces: Map<String, Value> = (jobs.iter())
+                .map(|job| (job.to_string(), json!(format!("nonce-{job}"))))
+                .collect();
+            json!({"id": id, "revision": 3, "agent": "claude", "account": "stub",
+                "resetAt": now + 3600, "createdAt": now - 600, "jobs": jobs, "nonces": nonces,
+                "choice": choice, "destination": (*choice == "move").then_some("codex"),
+                "snapshot": null, "applied": []})
+        })
+        .collect();
+    let home = folder.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("limit-decisions.json"), json!(kept).to_string()).unwrap();
+}
+
 /// Puts `token` in obid's `home/api-token` (0600, in a 0700 `home`), where obid takes its token
 /// from: never from its environment (docs/runner-api.md, "obid only: configuration").
 pub fn put_token(config: &Value, token: &str) {

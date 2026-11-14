@@ -135,12 +135,11 @@ pub async fn bind_device_pairing(
     Ok(json(StatusCode::OK, json!({"id":id})))
 }
 
-/// The grouped, owner-decided account limit incidents (#1563).
-pub async fn limit_decisions(State(shared): State<Arc<Shared>>) -> Response {
-    json(
-        StatusCode::OK,
-        Value::Array(shared.jobs.limit_decisions().await),
-    )
+/// `GET /v1/limit-decisions` (LIMITS-25): always `[]`, in the shape the apps decode. A job at a
+/// limit moves or waits by itself (LIMITS-15), and an older release's #1563 decisions settle when
+/// obid starts (LIMITS-26).
+pub async fn limit_decisions() -> Response {
+    json(StatusCode::OK, Value::Array(Vec::new()))
 }
 
 /// `GET /v1/alerts` (ALERTS-1, loopback only): what waits on the owner now, as the phones are
@@ -161,7 +160,9 @@ pub struct LimitDecisionAnswer {
     approval: crate::approval::Approval,
 }
 
-/// Only an owner's registered device can choose the exact revision and destination it signed.
+/// Only an owner's registered device can choose the exact revision and destination it signed. With
+/// no decision left to answer (LIMITS-25), a signed answer is `409`; its signature is spent, so
+/// sending it again is `403`.
 pub async fn answer_limit_decision(
     State(shared): State<Arc<Shared>>,
     device: Option<axum::Extension<crate::gateway::PairedDevice>>,
@@ -208,17 +209,10 @@ pub async fn answer_limit_decision(
             obi_protocol::time::now(),
         )
         .map_err(|why| ApiError::new(StatusCode::FORBIDDEN, why))?;
-    let result = shared
-        .jobs
-        .answer_limit_decision(
-            &id,
-            answer.revision,
-            &answer.choice,
-            answer.account.as_deref(),
-        )
-        .await
-        .map_err(|why| ApiError::new(StatusCode::CONFLICT, why))?;
-    Ok(json(StatusCode::OK, result))
+    Err(ApiError::new(
+        StatusCode::CONFLICT,
+        "Decision not found or no longer pending.",
+    ))
 }
 
 #[derive(serde::Deserialize)]
