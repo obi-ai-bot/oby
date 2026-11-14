@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { BRANDS, type Brand } from './brands';
-import { AGENTS, ARCHIVE, GITHUB_WORK, JOBS, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
+import { ARCHIVE, GITHUB_WORK, JOBS, agentOf, hasAttachments, STEER, TELL, type Archived, type Ask, type Attachments, type GitHubItem, type Job, type Message, type Offer } from './mock';
 import { modeLabel } from './modes';
 import { streamWords, wait } from './stream';
 import { chatFirst, everything, onObid } from './lean';
@@ -17,7 +17,9 @@ export type TaskType = { id: string; label: string };
 // said: the conversation since it opened (what you told the agent, from the
 // card or the chat, and Oby's replies), oldest first; typing: Oby is writing
 // one; answer: what you picked on its decision.
-export type Task = { id: string; type: string; title: string; who?: string; brand: Brand; status: Status; fresh?: boolean; job: Job; said?: Message[]; typing?: boolean; answer?: string };
+// unknown: obid's status for it is one this build doesn't know (docs/contracts/wire.md, WIRE-3):
+// placed as done, shown neutral, nothing to do but open, rename or delete it
+export type Task = { id: string; type: string; title: string; who?: string; brand: Brand; status: Status; fresh?: boolean; job: Job; said?: Message[]; typing?: boolean; answer?: string; unknown?: boolean };
 
 // Lean (lean.ts): only the kinds obid's jobs and GitHub's work go under (live.ts)
 export const TYPES: TaskType[] = [
@@ -35,7 +37,7 @@ const statusOf = (j: Job): Status =>
 const toTask = (j: Job, fresh = false): Task => ({
   id: j.id, type: j.type, title: j.title, who: j.who, status: statusOf(j), fresh, job: j,
   // where it came from; asked in Oby, the agent that took it
-  brand: j.from ?? AGENTS[j.agent].brand,
+  brand: j.from ?? agentOf(j.agent).brand,
 });
 
 // the mock's newest task starts out fresh, so there's a blue dot to see;
@@ -148,7 +150,7 @@ export function tell(id: string, text: string, att?: Attachments) {
 export function relay(id: string, text: string): { line: string; start?: () => string[] | undefined } | undefined {
   const k = tasks.find((x) => x.id === id);
   if (!k) return;
-  const agent = AGENTS[k.job.agent].name;
+  const agent = agentOf(k.job.agent).name;
   if (k.status === 'done') {
     const repo = k.job.repo.includes('/') ? ` in ${k.job.repo.split('/')[1]}` : '';
     return {
@@ -171,7 +173,7 @@ export function answer(id: string, option: string, words?: string) {
   const said = (option === TELL || option === STEER) && words ? words : option;
   update(id, () => ({ answer: said, status: option === 'Later' ? k.status : k.job.status === 'done' ? 'done' : 'running' }));
   say(id, { who: 'you', text: said, ago: 0 });
-  const agent = AGENTS[k.job.agent].name;
+  const agent = agentOf(k.job.agent).name;
   reply(id, () => (option === 'Later' ? 'Okay, it’ll wait. I’ll bring it back up in an hour.' : `Got it. ${agent} will go with that.`));
 }
 

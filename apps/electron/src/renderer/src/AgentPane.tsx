@@ -8,11 +8,12 @@ import { box as draftBox } from './drafts';
 import { onObid } from './lean';
 import { tellAgent } from './live';
 import { around, lastSteps, thoughtWords, todosOf, type Step, type Todo } from './liveTask';
-import { AGENTS } from './mock';
+import { agentOf } from './mock';
 import { markSeen, stop, tell, useTasks, type Task } from './tasks';
 
-// How the to-do it's on stands: at work, waiting on you, stopped by a failure, or just ended
-const stateOf = (task: Task) => (task.status === 'needs' ? 'needs' : task.status === 'running' ? 'working' : task.job.status === 'done' ? 'ended' : 'failed');
+// How the to-do it's on stands: at work, waiting on you, stopped by a failure, or just ended;
+// unknown: a status this build doesn't know (docs/contracts/wire.md, WIRE-3)
+const stateOf = (task: Task) => (task.unknown ? 'unknown' : task.status === 'needs' ? 'needs' : task.status === 'running' ? 'working' : task.job.status === 'done' ? 'ended' : 'failed');
 
 // Its to-dos as the agent wrote them, the one it's on lit (Sangam's sp-todos), and under it what's
 // passed in: on a card, the last things it did
@@ -44,7 +45,7 @@ function StepLine({ step: e }: { step: Step }) {
   if (e.kind === 'said') return <p className="lt-said">{e.text.replace(/\s+/g, ' ').slice(0, 200)}</p>;
   return (
     <div className={`lt-tool is-${e.state}`}>
-      <span className="status">{e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : e.state === 'declined' ? 'is-queued' : 'is-failed'}`} />}</span>
+      <span className="status">{e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : e.state === 'failed' ? 'is-failed' : 'is-queued'}`} />}</span>
       <span className="lt-tool-text"><span className="lt-verb">{e.verb}</span>{e.target && <> <span className={e.tool === 'Bash' || e.tool === 'Read' || e.tool === 'Edit' ? 'tok-path' : undefined}>{e.target}</span></>}</span>
     </div>
   );
@@ -103,7 +104,7 @@ export default function AgentPane({ id, onClose, onDetails, onFollowUp }: {
   const atWork = task.status === 'running' || task.status === 'needs';
   const live = useLiveLines(entries, atWork);
   const { list, onListScroll, thumbProps } = useLiveEnd();
-  const j = task.job, agent = AGENTS[j.agent], todos = todosOf(entries);
+  const j = task.job, agent = agentOf(j.agent), todos = todosOf(entries);
   // its to-dos are on top, not in the conversation as well
   const tail = useTail(useMemo(() => entries.filter((e) => e.kind !== 'plan'), [entries]));
   const send = (text: string, att: Parameters<typeof tell>[2]) => {

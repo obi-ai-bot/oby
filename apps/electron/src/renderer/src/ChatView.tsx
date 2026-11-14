@@ -14,7 +14,7 @@ import { span } from './jobPage';
 import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
-import { AGENTS, convoTitle, threadOf, type Message } from './mock';
+import { agentOf, convoTitle, threadOf, type Message } from './mock';
 import { markSeen, tell, useTasks, type Task } from './tasks';
 import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
@@ -77,7 +77,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
   const [opened, setPane] = useState<string | null>(null);
   // (deleted, it closes with its task: there's nobody left to tell)
   const pane = opened && tasks.some((t) => t.id === opened) ? opened : null;
-  const agent = j ? AGENTS[j.agent].name : 'Oby';
+  const agent = j ? agentOf(j.agent).name : 'Oby';
   // a task's: what came before, the decision (if any) where things stand, then
   // what's been said since (the decision has been waiting since Oby's last
   // word, so no time of its own)
@@ -322,27 +322,28 @@ const Face = ({ live = false, talk }: { live?: boolean; talk?: number }) => <Oby
 // and who has it, and its status mark (as in the side panel). While it works, under that, its to-dos
 // with the current one lit and the last things it did (WorkNow); ended, what it left behind, in one
 // line. A click opens the agent's own conversation beside the chat (again: closes it); in a task's
-// own thread, its own card just shows where it stands.
+// own thread, its own card just shows where it stands. A status this build doesn't know says no
+// word and shows StatusDot's neutral mark (docs/contracts/wire.md, WIRE-3).
 const ENDED: Partial<Record<Task['job']['status'], string>> = { failed: 'Failed', stopped: 'Stopped', interrupted: 'Stopped' };
 export function ThreadTask({ task, current, opened = false, onOpen }: { task: Task; current: boolean; opened?: boolean; onOpen: (id: string) => void }) {
   const j = task.job;
   const repo = j.repo.includes('/') ? j.repo.split('/')[1] : null;
   const atWork = task.status === 'running' || task.status === 'needs';
+  const word = task.unknown ? null : task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : j.nothingDone ? 'Nothing done' : ENDED[j.status] ?? 'Done';
   const body = <>
-    <BrandMark brand={AGENTS[j.agent].brand} size={16} mono />
+    <BrandMark brand={agentOf(j.agent).brand} size={16} mono />
     <span className="msg-task-text">
       <span className="msg-task-title">
         {task.who && <span className="tc-who">{task.who}</span>}
         {task.title}
       </span>
       <span className="msg-task-meta">
-        {task.status === 'running' ? (j.status === 'queued' ? 'Queued' : 'Running') : task.status === 'needs' ? 'Needs you' : j.nothingDone ? 'Nothing done' : ENDED[j.status] ?? 'Done'}
-        {' · '}{AGENTS[j.agent].name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
+        {word}{word && ' · '}{agentOf(j.agent).name} · {j.account}{j.on && <> · on {j.on}</>}{repo && <> · {repo}</>}
         {task.status === 'running' && j.status !== 'queued' && <> · {span(j.created * 60)}</>}
       </span>
       {/* stopped: why, in obid's words, on one line */}
       {task.status === 'done' && ENDED[j.status] && j.reason && <span className="msg-task-meta">{j.reason.split('\n')[0]}</span>}
-      {task.status === 'done' && resultLine(task)}
+      {task.status === 'done' && !task.unknown && resultLine(task)}
     </span>
     {/* stopped or failed isn't the check a finished one gets (Sangam's board "Stuck and failed") */}
     {task.status === 'done' && ENDED[j.status] ? <span className="status" role="img" aria-label={ENDED[j.status]}><span className="status-dot is-failed" /></span> : <StatusDot task={task} />}

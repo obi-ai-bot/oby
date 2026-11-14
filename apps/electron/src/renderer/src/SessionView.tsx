@@ -5,7 +5,7 @@ import Formatted from './Formatted';
 import Said from './Said';
 import { BrandMark, type Brand } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { AGENTS, type Attachments } from './mock';
+import { agentOf, type Attachments } from './mock';
 import { SESSIONS, type Detail, type Entry } from './session';
 import { useTasks, type Task } from './tasks';
 import { box as draftBox } from './drafts';
@@ -139,7 +139,7 @@ export default function SessionView({ id, leaving, covered = false, onBack, onGo
   // open across filters and as the session changes
   const visible = entries.map((e, n) => ({ e, n })).filter(({ e }) => filter === 'all' || e.kind === 'start' || filterOf(e) === filter);
   const tail = useTail(visible);
-  const agent = AGENTS[task.job.agent];
+  const agent = agentOf(task.job.agent);
 
   return (
     <div className={`chat-layer${leaving ? ' is-leaving' : ''}${covered ? ' is-covered' : ''}`} inert={covered}>
@@ -251,7 +251,7 @@ function Tool({ call: e, job, tick }: { call: Extract<Entry, { kind: 'tool' }>; 
     <li className={`ss-tool is-${e.state}${open ? ' is-open' : ''}`}>
       <button className="ss-tool-row" onClick={() => opens && setOpen(!open)} aria-expanded={opens ? open : undefined} disabled={!opens}>
         <span className="ss-tool-mark">
-          {e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : e.state === 'declined' ? 'is-queued' : 'is-failed'}`} />}
+          {e.state === 'done' ? <Check size={12} strokeWidth={2} /> : <span className={`status-dot ${e.state === 'running' ? 'is-working' : e.state === 'failed' ? 'is-failed' : 'is-queued'}`} />}
         </span>
         <span className="ss-tool-text"><span className="ss-verb">{e.verb}</span> <code>{e.target}</code></span>
         {e.meta && <span className="ss-tool-meta">{e.meta}</span>}

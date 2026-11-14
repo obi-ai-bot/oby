@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
+import { ApiError, api, isInboxKind, isJobStatus, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
-import { AGENTS, STEER, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
+import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { repoTicks } from './sharing';
 import { replaceTasks, type Asking, type PersonQuestion, type PersonReview, type Task } from './tasks';
@@ -261,6 +261,8 @@ const limitHolds = (s: Live, j: Job) => !!j.accountLimit || s.limits.some((d) =>
 // What a job needs from you: that decision (a permission's command as its detail); or, failed or
 // interrupted and not let go, what's next for it
 export function askOf(s: Live, j: Job): Ask | undefined {
+  // a status this build doesn't know: no answer it could judge (docs/contracts/wire.md, WIRE-3)
+  if (!isJobStatus(j.status)) return undefined;
   const item = itemOf(s, j.id);
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   const limited = limitHolds(s, j);
@@ -295,6 +297,8 @@ export function askOf(s: Live, j: Job): Ask | undefined {
 // answered too.
 const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
 export const itemAsk = (item: InboxItem, detail?: string): Ask => {
+  // a kind this build doesn't know: obid's words, its kind as its label, and nothing to answer (WIRE-2)
+  if (!isInboxKind(item.kind)) return { kind: item.kind as AskKind, headline: item.headline ?? item.title, text: item.text, options: [], unknown: true };
   // Oby's ask for a repository's check (set_check): the command under the question, and the
   // answers in plain words (answerJob turns them into obid's Confirm and Cancel)
   // (Cancel keeps the check a repository has; with none it's No check)
@@ -429,7 +433,7 @@ export function limitAsks(s: Live, conversation?: string, job?: string): Asking[
       ].filter(Boolean).join(' ');
       return {
         id: `limit:${d.id}:${d.revision}`, title: source?.name ?? d.agent,
-        brand: AGENTS[d.agent as keyof typeof AGENTS]?.brand,
+        brand: agentOf(d.agent).brand,
         ask: { kind: 'limit', headline: plan ? LIMIT_REACHED : `${source?.name ?? d.agent} reached its limit`, text, options: [...(plan ? [MANAGE_USAGE] : []), ...d.options.map(limitLabel)] },
       };
     });
@@ -481,10 +485,12 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
   });
 }
 
-function taskOf(s: Live, j: Job): Task {
+export function taskOf(s: Live, j: Job): Task {
+  // a status this build doesn't know: placed as done, with no ask, shown neutral (WIRE-3)
+  const unknown = !isJobStatus(j.status);
   // answered here: answered until obid asks something else. Put off: until its time, by obid's item
   // where there's one, so a restart keeps it; settled meanwhile, it's over
-  const now = askOf(s, j), was = s.answered[j.id], item = itemOf(s, j.id);
+  const now = askOf(s, j), was = unknown ? undefined : s.answered[j.id], item = itemOf(s, j.id);
   const putOff = !!now && (item?.later ? Date.parse(item.later) > Date.now() : was?.option === 'Later' && item?.id === was.item && (was.until ?? 0) > Date.now());
   const answer = putOff ? 'Later' : was && was.option !== 'Later' && (!now || item?.id === was.item) ? was.option : undefined;
   const ask = answer && !putOff ? was!.ask : now;
@@ -503,9 +509,9 @@ function taskOf(s: Live, j: Job): Task {
   const needs = !!now && (!answer || putOff);
   job.page = pageOf(j, s.status?.accounts.find((a) => a.id === j.account), needs);
   return {
-    id: j.id, type: job.type, title: j.title, brand: AGENTS[j.agent]?.brand ?? AGENTS.claude.brand, job,
+    id: j.id, type: job.type, title: j.title, brand: agentOf(j.agent).brand, job,
     status: needs ? 'needs' : j.status === 'queued' || j.status === 'running' ? 'running' : 'done',
-    fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id), answer,
+    fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id), answer, ...(unknown ? { unknown } : {}),
   };
 }
 const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.localeCompare(a.created)).map((j) => taskOf(s, j));
