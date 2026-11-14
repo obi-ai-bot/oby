@@ -31,7 +31,7 @@ acceptance scenarios, files, steps, tests and done-when checks.
 | **R10 Finish the Obysphere client** | A teammate's review request and question work end to end in the Electron app: the owner can accept or decline a review request on Home, a new Obysphere's admin can let members ask questions, and outgoing requests stop when their work ends and are never sent twice. Look-alike and changed member identities are shown before anything goes. The Obi-to-Obi protocol, the spec and the Sphere server (obi-ai-bot/obi-sphere) do not change: all work is in obid's sphere client, obi-protocol's client side and the apps. | 12 |
 | **R11 Connections: MCP, sign-in and the vault** | One MCP core in obid serves every agent server (the conversation's tools, the job broker, Tetrix), and its gates are data in one table. The owner's MCP servers live in one registry behind the existing broker, signed in through one OAuth module, and reach every own run of Claude Code, Codex and Cursor without a token in any run. The owner puts a secret into the vault from the app, never through a conversation, and sees vault health in GET /v1/status. | 15 |
 | **R12 Developer workflows** | A script, a CI step or a git hook drives Oby through one `oby` command with fixed exit codes; routines start from GitHub feed events and from a payload, exactly once, and end quietly when there is nothing to report. The owner can take a job over in Terminal and hand it back safely, memory stops asking twice and reaches every client, and the owner can move Oby to a new Mac or run a headless obid that is a Sphere member. | 17 |
-| **R13 How we work** | AGENTS.md states each rule in force once, splits a few non-negotiables from defaults the owner's word changes, and links to a decision log that holds the history. obid, Electron and iOS each have local instructions, size limits are paid back by named cuts, and obid's fixed prompt text and AGENTS.md cannot grow without a visible edit. The 425 gap-map issues have an owner-approved verdict each. | 16 |
+| **R13 How we work** | AGENTS.md states each rule in force once, splits a few non-negotiables from defaults the owner's word changes, and links to a decision log that holds the history. obid, Electron and iOS each have local instructions, size limits are paid back by named cuts, and obid's fixed prompt text and AGENTS.md cannot grow without a visible edit. The 425 gap-map issues have an owner-approved verdict each. || 17 |
 
 ## Sprints
 
@@ -271,7 +271,7 @@ acceptance scenarios, files, steps, tests and done-when checks.
 
 ### Sprint 10: Developer workflows · Connections: MCP, sign-in and the vault
 
-12 tasks, 22 points (a small task is 1, a medium task is 3).
+13 tasks, 25 points (a small task is 1, a medium task is 3).
 
 | Key | Task | Area | Size | Risk | Depends on |
 | --- | --- | --- | --- | --- | --- |
@@ -287,3 +287,4 @@ acceptance scenarios, files, steps, tests and done-when checks.
 | R12-15 | spike: a headless obid's Sphere enrollment, renewal and phone pairing | obid | S | medium | R10-02 |
 | R12-16 | feat(obid): `obid sphere enroll` joins a Sphere from a one-time bundle on stdin | obid | M | medium | R12-15, R09-16, R10-05 |
 | R12-17 | spike: a signed inbound webhook over an outbound socket | cloud | S | medium | R12-05, R12-03, R03-02 |
+| R13-17 | docs(api): move docs/runner-api.md's sections into docs/api/<area>.md and leave an index | docs | M | medium | R13-15 |
