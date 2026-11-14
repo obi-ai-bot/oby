@@ -816,26 +816,31 @@ class SetupBuilder(unittest.TestCase):
         self.assertLess(checked_sums, calls.index(f"-n rm -rf {home}/.quint"), calls)
         self.assertLess(calls.index(f"-n rm -rf {home}/.quint"), made, calls)
         self.assertLess(made, min(unpacked), calls)
-        # The warm-up: offline, / read-only, only .quint writable, no capability, its own process space.
-        [warm] = [c for c in calls if c.startswith(f"-n env HOME={home} bwrap ")]
-        for word in (" --unshare-net ", " --unshare-pid ", " --die-with-parent ", " --cap-drop ALL ",
-                     " --ro-bind / / ", " --tmpfs /tmp ", "quint run --max-steps=3 --invariant=",
-                     "quint verify --max-steps=3 --invariant="):
-            self.assertIn(word, warm)
-        self.assertEqual(re.findall(r"(?<!-ro)--bind (\S+) (\S+)", warm), [(f"{home}/.quint", f"{home}/.quint")])
-        self.assertLess(max(unpacked), calls.index(warm), calls)
+        # Root only installs and unpacks: no Quint, Node or Java, and no program from .quint, runs as root.
+        root = [c for c in calls if c.startswith("-n ") and not c.startswith("-n -u oby-builder ")]
+        for call in root:
+            self.assertNotRegex(call, r"\bquint (run|verify|typecheck|test|repl|compile|docs|parse|--version)\b", call)
+            self.assertNotIn("bwrap", call)
+            self.assertNotRegex(call, rf"(^|\s)HOME={re.escape(str(home))}(\s|$)", call)
+            if " bash -c " in call:
+                self.assertNotIn("quint", call)
+            words = [w for w in call.split()[1:] if w != "env" and "=" not in w]
+            self.assertNotIn(words[0].rsplit("/", 1)[-1], ("quint", "node", "npx", "java", "apalache-mc",
+                                                            "quint_evaluator", "cli.js"), call)
         self.assertFalse([c for c in calls if "-u oby-builder" in c and "npm" in c], calls)
         kani = next(i for i, c in enumerate(calls) if "kani-verifier" in c)
         installed = calls.index(install)
         given = calls.index(f"-n chown -R -h root:root {home}/.quint")
+        closed = calls.index(f"-n chmod -R go-w {home}/.quint")
         tightened = next(i for i, c in enumerate(calls) if "tighten_writable" in c)
         self.assertLess(kani, installed, calls)
-        self.assertLess(installed, calls.index(warm), calls)
-        self.assertLess(calls.index(warm), given, calls)
-        self.assertLess(given, tightened, calls)
+        self.assertLess(installed, made, calls)
+        self.assertLess(max(unpacked), given, calls)
+        self.assertLess(given, closed, calls)
+        self.assertLess(closed, tightened, calls)
         self.assertIn(f"-n find {home} -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup "
                       "! -name .kani ! -name .quint -exec rm -rf {} +", calls)
-        # The builder's proof: no network, its own process space, / read-only and a scratch /tmp.
+        # The builder's proof, Quint's one run: no network, its own process space, / read-only and a scratch /tmp.
         [proof] = [c for c in calls if c.startswith("-n -u oby-builder -H bwrap ")]
         self.assertLess(tightened, calls.index(proof), calls)
         for word in ("--unshare-net", "--unshare-pid", "--die-with-parent", "--ro-bind / /", "--tmpfs /tmp",

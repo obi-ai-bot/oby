@@ -30,10 +30,9 @@
 # to root, tightened with tighten.sh's rule and proven to run for the builder, Kani offline on a scratch
 # harness, cargo-mutants by its version; Quint at its pin, installed by root with npm (--ignore-scripts) into
 # /usr/local/lib/quint/<pin> and linked from /usr/local/bin, its evaluator and Apalache checked against their
-# SHA-256s and unpacked into .quint, warmed up offline in a box with / read-only, only .quint writable and no
-# capability, .quint given to root, then proven for the builder with no network and a read-only home (typecheck,
-# run and verify on a scratch model, Java 17 or newer); setup stops naming any of its home, keys or toolchain the
-# builder can still write, and
+# SHA-256s and unpacked into .quint by root, which runs none of it, .quint given to root, then proven for the
+# builder, its only run, with no network and a read-only home (typecheck, run and verify on a scratch model,
+# Java 17 or newer); setup stops naming any of its home, keys or toolchain the builder can still write, and
 # it can't write /srv/oby. Run it again whenever: what is already at its pin is left as it is. It
 # writes no secret, token, key or login to the host, and changes no sshd setting, firewall or network
 # rule (the builder's authorized_keys holds public keys only). The host part runs under umask 022, and
@@ -191,19 +190,8 @@ cargo install --locked cargo-mutants --version "$1"' _ "$MUTANTS"
     # Quint for builders' design models (A00-40), installed by root as Kani is: the npm package in a prefix of its pin,
     # with none of its dependencies' install scripts, linked from /usr/local/bin; its Rust evaluator and Apalache
     # fetched here and checked against their SHA-256s into .quint, where Quint looks, so a builder run, offline,
-    # downloads nothing. Nothing from the npm tree or the downloads runs as root unboxed: the warm-up runs Quint offline
-    # on a tiny model with / read-only, only .quint writable and no capability, and its process space ends with it,
-    # Apalache's server included. Left as it is at its pin.
-    local tiny
-    tiny=$(cat <<'EOF'
-module tiny {
-  var x: int
-  action init = x' = 0
-  action step = x' = (x + 1) % 3
-  val small = x < 3
-}
-EOF
-)
+    # downloads nothing. Root only installs and unpacks: no code from the npm tree or the downloads runs as root, and
+    # the builder's proof below is Quint's first run. Left as it is at its pin.
     local package="/usr/local/lib/quint/$QUINT/lib/node_modules/@informalsystems/quint/package.json"
     local apalache="$home/.quint/apalache-dist-$QUINT_APALACHE" evaluator="$home/.quint/rust-evaluator-$QUINT_EVALUATOR"
     if [[ "$(readlink -f /usr/local/bin/quint 2>/dev/null)" == "/usr/local/lib/quint/$QUINT/"* ]] &&
@@ -233,16 +221,10 @@ EOF
         sudo -n tar -xzf "$download/apalache.tgz" --no-same-owner -C "$apalache" apalache
         sudo -n tar -xzf "$download/evaluator.tar.gz" --no-same-owner -C "$evaluator" quint_evaluator
         rm -rf "$download"
-        sudo -n env HOME="$home" bwrap --unshare-net --unshare-pid --die-with-parent --cap-drop ALL --ro-bind / / \
-            --dev /dev --proc /proc --tmpfs /tmp --bind "$home/.quint" "$home/.quint" bash -c 'set -euo pipefail
-scratch=$(mktemp -d)
-trap "rm -rf \"\$scratch\"" EXIT
-cd "$scratch"
-printf "%s\n" "$1" >tiny.qnt
-quint run --max-steps=3 --invariant=small tiny.qnt
-quint verify --max-steps=3 --invariant=small tiny.qnt' _ "$tiny"
     fi
+    # tar, run as root, keeps the archives' modes: none of it is writable by group or others.
     sudo -n chown -R -h root:root "$home/.quint"
+    sudo -n chmod -R go-w "$home/.quint"
     # tighten.sh's own rule for what group or others may write, on its home's toolchain and its root.
     sudo -n bash -c "$(declare -f tighten_writable)"'
 tighten_writable "$1" "$2" | xargs -0 -r chmod go-w
@@ -290,7 +272,17 @@ mutants=$(cargo mutants --version)
 printf "%s\n" "$mutants"
 [[ "$mutants" == "cargo-mutants $1" ]] || { echo "setup.sh: cargo mutants is not at $1"; exit 1; }' _ "$MUTANTS"
     # Quint and Java work for the builder with no network, its home read-only and only a scratch folder to write: a
-    # builder run downloads nothing and writes nothing into its home.
+    # builder run downloads nothing and writes nothing into its home. This is the one run of Quint setup makes.
+    local tiny
+    tiny=$(cat <<'EOF'
+module tiny {
+  var x: int
+  action init = x' = 0
+  action step = x' = (x + 1) % 3
+  val small = x < 3
+}
+EOF
+)
     as_builder bwrap --unshare-net --unshare-pid --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
         bash -c 'set -euo pipefail
 scratch=$(mktemp -d)
