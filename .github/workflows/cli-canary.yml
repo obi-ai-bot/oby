@@ -1,0 +1,222 @@
+# CLI canary: every 6 hours, and on demand, the newest Claude Code, Codex and cursor-agent run
+# through obid's real adapters against fakes on 127.0.0.1, with no login and no secret, so a new
+# release that breaks obid is found before the owner's first job is (docs/ci.md, "The CLI canary";
+# docs/contracts/ci.md, CI-14 to 16; what each CLI is checked for is docs/cli-canary.md's).
+#
+#   canary   installs each CLI's newest release from its vendor into $RUNNER_TEMP, runs
+#            core/crates/obid/tests/cli_canary.rs's ignored cases (Claude Code against
+#            tests/agents/fake-model-server, Codex through obid's ChatGPT relay to the stand-in
+#            OpenAI) and cursor-agent's signed-out check (adapters.rs), then uploads
+#            cli-canary-report.json: each CLI's version and each case's result. It fails when a
+#            case failed. Read-only, with no secret.
+#   drift    compares that report with the previous completed run's on the same branch, and when
+#            the same case failed twice in a row on the same version, opens one issue labelled
+#            cli-drift or comments on the open one (scripts/cli-canary.mjs).
+#
+# Only drift may write issues: canary runs code nobody here reviewed (each CLI's newest release,
+# its installer's scripts included), so it gets nothing it could write with. drift runs nothing
+# from the CLIs; it reads the report as data, and only the case names in cli_canary.rs, a version
+# that passes the script's pattern and the two runs' links ever reach an issue.
+#
+# A proof run on demand makes one case fail: gh workflow run cli-canary.yml -f force_fail=codex/start
+name: CLI canary
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "A case to fail on purpose, as <cli>/<case> (codex/start), for the proof runs"
+        required: false
+        default: ""
+        type: string
+
+# One run at a time, each to its end: drift reads the run before it.
+concurrency:
+  group: cli-canary
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The same Rust as ci.yml.
+  RUSTUP_TOOLCHAIN: "1.97"
+
+jobs:
+  canary:
+    name: canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: core
+          shared-key: cli-canary
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+
+      # obid's own secret scan runs gitleaks (on PATH), as in ci.yml.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+
+      # obid's job sandbox on Linux is bubblewrap (with slirp4netns), and Claude Code's own
+      # sandbox, which an own job's commands run in, needs bubblewrap and socat: as ci.yml's
+      # rust-test. When bubblewrap still can't run here, every case says so as `skipped`, which
+      # opens no issue, instead of failing.
+      - name: bubblewrap for obid's and Claude Code's sandboxes
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap slirp4netns socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          if ! bwrap --ro-bind / / --unshare-all --die-with-parent true; then
+            echo "CLI_CANARY_SKIP=bubblewrap can't run on this runner" >> "$GITHUB_ENV"
+          fi
+          mkdir -p "$RUNNER_TEMP/cli-canary-results"
+          echo "CLI_CANARY_RESULTS=$RUNNER_TEMP/cli-canary-results" >> "$GITHUB_ENV"
+
+      # Each CLI from its vendor's own package, the newest, into a folder of this run's: one that
+      # fails to install leaves only that CLI `not installed`.
+      - name: Install Claude Code
+        continue-on-error: true
+        run: npm install --no-fund --no-audit --prefix "$RUNNER_TEMP/cli-canary/claude" @anthropic-ai/claude-code@latest
+
+      - name: Install Codex
+        continue-on-error: true
+        run: npm install --no-fund --no-audit --prefix "$RUNNER_TEMP/cli-canary/codex" @openai/codex@latest
+
+      # Cursor's installer writes under HOME: a throwaway one is its prefix.
+      - name: Install cursor-agent
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/cursor-home"
+          HOME="$RUNNER_TEMP/cursor-home" sh -c 'curl -fsS https://cursor.com/install | bash'
+
+      # Each installed CLI's `--version` (in a throwaway HOME) for the report, and the variable
+      # that names it to the cases: a CLI that isn't installed gets neither.
+      - name: The versions
+        run: |
+          mkdir -p "$RUNNER_TEMP/version-home"
+          version() {
+            [ -x "$2" ] || { echo "$1 isn't installed"; return 0; }
+            HOME="$RUNNER_TEMP/version-home" timeout 60 "$2" --version > "$CLI_CANARY_RESULTS/$1.version" 2>&1 || true
+            echo "$1: $(head -c 200 "$CLI_CANARY_RESULTS/$1.version")"
+            [ -z "$3" ] || echo "$3=$2" >> "$GITHUB_ENV"
+          }
+          version claude-code "$RUNNER_TEMP/cli-canary/claude/node_modules/.bin/claude" CLI_CANARY_CLAUDE
+          version codex "$RUNNER_TEMP/cli-canary/codex/node_modules/.bin/codex" CLI_CANARY_CODEX
+          version cursor-agent "$RUNNER_TEMP/cursor-home/.local/bin/cursor-agent" ""
+
+      # A debug build: only that reads OBID_TEST_CHATGPT_ORIGIN, which points obid's relay at the
+      # stand-in OpenAI. The input reaches the cases only through this env.
+      - name: The adapter cases
+        env:
+          CLI_CANARY_FORCE_FAIL: ${{ inputs.force_fail }}
+        run: cargo test --manifest-path core/Cargo.toml --locked -p obid --test cli_canary -- --include-ignored --test-threads=1
+
+      # cursor-agent has no model endpoint a fake can stand in for (docs/cli-canary.md): its case
+      # is the signed-out check, adapters.rs's own test, with the installed binary first on PATH.
+      - name: cursor-agent signed out
+        if: ${{ !cancelled() }}
+        run: |
+          bin="$RUNNER_TEMP/cursor-home/.local/bin"
+          if [ -n "${CLI_CANARY_SKIP:-}" ]; then
+            echo "skipped: $CLI_CANARY_SKIP"
+            exit 0
+          elif [ ! -x "$bin/cursor-agent" ]; then
+            echo "skipped: cursor-agent isn't installed"
+            exit 0
+          fi
+          if PATH="$bin:$PATH" cargo test --manifest-path core/Cargo.toml --locked -p obid --test adapters the_real_cursor_agent_signed_out_says_so -- --ignored --exact; then
+            echo "CURSOR_RESULT=passed" >> "$GITHUB_ENV"
+          else
+            echo "CURSOR_RESULT=failed" >> "$GITHUB_ENV"
+          fi
+
+      - name: The report
+        if: always()
+        run: |
+          node scripts/cli-canary.mjs report --results "$CLI_CANARY_RESULTS" --run "$GITHUB_RUN_ID" \
+            --out cli-canary-report.json ${CURSOR_RESULT:+--record "cursor-agent/signed_out=$CURSOR_RESULT"}
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: cli-canary-report
+          path: cli-canary-report.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Fail when a case failed
+        if: always()
+        run: |
+          failed=$(jq -r '.clis | to_entries[] | .key as $cli | .value.cases | to_entries[] | select(.value.result == "failed") | "\($cli)/\(.key)"' cli-canary-report.json)
+          [ -z "$failed" ] || { echo "::error::Failed: $(echo "$failed" | tr '\n' ' ')"; exit 1; }
+
+  drift:
+    name: drift
+    needs: canary
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cli-canary-report
+          path: ${{ runner.temp }}/current
+
+      # The run before this one: the latest completed run of this workflow on the same branch,
+      # forced or not. One with no report (or no run at all) leaves nothing to compare.
+      - name: The previous run's report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          previous=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow cli-canary.yml --branch "$BRANCH" \
+            --status completed --limit 20 --json databaseId \
+            --jq "[.[] | select(.databaseId != $GITHUB_RUN_ID)][0].databaseId // empty")
+          if [ -z "$previous" ]; then
+            echo "No previous completed run on $BRANCH."
+          elif ! gh run download "$previous" --repo "$GITHUB_REPOSITORY" --name cli-canary-report --dir "$RUNNER_TEMP/previous"; then
+            echo "Run $previous has no report."
+          fi
+
+      - name: Two failures in a row
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/cli-canary.mjs drift --current "$RUNNER_TEMP/current/cli-canary-report.json" \
+            --previous "$RUNNER_TEMP/previous/cli-canary-report.json" --repo "$GITHUB_REPOSITORY"
