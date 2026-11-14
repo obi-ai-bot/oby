@@ -250,14 +250,11 @@ const isEscalation = (i: InboxItem) => i.id.startsWith('orchestrator-');
 const escalationAsk = (ask: Ask, item: InboxItem, steer: boolean): Ask =>
   isEscalation(item) ? { ...ask, fullText: true, ...(steer && item.job ? { steer: true } : {}) } : ask;
 
-// Sangam's failed card: another round tells its agent to try again where it left off (obid's
-// words, docs/runner-api.md), or, for one that never started and has no session to pick up, asks
-// again what it was asked (a follow-up); Stop here lets it go. His Open the session is the card's
-// Open task. A task whose follow-up carries it on asks nothing: tell that one.
+// Sangam's failed card: another round always tells its agent obid's Try-again words
+// (docs/runner-api.md); one that never started is run again by obid as itself, with no follow-up
+// (TASKS-20). Stop here lets it go. His Open the session is the card's Open task. A task whose
+// follow-up carries it on asks nothing: tell that one.
 const STOP_HERE = 'Stop here';
-// ponytail: a conversation's job has its turn as its request, so the title goes too; its brief
-// and files don't reach the follow-up until obid can run a job that never started again (#1836)
-const againWords = (j: Job) => (j.session || j.moves?.length ? TRY_AGAIN : `${j.title}\n\n${j.request}`);
 
 const limitHolds = (s: Live, j: Job) => !!j.accountLimit || s.limits.some((d) => d.jobs.some((job) => job.id === j.id));
 
@@ -1155,7 +1152,7 @@ export async function answerJob(id: string, option: string, words?: string) {
       // runs, so it's settled here; refused, it's still asked. Tell it what to do (TASKS-17) is the
       // task page's shape: conversation true, then Done
       if (option === STOP_HERE) take({ kind: 'job', job: await api.dismiss(id) });
-      else if (await tellJob(id, option === ANOTHER_ROUND ? againWords(j) : words!, [], option === STEER)) await settleQuestion(item);
+      else if (await tellJob(id, option === ANOTHER_ROUND ? TRY_AGAIN : words!, [], option === STEER)) await settleQuestion(item);
       set({ answered: without(state.answered, id) });
     } else if (item) {
       // (an agent's question by its own item, never the job's permission, which can lag behind the
@@ -1169,7 +1166,7 @@ export async function answerJob(id: string, option: string, words?: string) {
       take({ kind: 'job', job: next });
     } else if (option === ANOTHER_ROUND) {
       // (a refusal is said; either way the card is obid's again, so a second failure shows too)
-      await tellJob(id, againWords(j));
+      await tellJob(id, TRY_AGAIN);
       set({ answered: without(state.answered, id) });
     }
   } catch (e) {
