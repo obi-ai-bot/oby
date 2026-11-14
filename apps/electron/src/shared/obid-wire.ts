@@ -153,6 +153,8 @@ export type InboxItem = {
     type?: unknown; fromOwner?: unknown; repos?: unknown; repo?: unknown; headSha?: unknown;
     quoted?: { text?: unknown; choices?: unknown; goal?: unknown; summary?: unknown; acceptance?: unknown } | null;
   } | null;
+  // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
+  revision?: number;
 };
 
 // One owner decision for all jobs stopped by the same account's limit (#1563).
@@ -166,7 +168,9 @@ export type LimitDecision = {
 // ended: the turn that tells how a job ended; routine: a routine's run's (neither answers you)
 // attachments: on your turn, the names of the files that went with the words (obid only)
 // relayed: Oby's turn about another Oby. asks: the cards of questions to other Obys it tells of (AskMark)
-export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[]; relayed?: boolean; asks?: AskMark[] };
+export type Turn = { id: string; who: 'user' | 'oby'; text: string; at: string; jobs: string[]; conversation?: string; ended?: boolean; routine?: unknown; attachments?: string[]; relayed?: boolean; asks?: AskMark[];
+  // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
+  revision?: number };
 // A question to another Oby as obid says it stands (docs/contracts/ask-an-oby.md): one per `exchange`, the
 // latest, in place of its turns; a refused one has no exchange. state: an open string. said: the other
 // Oby's words, data. by and reason: its own claims, which pick words and never show. why: obid's words.
@@ -177,7 +181,9 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
   // obid only (docs/contracts/conversation-agent.md): the account it talks through as the owner chose it here (an id or auto; none: the setting's), where its last answer came from, and the account its turns have moved off
   talkAccount?: string | null; talkedOn?: string | null; movedOff?: string | null;
   // what other Obys ask you: never where the app opens (docs/contracts/ask-an-oby.md, ASK-18)
-  fromObys?: boolean };
+  fromObys?: boolean;
+  // one more each time obid sends it changed, as a job's: the higher is the newer; none from an older obid
+  revision?: number };
 
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.

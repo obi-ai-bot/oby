@@ -1,65 +1,88 @@
 # What obid has, as the app keeps it
 
-The business behavior contract for the one rule by which obid's jobs reach the Electron app's state, from [the template](../business-contract-template.md).
+The business behavior contract for the one rule by which what obid has (its jobs, conversations, turns, inbox items, status and GitHub's work) reaches the Electron app's state, from [the template](../business-contract-template.md).
 
 ## Feature and status
 
-- **Outcome:** The owner sees the same tasks and cards as before. What changes is underneath: whether a job from obid replaces the one the app holds is decided in one place, a pure function tested on its own, instead of by hand at each event and each answer in `live.ts`. A late answer can't undo a newer event, and a deleted task can't come back.
-- **Status:** **Implemented** for jobs only (roadmap R06-06): `apps/electron/src/shared/live-state.ts`, used by `apps/electron/src/renderer/src/live.ts`. The other kinds (inbox, turns, conversations, accounts, GitHub's work, the room and peer threads) stay in `live.ts` until R06-07; running the rule in main is R06-08. Related: #1707 (an answer applied over the state as it is when it comes) and #1709 (revisions and deleted jobs).
-- **Scope:** The `job` and `jobGone` events, every job a call to obid answers with, and the job half of the reconnect's sync. **Out of scope:** every other event kind, a job's session (its transcript), the jobs the app saw when it opened, any screen, and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
+- **Outcome:** The owner sees the same tasks, conversations, cards and Home as before. What changes is underneath: whether an object from obid replaces the one the app holds is decided in one place, a pure function tested on its own, instead of by hand at each event and each answer in `live.ts`. A late answer can't undo a newer event, a deleted task or conversation can't come back, and an older answer can't reopen an item the iPhone settled.
+- **Status:** **Implemented** (roadmap R06-06 for jobs, R06-07 for the other kinds): `apps/electron/src/shared/live-state.ts`, used by `apps/electron/src/renderer/src/live.ts`. Running the rule in main is R06-08. Related: #1707 (an answer applied over the state as it is when it comes) and #1709 (revisions and deleted jobs).
+- **Scope:** The `job`, `jobGone`, `conversation`, `conversationGone`, `turn`, `turnAsks`, `inbox`, `accounts` and `github` events; every job a call to obid answers with, the turns `GET /v1/conversation` answers with, and the status `GET /v1/status` answers with; and the reconnect's sync of jobs, conversations, the inbox, the status and GitHub's work. **Out of scope:** the `step`, `delta`, `roomPost` and `peerThread` events, a job's session (its transcript), the limit decisions (`limits`, which have their own revision and refresh), the repositories (`repos`), the jobs the app saw when it opened, the fields the app writes before obid answers (R06-10, R06-11), running the rule in main (R06-08), any screen, and obid and its API ([runner-api.md](../runner-api.md) is unchanged).
 
 ## Behavior
 
 ### Actors and ownership
 
-- **obid** owns a job's `revision` (`core/crates/obid/src/job.rs`, `Job::revision`): one more each time it sends the job changed, kept across restarts, none from an older obid ([runner-api.md](../runner-api.md), "revision"). It decides when a job is deleted, and says so with a `job` event with `deleted: true`.
-- **The app** only applies what obid sent. It decides nothing about a job but which of two copies it keeps.
+- **obid** owns each object's `revision`: a job's (`core/crates/obid/src/job.rs`, `Job::revision`), a conversation's, a turn's and an inbox item's ([events.md](events.md), EVENTS-7 to 10): one more each time it sends the object changed, kept across restarts, none from an older obid ([runner-api.md](../runner-api.md), "revision"). It decides when a job or a conversation is deleted, and says so with a `job` or `conversation` event with `deleted: true`.
+- **The app** only applies what obid sent. It decides nothing about an object but which of two copies it keeps.
 
 ### The rule
 
-The state is `ObidState`: the jobs by id, and `gone`, the ids of the jobs obid said it deleted. `apply(state, event)` takes a `job` or `jobGone` event; `answer(state, job)` takes a job a call returned, by the same rule.
+The state is `ObidState`:
 
-- A job whose id is in `gone` leaves the state unchanged, from an event or an answer.
-- Otherwise, when the state holds that job with a `revision` higher than the incoming job's, the held copy stays. On a tie the incoming one is taken.
-- Otherwise the incoming job is taken, including one with no `revision` (an older obid, after a downgrade): it is taken as it comes, never held off by a revision from before.
-- `jobGone` removes the job and adds its id to `gone`.
+- `jobs`, by id, and `gone`, the ids of the jobs obid said it deleted;
+- `status` and `github` (GitHub's work), each `null` until read;
+- `inbox`, the open and put-off items, sorted by `created`;
+- `conversations`, and `turns`, each conversation's sorted by `at`;
+- `goneConversations`, the ids of the conversations obid's `conversationGone` named;
+- `settledInbox`, the `revision` of the copy that settled an item, by id, only for a settled item that had a revision.
+
+`apply(state, event)` takes each kind in Scope. One comparison decides between two copies of the same object, for every kind: when the state holds it with a `revision` higher than the incoming copy's, the held copy stays; on a tie the incoming one is taken; an incoming copy with no `revision` (an older obid, after a downgrade) is always taken, never held off by a revision from before.
+
+- **`job`:** one whose id is in `gone` leaves the state unchanged; otherwise the comparison by id.
+- **`jobGone`:** removes the job and adds its id to `gone`.
+- **`conversation`:** one whose id is in `goneConversations` leaves the state unchanged; otherwise the comparison by id.
+- **`conversationGone`:** removes the conversation and its turns, and adds its id to `goneConversations`.
+- **`turn` and `turnAsks`** (the same, as far as what obid has goes): one with no `conversation`, or of a conversation in `goneConversations`, leaves the state unchanged; otherwise the comparison by turn id within that conversation's turns.
+- **`inbox`:** a copy whose revision is lower than the item's `settledInbox` mark is refused; otherwise a held copy with a higher revision stays; otherwise an item with `state` `done` leaves `inbox` and, if it has a `revision`, sets its mark to it, and any other item replaces the held one and clears its mark. An item with no `revision` is taken as it comes, over a mark too.
+- **`accounts`:** sets the status's accounts when there is a status; with none, nothing changes.
+- **`github`:** replaces GitHub's work.
+
+The answers go through the same rule: `answer(state, job)` takes a job a call returned; `answerTurns(state, conversation, turns)` takes the turns `GET /v1/conversation` returned, each under the conversation asked for (a turn without its own `conversation` too); `answerStatus(state, status)` takes a status as it comes, since it has no revision. Every other answer (a conversation edited, an inbox item answered or confirmed, a job fetched) is taken as its event.
 
 ### Triggers
 
 - An event from obid's stream, applied as it comes.
-- obid's answer to a call on a job (stop, mode, rename, archive, a message, an answer to its question, starting GitHub's work, fetching one job), and the jobs a plan's answer carries, applied over the state as it is when the answer comes, never over a state read before the call (#1707, #1709).
+- obid's answer to a call (stop, mode, rename, archive, a message, an answer to a job's question, starting GitHub's work, fetching one job, a conversation's turns, an edited conversation, an inbox item's answer or Confirm, the status), and the jobs a plan's answer carries, applied over the state as it is when the answer comes, never over a state read before the call (#1707, #1709).
 - The reconnect's sync, below.
 
 ### Failures and recovery
 
 - An answer and an event that crossed: the higher revision wins, whichever came last.
-- A deleted job's answer that crossed its `deleted` event: it stays out.
-- **After a reconnect** (the sync), obid's list of jobs is the truth, since a revision can go back (a restart after a save that didn't land, a downgrade and upgrade again). For each listed job:
-  - whose copy in the app didn't change while the list was read, obid's listed copy is taken whatever its revision, and over an older kept copy with the same id;
-  - whose copy changed while the list was read (an answer came meanwhile), the newer of the two wins by the rule;
-  - deleted ones stay out.
+- A deleted job's or conversation's answer that crossed its `deleted` event: it stays out, its turns too.
+- **After a reconnect** (the sync), `synced(held, before, read)` takes what obid listed (`read`: its latest 100 jobs, every conversation and whether the list was `complete`, the inbox, the status and GitHub's work) over what's held, `before` being what was held when the read started. obid's lists are the truth, since a revision can go back (a restart after a save that didn't land, a downgrade and upgrade again). A held copy changed while the lists were read when it isn't the one `before` held, or `before` held none.
+  - **Jobs:** a listed job whose copy didn't change while read is taken whatever its revision, and over an older kept copy with the same id; one whose copy changed (an answer came meanwhile) goes through the rule; deleted ones stay out. The older jobs a conversation fetched, at or past the 100th's `created`, are kept; any other held job was deleted while the stream was away and goes.
+  - **Conversations:** a listed one in `goneConversations` stays out; one whose copy changed while read goes through the rule; otherwise obid's listed copy is taken whatever its revision. A held conversation missing from the list is dropped only when the list is complete: one cut short drops nothing. The sync doesn't change the turns.
+  - **Inbox:** each listed item goes through the `inbox` decision, but a held copy that didn't change while read doesn't hold the listed one off. Settled marks already in `before` are dropped, as obid's list is the truth; marks set while the list was read stay and apply. A held item missing from the list leaves.
+  - **The status and GitHub's work** are taken as read (when GitHub's work can't be read, the sync passes the last one with why, as obid keeps its last lists).
 
-  The older jobs a conversation fetched, past obid's latest 100, are kept. The decisions on deleted jobs and revisions in this merge are the rule's; the sync only says which copy counts as held. The events that came while the list was read are then applied over it.
+  The sync only says which copy counts as held: the decisions on deleted objects and revisions are the rule's. The events that came while the lists were read are then applied over it.
 - A deleted job's session (its transcript, if the app had it) is let go by the code that handles the `jobGone` event, never by the rule.
 
 ### Invariants and boundaries
 
 - The rule is pure: no I/O, no module state, nothing of the screens or of Electron; it imports only obid's wire types. It never changes the state it's given, and the same events from the same state give the same result.
-- It's written once: nothing else in the app compares job revisions or adds to `gone`.
+- It's written once: nothing else in the app compares the revision of a job, a conversation, a turn or an inbox item, or writes `gone`, `goneConversations` or `settledInbox`. A limit decision's revision is another thing, and stays `live.ts`'s.
+- What a turn shows while it's under way (what it's on, Oby's words so far and as paced, the words still waiting for their answer, a new conversation's id in the app) is `live.ts`'s, worked out from the state the rule left; a turn the rule kept out changes none of it.
 - A rename shows its new title before obid answers, and puts the old one back if obid refuses: that's not an answer and doesn't go through the rule. It keeps the held revision, so it can't break it.
+- The owner's Delete hides a conversation and its turns at once, but that's not a deletion obid said: it adds nothing to `goneConversations`, so one obid refuses to delete can come back. Only obid's `conversationGone` keeps it out.
 
 ## Interfaces and dependencies
 
-Reads the `job` event (`deleted: true` parsed as `jobGone` by `parseEvent` in `apps/electron/src/shared/obid-wire.ts`) and the jobs obid's routes answer with, as [runner-api.md](../runner-api.md) describes them. No new route, key or value in obid's API.
+Reads the `job`, `conversation`, `turn`, `turnAsks`, `inbox`, `accounts` and `github` events (`deleted: true` parsed as `jobGone` or `conversationGone` by `parseEvent` in `apps/electron/src/shared/obid-wire.ts`) and the objects obid's routes answer with, as [runner-api.md](../runner-api.md) describes them, with the `revision` of [events.md](events.md) (EVENTS-7 to 10). No new route, key or value in obid's API.
 
 ## Acceptance scenarios
 
-Tests: [`apps/electron/src/renderer/src/test/liveState.test.ts`](../../apps/electron/src/renderer/src/test/liveState.test.ts) calls the rule directly. Through `live.ts`, [`taskActions.test.ts`](../../apps/electron/src/renderer/src/test/taskActions.test.ts) covers the answers that cross events ("obid's answers over the events that came meanwhile", #1707), a job with no revision, the sync after a restart that took a revision back ("back after obid restarted with a lower revision: obid's list wins, but a newer answer that came while it was read stays") and after a deletion while the stream was away ("back after the stream was away: a task deleted meanwhile (on the iPhone) leaves, the older ones a conversation fetched stay"), and a deleted task not fetched back.
+Tests: [`apps/electron/src/renderer/src/test/liveState.test.ts`](../../apps/electron/src/renderer/src/test/liveState.test.ts) calls the rule directly. Through `live.ts`, [`taskActions.test.ts`](../../apps/electron/src/renderer/src/test/taskActions.test.ts) covers the answers that cross events ("obid's answers over the events that came meanwhile", #1707), a job with no revision, the sync after a restart that took a revision back ("back after obid restarted with a lower revision: obid's list wins, but a newer answer that came while it was read stays") and after a deletion while the stream was away ("back after the stream was away: a task deleted meanwhile (on the iPhone) leaves, the older ones a conversation fetched stay"), a deleted task not fetched back, and the turns that cross a conversation's fetch.
 
 - **LIVE-1** (implemented): Given the state holds job J at revision 5, when a `job` event or an answer brings J at revision 4, then the state keeps revision 5.
 - **LIVE-2** (implemented): Given a `job` event with `deleted: true` for J, when any later answer or event brings J, then J stays out of the state.
 - **LIVE-3** (implemented): Given J with no revision (an older obid), when it comes, then it is taken as it comes, over a held revision too.
-- **LIVE-4** (implemented): Given the same list of events, when `apply` runs twice from the same state, then both results are equal and the state they started from is unchanged.
+- **LIVE-4** (implemented): Given the same list of events, of every kind the rule takes, when `apply` runs twice from the same state, then both results are equal and the state they started from is unchanged.
+- **LIVE-5** (implemented): Given the state holds turn T at revision 3 from a `turn` event, when `GET /v1/conversation` answers with T at revision 2, then the state keeps revision 3 and its text; T at revision 4 replaces it.
+- **LIVE-6** (implemented): Given inbox item I held after an `inbox` event at revision 4 (the iPhone's answer, settled, put off with its answer, or still open), when an older answer of the Mac's at revision 3 arrives as an `inbox` event, then I stays as the revision-4 copy left it.
+- **LIVE-7** (implemented): Given a `conversationGone` for C, when a `conversation` event for C (with or without a revision) or a reconnect's complete list holding C comes, then C stays out, and so do its turns, from a later `turn` event or answer too.
+- **LIVE-8** (implemented): Given an answer during the reconnect's read brought a newer conversation and inbox item, obid's lists hold those at a lower revision and another conversation at a lower revision than its unchanged held copy (a restart), and the events that came meanwhile bring a newer turn and a `conversationGone`, when `synced` and then those events run, then the state holds exactly obid's newest copy of each object.
+- **LIVE-9** (implemented): Given a conversation, a turn and an inbox item with no revision, when they come over held copies with revisions or over an empty state, then each is taken as it comes, in the order they came.
 
 ## Settings rows obid has no setting for yet (R06-13)
 
