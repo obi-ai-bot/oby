@@ -1152,7 +1152,7 @@ impl Jobs {
         let stopped_cleanly = std::fs::remove_file(&clean).is_ok();
         // What its agents and checks it left running end before any job is picked up again, so
         // none goes on writing beside the job's next run (crate::groups).
-        crate::groups::reap(&crate::groups::dir(&config.home));
+        crate::groups::reap(&config.home);
         let now = obi_protocol::time::now();
         let mut jobs = HashMap::new();
         for mut job in store.load_all() {
@@ -18528,7 +18528,7 @@ mod tests {
     /// no word of an answer anywhere.
     #[tokio::test]
     async fn usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
         let _only = STAND_IN_TAKEN.lock().await;
         #[derive(Clone, Default)]
@@ -18630,7 +18630,7 @@ mod tests {
     /// job: its window share is the 5-hour window's and the week's, and this may be neither.
     #[tokio::test]
     async fn usage_9_a_cursor_figure_gives_a_running_job_no_window_share() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
         let _only = STAND_IN_TAKEN.lock().await;
         let root = std::env::temp_dir().join(format!("obid-share-{}", uuid::Uuid::new_v4()));
@@ -18696,7 +18696,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn keychain_8_a_slow_keychain_read_leaves_the_runtime_free() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{RERUN, TOKEN, body, rerun, stand_in};
         if std::env::var_os(RERUN).is_none() {
             let root = std::env::temp_dir().join(format!("obid-slow-{}", uuid::Uuid::new_v4()));
@@ -22345,15 +22345,15 @@ mod tests {
         };
 
         // The rule's site: tunnelled, its hello naming it.
-        let hello = crate::egress::tests::client_hello(Some("localhost"), false);
+        let hello = crate::egress::hello::client_hello(Some("localhost"), false);
         let (status_line, stream) = connect(format!("localhost:{up}"), Some(auth.clone())).await;
         assert_eq!(status_line, "200");
         assert_eq!(echoed(stream, hello.clone()).await, Some(hello));
         // Another name in its hello (a CDN would serve that site), an encrypted hello, or no TLS
         // at all: the tunnel closes, and nothing reached the echo.
         for bytes in [
-            crate::egress::tests::client_hello(Some("attacker.workers.dev"), false),
-            crate::egress::tests::client_hello(Some("localhost"), true),
+            crate::egress::hello::client_hello(Some("attacker.workers.dev"), false),
+            crate::egress::hello::client_hello(Some("localhost"), true),
             b"GET / HTTP/1.1\r\nHost: attacker.workers.dev\r\n\r\n".to_vec(),
         ] {
             let (status_line, stream) =

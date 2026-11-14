@@ -275,6 +275,7 @@ fn words_of(kind: &str, body: &Value) -> Value {
 
 /// Where exchanges are kept.
 pub struct Exchanges {
+    home: PathBuf,
     dir: PathBuf,
 }
 
@@ -285,7 +286,8 @@ impl Exchanges {
         if let Err(e) = store::make_private_dir(&dir) {
             tracing::error!("can't make {}: {e}", dir.display());
         }
-        Exchanges { dir }
+        let home = home.to_owned();
+        Exchanges { home, dir }
     }
 
     /// A correlation id is a lower-case UUID (the envelope's schema checked it): safe as a name.
@@ -303,7 +305,7 @@ impl Exchanges {
     }
 
     pub fn load_all(&self) -> Vec<Exchange> {
-        store::load_dir(&self.dir)
+        store::load_dir(&self.home, &self.dir)
     }
 }
 

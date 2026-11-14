@@ -1315,19 +1315,19 @@ pub fn install_root(bin: &Path, hidden: &[PathBuf], never: &[PathBuf]) -> Option
 mod tests {
     use super::*;
 
-    /// The keychain's services a job keeps on macOS: the file-based keychains' securityd (see
-    /// [`KEYCHAIN`]) and trustd, which checks a server's certificate.
-    const KEYCHAIN_KEPT: [&str; 2] = ["com.apple.SecurityServer", "com.apple.trustd.agent"];
-
-    /// bubblewrap's arguments for a box that reads the system ([`bubblewrap_args_reading`]).
+    /// bubblewrap's arguments for a box that reads what isn't hidden.
     fn bubblewrap_args(spec: &Spec) -> Vec<OsString> {
         bubblewrap_args_reading(spec, false, None)
     }
 
-    /// A Seatbelt profile for a box that reads the system ([`seatbelt_profile_reading`]).
+    /// The Seatbelt profile of a box that reads what isn't hidden.
     fn seatbelt_profile(spec: &Spec) -> String {
         seatbelt_profile_reading(spec, false)
     }
+
+    /// The keychain's services a job keeps on macOS: the file-based keychains' securityd (see
+    /// [`KEYCHAIN`]) and trustd, which checks a server's certificate.
+    const KEYCHAIN_KEPT: [&str; 2] = ["com.apple.SecurityServer", "com.apple.trustd.agent"];
 
     /// A folder a box may read shows nothing hidden: not a hidden folder, nor one that holds one,
     /// nor anything in obid's home.

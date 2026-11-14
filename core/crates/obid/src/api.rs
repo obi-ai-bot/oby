@@ -665,6 +665,8 @@ pub struct Status {
     pub scanner: ScannerJson,
     /// Each tool's binary and version (crate::cli_versions). Older obids don't send it.
     pub tools: Vec<ToolJson>,
+    /// The files obid kept aside or couldn't read, never loaded (HOME-8). Older obids don't send it.
+    pub unreadable: Vec<serde_json::Value>,
 }
 
 /// `status.tools[]`: the binary's absolute path and what its `--version` said, each null when
@@ -1070,6 +1072,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                 }
             })
             .collect(),
+        unreadable: crate::store::unreadable().clone(),
     }))
 }
 
