@@ -525,10 +525,12 @@ class SetupBuilder(unittest.TestCase):
         self.tool("ssh", f'if [ "$2 $3" = "bash -s" ]; then cat >"{self.sent}"; else cat >/dev/null; fi')
         self.log = self.dir / "sudo.log"
         # sudo: one line per call; `sudo -n -l -U` prints $dir/rights; `find ... ! -user root` prints a path when
-        # $dir/not-root exists; `test` as the builder finds nothing but the `-w <path>` in $dir/writable.
+        # $dir/not-root exists; the builder's proof (`bash` as the builder) fails when $dir/proof-fails exists; `test`
+        # as the builder finds nothing but the `-w <path>` in $dir/writable.
         self.tool("sudo", f'printf "%s\\n" "$*" | tr "\\n" " " >>"{self.log}"; echo >>"{self.log}"\n'
                           f'if [ "$2 $3" = "-l -U" ]; then cat "{self.dir}/rights"; fi\n'
                           f'case "$*" in *"! -user root"*) if [ -e "{self.dir}/not-root" ]; then echo "$3"; fi;; esac\n'
+                          f'if [ "$2 $5" = "-u bash" ] && [ -e "{self.dir}/proof-fails" ]; then exit 1; fi\n'
                           f'[ "$5" != test ] || [ "$6 $7" = "$(cat "{self.dir}/writable" 2>/dev/null)" ]')
         self.tool("id", "exit 1")
         self.tool("getent", f'echo "oby-builder:x:1001:1001::{self.dir}/builder-home:/bin/bash"')
@@ -623,7 +625,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn(f"-n install -o root -g root -m 644 {self.dir}/.ssh/authorized_keys {home}/.ssh/authorized_keys",
                       calls)
         self.assertIn(f"-n find {home} -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup "
-                      "-exec rm -rf {} +", calls)
+                      "! -name .kani -exec rm -rf {} +", calls)
         self.assertFalse([c for c in calls if "-o oby-builder" in c and str(home) in c], calls)
         # As the builder: only checks, its clone in /srv/oby-builder, and the toolchain run from a scratch folder.
         for call in (c for c in calls if c.startswith("-n -u oby-builder -H ")):
@@ -640,8 +642,9 @@ class SetupBuilder(unittest.TestCase):
         for word in ("cargo --version", "rustc --version", "mktemp -d"):
             self.assertIn(word, proof[0])
         checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in calls if " test -w " in c]
+        kani = f"{home}/.kani/kani-" + re.search(r"^KANI=(\S+)$", self.sent.read_text(), re.M).group(1)
         self.assertEqual(checked, [str(home), f"{home}/.ssh", f"{home}/.ssh/authorized_keys", f"{home}/.cargo",
-                                   f"{home}/.cargo/bin", f"{home}/.rustup"])
+                                   f"{home}/.cargo/bin", f"{home}/.rustup", f"{home}/.kani", kani, f"{kani}/bin"])
         self.assertIn("setup.sh: oby-builder is set up", done.stdout)
 
     def test_remote_33_setup_stops_when_the_builder_can_still_write_its_logins(self):
@@ -663,15 +666,56 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn("--no-modify-path", rust)
         self.assertIn("rustfmt,clippy", rust)
         self.assertFalse([c for c in calls if "-u oby-builder" in c and re.search(r"rustup |curl ", c)], calls)
-        self.assertNotIn(f"-n rm -rf {home}/.cargo {home}/.rustup", calls)
+        self.assertNotIn(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani", calls)
         # A toolchain with anything not root's in it (A00-31's, the builder's own) goes before the install.
         (self.dir / "not-root").touch()
         self.log.unlink()
         done = self.builder()
         self.assertEqual(done.returncode, 0, done.stdout)
         calls = self.calls()
-        removed = calls.index(f"-n rm -rf {home}/.cargo {home}/.rustup")
+        removed = calls.index(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani")
         self.assertLess(removed, next(i for i, c in enumerate(calls) if "rustup toolchain install" in c), calls)
+        self.assertIn(f"removing {home}/.cargo, {home}/.rustup and {home}/.kani: not all root's", done.stdout)
+
+    def test_remote_35_setup_installs_kani_for_the_builder_as_root(self):
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        home = self.dir / "builder-home"
+        calls = self.calls()
+        kani = re.search(r"^KANI=(\S+)$", self.sent.read_text(), re.M).group(1)
+        [install] = [c for c in calls if "kani-verifier" in c]
+        self.assertTrue(install.startswith(f"-n env RUSTUP_HOME={home}/.rustup CARGO_HOME={home}/.cargo "
+                                           f"KANI_HOME={home}/.kani bash -c "), install)
+        self.assertIn("cargo install --locked kani-verifier --version", install)
+        self.assertIn("cargo kani setup", install)
+        self.assertTrue(install.endswith(f" _ {kani}"), install)
+        self.assertFalse([c for c in calls if "-u oby-builder" in c and re.search(r"kani-verifier|kani setup", c)],
+                         calls)
+        rust = next(i for i, c in enumerate(calls) if "rustup toolchain install" in c)
+        installed = calls.index(install)
+        given = calls.index(f"-n chown -R -h root:root {home}/.kani")
+        tightened = next(i for i, c in enumerate(calls) if "tighten_writable" in c)
+        self.assertLess(rust, installed, calls)
+        self.assertLess(installed, given, calls)
+        self.assertLess(given, tightened, calls)
+        [proof] = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ")]
+        for word in ("cargo kani --version", "CARGO_NET_OFFLINE=true", "VERIFICATION:- SUCCESSFUL", "#[kani::proof]",
+                     "kani::any()"):
+            self.assertIn(word, proof)
+        self.assertTrue(proof.endswith(f" _ {kani}"), proof)
+        self.assertIn(f"setup.sh: oby-builder is set up: no sudo, /srv/oby-builder, rust ", done.stdout)
+        self.assertIn(f", kani {kani}, its home, keys and toolchain root's", done.stdout)
+
+    def test_remote_35_setup_stops_when_kani_fails_for_the_builder(self):
+        (self.dir / "proof-fails").touch()
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+        calls = self.calls()
+        # It stopped at the builder's proof of the Kani root installed, not before.
+        self.assertEqual(len([c for c in calls if "cargo install --locked kani-verifier" in c]), 1, calls)
+        self.assertIn("cargo kani --version", calls[-1])
+        self.assertFalse([c for c in calls if " test -w " in c], "setup went on after the proof failed")
 
 
 class Pins(unittest.TestCase):
