@@ -1,9 +1,11 @@
-import { app, dialog, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { app, dialog, shell } from 'electron';
 import { execFile } from 'node:child_process';
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
+import { anything, flag, method, v1Path } from '../shared/decode';
+import { ipc, type Trusted } from './ipc';
 
 // obid, Oby's engine (core/, docs/runner-api.md), as this app reaches it: the obid already
 // answering on this Mac, adopted. Its token stays here in main: the renderer asks main for each
@@ -109,10 +111,12 @@ async function listener(): Promise<'mine' | 'foreign' | 'none'> {
 
 // What a call or the stream came back with: obid's status and body, or (status 0) why it didn't answer
 export type Answer = { status: number; text: string; why?: 'waiting' | 'approval' };
+// a call that isn't to obid's API
+const NOT_OBID: Answer = { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
 
 export async function send(method: string, path: string, body: unknown, signal?: AbortSignal, words?: string): Promise<Response | Answer> {
   // only obid's API: never another host, never another path
-  if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return { status: 400, text: JSON.stringify({ error: 'Not an obid call.' }) };
+  if (!METHODS.has(method) || !/^\/v1\/[^\s#]*$/.test(path) || !new URL(BASE + path).pathname.startsWith('/v1/')) return NOT_OBID;
   const t = token();
   // (obid writes its token on its first start)
   if (!t) return problem || starting || readOwn('last-start-error', false) ? reason() : { status: 0, text: `No token of obid’s in ${HOME}/api-token: is obid set up on this Mac?` };
@@ -371,25 +375,24 @@ export async function takesKeys(): Promise<boolean> {
   return receipts;
 }
 
-// The page's own frame only: no other page, or frame in it, gets obid
-export type Trusted = (e: IpcMainEvent | IpcMainInvokeEvent) => boolean;
+// The page's own frame only: no other page, or frame in it, gets obid (main/ipc.ts)
+export type { Trusted };
 
 export function bridge(trusted: Trusted, ownersWords: (method: string, path: string, body: unknown, owners: boolean) => Promise<Answer>) {
+  const channels = ipc(trusted);
   // one call: obid's status and body, or why it didn't answer. owners: the preload saw the owner's
   // own keystroke or click hold its words, so main signs them; and a keyed request main signed
-  // that obid didn't answer, sent again as it was, is signed again (device.ts, WORDS-16)
-  ipcMain.handle('obid', async (e, method: string, path: string, body?: unknown, owners?: unknown): Promise<Answer> => {
-    if (!trusted(e)) return { status: 403, text: '' };
-    return ownersWords(method, path, body, owners === true);
-  });
+  // that obid didn't answer, sent again as it was, is signed again (device.ts, WORDS-16). A method
+  // or path that isn't obid's goes no further: nothing signed, no input taken (IPC-2)
+  channels.handle('obid', [method, v1Path, anything, flag], (_e, verb, path, body, owners) => ownersWords(verb, path, body, owners),
+    { status: 403, text: '' }, NOT_OBID);
 
   // the splash's Open Login Items, when obid waits for that approval
-  ipcMain.on('open-login-items', (e) => { if (trusted(e)) void openLoginItems(); });
+  channels.on('open-login-items', [], () => { void openLoginItems(); });
 
   // The event stream (GET /v1/events), one at a time: each piece of its text goes to the page as
   // it comes ('obid-chunk'), then how it ended ('obid-end'). Following again drops the one before.
-  ipcMain.on('obid-follow', async (e) => {
-    if (!trusted(e)) return;
+  channels.on('obid-follow', [], async (e) => {
     following?.abort();
     const control = new AbortController();
     following = control;

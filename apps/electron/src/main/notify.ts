@@ -1,9 +1,11 @@
-import { app, ipcMain, Notification, powerMonitor, shell, type BrowserWindow } from 'electron';
+import { app, Notification, powerMonitor, shell, type BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { closeSync, constants, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { obid, send, takesKeys, type Answer, type Trusted } from './obid';
 import { answerLimit, notificationWords, writeOwn } from './device';
+import { ipc } from './ipc';
+import { boolean, orUndefined, type Decoder } from '../shared/decode';
 import { parseEvent, plainId, sseReader, type Conversation, type Event, type InboxItem, type LimitDecision, type Turn } from '../shared/obid-wire';
 
 // Oby's alerts on this Mac (docs/contracts/alerts.md). What waits on the owner is obid's one list,
@@ -435,6 +437,14 @@ export const settings = (): Record<string, unknown> => { try { return JSON.parse
 // app's bundle id, electron-builder.yml's appId; in development, the list
 const SYSTEM = `x-apple.systempreferences:com.apple.Notifications-Settings.extension${app.isPackaged ? '?id=com.deskree.oby.electron' : ''}`;
 
+// What the window shows, as the page says: a job's or a conversation's (anything else in it
+// dropped), or nothing; never refused
+const place: Decoder<Place | null> = (p) => {
+  const s = p && typeof p === 'object' ? p as Record<string, unknown> : null;
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  return { value: s && { job: str(s.job), conversation: str(s.conversation) } };
+};
+
 export function notifying(trusted: Trusted, window: () => BrowserWindow | null, bringUp: () => BrowserWindow) {
   current = window;
   show = bringUp;
@@ -442,29 +452,25 @@ export function notifying(trusted: Trusted, window: () => BrowserWindow | null, 
   said = keptSaid();
   powerMonitor.on('lock-screen', () => { locked = true; });
   powerMonitor.on('unlock-screen', () => { locked = false; });
-  ipcMain.on('showing', (e, p: unknown) => {
-    if (!trusted(e)) return;
-    const s = p && typeof p === 'object' ? p as Record<string, unknown> : null;
-    const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-    showing = s && { job: str(s.job), conversation: str(s.conversation) };
+  const channels = ipc(trusted);
+  channels.on('showing', [place], (_e, p) => {
+    showing = p;
     windowSeen();
   });
-  ipcMain.handle('opened', (e) => {
-    if (!trusted(e)) return null;
+  channels.handle('opened', [], () => {
     const place = opening;
     opening = null;
     return place;
-  });
-  ipcMain.handle('notifications', (e, turn?: unknown) => {
-    if (!trusted(e)) return null;
-    if (typeof turn === 'boolean' && turn !== on) {
+  }, null);
+  channels.handle('notifications', [orUndefined(boolean)], (_e, turn) => {
+    if (turn !== undefined && turn !== on) {
       on = turn;
       writeOwn(SETTINGS(), JSON.stringify({ ...settings(), notifications: on }), constants.O_TRUNC);
       if (!on) [...shown.keys()].forEach(withdraw);
     }
     return on;
-  });
-  ipcMain.on('open-notification-settings', (e) => { if (trusted(e)) void shell.openExternal(SYSTEM); });
+  }, null);
+  channels.on('open-notification-settings', [], () => { void shell.openExternal(SYSTEM); });
   setInterval(() => { if (ready) void refreshLimits(); }, 15_000);
   void follow();
 }
