@@ -916,6 +916,53 @@ fn receipts_11_a_repeated_stop_answers_the_same() {
     assert_eq!(now["stoppedBy"], first.body["stoppedBy"], "{now}");
 }
 
+/// RECEIPTS-15: `POST /v1/jobs` retried with its key and its used signed words, or unsigned, isn't
+/// as signed as the first (q067): `409`, and nothing is made; signed again, it gets the first job.
+#[test]
+fn receipts_15_a_job_request_with_used_words_is_409() {
+    let folder = Folder::new("receipts-15-jobs");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Look around"});
+    let body = json!({ "job": job });
+    let sign = || support::words_header(&obid, "POST", "/v1/jobs", Some(&body));
+    let used = sign();
+    let first = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", Some(&used));
+    assert_eq!(first.status, 201, "{}", first.text);
+    let retry = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", Some(&used));
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    let unsigned = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", None);
+    assert_eq!(unsigned.status, 409, "{}", unsigned.text);
+    let again = post_with_key(&obid, "/v1/jobs", &body, "jobs-15", Some(&sign()));
+    assert_eq!(again.status, 200, "{}", again.text);
+    assert_eq!(again.body["id"], first.body["id"]);
+    assert_eq!(job_ids(&obid).len(), 1);
+}
+
+/// RECEIPTS-15: a stop retried with its key (in its body this time) and its used signed words isn't
+/// as signed as the first (q067): `409`; signed again, it gets the first answer.
+#[test]
+fn receipts_15_a_stop_with_used_words_is_409() {
+    let folder = Folder::new("receipts-15-stop");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"});
+    let id = post_job(&obid, job).body["id"].as_str().unwrap().to_owned();
+    beat(&obid, &id);
+    let target = format!("/v1/jobs/{id}/stop");
+    let body = json!({"clientRequestId": "stop-15"});
+    let sign = || support::words_header(&obid, "POST", &target, Some(&body));
+    let send =
+        |words: &str| request_with(&obid, "POST", &target, Some(&body.to_string()), Some(words));
+    let used = sign();
+    let first = send(&used);
+    assert_eq!(first.status, 200, "{}", first.text);
+    let retry = send(&used);
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    let again = send(&sign());
+    assert_eq!((again.status, &again.text), (first.status, &first.text));
+}
+
 /// A stand-in `gh` in `folder/bin` that keeps its arguments (`folder/gh-calls`) and environment
 /// (`folder/gh-env`), opens pull request 7, and answers `gh pr view` with `folder/pr-view.json`
 /// when there's one.

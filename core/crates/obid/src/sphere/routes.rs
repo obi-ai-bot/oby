@@ -258,18 +258,35 @@ pub async fn answer(
     {
         return Err(crate::routes::needs_the_owners_app());
     }
-    // A request key (docs/contracts/receipts.md, RECEIPTS-10): the same answer again, as signed as
-    // the first, gets the first one's answer and does nothing. Neither the key nor an approval is
-    // part of what's compared.
+    // A request key (docs/contracts/receipts.md, RECEIPTS-10 and 15): the same answer again, as
+    // signed as the first, gets the first one's answer and does nothing. A Confirm's approval is its
+    // signature (#776): it's checked, and used up, here, as signed words are, and whether it held
+    // is compared, never the approval itself; so a retry with a used one is `409` (q067).
     let sent = serde_json::from_slice::<Value>(&body).unwrap_or_default();
     let key = crate::routes::request_key(&sent, &headers)
         .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let confirming = sent["answer"].as_str() == Some(super::inbox::CONFIRM);
+    // On an item done since too: a retry re-signed after the first Confirm settled it.
+    let item = shared.link.item(&id).filter(|i| i.kind == "confirm");
+    let approval = sent.get("approval").cloned();
+    let approval =
+        approval.and_then(|a| serde_json::from_value::<crate::approval::Approval>(a).ok());
+    let checked = item
+        .filter(|_| confirming)
+        .zip(approval)
+        .map(|(item, approval)| {
+            let key = shared.devices.public_key(&approval.device);
+            let now = obi_protocol::time::now();
+            let confirms = shared.jobs.approvals();
+            confirms.check_confirm(&approval, &id, &item.title, key.as_deref(), now)
+        });
     let mut judged = sent;
     if let Some(map) = judged.as_object_mut() {
         map.remove("clientRequestId");
         map.remove("approval");
     }
-    let judged = serde_json::json!({"body": judged, "signed": typed});
+    let approved = checked.as_ref().map(Result::is_ok);
+    let judged = serde_json::json!({"body": judged, "signed": typed, "approved": approved});
     let route = format!("POST /v1/inbox/{id}/answer");
     let work = async {
         // Who answered stays on the item, and in the log: a merge can be traced afterwards (#1825).
@@ -350,15 +367,10 @@ pub async fn answer(
                 "An approval is {\"device\", \"action\", \"signedAt\", \"signature\"}.",
             ));
         };
-        let key = shared.devices.public_key(&approval.device);
         let signed_at = obi_protocol::time::parse(&approval.signed_at).unwrap_or_default();
-        if let Err(why) = shared.jobs.approvals().check_confirm(
-            &approval,
-            &id,
-            &item.title,
-            key.as_deref(),
-            obi_protocol::time::now(),
-        ) {
+        // Checked before the lookup; none when the item wasn't a confirm item then.
+        let checked = checked.unwrap_or_else(|| Err(super::link::NEEDS_YOUR_TAP.to_owned()));
+        if let Err(why) = checked {
             return refuse(&why);
         }
         let answered = shared

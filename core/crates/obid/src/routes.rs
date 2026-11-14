@@ -329,13 +329,16 @@ pub async fn transcript_entry(
 pub async fn stop(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let key = request_key(&serde_json::from_slice(&body).unwrap_or_default(), &headers)
         .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
     let route = format!("POST /v1/jobs/{id}/stop");
-    keyed(&shared, key.as_deref(), &route, &json!({}), stored, async {
+    // Judged on whether it was signed, as every keyed route is: a retry signed otherwise is 409.
+    let judged = json!({"signed": typed_by_owner(&shared, "POST", &uri, &headers, &body)});
+    keyed(&shared, key.as_deref(), &route, &judged, stored, async {
         let job = shared.jobs.stop(&id, crate::jobs::STOPPED_BY_API);
         let job = job.ok_or_else(|| no_job(&shared, &id))?;
         Ok((StatusCode::OK, job.to_json(), Some(job.id)))
@@ -687,9 +690,12 @@ pub async fn dispatch(
     }
     let key = request_key(&value["job"], &headers)
         .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
+    let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
     let mut judged = value.clone();
     judged["job"]["clientRequestId"] = Value::Null; // as left out: the header's or the body's
-    // The same request again, or at once, gets the first job as it is now (RECEIPTS-5 to 7).
+    let judged = json!({"body": judged, "signed": typed});
+    // The same request again, as signed as the first (q067), or at once, gets the first job as it
+    // is now (RECEIPTS-5 to 7, 15).
     let repeat = |_, answer, job: Option<String>| match job.and_then(|id| shared.jobs.get(&id)) {
         Some(job) => json(StatusCode::OK, job.to_json()),
         None => stored(200, answer, None),
@@ -697,7 +703,7 @@ pub async fn dispatch(
     let work = async {
         let mut new =
             new_job(job).map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, why))?;
-        new.vetted = typed_by_owner(&shared, "POST", &uri, &headers, &body);
+        new.vetted = typed;
         // Only an app of the owner's signs: anything else with the token, nobody's said to watch.
         new.unattended = !new.vetted;
         if job.get("runsOn").is_some_and(|place| !place.is_null()) {
@@ -1199,10 +1205,8 @@ pub async fn message(
     let first = shared.jobs.get(&id);
     let typed = typed_by_owner(&shared, "POST", &uri, &headers, &body);
     if first.as_ref().is_some_and(|job| job.account_limit_blocked) && !typed {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "Continuing a limit-stopped job needs your app's signed choice.",
-        ));
+        let why = "Continuing a limit-stopped job needs your app's signed choice.";
+        return Err(ApiError::new(StatusCode::FORBIDDEN, why));
     }
     value.as_object_mut().map(|b| b.remove("clientRequestId"));
     let judged = json!({"body": value, "signed": typed});
@@ -1220,15 +1224,11 @@ pub async fn message(
         } else {
             // Unsigned API follow-ups are born untrusted, before their scheduler can run. Keep
             // the same audit evidence even when there is no vetted state left to revoke.
+            let why = "words no app of the owner's signed reached it";
             if !job.vetted {
-                tracing::info!(
-                    "job {}: words no app of the owner's signed reached it",
-                    job.id
-                );
+                tracing::info!("job {}: {why}", job.id);
             }
-            shared
-                .jobs
-                .unvet(&job.id, "words no app of the owner's signed reached it");
+            shared.jobs.unvet(&job.id, why);
             shared.jobs.mark_unsigned(&job.id).unwrap_or(job)
         };
         // Said on the task's page (Sangam's TaskView): the words and Oby's answer go on the end of

@@ -3261,3 +3261,53 @@ fn receipts_10_a_repeated_try_again_is_one_round() {
     let ended = ended_within(&obid, "dddd0010", 60);
     assert_eq!(ended["round"], json!(round + 1), "{ended}");
 }
+
+/// RECEIPTS-15: a Confirm retried with its key and its used approval isn't as signed as the first
+/// (q067): `409`, and nothing is answered again; with a fresh approval, it gets the first answer.
+#[test]
+fn receipts_15_a_confirm_with_its_used_approval_is_409() {
+    let folder = Folder::new("receipts-15-confirm");
+    let remote = fixture(&folder.0.join("fixture"));
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude");
+    let mut job = obid::job::Job::new(
+        "dddd0015".into(),
+        "obi-e2e/fixture-app".into(),
+        "investigate".into(),
+        "Look around".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    // Failed, so it needs the owner and can be let go.
+    job.status = obid::job::Status::Failed;
+    job.reason = Some("It broke.".into());
+    job.finished = Some(obi_protocol::time::now() - 60);
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::create_dir_all(home.join("inbox")).unwrap();
+    let job = serde_json::to_vec(&job).unwrap();
+    std::fs::write(home.join("jobs/dddd0015.json"), job).unwrap();
+    // A Confirm of letting the job go, as a conversation proposes it (#631).
+    let item = json!({"id": "dddd0015-confirm", "kind": "confirm", "job": "dddd0015",
+        "title": "Dismiss Look around", "text": "Dismiss it?", "options": ["Confirm", "Cancel"],
+        "details": null, "recommended": null, "created": 1, "done": null, "later": null,
+        "answer": null, "obi": null,
+        "confirm": {"action": "dismiss_job", "target": "dddd0015", "payload": null}});
+    std::fs::write(home.join("inbox/dddd0015-confirm.json"), item.to_string()).unwrap();
+    let obid = start(&folder.0, &config(&folder.0, &remote, &agent), None);
+    let target = "/v1/inbox/dddd0015-confirm/answer";
+    let send = |approval: &Value| {
+        let body = json!({"answer": "Confirm", "approval": approval});
+        let key = [("Idempotency-Key", "confirm-15")];
+        call_with_headers(&obid, TOKEN, "POST", target, Some(&body), &key)
+    };
+    // Both signed while the item is open, as an app signs what it shows; a second apart.
+    let used = confirm_approval(&obid, "dddd0015-confirm");
+    let fresh = confirm_approval_at(&obid, "dddd0015-confirm", obi_protocol::time::now() - 1);
+    let first = send(&used);
+    assert_eq!(first.status, 200, "{}", first.text);
+    assert!(get(&obid, "/v1/jobs/dddd0015")["dismissed"].is_string());
+    let retry = send(&used);
+    assert_eq!(retry.status, 409, "{}", retry.text);
+    let again = send(&fresh);
+    assert_eq!((again.status, &again.body), (first.status, &first.body));
+}
