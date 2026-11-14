@@ -154,6 +154,8 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # Dispatcher, not harness (AGENTS.md): how many production lines the Rust core may have outside the
 # Sphere. A cut lowers it. Raising it is the owner's word: this is the check, so a job's own change
 # to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
+# A raise of it or jobs_rs_limit comes in a pull request that changes only this script, with a
+# `# payback: #<issue>` or `# payback: <task key>` line directly above it (docs/contracts/ci.md, CI-39 to 41).
 obid_lines_limit=100000
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
 jobs_rs_limit=15107
@@ -187,6 +189,16 @@ pick_limit tests_sleep_limit
 pick_limit agents_md_bytes_limit
 # Said after a limit's failure: dev's limit changed since this branch started.
 moved() { [[ " ${limit_moved[*]} " != *" $1 "* ]] || echo " (dev's limit changed since this branch started: rebase onto dev)"; }
+above_limit() { # the line directly above a limit in the commit's copy of this script
+    git show "HEAD:scripts/oby-check.sh" 2>/dev/null | awk -v name="$1" '$0 ~ "^" name "=[0-9]+$" { print above; exit } { above = $0 }' || true
+}
+# Said after a limit's own message: its payback, when the line above it is one (CI-41).
+paid() {
+    local above
+    above=$(above_limit "$1")
+    [[ "$above" != '# payback: '* ]] || echo "oby-check: $1's payback: ${above#'# payback: '}"
+}
+payback_form='^# payback: (#[0-9]+|[A-Z][A-Z0-9]*-[0-9]+)( .*)?$'
 # A file counts all but its test modules: from a `#[cfg(test)]` on a `mod name {` to the next `}` in
 # column 0 (rustfmt's). A `#[cfg(test)]` on a helper or an out-of-line `mod name;` counts.
 production_lines='
@@ -515,6 +527,7 @@ if { selected && [[ -n "$rust$check_script$agents_md" ]]; } || [[ "${OBY_CHECK_O
     else
         echo "oby-check: the Rust core has $lines production lines outside the Sphere, within its limit of $obid_lines_limit"
     fi
+    paid obid_lines_limit
     jobs_lines=$(jobs_rs_lines)
     if ((jobs_lines > jobs_rs_limit)); then
         echo "oby-check: jobs.rs has $jobs_lines production lines, past its limit of $jobs_rs_limit: it may only shrink: put new code in a module of its own, and lower jobs_rs_limit in this script when jobs.rs shrinks$(moved jobs_rs_limit)" >&2
@@ -522,6 +535,7 @@ if { selected && [[ -n "$rust$check_script$agents_md" ]]; } || [[ "${OBY_CHECK_O
     else
         echo "oby-check: jobs.rs has $jobs_lines production lines, within its limit of $jobs_rs_limit"
     fi
+    paid jobs_rs_limit
     sleeps=$(tests_sleeps)
     if ((sleeps > tests_sleep_limit)); then
         echo "oby-check: obid's tests have $sleeps sleep calls, past their limit of $tests_sleep_limit (docs/contracts/ci.md, CI-12): a test waits for state with support::within instead of sleeping$(moved tests_sleep_limit)" >&2
@@ -532,6 +546,7 @@ if { selected && [[ -n "$rust$check_script$agents_md" ]]; } || [[ "${OBY_CHECK_O
     else
         echo "oby-check: obid's tests have $sleeps sleep calls, within their limit of $tests_sleep_limit"
     fi
+    paid tests_sleep_limit
     # The root AGENTS.md's bytes, committed or not (CI-36 to 38).
     if [[ ! -f AGENTS.md ]]; then
         echo "oby-check: this commit has no AGENTS.md, whose size agents_md_bytes_limit holds: put it back" >&2
@@ -547,6 +562,26 @@ if { selected && [[ -n "$rust$check_script$agents_md" ]]; } || [[ "${OBY_CHECK_O
         else
             echo "oby-check: AGENTS.md has $bytes bytes, within its limit of $agents_md_bytes_limit"
         fi
+    fi
+    paid agents_md_bytes_limit
+    # A raise of a line limit since the branch started names its payback (CI-39) and comes alone, in
+    # a committed change to this script only (CI-40). Not on the combined code GitHub's `limits` job
+    # checks (CI-35), where a raise shares its diff with the pull requests queued beside it.
+    if [[ "${OBY_CHECK_ONLY:-}" != limits ]]; then
+        raise_others=$(git diff --name-only "$base" HEAD | grep -vxF scripts/oby-check.sh || true)
+        for raised in obid_lines_limit jobs_rs_limit; do
+            raised_from=$(limit_in "$base" "$raised")
+            raised_to=$(limit_in HEAD "$raised")
+            [[ -n "$raised_from" && -n "$raised_to" ]] && ((raised_to > raised_from)) || continue
+            if [[ ! "$(above_limit "$raised")" =~ $payback_form ]]; then
+                echo "oby-check: this change raises $raised from $raised_from to $raised_to with no payback line: add \"# payback: #<issue>\" or \"# payback: <task key>\", naming what cut pays it back, as the line directly above \"$raised=$raised_to\" in this script (docs/contracts/ci.md, CI-39)" >&2
+                failed+=("$raised's payback line")
+            fi
+            if [[ -n "$raise_others" ]]; then
+                echo "oby-check: this change raises $raised from $raised_from to $raised_to and changes $(awk 'NR <= 5 { printf "%s%s", (NR > 1 ? ", " : ""), $0 } END { if (NR > 5) printf " and %d more", NR - 5 }' <<<"$raise_others") too: move the raise into a pull request that changes only scripts/oby-check.sh (docs/contracts/ci.md, CI-40)" >&2
+                failed+=("$raised's raise in a pull request of its own")
+            fi
+        done
     fi
     # The flaky list may only shrink (CI-28): an entry the base's list hasn't comes with the task that
     # fixes it, a file this change adds.

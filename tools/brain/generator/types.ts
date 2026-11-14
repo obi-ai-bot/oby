@@ -28,7 +28,7 @@ export interface Route {
   access: AccessKind[];
   /** A paired phone may call it through the gateway (gateway::ROUTES). */
   phone: boolean;
-  /** Mentioned as `METHOD /path` in docs/runner-api.md. */
+  /** Mentioned as `METHOD /path` in an API doc (docs/runner-api.md, docs/api/*.md). */
   documented: boolean;
   /** Where the app calls it: renderer api methods and main-process literals. */
   callers: Caller[];
@@ -145,7 +145,7 @@ export interface BrainData {
   stats: Record<string, number>;
   routes: Route[];
   phoneRoutes: PhoneRoute[];
-  docRoutes: Array<{ id: string; line: number; exists: boolean }>;
+  docRoutes: Array<{ id: string; file: string; line: number; exists: boolean }>;
   areas: Area[];
   modules: Module[];
   cycles: string[][];

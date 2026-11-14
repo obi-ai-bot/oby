@@ -80,7 +80,7 @@ A merge into `dev` goes through GitHub's merge queue and needs its `Check` (docs
 
 Oby (MERGING-41) and the factory (`job merge`, CI-23) hand an approved pull request to GitHub with `gh pr merge --auto --match-head-commit <head>`, which queues it pinned to the head that was reviewed. A pull request into `main` needs `Check` green, with no queue.
 
-The queue's `limits` job judges obid's line limits on the group's combined code (CI-35), so two pull requests that each fit can't put `dev` past a limit together. The script's other rules come along on that code too: a group more than 1,000 lines under the line limit, or under the sleep limit, fails until a pull request lowers the limit.
+The queue's `limits` job judges obid's line limits on the group's combined code (CI-35), so two pull requests that each fit can't put `dev` past a limit together. The script's other rules come along on that code too, but for a raise's payback line and its pull request of its own (CI-39, CI-40), which the pull request's own check judges against its merge base. So a group more than 1,000 lines under the line limit, or under the sleep limit, fails until a pull request lowers the limit.
 
 The Mac's check still gates each pull request before approval, and the nightly full Mac run (CI-29) checks `dev` as merged.
 

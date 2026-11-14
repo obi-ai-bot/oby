@@ -79,13 +79,13 @@ The business behavior contract for what milestone R03 ("Delete what has no calle
 ### Interfaces and dependencies
 
 - **API:** none added or removed: obid never routed the 7, and the gateway no longer lets them through.
-- **Docs:** runner-api.md, whose gone list the Brain finds through `goneSection` in `tools/brain/brain.config.ts`.
+- **Docs:** `docs/runner-api.md` and `docs/api/*.md` (`apiDocs` in `tools/brain/brain.config.ts`), whose gone list the Brain finds through `goneSection` in whichever of them holds it.
 - **Tests:** the Brain's tests run by hand (`cd tools/brain && npm test`), not in `scripts/oby-check.sh`. The gateway's own refusals are asserted in `the_gateway_allows_only_the_listed_routes` (`core/crates/obid/src/gateway.rs`), which the check runs.
 
 ### Acceptance scenarios
 
 - **RETIRED-7** (implemented). Given obid's router and the gateway's allowlist, when the Brain generates its checks, then every allowlist entry (method and path) matches a route obid serves. Test: `retired_7_every_phone_route_is_served` (`tools/brain/test/repo.test.ts`).
-- **RETIRED-8** (implemented). Given docs/runner-api.md, when the Brain generates its checks, then every route documented as served exists in obid, and each route obid stopped serving is listed as gone. Test: `retired_8_every_documented_route_is_served` (`tools/brain/test/repo.test.ts`).
+- **RETIRED-8** (implemented). Given `docs/runner-api.md` and `docs/api/*.md`, when the Brain generates its checks, then every route documented as served in any of them exists in obid, and each route obid stopped serving is listed as gone, in whichever of them holds the gone list, for a mention in any of them. Tests: `retired_8_every_documented_route_is_served` and `retired_8_reads_every_api_doc` (`tools/brain/test/repo.test.ts`).
 - **RETIRED-9** (implemented). Given `apps/shared` and `apps/ios` (not their tests), when the Brain scans their `call`/`send` calls, then every method and path they call is a route obid serves, except the one named exception in the test (`POST /v1/jobs/{id}/proposals/{index}/file`, the task page's). Test: `retired_9_the_swift_client_calls_only_served_routes` (`tools/brain/test/repo.test.ts`).
 
 ## oby-mcp

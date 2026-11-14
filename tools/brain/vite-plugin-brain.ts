@@ -9,7 +9,7 @@ const WATCHED = /\.(rs|ts|tsx|md)$/;
 
 /**
  * Serves the Brain at /brain.json, generated from the repository when the server starts, and again (telling the page)
- * whenever obid, the app or the API doc changes. Nothing is written to disk.
+ * whenever obid, the app or an API doc changes. Nothing is written to disk.
  */
 export function brainPlugin(config: BrainConfig): Plugin {
   let data: BrainData | null = null;
@@ -28,7 +28,9 @@ export function brainPlugin(config: BrainConfig): Plugin {
     server?.ws.send({ type: 'custom', event: 'brain:update', data: { generatedAt: data?.generatedAt, error } });
   };
 
-  const sources = [config.obid.crate, config.obid.apiDoc, 'AGENTS.md', 'apps/electron/src'].map(d => `${config.root}/${d}`);
+  // each API doc file, and the folder of each `<folder>/*.md` pattern
+  const apiDocs = config.obid.apiDocs.map(d => d.replace(/\/\*\.md$/, ''));
+  const sources = [config.obid.crate, ...apiDocs, 'AGENTS.md', 'apps/electron/src'].map(d => `${config.root}/${d}`);
 
   return {
     name: 'oby-brain',

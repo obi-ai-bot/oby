@@ -15,43 +15,61 @@ import type {
 export const normPath = (p: string) => p.split('?')[0].replace(/\{\*[^}]*\}/g, '**').replace(/\{[^}]*\}/g, '{}').replace(/[^/]*<[^>]*>[^/]*/g, '{}').replace(/\/$/, '');
 
 export interface ApiDoc {
-  /** The served routes' keys (`METHOD /normalized/path`) the doc mentions outside its gone list, under any prefix. */
+  /** The served routes' keys (`METHOD /normalized/path`) the docs mention outside their gone list, under any prefix. */
   documented: Set<string>;
-  /** Every `/v1/` route the doc mentions outside its gone list, by key, and whether obid routes it. */
-  docRoutes: Array<{ id: string; line: number; exists: boolean }>;
+  /** Every `/v1/` route the docs mention outside their gone list, by key, where first, and whether obid routes it. */
+  docRoutes: Array<{ id: string; file: string; line: number; exists: boolean }>;
   checks: Check[];
 }
 
 /**
- * What the API doc says about obid's routes. Every backticked `METHOD /path` counts; those inside the section headed
- * `gone` (to the next heading of its level or higher) are routes obid stopped serving, and a mention of one anywhere
- * never counts as documenting it.
+ * What the API docs say about obid's routes. Every backticked `METHOD /path` counts; those inside the section headed
+ * `gone` (to the next heading of its level or higher), in whichever file holds it, are routes obid stopped serving,
+ * and a mention of one in any file never counts as documenting it.
  */
-export function readApiDoc(text: string, served: ReadonlySet<string>, doc: { file: string; gone: string }): ApiDoc {
-  const mentions = new Map<string, number>();
-  const gone = new Map<string, number>();
-  let goneLevel = 0;
-  let fenced = false;
-  text.split('\n').forEach((line, i) => {
-    if (line.trimStart().startsWith('```')) fenced = !fenced;
-    const heading = fenced ? null : /^(#+)\s+(.*?)\s*$/.exec(line);
-    if (heading) {
-      if (goneLevel && heading[1].length <= goneLevel) goneLevel = 0;
-      if (heading[2] === doc.gone) goneLevel = heading[1].length;
-    }
-    for (const m of line.matchAll(/`(GET|POST|PUT|PATCH|DELETE) (\/[^`\s]*)`/g)) {
-      const key = `${m[1]} ${normPath(m[2])}`;
-      const into = goneLevel ? gone : mentions;
-      if (!into.has(key)) into.set(key, i + 1);
-    }
-  });
-  const kept = [...mentions].filter(([key]) => !gone.has(key));
+export function readApiDocs(docs: Array<{ file: string; text: string }>, served: ReadonlySet<string>, gone: string): ApiDoc {
+  type At = { file: string; line: number };
+  const mentions = new Map<string, At>();
+  const goneAt = new Map<string, At>();
+  for (const { file, text } of docs) {
+    let goneLevel = 0;
+    let fenced = false;
+    text.split('\n').forEach((line, i) => {
+      if (line.trimStart().startsWith('```')) fenced = !fenced;
+      const heading = fenced ? null : /^(#+)\s+(.*?)\s*$/.exec(line);
+      if (heading) {
+        if (goneLevel && heading[1].length <= goneLevel) goneLevel = 0;
+        if (heading[2] === gone) goneLevel = heading[1].length;
+      }
+      for (const m of line.matchAll(/`(GET|POST|PUT|PATCH|DELETE) (\/[^`\s]*)`/g)) {
+        const key = `${m[1]} ${normPath(m[2])}`;
+        const into = goneLevel ? goneAt : mentions;
+        if (!into.has(key)) into.set(key, { file, line: i + 1 });
+      }
+    });
+  }
+  const kept = [...mentions].filter(([key]) => !goneAt.has(key));
   const documented = new Set(kept.map(([key]) => key).filter(key => served.has(key)));
-  const docRoutes = kept.filter(([key]) => key.split(' ')[1].startsWith('/v1/')).map(([id, line]) => ({ id, line, exists: served.has(id) }));
+  const docRoutes = kept.filter(([key]) => key.split(' ')[1].startsWith('/v1/')).map(([id, at]) => ({ id, ...at, exists: served.has(id) }));
   const checks: Check[] = [];
-  for (const d of docRoutes) if (!d.exists) checks.push({ kind: 'doc-without-route', message: `${doc.file} documents ${d.id}, which obid doesn't route`, source: { file: doc.file, line: d.line }, ref: d.id });
-  for (const [key, line] of gone) if (served.has(key)) checks.push({ kind: 'gone-but-routed', message: `${doc.file} lists ${key} as gone, but obid routes it`, source: { file: doc.file, line }, ref: key });
+  for (const d of docRoutes) if (!d.exists) checks.push({ kind: 'doc-without-route', message: `${d.file} documents ${d.id}, which obid doesn't route`, source: { file: d.file, line: d.line }, ref: d.id });
+  for (const [key, at] of goneAt) if (served.has(key)) checks.push({ kind: 'gone-but-routed', message: `${at.file} lists ${key} as gone, but obid routes it`, source: at, ref: key });
   return { documented, docRoutes, checks };
+}
+
+/** One API doc alone: `readApiDocs` on a single file. */
+export function readApiDoc(text: string, served: ReadonlySet<string>, doc: { file: string; gone: string }): ApiDoc {
+  return readApiDocs([{ file: doc.file, text }], served, doc.gone);
+}
+
+/** The configured API docs' files, relative to root: each file as named, each `<folder>/*.md` as that folder's `.md` files, sorted. */
+export function apiDocFiles(root: string, patterns: string[]): string[] {
+  return patterns.flatMap(p => {
+    const folder = /^(.*)\/\*\.md$/.exec(p)?.[1];
+    if (folder === undefined) return existsSync(join(root, p)) ? [p] : [];
+    if (!existsSync(join(root, folder))) return [];
+    return readdirSync(join(root, folder)).filter(name => name.endsWith('.md')).sort().map(name => `${folder}/${name}`);
+  });
 }
 
 /** A phone allowlist pattern (`*` one segment, `**` last only, one or more) against a route's path. */
@@ -142,9 +160,9 @@ export function generateBrain(config: BrainConfig): BrainData {
   const rustKeys = new Set(rust.routes.map(r => routeKey(r.method, r.path)));
   const idOfKey = new Map(rust.routes.map(r => [routeKey(r.method, r.path), `${r.method} ${r.path}`]));
 
-  // ---- docs: every `METHOD /path` the API doc mentions, and the routes it lists as gone
-  const docText = existsSync(join(root, config.obid.apiDoc)) ? readFileSync(join(root, config.obid.apiDoc), 'utf8') : '';
-  const doc = readApiDoc(docText, rustKeys, { file: config.obid.apiDoc, gone: config.obid.goneSection });
+  // ---- docs: every `METHOD /path` the API docs mention, and the routes they list as gone
+  const docFiles = apiDocFiles(root, config.obid.apiDocs).map(file => ({ file, text: readFileSync(join(root, file), 'utf8') }));
+  const doc = readApiDocs(docFiles, rustKeys, config.obid.goneSection);
   checks.push(...doc.checks);
   const callersOf = new Map<string, Route['callers']>();
   const addCaller = (key: string, via: string, file: string, line: number) => {
@@ -189,7 +207,7 @@ export function generateBrain(config: BrainConfig): BrainData {
       extractors: r.extractors, errors: r.errors, access, phone: onPhone, documented: doc.documented.has(key), callers,
     };
   }).sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
-  for (const r of routes) if (!r.documented && r.router !== 'gateway') checks.push({ kind: 'route-undocumented', message: `${r.id} isn't in ${config.obid.apiDoc}`, source: r.source, ref: r.id });
+  for (const r of routes) if (!r.documented && r.router !== 'gateway') checks.push({ kind: 'route-undocumented', message: `${r.id} isn't in ${config.obid.apiDocs.join(' or ')}`, source: r.source, ref: r.id });
   const docRoutes = doc.docRoutes.map(d => ({ ...d, id: idOfKey.get(d.id) ?? d.id }));
   const phoneRoutes: PhoneRoute[] = phone.map(p => ({ ...p, matches: routes.filter(r => r.method === p.method && patternMatches(p.pattern, r.path)).map(r => r.id) }));
   for (const p of phoneRoutes) if (!p.matches.length) checks.push({ kind: 'phone-without-route', message: `The phone allowlist lets ${p.method} ${p.pattern} through, but no route matches it`, source: { file: 'core/crates/obid/src/gateway.rs', line: p.line } });
