@@ -5,4 +5,3 @@
 apps/shared/Runner.swift /v1/jobs/*/proposals/*/file
 apps/shared/Runner.swift /v1/watches
 apps/shared/Runner.swift /v1/watches/*
-mcp/server/Server.swift /v1/jobs/*/start-when

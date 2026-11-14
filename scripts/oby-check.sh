@@ -28,20 +28,18 @@
 #                         src/job.rs, config.rs or store.rs; every test of another touched crate;
 #                         an obid run whose failed tests are all on the flaky list
 #                         (core/.config/nextest.toml, which may only shrink) runs them once more
-#   docs/api/, obid's src/ files with a `.route(`, apps/electron/src (not its tests or mock), apps/shared,
-#   mcp/server            the Rust group above with tests/routes_guard.rs (docs/contracts/ci.md)
+#   docs/api/, obid's src/ files with a `.route(`, apps/electron/src (not its tests or mock), apps/shared
+#                         the Rust group above with tests/routes_guard.rs (docs/contracts/ci.md)
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
-#   mcp/, Package.swift   swift test
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #   scripts/oby-check*    scripts/oby-check-test.sh and the line limit below
 #   factory/bin/, factory/checks.sh, factory/tests/, factory/config.json
 #                         python3 -m unittest discover -s factory/tests, with no GitHub login
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
-# apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
-# sandbox of its own, which can't nest there, and xcodebuild has no switch for it, and a cold
-# SwiftPM build in the job's HOME doesn't fit the check's 45 minutes. Nothing runs them by itself
+# apps aren't built: SwiftPM evaluates every package manifest in a sandbox of its own, which can't
+# nest there, and xcodebuild has no switch for it, and a cold build in the job's HOME doesn't fit the check's 45 minutes. Nothing runs them by itself
 # since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
 # for the owner, who runs them on the Mac.
 # obid's tests that make a sandbox of their own (tests/sandbox.rs, tests/jobs_setup.rs, plug-ins' if
@@ -52,7 +50,7 @@
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
-# cores), for Cargo, Rust's tests, swift test (-j) and xcodebuild (-jobs). Run by hand, outside obid,
+# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand, outside obid,
 # every one gets 4, on purpose: obid runs one check at a time, and a Mac has other work.
 set -eo pipefail
 jobs="${OBY_BUILD_JOBS:-4}"
@@ -406,7 +404,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script='' factory=''
+rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' factory=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -452,7 +450,7 @@ while IFS= read -r file; do
     # The routes obid serves and the clients that call them (docs/contracts/ci.md, CI-9 to 11).
     routes=''
     case "$file" in
-        core/crates/obid/src/api.rs | core/crates/obid/src/gateway.rs | docs/api/* | apps/shared/*.swift | mcp/server/*.swift)
+        core/crates/obid/src/api.rs | core/crates/obid/src/gateway.rs | docs/api/* | apps/shared/*.swift)
             routes=1 ;;
         core/crates/obid/src/*) [[ ! -f "$file" ]] || ! grep -qF '.route(' "$file" || routes=1 ;;
         */test/* | *.test.ts | *.test.tsx | apps/electron/src/renderer/src/mock.ts) ;;
@@ -462,9 +460,6 @@ while IFS= read -r file; do
     case "$file" in
         apps/ios/tests/*.swift) ios=1 ios_suites=$(add "$ios_suites" "$(suites iOSTests/ "$file")") ;;
         apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) ios=1 ;;
-    esac
-    case "$file" in
-        mcp/* | Package.swift) swift=1 ;;
     esac
     case "$file" in
         apps/electron/*) electron=1 ;;
@@ -480,10 +475,10 @@ if [[ -z "$nested" && "$tests" == *core/crates/obid/tests/jobs_api.rs* ]]; then
 fi
 
 # OBY_CHECK_ALL=1: everything, as if every part had changed (a full check of a branch): obid, the
-# Electron app, swift test and the Apple apps' build (no suites named: build-for-testing). The secret
-# scan still covers what changed against the base, which on the base itself is nothing.
+# Electron app and the Apple apps' build (no suites named: build-for-testing). The secret scan still
+# covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1 factory=1
+    rust=1 blok=1 lib_all=1 check_script=1 electron=1 ios=1 factory=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -618,10 +613,9 @@ if ! selected; then
     :
 elif [[ -z "$nested" ]]; then
     if [[ -n "$ios" ]]; then apple ObyPhone "platform=iOS Simulator,name=iPhone 17,OS=latest" "$ios_suites"; fi
-    if [[ -n "$swift" ]]; then step swift test -j "$jobs" --scratch-path "$cache/swiftpm"; fi
-elif [[ -n "$ios$swift" ]]; then
+elif [[ -n "$ios" ]]; then
     plan_group
-    echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): run them on the Mac before merging"
+    echo "oby-check: the Apple apps don't run in a job's sandbox (Seatbelt can't nest in it): run them on the Mac before merging"
 fi
 
 group=electron
