@@ -125,11 +125,10 @@ impl Turns {
         {
             return None;
         }
-        let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *waiting)
-            .into_iter()
-            .partition(|(c, _)| c == conversation);
-        *waiting = kept;
-        let taken: Vec<Words> = taken.into_iter().map(|(_, w)| w).collect();
+        let taken: Vec<Words> = waiting
+            .extract_if(.., |(c, _)| c == conversation)
+            .map(|(_, w)| w)
+            .collect();
         Some(Next {
             words: Words {
                 turn,
@@ -179,11 +178,13 @@ impl Turns {
     }
 
     /// Drops the turns under way (in `conversation`, or all): their plans do nothing; and the
-    /// owner's words waiting there: no turn answers them.
-    pub fn cancel(&self, conversation: Option<&str>) -> bool {
-        self.waiting()
-            .retain(|(c, _)| conversation.is_some_and(|id| c != id));
-        self.mark(conversation, |c| c.cancelled.store(true, Ordering::SeqCst))
+    /// owner's words waiting there: no turn answers them. The user's turns of the words dropped.
+    pub fn cancel(&self, conversation: Option<&str>) -> Vec<String> {
+        let mut waiting = self.waiting();
+        let dropped = waiting.extract_if(.., |(c, _)| conversation.is_none_or(|id| c == id));
+        let dropped = dropped.map(|(_, w)| w.turn).collect();
+        self.mark(conversation, |c| c.cancelled.store(true, Ordering::SeqCst));
+        dropped
     }
 
     fn mark(&self, conversation: Option<&str>, mark: impl Fn(&Control)) -> bool {
@@ -406,7 +407,7 @@ mod tests {
         assert!(turns.stop(Some("c2")));
         assert!(other.stopped() && second.live());
         turns.end(&second);
-        assert!(!turns.cancel(Some("c3")));
+        assert!(turns.cancel(Some("c3")).is_empty());
         assert_eq!(turns.latest_conversation(), Some("c2".into()));
     }
 }
