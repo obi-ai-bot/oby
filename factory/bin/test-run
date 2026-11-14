@@ -82,9 +82,11 @@ core/crates/*/tests/<name>.rs. Then it says `factory/bin/test-run: on this Mac:
 <why>` and runs here as above. A command whose first two words are cargo and
 kani isn't held to the worktree's macOS-only rule, so it goes to the VM, never
 the Mac worker, as its proof checks obid's Linux build only (REMOTE-48); every
-other rule holds for it. So is a command whose first word's name is quint: a
-design model is no platform code, so it too goes to the VM, never the Mac
-worker; `quint` later in a command changes nothing (REMOTE-50).
+other rule holds for it. A command whose first two words are cargo and mutants
+goes the same way, as factory/bin/mutants tests obid's Linux build (MUTANTS-10).
+So is a command whose first word's name is quint: a design model is no
+platform code, so it too goes to the VM, never the Mac worker; `quint` later
+in a command changes nothing (REMOTE-50).
 
 What is sent: the base's SHA, which is on origin, and the SHA of the worktree's
 tree, written from an index of its own (seeded from HEAD, then `git add -A`, so
@@ -253,8 +255,9 @@ def to_send(gate, command, vm, mac):
         git("add", "-A", cwd=top, env=env)
         tree = git("write-tree", cwd=top, env=env)
     touched = git("diff", "--name-only", "--no-renames", base, tree, cwd=top).splitlines()
-    # A Kani proof checks obid's Linux build, so macOS-only changes don't keep it from the VM (REMOTE-48).
-    macos = [] if names[:2] == ["cargo", "kani"] else gate.macos_only(top, base, touched, tree)
+    # A Kani proof or a mutants run checks obid's Linux build, so macOS-only changes don't keep it from the VM
+    # (REMOTE-48, MUTANTS-10).
+    macos = [] if names[:2] in (["cargo", "kani"], ["cargo", "mutants"]) else gate.macos_only(top, base, touched, tree)
     # Nor do they keep a Quint model check from it: a design model isn't platform code (REMOTE-50).
     macos = [] if names[:1] == ["quint"] else macos
     why = f"the worktree's changes touch macOS-only code: {gate.named(macos)}" if macos else None

@@ -41,6 +41,9 @@ from its gates', off until the owner sets `builder_slots` in `mac_worker`. The s
   (`bwrap --unshare-net`) and `/` read-only, it proves Java 17 or newer, `quint --version` at the pin, and
   `quint typecheck`, `run` and `verify` on a scratch model ([REMOTE-49](contracts/remote-gate.md)). Gates don't need
   Quint. The seed design model is `docs/models/job_race.qnt` ([REMOTE-52](contracts/remote-gate.md)).
+- For `oby-builder` too, setup installs cargo-mutants at `setup.sh`'s own pin (27.1.0; `--pins` leaves it out),
+  root's in its `.cargo`, left as it is when `cargo install --list` already shows that version, then checks as
+  `oby-builder` that `cargo mutants --version` is that pin (MUTANTS-11, [factory.md](contracts/factory.md)).
 - Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
   host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
   slots (`factory/remote/tighten.sh`), checks `oby-check-blok` with origin/dev's own `scripts/oby-check.sh`,
@@ -317,7 +320,9 @@ with the builder's command line unchanged (REMOTE-22 to 34):
   `target_os = "macos"`, or a `--test` that is such a file, stays here under the lock, with one `on this Mac:`
   line. A run whose first two words are `cargo kani` isn't held to the worktree's macOS-only rule
   ([REMOTE-48](contracts/remote-gate.md)), so it goes to the VM, never the Mac worker: its proof covers obid's Linux
-  build only. Nor is a run whose first word is `quint`, a design model's check and no platform code
+  build only. A run whose first two words are `cargo mutants` goes the same way, as `factory/bin/mutants` tests
+  obid's Linux build (MUTANTS-10, [factory.md](contracts/factory.md)).
+  Nor is a run whose first word is `quint`, a design model's check and no platform code
   ([REMOTE-50](contracts/remote-gate.md)); it counts as heavy, so a fallback here takes the lock.
 - **What goes.** The merge-base with `origin/dev` (on origin, so the VM fetches it with no credential), the
   SHA of the worktree's tree written from an index of its own (nothing gitignored), and on ssh's standard input

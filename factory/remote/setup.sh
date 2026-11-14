@@ -26,16 +26,18 @@
 # made afresh by root (0755) with a root-owned copy of the ssh user's authorized_keys (0644), rustup
 # with the pinned toolchain, rustfmt and clippy installed by root (--no-modify-path; a toolchain the
 # builder owned any part of is installed afresh), and Kani at its pin (cargo-kani in .cargo, its bundle in
-# .kani, its nightly in .rustup) installed by root and given to root, tightened with tighten.sh's rule and
-# proven to run for the builder, Kani offline on a scratch harness; Quint at its pin, installed by root with npm
-# (--ignore-scripts) into /usr/local/lib/quint/<pin> and linked from /usr/local/bin, its evaluator and Apalache
-# checked against their SHA-256s and unpacked into .quint, warmed up offline in a box with / read-only, only .quint
-# writable and no capability, .quint given to root, then proven for the builder with no network and a read-only home
-# (typecheck, run and verify on a scratch model, Java 17 or newer); setup stops naming any of its home, keys or
-# toolchain the builder can still write, and it can't write /srv/oby. Run it again whenever: what is already at
-# its pin is left as it is. It writes no secret, token, key or login to the host, and changes no sshd setting,
-# firewall or network rule (the builder's authorized_keys holds public keys only). The host part runs under umask
-# 022, and setup tightens, checks (with origin/dev's own scripts/oby-check.sh) and prints the modes on the check's
+# .kani, its nightly in .rustup) and cargo-mutants at its own pin (in .cargo), installed by root and given
+# to root, tightened with tighten.sh's rule and proven to run for the builder, Kani offline on a scratch
+# harness, cargo-mutants by its version; Quint at its pin, installed by root with npm (--ignore-scripts) into
+# /usr/local/lib/quint/<pin> and linked from /usr/local/bin, its evaluator and Apalache checked against their
+# SHA-256s and unpacked into .quint, warmed up offline in a box with / read-only, only .quint writable and no
+# capability, .quint given to root, then proven for the builder with no network and a read-only home (typecheck,
+# run and verify on a scratch model, Java 17 or newer); setup stops naming any of its home, keys or toolchain the
+# builder can still write, and
+# it can't write /srv/oby. Run it again whenever: what is already at its pin is left as it is. It
+# writes no secret, token, key or login to the host, and changes no sshd setting, firewall or network
+# rule (the builder's authorized_keys holds public keys only). The host part runs under umask 022, and
+# setup tightens, checks (with origin/dev's own scripts/oby-check.sh) and prints the modes on the check's
 # path (tighten.sh), then sets up oby-builder.
 set -euo pipefail
 
@@ -69,6 +71,7 @@ node=$(pin node-version)
 gitleaks=$(pin GITLEAKS_VERSION)
 gitleaks_sha=$(pin GITLEAKS_SHA256)
 kani=0.68.0
+mutants=27.1.0
 quint=0.33.1
 # What Quint 0.33.1 would fetch by itself, unchecked (apalache.js, rust/binaryManager.js), at their SHA-256s.
 quint_apalache=0.62.4
@@ -103,6 +106,7 @@ fi' <"$here/oby-remote-gate"
 # nothing it runs reads the script.
 {
     printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap" KANI "$kani"
+    printf '%s=%q\n' MUTANTS "$mutants"
     printf '%s=%q\n' QUINT "$quint" QUINT_APALACHE "$quint_apalache" QUINT_APALACHE_SHA "$quint_apalache_sha" \
         QUINT_EVALUATOR "$quint_evaluator" QUINT_EVALUATOR_SHA "$quint_evaluator_sha"
     cat "$here/tighten.sh"
@@ -173,6 +177,15 @@ echo "setup.sh: installing kani $1"
 rm -rf "$KANI_HOME"
 cargo install --locked kani-verifier --version "$1"
 cargo kani setup' _ "$KANI"
+    # cargo-mutants for factory/bin/mutants' runs (A00-41), installed as root into .cargo. Left as it is at its pin.
+    sudo -n env RUSTUP_HOME="$home/.rustup" CARGO_HOME="$home/.cargo" bash -c 'set -euo pipefail
+export PATH="$CARGO_HOME/bin:$PATH"
+if grep -qx "cargo-mutants v$1:" <<<"$(cargo install --list)"; then
+    echo "setup.sh: cargo-mutants $1 already installed"
+    exit 0
+fi
+echo "setup.sh: installing cargo-mutants $1"
+cargo install --locked cargo-mutants --version "$1"' _ "$MUTANTS"
     # tar, run as root, keeps the owners the bundle's archive names: all of it is root's.
     sudo -n chown -R -h root:root "$home/.kani"
     # Quint for builders' design models (A00-40), installed by root as Kani is: the npm package in a prefix of its pin,
@@ -267,6 +280,15 @@ if ! grep "VERIFICATION:- SUCCESSFUL" <<<"$proved"; then
     printf "%s\n" "$proved" "setup.sh: cargo kani did not prove the scratch harness"
     exit 1
 fi' _ "$KANI"
+    # cargo-mutants runs for the builder with a Cargo home of its own, at its pin.
+    as_builder bash -c 'set -euo pipefail
+scratch=$(mktemp -d)
+trap "rm -rf \"\$scratch\"" EXIT
+cd "$scratch"
+export CARGO_HOME="$scratch/cargo" PATH="$HOME/.cargo/bin:$PATH"
+mutants=$(cargo mutants --version)
+printf "%s\n" "$mutants"
+[[ "$mutants" == "cargo-mutants $1" ]] || { echo "setup.sh: cargo mutants is not at $1"; exit 1; }' _ "$MUTANTS"
     # Quint and Java work for the builder with no network, its home read-only and only a scratch folder to write: a
     # builder run downloads nothing and writes nothing into its home.
     as_builder bwrap --unshare-net --unshare-pid --die-with-parent --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \

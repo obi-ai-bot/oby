@@ -16,6 +16,9 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
 bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
                 bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
                 games them → round-N/proofs.md; advisory by default (docs/contracts/factory.md, PROVE)
+bin/mutants     runs cargo-mutants on the core/crates/ Rust a job's gated commit changes, through bin/test-run on a gate
+                VM builder slot, within a time budget → round-N/mutants.md, the missed mutants for reviewer-code and the
+                approver; advisory only, it never moves a job (docs/contracts/factory.md, MUTANTS)
 bin/route       risk + surfaces → the job's reviewers and models
 bin/test-run    a builder's or approver's own test, clippy or build run at nice 15, half the cores; only runs that can
                 build Rust or Xcode code take turns on its own lock, other runs start at once; it refuses a run whose

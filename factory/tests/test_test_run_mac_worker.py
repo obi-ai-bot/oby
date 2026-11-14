@@ -226,6 +226,20 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
         self.assertEqual(run["args"], ["kani", "-p", "obid", "--tests", "--harness", "h"])
         self.assertFalse(list(self.builders.glob("builder-*")))
 
+    # ---- MUTANTS-10 ------------------------------------------------------------------------------
+
+    def test_mutants_10_a_mutants_run_goes_to_the_vm_not_the_mac_worker(self):
+        self.write(SANDBOX, "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "mutants", "--in-diff", "mutants.diff", "-p", "obid")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(call["argv"][-4:-1], ["-l", "oby-builder", "oby-gate"])
+        self.assertNotIn("oby-mac-pro", json.dumps(self.ssh_calls()))
+        self.assertNotIn("Mac worker", err)
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["mutants", "--in-diff", "mutants.diff", "-p", "obid"])
+        self.assertFalse(list(self.builders.glob("builder-*")))
+
     # ---- REMOTE-50 -------------------------------------------------------------------------------
 
     def test_remote_50_a_quint_run_goes_to_the_vm_not_the_mac_worker(self):
