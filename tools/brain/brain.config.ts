@@ -34,7 +34,7 @@ export const config: BrainConfig = {
     { id: 'conversation', title: 'Conversation', summary: 'Conversations, the brain\'s turns, transcripts, artifacts and memory.', modules: ['brain', 'conversation', 'task_conversation', 'transcript', 'activity', 'detail', 'artifacts', 'memory'] },
     { id: 'jobs', title: 'Jobs', summary: 'Starting, scheduling and running jobs, their records and checks.', modules: ['jobs', 'job', 'store', 'groups', 'facts', 'failures', 'routines', 'obi_dir', 'clear', 'meter', 'power', 'receipts'] },
     { id: 'agents', title: 'Agents', summary: 'The agent CLIs: Claude Code, Codex, Cursor, and how obid talks to them.', modules: ['agent', 'codex', 'acp', 'conn', 'process', 'model_lists', 'cli_versions'] },
-    { id: 'accounts', title: 'Accounts and limits', summary: 'Accounts, sign-ins, usage, limits and the owner\'s limit decisions.', modules: ['accounts', 'usage', 'limits', 'account_limits', 'chatgpt', 'chatgpt_relay', 'cursor_usage'] },
+    { id: 'accounts', title: 'Accounts and limits', summary: 'Accounts, sign-ins, usage and limits.', modules: ['accounts', 'usage', 'limits', 'chatgpt', 'chatgpt_relay', 'cursor_usage'] },
     { id: 'workspace', title: 'Workspace', summary: 'Clones, worktrees, repositories and working folders.', modules: ['git', 'repos', 'folders'] },
     { id: 'publish', title: 'Publish and review', summary: 'Publishing, reviews, merging and the decision checks before them.', modules: ['publish', 'merge', 'review', 'decisions', 'teammates'] },
     { id: 'connectors', title: 'Connectors', summary: 'GitHub, Tetrix and the MCP broker agents reach them through.', modules: ['github', 'github_login', 'github_work', 'tetrix', 'connections'] },
