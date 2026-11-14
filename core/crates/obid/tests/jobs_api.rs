@@ -3394,8 +3394,9 @@ fn merging_23_more_words_to_a_task_follow_up_its_last_follow_up() {
 
 /// A follow-up that commits nothing still publishes the first job's commits it started from, once
 /// its check passes on them alone (PUBLISHING-5): it ends done with them counted, pushed and in a
-/// pull request (#770). A follow-up of that one starts on its branch with them, and, adding
-/// nothing to a branch that's out, publishes nothing.
+/// pull request (#770), on the first job's branch, which it carries on (PUBLISHING-34). A
+/// follow-up of that one starts on that branch with them, and, adding nothing to a branch that's
+/// out, publishes nothing.
 #[test]
 fn a_follow_up_publishes_the_first_jobs_commits() {
     let folder = Folder::new("follow-publish");
@@ -3449,14 +3450,14 @@ fn a_follow_up_publishes_the_first_jobs_commits() {
     assert_eq!(
         git(
             &remote,
-            &["rev-parse", &format!("refs/heads/oby/build-{next}")]
+            &["rev-parse", &format!("refs/heads/oby/build-{id}")]
         ),
         head
     );
 
     let last = tell(&next, "DRAFT: b.txt");
     let again = wait(&obid, &last);
-    assert_eq!(again["branch"], format!("oby/build-{next}"), "{again}");
+    assert_eq!(again["branch"], format!("oby/build-{id}"), "{again}");
     assert!(
         obid.home
             .join("worktrees")
@@ -3514,7 +3515,8 @@ fn a_follow_up_doesnt_republish_a_closed_pull_requests_commits() {
     let turned_down = "The pull request of Add a.txt was closed without merging, so Oby didn't publish its commits again: Publish opens a new pull request with them.";
     assert_eq!(follow["reason"], turned_down, "{follow}");
 
-    // A follow-up of that follow-up carries the same turned-down commits: nor does it.
+    // A follow-up of that follow-up carries the same turned-down commits, on that one's branch, which
+    // no pull request was closed on (PUBLISHING-33): nor does it.
     let told = request(
         &obid,
         "POST",
@@ -3525,15 +3527,16 @@ fn a_follow_up_doesnt_republish_a_closed_pull_requests_commits() {
     let last = told.body["id"].as_str().unwrap().to_owned();
     let again = wait(&obid, &last);
     assert_eq!(again["status"], "done", "{again}");
-    assert_eq!(again["branch"], format!("oby/build-{last}"), "{again}");
+    assert_eq!(again["branch"], format!("oby/build-{next}"), "{again}");
     assert_eq!(again["commits"], 1, "{again}");
     assert_eq!(again["published"], Value::Null, "{again}");
     assert_eq!(again["outgoing"], json!([]), "{again}");
     assert_eq!(again["reason"], turned_down, "{again}");
 }
 
-/// A follow-up of a job that pushed with no pull request (a remote without them) doesn't push
-/// those commits again to a branch of its own when it adds none: they're out (#770).
+/// A follow-up of a job that pushed with no pull request (a remote without them) carries its
+/// branch on (PUBLISHING-34) and doesn't push those commits again when it adds none: they're out
+/// (#770).
 #[test]
 fn a_follow_up_doesnt_repush_its_first_jobs_pushed_commits() {
     let folder = Folder::new("follow-pushed");
@@ -3563,7 +3566,7 @@ fn a_follow_up_doesnt_repush_its_first_jobs_pushed_commits() {
     let next = told.body["id"].as_str().unwrap().to_owned();
     let follow = wait(&obid, &next);
     assert_eq!(follow["status"], "done", "{follow}");
-    assert_eq!(follow["branch"], format!("oby/build-{next}"), "{follow}");
+    assert_eq!(follow["branch"], format!("oby/build-{id}"), "{follow}");
     assert_eq!(follow["commits"], 0, "{follow}");
     assert_eq!(follow["outgoing"], json!([]), "{follow}");
     assert_eq!(
