@@ -14587,7 +14587,7 @@ fn tetrix_line(job: &Job) -> &'static str {
     }
 }
 
-fn owner_prompt(job: &Job) -> String {
+pub(crate) fn owner_prompt(job: &Job) -> String {
     let base = job
         .base
         .clone()
