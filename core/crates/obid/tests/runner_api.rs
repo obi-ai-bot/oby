@@ -1381,6 +1381,28 @@ fn agents_8_the_choices_are_listed() {
     );
 }
 
+/// PROVIDERS-3 (docs/contracts/providers.md): each tool's efforts, read from its row, are the
+/// answer AGENTS-5 and AGENTS-8 promise, on the tool and on every model it lists.
+#[test]
+fn providers_3_effort_choices_are_unchanged() {
+    let folder = Folder::new("provider-efforts");
+    let (obid, _) = obid(&folder);
+    let options = call(&obid, "GET", "/v1/settings/models/options", None);
+    assert_eq!(options.status, 200, "{}", options.text);
+    for (tool, efforts) in [
+        ("claude", json!(["low", "medium", "high", "xhigh", "max"])),
+        ("codex", json!(["low", "medium", "high", "xhigh"])),
+        ("cursor", json!([])),
+    ] {
+        let options = &options.body[tool];
+        assert_eq!(options["efforts"], efforts, "{tool}");
+        assert_eq!(options["complexEfforts"], efforts, "{tool}");
+        for model in options["models"].as_array().unwrap() {
+            assert_eq!(model["efforts"], efforts, "{tool} {model}");
+        }
+    }
+}
+
 /// With the cap lowered to one, a second job waits for the slot, and raising the cap starts it at
 /// once (runner-api.md, "GET /v1/settings/jobs and PUT /v1/settings/jobs").
 #[test]

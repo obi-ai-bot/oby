@@ -201,11 +201,7 @@ impl Tuning {
 
 /// The tool defaults exposed in status, shared by jobs and conversation turns.
 pub fn default_model(tool: crate::agent::Tool) -> &'static str {
-    match tool {
-        crate::agent::Tool::Claude => "claude-opus-5-5",
-        crate::agent::Tool::Codex => "gpt-6.1-sol",
-        crate::agent::Tool::Cursor => "auto",
-    }
+    tool.row().default_model
 }
 
 /// The model a turn or job runs on for `account`: its offered choice when still on the list, else
@@ -227,35 +223,13 @@ pub fn account_model(
 /// The efforts each tool takes, as Settings › Agents offers them (`GET /v1/settings/models/options`):
 /// Claude Code's `--effort`, Codex's turn `effort`; Cursor takes none.
 pub fn efforts(tool: crate::agent::Tool) -> &'static [&'static str] {
-    use crate::agent::Tool;
-    match tool {
-        Tool::Claude => &["low", "medium", "high", "xhigh", "max"],
-        Tool::Codex => &["low", "medium", "high", "xhigh"],
-        Tool::Cursor => &[],
-    }
+    tool.row().efforts
 }
 
 /// The fixed models each tool falls back to when its CLI isn't there or a read failed
 /// ([`crate::model_lists`]): `(id, name)`, as Sangam's screen listed them.
 pub fn models(tool: crate::agent::Tool) -> &'static [(&'static str, &'static str)] {
-    use crate::agent::Tool;
-    match tool {
-        Tool::Claude => &[
-            ("claude-fable-5-1", "Fable 5.1"),
-            ("claude-opus-5-5", "Opus 5.5"),
-            ("claude-sonnet-5-5", "Sonnet 5.5"),
-            ("claude-haiku-5-5", "Haiku 5.5"),
-        ],
-        Tool::Codex => &[
-            ("gpt-6.1-sol", "gpt-6.1-sol"),
-            ("gpt-6-astra", "GPT-6-Astra"),
-        ],
-        Tool::Cursor => &[
-            ("auto", "Auto"),
-            ("claude-opus-5-5", "Opus 5.5"),
-            ("gpt-6.1-sol", "gpt-6.1-sol"),
-        ],
-    }
+    tool.row().models
 }
 
 /// A model id obid passes on as one argument: letters, digits and `-._:@/[]`, so a provider's id is

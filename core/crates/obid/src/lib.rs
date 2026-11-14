@@ -52,6 +52,7 @@ pub mod policy;
 pub mod power;
 pub mod process;
 pub mod profiles;
+pub mod providers;
 pub mod publish;
 pub mod push;
 pub mod receipts;
