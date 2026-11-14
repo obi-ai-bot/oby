@@ -723,8 +723,10 @@ impl Conversations {
         let id = id.unwrap_or_else(new_id);
         let replay = threads[index].replays.entry(id.clone()).or_default();
         (replay.attachments, replay.signed) = (attachments, signed);
-        let mut queued = Delivery::default();
-        queued.status = "queued".into();
+        let queued = Delivery {
+            status: "queued".into(),
+            ..Delivery::default()
+        };
         let mut turn = Turn::of("user", said);
         (turn.id, turn.jobs, turn.attachments, turn.delivery) = (id, jobs, names, Some(queued));
         let turn = match self.add(&mut threads, index, turn, foreign) {
