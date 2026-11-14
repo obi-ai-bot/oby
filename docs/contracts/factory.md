@@ -1,6 +1,6 @@
 # The factory's proofs: an advisory `prove` stage after the gate
 
-The business behavior contract for re-running a factory job's Kani proofs on the commit its gate passed, from [the template](../business-contract-template.md). Scenarios are numbered `PROVE-n`. The factory itself: [factory/README.md](../../factory/README.md); where the proofs run: [remote-gate.md](remote-gate.md), REMOTE-48.
+The business behavior contract for re-running a factory job's Kani proofs on the commit its gate passed, from [the template](../business-contract-template.md). Scenarios are numbered `PROVE-n`, and those of the advisory mutants step below `MUTANTS-n`. The factory itself: [factory/README.md](../../factory/README.md); where the proofs run: [remote-gate.md](remote-gate.md), REMOTE-48.
 
 ## Feature and status
 
@@ -129,3 +129,88 @@ prove prints the first line, with the job id and round, on stdout.
 - **PROVE-10** (implemented). Given a job without the surface, then gate → review succeeds as before, and gate → prove, prove (SKIPPED), prove → review succeeds too. Tests: `test_prove_10_a_job_without_the_surface_goes_gate_to_review_as_before`, `test_prove_10_a_job_without_the_surface_may_go_through_prove`.
 - **PROVE-11** (implemented). Given a job leaving `spec`, then job.json records `proofs_hash`, the sha256 of the section or `none`; `job sync` stores the round's PROOFS value in `proofs` and prints `proofs <value>`; a new round resets `proofs` to null. Tests: `test_prove_11_leaving_spec_records_the_proofs_hash`, `test_prove_11_sync_records_the_rounds_proofs`, `test_prove_9_a_fail_goes_back_to_build_or_to_a_human_on_the_last_round`.
 - **PROVE-12** (implemented). Given `"proofs": {"mode": "strict"}`, `"timeout_s": 0` or a timeout that isn't an integer, then prove exits 2 naming the field and writes no proofs.md; `"mode": "blocking"` is accepted; a job with no round, or no passing checks.md, exits 2 too. Tests: `test_prove_12_invalid_settings_stop_before_anything`, `test_prove_12_blocking_mode_is_accepted`, `test_prove_12_no_passing_gate_or_round_stops_before_anything`.
+
+## Mutants: an advisory step after the gate
+
+### Feature and status
+
+- **Outcome:** every job whose branch changes Rust under `core/crates/` has its tests' strength measured on the commit its gate passed: cargo-mutants changes that code one small way at a time (`>` to `>=`, a body to a default value) and reruns the package's tests, and a change no test notices is a missed mutant, a test the job could add. The code reviewer and the approver read the result. It is advisory only: it never moves a job, and blocking on it is the owner's word.
+- **Status:** MUTANTS-1 to MUTANTS-12 are **implemented**: `factory/bin/mutants`, tested by `factory/tests/test_mutants.py`, the `cargo mutants` route in `factory/bin/test-run` and cargo-mutants' install in `factory/remote/setup.sh` (tasks A00-41 and A00-43). Two steps are the orchestrator's: adding `"mutants": {"budget_s": 1200}` to the protected `factory/config.json` (the code uses that default while the key is absent), and running the new `setup.sh` on the gate VM.
+- **Scope:** `factory/bin/mutants`, its settings and `round-N/mutants.md`; test-run's route for `cargo mutants`; setup.sh's cargo-mutants pin and install; the factory skill, `reviewer-code` and the approver reading the file. **Out of scope:** any blocking mode, job stage or transition (`factory/bin/job`, `gate`, `route` and the dashboard are unchanged); `factory/config.json`; a nightly or whole-crate run; `.rs` files outside `core/crates/` (`tools/`); excluding `target_os = "macos"` code; fixing the gaps a run finds.
+
+### Actors and ownership
+
+- **`factory/bin/mutants <job-id>`** runs the step and writes `round-N/mutants.md` and `round-N/mutants.log`. It reads job.json (never writing it or taking its lock), `round-N/checks.md` and the `config.json` beside it, and never modifies the job's worktree. It loads `factory/bin/job` beside it for the config and the job's files, and takes `end` and `KILL_AFTER` from `factory/bin/prove` rather than copying them.
+- **The factory skill** starts it in the background in the same step that spawns the round's reviewers: after a passing gate, or for a `proofs` job after prove sends it to review. Nothing waits for it, and the skill stops a run still going, by its PID, when the job leaves the round. Its result never moves the job.
+- **`reviewer-code`** reads mutants.md if it is there when it looks, and otherwise notes "mutants still running"; it may raise a missed mutant in shipping code the branch changed as a finding: a test to add. **The approver** quotes the `MUTANTS:` line in decision.md, or writes `MUTANTS: not finished`, and never withholds APPROVE on it alone.
+- **The orchestrator** adds the budget to `config.json` on the owner's word and runs `setup.sh` on the VM.
+
+### What mutants runs
+
+1. With `<mb>` = `git merge-base origin/<base> <commit>` in the job's worktree, the `.rs` files `git diff --name-only --no-renames --diff-filter=d <mb> <commit>` lists name the touched crates: each `core/crates/<dir>/`, its package the first `name = "<x>"` line of its `Cargo.toml` at the commit. With none, the step is `SKIPPED`: no test-run, no scratch copy.
+2. Otherwise, in one scratch worktree of the commit (`git worktree add --detach`), never the job's own, it writes `core/mutants.diff` (untracked and not ignored, so test-run sends it): `git diff --relative=core --no-renames --no-color --no-ext-diff <mb> <commit> -- '*.rs'`, paths relative to `core/`, the Cargo workspace root cargo-mutants reads them against.
+3. One call runs from the scratch copy's `core/`, with `CARGO_TARGET_DIR=<scratch>/core/target`: `<mutants' folder>/test-run -- cargo mutants --in-diff mutants.diff -p <pkg> [-p <pkg> …] -j 1 --no-times --caught --unviable --colors never`, the packages sorted, each with its full test set. test-run sends it to a gate VM builder slot (MUTANTS-10). `-j 1`: the slot gives every build one `CARGO_TARGET_DIR`, and parallel cargo-mutants builds there test each other's binaries; each build still uses the slot's share of the cores.
+4. Each output line `^(MISSED|caught|unviable|TIMEOUT)\s+(\S+?):(\d+):(\d+): (.+)$` is one mutant: its outcome, its path relative to `core/`, its line, column and change. A result line matches `^\d+ mutants? tested` or holds `No mutants to filter`.
+5. A mutant whose position, in its file at the commit, sits in code under `#[cfg(kani)]` or `#[cfg(test)]` is excluded, counted only in `EXCLUDED:`: a file whose first non-comment line is `#![cfg(kani)]` or `#![cfg(test)]`; inside the braces of an item whose attribute lines, directly above it or on its own line, hold one of those once whitespace is removed; or inside a block whose first line is `#![cfg(kani)]` or `#![cfg(test)]`. Braces are counted without regard to strings or comments.
+6. A missed mutant's function is the name after the last ` in ` of its change, else the name after `replace ` and before ` -> ` or ` with `, by its last `::` segment with any `<…>` removed. It is Kani-covered when that name is called (`<name>(` or `<name>::<…>(`) in the body of a `#[kani::proof]` fn in any `.rs` file of the same crate at the commit. It still counts as missed, and is listed under its own heading.
+
+### Verdicts and settings
+
+- The result line present, the call within its budget and its exit 0, 2 or 3: `MUTANTS: <c> caught, <m> missed, <t> timeout, <u> unviable`, counted after the exclusions.
+- Past the budget: `MUTANTS: TIMEOUT after <budget_s>s: <counts>`, counted from what was printed before the stop.
+- Anything else is `MUTANTS: NO RESULT (exit <code>)`, never a count: a test-run that couldn't start, no result line (a fall-back to a Mac without cargo-mutants, `no such command: mutants`), a failed baseline (exit 4) or any other exit.
+- The setting is `config.json`'s `mutants.budget_s`, a positive integer (by default 1200) for the call. A `mutants` that isn't an object, or a `budget_s` that isn't a positive integer, stops mutants with exit 2 naming the field, and no mutants.md.
+- Exit 0 whenever it wrote mutants.md, whatever it says; 2 on a usage or settings error, a job that doesn't exist or has no round, or a checks.md that is missing or not `GATE: PASS`; 128 + signal when stopped.
+
+### `round-N/mutants.md`
+
+```
+MUTANTS: <counts> | SKIPPED | TIMEOUT after <n>s: <counts> | NO RESULT (exit <code>)
+COMMIT: <checks.md's COMMIT>
+BUDGET: <budget_s>s
+VM SECONDS: <wall-clock seconds of the test-run call, one decimal> | -
+COMMAND: `<the exact test-run command>` | -
+EXCLUDED: <n> under #[cfg(kani)] or #[cfg(test)]
+WHY: <why>                                (SKIPPED and NO RESULT only)
+
+## Missed                                 (counts and TIMEOUT only)
+- core/<path>:<line>: <the change> (no test notices)
+(or "None.")
+
+## Missed in functions a Kani proof calls (counts and TIMEOUT only)
+- core/<path>:<line>: <the change> (no test notices; <function> is called by a #[kani::proof] harness)
+(or "None.")
+```
+
+The run's whole output is appended to `round-N/mutants.log` under a `==== <command> (<first-line value>, <s>s) ====` line, and mutants prints `MUTANTS: <value> (<job-id> round <N>)` on stdout.
+
+### Failures and recovery
+
+- mutants deletes the round's earlier mutants.md and any leftover `mutants.md.tmp` before anything else and starts mutants.log empty, so a stopped run never leaves an old one behind.
+- The result is written to `mutants.md.tmp` and renamed into place, so a reader sees no mutants.md or the whole of it.
+- A call past its budget gets prove's `end()`: SIGTERM by its test-run's PID, then SIGKILL 30 seconds later; test-run stops its own run's session, on the VM too.
+- SIGTERM or SIGINT to mutants ends the test-run it started, by that PID only, removes the scratch copy (`git worktree remove --force`, then `git worktree prune`) and exits 128 + signal, with no mutants.md. The scratch copy is removed the same way however mutants ends.
+- On exit 2, the skill tells the user what it said and goes on without it.
+
+### Invariants and limits
+
+- Advisory: no verdict, count or timeout moves a job, writes job.json or takes its lock.
+- An unfinished or missing run holds nothing: no reviewer, approver or merge waits for it.
+- The run is of the gated commit only: the scratch copy is that commit, and test-run sends nothing uncommitted from the job's worktree.
+- No run is a clean result without cargo-mutants' own result line: a fall-back to a Mac without it, a failed baseline or a missing line is NO RESULT.
+- **Limits.** The Kani-covered rule matches names, not resolved paths: it misses a function a harness reaches only through another call, and can over-match a same-named function elsewhere in the crate. The run covers obid's Linux build, so a missed mutant in code only macOS compiles is noise. The run is budget-bound: a TIMEOUT counts only what was tested before it.
+
+### Acceptance scenarios
+
+- **MUTANTS-1** (implemented). Given a gated job whose branch changes only a `.md` file, only a `.rs` file outside `core/crates/`, or only deletes a `.rs` file, then mutants exits 0, mutants.md starts `MUTANTS: SKIPPED` and `COMMIT: <head>` with a `WHY:` line, no test-run is called and no worktree is registered. Tests: `test_mutants_1_a_branch_with_no_rust_change_under_core_crates_is_skipped`.
+- **MUTANTS-2** (implemented). Given a branch changing two crates and a non-`.rs` file, then one call runs `test-run -- cargo mutants --in-diff mutants.diff -p <a> -p <b> -j 1 --no-times --caught --unviable --colors never` from `<scratch>/core` with `CARGO_TARGET_DIR=<scratch>/core/target`, its diff's `+++ b/` paths start `crates/` and hold no non-`.rs` file; no scratch copy is left and the job's worktree is unchanged. Tests: `test_mutants_2_one_call_on_the_touched_crates_with_a_diff_relative_to_core`.
+- **MUTANTS-3** (implemented). Given two caught, two missed, one timeout and one unviable mutant and a result line, exit 2, then mutants.md starts `MUTANTS: 2 caught, 2 missed, 1 timeout, 1 unviable` and `COMMIT:`, `BUDGET: 1200s`, `VM SECONDS:`, `COMMAND:` and `EXCLUDED: 0 …`, lists each missed mutant under `## Missed`, the log holds the output and mutants prints the first line and exits 0. Tests: `test_mutants_3_mutants_md_has_its_shape`.
+- **MUTANTS-4** (implemented). Given mutants inside a `#[cfg(kani)] mod`, a `#[cfg(test)] mod { #![cfg(kani)] … }` and a file starting `#![cfg(kani)]`, and one in plain code, then only the plain one is listed and counted, and `EXCLUDED: 3`. Tests: `test_mutants_4_mutants_under_cfg_kani_or_cfg_test_are_excluded`.
+- **MUTANTS-5** (implemented). Given a missed `replace > with >= in big` where a `#[kani::proof]` fn of the crate calls `big(`, then it is listed under `## Missed in functions a Kani proof calls` and still counted as missed; a missed mutant in a function no harness calls stays under `## Missed`. Tests: `test_mutants_5_a_missed_mutant_a_kani_proof_calls_is_listed_apart`.
+- **MUTANTS-6** (implemented). Given `budget_s: 1` and a run that printed one caught and one missed mutant and doesn't end, then `MUTANTS: TIMEOUT after 1s: 1 caught, 1 missed, 0 timeout, 0 unviable`, the missed one listed, the run's process gone, no scratch copy left and exit 0. Given SIGTERM to mutants mid-run, then exit 143, no mutants.md, the run's process gone and no scratch copy left. Tests: `test_mutants_6_a_run_past_its_budget_is_timeout_with_what_it_tested`, `test_mutants_6_a_stop_ends_the_run_and_removes_the_scratch_copy`.
+- **MUTANTS-7** (implemented). Given a run that fell back to this Mac with `no such command: mutants` (exit 101), one that prints mutants but no result line, or a failed baseline (exit 4), then each writes `MUTANTS: NO RESULT (exit <code>)` with a `WHY:`, never a count, and exits 0. Tests: `test_mutants_7_a_run_with_no_result_is_never_a_count`.
+- **MUTANTS-8** (implemented). Given `"budget_s": 0`, `"budget_s": "20"` or `"mutants": 5`, a job with round 0, a missing job or a usage error, or a checks.md that is `GATE: FAIL` or missing, then mutants exits 2 naming what is wrong, with no mutants.md and no test-run call; with no `mutants` key the budget is 1200s. Tests: `test_mutants_8_invalid_settings_stop_before_anything`, `test_mutants_8_no_passing_gate_or_round_stops_before_anything`, `test_mutants_8_the_budget_is_1200s_by_default`.
+- **MUTANTS-9** (implemented). Given missed, TIMEOUT, NO RESULT and SKIPPED runs, then job.json is byte for byte unchanged and no `.lock` file appears in the job's folder. Tests: `test_mutants_9_it_never_writes_job_json_or_takes_its_lock`.
+- **MUTANTS-10** (implemented). Given a worktree touching macOS-only code, then `test-run -- cargo mutants …` goes to a gate VM builder slot, never the Mac worker, and `sh -c "cargo mutants"` stays on this Mac, as for `cargo kani` (REMOTE-48). Tests: `test_mutants_10_a_mutants_run_with_macos_only_changes_goes_to_the_vm`, `test_mutants_10_a_mutants_run_after_another_command_stays_on_this_mac`, `test_mutants_10_a_mutants_run_goes_to_the_vm_not_the_mac_worker`.
+- **MUTANTS-11** (implemented). Given setup.sh's host script, then it holds `MUTANTS=27.1.0`; root installs `cargo install --locked cargo-mutants --version 27.1.0` into the builder's `.cargo` after its toolchain and before the tightening, unless `cargo install --list` holds `cargo-mutants v27.1.0:`; no `oby-builder` call installs it; one builder call checks `cargo mutants --version` is `cargo-mutants 27.1.0` with a Cargo home of its own, and setup stops before `is set up` when it isn't; `--pins` prints no cargo-mutants line. Tests: `test_mutants_11_setup_installs_cargo_mutants_for_the_builder_as_root`, `test_mutants_11_setup_stops_when_cargo_mutants_fails_for_the_builder`, `test_setup_pins_are_ci_yml_s`.
+- **MUTANTS-12** (implemented). Given a run that writes mutants.md, then a reader at any moment sees either no mutants.md or the whole of it, and a `mutants.md.tmp` left from a stopped run is gone after the next run. Tests: `test_mutants_12_mutants_md_appears_whole_by_a_rename`.
