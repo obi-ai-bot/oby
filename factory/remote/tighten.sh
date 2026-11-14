@@ -7,13 +7,14 @@
 #   tighten <home> <root> <gate> <oby-check.sh> <scratch>
 #
 # It removes group and other write from every entry but a link under <home>/.cargo and <home>/.rustup,
-# and from <root> and the slot-* folders in it (not what is in them); <gate> is installed 0755 by setup's
+# and from <root>, the slot-* folders in it and, on the Mac worker, its builders folder and the builder-*
+# folders in that (not what is in them); <gate> is installed 0755 by setup's
 # earlier step, so it is only checked. Then it fails, naming each path, when any of them is still writable
 # by others or a binary is missing, and when <oby-check.sh>'s own rule refuses <home>/.cargo/bin's
 # oby-check-blok. Last, it prints their modes.
 
-# The entries but links under <home>/.cargo and <home>/.rustup, and <root> with the slots it has (not
-# inside them), that group or others may write, each ended by a NUL.
+# The entries but links under <home>/.cargo and <home>/.rustup, and <root> with the slots and builder
+# slots it has (not inside them), that group or others may write, each ended by a NUL.
 tighten_writable() {
     local home=$1 root=$2 path deep=()
     local shallow=("$root")
@@ -23,7 +24,7 @@ tighten_writable() {
     if ((${#deep[@]})); then
         find "${deep[@]}" ! -type l \( -perm -020 -o -perm -002 \) -print0
     fi
-    for path in "$root"/slot-*; do
+    for path in "$root"/slot-* "$root/builders" "$root"/builders/builder-*; do
         if [[ -e "$path" ]]; then shallow+=("$path"); fi
     done
     find "${shallow[@]}" -prune ! -type l \( -perm -020 -o -perm -002 \) -print0
@@ -80,7 +81,7 @@ tighten() {
 
     printf 'setup.sh: %s\n' "modes:"
     modes=("$home/.cargo" "$home/.cargo/bin" "$home/.cargo/bin/oby-check-blok" "$home/.cargo/bin/oby-check-blok-nodes")
-    for path in "$home/.rustup" "$home/.rustup/toolchains"; do
+    for path in "$home/.rustup" "$home/.rustup/toolchains" "$root/builders" "$root"/builders/builder-*; do
         if [[ -e "$path" ]]; then modes+=("$path"); fi
     done
     ls -ld "${modes[@]}" "$gate" "$root" "$root"/slot-*
