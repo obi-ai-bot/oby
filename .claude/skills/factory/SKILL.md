@@ -31,6 +31,7 @@ worktree           → factory/<job-id> from origin/<base>
 spec-writer (opus) → spec.md
 builder (opus)     → commits; moves the task file to factory/queue/done; the first push opens a draft PR
 gate (script)      → checks.sh (scripts/oby-check.sh); FAIL → builder gets the log, no reviewers spawned
+prove (script)     → factory/bin/prove, for jobs with the proofs surface; PASS | ADVISORY-FAIL | SKIPPED → reviewers; FAIL | TIMEOUT → builder
 reviewers (routed) → parallel, WAIT FOR ALL; CHANGES → builder → gate → reviewers
 approver (opus)    → APPROVE: PR ready, gh pr merge --squash --auto --match-head-commit <gated head>
                      ESCALATE: decision as PR comment, the PR stays a draft, the job waits for the owner
@@ -56,6 +57,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/bin/job                         the only writer of job.json
 <repo>/factory/bin/gate                        runs checks.sh in a worktree → round-N/checks.md
 <repo>/factory/bin/route                       risk + surfaces → the job's agents
+<repo>/factory/bin/prove                       re-runs a proofs job's Kani harnesses on the gated commit → round-N/proofs.md
 <repo>/factory/bin/test-run                    runs a builder's or approver's own test, clippy or build run: one at a time, below the gates; refuses the shared Cargo folder
 <repo>/factory/bin/check-lock                  the gate's lock holder for a check that builds Rust: stops its leftovers, passes its code
 <repo>/factory/bin/child_session.py            a command in a session of its own, its leftovers stopped; shared by check-lock, test-run, nightly
@@ -73,6 +75,8 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/jobs/<job-id>/spec.md
 <repo>/factory/jobs/<job-id>/build.md
 <repo>/factory/jobs/<job-id>/round-<N>/checks.md        the gate's verdict for round N
+<repo>/factory/jobs/<job-id>/round-<N>/proofs.md        prove's verdict for round N
+<repo>/factory/jobs/<job-id>/round-<N>/proofs.log       prove's Kani runs for round N
 <repo>/factory/jobs/<job-id>/round-<N>/review-<r>.md    one per routed reviewer
 <repo>/factory/jobs/<job-id>/round-<N>/queue-failure.md why GitHub's merge queue removed the PR, quoted data
 <repo>/factory/jobs/<job-id>/decision.md                APPROVE or ESCALATE
@@ -148,17 +152,33 @@ gate's `round-<N-1>/checks.md`, the reviews in `round-<N-1>/`, or
 **gate.** Run `factory/bin/gate <id>` in the background: Oby's check builds and
 tests Rust, and can take many minutes. It prints `GATE: PASS` or `GATE: FAIL`.
 
-- PASS: `factory/bin/job advance <id> review` and go to **review**.
+- PASS: a job whose `job.json` `intake.surfaces` holds `proofs` goes
+  `factory/bin/job advance <id> prove`, then to **prove**. Every other job goes
+  `factory/bin/job advance <id> review`, then to **review**.
 - FAIL: `factory/bin/job advance <id> build`. If it refuses because this was the
   last round, `factory/bin/job advance <id> needs-human` instead. Otherwise
   resume the builder for the next round with
   `The gate failed: read round-<N-1>/checks.md and checks.log, fix it, push, and update build.md.`
   No reviewer runs on a failing build.
 
+**prove.** Run `factory/bin/prove <id>` in the background, like the gate: its
+harnesses run on the gate VM through test-run. It prints
+`PROOFS: <verdict> (<id> round <N>)`.
+
+- `PASS`, `ADVISORY-FAIL` or `SKIPPED`: `factory/bin/job advance <id> review`
+  and go to **review**.
+- `FAIL` or `TIMEOUT`: `factory/bin/job advance <id> build` (or `needs-human`
+  when it refuses because this was the last round), then resume the builder
+  for the next round with
+  `The proofs failed: read round-<N-1>/proofs.md and proofs.log, fix it, push, and update build.md.`
+- Exit 2 (it couldn't judge): stop this job and tell the user what prove said.
+
 **review.** Spawn every reviewer in `job.json` `agents.reviewers` **in one
 message**, so they run in parallel: `subagent_type` `reviewer-<r>`, model from
 the same map, prompt `<header> Review round <N>.` plus the port for `ux` and
-`ui`. **WAIT FOR ALL.** Each time one finishes, run
+`ui`. Spawn a lens only when `.claude/agents/reviewer-<r>.md` exists; when
+one doesn't, spawn no reviewer for that job and tell the user which file is
+missing. **WAIT FOR ALL.** Each time one finishes, run
 `factory/bin/job sync <id>` so the dashboard fills in. When every reviewer has
 finished:
 
@@ -271,7 +291,7 @@ then moves the job to `merged`; stop any agents still running for it.
 stopped. For a `resume` job, run its stage's step again: `intake` and `spec`
 respawn their agent; `build` spawns a new builder told it is resuming (it reads
 `build.md` and `git log` to see how far the last one got); `gate` runs the
-gate; `review` spawns only the reviewers whose `review-<r>.md` is missing in
+gate; `prove` runs `factory/bin/prove` again; `review` spawns only the reviewers whose `review-<r>.md` is missing in
 the current round; `approve` respawns the approver; `merging` runs
 `factory/bin/job merge <id>`. A `queued` job needs no agent: `factory/bin/job
 queue` settles it.

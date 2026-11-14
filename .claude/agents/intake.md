@@ -67,15 +67,19 @@ For ACCEPT, rate:
   call it, the lanes and Oby's box (sandbox, egress), agent logins and the
   Keychain, the vault, signed words and approvals, publishing and merging,
   the secret scan, untrusted text reaching an agent, the Obysphere, or a
-  security path (`.claude/`, AGENTS.md, CI files, the check's files). Both,
-  or `none`.
+  security path (`.claude/`, AGENTS.md, CI files, the check's files);
+  `proofs` if it changes pure, synchronous decision logic in Rust (a pure
+  function, a state machine transition, an encode/decode pair, an ordering
+  or arithmetic rule), which the factory then proves with Kani, the only
+  proof tool wired in. Never for async, I/O or concurrency code, and never
+  outside Rust. Any of them together, or `none`.
 
 ## Write intake.md
 
 ```markdown
 DECISION: ACCEPT | NEEDS-INFO | REJECT
 RISK: low | medium | high
-SURFACES: ui, security | ui | security | none
+SURFACES: ui, security, proofs | ui | security | proofs | none
 RESCOPED: yes | no
 
 ## Summary
