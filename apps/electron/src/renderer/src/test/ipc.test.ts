@@ -45,7 +45,7 @@ vi.mock('electron', async () => {
     focus() {}
   }
   the.app = Object.assign(new EventEmitter(), {
-    isPackaged: false, commandLine: { hasSwitch: () => false, appendSwitch() {} }, getPath: () => the.userData,
+    isPackaged: false, commandLine: { hasSwitch: () => false, appendSwitch() {} }, getPath: () => the.userData, getVersion: () => '1.0.0',
     enableSandbox() {}, whenReady: () => Promise.resolve(), setAsDefaultProtocolClient() {}, quit() {},
   });
   const capture = (kind: 'on' | 'handle') => (name: string, f: Handler) => { the.handlers.set(name, { kind, f }); };
