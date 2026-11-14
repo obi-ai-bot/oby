@@ -102,8 +102,7 @@ final class PhoneVoice {
                 try session.setActive(true)
                 let engine = AVAudioEngine()
                 let source = engine.inputNode.outputFormat(forBus: 0)
-                let speech = try await PhoneSpeech.make(request: UUID().uuidString, sampleRate: source.sampleRate,
-                                                        sourceFormat: source, context: context,
+                let speech = try await PhoneSpeech.make(request: UUID().uuidString, sourceFormat: source, context: context,
                                                         onCancel: { [weak self] in
                     self?.fail(RunnerError(message: "Listening was interrupted. Tap the mic to try again."), token: token)
                 }) { [weak self] words in

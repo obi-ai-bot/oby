@@ -1478,28 +1478,6 @@ nonisolated struct Runner: Sendable {
     }
     #endif
 
-    /// The Apple Watches paired with the runner, for its Watch API. The Mac lists and removes them
-    /// too; pairing one takes the iPhone, with the watch at hand.
-    func watches() async throws -> [PairedWatch] { try await call("GET", "v1/watches") }
-
-    func removeWatch(_ id: String) async throws {
-        struct Answer: Decodable { var removed: String }
-        let _: Answer = try await call("DELETE", "v1/watches/\(id)")
-    }
-
-    #if os(iOS)
-
-    /// Pairs a watch's key, approved with this phone's key, and hands the runner the Access service token
-    /// for its vault. Answers the watch's id and the Watch API's address.
-    func pairWatch(name: String, publicKey: Data, clientID: String, clientSecret: String, approval: PairingApproval) async throws -> (id: String, url: URL) {
-        struct Body: Encodable { var name: String; var publicKey: String; var accessClientId: String; var accessClientSecret: String; var approval: PairingApproval }
-        struct Answer: Decodable { var id: String; var url: URL }
-        let answer: Answer = try await call("POST", "v1/watches", body: Body(name: name, publicKey: publicKey.base64EncodedString(),
-                                                                          accessClientId: clientID, accessClientSecret: clientSecret, approval: approval))
-        return (answer.id, answer.url)
-    }
-    #endif
-
     /// Registers a device's publishing key (docs/runner-api.md, "POST /v1/devices"): a key the
     /// runner doesn't know needs the owner's presence (a paired phone's own pairing, or the runner's
     /// pairing naming it), else 403.
@@ -1711,13 +1689,6 @@ nonisolated struct DispatchedJob: Encodable {
         if job.check == nil { try nulls.encodeNil(forKey: .check) }
         if job.model == nil { try nulls.encodeNil(forKey: .model) }
     }
-}
-
-/// A watch paired with the runner, as `GET /v1/watches` lists it.
-nonisolated struct PairedWatch: Codable, Identifiable, Equatable, Sendable {
-    var id: String
-    var name: String
-    var registered: Date
 }
 
 /// An app or API the runner's agents use through its broker, as `GET /v1/connections` lists it

@@ -6,13 +6,10 @@ import SwiftUI
 /// only the Mac can do (open at login, adding or signing in an agent, connecting GitHub or Tetrix,
 /// pairing another device, updating Oby) stays on the Mac, and its rows say so.
 struct SettingsScreen: View {
-    /// Deskree's own Macs (`showEverything`) also get Apple Watch without iPhone.
-    @AppStorage(Launch.everythingKey) private var everything = false
-
     var body: some View {
         SettingsPageFrame(title: "Settings") {
             SetGroup {
-                ForEach(PhoneSettingsPage.allCases.filter { everything || $0 != .watch }, id: \.self) { page in
+                ForEach(PhoneSettingsPage.allCases, id: \.self) { page in
                     NavigationLink { page.screen } label: {
                         SetRow(page.label) {
                             Image(systemName: "chevron.right").font(Tokens.font(12, .semibold)).foregroundStyle(Tokens.muted)
@@ -35,7 +32,7 @@ struct SettingsScreen: View {
 
 /// Electron's Settings pages on obid, in its order.
 enum PhoneSettingsPage: CaseIterable {
-    case general, agents, remote, connectors, about, watch
+    case general, agents, remote, connectors, about
 
     var label: String {
         switch self {
@@ -44,7 +41,6 @@ enum PhoneSettingsPage: CaseIterable {
         case .remote: "Remote access"
         case .connectors: "Connectors"
         case .about: "About"
-        case .watch: "Apple Watch"
         }
     }
 
@@ -56,7 +52,6 @@ enum PhoneSettingsPage: CaseIterable {
             case .remote: RemotePage()
             case .connectors: ConnectorsPage()
             case .about: SetGroup { SetRow("Version") { SetValue(SettingsScreen.version) } }
-            case .watch: WatchPage()
             }
         }
     }
@@ -373,39 +368,4 @@ private struct ModelMenu: View {
     }
 
     private func name(_ id: String, _ list: [(String, String)]) -> String { list.first { $0.0 == id }?.1 ?? (id.isEmpty ? "—" : id) }
-}
-
-/// Apple Watches that reach the Mac without this iPhone (`showEverything` only, as before).
-private struct WatchPage: View {
-    @Environment(Phone.self) private var phone
-    @State private var watchPairing = WatchPairing()
-    @State private var problem: String?
-
-    var body: some View {
-        SetGroup("Apple Watch without iPhone",
-                 footer: "Away from this iPhone, your watch reaches your Mac through your Cloudflare Tunnel. Paste the Cloudflare Access service token, then pair with Oby open on the watch.",
-                 problem: problem) {
-            SetRow("Client ID") { SetField("Client ID", text: $watchPairing.clientID, prompt: "…access", width: 180).textInputAutocapitalization(.never) }
-            SetRow("Client secret") { SetField("Client secret", text: $watchPairing.clientSecret, prompt: "Secret", secret: true, width: 180) }
-            SetRow(watchPairing.watches.isEmpty ? "No watch paired" : "Pair another watch") {
-                Button(watchPairing.busy ? "Pairing…" : "Pair") {
-                    Task {
-                        problem = nil
-                        do { try await watchPairing.pair(phone) } catch { problem = error.localizedDescription }
-                    }
-                }
-                .buttonStyle(.set)
-                .disabled(!watchPairing.canPair)
-            }
-            ForEach(watchPairing.watches) { watch in
-                SetRow(watch.name, about: "Paired") {
-                    Button("Remove", role: .destructive) {
-                        Task { do { try await watchPairing.remove(watch.id, phone) } catch { problem = error.localizedDescription } }
-                    }
-                    .buttonStyle(.set)
-                }
-            }
-        }
-        .task { try? await watchPairing.load(phone) }
-    }
 }
