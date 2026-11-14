@@ -48,16 +48,34 @@ export const SETTINGS_PAGES = [
 ].filter((p) => everything || !LATER.has(p.id));
 export const settingsLabel = (id: string) => SETTINGS_PAGES.find((p) => p.id === id)?.label ?? 'Settings';
 
-// What's set, kept while the app runs (a mock: nothing is saved anywhere)
+// What's set in this launch; in the Mac app each row is kept across launches by main, in
+// settings.json's `local` (main/settings.ts, docs/contracts/live-state.md, LIVE-25 and 26), and in
+// a browser (npm run web) only while the page is open. accounts is never kept: on obid it's
+// obid's own list (replaceAccounts).
 const values = new Map<string, unknown>();
 const listeners = new Set<() => void>();
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
+const NOT_KEPT = 'accounts';
+// what main kept, read once as the app starts: a row shows it until it's set again in this launch
+const kept = new Map<string, unknown>();
+window.app?.settings?.local().then((local) => {
+  if (!local) return;
+  for (const [key, v] of Object.entries(local)) if (key !== NOT_KEPT) kept.set(key, v);
+  listeners.forEach((l) => l());
+}, () => {});
+// a kept value only of the default's own type (LIVE-26)
+const sameType = (a: unknown, b: unknown) => typeof a === typeof b && Array.isArray(a) === Array.isArray(b) && (a === null) === (b === null);
 export function useSetting<T>(key: string, initial: T): [T, (v: T) => void] {
   const value = useSyncExternalStore(
     subscribe,
-    () => (values.has(key) ? values.get(key) : initial) as T,
+    () => (values.has(key) ? values.get(key) : kept.has(key) && sameType(kept.get(key), initial) ? kept.get(key) : initial) as T,
   );
-  return [value, (v) => { values.set(key, v); listeners.forEach((l) => l()); }];
+  return [value, (v) => {
+    values.set(key, v);
+    listeners.forEach((l) => l());
+    // one main can't keep stays for this launch only
+    if (key !== NOT_KEPT) window.app?.settings?.keep(key, v).catch(() => {});
+  }];
 }
 // The same, kept across launches (localStorage, oby.setting.<key>): what's set here and nowhere
 // else yet (obid has no such setting), so it isn't lost each time the app quits

@@ -104,6 +104,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   notifications: { args: [false], refusal: null },
   'open-notification-settings': { args: [], refusal: undefined },
   updates: { args: ['check'], refusal: null },
+  'local-settings': { args: [], refusal: null },
+  'local-setting': { args: ['login', false], refusal: null },
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
 };
 
