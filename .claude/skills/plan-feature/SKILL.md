@@ -14,7 +14,7 @@ What "Ready" and "Done" mean, and the contract's sections, are defined once else
 
 ## 1. Read before writing
 
-1. **Plan from `origin/dev`, never the checkout.** `git fetch origin dev`, then `git rev-list --count dev..origin/dev`: a local `dev` is often hundreds of commits behind. Unpack a copy into a scratch folder (`git archive origin/dev | tar -x -C <scratch>`, then `git init -q && git add -A && git commit -qm base` there so the check's plan mode works) and read, grep and count lines in that. That includes AGENTS.md: the copy in your context may be the stale one.
+1. **Plan from `origin/dev`, never the checkout.** `git fetch origin dev`, record the commit you read it at (`git rev-parse --short origin/dev`: the draft's stamp, step 5), then `git rev-list --count dev..origin/dev`: a local `dev` is often hundreds of commits behind. Unpack a copy into a scratch folder (`git archive origin/dev | tar -x -C <scratch>`, then `git init -q && git add -A && git commit -qm base` there so the check's plan mode works) and read, grep and count lines in that. That includes AGENTS.md: the copy in your context may be the stale one.
 2. The issue, its comments and every issue, PR or decision it links: `gh issue view <n> -R obi-ai-bot/oby --json title,body,labels,comments` (plain `--comments` can print nothing). Its board row: `gh project item-list 2 --owner obi-ai-bot --limit 1000 --format json`, filtered on the number (Status, Area, Priority). Something not in Now is planned ahead of its turn: say so.
 3. **A feature issue: `approved` and its Lane**, from the labels and body just fetched (the rule: AGENTS.md, "How we work"). A bug or a chore skips both checks.
    - No `approved` label: stop, and say the owner has to set it (an agent never adds it).
@@ -63,6 +63,7 @@ Each task is one worker PR into `dev`, sized for one agent run that a check can 
 - **Owns its files.** Two tasks that can run at once never touch the same file, contracts and `docs/runner-api.md` included, and each task changes its docs in its own PR (AGENTS.md). Tasks that share a file run in sequence; prefer fewer tasks in sequence over parallel ones that collide. Say which can run in parallel.
 - Carries its context as pointers, not pasted code: `path:line` on `origin/dev` of where to start, the existing function or pattern to reuse, the test to copy from, and what not to touch.
 - Depends on: other tasks by key, decisions by number, open PRs by number.
+- Starts with the draft's drift check (step 5), carrying the stamp's sha and limited to the files this task relies on, so an agent that gets only this task still runs it.
 
 More than 6 tasks, more than two of obid, the Electron app and the phones, or several fixes that don't depend on each other: propose splitting the issue under Decisions needed, and say how.
 
@@ -72,7 +73,8 @@ Write the draft to the path you were given (default: `~/.oby-flow/plans/<issue n
 
 ```
 # Plan: #<n> <title>
-Planned from origin/dev at <short sha> (local dev <N> behind), <date>. Planner: <tool>, <model id>.
+Written at <sha>; relies on <files>. Local dev <N> behind, <date>. Planner: <tool>, <model id>.
+git fetch origin dev && git diff --stat <sha>..origin/dev -- <files>
 Board: <Status>, <Area>, <Priority>.
 ## Decisions needed            (or "None")
 ## Already true on dev         (what exists, with paths; what the issue got wrong)
@@ -80,6 +82,8 @@ Board: <Status>, <Area>, <Priority>.
 ## Tasks                       (key, scenarios, files, proof commands, inside/outside the box, context, depends on, parallel with)
 ## Risks                       (what could make an agent fail: environment, flaky tests, box limits, open PRs)
 ```
+
+`<sha>` is the `origin/dev` commit recorded in step 1.1. `<files>` are the real paths on `origin/dev` that "Already true on dev", the contract and the tasks rest on: the files read and cited, and the files the tasks will touch that already exist. The line under the stamp is the drift check, with the plan's own sha and files filled in, and it is the first thing run before any work from the draft. No output: the work starts. Any change in those files: the work stops until the plan is re-checked against the new code and re-stamped with the new sha.
 
 Then stop. Don't edit the issue, the board or any code, and don't dispatch: the owner reads the draft, settles the decisions, and says what goes where. When they approve, the contract goes into the issue and the issue moves on the board (AGENTS.md, "Update the issue at every step").
 

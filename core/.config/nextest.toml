@@ -24,8 +24,3 @@ path = "junit.xml"
 [[profile.ci.overrides]]
 filter = 'binary_id(obid) & test(=codex::tests::a_command_ends_the_codex_process_at_once)'
 retries = 2
-
-# R01-18: real checks of `sleep 15`, `sleep 3` and `sleep 60` set its order (runner_api.rs:627)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::runner_api) & test(=admission_5_a_job_back_from_the_check_queue_never_passes_max_running)'
-retries = 2
