@@ -771,7 +771,7 @@ impl Link {
         }
         let membership = files.load_membership();
         let delegation = files.load_delegation();
-        // What obid's log layer takes out of plug-ins' lines (crate::logs).
+        // What obid's log writer takes out of plug-ins' lines (crate::secrets::Redacting).
         let secrets = crate::secrets::known();
         if let Some(key) = &key {
             learn_key(key);
