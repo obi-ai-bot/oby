@@ -23,3 +23,5 @@ AGENTS.md's wording, not a quote.
 ## Notes
 
 Amends [2026-10-26-own-lane-for-claude-code-jobs.md](2026-10-26-own-lane-for-claude-code-jobs.md): the own lane is the default for every Claude Code job of the owner's own.
+
+lanes.md's Status lists the owner's decisions of 2026-11-09 for the lanes, which lead and are followed exactly; [2026-11-10-lane-6a.md](2026-11-10-lane-6a.md) and [2026-11-10-lane-10a.md](2026-11-10-lane-10a.md) narrow two of them.

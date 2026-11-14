@@ -1,6 +1,6 @@
 # Decisions
 
-The owner's decisions that AGENTS.md dates, one file each, with the owner's words, what each replaced, the contracts it touches and whether it still holds. AGENTS.md states the rule; the decision file holds the history.
+The owner's decisions that AGENTS.md dates, and those taken out of a contract in `docs/contracts/` (the template's "Current behavior, not history"), one file each, with the owner's words, what each replaced, the contracts it touches and whether it still holds. AGENTS.md or the contract states the rule; the decision file holds the history.
 
 The decision files quote AGENTS.md, and name its sections, as it stood before the rewrite of R13-03 (`git show 3ed5099c:AGENTS.md`). AGENTS.md now states each rule once, without its dates, and links its decision file.
 
@@ -25,6 +25,16 @@ Every decision file has these parts, in this order:
 A rule AGENTS.md replaced but gives no date (the earlier Touch ID, Face ID and password approvals, #1563's ask for jobs, #130's login rule) has no file of its own: the file that replaced it names it under **Replaced**.
 
 `2026-11-13-roadmap-answers.md` is different: a batch of the owner's answers to the roadmap tasks' questions, kept as it was written and listed below under its date.
+
+## Decisions from a contract
+
+A decision taken out of a contract is filed the same way: named `YYYY-MM-DD-<slug>.md`, with the date the contract gave it, and with the nine parts above, the contract standing where they name AGENTS.md, but for three:
+
+- **Contracts and scenarios** names the contract and the scenario ids the decision came from.
+- Under `## The owner's words`, each blockquote is followed by "The owner's words, as <contract> quoted them." or "<contract>'s wording, not a quote."
+- Part 8 is `## Where it is stated`: the contract and its scenarios, and the AGENTS.md section that states the rule too, if AGENTS.md states it.
+
+The contract links the file from the rule as `([why](../decisions/<file>.md))` and keeps the decision's code (`LANE-6a`, `ASK-LESS`) as the rule's label. Other history taken out of a contract (what a fix replaced, a finding and its date, when a scenario was implemented) goes in the pull request's body, not here.
 
 ## Index
 
@@ -52,9 +62,9 @@ Every date that appeared in AGENTS.md at `3ed5099c`, with its files, and the fil
 | 2026-11-03 | [2026-11-03-cursor-usage-from-api2.md](2026-11-03-cursor-usage-from-api2.md) |
 | 2026-11-05 | [2026-11-05-dispatcher-not-harness.md](2026-11-05-dispatcher-not-harness.md) |
 | 2026-11-06 | [2026-11-06-split-it.md](2026-11-06-split-it.md)<br>[2026-11-06-tool-api-hosts-dont-mark-a-job.md](2026-11-06-tool-api-hosts-dont-mark-a-job.md) |
-| 2026-11-08 | [2026-11-08-answers-on-merging-30-and-31.md](2026-11-08-answers-on-merging-30-and-31.md)<br>[2026-11-08-reviews-only.md](2026-11-08-reviews-only.md) |
-| 2026-11-09 | [2026-11-09-own-lane-by-default.md](2026-11-09-own-lane-by-default.md) |
-| 2026-11-10 | [2026-11-10-a-job-at-a-limit-moves.md](2026-11-10-a-job-at-a-limit-moves.md)<br>[2026-11-10-wait-when-no-room.md](2026-11-10-wait-when-no-room.md) |
-| 2026-11-11 | [2026-11-11-check-hands-off-to-blok.md](2026-11-11-check-hands-off-to-blok.md)<br>[2026-11-11-codex-1-bypass-only.md](2026-11-11-codex-1-bypass-only.md) |
-| 2026-11-12 | [2026-11-12-roadmap-is-the-task-files.md](2026-11-12-roadmap-is-the-task-files.md) |
+| 2026-11-08 | [2026-11-08-answers-on-merging-30-and-31.md](2026-11-08-answers-on-merging-30-and-31.md)<br>[2026-11-08-couldnt-judge.md](2026-11-08-couldnt-judge.md)<br>[2026-11-08-own-reads-dont-mark.md](2026-11-08-own-reads-dont-mark.md)<br>[2026-11-08-reviews-only.md](2026-11-08-reviews-only.md)<br>[2026-11-08-test-the-task-names.md](2026-11-08-test-the-task-names.md) |
+| 2026-11-09 | [2026-11-09-lane-12.md](2026-11-09-lane-12.md)<br>[2026-11-09-own-lane-by-default.md](2026-11-09-own-lane-by-default.md) |
+| 2026-11-10 | [2026-11-10-a-job-at-a-limit-moves.md](2026-11-10-a-job-at-a-limit-moves.md)<br>[2026-11-10-agents-below-checks.md](2026-11-10-agents-below-checks.md)<br>[2026-11-10-api-words-stay-quoted.md](2026-11-10-api-words-stay-quoted.md)<br>[2026-11-10-check-stops-when-stalled.md](2026-11-10-check-stops-when-stalled.md)<br>[2026-11-10-hand-review-reads.md](2026-11-10-hand-review-reads.md)<br>[2026-11-10-kept-merge.md](2026-11-10-kept-merge.md)<br>[2026-11-10-lane-10a.md](2026-11-10-lane-10a.md)<br>[2026-11-10-lane-6a.md](2026-11-10-lane-6a.md)<br>[2026-11-10-review-reads-current-head.md](2026-11-10-review-reads-current-head.md)<br>[2026-11-10-second-review-waits.md](2026-11-10-second-review-waits.md)<br>[2026-11-10-wait-when-no-room.md](2026-11-10-wait-when-no-room.md) |
+| 2026-11-11 | [2026-11-11-afterpr-1.md](2026-11-11-afterpr-1.md)<br>[2026-11-11-afterpr-3.md](2026-11-11-afterpr-3.md)<br>[2026-11-11-ask-less.md](2026-11-11-ask-less.md)<br>[2026-11-11-check-hands-off-to-blok.md](2026-11-11-check-hands-off-to-blok.md)<br>[2026-11-11-codex-1-bypass-only.md](2026-11-11-codex-1-bypass-only.md)<br>[2026-11-11-lane-6b.md](2026-11-11-lane-6b.md)<br>[2026-11-11-lanes-4a.md](2026-11-11-lanes-4a.md)<br>[2026-11-11-lanes-ask.md](2026-11-11-lanes-ask.md)<br>[2026-11-11-managed-1.md](2026-11-11-managed-1.md)<br>[2026-11-11-unsafe-1.md](2026-11-11-unsafe-1.md) |
+| 2026-11-12 | [2026-11-12-codex-2.md](2026-11-12-codex-2.md)<br>[2026-11-12-roadmap-is-the-task-files.md](2026-11-12-roadmap-is-the-task-files.md) |
 | 2026-11-13 | [2026-11-13-apple-watch-app-removed.md](2026-11-13-apple-watch-app-removed.md)<br>[2026-11-13-drop-the-mac-merge-gate.md](2026-11-13-drop-the-mac-merge-gate.md)<br>[2026-11-13-roadmap-answers.md](2026-11-13-roadmap-answers.md) (a batch of answers) |
