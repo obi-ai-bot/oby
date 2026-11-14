@@ -1,10 +1,12 @@
-import { ipcMain, type BrowserWindow } from 'electron';
+import { type BrowserWindow } from 'electron';
 import { constants } from 'node:fs';
 import updater from 'electron-updater';
 import { EVERY, FEED, next, onFeed, settings as updaterSettings, type Event, type Update } from '../shared/updates';
 import { writeOwn } from './device';
 import { SETTINGS, settings } from './notify';
 import type { Trusted } from './obid';
+import { ipc } from './ipc';
+import { oneOf, orUndefined } from '../shared/decode';
 
 // Oby updates itself from FEED (docs/contracts/updates.md) with electron-updater: it downloads the
 // zip for this Mac's architecture and refuses it unless its sha512 is latest-mac.yml's, and
@@ -44,8 +46,7 @@ export function updating(trusted: Trusted, current: () => BrowserWindow | null) 
   autoUpdater.on('error', (err) => { console.warn('update:', err.message); on({ kind: 'failed' }); });
   // About: what it shows and Update automatically; with 'check' or 'install', the owner's click,
   // with true or false, Update automatically turned
-  ipcMain.handle('updates', (e, ask: unknown) => {
-    if (!trusted(e)) return null;
+  ipc(trusted).handle('updates', [orUndefined(oneOf('check', 'install', true, false))], (_e, ask) => {
     if (ask === 'check' || ask === 'install') on({ kind: ask });
     else if (typeof ask === 'boolean' && ask !== auto) {
       auto = ask;
@@ -54,7 +55,7 @@ export function updating(trusted: Trusted, current: () => BrowserWindow | null) 
       on({ kind: 'auto', on: auto });
     }
     return { auto, update };
-  });
+  }, null);
   on({ kind: 'start' });
   setInterval(() => on({ kind: 'tick' }), EVERY);
 }
