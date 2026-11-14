@@ -78,7 +78,7 @@ export function BrandMark({ brand, size = 24, mono = false }: { brand: Brand; si
   return (
     <svg width={size} height={size} viewBox={brand.viewBox} aria-hidden="true">
       {brand.parts.map((p, i) => <path key={i} d={p.d} fill={own ? p.fill : 'currentColor'} transform={p.transform} />)}
-      {brand.letter && <text x="12" y="12" textAnchor="middle" dominantBaseline="central" fontSize="10" fontWeight="600" fill={WHITE}>{brand.letter}</text>}
+      {brand.letter && <text x="12" y="12" textAnchor="middle" dominantBaseline="central" fontSize="14" fontWeight="600" fill={WHITE}>{brand.letter}</text>}
     </svg>
   );
 }
