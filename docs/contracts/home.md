@@ -1,18 +1,19 @@
-# Home: the apps never show a job, conversation or inbox state a restart takes back
+# Home: the apps never show a job, conversation or inbox state a restart takes back, and an older obid never writes a newer home
 
 The business behavior contract for how a change to a job, a conversation or an inbox item reaches obid's memory and the apps, from [the template](../business-contract-template.md). The API is `docs/runner-api.md` (`GET /v1/jobs/{id}`, `POST /v1/jobs`, `POST /v1/plans`, `GET /v1/inbox`, `POST /v1/obid/decisions`).
 
 ## Feature and status
 
 - **Outcome:** What Home and a job's page show of a job is what obid kept on disk, and so is what a conversation and the inbox show. A job never shows a state, a revision or a whole job that a restart of obid then takes back; a conversation never shows a change, and the inbox never shows a new item, that a restart takes back. A save that fails is an error the caller sees, not only a log line.
-- **Status:** HOME-1 and HOME-2 **Implemented** (roadmap R02-01). HOME-3 and HOME-4, the same rule for conversations and the inbox's new items, **Implemented** (roadmap R02-02).
-- **Scope:** Every change obid makes to a job and tells the apps of with a `job` event (`Jobs::update`, `insert`, `hear_at_work`, `message_as` and `dismiss`); every change obid makes to a conversation and tells the apps of with a `conversation` or `turn` event; every `inbox` event; and every new inbox item obid makes on its own (a job's permission, GitHub's work, obid's own cards and confirms, the brain's offers, a teammate approval to remove on GitHub). Outside it: a typed transition layer for jobs (R04), append-only turns (R05), the saves obid makes at startup (which send no event), trying a failed save again, and what "Still open" below names.
+- **Status:** HOME-1 and HOME-2 **Implemented** (roadmap R02-01). HOME-3 and HOME-4, the same rule for conversations and the inbox's new items, **Implemented** (roadmap R02-02). HOME-5 to HOME-7, the home's format, **Implemented** (roadmap R02-11).
+- **Scope:** Every change obid makes to a job and tells the apps of with a `job` event (`Jobs::update`, `insert`, `hear_at_work`, `message_as` and `dismiss`); every change obid makes to a conversation and tells the apps of with a `conversation` or `turn` event; every `inbox` event; and every new inbox item obid makes on its own (a job's permission, GitHub's work, obid's own cards and confirms, the brain's offers, a teammate approval to remove on GitHub). And the home's format: after a downgrade, obid stops before it writes anything in its home and says which version wrote it, so no job or setting is lost to an older obid. Outside it: a typed transition layer for jobs (R04), append-only turns (R05), the saves obid makes at startup (which send no event), trying a failed save again, and what "Still open" below names.
 
 ## Behavior
 
 ### Actors and ownership
 
 - **obid** owns the rule: memory and events follow the disk, never lead it. A change is made on a copy of the job, under the lock it read the job under; the copy is saved to `home/jobs/<id>.json`, and only then does it replace the job in memory and go to the apps as a `job` event. What follows the change (a worker woken, the room told, the words noted in the transcript, the cleanup pass woken) follows the save too.
+- **obid** owns the home's format number (`HOME_FORMAT`, 1 for this obid) and its file, `home/schema.json`.
 - **The apps** show nothing new. A request that changed a job and couldn't be saved answers `500` with why, instead of `2xx`; so does `POST /v1/plans` for words a conversation couldn't keep, and `POST /v1/obid/decisions` for an item the inbox couldn't keep.
 
 ### Rules
@@ -25,12 +26,19 @@ The business behavior contract for how a change to a job, a conversation or an i
 - A conversation's change goes into memory, and out as a `conversation` or `turn` event, only once it's saved in `home/conversations`. One whose save failed leaves the conversation as it was. When an account is removed and a conversation that chose it can't be saved without it, that conversation keeps its choice, in memory as on disk, and no event says otherwise; obid logs `conversation <id>: its choice stays: <reason>`. The marks that only restrict a conversation (what it read that wasn't the owner's) stay in memory though their save failed, as a job's do.
 - An `inbox` event goes out only for an item obid saved in `home/inbox`, or again for an item in the inbox whose sort changed (kept in `home/triage.json`, not in the item). obid logs `can't keep inbox item <id>: <reason>` for one it couldn't.
 - A new inbox item whose save failed doesn't exist: not in memory, not in `GET /v1/inbox`, and no event says it was made. A later pass may make it again.
+- The home's format, checked on the configuration's `home` right after obid reads its configuration, before it makes or tightens the home or touches `api-token`, and again first thing in `serve`:
+  - no `schema.json` (nor the home): obid writes `{"format": 1, "writtenBy": "<obid's version>"}` (0600, whole or not at all) and goes on;
+  - a whole-number `format` lower than obid's: obid writes its own format and version over it and goes on. Nothing else in the home is migrated;
+  - the same `format`: obid writes nothing;
+  - a higher `format`: obid stops, writing nothing, and says the file, the version in its `writtenBy` (or that it's unknown), the home's format and obid's own format and version, and to run that version of Oby or newer;
+  - anything else (not JSON, no whole-number `format`, a folder, a link to nothing, a read that fails): obid stops the same way, says it can't read the file and why, and leaves it as it is.
 - obid keeps, for each job, why its last save failed, until a later save of it succeeds or it's deleted. A route whose change didn't land answers `500` `The job couldn't be kept: <reason>`, never `404` "There's no such job.", `409` or `2xx`; an inbox answer that carries a change out answers the same.
 
 ### Failures and recovery
 
 - A failed save isn't tried again by obid. The same request, once the disk takes it, lands and is sent once.
 - Still open, each left to a later task: a change to an inbox item that exists already (answered, done, put off, claimed, reopened, settled) whose save failed stays in obid's memory, and in `GET /v1/inbox`, with no event, until a restart takes it back. Items made together with an exchange (another Obi's review request or question, a teammate approval ask, the sharing card) still enter memory before their save. Exchanges send their `exchange` event whatever their save did.
+- A home a newer obid wrote stays as it is: the owner runs that version of Oby or a newer one. Still open: migrating a home's files from one format to the next, and keeping the keys an older obid doesn't know in a job's file (R02-13); obid takes no backup and deletes nothing.
 - A worker whose change couldn't be kept doesn't loop on it: a retry counted only in the job's file ends the job's run with "the job couldn't be kept" instead of trying for ever.
 
 ## Interfaces and dependencies
@@ -40,6 +48,8 @@ The business behavior contract for how a change to a job, a conversation or an i
 - `GET /v1/events`: a `job`, `conversation`, `turn` or `inbox` event only for a change obid saved.
 - `POST /v1/plans`: `500` when the conversation couldn't keep the words.
 - `POST /v1/obid/decisions`: `500` with `The item couldn't be kept: <reason>` when the `confirm` item couldn't be saved, instead of `202`.
+- `home/schema.json` (0600): `{"format": <whole number>, "writtenBy": "<obid's version>"}`, with exactly those two keys when obid writes it.
+- obid's exit code `3`: a home a newer obid wrote, or whose `schema.json` obid can't read. The reason is on stderr and in `home/last-start-error`, which the apps show as for every failed start (docs/runner-api.md, "obid only: configuration"); no other start failure uses `3`.
 
 ## Acceptance scenarios
 
@@ -47,3 +57,6 @@ The business behavior contract for how a change to a job, a conversation or an i
 - **HOME-2.** Given a `home/jobs` obid can't write, when `POST /v1/jobs` makes a job, then the answer is `500` with "couldn't be kept", no `job` event comes, `GET /v1/jobs` lists the same jobs as before, and no new `*.json` is in `home/jobs`. Test: `home_2_a_failed_save_makes_no_job` (core/crates/obid/tests/jobs_api.rs).
 - **HOME-3.** Given a conversation and a `home/conversations` obid can't write, when `POST /v1/plans` brings the owner's words to it, then the answer is `500`, no `conversation` or `turn` event comes within 2 seconds, and `GET /v1/conversations` is unchanged; once the folder is writable again, the same words answer `200`. Test: `home_3_a_failed_conversation_save_sends_no_event` (core/crates/obid/tests/conversations_api.rs). A removed account a conversation chose, when that conversation can't be saved: no `conversation` event, and it keeps the choice; once it can, one event, and the choice is gone. Test: `home_3_a_forgotten_account_that_cant_be_kept_sends_no_event` (core/crates/obid/src/conversation.rs).
 - **HOME-4.** Given a joined obid and a `home/inbox` obid can't write, when `POST /v1/obid/decisions` asks for a teammate approval, then the answer is `500` with "couldn't be kept", no `inbox` event comes within 2 seconds, and `GET /v1/inbox` lists no `confirm` item. Once the folder is writable again, the same request answers `202`, one `inbox` event carries the item, and `GET /v1/inbox` lists it; with the folder unwritable again, putting it off sends no `inbox` event for it. Test: `home_4_a_failed_inbox_save_sends_no_event` (core/crates/obid/tests/sphere_api.rs).
+- **HOME-5.** Given a home with no `schema.json`, when obid starts, then it writes `schema.json` (0600) with `format` 1 and its own version as `writtenBy`, and goes on. Test: `home_5_a_new_home_gets_a_format` (core/crates/obid/tests/startup.rs).
+- **HOME-6.** Given a home whose `schema.json` `format` is higher than obid's (`{"format": 2, "writtenBy": "9.9.9"}`), when obid starts, then it exits with code 3 before any file in the home changes, and its error, on stderr and in `home/last-start-error`, names `9.9.9`. `last-start-error` is the one file that may change: every other file and folder under the home, the home itself included, keeps its names, bytes, modification times and modes. A `schema.json` that holds `not json` stops it the same way, left byte for byte as it was. Test: `home_6_a_newer_home_stops_obid` (core/crates/obid/tests/startup.rs).
+- **HOME-7.** Given a home with a lower format (`{"format": 0, "writtenBy": "0.0.0"}`), when obid starts, then it raises `schema.json` to `format` 1 with its own version, and goes on. Test: `home_7_an_older_home_is_raised` (core/crates/obid/tests/startup.rs).
