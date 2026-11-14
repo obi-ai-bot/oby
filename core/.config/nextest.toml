@@ -19,8 +19,3 @@ path = "junit.xml"
 # the Mac runs it once more only when it failed and is listed at the merge base too. The list only
 # shrinks: a new entry comes with its task, factory/queue/tasks/<key>.md, in the same change, and
 # the fix takes its entry out.
-
-# R01-17: Codex's process must end within 1.5 seconds of wall clock (codex.rs:1751)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid) & test(=codex::tests::a_command_ends_the_codex_process_at_once)'
-retries = 2
