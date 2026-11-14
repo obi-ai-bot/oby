@@ -1,8 +1,11 @@
-//! Routines (docs/runner-api.md, "obid only: routines (#395)"): a saved request with a schedule.
-//! obid checks every minute; a routine that's due starts an ordinary job through `Jobs::create`,
-//! so routing, the permission mode, the checks, the secret scan and the review are a job's, and
-//! adds a turn to its conversation, with the job's card. One file per routine in `home/routines/`
-//! (0600), its runs inside.
+//! Routines (docs/runner-api.md, "obid only: routines (#395)"): a saved request with a schedule
+//! or on GitHub events. obid checks every minute; a routine that's due starts an ordinary job
+//! through `Jobs::create`, so routing, the permission mode, the checks, the secret scan and the
+//! review are a job's, and adds a turn to its conversation, with the job's card; one on GitHub
+//! events starts its feed events' jobs ([`Routines::on_github`]). One file per routine in
+//! `home/routines/` (0600), its runs and receipts inside.
+
+mod trigger;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +22,7 @@ use serde_json::{Value, json};
 
 use crate::api::{ApiError, Shared, answer};
 use crate::events::Events;
+use crate::github_work::{Feed, Item, Lists, opened_by, red, start_routine};
 use crate::job::{Job, RoutineMark, Status, Waiting};
 use crate::jobs::{Jobs, NewJob};
 
@@ -178,6 +182,124 @@ impl Schedule {
     }
 }
 
+/// What starts a routine instead of a schedule: an event in the GitHub work feed (ROUTINES-9).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct On {
+    pub github: OnGithub,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnGithub {
+    pub repo: String,
+    pub event: Event,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Event {
+    ReviewRequested,
+    Assigned,
+    ChecksFailed,
+    Labeled,
+}
+
+impl Event {
+    /// The kind of job it makes when the routine names none.
+    fn kind(self) -> &'static str {
+        if self == Event::ReviewRequested {
+            "review"
+        } else {
+            "fix"
+        }
+    }
+}
+
+impl OnGithub {
+    /// The feed's list its events are in for a routine making `kind` jobs, or none: it makes
+    /// none of those.
+    fn list(&self, kind: &str) -> Option<&'static str> {
+        match (self.event, kind) {
+            (Event::ReviewRequested | Event::Labeled, "review") => Some("reviews"),
+            (Event::Assigned | Event::Labeled, "fix") => Some("assigned"),
+            (Event::ChecksFailed, "fix") => Some("mine"),
+            _ => None,
+        }
+    }
+
+    /// Why it isn't a trigger of a routine on `repo` making `kind` jobs.
+    fn checked(&self, repo: &str, kind: &str) -> Result<(), &'static str> {
+        let label = self.label.as_deref();
+        if !self.repo.eq_ignore_ascii_case(repo) {
+            Err("on.github.repo is the routine's repo.")
+        } else if (self.event == Event::Labeled) != label.is_some() {
+            Err("label is given with the labeled event, and only with it.")
+        } else if label
+            .is_some_and(|l| l.trim().is_empty() || l.chars().count() > 50 || l.contains('\n'))
+        {
+            Err("label is one line of 1 to 50 characters.")
+        } else if self.list(kind).is_none() {
+            Err(
+                "reviewRequested makes review jobs, assigned and checksFailed fix jobs, labeled either.",
+            )
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether `item` is one of its events, for a routine making `kind` jobs.
+    fn matches(&self, kind: &str, item: &Item) -> bool {
+        let label = self.label.as_deref().unwrap_or_default();
+        self.list(kind) == Some(&item.list)
+            && item.repo.eq_ignore_ascii_case(&self.repo)
+            && match self.event {
+                Event::ChecksFailed => {
+                    red(item) && item.draft != Some(true) && item.fork == Some(false)
+                }
+                Event::Labeled => item.labels.iter().any(|l| l.eq_ignore_ascii_case(label)),
+                Event::ReviewRequested | Event::Assigned => true,
+            }
+    }
+
+    /// Its event on `item`, `<repo>#<number>@<event>@<marker>`: the head for a review request or
+    /// failed checks, the label for `labeled`, nothing for an assigned issue.
+    fn key(&self, item: &Item) -> String {
+        let marker = match self.event {
+            Event::ReviewRequested | Event::ChecksFailed => item.head.as_deref(),
+            Event::Labeled => self.label.as_deref(),
+            Event::Assigned => None,
+        };
+        let event = lower_first(&format!("{:?}", self.event));
+        format!(
+            "{}#{}@{event}@{}",
+            item.repo,
+            item.number,
+            marker.unwrap_or_default()
+        )
+    }
+}
+
+/// What one GitHub event did for a routine on GitHub events, kept before its job is asked for
+/// (ROUTINES-10). Never any of GitHub's text: its key, and obid's own words.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Receipt {
+    pub key: String,
+    pub repo: String,
+    pub number: u64,
+    pub outcome: trigger::Outcome,
+    pub reason: Option<String>,
+    pub job: Option<String>,
+    /// When its outcome was last set.
+    pub at: i64,
+}
+
+/// A receipt's `reason` when its file couldn't be written: no job starts.
+const NOT_KEPT: &str = "obid couldn't keep the receipt, so it started nothing.";
+/// How long a receipt is kept once its item has left the feed.
+const RECEIPTS_FOR: i64 = 7 * 24 * 60 * 60;
+
 /// One run: the time it was due, when obid acted on it, and what came of it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -216,7 +338,10 @@ pub struct Routine {
     pub mode: Option<String>,
     pub check: Option<String>,
     pub rounds: u32,
-    pub schedule: Schedule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Schedule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<On>,
     pub zone: String,
     pub enabled: bool,
     pub created: i64,
@@ -233,6 +358,9 @@ pub struct Routine {
     /// The job of its latest run that started one: skipped runs push that run out of `runs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_job: Option<String>,
+    /// A routine on GitHub events' receipts, oldest set first (ROUTINES-10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receipts: Vec<Receipt>,
 }
 
 impl Routine {
@@ -243,7 +371,7 @@ impl Routine {
     /// How late its latest time still runs, in seconds: its `grace_minutes`, else an hour for an
     /// hourly routine and a day for the rest (ROUTINES-3).
     fn grace(&self) -> i64 {
-        let hourly = matches!(self.schedule, Schedule::Hourly { .. });
+        let hourly = matches!(self.schedule, Some(Schedule::Hourly { .. }));
         i64::from(self.grace_minutes.unwrap_or(if hourly { 60 } else { 1440 })) * 60
     }
 
@@ -253,7 +381,25 @@ impl Routine {
             return None;
         }
         self.schedule
+            .as_ref()?
             .next_after(&self.zone(), self.last_fire.unwrap_or(self.created))
+    }
+
+    /// obid's words for when it runs: its schedule's, or its event's.
+    pub fn when(&self) -> String {
+        let Some(On { github: on }) = &self.on else {
+            return self.schedule.iter().map(Schedule::words).collect();
+        };
+        let (repo, label) = (&on.repo, on.label.as_deref().unwrap_or_default());
+        match on.event {
+            Event::ReviewRequested => format!("When your review is requested in {repo}"),
+            Event::Assigned => format!("When an issue in {repo} is assigned to you"),
+            Event::ChecksFailed => format!("When checks fail on your pull request in {repo}"),
+            Event::Labeled if self.kind == "review" => {
+                format!("When a pull request waiting for your review in {repo} is labeled {label}")
+            }
+            Event::Labeled => format!("When an issue assigned to you in {repo} is labeled {label}"),
+        }
     }
 
     /// `at` as the routine's zone reads it: "9:00".
@@ -271,7 +417,7 @@ impl Routine {
         json!({"id": self.id, "name": self.name, "repo": self.repo, "kind": self.kind,
                "task": self.task, "agent": self.agent, "account": self.account, "mode": self.mode,
                "check": self.check, "rounds": self.rounds, "schedule": self.schedule,
-               "zone": self.zone, "when": self.schedule.words(), "enabled": self.enabled,
+               "on": self.on, "zone": self.zone, "when": self.when(), "enabled": self.enabled,
                "created": obi_protocol::time::format(self.created), "createdBy": self.created_by,
                "conversation": self.conversation,
                "nextRun": self.next_run().map(obi_protocol::time::format),
@@ -316,7 +462,12 @@ impl Routine {
         }
         TimeZone::get(&self.zone)
             .map_err(|_| format!("{} isn't a time zone obid knows.", self.zone))?;
-        self.schedule = self.schedule.clone().checked()?;
+        match (&self.schedule, &self.on) {
+            (Some(schedule), None) => self.schedule = Some(schedule.clone().checked()?),
+            (None, Some(on)) => on.github.checked(&self.repo, &self.kind)?,
+            (Some(_), Some(_)) => return Err("A routine on GitHub events has no schedule.".into()),
+            (None, None) => return Err("A routine has a schedule or an on.".into()),
+        }
         if self.grace_minutes == Some(0) {
             return Err("graceMinutes is at least 1.".into());
         }
@@ -336,7 +487,10 @@ pub struct Draft {
     pub name: String,
     pub repo: String,
     pub task: String,
-    pub schedule: Schedule,
+    #[serde(default)]
+    pub schedule: Option<Schedule>,
+    #[serde(default)]
+    pub on: Option<On>,
     pub zone: String,
     #[serde(default)]
     pub kind: Option<String>,
@@ -448,15 +602,16 @@ impl Routines {
 
     /// Writes it and says so. A routine that can't be written stays as it was on disk; the one in
     /// memory runs on, so a full disk never runs a routine twice in a minute.
-    fn save(&self, routine: &Routine) {
+    fn save(&self, routine: &Routine) -> bool {
         let path = self.dir.join(format!("{}.json", routine.id));
         let written = serde_json::to_vec_pretty(routine)
             .map_err(std::io::Error::other)
             .and_then(|bytes| crate::store::write_private(&path, &bytes));
-        if let Err(e) = written {
+        if let Err(e) = &written {
             tracing::error!("can't keep routine {}: {e}", routine.id);
         }
         self.events.send("routine", routine.to_json());
+        written.is_ok()
     }
 
     /// Every routine, by name.
@@ -476,7 +631,10 @@ impl Routines {
             id: hex_id(),
             name: draft.name,
             repo: draft.repo,
-            kind: draft.kind.unwrap_or_else(|| "investigate".into()),
+            kind: (draft.kind.as_deref())
+                .or(draft.on.as_ref().map(|on| on.github.event.kind()))
+                .unwrap_or("investigate")
+                .into(),
             task: draft.task,
             agent: draft.agent.unwrap_or_else(|| "auto".into()),
             account: draft.account.unwrap_or_else(|| "auto".into()),
@@ -484,6 +642,7 @@ impl Routines {
             check: draft.check,
             rounds: draft.rounds.unwrap_or(1),
             schedule: draft.schedule,
+            on: draft.on,
             zone: draft.zone,
             enabled: true,
             created: now,
@@ -497,6 +656,7 @@ impl Routines {
             runs: vec![],
             grace_minutes: draft.grace_minutes,
             last_job: None,
+            receipts: vec![],
         };
         routine.vet(jobs)?;
         Ok(routine)
@@ -579,7 +739,7 @@ impl Routines {
             routine.task = task;
         }
         if let Some(schedule) = change.schedule {
-            routine.schedule = schedule;
+            routine.schedule = Some(schedule);
         }
         if let Some(zone) = change.zone {
             routine.zone = zone;
@@ -655,6 +815,115 @@ impl Routines {
         self.save(&routine);
         Some(routine)
     }
+
+    /// `receipt` in place of the routine `id`'s one with its key, kept: whether its file was
+    /// written. One that wasn't is `failed` in memory, saying so.
+    fn receipt(&self, id: &str, receipt: Receipt) -> bool {
+        let mut kept = self.lock();
+        let Some(routine) = kept.get_mut(id) else {
+            return false;
+        };
+        routine.receipts.retain(|c| c.key != receipt.key);
+        routine.receipts.push(receipt);
+        let written = self.save(routine);
+        if !written && let Some(c) = routine.receipts.last_mut() {
+            (c.outcome, c.reason) = (trigger::Outcome::Failed, Some(NOT_KEPT.into()));
+        }
+        written
+    }
+
+    /// After a read of the GitHub work feed that offers work (`before` the lists it read last,
+    /// `jobs` the jobs as it began), each enabled routine on GitHub events decides its events new
+    /// to this read and its held ones still in it, one at a time ([`trigger::decide`]). A start's
+    /// receipt is kept before its job is asked for, on the feed's Start's path (ROUTINES-9 to 14).
+    pub async fn on_github(&self, before: &Lists, lists: &Lists, jobs: &[Job], feed: &Feed) {
+        use trigger::{Decision, Facts, Outcome};
+        let now = obi_protocol::time::now();
+        for routine in self.list().into_iter().filter(|r| r.enabled) {
+            let (id, kind) = (&routine.id, &routine.kind);
+            let Some(On { github: on }) = &routine.on else {
+                continue;
+            };
+            let events = |lists: &Lists| -> Vec<(Item, String)> {
+                let matching = lists.all().filter(|i| on.matches(kind, i));
+                matching.map(|i| (i.clone(), on.key(i))).collect()
+            };
+            let (had, events) = (events(before), events(lists));
+            // Kept 7 days, and as long as its item is in the feed with the same marker.
+            let old =
+                |c: &Receipt| now - c.at > RECEIPTS_FOR && events.iter().all(|e| e.1 != c.key);
+            if routine.receipts.iter().any(old) {
+                self.update(id, |r| r.receipts.retain(|c| !old(c)));
+            }
+            for (item, key) in events {
+                let receipts = self.get(id).map(|r| r.receipts).unwrap_or_default();
+                let receipt = receipts.iter().find(|c| c.key == key);
+                let held = receipt.is_some_and(|c| c.outcome == Outcome::Held);
+                if !held && had.iter().any(|e| e.1 == key) {
+                    continue;
+                }
+                let on_it = || {
+                    (receipts.iter()).filter(|c| (&c.repo, c.number) == (&item.repo, item.number))
+                };
+                let pushed = |o: &crate::publish::Outgoing| {
+                    o.action == "push"
+                        && o.repo.eq_ignore_ascii_case(&item.repo)
+                        && item.head == Some(o.id.clone())
+                };
+                let open = |c: &Receipt| (c.job.as_deref()).and_then(|j| feed.jobs.get(j));
+                let facts = Facts {
+                    receipt: receipt.map(|c| c.outcome),
+                    by_oby: opened_by(jobs, &item.url).is_some()
+                        || jobs.iter().any(|j| j.outgoing.iter().any(pushed)),
+                    marker: item.head.is_some()
+                        || matches!(on.event, Event::Assigned | Event::Labeled),
+                    open_job: on_it().any(|c| open(c).is_some_and(|j| j.status.is_active())),
+                    starts_today: on_it()
+                        .filter(|c| c.outcome == Outcome::Started && now - c.at <= 86_400)
+                        .count() as u32,
+                };
+                let (outcome, reason) = match trigger::decide(facts) {
+                    Decision::Done => continue,
+                    Decision::Start => (Outcome::Started, None),
+                    Decision::Ignore(why) => (Outcome::Ignored, Some(why.reason().to_owned())),
+                    Decision::Hold(why) => (Outcome::Held, Some(why.reason().to_owned())),
+                };
+                if receipt.is_some_and(|c| (c.outcome, &c.reason) == (outcome, &reason)) {
+                    continue;
+                }
+                let (repo, number, job) = (item.repo.clone(), item.number, None);
+                let mut receipt = Receipt {
+                    key,
+                    repo,
+                    number,
+                    outcome,
+                    reason,
+                    job,
+                    at: now,
+                };
+                // ROUTINES-10: kept before its job is asked for, so nothing starts twice.
+                if !self.receipt(id, receipt.clone()) || outcome != Outcome::Started {
+                    continue;
+                }
+                let list = on.list(kind).unwrap_or_default();
+                match start_routine(feed, list, &item, routine.job(now, false)).await {
+                    Ok((job, new)) => {
+                        let offer = crate::sphere::inbox::github_item_id(&item);
+                        feed.link.github_started(&offer, &job.id);
+                        if !new {
+                            receipt.outcome = Outcome::Ignored;
+                            receipt.reason = Some("Another job is already on it.".into());
+                        }
+                        receipt.job = Some(job.id);
+                    }
+                    Err(e) => {
+                        (receipt.outcome, receipt.reason) = (Outcome::Failed, Some(e.message))
+                    }
+                }
+                self.receipt(id, receipt);
+            }
+        }
+    }
 }
 
 /// Eight lower-case hex characters.
@@ -688,24 +957,23 @@ fn due(routine: &Routine, now: i64) -> Due {
     let zone = routine.zone();
     // A clock set back leaves no time in the future to wait for.
     let from = routine.last_fire.unwrap_or(routine.created).min(now);
-    let Some(first) = routine
-        .schedule
-        .next_after(&zone, from)
-        .filter(|t| *t <= now)
-    else {
+    let Some(schedule) = &routine.schedule else {
+        return Due::Nothing;
+    };
+    let Some(first) = schedule.next_after(&zone, from).filter(|t| *t <= now) else {
         return Due::Nothing;
     };
     let older = first <= now - CATCH_UP;
     let mut times = vec![];
     let mut next = if older {
-        routine.schedule.next_after(&zone, now - CATCH_UP)
+        schedule.next_after(&zone, now - CATCH_UP)
     } else {
         Some(first)
     };
     // ponytail: every time in the last 7 days, at most 24 × 7 of them for an hourly routine.
     while let Some(t) = next.filter(|t| *t <= now && times.len() <= 24 * 8) {
         times.push(t);
-        next = routine.schedule.next_after(&zone, t);
+        next = schedule.next_after(&zone, t);
     }
     let Some(&scheduled) = times.last() else {
         return Due::Nothing;
@@ -1009,6 +1277,10 @@ fn pause_if_failing(shared: &Shared, routine: &Routine) {
 
 /// Run now: a run for `now`, paused or not, that leaves its next time as it was.
 pub fn run_now(shared: &Shared, id: &str, now: i64) -> Result<(Routine, Job), NotRun> {
+    if shared.routines.get(id).is_some_and(|r| r.on.is_some()) {
+        let why = "A routine on GitHub events runs when its event comes.";
+        return Err(NotRun::Refused(why.into()));
+    }
     ended(shared, id);
     let (run, routine) = fire_kept(shared, id, now, false, now, true).ok_or(NotRun::NoRoutine)?;
     if run.outcome == "skipped" {
@@ -1120,6 +1392,12 @@ pub async fn get(
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, NO_ROUTINE))?;
     let mut value = routine.to_json();
     value["runs"] = routine.runs.iter().rev().map(Run::to_json).collect();
+    value["receipts"] = (routine.receipts.iter().rev())
+        .map(|c| {
+            json!({"key": c.key, "repo": c.repo, "number": c.number, "outcome": c.outcome,
+                        "reason": c.reason, "job": c.job, "at": obi_protocol::time::format(c.at)})
+        })
+        .collect();
     Ok(answer(StatusCode::OK, value))
 }
 
@@ -1326,7 +1604,8 @@ mod tests {
             mode: None,
             check: None,
             rounds: 1,
-            schedule,
+            schedule: Some(schedule),
+            on: None,
             zone: "UTC".into(),
             enabled: true,
             created: at(created),
@@ -1337,6 +1616,7 @@ mod tests {
             runs: vec![],
             grace_minutes: None,
             last_job: None,
+            receipts: vec![],
         }
     }
 
