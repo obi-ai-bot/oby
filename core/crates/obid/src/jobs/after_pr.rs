@@ -204,8 +204,6 @@ fn may_round(jobs: &HashMap<String, Job>, id: &str, head: &str, round: Round) ->
             }
             && !past_safety(job)
             && branch_busy(jobs, job).is_none()
-            && !jobs.values().any(|j| {
-                j.follow_up_of.as_deref() == Some(id) && same_branch(&j.branch, &job.branch)
-            })
+            && chain::branch_carrier(jobs, job, Holds::Any).is_none()
     })
 }

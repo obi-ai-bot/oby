@@ -23,6 +23,7 @@ use tokio::sync::{Notify, watch};
 use crate::agent::{self, Answer, Event as AgentEvent, Launch, Ruling, Tool};
 use crate::config::{Config, Repo};
 use crate::events::Events;
+use crate::job::chain::{self, Holds, chain_tip, follows_up, pull_request_open, same_branch};
 use crate::job::{EndKind, Ended, Job, JobArtifact, ObiRef, Phase, Status, Waiting, transition};
 use crate::limits::holds::Work;
 use crate::permissions::{self, Call, Decision, Mode, Permission, Rule};
@@ -4349,12 +4350,7 @@ impl Jobs {
             return self.get(id).map(Ok);
         }
         // Tried again, it would move a branch its follow-up carries on.
-        if let Some(next) = self
-            .lock()
-            .jobs
-            .values()
-            .find(|j| j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch)
-        {
+        if let Some(next) = chain::branch_carrier(&self.lock().jobs, &job, Holds::Any) {
             return Some(Err(Refused(format!(
                 "Its follow-up {} carries its branch on: tell that one instead.",
                 next.short_title()
@@ -11758,9 +11754,7 @@ impl Jobs {
         let Some(review) = job.current_review().filter(|r| !r.approved()).cloned() else {
             return refused("Oby's review of it isn't waiting for you.");
         };
-        let carried = self.lock().jobs.values().any(|j| {
-            j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch && j.status.is_active()
-        });
+        let carried = chain::branch_carrier(&self.lock().jobs, &job, Holds::AtWork).is_some();
         if job.status != Status::Done || job.reviewing.is_some() || carried || past_safety(&job) {
             return refused("It can't take another round now.");
         }
@@ -12014,9 +12008,7 @@ impl Jobs {
         // Its next round only with reviews left and nothing else moving its branch (Try again's).
         let (carried, busy) = {
             let state = self.lock();
-            let carried = state.jobs.values().any(|j| {
-                j.follow_up_of.as_deref() == Some(of.as_str()) && j.branch == author.branch
-            });
+            let carried = chain::branch_carrier(&state.jobs, &author, Holds::Any).is_some();
             (carried, branch_busy(&state.jobs, &author))
         };
         let quoted = (!approved
@@ -12083,9 +12075,7 @@ impl Jobs {
         if self.carrier(&job).id != job.id {
             return None;
         }
-        let following = self.lock().jobs.values().any(|j| {
-            j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch && j.status.is_active()
-        });
+        let following = chain::branch_carrier(&self.lock().jobs, &job, Holds::AtWork).is_some();
         if !job.review_needs_you() || following {
             return None;
         }
@@ -13428,25 +13418,6 @@ fn pushers<'a>(jobs: &'a HashMap<String, Job>, job: &'a Job) -> Vec<&'a Job> {
     found
 }
 
-/// Whether `job` follows up `of`, at any depth, or is it.
-fn follows_up(jobs: &HashMap<String, Job>, job: &Job, of: &str) -> bool {
-    let mut at = Some(job.id.as_str());
-    // ponytail: a chain longer than 64 follow-ups counts as not following up.
-    for _ in 0..64 {
-        match at {
-            Some(id) if id == of => return true,
-            Some(id) => {
-                at = jobs
-                    .get(id)
-                    .or((id == job.id).then_some(job))
-                    .and_then(|j| j.follow_up_of.as_deref())
-            }
-            None => return false,
-        }
-    }
-    false
-}
-
 /// The job that carries `job`'s pull request on (MERGING-23, 24): of the owner's own jobs that
 /// published to it on `job`'s branch (a follow-up adds to its task's, #1663), the one that pushed
 /// there last. Its head is that push, its card the pull request's only one; `job` itself when none
@@ -13467,24 +13438,6 @@ fn unfollowed_why(jobs: &HashMap<String, Job>, job: &Job) -> Option<String> {
         "Not merged: its head holds what {} pushed, and this task doesn't follow that one up, so its review alone doesn't count for that work.",
         other.short_title()
     ))
-}
-
-/// The job a new follow-up of `of` follows up: the newest of the owner's own jobs on its branch
-/// that follows `of` up, at any depth, or `of` itself. Its branch holds their commits, so their
-/// marks are the follow-up's (MERGING-14, 23): follow-ups make one line, never siblings.
-fn chain_tip(jobs: &HashMap<String, Job>, of: &str) -> String {
-    let Some(first) = jobs.get(of) else {
-        return of.to_owned();
-    };
-    jobs.values()
-        .filter(|j| {
-            j.obi.is_none()
-                && j.repo == first.repo
-                && same_branch(&j.branch, &first.branch)
-                && follows_up(jobs, j, of)
-        })
-        .max_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)))
-        .map_or_else(|| of.to_owned(), |j| j.id.clone())
 }
 
 /// Why `job` tells the owner about its pull request when the job that carries it can't
@@ -13525,13 +13478,7 @@ fn publish_action_of(
     jobs: &HashMap<String, Job>,
     by_hand: &crate::publish::ByHand,
 ) -> Result<(String, String), String> {
-    let carried = jobs.values().find(|j| {
-        j.id != job.id
-            && j.follow_up_of.as_deref() == Some(job.id.as_str())
-            && same_branch(&j.branch, &job.branch)
-            && j.dismissed.is_none()
-            && (j.status.is_active() || j.status == Status::Done)
-    });
+    let carried = chain::branch_carrier(jobs, job, Holds::AtWorkOrDone);
     let anyway = by_hand.anyway
         && !job.status.is_active()
         && job.kind != "review"
@@ -14167,12 +14114,6 @@ fn base_a_job_made(jobs: &HashMap<String, Job>, repo: &str, base: &str) -> bool 
         .any(|j| j.made_branch && j.repo == repo && same_branch(&j.branch, base))
 }
 
-/// Two branch names that are one ref in obid's clone: a Mac's disk ignores letter case, so
-/// `oby/Fix-34` is `oby/fix-34` there.
-fn same_branch(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-}
-
 /// Why `job` can't start, new or again, on its branch (PUBLISHING-4): another queued or running
 /// job of its repository works on it, of every job obid has (`jobs`).
 fn branch_busy(jobs: &HashMap<String, Job>, job: &Job) -> Option<String> {
@@ -14203,24 +14144,11 @@ fn undeletable_in(jobs: &HashMap<String, Job>, publishing: bool, id: &str) -> Op
         Some("obid is publishing it: delete it once that's done.")
     } else if pull_request_open(job) {
         Some("Its pull request is open: merge or close it first, or archive the job.")
-    } else if jobs.values().any(|j| {
-        j.id != job.id
-            && j.follow_up_of.as_deref() == Some(id)
-            && same_branch(&j.branch, &job.branch)
-    }) {
+    } else if chain::branch_carrier(jobs, job, Holds::Any).is_some() {
         Some("Its follow-up carries its branch on: delete that one first.")
     } else {
         None
     }
-}
-
-/// Published, and its pull request open as obid last read it (or never read).
-fn pull_request_open(job: &Job) -> bool {
-    job.published.is_some()
-        && job
-            .pull_request
-            .as_ref()
-            .is_none_or(|pr| pr.state != "MERGED" && pr.state != "CLOSED")
 }
 
 /// What the agent of a job like `job` (its tool, repository and kind, itself included when it
@@ -14309,11 +14237,7 @@ fn done_with(state: &State, job: &Job) -> bool {
     at_rest(state, job)
         && !job.needs_you()
         && !pull_request_open(job)
-        && !state.jobs.values().any(|j| {
-            j.follow_up_of.as_deref() == Some(job.id.as_str())
-                && j.branch == job.branch
-                && (j.status.is_active() || j.needs_you() || pull_request_open(j))
-        })
+        && chain::branch_carrier(&state.jobs, job, Holds::Open).is_none()
 }
 
 /// Whether `job` ended (done, failed, stopped or interrupted) and no worker or publish holds it.

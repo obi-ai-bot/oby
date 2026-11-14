@@ -573,6 +573,81 @@ fn publishing_12_a_follow_up_adds_to_its_tasks_open_pull_request() {
     );
 }
 
+/// PUBLISHING-32: a follow-up at work on its first job's branch in another letter case
+/// (`oby/Fix-34`, `oby/fix-34`: one ref on a Mac) carries it on as on an exact match: Try again,
+/// Delete and Publish on the first job each answer so.
+#[test]
+fn publishing_32_a_carrier_on_another_letter_case_still_holds_the_branch() {
+    let folder = Folder::new("publish-carrier-case");
+    let bin = fake_gh(&folder.0);
+    // Its publish fails: Publish is offered, and no pull request holds its Delete.
+    let broken = broken_scanner(&folder, &bin);
+    let (mut obid, _remote, config) = obid_with(&folder, &broken);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "title": "Hello file"}),
+    );
+    let first = ended(&obid, &id);
+    assert!(first["publishError"].is_string(), "{first}");
+    let publish = |obid: &Obid| call(obid, "GET", &format!("/v1/jobs/{id}/publish"), None);
+    assert_eq!(publish(&obid).status, 200);
+    let told = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": "Look around."})),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    let next = told.body["id"].as_str().unwrap().to_owned();
+    ended(&obid, &next);
+    // Its follow-up waits for a reset, at work, on the first job's branch in capitals.
+    let stored = obid.home.join(format!("jobs/{next}.json"));
+    obid.stop();
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&stored).unwrap()).unwrap();
+    kept["branch"] = json!(first["branch"].as_str().unwrap().to_uppercase());
+    kept["status"] = json!("queued");
+    kept["resumesAt"] = json!(obi_protocol::time::now() + 86_400);
+    kept.as_object_mut().unwrap().remove("finished");
+    std::fs::write(&stored, kept.to_string()).unwrap();
+    let obid = start(&folder.0, &config, Some(&broken));
+    let follow = call(&obid, "GET", &format!("/v1/jobs/{next}"), None).body;
+    assert_eq!(follow["status"], "queued", "{follow}");
+    assert_ne!(follow["branch"], first["branch"], "{follow}");
+
+    let again = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&json!({"text": TRY_AGAIN})),
+    );
+    assert_eq!(again.status, 422, "{}", again.text);
+    assert!(
+        again.body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Its follow-up "),
+        "{}",
+        again.text
+    );
+    let delete = call(&obid, "POST", &format!("/v1/jobs/{id}/delete"), None);
+    assert_eq!(delete.status, 409, "{}", delete.text);
+    assert_eq!(
+        delete.body["error"],
+        "Its follow-up carries its branch on: delete that one first."
+    );
+    let answer = publish(&obid);
+    assert_eq!(answer.status, 409, "{}", answer.text);
+    assert!(
+        answer.body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Its follow-up "),
+        "{}",
+        answer.text
+    );
+}
+
 /// What a job hears when the owner tries it again (`Inbox.tryAgainMessage`): its session again,
 /// where words for a job that ended would start a follow-up.
 const TRY_AGAIN: &str =
