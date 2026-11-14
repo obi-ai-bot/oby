@@ -298,7 +298,7 @@ const POLL_MS = 2000
 const COLUMNS = [
   { label: 'Intake', who: 'intake · fable', stages: ['intake', 'needs-info'] },
   { label: 'Spec', who: 'spec-writer · opus', stages: ['spec'] },
-  { label: 'Build', who: 'builder · gate', stages: ['build', 'gate'] },
+  { label: 'Build', who: 'builder · gate', stages: ['build', 'gate', 'prove'] },
   { label: 'Review', who: 'routed reviewers', stages: ['review'] },
   { label: 'Approve', who: 'approver · merge', stages: ['approve', 'merging'] },
   { label: 'Queued', who: 'GitHub merge queue', stages: ['queued'] },
@@ -306,7 +306,7 @@ const COLUMNS = [
   { label: 'Done', who: 'merged · rejected', stages: ['merged', 'rejected'], cls: 'merged-col' },
 ]
 const STAGES = new Set(COLUMNS.flatMap((c) => c.stages))
-const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'review', 'approve', 'merging'])
+const LIVE = new Set(['intake', 'spec', 'build', 'gate', 'prove', 'review', 'approve', 'merging'])
 const SHORT = { code: 'code', ux: 'ux', ui: 'ui', security: 'sec' }
 
 const $ = (id) => document.getElementById(id)
