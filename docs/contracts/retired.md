@@ -61,7 +61,7 @@ The business behavior contract for what milestone R03 ("Delete what has no calle
 - **Outcome:** A paired phone can call only routes obid serves, and [runner-api.md](../runner-api.md) promises only those: no speech service, Watch API or Live Activity pushes that obid doesn't have. The routes it stopped serving are listed once, each with the date it went, and a Brain test keeps the allowlist and the doc honest.
 - **Why:** The gateway's allowlist let through 7 routes obid never routed (`POST /v1/jobs/*/proposals/*/file`, `POST /v1/jobs/*/start-when`, `PUT /v1/settings/models`, `POST /v1/activities`, `GET` and `POST /v1/watches`, `DELETE /v1/watches/*`), and runner-api.md still documented them, with `POST /v1/speech` and the Watch API. The Swift runner served them; it was deleted on 2026-11-02 (#1653).
 - **Status:** **implemented** (RETIRED-7 to RETIRED-9, tasks R03-03 and R03-04).
-- **Scope:** `ROUTES` in `core/crates/obid/src/gateway.rs`, runner-api.md's sections for those routes and its new "Routes obid does not serve" list, and the Brain (`tools/brain`), which reads that list. The Swift client's calls (`apps/shared` and `apps/ios`, not their tests) are in. Out of scope: the Watch's calls (`apps/watch`, R03-07), `mcp/server/Server.swift`'s and Android's `Runner.kt` (R03-08), and serving any of these routes again.
+- **Scope:** `ROUTES` in `core/crates/obid/src/gateway.rs`, runner-api.md's sections for those routes and its new "Routes obid does not serve" list, and the Brain (`tools/brain`), which reads that list. The Swift client's calls (`apps/shared` and `apps/ios`, not their tests) are in. Out of scope: the Watch's calls (`apps/watch`, R03-07), Android's `Runner.kt` (R03-08), and serving any of these routes again. `mcp/server/Server.swift`'s call left with oby-mcp (R03-05, below).
 
 ### Behavior
 
@@ -87,3 +87,23 @@ The business behavior contract for what milestone R03 ("Delete what has no calle
 - **RETIRED-7** (implemented). Given obid's router and the gateway's allowlist, when the Brain generates its checks, then every allowlist entry (method and path) matches a route obid serves. Test: `retired_7_every_phone_route_is_served` (`tools/brain/test/repo.test.ts`).
 - **RETIRED-8** (implemented). Given docs/runner-api.md, when the Brain generates its checks, then every route documented as served exists in obid, and each route obid stopped serving is listed as gone. Test: `retired_8_every_documented_route_is_served` (`tools/brain/test/repo.test.ts`).
 - **RETIRED-9** (implemented). Given `apps/shared` and `apps/ios` (not their tests), when the Brain scans their `call`/`send` calls, then every method and path they call is a route obid serves, except the named exceptions in the test (`/v1/watches`, R03-07; `POST /v1/jobs/{id}/proposals/{index}/file`, the task page's). Test: `retired_9_the_swift_client_calls_only_served_routes` (`tools/brain/test/repo.test.ts`).
+
+## oby-mcp
+
+### Feature and status
+
+- **Outcome:** The repository carries no MCP server that reads a deleted app's settings and calls a route obid doesn't serve. obid's own MCP server, which conversations and agents get, is unchanged.
+- **Why:** oby-mcp (`mcp/`, built by the root `Package.swift`) found obid through the deleted Swift Mac app's `runnerURL` default and called `POST /v1/jobs/{id}/start-when`, which obid doesn't serve. Nothing under `apps/`, `install/`, `scripts/` or `.github/` started or shipped it. The owner's answer: "Delete it now" (2026-11-13, [trim.md](../trim.md)).
+- **Status:** **implemented**, by R03-05.
+- **Scope:**
+  - **Left:** `mcp/` (the `oby-mcp` server and its tests), the root `Package.swift`, `docs/mcp.md`, and the check's `swift test` step. Git history keeps them.
+  - **Stayed, unchanged:** obid's `/v1/agent/mcp/{job}` and the conversation's `oby` MCP server, and the check's Apple apps' build and suites (the `swift` group).
+  - **Outside it:** an `oby` CLI or an `oby mcp` command (R12).
+
+### Behavior
+
+- **Actors and ownership:** Nothing changes in obid or in the apps. A person who added oby-mcp to Claude Code by hand loses it.
+
+### Acceptance scenarios
+
+- None: a deletion adds no behaviour.

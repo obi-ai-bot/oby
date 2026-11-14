@@ -50,6 +50,7 @@ About 45k of obid's 131k source lines, and about 33k lines of Swift, leave.
 - **Tetrix stays** and has to be flawless: it's why Oby exists (the owner, 2026-10-25).
 - **The iPhone waited** until the Mac app was right (the owner, 2026-10-25); after 0.4.1 it's back, as the Mac's launch build (the owner, 2026-10-26).
 - **Slack goes:** GitHub is the only outside connection, and Obys do the talking (the owner, 2026-10-25).
+- **oby-mcp goes:** "Delete it now" (the owner, 2026-11-13, R03-05). The Swift MCP server in `mcp/`, its `Package.swift` and `docs/mcp.md` leave: a person who added oby-mcp to Claude Code by hand loses it. obid's own MCP server for conversations and agents stays, and an `oby mcp` command is R12's.
 
 ## Still open
 
