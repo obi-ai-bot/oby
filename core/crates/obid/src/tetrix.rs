@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 use crate::api::{ApiError, Shared};
 use crate::connections::{Connection, ConnectionUse, Connections};
+use crate::mcp::{Does, Marks, Server, Tool, failure};
 
 /// The tools agents may call: the graph reads,
 /// earlier sessions' digests, and saving the agent's own session. Never `resume_session` (the
@@ -76,11 +77,17 @@ const SERVER: &str = "Oby's Tetrix server";
 /// The upstream session every conversation's calls share: the graph reads and `save_session`.
 const CONVERSATIONS: &str = "conversations";
 
-/// Whether a conversation's turn may call `tool`: [`TOOLS`], `save_session` too (TASKCONV-12): what
-/// it saves passes the secret scan and is in the use log (`vault/uses.jsonl`, access `write`), as
-/// every call is.
-fn reads(tool: &str) -> bool {
-    TOOLS.contains(&tool)
+/// [`TOOLS`] as entries of obid's tools (crate::mcp): each only for the owner's own jobs
+/// (`Jobs::tetrix_for`), its answer marking where it's read, and only `save_session` writing.
+#[rustfmt::skip]
+pub(crate) fn table() -> Vec<Tool> {
+    TOOLS.iter().map(|&name| Tool { name, server: Server::Tetrix, confirm_unless_owners_word: false, owner_only: true,
+        marks_on_result: Marks::With("Tetrix's answers"), read_only: name != "save_session", does: Does::Forwarded }).collect()
+}
+
+/// Tetrix's `tool` agents may call, a conversation's turn too, `save_session` included (TASKCONV-12).
+fn entry(tool: &str) -> Option<&'static Tool> {
+    crate::mcp::tool(Server::Tetrix, tool)
 }
 
 /// What every agent with Tetrix is told, after its task.
@@ -1119,7 +1126,7 @@ impl Tetrix {
         };
         let mut tools: Vec<Value> = listed
             .into_iter()
-            .filter(|(name, _)| TOOLS.contains(&name.as_str()))
+            .filter(|(name, _)| entry(name).is_some())
             .map(|(_, tool)| tool)
             .collect();
         tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
@@ -1192,14 +1199,8 @@ impl Tetrix {
                 json!({"tools": listed.unwrap_or_else(|_| self.known())})
             }
             "tools/call" => {
-                let tool = params["name"].as_str().unwrap_or("");
-                let arguments = params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let refused = self
-                    .refused(connections, job, tool, &arguments, TOOLS.contains(&tool))
-                    .await;
+                let (tool, arguments) = crate::mcp::called(&params);
+                let refused = self.refused(connections, job, tool, &arguments).await;
                 if let Some(why) = refused {
                     failure(why)
                 } else {
@@ -1229,7 +1230,7 @@ impl Tetrix {
 
     /// One JSON-RPC message from a conversation's turn (crate::brain::harness; `endpoint` is
     /// `conversation-<id>`) to obid's Tetrix server: answered as a job's agent's is, but with
-    /// [`reads`] only, every answer quoted between the turn's fences, and the turn marked as having
+    /// [`entry`]'s only, every answer quoted between the turn's fences, and the turn marked as having
     /// read something untrusted. `session` is none while its Claude Code waits for a turn: it
     /// connects and lists, and calls nothing.
     pub async fn converse(
@@ -1244,35 +1245,28 @@ impl Tetrix {
         let result = match (method, session) {
             ("initialize", _) => crate::mcp::hello(&params, "tetrix", CONVERSATION_INSTRUCTIONS),
             ("ping", _) => crate::mcp::ping(),
+            // Tetrix's own listing, already only the tools with an [`entry`].
             ("tools/list", _) => {
-                let mut tools = self
-                    .tools(connections, CONVERSATIONS)
-                    .await
-                    .unwrap_or_else(|_| self.known());
-                tools.retain(|t| t["name"].as_str().is_some_and(reads));
-                json!({"tools": tools})
+                let tools = self.tools(connections, CONVERSATIONS).await;
+                json!({"tools": tools.unwrap_or_else(|_| self.known())})
             }
             // A stopped turn calls nothing more, as Oby's own tools (crate::brain::tools).
             ("tools/call", Some(session)) if !session.control.live() => {
-                failure("The turn was stopped: nothing more happens for it.".into())
+                failure("The turn was stopped: nothing more happens for it.")
             }
             ("tools/call", Some(session)) => {
-                let tool = params["name"].as_str().unwrap_or("");
-                let arguments = params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                let refused = self
-                    .refused(connections, endpoint, tool, &arguments, reads(tool))
-                    .await;
+                let (tool, arguments) = crate::mcp::called(&params);
+                let refused = self.refused(connections, endpoint, tool, &arguments).await;
                 if let Some(why) = refused {
                     failure(why)
                 } else {
                     // What the graph and earlier sessions hold is anyone's words.
                     session.taint();
-                    shared
-                        .conversations
-                        .mark(&session.conversation, "Tetrix's answers".into());
+                    let marks = entry(tool)
+                        .and_then(|t| t.marks_on_result.why(tool, &arguments, &shared.jobs));
+                    if let Some(why) = marks {
+                        shared.conversations.mark(&session.conversation, why);
+                    }
                     let answer = self
                         .call_tool(connections, CONVERSATIONS, tool, &arguments)
                         .await
@@ -1293,7 +1287,7 @@ impl Tetrix {
     }
 
     /// Why `job` (or a conversation, `conversation-<id>`) can't send `tool` with `arguments` to
-    /// Tetrix, or none: only a tool it `may` call, and only what the secret scan passes, leaves
+    /// Tetrix, or none: only a tool with an [`entry`], and only what the secret scan passes, leaves
     /// obid under Oby's own login. Every try is in the connection uses.
     async fn refused(
         &self,
@@ -1301,10 +1295,9 @@ impl Tetrix {
         job: &str,
         tool: &str,
         arguments: &Value,
-        may: bool,
     ) -> Option<String> {
-        let short: String = tool.chars().take(64).collect();
-        let refused = if !may {
+        let (allowed, short) = (entry(tool), tool.chars().take(64).collect::<String>());
+        let refused = if allowed.is_none() {
             Some(format!("Oby doesn't let agents call Tetrix's {short}."))
         } else {
             scanned(arguments, &self.scratch)
@@ -1316,7 +1309,7 @@ impl Tetrix {
             job: job.to_owned(),
             connection: "tetrix".into(),
             tool: short,
-            access: if tool == "save_session" {
+            access: if allowed.is_some_and(|t| !t.read_only) {
                 "write"
             } else {
                 "read"
@@ -1684,10 +1677,6 @@ async fn callback(
 
 fn internal(text: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, text)
-}
-
-fn failure(text: String) -> Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": true})
 }
 
 /// A call that got no answer from Tetrix, as its caller reads it.
@@ -2194,10 +2183,7 @@ async fn agent(
         }
         shared.tetrix.handle(&shared, &job, value).await
     };
-    match answer {
-        Some(answer) => (StatusCode::OK, Json(answer)).into_response(),
-        None => StatusCode::ACCEPTED.into_response(),
-    }
+    crate::connections::replied(answer)
 }
 
 /// Where a job's context files go, in its worktree (excluded from git with all of `.obi/`).

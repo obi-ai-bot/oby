@@ -1509,6 +1509,51 @@ fn merging_30_tetrix_tools_given_leave_the_job_the_owners() {
     assert!(kept["foreign"].is_null(), "{kept} {job}");
 }
 
+/// AGENTMCP-6 (docs/contracts/agent-mcp.md): a job given Tetrix's tools that calls none ends with
+/// no mark, MERGING-30 kept by the table: a Tetrix entry marks only where its answer is read, and
+/// every tool the agent was listed is one of the entries (built from `tetrix::TOOLS`), never one
+/// Tetrix lists past them (`resume_session`, `admin_wipe_graph`).
+#[test]
+fn agentmcp_6_given_tetrix_tools_no_call_no_mark() {
+    let folder = Folder::new("agentmcp-6");
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, seen) = fake_tetrix();
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    sign_in(&obid, &base);
+    seen.lock().unwrap().mode = "quiet";
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(&json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "REPORT"}})),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+    let worktree = obid.home.join("worktrees").join(&id);
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(worktree.join(".obi/report.json"))
+            .unwrap_or_else(|e| panic!("{e}: {job}")),
+    )
+    .unwrap();
+    let listed: Vec<&str> = report["answers"]["tetrix"]["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the agent has Tetrix's tools: {report}"))
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(!listed.is_empty(), "{report}");
+    for name in &listed {
+        assert!(obid::tetrix::TOOLS.contains(name), "{name} in {listed:?}");
+    }
+    let kept: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    assert!(kept["foreign"].is_null(), "{kept} {job}");
+}
+
 /// Signing in to another Tetrix whose sign-in server is another one takes back the login it
 /// replaces there, as a sign-out does. Signing in again on the same sign-in server doesn't: there
 /// the old and new logins can share one session, and revoking the old would end the new. Both
