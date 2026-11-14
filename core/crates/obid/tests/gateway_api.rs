@@ -632,6 +632,106 @@ fn open(obid: &Obid, token: &str, target: &str) -> TcpStream {
     stream
 }
 
+/// The frames in a piece of the event stream, as `(name, id)`, each ending with a blank line.
+fn frames(text: &str) -> Vec<(String, Option<String>)> {
+    let (mut got, mut name, mut id, mut data) = (Vec::new(), String::new(), None, false);
+    for line in text.lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix("event: ") {
+            name = value.to_owned();
+        } else if let Some(value) = line.strip_prefix("id: ") {
+            id = Some(value.to_owned());
+        } else if line.starts_with("data: ") {
+            data = true;
+        } else if line.is_empty() && std::mem::take(&mut data) {
+            got.push((std::mem::take(&mut name), id.take()));
+        }
+    }
+    got
+}
+
+/// EVENTS-6: a phone that resumes through the gateway with `?after=` gets what it missed but the
+/// Mac's own events, in order and with their ids (docs/contracts/events.md).
+#[test]
+fn events_6_gateway_replay_leaves_out_mac_only_events() {
+    let folder = Folder::new("gateway-events-6");
+    let obid = started(&folder);
+    let token = paired(&obid);
+    let mut phone = open(&obid, &token, "/v1/events");
+    let (head, _) = read_until(&mut phone, 10, |seen| seen.contains("\r\n\r\n"));
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert_eq!(call(&obid, "POST", "/v1/clear", None).status, 200);
+    let (seen, _) = read_until(&mut phone, 10, |seen| {
+        frames(seen).iter().any(|frame| frame.0 == "clear")
+    });
+    let seen = frames(&seen)
+        .into_iter()
+        .find(|frame| frame.0 == "clear")
+        .and_then(|frame| frame.1)
+        .expect("a clear with no id");
+    drop(phone);
+
+    // Missed: the Mac's own `tetrix` among the phone's.
+    assert_eq!(call(&obid, "POST", "/v1/clear", None).status, 200);
+    let forgotten = call(&obid, "DELETE", "/v1/tetrix", None);
+    assert!(forgotten.status < 300, "{}", forgotten.text);
+    assert_eq!(call(&obid, "POST", "/v1/clear", None).status, 200);
+
+    let target = format!("/v1/events?after={seen}");
+    let mut mac = TcpStream::connect(("127.0.0.1", obid.port)).unwrap();
+    mac.write_all(
+        format!(
+            "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let mut phone = open(&obid, &token, &target);
+    let (mac_head, _) = read_until(&mut mac, 10, |seen| seen.contains("\r\n\r\n"));
+    assert!(mac_head.starts_with("HTTP/1.1 200"), "{mac_head}");
+    let (phone_head, _) = read_until(&mut phone, 10, |seen| seen.contains("\r\n\r\n"));
+    assert!(phone_head.starts_with("HTTP/1.1 200"), "{phone_head}");
+    assert_eq!(call(&obid, "POST", "/v1/clear", None).status, 200);
+
+    // The Mac hears all of it, the live clear last of three.
+    let clears = |text: &str| {
+        frames(text)
+            .into_iter()
+            .filter(|frame| frame.0 == "clear")
+            .collect::<Vec<_>>()
+    };
+    let (heard, _) = read_until(&mut mac, 20, |seen| {
+        clears(&format!("{mac_head}{seen}")).len() == 3
+    });
+    let live = clears(&format!("{mac_head}{heard}"))[2].1.clone().unwrap();
+    let up_to_live = |text: &str| {
+        let mut got = frames(text);
+        let end = got
+            .iter()
+            .position(|frame| frame.1.as_deref() == Some(live.as_str()));
+        got.truncate(end.map_or(usize::MAX, |end| end + 1));
+        got
+    };
+    let heard = up_to_live(&format!("{mac_head}{heard}"));
+    assert!(heard.iter().any(|frame| frame.0 == "tetrix"), "{heard:?}");
+    let (got, _) = read_until(&mut phone, 20, |seen| {
+        up_to_live(&format!("{phone_head}{seen}"))
+            .last()
+            .is_some_and(|frame| frame.1.as_deref() == Some(live.as_str()))
+    });
+    let got = up_to_live(&format!("{phone_head}{got}"));
+    let expected: Vec<_> = heard
+        .into_iter()
+        .filter(|frame| !["tetrix", "hooks", "watch", "roomPost"].contains(&frame.0.as_str()))
+        .collect();
+    assert_eq!(got, expected);
+    assert!(got.iter().all(|frame| frame.1.is_some()), "{got:?}");
+    assert!(
+        got.iter()
+            .all(|frame| frame.1.as_deref() != Some(seen.as_str())),
+        "{got:?}"
+    );
+}
+
 /// A phone revoked while it follows the event stream hears nothing more: its stream ends at the
 /// next event.
 #[test]
