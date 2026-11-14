@@ -17,9 +17,10 @@ command's arguments are joined with spaces and split into words on whitespace
 and on ; & | ( ) < > ' " and the backquote; a word's name is the text after its
 last /. The command is heavy when any word's name is cargo, cargo-nextest,
 nextest, rustc, xcodebuild, oby-check.sh or oby-check-blok, or when a word's
-name is swift and a later word is build or test. Matching is case-sensitive
-(Cargo.toml doesn't count). So `sh -c "cargo test"`, `env X=1 cargo test`,
-`/path/to/cargo clippy` and `swift test` are heavy; `python3 -m unittest`,
+name is swift and a later word is build or test, or when its first word's name
+is quint (a Quint model check; `sh -c "quint verify …"` doesn't count). Matching
+is case-sensitive (Cargo.toml doesn't count). So `sh -c "cargo test"`, `env X=1
+cargo test`, `/path/to/cargo clippy`, `swift test` and `quint verify` are heavy; `python3 -m unittest`,
 `npm test`, `npx vitest` and `npm run typecheck` are light. A light run starts
 at once: it never opens, takes or waits for the lock, and writes no holder
 line; everything below but the lock still holds for it.
@@ -81,7 +82,9 @@ core/crates/*/tests/<name>.rs. Then it says `factory/bin/test-run: on this Mac:
 <why>` and runs here as above. A command whose first two words are cargo and
 kani isn't held to the worktree's macOS-only rule, so it goes to the VM, never
 the Mac worker, as its proof checks obid's Linux build only (REMOTE-48); every
-other rule holds for it.
+other rule holds for it. So is a command whose first word's name is quint: a
+design model is no platform code, so it too goes to the VM, never the Mac
+worker; `quint` later in a command changes nothing (REMOTE-50).
 
 What is sent: the base's SHA, which is on origin, and the SHA of the worktree's
 tree, written from an index of its own (seeded from HEAD, then `git add -A`, so
@@ -174,6 +177,8 @@ def heavy(command):
     names = word_names(command)
     if any(name in HEAVY for name in names):
         return True
+    if names[:1] == ["quint"]:
+        return True
     return any(name == "swift" and {"build", "test"} & set(names[i + 1 :]) for i, name in enumerate(names))
 
 
@@ -250,6 +255,8 @@ def to_send(gate, command, vm, mac):
     touched = git("diff", "--name-only", "--no-renames", base, tree, cwd=top).splitlines()
     # A Kani proof checks obid's Linux build, so macOS-only changes don't keep it from the VM (REMOTE-48).
     macos = [] if names[:2] == ["cargo", "kani"] else gate.macos_only(top, base, touched, tree)
+    # Nor do they keep a Quint model check from it: a design model isn't platform code (REMOTE-50).
+    macos = [] if names[:1] == ["quint"] else macos
     why = f"the worktree's changes touch macOS-only code: {gate.named(macos)}" if macos else None
     tests = [names[i + 1] for i, name in enumerate(names[:-1]) if name == "--test"]
     tests += [name.removeprefix("--test=") for name in names if name.startswith("--test=")]
