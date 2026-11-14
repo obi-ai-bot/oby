@@ -25,11 +25,6 @@ path = "junit.xml"
 filter = 'binary_id(obid::merge_api) & test(=merging_24_a_follow_ups_push_settles_the_tasks_open_card)'
 retries = 2
 
-# R01-17: Codex's process must end within 1.5 seconds of wall clock (codex.rs:1751)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid) & test(=codex::tests::a_command_ends_the_codex_process_at_once)'
-retries = 2
-
 # R01-18: real checks of `sleep 15`, `sleep 3` and `sleep 60` set its order (runner_api.rs:627)
 [[profile.ci.overrides]]
 filter = 'binary_id(obid::runner_api) & test(=admission_5_a_job_back_from_the_check_queue_never_passes_max_running)'
