@@ -957,6 +957,14 @@ export async function sent<T>(send: () => Promise<T>, tries = 3, pause = 1000): 
     }
   }
 }
+// One click, one key (docs/contracts/receipts.md, RECEIPTS-16), only once obid says it takes keys
+export const requestKey = () => (state.status?.receipts === true ? crypto.randomUUID() : undefined);
+// One click's request: with its key, made before the first try, sent again while obid doesn't
+// answer (sent), every try the same body and key; with none (an obid that takes no key), once
+export function keyed<T>(send: (key?: string) => Promise<T>): Promise<T> {
+  const key = requestKey();
+  return key ? sent(() => send(key)) : send();
+}
 
 export async function renameConversation(shown: string, title: string) {
   const t = title.trim();
@@ -990,7 +998,7 @@ export async function deleteConversation(shown: string) {
 export async function tellJob(id: string, text: string, files: { path?: string }[] = [], conversation = false): Promise<Job | undefined> {
   const paths = files.flatMap((f) => (f.path ? [f.path] : []));
   try {
-    const j = await api.message(id, text.trim(), paths, conversation);
+    const j = await keyed((key) => api.message(id, text.trim(), paths, conversation, key));
     // the follow-up it started, and the task itself, now in the conversation
     const told = j.id === id ? j : await api.job(id).catch(() => undefined);
     take({ kind: 'job', job: j });
@@ -1012,7 +1020,7 @@ export async function changeMode(id: string, mode: string) {
   try { const j = await api.mode(id, mode); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 export async function stopJob(id: string) {
-  try { const j = await api.stop(id); take({ kind: 'job', job: j }); } catch (e) { say(e); }
+  try { const j = await keyed((key) => api.stop(id, key)); take({ kind: 'job', job: j }); } catch (e) { say(e); }
 }
 
 // The task's menu: Rename (PATCH /v1/jobs/{id}), shown at once as the mock does it; Archive
@@ -1116,7 +1124,7 @@ export async function startGitHubWork(id: string) {
 // place, confirmed here at once with this Mac's signature over that ask's title.
 const DECISIONS: Record<string, 'allow' | 'always' | 'deny'> = { Allow: 'allow', 'Always allow': 'always', Deny: 'deny' };
 const settleQuestion = async (item: InboxItem) => {
-  if (!takesNoAnswer(item)) take({ kind: 'inbox', item: await api.answer(item.id, { answer: 'Done' }) });
+  if (!takesNoAnswer(item)) take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, { answer: 'Done' }, key)) });
 };
 export async function answerJob(id: string, option: string, words?: string) {
   if (id.startsWith('limit:')) return answerLimitAsk(id, option).catch(say);
@@ -1135,7 +1143,7 @@ export async function answerJob(id: string, option: string, words?: string) {
         if (!changed.ask) return;
         asked = changed.ask;
       }
-      const next = option === 'No check' || option === 'Keep it' ? await api.answer(asked.id, { answer: 'Cancel' }) : await api.confirm(asked.id);
+      const next = option === 'No check' || option === 'Keep it' ? await keyed((key) => api.answer(asked.id, { answer: 'Cancel' }, key)) : await api.confirm(asked.id);
       take({ kind: 'inbox', item: next });
       void api.repos().then(({ repos }) => set({ repos }), () => {});
     } else if (item?.kind === 'confirm' && option === 'Confirm') {
@@ -1159,7 +1167,7 @@ export async function answerJob(id: string, option: string, words?: string) {
       // inbox: Tell it something sends the owner's words as its answer)
       const said = (option === TELL || option === STEER) && words ? words : option;
       const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: said };
-      take({ kind: 'inbox', item: await api.answer(item.id, body) });
+      take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) });
     } else if (option === STOP_HERE) {
       // a failed job with no item: let go
       const next = await api.dismiss(id);
@@ -1200,7 +1208,7 @@ export async function changeCheck(repo: string, check: string | null) {
 // AskStack.tsx): signed by main, or obid refuses it, and that refusal is the caller's to say, over
 // the words it keeps (QuestionCard.tsx).
 export async function answerQuestion(id: string, words: string) {
-  take({ kind: 'inbox', item: await api.answer(id, { answer: words }) });
+  take({ kind: 'inbox', item: await keyed((key) => api.answer(id, { answer: words }, key)) });
 }
 
 // an item with no task answered from Home's stack, its answer on its way (or not any more)
@@ -1215,7 +1223,7 @@ export async function answerOffer(offer: string, option: 'Dispatch' | 'Skip' | '
   items.forEach((i) => answering(i.id, true));
   for (const item of items) {
     const body = option === 'Later' ? { later: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z') } : { answer: option === 'Dispatch' ? 'Start' : 'Cancel' };
-    try { take({ kind: 'inbox', item: await api.answer(item.id, body) }); } catch (e) { say(e); } finally { answering(item.id, false); }
+    try { take({ kind: 'inbox', item: await keyed((key) => api.answer(item.id, body, key)) }); } catch (e) { say(e); } finally { answering(item.id, false); }
   }
 }
 

@@ -23,6 +23,10 @@ export const mac = {
   down: false,
   // whether the window is in front
   front: false,
+  // whether main's own read of GET /v1/status says obid takes request keys
+  receipts: false,
+  // how many of the next answers Oby sends obid get no answer at all (status 0)
+  lost: 0,
   posted: [] as Banner[],
   badge: undefined as string | undefined,
   // what Oby sent obid that isn't a read, and whether this Mac signed it
@@ -40,7 +44,7 @@ let launches = 0;
 // A new app folder, nothing served
 export function fresh() {
   launches++;
-  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, front: false });
+  Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, front: false, receipts: false, lost: 0 });
 }
 
 // One alert of obid's list (docs/runner-api.md, GET /v1/alerts)
@@ -90,6 +94,7 @@ export async function launch() {
   const answer = (method: string, path: string, body: unknown, signed: boolean) => {
     if (method !== 'GET') {
       mac.sent.push({ method, path, body, signed });
+      if (mac.lost > 0) { mac.lost--; return { status: 0, text: 'obid closed the connection.' }; }
       return { status: 200, text: '{}' };
     }
     lists++;
@@ -103,6 +108,7 @@ export async function launch() {
   vi.doMock('../../../main/obid', () => ({
     obid: async (method: string, path: string, body?: unknown) => (live() ? answer(method, path, body, false) : never),
     send: async () => (live() ? new Response(new ReadableStream<Uint8Array>({ start: (c) => { stream = c; } })) : never),
+    takesKeys: async () => mac.receipts,
   }));
   vi.doMock('../../../main/device', () => ({
     answerLimit: async (...a: unknown[]) => { if (!live()) return never; mac.sent.push({ method: 'POST', path: 'answerLimit', body: a, signed: true }); return { status: 200, text: '{}' }; },
