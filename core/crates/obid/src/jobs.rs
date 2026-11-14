@@ -4,9 +4,9 @@
 //! another Obi's work, untrusted work and the rest stay in Oby's box (docs/contracts/lanes.md).
 //!
 //! It owns each job's status and side fields, its task chain and the in-memory `State` sets, and
-//! saves jobs through crate::store; it never writes a conversation, the vault or the inbox's files
-//! (docs/ARCHITECTURE.md, "State ownership"). Two kinds of job: the owner's own (`POST /v1/jobs`),
-//! and a review another Obi asked for ([`Jobs::start_obi_review`]), its agent reading only.
+//! saves jobs through crate::store; it hands inbox items to the Sphere link, which writes them, and
+//! never writes a conversation or the vault (docs/ARCHITECTURE.md, "State ownership"). Two kinds:
+//! the owner's own (`POST /v1/jobs`), and another Obi's review ([`Jobs::start_obi_review`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;

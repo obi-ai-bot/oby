@@ -2,7 +2,8 @@
 //! docs/contracts/account-limits.md) and `oby_change_job`. The worktree and branch stay; a job that
 //! has run goes on in a new session there, told what it's taking over ([`carry_over`]). It owns a
 //! job's tool, account and model, its `moves` and its handoff, and ends a limit wait; it never
-//! writes the job's branch, worktree or status (docs/ARCHITECTURE.md, "State ownership").
+//! writes the job's branch or worktree, and queues a running job it moves only through `next_round`
+//! (jobs.rs; docs/ARCHITECTURE.md, "State ownership").
 
 use super::*;
 
