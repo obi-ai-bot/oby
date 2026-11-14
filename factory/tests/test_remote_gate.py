@@ -449,7 +449,7 @@ else:
 
 
 class BuilderRun(unittest.TestCase):
-    """REMOTE-34: oby-remote-gate --run against a temporary origin and builder root, with a stand-in cargo in a
+    """REMOTE-34 and 45: oby-remote-gate --run against a temporary origin and builder root, with a stand-in cargo in a
     temporary home's ~/.cargo/bin."""
 
     def setUp(self):
@@ -511,6 +511,15 @@ class BuilderRun(unittest.TestCase):
         self.assertNotIn("hooksPath", second["config"])
         self.assertIn("bare = true", second["config"])
         self.assertFalse(second["attributes"], "the first run's info/attributes is still there")
+
+    def test_remote_45_the_vms_builder_clone_config_is_unchanged(self):
+        # git clone --bare wrote this Mac's own settings into the clone; on the VM the reset writes setup.sh's text.
+        (self.fake / "first").touch()
+        code, out = self.builder_run()
+        self.assertEqual(code, 0, out)
+        config = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n[gc]\n\tauto = 0\n"
+        self.assertEqual(json.loads((self.fake / "second").read_text())["config"], config)
+        self.assertEqual((self.root / "repo.git" / "config").read_text(), config)
 
 
 class SetupBuilder(unittest.TestCase):
@@ -677,7 +686,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertLess(removed, next(i for i, c in enumerate(calls) if "rustup toolchain install" in c), calls)
         self.assertIn(f"removing {home}/.cargo, {home}/.rustup and {home}/.kani: not all root's", done.stdout)
 
-    def test_remote_43_setup_installs_kani_for_the_builder_as_root(self):
+    def test_remote_47_setup_installs_kani_for_the_builder_as_root(self):
         done = self.builder()
         self.assertEqual(done.returncode, 0, done.stdout)
         home = self.dir / "builder-home"
@@ -706,7 +715,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn(f"setup.sh: oby-builder is set up: no sudo, /srv/oby-builder, rust ", done.stdout)
         self.assertIn(f", kani {kani}, its home, keys and toolchain root's", done.stdout)
 
-    def test_remote_43_setup_stops_when_kani_fails_for_the_builder(self):
+    def test_remote_47_setup_stops_when_kani_fails_for_the_builder(self):
         (self.dir / "proof-fails").touch()
         done = self.builder()
         self.assertNotEqual(done.returncode, 0, done.stdout)

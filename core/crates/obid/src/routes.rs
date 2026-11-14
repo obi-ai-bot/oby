@@ -582,18 +582,36 @@ pub async fn events(
     State(shared): State<Arc<Shared>>,
     device: Option<axum::Extension<crate::gateway::PairedDevice>>,
     Query(query): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let mac = (device.is_none() && query.get("alerts").is_some_and(|v| v == "1"))
         .then(|| shared.push.mac_followed());
     let following = device.map(|_| shared.push.followed());
     // An app opened: the accounts' usage, if stale, is asked of their tools (crate::jobs).
     shared.jobs.want_usage();
-    // Behind on transcripts, the app hears so; behind on anything else, the stream ends
-    // (crate::events::Events::follow, docs/runner-api.md "GET /v1/events").
-    let stream = shared.events.follow().map(|event| {
-        Ok(SseEvent::default()
+    // The last event the app had: `after`, else the `Last-Event-ID` header; empty is none.
+    let after = query
+        .get("after")
+        .map(String::as_str)
+        .filter(|after| !after.is_empty())
+        .or_else(|| {
+            headers
+                .get("last-event-id")
+                .and_then(|v| v.to_str().ok())
+                .filter(|after| !after.is_empty())
+        });
+    // What the app missed first, or `resync`; behind on transcripts, the app hears so; behind on
+    // anything else, the stream ends (crate::events::Events::follow_from, docs/runner-api.md
+    // "GET /v1/events").
+    let epoch = shared.events.epoch();
+    let stream = shared.events.follow_from(after).map(move |event| {
+        let frame = SseEvent::default()
             .event(event.name)
-            .data(event.data.to_string()))
+            .data(event.data.to_string());
+        Ok(match event.id {
+            Some(id) => frame.id(format!("{epoch}-{id}")),
+            None => frame,
+        })
     });
     let stream = stream
         .take_until(stopping(shared.stopping.clone()))

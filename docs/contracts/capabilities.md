@@ -5,7 +5,7 @@ The business behavior contract for `capabilities` on `GET /v1/status`, from [the
 ## Feature and status
 
 - **Outcome:** A client learns which optional features obid serves by stable name, instead of guessing from obid's version or from a `404`. A new optional feature ships its name in the same pull request.
-- **Status:** **Implemented** by R06-01 (`CAPABILITIES` and `Status.capabilities` in `core/crates/obid/src/api.rs`; docs/runner-api.md, `GET /v1/status`, "Capabilities"). R06-02 and R06-03 add their names. R06-05 is **implemented**: the Electron app gates its folders on it (`has` in `apps/electron/src/shared/capabilities.ts`, used by `live.ts`).
+- **Status:** **Implemented** by R06-01 (`CAPABILITIES` and `Status.capabilities` in `core/crates/obid/src/api.rs`; docs/runner-api.md, `GET /v1/status`, "Capabilities"). R06-02 added `events-replay-v1` ([events.md](events.md)), and R06-03 adds its name. R06-05 is **implemented**: the Electron app gates its folders on it (`has` in `apps/electron/src/shared/capabilities.ts`, used by `live.ts`).
 - **Scope:** `capabilities` on `GET /v1/status`, a static sorted list of names with a version suffix, its first name `folders-v1`; the Capabilities table in docs/runner-api.md; the test that keeps them equal. Outside it: request headers such as `Oby-Client` or `Oby-Capabilities`, and obid answering differently per client; deleting #1653's dead routes and the Bonjour path (R01 and R03); the iPhone and Apple Watch apps, which are frozen; names for other features (R06-02, R06-03); removing or deprecating any existing key.
 
 ## Behavior

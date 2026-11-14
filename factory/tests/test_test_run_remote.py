@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/test-run's builder path to the gate VM (REMOTE-22 to 29 and 31), with a fake `az` and `ssh`, never
+"""factory/bin/test-run's builder path to the gate VM (REMOTE-22 to 29, 31 and 46), with a fake `az` and `ssh`, never
 the VM or the network.
 
 Run from the repository root: python3 factory/tests/test_test_run_remote.py
@@ -35,6 +35,8 @@ OBY_REMOTE_GATE = FACTORY / "remote" / "oby-remote-gate"
 KEYS = {"ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate"}
 IP = "8.8.4.4"
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
+# Words a builder's command can hold that a quoting fish and bash read differently could change (REMOTE-46).
+AWKWARD = ["foo\\", "a\\b", "it's", "a b", ""]
 
 # `ssh ... true` exits with $FAKE/ssh-reach's code (0 without it). With $FAKE/no-user, a call with -l is refused as
 # sshd refuses an unknown user. Any other command runs through sh in a session of its own, its standard input
@@ -376,9 +378,9 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assert_on_this_mac(self.run_test_run("cargo", "test", "-p", "obid", "--test", "sandbox"),
                                 "on this Mac: its test is macOS-only: core/crates/obid/tests/sandbox.rs")
 
-    # ---- REMOTE-44 -------------------------------------------------------------------------------
+    # ---- REMOTE-48 -------------------------------------------------------------------------------
 
-    def test_remote_44_a_kani_run_with_macos_only_changes_goes_to_the_vm(self):
+    def test_remote_48_a_kani_run_with_macos_only_changes_goes_to_the_vm(self):
         self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
         code, out, err, _ = self.run_test_run("cargo", "kani", "-p", "obid", "--tests", "--harness", "h")
         self.assertEqual(code, 0, out + err)
@@ -391,7 +393,7 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assertNotIn("on this Mac:", err)
         self.assertEqual(self.lines("mac-runs"), [])
 
-    def test_remote_44_a_kani_run_after_another_command_stays_on_this_mac(self):
+    def test_remote_48_a_kani_run_after_another_command_stays_on_this_mac(self):
         self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
         code, out, err, _ = self.run_test_run("sh", "-c", "cargo kani && cargo test")
         self.assertEqual(code, 0, out + err)
@@ -582,6 +584,18 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         (self.fake / "hold").unlink()
         out, err = proc.communicate(timeout=60)
         self.assertEqual(proc.returncode, 0, out + err)
+
+    # ---- REMOTE-46 -------------------------------------------------------------------------------
+
+    def test_remote_46_words_reach_the_vm_unchanged(self):
+        self.write("core/crates/obid/src/gateway.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "test", "--test", "one", "--", *AWKWARD)
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(call["argv"][-4:-1], ["-l", "oby-builder", "oby-gate"])
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["test", "--test", "one", "--", *AWKWARD])
+        self.assertEqual(self.lines("mac-runs"), [])
 
 
 if __name__ == "__main__":

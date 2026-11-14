@@ -11,6 +11,7 @@ import { localSettings } from './settings';
 import { menu } from '../shared/menu';
 import { sphering } from './sphere';
 import { ipc } from './ipc';
+import { childGone, quit, quitting, rendererGone, started, windowLoaded } from './runMarker';
 import { flag, https } from '../shared/decode';
 
 // One small window: Oby, what needs you, and a way to talk. The renderer gets
@@ -169,6 +170,8 @@ function createWindow() {
     if (!dev || new URL(url).origin !== new URL(win!.webContents.getURL()).origin) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // its page loaded: this start counts as a good one (runMarker.ts)
+  win.webContents.on('did-finish-load', windowLoaded);
   // the owner's real Enter and clicks, which the page's own process can't make: each lets main sign
   // one request of the owner's words right after it (words.ts, device.ts)
   win.webContents.on('before-input-event', (_, i) => {
@@ -191,6 +194,8 @@ app.whenReady().then(() => {
   // the Dock icon while developing (a packaged app takes apps/icon/AppIcon.icon, electron-builder.yml)
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(__dirname, '../../../icon/exports/oby-1024.png'));
   if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate(menu));
+  // the app's own run records (runMarker.ts): how the last run ended, and this start
+  started(process.argv.includes('--background'));
   startObid();
   // the window, opened again if it was closed, in front
   const front = () => {
@@ -221,3 +226,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+// a gone process is a crash line; the window's renderer is reloaded once (runMarker.ts)
+app.on('render-process-gone', (_e, contents, details) => rendererGone(details, win && contents === win.webContents ? contents : null));
+app.on('child-process-gone', (_e, details) => childGone(details));
+// a quit ends within 30 s, Oby's update's too (updates.ts)
+app.on('before-quit', quitting);
+app.on('quit', quit);

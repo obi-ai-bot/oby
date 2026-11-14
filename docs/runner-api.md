@@ -548,7 +548,7 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
- "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["folders-v1"],
+ "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["events-replay-v1", "folders-v1"],
  "tools": [{"agent": "claude", "path": "/Users/me/.local/bin/claude", "version": "2.1.317"},
            {"agent": "codex", "path": "/opt/homebrew/bin/codex", "version": "0.163.0"},
            {"agent": "cursor", "path": null, "version": null}],
@@ -587,6 +587,7 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
 
 | Name | What it means | Since |
 |---|---|---|
+| `events-replay-v1` | `GET /v1/events` numbers its events with an `id: <epoch>-<seq>` line, and resumes a client that sends the last one it had (`?after=` or the `Last-Event-ID` header): it replays what the client missed, or sends one `resync` when it can't. | R06-02 |
 | `folders-v1` | obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`, the same behaviour `folders: true` announces. | The behaviour since #1572, listed since R06-01 |
 
 `cleanup` is the runner's job-worktree disk usage and cleanup status. `path` is the worktree folder, `bytes` is its allocated disk usage, and `lastRun` is when the last cleanup pass completed, or null before the first pass. The runner runs cleanup at startup and every three hours. It removes a worktree only for a settled job finished more than 24 hours ago (merged, closed, dismissed or stopped), or immediately after an Oby review job has a verdict; open pull requests, jobs needing the user, queued or waiting jobs, and worktrees in use by an agent, check, publish or merge are kept. Older runners don't send the key. obid answers before it has measured a big worktrees folder (it waits for the walk 200 ms at most) and leaves `cleanup` out until the walk ends, then sends it as the `cleanup` event.
@@ -1021,6 +1022,7 @@ Server-Sent Events, so the app stays live while it's open:
 ```
 event: job
 data: { …Job }
+id: 3f2a9c0e8d7b4f61a5c2e9d0b1f4a6c8-41
 
 event: accounts
 data: [ …Account ]
@@ -1059,7 +1061,10 @@ event: recap
 data: {"text": "Two jobs are done. Pick a base branch needs you.", "since": "2026-10-17T08:10:00Z", "at": "2026-10-17T09:02:00Z"}
 ```
 
-- An app that falls more than 1,024 events behind on events other than `transcript` has its stream ended there, instead of skipping those events and staying open, so the app reconnects and fetches again, as after every reconnect. `transcript` events have a queue of their own (below): falling more than 1,024 of them behind never ends the stream, so a busy job's lines can't make a phone reconnect over and over.
+- Numbered events (obid only, R06-02, `events-replay-v1`, [docs/contracts/events.md](contracts/events.md)): every event but `transcript`, `delta`, `transcriptStale` and `resync` carries an SSE `id:` line, `<epoch>-<seq>`, and its `event` and `data` stay as they are. The epoch is random, made each time obid starts and never saved, so a restart changes it; `seq` goes up by one with each numbered event. obid keeps the last 2,000 numbered events in memory, and no more than 8 MB of their data. Apps that don't know the `id:` line ignore it.
+- Resuming (obid only): an app that reconnects names the last id it had, with `?after=<epoch>-<seq>` or the `Last-Event-ID` header. The query wins, and an empty value of either counts as not sent. When that id is still in obid's memory, obid sends the numbered events after it, in order, then goes live, none twice. When it isn't (another epoch, after a restart; older than what obid keeps; ahead of the latest; not an id at all), the stream's first event is one `resync`, `{"epoch": "<this run's epoch>"}`, with no id, then live events: the app fetches again (status, jobs, inbox, conversations), as after every reconnect before. An app that names no id gets live events only, as before, and never a `resync`. Phones resume with `?after=`: the gateway passes the query on and not `Last-Event-ID`, and a phone's replay leaves out the Mac's own events as its live stream does.
+- An app never infers a gap from a jump in the numbers: the gateway leaves the Mac's own events out of a phone's stream, and `delta` has no number. Only `resync` means "fetch again".
+- An app that falls more than 1,024 events behind on events other than `transcript` has its stream ended there, instead of skipping those events and staying open, so the app reconnects and resumes with `after` (above), or fetches again when it gets `resync` or names no id. `transcript` events have a queue of their own (below): falling more than 1,024 of them behind never ends the stream, so a busy job's lines can't make a phone reconnect over and over.
 - A `job` event comes with every change: a new step, a status, the summary, `commits`, `published`, `publishError`, `pipeline`, `pullRequest`, `pullRequestError`, `dismissed`, `macCheck`, `mergeError`, a move to another account. The app replaces the job with that `id`.
 - `stalled` (obid only) comes once when a job stalls (`limit`, above), with the job as its `job` event carries it, `stalled` and the handoff note included.
 - `transcript` (obid only) comes with each transcript entry that comes or changes: `{"job": "<id>", "entry": {…}}`, and with each line the agent writes: `{"job": "<id>", "n": 9, "append": "…"}` (add it to entry `n`'s `text`), the entry as `GET /v1/jobs/{id}/transcript` has it. Update by `n`: a call comes again under its `n` when it ends. These events have a queue of their own in obid, so a busy job's calls never push another event (a job's end, say) out of a slow app's backlog; an app that falls more than 1,024 of them behind gets one `transcriptStale` event (obid only), `{"missed": 976}`, the number of `transcript` events it missed, of any job, in their place, and the stream goes on: it fetches each transcript it shows again with `after` (`GET /v1/jobs/{id}/transcript`, below). Apps that don't know `transcriptStale` ignore it, as any event they don't know.

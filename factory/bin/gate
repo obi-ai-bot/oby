@@ -43,14 +43,16 @@ default 4) and `builder_slots` (0 to 64, by default 0) size the VM's gate and bu
 the settings, reach and the uses (REMOTE-22 to 31): config.json and state.json are always the main checkout's,
 found from git's common folder, whichever copy runs (in a bare clone's worktree, which has none, the copy's own).
 
-The Mac worker (REMOTE-13 to 16). With `remote_gate` on and config.json's `mac_worker` ({"ssh_host": ...}),
-or the same JSON in FACTORY_MAC_WORKER for one run, the Mac's part above (its rust, swift and factory) runs
-once the VM's part passed on that second Mac, in one call: `ssh <host> oby-worker/bin/oby-remote-gate --mac
-<commit> origin/<base> <group>...`, after `ssh <host> true` answers within 60 seconds. Its 0 or 1 is the
-verdict. When it doesn't answer, both its slots are busy, it couldn't judge or was cut off, or the settings
-are invalid, that part runs on this Mac as without it, and checks.md says `Fell back from <host> to this
-Mac: <why>`. No az, stamp or lock is ever used for it. Without `mac_worker` nothing here changes. Its optional
-`builder_slots` (0 to 64, by default 0) is how many builder slots factory/bin/test-run may use on it for
+The Mac worker (REMOTE-13 to 16). With `remote_gate` on and config.json's `mac_worker` ({"ssh_host": ...}), or
+the same JSON in FACTORY_MAC_WORKER for one run, the Mac's part above (its rust, swift and factory) runs once the
+VM's part passed on that second Mac, in one call: `ssh <host> oby-worker/bin/oby-remote-gate --mac <commit>
+origin/<base> <group>...`, after `ssh <host> true` answers within 60 seconds. Its 0 or 1 is the verdict. When it
+doesn't answer, both its slots are busy, it couldn't judge or was cut off, or the settings are invalid, that part
+runs on this Mac as without it, and checks.md says `Fell back from <host> to this Mac: <why>`. Between the two,
+`ssh <host> /usr/bin/shasum -a 256 oby-worker/bin/oby-remote-gate` must name the sha256 of this checkout's
+factory/remote/oby-remote-gate, else that part falls back saying to run factory/remote/setup-mac.sh again
+(REMOTE-43, 44). No az, stamp or lock is ever used for it. Without `mac_worker` nothing here changes. Its
+optional `builder_slots` (0 to 64, by default 0) is how many builder slots factory/bin/test-run may use on it for
 builders' macOS-only runs (REMOTE-35 to 42), with or without `remote_gate`; a wrong type or count makes the
 settings invalid, and the gate's macOS part falls back saying why. The gate's own call and slots don't change.
 """
@@ -62,7 +64,6 @@ import ipaddress
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import time
@@ -416,6 +417,19 @@ def ssh(remote, command):
     return ["ssh", *SSH, remote["ssh_host"], command]
 
 
+def command_line(words):
+    """The words as one command line that fish and bash both read back as exactly those words: shlex.join's, but
+    with each \\ and ' outside the single quotes (fish reads \\\\ and \\' inside them as escapes)."""
+    line = []
+    for word in words:
+        if word and not re.search(r"[^\w@%+=:,./-]", word, re.ASCII):  # shlex's safe characters stay bare
+            line.append(word)
+        else:
+            line.append("".join("\\" + part if part in ("\\", "'") else f"'{part}'" if part else ""
+                                for part in re.split(r"([\\'])", word)) or "''")
+    return " ".join(line)
+
+
 def plan(worktree, base):
     """The groups the check plans for this change, or Fallback."""
     try:
@@ -492,7 +506,7 @@ def remote_gate(remote, words, groups, heading, log):
     # Standard input stays an open pipe, never written: its end is how oby-remote-gate learns the
     # connection dropped (REMOTE-7).
     try:
-        proc = subprocess.Popen(ssh(remote, shlex.join(words)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        proc = subprocess.Popen(ssh(remote, command_line(words)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, errors="replace")
     except OSError as e:
         raise Fallback(f"ssh couldn't run: {e}")
@@ -524,6 +538,33 @@ def vm_part(remote, commit, base, groups, log, moves):
         close_use(use)
 
 
+def check_runner(worker):
+    """Return when the Mac worker's runner has the sha256 of this checkout's factory/remote/oby-remote-gate, which a
+    builder run there can't write, or Fallback (REMOTE-43, 44)."""
+    host, mine = worker["ssh_host"], "factory/remote/oby-remote-gate"
+    again = f"run factory/remote/setup-mac.sh {host} to put it back"
+    try:
+        here = hashlib.sha256((FACTORY / "remote" / "oby-remote-gate").read_bytes()).hexdigest()
+    except OSError:
+        raise Fallback(f"this checkout has no {mine} to check its runner against")
+    try:
+        res = subprocess.run(ssh(worker, command_line(["/usr/bin/shasum", "-a", "256", MAC_GATE])),
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                             timeout=MAC_REACH)
+        found = re.search(rf"^([0-9a-f]{{64}})  {re.escape(MAC_GATE)}$", res.stdout, re.M)
+        detail = f"ssh ended {res.returncode}" if res.returncode else None if found else "no sha256 in its answer"
+    except subprocess.TimeoutExpired:
+        detail = f"no answer within {MAC_REACH:.0f}s"
+    except OSError as e:
+        detail = f"ssh couldn't run: {e}"
+    if detail:
+        raise Fallback(f"couldn't read the sha256 of its {MAC_GATE} ({detail}): {again}")
+    there = found.group(1)
+    if there != here:
+        raise Fallback(f"its {MAC_GATE} isn't this checkout's {mine} (sha256 {there[:12]} there, {here[:12]} here): "
+                       f"{again}")
+
+
 def mac_worker_part(worker, invalid, commit, base, groups, labels, log):
     """The macOS groups on the Mac worker, in one call: (a part that ended 0 or 1, None), or (None, the line
     saying why they run on this Mac). Never az, a stamp or this Mac's lock."""
@@ -531,6 +572,7 @@ def mac_worker_part(worker, invalid, commit, base, groups, labels, log):
         return None, f"Fell back from the Mac worker to this Mac: {invalid}"
     try:
         answers(worker, time.monotonic() + MAC_REACH, MAC_REACH)
+        check_runner(worker)
         return remote_gate(worker, [MAC_GATE, "--mac", commit, base, *groups], labels, ", ".join(labels), log), None
     except Fallback as e:
         return None, f"Fell back from {worker['ssh_host']} to this Mac: {e}"
