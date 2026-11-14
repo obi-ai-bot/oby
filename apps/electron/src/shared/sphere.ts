@@ -204,6 +204,23 @@ export async function keepMembership(call: Call, ownerKey: () => KeyObject, now 
   return Object.keys(body);
 }
 
+// The owner's own token for `scope`, from a new 5-minute assertion (identity.md 4.3), with the
+// scopes the Sphere granted; m is obid's membership. No redirect: one would carry the owner's
+// assertion to another address.
+async function ownerToken(http: typeof fetch, m: Record<string, unknown>, key: KeyObject, scope: string) {
+  const t = await http(`${String(m.url)}/v0.1/oauth/token`, {
+    method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange', subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+      subject_token: assertion(key, String(m.owner), String(m.sphere), scope),
+    }),
+  });
+  const got = t.ok ? ((await t.json()) as { access_token?: string; scope?: string }) : {};
+  if (!got.access_token) throw new Error(`the Obysphere gave no token (${t.status})`);
+  return { token: got.access_token, scopes: String(got.scope ?? '').split(' ') };
+}
+const sphereAt = (m: Record<string, unknown>) => `${String(m.url)}/v0.1/spheres/${encodeURIComponent(String(m.sphere))}`;
+
 // Leaves (SPHERE-4): the Sphere takes this Oby out first, with the owner's own token, which obid
 // never holds; then obid forgets the Sphere and its Oby key. When the Sphere can't be told, obid
 // leaves all the same and `untold` says why: the Sphere lists this Oby until its admin removes it.
@@ -211,23 +228,106 @@ export async function leave(call: Call, ownerKey: () => KeyObject, http: typeof 
   const now = await must(call, 'GET', '/v1/obid/sphere');
   let untold: string | null = null;
   if (now.state === 'joined') {
-    const base = String(now.url), sphere = String(now.sphere), obi = String(now.obiId);
+    const obi = String(now.obiId);
     try {
-      // no redirect: one would carry the owner's assertion to another address
-      const t = await http(`${base}/v0.1/oauth/token`, {
-        method: 'POST', redirect: 'error', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange', subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
-          subject_token: assertion(ownerKey(), String(now.owner), sphere, 'directory:read'),
-        }),
-      });
-      const token = t.ok ? ((await t.json()) as { access_token?: string }).access_token : undefined;
-      if (!token) throw new Error(`the Obysphere gave no token (${t.status})`);
-      const d = await http(`${base}/v0.1/spheres/${encodeURIComponent(sphere)}/members/${encodeURIComponent(obi)}`, { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${token}` } });
+      const { token } = await ownerToken(http, now, ownerKey(), 'directory:read');
+      const d = await http(`${sphereAt(now)}/members/${encodeURIComponent(obi)}`, { method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${token}` } });
       if (!d.ok) throw new Error(`the Obysphere answered ${d.status}`);
     } catch (e) {
       untold = e instanceof Error ? e.message : String(e);
     }
   }
   return { membership: await must(call, 'DELETE', '/v1/obid/sphere'), untold, sphere: String(now.sphere ?? 'the Obysphere') };
+}
+
+// The Obysphere's rules (docs/contracts/sphere-policy.md, POLICY-1 to 4): read with the owner's own
+// directory:read token, written with an admin one. Each call makes a new assertion and exchange;
+// a token is used on its own calls only and dropped, never kept, logged or answered. Nothing here
+// throws: a failure is an answer, in words.
+export type Rule = { id: string } & Record<string, unknown>;
+export type Policy = { version: number; updated_at: string; rules: Rule[] };
+export type PolicyAnswer = {
+  sphere: string | null; policy: Policy | null; admin: boolean;
+  refused: null | 'not_joined' | 'not_admin' | 'changed' | 'failed'; why: string | null;
+};
+
+// What lets every member ask every other a question or a review (ask-an-oby.md)
+const STARTER = 'members-ask';
+export const starterRule = (): Rule => ({ id: STARTER, from_owner: '*', to_owner: '*', actions: ['question', 'review_request'], repos: ['*'] });
+
+const NOT_JOINED = 'This Oby isn’t in an Obysphere.';
+const ONLY_ADMINS = 'Only the Obysphere’s admins can change its rules.';
+const CHANGED = 'The rules changed meanwhile: these are the rules as they are now.';
+const refusal = (sphere: string | null, refused: PolicyAnswer['refused'], why: string): PolicyAnswer => ({ sphere, policy: null, admin: false, refused, why });
+const failed = (sphere: string | null, e: unknown) => refusal(sphere, 'failed', e instanceof Error ? e.message : String(e));
+
+// The Sphere's policy (policy.schema.json), each rule as it was sent, or a throw
+function asPolicy(v: unknown): Policy {
+  const p = v as Partial<Policy> | null;
+  if (!p || !Number.isSafeInteger(p.version) || typeof p.updated_at !== 'string' || !Array.isArray(p.rules) || !p.rules.every((r) => typeof r?.id === 'string')) {
+    throw new Error('the Obysphere’s policy isn’t one Oby can read');
+  }
+  return { version: p.version!, updated_at: p.updated_at, rules: p.rules };
+}
+async function read(http: typeof fetch, url: string, token: string) {
+  const r = await http(url, { redirect: 'error', headers: { authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`the Obysphere answered ${r.status}`);
+  return (await r.json()) as unknown;
+}
+
+// The policy, and whether this owner is among the Sphere's admins (only `admins` says who may write)
+export async function readPolicy(call: Call, ownerKey: () => KeyObject, http: typeof fetch = fetch): Promise<PolicyAnswer> {
+  let sphere: string | null = null;
+  try {
+    const m = await must(call, 'GET', '/v1/obid/sphere');
+    if (m.state !== 'joined') return refusal(null, 'not_joined', NOT_JOINED);
+    sphere = String(m.sphere);
+    const { token } = await ownerToken(http, m, ownerKey(), 'directory:read');
+    const about = (await read(http, sphereAt(m), token)) as { admins?: unknown } | null;
+    const policy = asPolicy(await read(http, `${sphereAt(m)}/policy`, token));
+    const admin = Array.isArray(about?.admins) && about.admins.includes(String(m.owner));
+    return { sphere, policy, admin, refused: null, why: null };
+  } catch (e) {
+    return failed(sphere, e);
+  }
+}
+
+// Replaces the policy with rules at expectedVersion (POLICY-2, 3): the PUT goes only with a token
+// the Sphere granted `admin`. On a conflict the policy is read again with a new directory:read
+// token; the Sphere's message is passed on as it came, never parsed.
+export async function writePolicy(call: Call, ownerKey: () => KeyObject, rules: Rule[], expectedVersion: number, http: typeof fetch = fetch): Promise<PolicyAnswer> {
+  let sphere: string | null = null;
+  try {
+    const m = await must(call, 'GET', '/v1/obid/sphere');
+    if (m.state !== 'joined') return refusal(null, 'not_joined', NOT_JOINED);
+    sphere = String(m.sphere);
+    const { token, scopes } = await ownerToken(http, m, ownerKey(), 'admin directory:read');
+    if (!scopes.includes('admin')) return refusal(sphere, 'not_admin', ONLY_ADMINS);
+    const r = await http(`${sphereAt(m)}/policy`, {
+      method: 'PUT', redirect: 'error', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ expected_version: expectedVersion, rules }),
+    });
+    if (r.ok) return { sphere, policy: asPolicy(await r.json()), admin: true, refused: null, why: null };
+    if (r.status === 403) return refusal(sphere, 'not_admin', ONLY_ADMINS);
+    const said = r.status === 409 ? ((await r.json().catch(() => null)) as { error?: { code?: unknown; message?: unknown } } | null)?.error : undefined;
+    if (said?.code !== 'conflict') throw new Error(`the Obysphere answered ${r.status}`);
+    const now = await readPolicy(call, ownerKey, http);
+    if (now.refused || !now.policy) return now;
+    return now.policy.version !== expectedVersion
+      ? { ...now, refused: 'changed', why: CHANGED }
+      : { ...now, refused: 'failed', why: String(said.message ?? `the Obysphere answered ${r.status}`) };
+  } catch (e) {
+    return failed(sphere, e);
+  }
+}
+
+// The members rule added to the rules as they are at seenVersion, the version the page read
+// (POLICY-1): every rule there kept, in order; nothing written when it's there already.
+export async function addStarterRule(call: Call, ownerKey: () => KeyObject, seenVersion: number, http: typeof fetch = fetch): Promise<PolicyAnswer> {
+  const now = await readPolicy(call, ownerKey, http);
+  if (now.refused || !now.policy) return now;
+  if (now.policy.version !== seenVersion) return { ...now, refused: 'changed', why: CHANGED };
+  if (!now.admin) return { ...now, refused: 'not_admin', why: ONLY_ADMINS };
+  if (now.policy.rules.some((r) => r.id === STARTER)) return now;
+  return writePolicy(call, ownerKey, [...now.policy.rules, starterRule()], seenVersion, http);
 }

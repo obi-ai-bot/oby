@@ -17,6 +17,7 @@ const the = vi.hoisted(() => ({
   dialogs: 0,
   opened: [] as string[],
   checks: 0,
+  policies: 0,
 }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
@@ -80,6 +81,7 @@ vi.mock('../../../main/obid', async (original) => ({
 }));
 vi.mock('../../../shared/sphere', () => ({
   NotThisKey: class extends Error {}, join() {}, joinWarning() {}, leave() {}, parseInvite() {}, keepMembership: async () => {},
+  readPolicy: async () => { the.policies++; }, addStarterRule: async () => { the.policies++; },
 }));
 
 const FORBIDDEN = { status: 403, text: '' };
@@ -107,6 +109,8 @@ const CHANNELS: Record<string, { args: unknown[]; refusal: unknown; sync?: true 
   'local-settings': { args: [], refusal: null },
   'local-setting': { args: ['login', false], refusal: null },
   'sphere-leave': { args: [], refusal: 'Not this app’s page.' },
+  'sphere-policy': { args: [], refusal: null },
+  'sphere-set-policy': { args: [0], refusal: null },
 };
 
 const UNSET = Symbol('unset');
@@ -137,7 +141,7 @@ beforeAll(async () => {
 describe('IPC-1', () => {
   it('ipc_1_a_sender_that_isnt_the_windows_page_gets_the_channels_refusal_and_nothing_runs', async () => {
     expect([...the.handlers.keys()].sort()).toEqual(Object.keys(CHANNELS).sort());
-    const before = { calls: the.calls.length, checks: the.checks };
+    const before = { calls: the.calls.length, checks: the.checks, policies: the.policies };
     // full screen: what full-screen's own answer would be
     the.windows[0].fullScreen = true;
     for (const [name, { args, refusal, sync }] of Object.entries(CHANNELS)) {
@@ -146,6 +150,7 @@ describe('IPC-1', () => {
     }
     expect(the.calls.length).toBe(before.calls);
     expect(the.checks).toBe(before.checks);
+    expect(the.policies).toBe(before.policies);
     expect(the.dialogs).toBe(0);
     expect(the.opened).toEqual([]);
     expect(existsSync(join(the.userData, 'settings.json'))).toBe(false);
@@ -225,6 +230,9 @@ describe('IPC-3', () => {
     for (const choices of [null, [], { force: false }, { to: '' }, { other: true }]) {
       expect(await call('obid-publish', own(), 'j1', 'Publish this', choices), JSON.stringify(choices)).toEqual(FORBIDDEN);
     }
+    // the Obysphere's rules: only a version the page read
+    for (const version of ['0', 1.5, null, undefined]) expect(await call('sphere-set-policy', own(), version), String(version)).toBeNull();
+    expect(the.policies).toBe(0);
     expect(the.calls.length).toBe(before);
     // the same calls, readable, reach obid
     expect(await call('obid-limit-answer', own(), 'd1', 1, 'stop')).toMatchObject({ status: 409 });

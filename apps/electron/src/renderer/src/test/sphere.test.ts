@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join as path } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
-  ACCEPTS, NotThisKey, SCOPES, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, type Answer, type Call,
+  ACCEPTS, NotThisKey, SCOPES, addStarterRule, canonical, join, keepMembership, keyIdOf, leave, openedInviteLink, parseInvite, publicOf, readInviteLink, readPolicy,
+  starterRule, writePolicy, type Answer, type Call, type PolicyAnswer, type Rule,
 } from '../../../shared/sphere';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, tickRepo, whatItTells, type SharingRule } from '../sharing';
 
@@ -190,6 +191,174 @@ describe('obysphere', () => {
     await expect(keepMembership(other.call, owner, at)).rejects.toThrow(NotThisKey);
     await expect(keepMembership(other.call, owner, at)).rejects.toThrow('leave demo in its settings, then open its link again.');
     expect(other.calls.every((c) => c.method === 'GET')).toBe(true);
+  });
+});
+
+// docs/contracts/sphere-policy.md: the Obysphere's rules as main reads and writes them. POLICY-1 and
+// 3 also run against a real obi-sphere in scripts/test-sphere.mjs.
+const BASE = 'https://sphere.example.com/v0.1';
+// The Obysphere as main reaches it, stood in for: its admins and policy, and every request. An
+// exchange grants `admin` only to an admin, as obi-sphere does (left out, never an error); onPut
+// runs before a PUT is checked, as another admin's write would, or answers in its place.
+function fakeSphere(o: { admins?: string[]; version?: number; rules?: Rule[]; onPut?: (p: { version: number; rules: Rule[] }) => Response | void } = {}) {
+  const policy = { version: o.version ?? 0, rules: o.rules ?? [] };
+  const admins = o.admins ?? ['wellington'];
+  const granted = new Map<string, string>();
+  const requests: { url: string; init: RequestInit }[] = [];
+  const answer = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+  const now = () => ({ version: policy.version, updated_at: '2026-11-14T00:00:00Z', rules: policy.rules });
+  const http = vi.fn(async (url: string, init: RequestInit = {}) => {
+    requests.push({ url, init });
+    if (url === `${BASE}/oauth/token`) {
+      const claims = part(new URLSearchParams(String(init.body)).get('subject_token')!.split('.')[1]);
+      const scope = (claims.scope as string).split(' ').filter((s) => s !== 'admin' || admins.includes(claims.sub)).join(' ');
+      const token = `token-${granted.size + 1}-${claims.jti}`;
+      granted.set(token, scope);
+      return answer({ access_token: token, token_type: 'Bearer', scope, expires_in: 300 });
+    }
+    const scope = granted.get(String((init.headers as Record<string, string>).authorization).replace('Bearer ', '')) ?? '';
+    if (url === `${BASE}/spheres/demo`) return answer({ sphere: 'demo', admin_owner: 'dmytro', admins });
+    if (url !== `${BASE}/spheres/demo/policy`) return answer({}, 404);
+    if (init.method !== 'PUT') return answer(now());
+    if (!scope.split(' ').includes('admin')) return answer({ error: { code: 'insufficient_scope', message: 'this call needs the scope admin' } }, 403);
+    const instead = o.onPut?.(policy);
+    if (instead) return instead;
+    const body = JSON.parse(String(init.body)) as { expected_version: number; rules: Rule[] };
+    if (body.expected_version !== policy.version) return answer({ error: { code: 'conflict', message: `the policy is at version ${policy.version}` } }, 409);
+    Object.assign(policy, { version: policy.version + 1, rules: body.rules });
+    return answer(now());
+  });
+  const puts = () => requests.filter((r) => r.init.method === 'PUT');
+  // the scope each exchange's assertion asked for, in order
+  const asked = () => requests.filter((r) => r.url.endsWith('/oauth/token')).map((r) => part(new URLSearchParams(String(r.init.body)).get('subject_token')!.split('.')[1]));
+  return { http: http as unknown as typeof fetch, calls: http, requests, policy, granted, puts, asked };
+}
+const OTHER: Rule = { id: 'dmytro-reviews', from_owner: 'dmytro', to_owner: '*', actions: ['review_request'], repos: ['acme/app'] };
+const THIRD: Rule = { id: 'ernesto-asks', from_owner: 'ernesto', to_owner: 'dmytro', actions: ['question'], repos: ['*'], note: { kept: true } };
+
+describe('the Obysphere\'s rules', () => {
+  it('policy_1_the_starter_rule_lets_members_ask', async () => {
+    expect(starterRule()).toEqual({ id: 'members-ask', from_owner: '*', to_owner: '*', actions: ['question', 'review_request'], repos: ['*'] });
+    expect(starterRule()).not.toBe(starterRule());
+    // a new Sphere's policy, [] at version 0: one PUT, and version 1
+    const fresh = fakeSphere();
+    const r = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 0, fresh.http);
+    expect(r).toMatchObject({ sphere: 'demo', admin: true, refused: null, why: null, policy: { version: 1, rules: [starterRule()] } });
+    expect(fresh.puts()).toHaveLength(1);
+    expect(JSON.parse(String(fresh.puts()[0].init.body))).toEqual({ expected_version: 0, rules: [starterRule()] });
+    // the rules already there are kept first, unchanged and in order
+    const ruled = fakeSphere({ version: 3, rules: [structuredClone(OTHER), structuredClone(THIRD)] });
+    const kept = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 3, ruled.http);
+    expect(JSON.parse(String(ruled.puts()[0].init.body))).toEqual({ expected_version: 3, rules: [OTHER, THIRD, starterRule()] });
+    expect(kept.policy).toMatchObject({ version: 4, rules: [OTHER, THIRD, starterRule()] });
+    // already there, by its id: nothing written, the policy as read
+    const there = fakeSphere({ version: 2, rules: [OTHER, { ...starterRule(), repos: ['acme/app'] }] });
+    const same = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 2, there.http);
+    expect(there.puts()).toEqual([]);
+    expect(same).toMatchObject({ refused: null, admin: true, policy: { version: 2, rules: [OTHER, { ...starterRule(), repos: ['acme/app'] }] } });
+    // and a member reads it
+    expect(await readPolicy(fakeObid('wellington', 'joined').call, () => key, fakeSphere({ admins: ['dmytro'], version: 2, rules: [OTHER] }).http))
+      .toMatchObject({ sphere: 'demo', admin: false, refused: null, policy: { version: 2, updated_at: '2026-11-14T00:00:00Z', rules: [OTHER] } });
+  });
+
+  it('policy_2_a_member_cannot_write', async () => {
+    // the exchange grants only directory:read: no PUT, and words naming the admins
+    const member = fakeSphere({ admins: ['dmytro'] });
+    const w = await writePolicy(fakeObid('wellington', 'joined').call, () => key, [starterRule()], 0, member.http);
+    expect(w).toMatchObject({ sphere: 'demo', policy: null, admin: false, refused: 'not_admin' });
+    expect(w.why).toMatch(/admins/);
+    expect(member.asked().map((c) => c.scope)).toEqual(['admin directory:read']);
+    expect(member.puts()).toEqual([]);
+    // the Sphere's own 403 answers the same
+    const taken = fakeSphere({ onPut: () => new Response('{}', { status: 403 }) });
+    expect(await writePolicy(fakeObid('wellington', 'joined').call, () => key, [], 0, taken.http)).toMatchObject({ refused: 'not_admin', admin: false });
+    // the starter rule for an owner not in `admins`: never asked for admin
+    const asked = fakeSphere({ admins: ['dmytro'] });
+    const a = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 0, asked.http);
+    expect(a).toMatchObject({ refused: 'not_admin', admin: false, policy: { version: 0, rules: [] } });
+    expect(a.why).toMatch(/admins/);
+    expect(asked.asked().map((c) => c.scope)).toEqual(['directory:read']);
+    expect(asked.puts()).toEqual([]);
+    // not joined: no owner key, nothing reaches a Sphere
+    const never = () => { throw new Error('no key'); };
+    const nothing = vi.fn();
+    for (const f of [
+      () => readPolicy(fakeObid('wellington', 'none').call, never, nothing as unknown as typeof fetch),
+      () => writePolicy(fakeObid('wellington', 'none').call, never, [starterRule()], 0, nothing as unknown as typeof fetch),
+      () => addStarterRule(fakeObid('wellington', 'none').call, never, 0, nothing as unknown as typeof fetch),
+    ]) expect(await f()).toMatchObject({ sphere: null, policy: null, admin: false, refused: 'not_joined' });
+    expect(nothing).not.toHaveBeenCalled();
+  });
+
+  it('policy_3_a_stale_version_replaces_nothing', async () => {
+    // another admin wrote meanwhile: the PUT is 409 conflict, read again with a new directory:read token
+    const raced = fakeSphere({ onPut: (p) => { if (p.version === 0) Object.assign(p, { version: 1, rules: [OTHER] }); } });
+    const r = await writePolicy(fakeObid('wellington', 'joined').call, () => key, [starterRule()], 0, raced.http);
+    expect(r).toMatchObject({ sphere: 'demo', admin: true, refused: 'changed', policy: { version: 1, rules: [OTHER] } });
+    expect(r.why).toContain('changed meanwhile');
+    expect(raced.policy).toEqual({ version: 1, rules: [OTHER] });
+    expect(raced.puts()).toHaveLength(1);
+    expect(raced.asked().map((c) => c.scope)).toEqual(['admin directory:read', 'directory:read']);
+    const [adminToken, readToken] = [...raced.granted.keys()];
+    const after = raced.requests.slice(raced.requests.indexOf(raced.puts()[0]) + 1);
+    expect(after.map((q) => `${q.init.method ?? 'GET'} ${q.url}`)).toEqual([
+      `POST ${BASE}/oauth/token`, `GET ${BASE}/spheres/demo`, `GET ${BASE}/spheres/demo/policy`,
+    ]);
+    for (const q of after.slice(1)) expect((q.init.headers as Record<string, string>).authorization).toBe(`Bearer ${readToken}`);
+    expect(readToken).not.toBe(adminToken);
+    // a conflict at the same version (a rule naming an owner who hasn't joined): the Sphere's words
+    const said = 'the policy names nobody, who hasn’t joined this Sphere: it can name only owners who have, or *';
+    const named = fakeSphere({ onPut: () => new Response(JSON.stringify({ error: { code: 'conflict', message: said } }), { status: 409 }) });
+    const f = await writePolicy(fakeObid('wellington', 'joined').call, () => key, [{ ...starterRule(), from_owner: 'nobody' }], 0, named.http);
+    expect(f).toMatchObject({ refused: 'failed', why: said, policy: { version: 0, rules: [] } });
+    // the starter rule at a version the page read before a change: nothing asked for admin
+    const moved = fakeSphere({ version: 5, rules: [OTHER] });
+    const m = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 4, moved.http);
+    expect(m).toMatchObject({ refused: 'changed', policy: { version: 5, rules: [OTHER] } });
+    expect(m.why).toContain('changed meanwhile');
+    expect(moved.asked().map((c) => c.scope)).toEqual(['directory:read']);
+    expect(moved.puts()).toEqual([]);
+  });
+
+  it('policy_4_the_owner_key_stays_in_main', async () => {
+    const sphere = fakeSphere();
+    const answers: PolicyAnswer[] = [];
+    let used = 0;
+    const owner = () => { used++; return key; };
+    answers.push(await writePolicy(fakeObid('wellington', 'joined').call, owner, [OTHER], 0, sphere.http));
+    answers.push(await writePolicy(fakeObid('wellington', 'joined').call, owner, [OTHER, starterRule()], 1, sphere.http));
+    answers.push(await readPolicy(fakeObid('wellington', 'joined').call, owner, sphere.http));
+    expect(answers.map((a) => a.refused)).toEqual([null, null, null]);
+    expect(sphere.policy.version).toBe(2);
+    // every call: no redirect
+    for (const q of sphere.requests) expect(q.init.redirect, q.url).toBe('error');
+    // two writes, two exchanges with their own jti; each admin token on exactly one request, the PUT
+    const writes = sphere.asked().filter((c) => c.scope === 'admin directory:read');
+    expect(writes).toHaveLength(2);
+    expect(writes[0].jti).not.toBe(writes[1].jti);
+    const adminTokens = [...sphere.granted].filter(([, scope]) => scope.split(' ').includes('admin')).map(([t]) => t);
+    expect(adminTokens).toHaveLength(2);
+    for (const t of adminTokens) {
+      const carried = sphere.requests.filter((q) => (q.init.headers as Record<string, string>)?.authorization === `Bearer ${t}`);
+      expect(carried.map((q) => q.init.method)).toEqual(['PUT']);
+    }
+    expect(used).toBe(3);
+    // no answer carries a token or an assertion, failures included
+    const assertions = sphere.requests.filter((q) => q.url.endsWith('/oauth/token')).map((q) => new URLSearchParams(String(q.init.body)).get('subject_token')!);
+    const offline = await writePolicy(fakeObid('wellington', 'joined').call, () => key, [], 0, (async () => { throw new Error('offline'); }) as unknown as typeof fetch);
+    expect(offline).toMatchObject({ refused: 'failed', why: 'offline' });
+    const noToken = await readPolicy(fakeObid('wellington', 'joined').call, () => key, (async () => new Response('{"error":"invalid_grant"}', { status: 400 })) as unknown as typeof fetch);
+    expect(noToken).toMatchObject({ refused: 'failed', why: 'the Obysphere gave no token (400)' });
+    const down = await readPolicy(async () => ({ status: 0, text: 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' }), () => key, sphere.http);
+    expect(down).toMatchObject({ refused: 'failed', why: 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' });
+    for (const a of [...answers, offline, noToken, down]) {
+      const said = JSON.stringify(a);
+      for (const secret of [...sphere.granted.keys(), ...assertions]) expect(said).not.toContain(secret);
+      expect(said).not.toMatch(/token-|eyJ/);
+    }
+    // the page's side never names the key, an assertion or a token
+    const preload = readFileSync(path(__dirname, '../../../preload/index.ts'), 'utf8');
+    for (const word of ['ownerKey', 'assertion', 'access_token']) expect(preload).not.toContain(word);
   });
 });
 
