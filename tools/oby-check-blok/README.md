@@ -32,6 +32,13 @@ for the script to exec an installed copy (`cargo install --locked --path tools/o
   none for the scan, is unjudged.
 - Every script it runs gets `OBY_CHECK_INNER=1`, so the script never execs this tool again under it.
 - It waits up to 60 seconds for the nodes binary to start and answer.
+- A full run (`OBY_CHECK_ALL` set) gives the Rust group (`rust-affected-tests`) the full-run limit,
+  60 minutes (`FULL_RUN_RUST_LIMIT` in `src/lib.rs`, CI-34); every other step, and the Rust group of a
+  check without `OBY_CHECK_ALL` (a gate's, obid's), keeps the workflow file's `maxDuration`.
+- A node past its limit stops its script itself (CI-33): SIGTERM to the script and every process under
+  it, in the check's own process group, then what the script says for up to 30 seconds, then SIGKILL to
+  what's left. Its reason names the test binaries still running: `ran past its maxDuration of 2700s:
+  tests/jobs_api.rs was still running`.
 
 ## Adopt it
 
@@ -75,7 +82,7 @@ file's order, honoring BLOK's step settings:
 | `active: false` | skips the step; its group counts as not judged |
 | `stop: true` | halts the workflow after the step; later planned steps count as not judged |
 | `retry.maxAttempts` | tries again a node that couldn't judge (a transport error, a timeout), never a failure |
-| `maxDuration` | `"45m"`, `"30s"` or milliseconds: past it, the node couldn't judge |
+| `maxDuration` | `"45m"`, `"30s"` or milliseconds: past it, the node stops its script's whole tree and couldn't judge, naming the test binaries still running (CI-33). In `check` with `OBY_CHECK_ALL`, `rust-affected-tests` gets the full-run limit, 60 minutes, instead (CI-34) |
 
 A planned group with no step, skipped or stopped is never a pass: the run folds to `unjudged`. A step this
 host can't run (`branch`, `switch`, `forEach`, `tryCatch`, `wait`, `loop`, `subworkflow`, a node that isn't
