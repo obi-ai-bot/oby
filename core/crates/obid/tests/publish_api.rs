@@ -3317,6 +3317,49 @@ fn merging_8_reviews_that_run_out_ask_the_owner_with_one_more_round() {
     assert_eq!(again[0]["options"], json!(["One more round", "Merge"]));
 }
 
+/// JOBSTATE-11 (docs/contracts/job-state.md): Another round. A done job whose Oby reviews ran out
+/// asking for changes, after the inbox's One more round, is the same job queued for its next
+/// round, its step "Working on Oby's review".
+#[test]
+fn jobstate_11_one_more_round_queues_the_reviews_changes() {
+    let folder = Folder::new("jobstate-11");
+    let bin = fake_gh(&folder.0);
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build",
+               "task": "COMMIT: hello.txt WANTS: fix.txt STUBBORN", "check": "test -f hello.txt"}),
+    );
+    let done = reviewed(&obid, &id, 3);
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["round"], 3, "{done}");
+    let items = within(60, "the owner's item", || {
+        let open = review_items(&obid, &id);
+        (!open.is_empty()).then_some(open)
+    });
+    let events = follow_events(&obid);
+    let more = call(
+        &obid,
+        "POST",
+        &format!("/v1/inbox/{}/answer", items[0]["id"].as_str().unwrap()),
+        Some(&json!({"answer": "One more round"})),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    let got = events_named(&events, "job", 60, |got| {
+        got.iter()
+            .any(|j| j["id"] == id.as_str() && j["round"] == 4)
+    });
+    let next = got
+        .iter()
+        .find(|j| j["id"] == id.as_str() && j["round"] == 4)
+        .unwrap();
+    assert_eq!(next["status"], "queued", "{next}");
+    assert_eq!(next["step"], "Working on Oby's review", "{next}");
+    for empty in ["finished", "reason", "nextStep", "stoppedBy", "resumesAt"] {
+        assert!(next[empty].is_null(), "{empty}: {next}");
+    }
+}
+
 /// MERGING-8, the path #1658 found: a follow-up works on the job's branch when Oby's first review
 /// asks for changes, so no round starts. Once it ended, the owner gets obid's own item after that
 /// one round, with One more round and Merge, and no question of the orchestrator's.

@@ -1455,6 +1455,34 @@ fn limits_16_a_finished_job_runs_its_next_round_there() {
     assert!(!codex_heard(&folder, &id).is_empty());
 }
 
+/// JOBSTATE-14 (docs/contracts/job-state.md): moving a finished job changes where it runs next,
+/// not where it is: the same status, round and branch, one more move.
+#[test]
+fn jobstate_14_moving_a_finished_job_keeps_its_state() {
+    let folder = Folder::new("jobstate-14");
+    let config = limit_config(&folder.0, "fake-claude", true);
+    let obid = start(&folder.0, &config, None);
+    let id = post(&obid, "Look around");
+    let first = ended(&obid, &id);
+    let body = json!({"account": "codex", "why": "Try Codex"});
+    let moved = within(60, "it moves once it's published", || {
+        let moved = call_typed(&obid, "POST", &format!("/v1/jobs/{id}/move"), &body);
+        (moved.status != 422 || !moved.text.contains("publishing")).then_some(moved)
+    });
+    assert_eq!(moved.status, 200, "{}", moved.text);
+    let job = &moved.body;
+    for same in ["status", "round", "branch", "finished"] {
+        assert_eq!(job[same], first[same], "{same}: {job}");
+    }
+    let moves = job["moves"].as_array().unwrap();
+    assert_eq!(
+        moves.len(),
+        first["moves"].as_array().unwrap().len() + 1,
+        "{job}"
+    );
+    assert_eq!(job["agent"], "codex", "{job}");
+}
+
 /// LIMITS-17: a move writes a handoff in the worktree, with the earlier rounds' summaries and the
 /// files changed so far, and the new session's first prompt tells it to read and compress it.
 #[test]
