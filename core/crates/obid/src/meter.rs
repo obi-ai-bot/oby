@@ -186,8 +186,6 @@ fn read_machine() -> Option<Machine> {
         let psi = std::fs::read_to_string("/proc/pressure/memory").unwrap_or_default();
         linux_machine(&meminfo, &psi)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    None
 }
 
 /// Every process now; empty when they can't be listed.
@@ -250,8 +248,6 @@ pub fn processes() -> Vec<Process> {
             })
             .collect()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    Vec::new()
 }
 
 #[cfg(target_os = "macos")]
