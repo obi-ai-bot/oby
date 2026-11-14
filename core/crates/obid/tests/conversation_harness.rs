@@ -2248,6 +2248,83 @@ fn merging_32_reading_someone_elses_job_still_marks() {
     assert!(kept["foreign"].is_string(), "{kept}");
 }
 
+/// AGENTMCP-4 (docs/contracts/agent-mcp.md): on a turn that isn't the owner's signed word, a tool
+/// whose entry says `confirm_unless_owners_word` doesn't act: its handler leaves a Confirm item,
+/// and the turn asks for the owner's OK at most 10 times. A tool without the gate isn't capped.
+#[test]
+fn agentmcp_4_a_confirm_tool_waits_without_the_owners_word() {
+    let (_folder, obid) = obid("harness-agentmcp-4", true);
+    let here = said(&obid, json!({"said": "HELLO", "new": true})).body["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let delete = format!(r#"OBY oby_delete_conversations {{"ids": ["{here}"]}}"#);
+    let waits = said(&obid, json!({"said": delete, "conversation": here}));
+    assert!(
+        oby_said(&waits).contains("waits for your OK"),
+        "{}",
+        waits.text
+    );
+    let item = inbox(&obid)
+        .into_iter()
+        .find(|i| i["kind"] == "confirm" && i["confirm"]["action"] == "delete_conversations")
+        .unwrap_or_else(|| panic!("no Confirm: {:?}", inbox(&obid)));
+    assert!(
+        item["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("Delete the conversation "),
+        "{item}"
+    );
+    let kept = call(&obid, "GET", "/v1/conversations", None);
+    assert!(kept.text.contains(&here), "{}", kept.text);
+
+    let again = format!(r#"REPEAT 11 OBY oby_delete_conversations {{"ids": ["{here}"]}}"#);
+    let capped = said(&obid, json!({"said": again, "conversation": here}));
+    assert!(
+        oby_said(&capped).contains("asks for the owner's OK at most 10 times"),
+        "{}",
+        capped.text
+    );
+    let ungated = said(
+        &obid,
+        json!({"said": "REPEAT 11 OBY oby_routines {}", "conversation": here}),
+    );
+    assert!(
+        !oby_said(&ungated).contains("asks for the owner's OK"),
+        "{}",
+        ungated.text
+    );
+}
+
+/// AGENTMCP-5: on the owner's signed turns, a tool whose entry marks its answer marks the
+/// conversation with its reason, one that marks nothing leaves it clean, and a name with no entry
+/// fails closed: it marks as its answer and says Oby has no such tool.
+#[test]
+fn agentmcp_5_only_marking_tools_mark() {
+    let (_folder, obid) = obid("harness-agentmcp-5", true);
+    let foreign = |said: &str| -> (Value, String) {
+        let answer = call_typed(
+            &obid,
+            "POST",
+            "/v1/plans",
+            &json!({"said": said, "new": true}),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        let id = answer.body["conversation"].as_str().unwrap();
+        let kept = obid.home.join("conversations").join(format!("{id}.json"));
+        let kept: Value = serde_json::from_slice(&std::fs::read(kept).unwrap()).unwrap();
+        (kept["foreign"].clone(), oby_said(&answer))
+    };
+    let (clean, _) = foreign("OBY oby_tasks {}");
+    assert!(clean.is_null(), "{clean}");
+    let (marked, _) = foreign("OBY oby_routines {}");
+    assert_eq!(marked, "oby_routines's answer");
+    let (unknown, text) = foreign("OBY oby_no_such_tool {}");
+    assert_eq!(unknown, "oby_no_such_tool's answer");
+    assert!(text.contains("Oby has no tool oby_no_such_tool."), "{text}");
+}
+
 /// TASKCONV-17: the session going on hears, once, how its jobs ended since the owner last spoke,
 /// quoted. A job started on the owner's own word leaves the next turn theirs.
 #[test]
