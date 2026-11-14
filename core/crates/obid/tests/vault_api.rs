@@ -194,12 +194,15 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     let (code, out, _) = vault(&path, &["list"], None);
     assert_eq!((code, out.as_str()), (0, "staging-api-key\n"));
 
-    // A clean answer is as it was, byte for byte but its revision. The meter can still save the
-    // job with nothing else changed: `Jobs::metered` → `Jobs::keep_peaks` keeps its peaks, grown
-    // or not, once its worker is gone, as a reading under way (`Jobs::measure`) can, and a
-    // cleanup pass can come first. Nothing in the answer marks that save's end, and waiting for
-    // `revision` to stop changing would be a guess about timing. Adding a vault secret saves no
-    // job: answers are redacted as they're written.
+    // A clean answer is as it was, byte for byte but its revision. Leaving the revision out covers
+    // a save that changes nothing else: `Jobs::metered` → `Jobs::keep_peaks` saves a measured
+    // job's peaks again once its worker is gone, grown or not, and nothing in the answer marks
+    // that save's end; waiting for `revision` to stop changing would be a guess about timing. A
+    // peak kept for the first time would add `peakRss` too: `metered` runs before the job's end
+    // wakes the cleanup pass, so the wait for `buildFreed` above is what keeps it before `before`,
+    // unless a pass woken otherwise (30 seconds after obid started, or by another job) ran in
+    // between, or a reading under way (`Jobs::measure`) keeps its peak late. Adding a vault
+    // secret saves no job: answers are redacted as they're written.
     let after = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None);
     let revision = |text: &str| -> u64 {
         assert_eq!(text.matches("\"revision\":").count(), 1, "{text}");
@@ -473,23 +476,27 @@ fn obid_answers_while_the_vault_scan_reads_a_big_file() {
             .position(|(_, _, step)| !scanning(step))?;
         Some(first + after)
     });
-    let (window, slowest) = match (first, last) {
-        (Some(first), Some(last)) => (
-            answers[last].0 + answers[last].1 - answers[first].0,
-            answers[first..=last]
-                .iter()
-                .map(|(_, took, _)| *took)
-                .max()
-                .unwrap(),
-        ),
-        _ => Default::default(),
+    let (Some(first), Some(last)) = (first, last) else {
+        panic!(
+            "no answer showed the scan and a later step: too short to judge\n{}",
+            obid.log()
+        );
     };
+    let window = answers[last].0 + answers[last].1 - answers[first].0;
+    let slowest = answers[first..=last]
+        .iter()
+        .map(|(_, took, _)| *took)
+        .max()
+        .unwrap();
     // A stalled answer lasts about as long as a piece of the scan (#749 put back: `off_runtime`
-    // running its work inline). On a Mac's debug build (A00-30), the slowest answer in the window
-    // took at most 0.4% of it unstalled (14 ms of 6.3 s alone, 0.28 s of 76 s on a busy Mac, 50 ms
-    // of 31 to 60 s with four copies of this binary at once) and at least 72% stalled (4.4 to
-    // 9.2 s of 6.1 to 12.3 s alone, 29 to 44 s of 36 to 55 s with four at once). A quarter parts
-    // them; a window of 3 s, half the shortest measured, is the least a stall shows in.
+    // running its work inline). On a Mac's debug build, the slowest answer in the window took at
+    // most 0.4% of it unstalled (14 ms of 6.3 s alone, 0.28 s of 76 s on a busy Mac, 50 ms of 31
+    // to 60 s with four copies of this binary at once) and at least 72% stalled (4.4 to 9.2 s of
+    // 6.1 to 12.3 s alone, 29 to 44 s of 36 to 55 s with four at once): the stall failed 7 runs
+    // of 7 there. A quarter parts them; a window of 3 s, half the shortest measured, is the least
+    // a stall shows in. Only an answer the stall holds shows it, so finding one is likely, not
+    // certain: on a 64-core Linux VM the stall failed 4 runs of 4 at once but 1 of 2 alone, the
+    // other run's answers all falling between the stall's pieces.
     const FRACTION: f64 = 0.25;
     const FLOOR: std::time::Duration = std::time::Duration::from_secs(3);
     assert!(
