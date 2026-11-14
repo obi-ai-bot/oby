@@ -2329,7 +2329,8 @@ fn follow_ups(obid: &Obid, id: &str) -> Vec<Value> {
 }
 
 /// TASKS-20 (#1851): Try again on a task that ended before its agent started (no session) runs
-/// that same task again, another round launched from its own task, and makes no follow-up.
+/// that same task again, another round launched from its own task, and makes no follow-up; its
+/// `finished`, `reason` and `nextStep` are empty in the new round (JOBSTATE-6).
 #[test]
 fn tasks_20_try_again_reruns_a_task_that_never_started() {
     let folder = Folder::new("tasks-20");
@@ -2360,6 +2361,11 @@ fn tasks_20_try_again_reruns_a_task_that_never_started() {
         "{}",
         again.text
     );
+    // How it ended is gone with its new round (JOBSTATE-6).
+    assert!(!failed["reason"].is_null(), "{failed}");
+    for empty in ["finished", "reason", "nextStep"] {
+        assert!(again.body[empty].is_null(), "{empty}: {}", again.text);
+    }
     assert_eq!(follow_ups(&obid, &id), Vec::<Value>::new());
 
     // Launched from its task again, it went through prepare again, and failed there the same way.
@@ -2460,6 +2466,288 @@ fn tasks_22_an_old_worker_cannot_end_a_new_round() {
         json!(["Added notes.txt.", "Tried again."]),
         "{job}"
     );
+}
+
+/// A job of the fixture's kept in obid's home as `id` before it starts, `status`, with a session.
+fn seeded(folder: &Path, id: &str, status: obid::job::Status) -> obid::job::Job {
+    let mut job = obid::job::Job::new(
+        id.into(),
+        "obi-e2e/fixture-app".into(),
+        "investigate".into(),
+        "Look around".into(),
+        "claude".into(),
+        "stub".into(),
+    );
+    job.branch = format!("oby/investigate-{id}");
+    job.status = status;
+    job.session = Some("00000000-0000-4000-8000-000000000001".into());
+    job.started = Some(obi_protocol::time::now() - 300);
+    job.finished = Some(obi_protocol::time::now() - 200);
+    keep(folder, &job);
+    job
+}
+
+/// Writes `job` in obid's home, as obid keeps it.
+fn keep(folder: &Path, job: &obid::job::Job) {
+    let jobs = folder.join("home/jobs");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(
+        jobs.join(format!("{}.json", job.id)),
+        serde_json::to_vec(job).unwrap(),
+    )
+    .unwrap();
+}
+
+/// Job `id` as obid keeps it in its file, with what the API doesn't show.
+fn kept_file(obid: &Obid, id: &str) -> Value {
+    let file = obid.home.join(format!("jobs/{id}.json"));
+    serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()
+}
+
+/// JOBSTATE-1 (docs/contracts/job-state.md): Stop of a running job: `stopped` at once, who stopped
+/// it in `stoppedBy`, nothing it waits for, `finished` set and its `reason` as it was.
+#[test]
+fn jobstate_1_stop_clears_the_side_fields() {
+    let folder = Folder::new("jobstate-1");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = post_job(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}),
+    )
+    .body["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    beat(&obid, &id);
+    let running = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(running["status"], "running", "{running}");
+    assert!(running["finished"].is_null(), "{running}");
+    let stopped = request(&obid, "POST", &format!("/v1/jobs/{id}/stop"), None);
+    assert_eq!(stopped.status, 200, "{}", stopped.text);
+    let job = &stopped.body;
+    assert_eq!(job["status"], "stopped", "{job}");
+    assert_eq!(job["stoppedBy"], obid::jobs::STOPPED_BY_API, "{job}");
+    assert_eq!(job["step"], "", "{job}");
+    for empty in ["waiting", "resumesAt", "unjudged"] {
+        assert!(job[empty].is_null(), "{empty}: {job}");
+    }
+    assert!(job["finished"].as_str().is_some(), "{job}");
+    assert_eq!(job["reason"], running["reason"], "{job}");
+    assert_eq!(job["round"], running["round"], "{job}");
+}
+
+/// Try again on a job kept `status` with a session and every field Try again clears set: the same
+/// job, `queued` or `running`, its round one on, all of them empty, and no follow-up.
+fn try_again_clears(name: &str, status: obid::job::Status) {
+    let folder = Folder::new(name);
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let now = obi_protocol::time::now();
+    let id = "aaaa0002";
+    let mut job = seeded(&folder.0, id, status);
+    job.round = Some(2);
+    job.dismissed = Some(now - 100);
+    job.archived = Some(now - 100);
+    job.limit = Some("No progress for 3 seconds.".into());
+    job.reason = Some("It broke.".into());
+    job.stopped_by = Some("by you".into());
+    job.next_step = Some(obid::job::TRY_AGAIN.into());
+    job.resumes_at = Some(now + 86_400);
+    job.unjudged = Some(serde_json::from_value(json!({"tries": 1, "why": "No runner."})).unwrap());
+    job.stalled = Some(
+        serde_json::from_value(
+            json!({"why": "quiet", "text": "No progress.", "at": now - 200,
+            "round": 2, "branch": job.branch, "commit": null, "commits": 0, "session": true,
+            "note": "A note.", "noteBy": "obid"}),
+        )
+        .unwrap(),
+    );
+    job.waiting =
+        Some(serde_json::from_value(json!({"kind": "slot", "text": "Waiting."})).unwrap());
+    job.account_limit_episode = Some("episode".into());
+    job.account_limit_nonce = Some("nonce".into());
+    job.account_limit_reset = Some(now + 3600);
+    job.account_limit_choice = Some(serde_json::from_value(json!("resume")).unwrap());
+    keep(&folder.0, &job);
+    let obid = start(&folder.0, &config);
+    let before = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(before["status"], status.as_str(), "{before}");
+    assert_eq!(before["round"], 2, "{before}");
+    for set in [
+        "finished",
+        "dismissed",
+        "archived",
+        "limit",
+        "reason",
+        "stoppedBy",
+        "nextStep",
+    ] {
+        assert!(!before[set].is_null(), "{set}: {before}");
+    }
+
+    let again = press_try_again(&obid, id);
+    assert_eq!(again.status, 200, "{}", again.text);
+    let job = &again.body;
+    assert_eq!(job["id"], id, "{job}");
+    assert!(
+        matches!(job["status"].as_str(), Some("queued" | "running")),
+        "{job}"
+    );
+    assert_eq!(job["round"], 3, "{job}");
+    for empty in [
+        "finished",
+        "dismissed",
+        "archived",
+        "limit",
+        "reason",
+        "stoppedBy",
+        "nextStep",
+        "resumesAt",
+        "unjudged",
+        "stalled",
+        "waiting",
+        "accountLimit",
+    ] {
+        assert!(job[empty].is_null(), "{empty}: {job}");
+    }
+    // The account-limit fields the API doesn't show, as obid keeps them.
+    let kept = kept_file(&obid, id);
+    for empty in [
+        "accountLimitEpisode",
+        "accountLimitNonce",
+        "accountLimitReset",
+        "accountLimitChoice",
+        "waiting",
+        "stalled",
+    ] {
+        assert!(kept[empty].is_null(), "{empty}: {kept}");
+    }
+    assert_ne!(kept["accountLimitBlocked"], true, "{kept}");
+    assert_eq!(follow_ups(&obid, id), Vec::<Value>::new());
+}
+
+/// JOBSTATE-2 (docs/contracts/job-state.md): Try again on a `failed` job with a session.
+#[test]
+fn jobstate_2_try_again_resets_the_round() {
+    try_again_clears("jobstate-2", obid::job::Status::Failed);
+}
+
+/// JOBSTATE-9 (docs/contracts/job-state.md): Try again on an `interrupted` job.
+#[test]
+fn jobstate_9_try_again_after_interrupted_resets_the_round() {
+    try_again_clears("jobstate-9", obid::job::Status::Interrupted);
+}
+
+/// JOBSTATE-10 (docs/contracts/job-state.md): Try again on a `stopped` job.
+#[test]
+fn jobstate_10_try_again_after_stopped_resets_the_round() {
+    try_again_clears("jobstate-10", obid::job::Status::Stopped);
+}
+
+/// JOBSTATE-5 (docs/contracts/job-state.md): Try again on a job whose follow-up carries its branch
+/// on is refused with `422`, naming the follow-up, and the job stays as it was.
+#[test]
+fn jobstate_5_try_again_refused_while_a_follow_up_carries_the_branch() {
+    let folder = Folder::new("jobstate-5");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let first = seeded(&folder.0, "aaaa0005", obid::job::Status::Failed);
+    let mut next = seeded(&folder.0, "bbbb0005", obid::job::Status::Stopped);
+    next.task = "Carry it on".into();
+    next.follow_up_of = Some(first.id.clone());
+    next.branch = first.branch.clone();
+    keep(&folder.0, &next);
+    let obid = start(&folder.0, &config);
+    let before = request(&obid, "GET", "/v1/jobs/aaaa0005", None).body;
+    assert_eq!(before["status"], "failed", "{before}");
+
+    let refused = press_try_again(&obid, "aaaa0005");
+    assert_eq!(refused.status, 422, "{}", refused.text);
+    assert!(
+        refused
+            .text
+            .contains("Its follow-up Carry it on carries its branch on"),
+        "{}",
+        refused.text
+    );
+    let after = request(&obid, "GET", "/v1/jobs/aaaa0005", None).body;
+    for same in ["status", "round", "finished", "reason", "nextStep"] {
+        assert_eq!(after[same], before[same], "{same}: {after}");
+    }
+}
+
+/// JOBSTATE-12 (docs/contracts/job-state.md): the owner's words to a job that ended done start a
+/// follow-up (`201`), and the first job keeps its status, round and `finished`. With no open pull
+/// request of the first job's to carry on, the follow-up works on a branch of its own.
+#[test]
+fn jobstate_12_words_to_a_done_job_start_a_follow_up() {
+    let folder = Folder::new("jobstate-12");
+    let remote = fixture(&folder.0.join("fixture"));
+    let obid = start(&folder.0, &config(&folder.0, &remote));
+    let id = ended(&obid, "Look around");
+    let before = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    let words = json!({"text": "Look around once more"}).to_string();
+    let told = request(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&words),
+    );
+    assert_eq!(told.status, 201, "{}", told.text);
+    assert_ne!(told.body["id"], id.as_str(), "{}", told.text);
+    assert_eq!(told.body["followUpOf"], id.as_str(), "{}", told.text);
+    let follow_up = told.body["id"].as_str().unwrap();
+    assert_eq!(
+        told.body["branch"],
+        format!("oby/investigate-{follow_up}"),
+        "{}",
+        told.text
+    );
+    assert_ne!(told.body["branch"], before["branch"], "{}", told.text);
+    let after = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    for same in ["status", "round", "finished"] {
+        assert_eq!(after[same], before[same], "{same}: {after}");
+    }
+}
+
+/// JOBSTATE-13 (docs/contracts/job-state.md): Dismiss lets a job that needs the owner go:
+/// `dismissed` set, no resume left (`resumesAt` empty), its status as it was. A job that doesn't
+/// need the owner is `409`.
+#[test]
+fn jobstate_13_dismiss_lets_an_interrupted_job_go() {
+    let folder = Folder::new("jobstate-13");
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote);
+    let mut interrupted = seeded(&folder.0, "aaaa0013", obid::job::Status::Interrupted);
+    interrupted.reason = Some("It needs you.".into());
+    keep(&folder.0, &interrupted);
+    // An interrupted job kept with a resume is an older release's limit hold, which obid turns
+    // into a card when it starts: a failed one shows a resume going too.
+    let mut failed = seeded(&folder.0, "bbbb0013", obid::job::Status::Failed);
+    failed.reason = Some("It broke.".into());
+    failed.resumes_at = Some(obi_protocol::time::now() + 86_400);
+    keep(&folder.0, &failed);
+    let obid = start(&folder.0, &config);
+    for (id, status) in [("aaaa0013", "interrupted"), ("bbbb0013", "failed")] {
+        let before = request(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        assert_eq!(before["status"], status, "{before}");
+        assert!(before["dismissed"].is_null(), "{before}");
+        assert_eq!(before["resumesAt"].is_null(), id == "aaaa0013", "{before}");
+
+        let dismissed = request(&obid, "POST", &format!("/v1/jobs/{id}/dismiss"), None);
+        assert_eq!(dismissed.status, 200, "{}", dismissed.text);
+        let job = &dismissed.body;
+        assert!(job["dismissed"].as_str().is_some(), "{job}");
+        assert!(job["resumesAt"].is_null(), "{job}");
+        for same in ["status", "round", "finished", "reason"] {
+            assert_eq!(job[same], before[same], "{same}: {job}");
+        }
+    }
+
+    let done = ended(&obid, "Look around");
+    let refused = request(&obid, "POST", &format!("/v1/jobs/{done}/dismiss"), None);
+    assert_eq!(refused.status, 409, "{}", refused.text);
 }
 
 /// A check that keeps failing gets the agent another round with its output, then stops at a limit:
