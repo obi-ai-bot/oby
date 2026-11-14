@@ -9568,6 +9568,7 @@ impl Jobs {
         signal: &watch::Receiver<Signal>,
     ) -> Result<(), End> {
         let mut job = self.get(id).ok_or("the job is gone")?;
+        let mut ours = job.current_round(); // the round it last launched, all it ends (TASKS-22)
         if let Err(why) = &self.sandbox {
             return Err(End::Failed(format!(
                 "obid can't make the job sandbox on this machine, so it ran nothing: {why}"
@@ -10528,6 +10529,7 @@ impl Jobs {
                         job.step = format!("Starting {}", tool.name());
                     }
                 });
+                ours = round;
                 self.stamp_version(id, tool);
                 round_due = false;
                 stages.begin(&format!("agent round {round}"));
@@ -11019,7 +11021,7 @@ impl Jobs {
             // Nothing committed: done, as Claude Code is when its model stops, and the agent's
             // summary says why. A round the owner asked for says nothing of it: their words decide.
             if COMMITTING.contains(&job.kind.as_str()) && commits == 0 && !job.asked {
-                self.end_done(id, 0, job.pushed, |job| {
+                self.end_done(id, ours, 0, job.pushed, |job| {
                     job.reason = Some(NOTHING_COMMITTED.into());
                 });
                 return Ok(());
@@ -11027,7 +11029,7 @@ impl Jobs {
             // A review publishes nothing: one that committed is done, its review standing, its
             // commits counted and kept on its branch, never published.
             if job.kind == "review" && commits > 0 {
-                self.end_done(id, commits, job.pushed, |job| {
+                self.end_done(id, ours, commits, job.pushed, |job| {
                     job.reason = Some(crate::publish::REVIEW_COMMITTED.into());
                 });
                 self.offer_owner_review(id).await;
@@ -11041,7 +11043,7 @@ impl Jobs {
                     || Box::pin(self.sandboxed_git(id, &TRACKED, None)).await.ok()
                         != reviewed_tracked)
             {
-                self.end_done(id, 0, job.pushed, |job| {
+                self.end_done(id, ours, 0, job.pushed, |job| {
                     job.reason = Some(REVIEW_MOVED.into());
                 });
                 self.offer_owner_review(id).await;
@@ -11071,7 +11073,7 @@ impl Jobs {
                 .await
                     == 0
             {
-                self.end_done(id, commits, job.pushed, |job| {
+                self.end_done(id, ours, commits, job.pushed, |job| {
                     job.reason = Some(format!(
                         "The pull request of {first} was closed without merging, so Oby didn't publish its commits again: Publish opens a new pull request with them."
                     ));
@@ -11081,13 +11083,15 @@ impl Jobs {
             let pushed = self.still_pushed(&job, &head, commits).await;
             // Its check didn't pass on its commits alone: done, nothing published, and why.
             if let Err(why) = &verified {
-                self.end_done(id, commits, pushed, |job| job.reason = Some(why.clone()));
+                self.end_done(id, ours, commits, pushed, |job| {
+                    job.reason = Some(why.clone())
+                });
                 return Ok(());
             }
             if let Some(why) = by_hand.take()
                 && job.kind != "research"
             {
-                self.end_done(id, commits, pushed, |job| job.reason = Some(why));
+                self.end_done(id, ours, commits, pushed, |job| job.reason = Some(why));
                 return Ok(());
             }
             // The job as it would end, which is what gets published.
@@ -11105,7 +11109,7 @@ impl Jobs {
             if !ended.can_publish() || (!made_now && job.publish_error.is_some()) {
                 // Still waiting for Publish by hand: why its own publish failed still holds.
                 let waiting = ended.can_publish();
-                self.end_done(id, commits, pushed, |job| {
+                self.end_done(id, ours, commits, pushed, |job| {
                     if !waiting {
                         job.publish_error = None;
                     }
@@ -11211,7 +11215,7 @@ impl Jobs {
             let pushed = if went_out { Some(commits) } else { pushed };
             match published {
                 Ok(Some(url)) => {
-                    self.end_done(id, commits, Some(commits), |job| {
+                    self.end_done(id, ours, commits, Some(commits), |job| {
                         job.was_published(url);
                     });
                     self.follow.notify_one();
@@ -11220,18 +11224,20 @@ impl Jobs {
                 }
                 // Pushed to a remote that has no pull requests: that's all of it.
                 Ok(None) => {
-                    self.end_done(id, commits, Some(commits), |job| job.publish_error = None);
+                    self.end_done(id, ours, commits, Some(commits), |job| {
+                        job.publish_error = None
+                    });
                 }
                 // Pushed, and only the pull request failed: the commits count as out (#627).
                 Err(failure @ Failure::PullRequest(_)) => {
                     let why = failure.line();
-                    self.end_done(id, commits, Some(commits), |job| {
+                    self.end_done(id, ours, commits, Some(commits), |job| {
                         job.publish_error = Some(why)
                     });
                 }
                 Err(Failure::AlreadyOnBase(base)) => {
                     let line = Failure::AlreadyOnBase(base).line();
-                    self.end_done(id, 0, pushed, |job| {
+                    self.end_done(id, ours, 0, pushed, |job| {
                         job.summary = format!("{line}\n\n{}", job.summary);
                         job.publish_error = None;
                     });
@@ -11280,7 +11286,9 @@ impl Jobs {
                     | Failure::Refused(_)),
                 ) => {
                     let why = failure.line();
-                    self.end_done(id, commits, pushed, |job| job.publish_error = Some(why));
+                    self.end_done(id, ours, commits, pushed, |job| {
+                        job.publish_error = Some(why)
+                    });
                 }
             }
             return Ok(());
@@ -12102,11 +12110,18 @@ impl Jobs {
             .map_err(|e| e.to_string())
     }
 
-    /// Ends the job `id` done with `commits` (and `pushed` of them on its pull request), then
-    /// `change`: unless it was stopped meanwhile.
-    fn end_done(&self, id: &str, commits: u64, pushed: Option<u64>, change: impl FnOnce(&mut Job)) {
+    /// Ends the job `id` done in its round `ours` with `commits` (and `pushed` of them on its pull
+    /// request), then `change`: unless it was stopped meanwhile or its round moved on (TASKS-22).
+    fn end_done(
+        &self,
+        id: &str,
+        ours: u32,
+        commits: u64,
+        pushed: Option<u64>,
+        change: impl FnOnce(&mut Job),
+    ) {
         self.update(id, |job| {
-            if !job.status.is_active() {
+            if !job.status.is_active() || job.current_round() != ours {
                 return;
             }
             job.status = Status::Done;
