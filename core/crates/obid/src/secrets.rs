@@ -7,14 +7,16 @@
 //! delegation and access token, and the owner's vault (`crate::vault`, #457); [`known`] holds them
 //! once obid has read or been given them. The vault's values join that set as `vault <name>`, and
 //! the set reads the vault again before each use when it changed (a value `obid vault add` put
-//! there while obid runs), so the log layer (`crate::logs`), the publish gate (`crate::scan`) and
-//! every text obid redacts take them out too.
+//! there while obid runs), so the log's writer ([`Redacting`], with the values it learned last),
+//! the publish gate (`crate::scan`) and every text obid redacts take them out too.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use base64::Engine as _;
 use regex::Regex;
+use tracing_subscriber::fmt::MakeWriter;
 
 /// The shortest value taken out: a shorter one would match ordinary text everywhere (the vault's
 /// own shortest secret, Engine/Vault.swift's `Vault.shortest`).
@@ -215,6 +217,53 @@ impl Secrets {
     /// The marker [`Secrets::redact`] writes for `names`.
     pub fn marker(&self, names: &[String]) -> String {
         marker(self.label(), names)
+    }
+}
+
+/// The log's writer (docs/contracts/logs.md): each event goes to `inner` once, whole, with every
+/// value the set learned last taken out ([`Secrets::try_redact`]: no vault read, no wait on a
+/// lock, so a line logged while one is held can't hang), or withheld when it can't be.
+pub struct Redacting<W>(Arc<Secrets>, W);
+
+impl<W> Redacting<W> {
+    pub fn new(secrets: Arc<Secrets>, inner: W) -> Redacting<W> {
+        Redacting(secrets, inner)
+    }
+}
+
+impl<'a, W: MakeWriter<'a>> MakeWriter<'a> for Redacting<W> {
+    type Writer = Held<'a, W::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        Held(&self.0, Vec::new(), self.1.make_writer())
+    }
+}
+
+/// One event's bytes, held until it is flushed or dropped, then written redacted ([`Redacting`]).
+pub struct Held<'a, W: Write>(&'a Secrets, Vec<u8>, W);
+
+impl<W: Write> Write for Held<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.1.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.1.is_empty() {
+            return Ok(());
+        }
+        let text = String::from_utf8_lossy(&std::mem::take(&mut self.1)).into_owned();
+        let text = self.0.try_redact(&text).unwrap_or_else(|| {
+            "obid: a log line was withheld: obid couldn't take its secrets out of it\n".to_owned()
+        });
+        self.2.write_all(text.as_bytes())?;
+        self.2.flush()
+    }
+}
+
+impl<W: Write> Drop for Held<'_, W> {
+    fn drop(&mut self) {
+        let _ = self.flush();
     }
 }
 
@@ -923,5 +972,90 @@ mod tests {
                 .redact("line: AAAAB3NzaC1yc2EAAAADAQABAAABAQ")
                 .contains("AAAAB3NzaC1yc2EAAAADAQABAAABAQ")
         );
+    }
+
+    /// What a log writer under test was given, all of it.
+    #[derive(Clone, Default)]
+    struct Logged(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for Logged {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Logged {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    /// LOGS-1: a value obid holds, logged plain, base64, hex or URL-encoded, reaches the log's
+    /// writer in none of those forms, and the rest of the line does.
+    #[test]
+    fn logs_1_every_form_of_a_secret_is_taken_out() {
+        // Its base64 has `+` and `/`, so the URL-safe form is another text.
+        const V: &str = "log token: ~~~???";
+        let secrets = Secrets::default();
+        secrets.learn("log-token", V);
+        let logged = Logged::default();
+        let capture = logged.clone();
+        let log = Redacting::new(Arc::new(secrets), move || capture.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(log)
+            .finish();
+        let forms = [
+            V.to_owned(),
+            b64(V.as_bytes()),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(V),
+            hex::encode(V),
+            hex::encode(V).to_ascii_uppercase(),
+            percent_encode(V, false),
+        ];
+        assert_ne!(forms[1].trim_end_matches('='), forms[2]);
+        tracing::subscriber::with_default(subscriber, || {
+            for (i, form) in forms.iter().enumerate() {
+                tracing::info!("form {i}: the value is <{form}> and more");
+            }
+        });
+        let text = logged.text();
+        for (i, form) in forms.iter().enumerate() {
+            assert!(!text.contains(form.as_str()), "{form}: {text}");
+            let line = format!("form {i}: the value is <[redacted: log-token]> and more\n");
+            assert!(text.contains(&line), "{form}: {text}");
+        }
+    }
+
+    /// LOGS-2: a line that reaches the writer in several writes, with a value split across them,
+    /// is written once, whole, with the value taken out: nothing goes before the event ends.
+    #[test]
+    fn logs_2_a_secret_split_across_writes_is_taken_out() {
+        let logged = Logged::default();
+        let capture = logged.clone();
+        let log = Redacting::new(Arc::new(secrets()), move || capture.clone());
+        let (head, tail) = TOKEN.split_at(TOKEN.len() / 2);
+        let mut writer = log.make_writer();
+        for piece in [
+            format!("the value is {head}"),
+            format!("{tail} and more"),
+            "\n".into(),
+        ] {
+            assert_eq!(writer.write(piece.as_bytes()).unwrap(), piece.len());
+            assert_eq!(
+                logged.text(),
+                "",
+                "nothing is written before the event ends"
+            );
+        }
+        drop(writer);
+        let text = logged.text();
+        assert_eq!(text, "the value is [redacted: api-token] and more\n");
+        assert!(!text.contains(head) && !text.contains(tail), "{text}");
     }
 }
