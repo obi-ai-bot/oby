@@ -12,6 +12,7 @@ Run from the repository root: python3 factory/tests/test_remote_gate.py
 """
 
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -282,6 +283,25 @@ class RemoteGate(unittest.TestCase):
         # npm ci, before the electron group, still has the network.
         self.assertEqual((self.fake / "npm-offline").read_text(), "unset\n")
 
+    def test_remote_32_gate_locks_are_the_owners_alone(self):
+        # The locks A00-31 left at 0644, which another user could open and hold; slot-1's is held, so the gate
+        # opens it, takes slot-2 and makes its lock.
+        (self.root / "slot-1").mkdir()
+        for lock in (self.root / "repo.lock", self.root / "slot-1" / "lock"):
+            lock.touch()
+            lock.chmod(0o644)
+        held = os.open(self.root / "slot-1" / "lock", os.O_RDWR)
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            (self.fake / "release").touch()
+            gate = self.start()
+            self.assertEqual(gate.slot(), 2)
+            self.assertEqual(gate.finish(), 0, gate.output())
+        finally:
+            os.close(held)
+        for lock in (self.root / "repo.lock", self.root / "slot-1" / "lock", self.root / "slot-2" / "lock"):
+            self.assertEqual(lock.stat().st_mode & 0o777, 0o600, lock)
+
 
     # ---- REMOTE-28: --slots and --builder-slots ------------------------------------------------
 
@@ -390,6 +410,109 @@ class RemoteGate(unittest.TestCase):
         self.assertFalse((self.root / "slot-1").exists(), "a usage error took a slot")
 
 
+# The builder's cargo for REMOTE-34. Its first run leaves what a hostile run could: an ignored file in the worktree,
+# strays in the slot and the builder root, a config.toml in its CARGO_HOME, a post-checkout hook with core.hooksPath
+# and info/attributes in the clone, and a file in target. Its second records what is still there.
+BUILDER_CARGO = """#!/usr/bin/env python3
+import json, os, subprocess
+from pathlib import Path
+fake = Path(os.environ["FAKE"])
+target = Path(os.environ["CARGO_TARGET_DIR"])
+slot, cargo_home = target.parent, Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
+root, worktree = slot.parent, slot / "worktree"
+repo = root / "repo.git"
+if not (fake / "first").exists():
+    (fake / "first").touch()
+    (worktree / "ignored").mkdir()
+    (worktree / "ignored" / "left").write_text("left\\n")
+    (slot / "stray").write_text("stray\\n")
+    (root / "stray").write_text("stray\\n")
+    cargo_home.mkdir(parents=True, exist_ok=True)
+    (cargo_home / "config.toml").write_text("[build]\\n")
+    hook = repo / "hooks" / "post-checkout"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text(f"#!/bin/sh\\ntouch '{fake}/hook-ran'\\n")
+    hook.chmod(0o755)
+    subprocess.run(["git", "config", "--file", str(repo / "config"), "core.hooksPath", str(hook.parent)], check=True)
+    (repo / "info").mkdir(exist_ok=True)
+    (repo / "info" / "attributes").write_text("* filter=steer\\n")
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "kept").write_text("kept\\n")
+else:
+    (fake / "second").write_text(json.dumps({
+        "slot": sorted(p.name for p in slot.iterdir()), "root": sorted(p.name for p in root.iterdir()),
+        "ignored": (worktree / "ignored").exists(), "cargo_home": str(cargo_home),
+        "cargo_config": (cargo_home / "config.toml").exists(), "target": (target / "kept").exists(),
+        "hook": (fake / "hook-ran").exists(), "config": (repo / "config").read_text(),
+        "attributes": (repo / "info" / "attributes").exists()}))
+"""
+
+
+class BuilderRun(unittest.TestCase):
+    """REMOTE-34: oby-remote-gate --run against a temporary origin and builder root, with a stand-in cargo in a
+    temporary home's ~/.cargo/bin."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp()).resolve()
+        self.fake = self.dir / "fake"
+        self.fake.mkdir()
+        origin = self.dir / "origin"
+        origin.mkdir()
+        git("init", "--quiet", "--initial-branch=dev", cwd=origin)
+        git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
+        (origin / ".gitignore").write_text("ignored/\n")
+        (origin / "core").mkdir()
+        (origin / "core" / "a.txt").write_text("a\n")
+        git("add", ".", cwd=origin)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "base", cwd=origin)
+        self.base = git("rev-parse", "HEAD", cwd=origin)
+        self.tree = git("rev-parse", "HEAD^{tree}", cwd=origin)
+        self.root = self.dir / "root"
+        self.root.mkdir()
+        git("clone", "--quiet", "--bare", str(origin), str(self.root / "repo.git"), cwd=self.dir)
+        home = self.dir / "home"
+        cargo = home / ".cargo" / "bin" / "cargo"
+        cargo.parent.mkdir(parents=True)
+        cargo.write_text(BUILDER_CARGO)
+        cargo.chmod(0o755)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("OBY_", "CARGO_"))}
+        self.env.update(OBY_REMOTE_ROOT=str(self.root), OBY_REMOTE_URL=str(origin), FAKE=str(self.fake),
+                        HOME=str(home), GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def builder_run(self):
+        proc = subprocess.Popen([str(GATE), "--run", "--slots", "4", "--builder-slots", "1", "--wait", "5", self.base,
+                                 self.tree, ".", "--", "cargo", "test"],
+                                env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc.stdin.write(b"0\n")
+        proc.stdin.flush()
+        out = proc.stdout.read().decode()
+        code = proc.wait(timeout=60)
+        proc.stdin.close()
+        proc.stdout.close()
+        return code, out
+
+    def test_remote_34_each_builder_run_starts_clean(self):
+        for _ in range(2):
+            code, out = self.builder_run()
+            self.assertEqual(code, 0, out)
+            self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        second = json.loads((self.fake / "second").read_text())
+        slot = self.root / "builder-1"
+        self.assertEqual(second["slot"], ["lock", "target", "worktree"], second)
+        self.assertEqual(second["root"], ["builder-1", "repo.git", "repo.lock"], second)
+        self.assertFalse(second["ignored"], "the first run's ignored file is still in the worktree")
+        self.assertEqual(second["cargo_home"], str(slot / "cargo"))
+        self.assertFalse(second["cargo_config"], "the first run's CARGO_HOME is still there")
+        self.assertTrue(second["target"], "the slot's target was emptied")
+        self.assertFalse(second["hook"], "the first run's post-checkout hook ran")
+        self.assertNotIn("hooksPath", second["config"])
+        self.assertIn("bare = true", second["config"])
+        self.assertFalse(second["attributes"], "the first run's info/attributes is still there")
+
+
 class SetupBuilder(unittest.TestCase):
     """REMOTE-30: setup.sh's host script sets up oby-builder with no sudo. A stand-in ssh keeps the script setup.sh
     sends; its builder function runs against stand-in sudo, id and getent, which record and run nothing."""
@@ -401,10 +524,12 @@ class SetupBuilder(unittest.TestCase):
         self.sent = self.dir / "sent.sh"
         self.tool("ssh", f'if [ "$2 $3" = "bash -s" ]; then cat >"{self.sent}"; else cat >/dev/null; fi')
         self.log = self.dir / "sudo.log"
-        # sudo: one line per call; `sudo -n -l -U` prints $dir/rights; `test` as the builder finds nothing.
+        # sudo: one line per call; `sudo -n -l -U` prints $dir/rights; `find ... ! -user root` prints a path when
+        # $dir/not-root exists; `test` as the builder finds nothing but the `-w <path>` in $dir/writable.
         self.tool("sudo", f'printf "%s\\n" "$*" | tr "\\n" " " >>"{self.log}"; echo >>"{self.log}"\n'
                           f'if [ "$2 $3" = "-l -U" ]; then cat "{self.dir}/rights"; fi\n'
-                          '[ "$5" != test ]')
+                          f'case "$*" in *"! -user root"*) if [ -e "{self.dir}/not-root" ]; then echo "$3"; fi;; esac\n'
+                          f'[ "$5" != test ] || [ "$6 $7" = "$(cat "{self.dir}/writable" 2>/dev/null)" ]')
         self.tool("id", "exit 1")
         self.tool("getent", f'echo "oby-builder:x:1001:1001::{self.dir}/builder-home:/bin/bash"')
         self.rights("User oby-builder is not allowed to run sudo on oby-gate.")
@@ -447,7 +572,7 @@ class SetupBuilder(unittest.TestCase):
                                      "-n -l -U oby-builder"])
         self.assertFalse([c for c in calls if re.search(r"usermod|gpasswd|adduser|sudoers|visudo| -G ", c)], calls)
         home = self.dir / "builder-home"
-        self.assertIn(f"-n install -o oby-builder -g oby-builder -m 600 {self.dir}/.ssh/authorized_keys "
+        self.assertIn(f"-n install -o root -g root -m 644 {self.dir}/.ssh/authorized_keys "
                       f"{home}/.ssh/authorized_keys", calls)
         self.assertIn("-n install -d -o oby-builder -g oby-builder -m 755 /srv/oby-builder", calls)
         self.assertIn("-n -u oby-builder -H git clone --bare --quiet https://github.com/obi-ai-bot/oby.git "
@@ -455,13 +580,14 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn("-n -u oby-builder -H git -C /srv/oby-builder/repo.git config gc.auto 0", calls)
         rust = [c for c in calls if "rustup toolchain install" in c]
         self.assertEqual(len(rust), 1, calls)
-        self.assertTrue(rust[0].startswith("-n -u oby-builder -H bash -c "), rust[0])
+        self.assertTrue(rust[0].startswith(f"-n env RUSTUP_HOME={home}/.rustup CARGO_HOME={home}/.cargo bash -c "),
+                        rust[0])
         self.assertTrue(rust[0].endswith(" _ " + re.search(r"^RUST=(\S+)$", self.sent.read_text(), re.M).group(1)),
                         rust[0])
         tightened = [c for c in calls if "tighten_writable" in c]
         self.assertEqual(len(tightened), 1, calls)
-        self.assertTrue(tightened[0].startswith("-n -u oby-builder -H bash -c "), tightened[0])
-        self.assertTrue(tightened[0].endswith(" _ /srv/oby-builder"), tightened[0])
+        self.assertTrue(tightened[0].startswith("-n bash -c "), tightened[0])
+        self.assertTrue(tightened[0].endswith(f" _ {home} /srv/oby-builder"), tightened[0])
         self.assertFalse([c for c in calls if "/srv/oby " in c + " " or "/srv/oby/" in c], calls)
 
     def test_remote_30_a_builder_user_with_sudo_stops_setup(self):
@@ -470,6 +596,82 @@ class SetupBuilder(unittest.TestCase):
         self.assertEqual(done.returncode, 1, done.stdout)
         self.assertIn("setup.sh: oby-builder may run commands with sudo, and must not:", done.stdout)
         self.assertEqual(self.calls()[-1], "-n -l -U oby-builder", "setup went on after the check")
+
+    def test_remote_32_setup_closes_the_gate_root(self):
+        # A sudo that runs what it is given, but install's -o/-g, which need root: the root already exists.
+        self.tool("sudo", f'echo "$*" >>"{self.log}"\nshift\nif [ "$1" = install ]; then exit 0; fi\nexec "$@"')
+        root = self.dir / "srv-oby"
+        root.mkdir(mode=0o755)
+        root.chmod(0o755)
+        done = subprocess.run(["bash", "-c", '. "$0"; gate_root "$1" "$2"', str(self.functions), str(root), "oby"],
+                              env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}"),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(root.stat().st_mode & 0o777, 0o700, self.calls())
+        self.assertIn(f"-n install -d -o oby -g oby {root}", self.calls())
+        self.assertIn('    gate_root "$root" "$user"\n', self.sent.read_text())
+
+    def test_remote_33_setup_leaves_the_builder_no_key_it_can_change(self):
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        calls = self.calls()
+        home = self.dir / "builder-home"
+        self.assertIn(f"-n chown root:root {home}", calls)
+        self.assertIn(f"-n chmod 755 {home}", calls)
+        made = calls.index(f"-n install -d -o root -g root -m 755 {home}/.ssh")
+        self.assertLess(calls.index(f"-n rm -rf {home}/.ssh"), made, calls)
+        self.assertIn(f"-n install -o root -g root -m 644 {self.dir}/.ssh/authorized_keys {home}/.ssh/authorized_keys",
+                      calls)
+        self.assertIn(f"-n find {home} -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup "
+                      "-exec rm -rf {} +", calls)
+        self.assertFalse([c for c in calls if "-o oby-builder" in c and str(home) in c], calls)
+        # As the builder: only checks, its clone in /srv/oby-builder, and the toolchain run from a scratch folder.
+        for call in (c for c in calls if c.startswith("-n -u oby-builder -H ")):
+            words = call.removeprefix("-n -u oby-builder -H ")
+            if words.startswith("test "):
+                continue
+            self.assertNotIn(str(home), words, call)
+            self.assertFalse(re.search(r"rustup|curl|chmod|tighten|install", words), call)
+            self.assertTrue(words.startswith(("git clone ", "git -C /srv/oby-builder/repo.git ", "bash -c set -euo")),
+                            call)
+        proof = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ")]
+        self.assertEqual(len(proof), 1, calls)
+        self.assertIn('export CARGO_HOME="$scratch/cargo"', proof[0])
+        for word in ("cargo --version", "rustc --version", "mktemp -d"):
+            self.assertIn(word, proof[0])
+        checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in calls if " test -w " in c]
+        self.assertEqual(checked, [str(home), f"{home}/.ssh", f"{home}/.ssh/authorized_keys", f"{home}/.cargo",
+                                   f"{home}/.cargo/bin", f"{home}/.rustup"])
+        self.assertIn("setup.sh: oby-builder is set up", done.stdout)
+
+    def test_remote_33_setup_stops_when_the_builder_can_still_write_its_logins(self):
+        home = self.dir / "builder-home"
+        (self.dir / "writable").write_text(f"-w {home}/.ssh/authorized_keys\n")
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn(f"setup.sh: oby-builder can still write {home}/.ssh/authorized_keys", done.stdout.splitlines())
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+
+    def test_remote_34_setup_installs_the_builders_toolchain_as_root(self):
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        home = self.dir / "builder-home"
+        calls = self.calls()
+        [rust] = [c for c in calls if "rustup toolchain install" in c]
+        self.assertTrue(rust.startswith(f"-n env RUSTUP_HOME={home}/.rustup CARGO_HOME={home}/.cargo bash -c "), rust)
+        self.assertNotIn("-u oby-builder", rust)
+        self.assertIn("--no-modify-path", rust)
+        self.assertIn("rustfmt,clippy", rust)
+        self.assertFalse([c for c in calls if "-u oby-builder" in c and re.search(r"rustup |curl ", c)], calls)
+        self.assertNotIn(f"-n rm -rf {home}/.cargo {home}/.rustup", calls)
+        # A toolchain with anything not root's in it (A00-31's, the builder's own) goes before the install.
+        (self.dir / "not-root").touch()
+        self.log.unlink()
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        calls = self.calls()
+        removed = calls.index(f"-n rm -rf {home}/.cargo {home}/.rustup")
+        self.assertLess(removed, next(i for i, c in enumerate(calls) if "rustup toolchain install" in c), calls)
 
 
 class Pins(unittest.TestCase):

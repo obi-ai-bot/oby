@@ -24,7 +24,8 @@ Slots. Four, or --slots' 1 to 64, <root>/slot-1 to slot-4 (<root> is /srv/oby), 
 file, git worktree and Cargo build folder (slot-N/target, the check's CARGO_TARGET_DIR)
 and the check's own cache (slot-N/cache, its OBY_CHECK_CACHE). It takes the first free
 one; with all four held it says so once and tries again every second. The lock stays
-in this process and isn't inherited by the check.
+in this process and isn't inherited by the check. Every lock file it opens (a slot's
+and repo.lock) is made, or set, 0600, so no other user can hold it (REMOTE-32).
 
 Checkout. Under <root>/repo.lock, so two gates never fetch or add a worktree at once,
 it fetches the commit by its SHA from origin with no credential, and the base, into
@@ -59,25 +60,28 @@ wait, no fetch and nothing run, so the gate runs that part on its own Mac. It re
 exactly the groups given, each with OBY_CHECK_ONLY, offline, and OBY_BUILD_JOBS at the cores / 2.
 /opt/homebrew/bin and /usr/local/bin follow ~/.cargo/bin on PATH, ahead of the inherited one.
 
-Builder mode (--run, docs/contracts/remote-gate.md, REMOTE-22 to 31), as the user oby-builder, which
+Builder mode (--run, docs/contracts/remote-gate.md, REMOTE-22 to 34), as the user oby-builder, which
 has no sudo, for factory/bin/test-run. <base> and <tree> are full SHAs, <folder> the run's folder
 relative to the worktree (`.` at its root; [A-Za-z0-9._/-]+ with no .. component). Standard input
 holds a line with the payload's size, then the payload (at most 64 MiB): `git diff --binary
 --full-index <base> <tree>`; after it, its end is the dropped connection, as above. <root> is
 /srv/oby-builder, with its own repo.git; it takes the first free of builder-1 to builder-<m> (never a
 gate's slot), each with its own lock, worktree and Cargo build folder (builder-N/target), waiting at
-most --wait seconds, then says `all builder slots are busy` and exits 2. Each run starts in a slot
-emptied of all but its lock and its target folder (a target that isn't a real folder goes too), so
-its worktree is added afresh. In the slot: the checkout above on <base> (fetched by its SHA), `git
-apply --index --binary` of the payload, a check that `git write-tree` is <tree>, then every file under
-core/ and tools/ in the index gets the current time, and `cargo fetch --locked`. If the command's
-program (and for `cargo nextest`, cargo-nextest) is on PATH,
-~/.cargo/bin first, it says `running in builder slot <N>` and runs the command's words, with no shell,
-from <slot>/worktree/<folder> under `nice -n 15`, offline, with CARGO_TARGET_DIR=<slot>/target and
-OBY_BUILD_JOBS, CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS at the cores / (slots +
-builder slots). Output is relayed as it comes; the last line is `ended <code> in builder slot <N>
-after <s>s`, and it exits with the command's code (128 + signal when stopped). Anything that fails
-before the `running in` line exits 2 with a line saying why.
+most --wait seconds, then says `all builder slots are busy` and exits 2. Each run starts clean
+(REMOTE-34): the slot is emptied of all but its lock and its target folder (a target that isn't a real
+folder goes too), and <root> of all but repo.git, repo.lock and the builder-N folders. In the slot: the
+checkout above on <base> (fetched by its SHA; under repo.lock, repo.git/config is first written afresh
+as setup.sh leaves it, a bare clone with gc.auto 0, and repo.git/info/attributes removed), a worktree
+added afresh, `git apply --index --binary` of the payload, a check that `git write-tree` is <tree>, then
+every file under core/ and tools/ in the index gets the current time, and `cargo fetch --locked`. Every
+git call runs with core.hooksPath=/dev/null. If the command's program (and for `cargo nextest`,
+cargo-nextest) is on PATH, ~/.cargo/bin first, it says `running in builder slot <N>` and runs the
+command's words, with no shell, from <slot>/worktree/<folder> under `nice -n 15`, offline, with
+CARGO_TARGET_DIR=<slot>/target, CARGO_HOME=<slot>/cargo (the slot's own, emptied with it, and with
+`cargo fetch` too) and OBY_BUILD_JOBS, CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS at
+the cores / (slots + builder slots). Output is relayed as it comes; the last line is `ended <code> in
+builder slot <N> after <s>s`, and it exits with the command's code (128 + signal when stopped).
+Anything that fails before the `running in` line exits 2 with a line saying why.
 
 Builder mode on the Mac worker (--mac --run, REMOTE-35 to 42), for factory/bin/test-run's macOS-only
 runs, as the user the gates run as there. The same builder mode, with these differences: <root> is
@@ -123,6 +127,11 @@ BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
 GRACE = 10
 # As oby-check-blok's check_command sets them on the Mac: no network for a group's builds and tests.
 OFFLINE = {"CARGO_NET_OFFLINE": "true", "npm_config_offline": "true"}
+
+# Builder mode's git calls run no hook: an earlier run could have left one in its clone (REMOTE-34).
+HOOKS = []
+# The builder clone's config as setup.sh leaves it, written afresh before each builder run's git steps.
+BUILDER_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n[gc]\n\tauto = 0\n"
 
 child = None
 starting = False
@@ -228,12 +237,20 @@ def run(command, cwd, env=None, capture=False):
 
 def git(*args, cwd=None):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    return run(["git", "-c", "credential.helper=", *args], cwd or ROOT, env)[0]
+    return run(["git", *HOOKS, "-c", "credential.helper=", *args], cwd or ROOT, env)[0]
 
 
 def usage(why):
     print(f"{NAME}: {why}\n\n{__doc__}", file=sys.stderr)
     return 2
+
+
+def lock_file(path):
+    """A lock file opened for flock, its owner's alone (0600, an older one's mode set too), so no other user can
+    open it and hold its lock (REMOTE-32)."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.fchmod(fd, 0o600)
+    return fd
 
 
 def take_slot(name="slot", count=None, wait=None, waiting_line=None):
@@ -246,7 +263,7 @@ def take_slot(name="slot", count=None, wait=None, waiting_line=None):
         for n in range(1, count + 1):
             folder = ROOT / f"{name}-{n}"
             folder.mkdir(exist_ok=True)
-            fd = os.open(folder / "lock", os.O_RDWR | os.O_CREAT, 0o644)
+            fd = lock_file(folder / "lock")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return n, fd
@@ -260,13 +277,21 @@ def take_slot(name="slot", count=None, wait=None, waiting_line=None):
         time.sleep(1)
 
 
-def check_out(commit, base, worktree, touch=True):
+def check_out(commit, base, worktree, touch=True, reset=False):
     """Fetch the commit and the base and make the slot's worktree (its files under core/ and tools/ touched,
-    unless not touch): an error to say, or None."""
+    unless not touch; the clone's config and attributes reset first when reset): an error to say, or None."""
     repo = str(ROOT / "repo.git")
-    fd = os.open(ROOT / "repo.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    fd = lock_file(ROOT / "repo.lock")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
+        if reset:
+            try:
+                written = ROOT / "repo.git" / "config.reset"
+                written.write_text(BUILDER_CONFIG)
+                os.replace(written, ROOT / "repo.git" / "config")
+                (ROOT / "repo.git" / "info" / "attributes").unlink(missing_ok=True)
+            except OSError as error:
+                return f"can't reset {repo}'s settings: {error}"
         if git("--git-dir", repo, "fetch", "--quiet", "--no-tags", URL, commit) != 0:
             return f"{commit} isn't on origin"
         if base.startswith("origin/"):
@@ -291,7 +316,7 @@ def check_out(commit, base, worktree, touch=True):
 def touch_tracked(worktree):
     """Give every file under core/ and tools/ in the index the current time, so no build another tree left in the
     slot's target looks fresh (A00-23): an error to say, or None."""
-    files = subprocess.run(["git", "ls-files", "-z", "--", "core", "tools"], cwd=worktree, capture_output=True)
+    files = subprocess.run(["git", *HOOKS, "ls-files", "-z", "--", "core", "tools"], cwd=worktree, capture_output=True)
     if files.returncode != 0:
         return f"can't list the tracked files under core/ and tools/ in {worktree}"
     for name in filter(None, files.stdout.split(b"\0")):
@@ -373,11 +398,17 @@ def remove(path):
 
 
 def start_clean(place):
-    """Leave nothing an earlier builder run made in the slot that could steer this one: it keeps only its lock and its
-    target folder (a real folder), so the worktree is added afresh. An error to say, or None."""
+    """Leave nothing an earlier builder run made that could steer this one (REMOTE-34): the slot keeps only its lock
+    and its target folder (a real folder), and the builder root only its clone, its lock and the builder-N slots. An
+    error to say, or None."""
     try:
         for entry in place.iterdir():
             if entry.name == "lock" or (entry.name == "target" and entry.is_dir() and not entry.is_symlink()):
+                continue
+            remove(entry)
+        for entry in ROOT.iterdir():
+            if entry.name in ("repo.git", "repo.lock") or (re.fullmatch(r"builder-[0-9]+", entry.name)
+                                                           and entry.is_dir() and not entry.is_symlink()):
                 continue
             remove(entry)
     except OSError as error:
@@ -388,8 +419,9 @@ def start_clean(place):
 def builder_run(args, mac=False):
     """--run, or --mac --run on the Mac worker: a builder's command on its worktree's tree, in a builder slot. Its
     exit code, or 2 before it ran."""
-    global ROOT
+    global ROOT, HOOKS
     ROOT = MAC_ROOT / "builders" if mac else BUILDER_ROOT
+    HOOKS = ["-c", "core.hooksPath=/dev/null"]
     args, why = counts(args)
     if why:
         return usage(why)
@@ -421,18 +453,22 @@ def builder_run(args, mac=False):
         return 2
     place = ROOT / f"builder-{slot}"
     worktree = place / "worktree"
-    why = start_clean(place) or check_out(base, base, worktree, touch=False)
+    why = start_clean(place)
+    if why:
+        say(why)
+        return 2
+    why = check_out(base, base, worktree, touch=False, reset=True)
     if why:
         say(why)
         return 2
     if payload:
-        applied = subprocess.run(["git", "apply", "--index", "--binary"], cwd=worktree, input=payload,
+        applied = subprocess.run(["git", *HOOKS, "apply", "--index", "--binary"], cwd=worktree, input=payload,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if applied.returncode != 0:
             write(applied.stdout)
             say(f"the payload doesn't apply to {base}")
             return 2
-    written = subprocess.run(["git", "write-tree"], cwd=worktree, capture_output=True, text=True)
+    written = subprocess.run(["git", *HOOKS, "write-tree"], cwd=worktree, capture_output=True, text=True)
     if written.stdout.strip() != tree:
         say(f"the slot's tree is {written.stdout.strip() or 'unreadable'}, not {tree}")
         return 2
@@ -442,7 +478,8 @@ def builder_run(args, mac=False):
         return 2
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_CHECK_")}
-    env.update(OFFLINE, CARGO_TARGET_DIR=str(place / "target"), **dict.fromkeys(CORE_VARS, share()))
+    env.update(OFFLINE, CARGO_TARGET_DIR=str(place / "target"), CARGO_HOME=str(place / "cargo"),
+               **dict.fromkeys(CORE_VARS, share()))
     env["PATH"] = first_on_path(env, mac)
     why = prepare("rust", worktree, {k: v for k, v in env.items() if k not in OFFLINE})
     if why:

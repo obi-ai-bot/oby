@@ -13,7 +13,7 @@ The business behavior contract for Settings › About's updater rows in the Elec
 ### Actors and ownership
 
 - **The owner** turns Update automatically on or off, clicks Check for Updates and Update and Restart.
-- **The Electron app's main process** decides and acts (`shared/updates.ts`'s `next`), keeps Update automatically in the app's own folder (`settings.json`'s `updatesAuto`, next to Notifications' `notifications`), and tells About what to show (`update` events; the `updates` call answers `{auto, update}`).
+- **The Electron app's main process** decides and acts (`shared/updates.ts`'s `next`), keeps Update automatically in the app's own folder (`settings.json`'s `updatesAuto`, next to Notifications' `notifications` and the page's local Settings rows under `local`; `src/main/settings.ts` owns the file, [live-state.md](live-state.md)), and tells About what to show (`update` events; the `updates` call answers `{auto, update}`).
 - **obid** owns nothing here: it can't replace the app it runs inside, and the setting is this Mac's app's. obid is inside the app bundle (`Contents/Helpers/obid`), so an update brings its obid too.
 - **downloads.oby.dev** (`https://downloads.oby.dev/electron`) serves `latest-mac.yml` and the zips `scripts/package.sh` makes.
 
