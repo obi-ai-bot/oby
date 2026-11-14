@@ -9,7 +9,7 @@ import { onObid } from './lean';
 import { tellAgent } from './live';
 import { around, lastSteps, thoughtWords, todosOf, type Step, type Todo } from './liveTask';
 import { agentOf } from './mock';
-import { markSeen, stop, tell, useTasks, type Task } from './tasks';
+import { markSeen, stop, tell, tellPlaceholder, useTasks, type Task } from './tasks';
 
 // How the to-do it's on stands: at work, waiting on you, stopped by a failure, or just ended;
 // unknown: a status this build doesn't know (docs/contracts/wire.md, WIRE-3)
@@ -137,7 +137,7 @@ export default function AgentPane({ id, onClose, onDetails, onFollowUp }: {
       <Composer
         className="task-composer"
         autoFocus={false}
-        placeholder={task.status === 'done' ? 'Ask for a follow-up…' : `Tell ${agent.name}…`}
+        placeholder={tellPlaceholder(task, agent.name)}
         label={`Tell the agent about ${task.title}`}
         onSend={send}
         draft={draftBox.task(id)}

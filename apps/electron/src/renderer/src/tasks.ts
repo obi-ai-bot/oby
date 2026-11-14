@@ -76,6 +76,9 @@ export const replaceTasks = (next: Task[], more?: { asks: Asking[]; work: GitHub
   if (more) { asks = more.asks; waiting = more.work; workError = more.error; }
   set(next);
 };
+// The box under a task, to its agent: a finished one's words start a follow-up. A status this build
+// doesn't know names no state and offers none (docs/contracts/wire.md, WIRE-3).
+export const tellPlaceholder = (task: Task, agent: string) => (task.status === 'done' && !task.unknown ? 'Ask for a follow-up…' : `Tell ${agent}…`);
 // the conversation whose words started it, as obid says (Job.conversation)
 export const conversationOfTask = (id: string) => tasks.find((t) => t.id === id)?.job.conversation;
 

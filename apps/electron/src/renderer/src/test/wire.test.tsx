@@ -12,6 +12,7 @@ vi.mock('../Composer', () => ({ default: () => null, typingIn: () => false }));
 
 const call = vi.fn();
 let live: typeof import('../live');
+let tellPlaceholder: typeof import('../tasks').tellPlaceholder;
 let ui: {
   TaskCard: typeof import('../TaskCard').default; AskBlock: typeof import('../TaskCard').AskBlock;
   ThreadTask: typeof import('../ChatView').ThreadTask; StatusDot: typeof import('../StatusDot').default; TaskMenu: typeof import('../TaskMenu').default;
@@ -23,6 +24,7 @@ beforeAll(async () => {
   // ChatView's words make a scratch textarea as they load
   vi.stubGlobal('document', { createElement: () => ({}) });
   live = await import('../live');
+  ({ tellPlaceholder } = await import('../tasks'));
   const card = await import('../TaskCard');
   ui = {
     TaskCard: card.default, AskBlock: card.AskBlock, ThreadTask: (await import('../ChatView')).ThreadTask,
@@ -107,6 +109,8 @@ describe('WIRE-3: a job status this build doesn’t know', () => {
       expect(menu).not.toContain('Archive task');
       expect(menu).toContain('Rename');
       expect(card).not.toContain('tc-result');
+      // the box under it names no state and offers no follow-up
+      expect(tellPlaceholder(task, 'Claude Code')).not.toContain('follow-up');
     }
   });
 
@@ -118,6 +122,7 @@ describe('WIRE-3: a job status this build doesn’t know', () => {
     expect(dot).toContain('<svg');
     expect(thread).toContain('>Done · Claude Code');
     expect(menu).toContain('Archive task');
+    expect(tellPlaceholder(task, 'Claude Code')).toContain('follow-up');
   });
 });
 

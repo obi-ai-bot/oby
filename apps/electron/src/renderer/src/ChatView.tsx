@@ -15,7 +15,7 @@ import Composer, { typingIn } from './Composer';
 import Formatted from './Formatted';
 import Said from './Said';
 import { agentOf, convoTitle, threadOf, type Message } from './mock';
-import { markSeen, tell, useTasks, type Task } from './tasks';
+import { markSeen, tell, tellPlaceholder, useTasks, type Task } from './tasks';
 import { obys, ofObid, stopChat, tellChat, useChats, type Chat } from './chats';
 import SetupCard from './SetupCard';
 import OfferCard from './OfferCard';
@@ -263,7 +263,7 @@ export default function ChatView({ id, kind = 'task', leaving, covered = false, 
       )}
       <Composer
         style={{ '--i': 2 } as React.CSSProperties}
-        placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : !task ? 'Reply to Oby…' : task.status === 'done' ? 'Ask for a follow-up…' : `Tell ${agent}…`}
+        placeholder={convo ? `Message ${convo.with.length > 1 ? 'the group' : `${writer}’s Oby`}…` : !task ? 'Reply to Oby…' : tellPlaceholder(task, agent)}
         label={convo ? `Message ${convo.title}` : task ? `Tell the agent about ${task.title}` : 'Reply to Oby'}
         onSend={(text, att) => (task ? tell(task.id, text, att) : talk ? (talk.id === WELCOME && typedFirst(text)) || tellChat(talk.id, text, att) : say(convo!.id, text, att))}
         repos={!!talk && !talk.local}
