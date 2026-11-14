@@ -93,7 +93,7 @@ The other cases:
 How it ran:
 
 - **Environment.** `HOME` and `CODEX_HOME` throwaway folders, and `CANARY_KEY=dummy`.
-- **The model provider.** Set only through `-c`, with the keys obid's ChatGPT relay uses (`core/crates/obid/src/chatgpt_relay.rs:125-131`):
+- **The model provider.** Set only through `-c`, with the keys obid's ChatGPT relay uses (`core/crates/obid/src/chatgpt_relay.rs:125-131`; there the provider is `openai_chatgpt_plan` and its `env_key` is `OBY_MCP_TOKEN`, here the spike's own names):
 
   ```sh
   codex \
@@ -157,8 +157,8 @@ The other cases:
 - **Offline, with no endpoint**, it says "Failed to reach the Cursor API".
 - **What a runner can check with no login.** Measured:
   - the install and `--version`;
-  - ACP `initialize` (with `clientInfo` holding a `version`, as obid sends it, `acp.rs:625`): `protocolVersion: 1`, `loadSession: true`, `mcpCapabilities` `http` and `sse`, `authMethods` `cursor_login`. Without a `version` in `clientInfo` it answers -32602 "Invalid params";
-  - `session/new` answering -32000 "Authentication required". That is what `the_real_cursor_agent_signed_out_says_so` (`adapters.rs:1308`) checks through obid.
+  - ACP `initialize` (with `clientInfo` holding a `version`, as obid sends it, `acp.rs:626`): `protocolVersion: 1`, `loadSession: true`, `mcpCapabilities` `http` and `sse`, `authMethods` `cursor_login`. Without a `version` in `clientInfo` it answers -32602 "Invalid params";
+  - `session/new` answering -32000 "Authentication required". That is what `the_real_cursor_agent_signed_out_says_so` (`adapters.rs:1309`) checks through obid.
 
   Everything past `session/new` needs the owner's Mac with a real login.
 
@@ -191,17 +191,17 @@ For R01-11's fake model server, from what worked above:
 
 ## What the canary can reuse
 
-The canary should drive these through obid's adapters, as R01-11 says. Line numbers are on `dev` at 9eb7d431.
+The canary should drive these through obid's adapters, as R01-11 says. Line numbers are on `dev` at 9eb7d431, each a test's `fn` line (its `#[ignore]` is the line above).
 
 - **`make e2e-live`** (`Makefile:46`, `node e2e/run.mjs --live`). The two-Oby review scenario with the real Claude Code adapter, run by a person on a Mac with a signed-in Claude Code. Owner's Mac only.
 - **`scripts/cursor-probe.sh offline`.** The real cursor-agent signed out in a throwaway `HOME`: `--version`, `acp --help`, `initialize`. It needs no login, so it can run on a runner as is. Its `signed-in` half needs two real Cursor logins: owner's Mac only.
 - **`#[ignore]` real-CLI tests in `core/crates/obid/tests/`.** Listed, not run.
-  - `adapters.rs:1308`, `the_real_cursor_agent_signed_out_says_so`. Needs `cursor-agent` on `PATH` and no login. obid starts it in a job's sandbox, and the job fails saying the account is signed out. It fits a runner as is.
-  - `claude_bare.rs:532`, `issue_1867_the_real_claude_code_still_takes_a_plan_login`. Needs `claude` on `PATH` signed in with a plan, and spends a real turn. Owner's Mac only. Its flags and environment are the ones a job's turn uses, which a fake-model version can copy.
-  - `chatgpt_api.rs:1727`, `chatgpt_real_codex_talks_through_the_relay`, and `chatgpt_api.rs:1788`, `chatgpt_real_codex_runs_through_the_relay`. They need `OBY_REAL_CODEX=<binary>` and no login: the real Codex runs through obid's ChatGPT relay to the test's own OpenAI stand-in. They are the closest existing thing to the Codex canary, and fit a runner as they are.
-  - `mcp_sphere.rs:196`, `a_review_request_goes_through_oby_mcp`. Needs `OBY_MCP_BIN` (the `oby-mcp` binary) and no agent CLI.
-  - `mcp_sphere.rs:293`, `a_claude_code_session_sends_a_review_request`. Needs `OBY_MCP_BIN` and, with `OBY_MCP_CLAUDE=1`, Claude Code signed in on the Mac. Owner's Mac only.
-  - `jobs_api.rs:1731` and `:1794` are sandbox helpers, not real-CLI probes.
+  - `adapters.rs:1309`, `the_real_cursor_agent_signed_out_says_so`. Needs `cursor-agent` on `PATH` and no login. obid starts it in a job's sandbox, and the job fails saying the account is signed out. It fits a runner as is.
+  - `claude_bare.rs:533`, `issue_1867_the_real_claude_code_still_takes_a_plan_login`. Needs `claude` on `PATH` signed in with a plan, and spends a real turn. Owner's Mac only. Its flags and environment are the ones a job's turn uses, which a fake-model version can copy.
+  - `chatgpt_api.rs:1728`, `chatgpt_real_codex_talks_through_the_relay`, and `chatgpt_api.rs:1789`, `chatgpt_real_codex_runs_through_the_relay`. They need `OBY_REAL_CODEX=<binary>` and no login: the real Codex runs through obid's ChatGPT relay to the test's own OpenAI stand-in. They are the closest existing thing to the Codex canary, and fit a runner as they are.
+  - `mcp_sphere.rs:197`, `a_review_request_goes_through_oby_mcp`. Needs `OBY_MCP_BIN` (the `oby-mcp` binary) and no agent CLI.
+  - `mcp_sphere.rs:294`, `a_claude_code_session_sends_a_review_request`. Needs `OBY_MCP_BIN` and, with `OBY_MCP_CLAUDE=1`, Claude Code signed in on the Mac. Owner's Mac only.
+  - `jobs_api.rs:1732` (`a_command_in_a_jobs_box`) and `:1795` (`reach_from_inside_a_job`) are sandbox helpers, not real-CLI probes.
 - **Stand-in agents in `core/crates/obid/tests/agents/`.** What each fakes is what a canary case asserts against the real CLI.
   - `fake-claude`: Claude Code's stream-json for jobs: commits, edits, permission asks, questions, stops.
   - `fake-claude-bare-default`: the lines Claude Code 2.1.302 printed with `--bare` on a plan login (#1867), a recorded transcript.
@@ -220,12 +220,12 @@ The canary should drive these through obid's adapters, as R01-11 says. Line numb
 - **Claude Code's usage and limits need a real account.** No `rate_limit_event` came with a dummy key or token. obid's limit handling for Claude Code (LIMITS, USAGE) can't be checked on a runner, and it stays on the owner's Mac (#1099).
 - **cursor-agent has no model endpoint.** Its `--endpoint` is Cursor's private backend. A canary for it is a signed-out check on a runner, plus a real login on the owner's Mac. The other way, a real Cursor API key as a GitHub secret, is a real key on a runner, which this task rules out.
 - **Other hosts and telemetry.** Every run here had no network, so whatever else the CLIs try to reach failed quietly, and a turn still finished. With a network a runner would let it out:
-  - Claude Code's telemetry and error reports: obid turns them off with `DISABLE_TELEMETRY` and `DISABLE_ERROR_REPORTING` (`process::CLAUDE_RUN_SWITCHES`), which the drivers here didn't set;
+  - Claude Code's telemetry, error reports and self-update: obid sets `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING` and `DISABLE_AUTOUPDATER`, each `1`, on every run it starts (`process::CLAUDE_RUN_SWITCHES`, `core/crates/obid/src/process.rs:286-290`), the third turning self-update off per run (CLIVERSIONS-5). The drivers here set none of them;
   - Codex's update check;
   - cursor-agent's backend.
 
   The canary should run its CLIs with no network but loopback, or set those switches and say so. What each CLI asks for with a network and no login wasn't measured.
-- **Self-update.** cursor-agent updates itself by default with no switch (CLIVERSIONS). Codex's update check is `check_for_update_on_startup` in `config.toml`, which a `-c` can set. Claude Code's is `DISABLE_AUTOUPDATER=1`. None of them could update here, with no network. The canary installs the newest each run anyway, but a CLI that updates mid-run would test a version the report doesn't name.
+- **Self-update.** cursor-agent updates itself by default with no switch (CLIVERSIONS). Codex's update check is `check_for_update_on_startup` in `config.toml`, which a `-c` can set. Claude Code's is the third of `process::CLAUDE_RUN_SWITCHES` (above), which a canary through obid gets with the other two. None of them could update here, with no network. The canary installs the newest each run anyway, but a CLI that updates mid-run would test a version the report doesn't name.
 - **Not quite a GitHub runner.** These runs were Debian 12 under x86_64 emulation, not Ubuntu on GitHub's hardware, and Codex used its bundled bubblewrap. Ubuntu 24.04's AppArmor stops unprivileged user namespaces, so Codex's own sandbox, and obid's bubblewrap box on Linux, may not start there (AGENTS.md: on Linux obid runs Codex `danger-full-access`). Claude Code's sandbox wasn't used. A macOS runner would add the Keychain, which these runs never met.
 - **Drift already showing.**
   - Codex 0.169.0 warns that full-history `thread/resume` is deprecated.
