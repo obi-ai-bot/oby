@@ -2,9 +2,9 @@ use blok::grpc_server::proto::node_runtime_client::NodeRuntimeClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     process::{Output, Stdio},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
@@ -59,6 +59,9 @@ pub struct NodeInput {
     pub token: String,
     pub checkout: Option<String>,
     pub base: Option<String>,
+    /// The step's limit, in milliseconds: past it the node stops its script (CI-33). None, no limit.
+    #[serde(default)]
+    pub max_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -97,6 +100,20 @@ pub struct Step {
     pub attempts: u32,
     /// BLOK's `maxDuration`, per attempt.
     pub max: Option<std::time::Duration>,
+}
+
+/// The Rust group's limit in a full run (`check` with `OBY_CHECK_ALL`, CI-34): 1.5 times a measured
+/// full run's Rust group, rounded up to 15 minutes, within 45 minutes and 2 hours (PUBLISHING-29).
+/// Measured on the Mac at 9eb7d431: 2,306 s, times 1.5 is 3,459 s, so 60 minutes.
+pub const FULL_RUN_RUST_LIMIT: Duration = Duration::from_secs(60 * 60);
+
+/// A step's limit: a full run's Rust group gets FULL_RUN_RUST_LIMIT, every other its own (CI-34).
+pub fn step_limit(step: &Step, full_run: bool) -> Option<Duration> {
+    if full_run && step.node == "rust-affected-tests" {
+        Some(FULL_RUN_RUST_LIMIT)
+    } else {
+        step.max
+    }
 }
 
 const UNSUPPORTED: [&str; 7] = [
@@ -270,8 +287,9 @@ pub fn check_command(input: &CheckInput, group: &str) -> Command {
 /// A pipe's lines, each written to stderr as it comes, so a long node never looks silent
 /// (PUBLISHING-16), and kept for the verdict. Only the host says `couldn't judge:` for the whole
 /// check (the script's rule: never when something else failed), so a node's names its group.
-async fn relay(pipe: impl AsyncRead + Unpin, group: &str) -> String {
-    let (mut pipe, mut text, mut line) = (BufReader::new(pipe), String::new(), vec![]);
+/// Kept in `text` as it comes, so a relay cut short still has what was said.
+async fn relay(pipe: impl AsyncRead + Unpin, group: &str, text: &mut String) {
+    let (mut pipe, mut line) = (BufReader::new(pipe), vec![]);
     while pipe.read_until(b'\n', &mut line).await.is_ok_and(|n| n > 0) {
         let said = String::from_utf8_lossy(&line);
         let said = said.trim_end_matches('\n');
@@ -284,10 +302,81 @@ async fn relay(pipe: impl AsyncRead + Unpin, group: &str) -> String {
         text.push('\n');
         line.clear();
     }
-    text
 }
 
-pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
+// How long a cut script has after SIGTERM to say what was running, before SIGKILL (CI-33).
+const GRACE: Duration = Duration::from_secs(30);
+
+/// `root` and every process descended from it, parents first, from the system's process list by
+/// parent id. One whose parent already died (moved to launchd) is found only from `known`.
+async fn tree(root: u32, known: &[u32]) -> Vec<u32> {
+    let listed = Command::new("/bin/ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "stat="])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let (mut children, mut alive) = (BTreeMap::<u32, Vec<u32>>::new(), BTreeSet::new());
+    for line in listed.lines() {
+        let mut words = line.split_whitespace();
+        let (Some(Ok(pid)), Some(Ok(ppid)), stat) = (
+            words.next().map(str::parse::<u32>),
+            words.next().map(str::parse::<u32>),
+            words.next().unwrap_or_default(),
+        ) else {
+            continue;
+        };
+        // A zombie has ended: only its parent's wait is left.
+        if !stat.starts_with('Z') {
+            alive.insert(pid);
+        }
+        children.entry(ppid).or_default().push(pid);
+    }
+    let (mut found, mut next) = (vec![], vec![root]);
+    next.extend(known.iter().filter(|pid| alive.contains(*pid)));
+    while !next.is_empty() {
+        for pid in std::mem::take(&mut next) {
+            if found.contains(&pid) {
+                continue;
+            }
+            found.push(pid);
+            next.extend(children.get(&pid).into_iter().flatten());
+        }
+    }
+    found.retain(|pid| alive.contains(pid));
+    found
+}
+
+async fn signal(name: &str, pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
+    let _ = Command::new("/bin/kill")
+        .arg(format!("-{name}"))
+        .args(pids.iter().map(u32::to_string))
+        .stdin(Stdio::null())
+        .output()
+        .await;
+}
+
+/// The reason a cut node gives: its limit, then each binary the script named as still running.
+fn cut_reason(max: Duration, text: &str) -> String {
+    let running: Vec<_> = text
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("oby-check: "))
+        .filter_map(|l| l.strip_suffix(" was still running"))
+        .filter(|name| name.starts_with("tests/"))
+        .collect();
+    let limit = format!("ran past its maxDuration of {}s", max.as_secs());
+    match running.as_slice() {
+        [] => limit,
+        [one] => format!("{limit}: {one} was still running"),
+        many => format!("{limit}: {} were still running", many.join(", ")),
+    }
+}
+
+pub async fn run_group(input: &CheckInput, group: &str, max: Option<Duration>) -> CheckResult {
     let start = Instant::now();
     let spawned = check_command(input, group)
         .stdin(Stdio::null())
@@ -304,13 +393,53 @@ pub async fn run_group(input: &CheckInput, group: &str) -> CheckResult {
         }
     };
     let (out, err) = (child.stdout.take(), child.stderr.take());
-    let (out, err) = tokio::join!(
-        relay(out.expect("piped stdout"), group),
-        relay(err.expect("piped stderr"), group)
-    );
+    let (mut said, mut said_err) = (String::new(), String::new());
+    let mut cut = None;
+    {
+        let relayed = async {
+            tokio::join!(
+                relay(out.expect("piped stdout"), group, &mut said),
+                relay(err.expect("piped stderr"), group, &mut said_err)
+            )
+        };
+        tokio::pin!(relayed);
+        let ended = match max {
+            Some(max) => tokio::time::timeout(max, &mut relayed).await.is_ok(),
+            None => {
+                relayed.as_mut().await;
+                true
+            }
+        };
+        // Past its limit: SIGTERM to the script's whole tree, in the check's own process group (obid
+        // and check-lock stop a check by its group), so test_binaries' trap names what was running;
+        // what it said is relayed until the pipes close or GRACE passes, then SIGKILL to what's left.
+        if let (false, Some(root)) = (ended, child.id()) {
+            cut = max;
+            let known = tree(root, &[]).await;
+            signal("TERM", &known).await;
+            let _ = tokio::time::timeout(GRACE, &mut relayed).await;
+            let left = tree(root, &known).await;
+            signal("KILL", &left).await;
+            // Gone before the node answers, so the next step never shares the Mac with it.
+            for _ in 0..50 {
+                if tree(root, &left).await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
     let status = child.wait().await.ok().and_then(|status| status.code());
-    let text = format!("{out}\n{err}");
+    let text = format!("{said}\n{said_err}");
     let failing = failing_tests(&text);
+    if let Some(max) = cut {
+        return CheckResult {
+            verdict: Verdict::Unjudged,
+            failing,
+            reason: cut_reason(max, &text),
+            seconds: start.elapsed().as_secs_f64(),
+        };
+    }
     let cache_missing = failing.is_empty()
         && [
             "no matching package named",
@@ -386,7 +515,7 @@ impl CheckNode {
         {
             return CheckResult::unjudged("request does not match spawned check", 0.0);
         }
-        run_group(&self.2, self.1).await
+        run_group(&self.2, self.1, input.max_ms.map(Duration::from_millis)).await
     }
 }
 
@@ -424,6 +553,42 @@ mod tests {
         assert!(steps
             .iter()
             .all(|s| s.active && !s.stop && s.attempts == 1 && s.max.is_some()));
+    }
+
+    #[test]
+    fn ci_34_a_full_runs_rust_group_gets_the_full_run_limit_and_every_other_step_its_own() {
+        let steps = parse_workflow(DEFAULT_WORKFLOW).unwrap();
+        for step in &steps {
+            if step.id == "rust-affected-tests" {
+                assert_eq!(step_limit(step, true), Some(FULL_RUN_RUST_LIMIT));
+                assert_eq!(step_limit(step, false), Some(Duration::from_secs(45 * 60)));
+            } else {
+                assert_eq!(step_limit(step, true), step.max, "{}", step.id);
+                assert_eq!(step_limit(step, false), step.max, "{}", step.id);
+            }
+        }
+        assert!(steps.iter().any(|s| s.id == "rust-affected-tests"));
+        assert!(
+            (Duration::from_secs(45 * 60)..=Duration::from_secs(2 * 3600))
+                .contains(&FULL_RUN_RUST_LIMIT)
+                && FULL_RUN_RUST_LIMIT.as_secs().is_multiple_of(15 * 60)
+        );
+    }
+
+    #[test]
+    fn ci_33_a_cut_names_each_binary_the_script_said_was_still_running() {
+        let max = Duration::from_secs(2700);
+        assert_eq!(
+            cut_reason(max, "==> cargo build\n"),
+            "ran past its maxDuration of 2700s"
+        );
+        assert_eq!(
+            cut_reason(
+                max,
+                "running 3 tests\noby-check: tests/jobs_api.rs was still running\noby-check: tests/long_jobs.rs was still running\n"
+            ),
+            "ran past its maxDuration of 2700s: tests/jobs_api.rs, tests/long_jobs.rs were still running"
+        );
     }
 
     #[test]

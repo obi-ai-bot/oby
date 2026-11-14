@@ -22,36 +22,21 @@ async fn node_rejects_missing_token_and_foreign_checkout_without_running() {
         },
         "spawn-token".into(),
     );
+    let input = |v: serde_json::Value| serde_json::from_value::<NodeInput>(v).unwrap();
     for input in [
-        serde_json::from_str::<NodeInput>("{}").unwrap(),
-        NodeInput {
-            token: "wrong".into(),
-            checkout: None,
-            base: None,
-        },
-        NodeInput {
-            token: "spawn-token".into(),
-            checkout: Some(foreign.to_string_lossy().into_owned()),
-            base: None,
-        },
-        NodeInput {
-            token: "spawn-token".into(),
-            checkout: None,
-            base: Some("other".into()),
-        },
+        input(serde_json::json!({})),
+        input(serde_json::json!({"token": "wrong"})),
+        input(serde_json::json!({"token": "spawn-token", "checkout": foreign})),
+        input(serde_json::json!({"token": "spawn-token", "base": "other"})),
     ] {
         assert_eq!(node.execute(input).await.verdict, Verdict::Unjudged);
         assert!(!repo.join("ran").exists());
         assert!(!foreign.join("ran").exists());
     }
     assert_eq!(
-        node.execute(NodeInput {
-            token: "spawn-token".into(),
-            checkout: None,
-            base: None
-        })
-        .await
-        .verdict,
+        node.execute(input(serde_json::json!({"token": "spawn-token"})))
+            .await
+            .verdict,
         Verdict::Passed
     );
     assert!(repo.join("ran").exists());
@@ -780,6 +765,61 @@ fn check_waits_a_minute_for_a_slow_nodes_binary() {
     let (code, out, err) = check_with(&tool, scratch.path(), &[]);
     assert_eq!(code, Some(0), "{out}{err}");
     assert_eq!(out.lines().last(), Some("oby-check: passed"));
+}
+
+#[test]
+fn ci_33_a_node_past_its_limit_stops_its_scripts_whole_tree_and_names_what_was_running() {
+    // The rust group hangs in a long sleep; stopped, it names a binary, as test_binaries' trap does.
+    let hangs = "if [[ -n $OBY_CHECK_PLAN ]]; then [[ $OBY_CHECK_ONLY == rust || $OBY_CHECK_ONLY == scan ]] && echo \"oby-check: group $OBY_CHECK_ONLY\"; exit 0; fi\nif [[ $OBY_CHECK_ONLY == rust ]]; then\n    trap 'echo \"oby-check: tests/slow.rs was still running\" >&2; exit 143' TERM\n    echo $$ >>pids\n    sleep 300 &\n    echo $! >>pids\n    wait\nfi\nexit 0\n";
+    let scratch = checkout(hangs);
+    let repo = scratch.path();
+    let workflow = repo.join("short.json");
+    std::fs::write(
+        &workflow,
+        r#"{"schemaVersion":"2","name":"oby-check","steps":[
+        {"id":"rust-affected-tests","use":"runtime.rust:rust-affected-tests","maxDuration":"3s"},
+        {"id":"secret-scan","use":"runtime.rust:secret-scan","maxDuration":"1m"}]}"#,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_oby-check-blok"))
+        .current_dir(repo)
+        .args([".", "HEAD"])
+        .env("HOME", repo)
+        .env("OBY_CHECK_WORKFLOW", &workflow)
+        .env_remove("OBY_CHECK_ALL")
+        .env_remove("OBY_CHECK_PATHS")
+        .output()
+        .unwrap();
+    let took = started.elapsed();
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("{}", oby_check_blok::text_output(&output)));
+    let rust = &report["nodes"]["rust-affected-tests"];
+    assert_eq!(rust["verdict"], "unjudged", "{report}");
+    let reason = rust["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("maxDuration") && reason.contains("tests/slow.rs"),
+        "{reason}"
+    );
+    assert!(took < std::time::Duration::from_secs(60), "{took:?}");
+    let pids = std::fs::read_to_string(repo.join("pids")).unwrap();
+    assert_eq!(pids.lines().count(), 2, "{pids}");
+    for pid in pids.lines() {
+        let alive = Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        if alive {
+            let _ = Command::new("/bin/kill").args(["-KILL", pid]).status();
+        }
+        assert!(!alive, "process {pid} outlived its node");
+    }
+    assert_eq!(
+        report["nodes"]["secret-scan"]["verdict"], "passed",
+        "{report}"
+    );
 }
 
 #[test]
