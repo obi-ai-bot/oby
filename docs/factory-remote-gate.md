@@ -9,7 +9,9 @@ owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). 
 the owner's MacBook Pro, for the macOS part ("The second Mac", below), off until the owner adds `mac_worker`.
 Task A00-19 made the VM's SSH rule follow the Mac's IP and its idle stop count only the VM's uses. Task A00-31
 sent builders' heavy Rust runs to the VM, in builder slots of their own ("Builders' runs", below), off until
-the owner sets `builder_slots`. The scenarios are [REMOTE-1 to 31](contracts/remote-gate.md).
+the owner sets `builder_slots`. Task A00-34 sent builders' macOS-only runs to the second Mac, in builder slots
+apart from its gates', off until the owner sets `builder_slots` in `mac_worker`. The scenarios are [REMOTE-1 to
+31 and 35 to 42](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -308,11 +310,22 @@ with the builder's command line unchanged (REMOTE-22 to 31):
   Mac:` line. After it, the VM's exit code is the verdict. A stop or a dropped connection frees the slot.
 - **Turning it on.** Run `factory/remote/setup.sh oby-gate` again, then add `"slots": 4, "builder_slots": 8`
   (on the 64-core VM) to `remote_gate` in `factory/config.json`. Until then nothing changes.
+- **On the Mac worker (REMOTE-35 to 42).** A run that stays here only because it needs macOS (macOS-only code,
+  or a macOS-only `--test`) goes to the Pro instead when `mac_worker` has `builder_slots`: test-run says `to the
+  Mac worker oby-mac-pro: <why>` and sends the same tree and scanned diff with `ssh oby-mac-pro
+  oby-worker/bin/oby-remote-gate --mac --run --slots 2 --builder-slots <m> …`, with no use, `az` or probe
+  first. There it runs as the gates' own user, in `~/oby-worker/builders/builder-N` with a clone of its own,
+  never a gate's `slot-1` or `slot-2`, each run in a slot emptied of all but its lock and `target`, at nice 15
+  with `cores / (2 + builder_slots)` jobs. The same fallbacks apply (ssh's 255, no `builders/repo.git`, every
+  builder slot busy for 10 minutes), and a fallback from either host runs here, never on the other. Swift,
+  Xcode and whole-check runs stay here, as does a run started with `test-run --here -- …`, for one that needs
+  this Mac itself (its Keychain, the owner's real home). Builders there can do what that user can (the
+  contract's "Known limits on the Mac worker"): accepted with the count. To turn it on, run
+  `factory/remote/setup-mac.sh oby-mac-pro` again, then set `"mac_worker": {"ssh_host": "oby-mac-pro",
+  "builder_slots": 2}`.
 
 ## Still to build
 
-- **Builders' macOS-only runs on the Pro:** `factory/bin/test-run` sending a builder's macOS-only run to the
-  Pro when the builder lock here is taken and the Pro has a free slot (its Linux-able runs go to the VM).
 - **The nightly check on the Pro:** `factory/bin/nightly` running there when it's free, so the nightly full
   check doesn't hold this Mac's lock for an hour.
 - **Whole checks on the Pro:** a change to the check's own files, a gate with no Linux group planned, and a
