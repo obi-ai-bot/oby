@@ -2,6 +2,8 @@
 
 The owner's decisions that AGENTS.md dates, one file each, with the owner's words, what each replaced, the contracts it touches and whether it still holds. AGENTS.md states the rule; the decision file holds the history.
 
+The decision files quote AGENTS.md, and name its sections, as it stood before the rewrite of R13-03 (`git show 3ed5099c:AGENTS.md`). AGENTS.md now states each rule once, without its dates, and links its decision file.
+
 ## Naming
 
 A decision file is named `YYYY-MM-DD-<slug>.md`: the date AGENTS.md gives the decision, then a slug of lowercase ASCII letters, digits and hyphens. A date that carries several separate decisions has several files; clauses that are one decision share a file. Two files have other names: this README, and `not-decisions.md`, which lists the dates in AGENTS.md that mark something other than a decision (a finding, a contract note, a consequence of a decision, an issue's date).
@@ -26,7 +28,7 @@ A rule AGENTS.md replaced but gives no date (the earlier Touch ID, Face ID and p
 
 ## Index
 
-Every date that appears in AGENTS.md, with its files.
+Every date that appeared in AGENTS.md at `3ed5099c`, with its files, and the files added since.
 
 | Date | Files |
 | --- | --- |
@@ -55,4 +57,4 @@ Every date that appears in AGENTS.md, with its files.
 | 2026-11-10 | [2026-11-10-a-job-at-a-limit-moves.md](2026-11-10-a-job-at-a-limit-moves.md)<br>[2026-11-10-wait-when-no-room.md](2026-11-10-wait-when-no-room.md) |
 | 2026-11-11 | [2026-11-11-check-hands-off-to-blok.md](2026-11-11-check-hands-off-to-blok.md)<br>[2026-11-11-codex-1-bypass-only.md](2026-11-11-codex-1-bypass-only.md) |
 | 2026-11-12 | [2026-11-12-roadmap-is-the-task-files.md](2026-11-12-roadmap-is-the-task-files.md) |
-| 2026-11-13 | [2026-11-13-drop-the-mac-merge-gate.md](2026-11-13-drop-the-mac-merge-gate.md)<br>[2026-11-13-roadmap-answers.md](2026-11-13-roadmap-answers.md) (a batch of answers) |
+| 2026-11-13 | [2026-11-13-apple-watch-app-removed.md](2026-11-13-apple-watch-app-removed.md)<br>[2026-11-13-drop-the-mac-merge-gate.md](2026-11-13-drop-the-mac-merge-gate.md)<br>[2026-11-13-roadmap-answers.md](2026-11-13-roadmap-answers.md) (a batch of answers) |

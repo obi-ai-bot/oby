@@ -1,6 +1,6 @@
 # Dates in AGENTS.md that are not decisions
 
-Some dates in AGENTS.md mark something other than an owner decision: a finding proven on a date, a contract note, a consequence of a dated decision, or an issue's date. They are listed here so that every date in AGENTS.md maps to a file in the [index](README.md).
+Some dates in AGENTS.md mark something other than an owner decision: a finding proven on a date, a contract note, a consequence of a dated decision, or an issue's date. They are listed here so that every date in AGENTS.md maps to a file in the [index](README.md). The dates, quotes and sections here are AGENTS.md's as it stood at `3ed5099c`, before it was rewritten to state each rule once, without its dates, with a link to its decision file.
 
 ## 2026-10-09
 
