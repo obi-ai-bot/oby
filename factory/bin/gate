@@ -41,7 +41,7 @@ default 4) and `builder_slots` (0 to 64, by default 0) size the VM's gate and bu
 (by default oby-builder) names the builders' user there; with either count set, the call is `oby-remote-gate
 --slots <n> --builder-slots <m> <commit> origin/<base>`. factory/bin/test-run imports this file for the macOS rule,
 the settings, reach and the uses (REMOTE-22 to 31): config.json and state.json are always the main checkout's,
-found from git's common folder, whichever copy runs.
+found from git's common folder, whichever copy runs (in a bare clone's worktree, which has none, the copy's own).
 
 The Mac worker (REMOTE-13 to 16). With `remote_gate` on and config.json's `mac_worker` ({"ssh_host": ...}),
 or the same JSON in FACTORY_MAC_WORKER for one run, the Mac's part above (its rust, swift and factory) runs
