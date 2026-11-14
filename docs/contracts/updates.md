@@ -28,11 +28,11 @@ The business behavior contract for Settings › About's updater rows in the Elec
 | About shows | State | What changes it |
 |---|---|---|
 | Check for Updates | `idle` | Launch; a failure. Check for Updates → `checking`. |
-| Check for Updates (disabled) | `checking` | Nothing newer → `current`; newer → `downloading` (on) or `available` (off); a failure → `idle`. |
+| Check for Updates (disabled) | `checking` | Nothing newer → `current`; newer → `downloading` (on) or `available` (off); a failure, or 90 s with no answer → `idle`. |
 | Check for Updates · Oby is up to date | `current` | Check for Updates stays, so the owner can look again at any time (Wellington, 2026-10-30); with it on, the 6-hour look runs again. |
 | Oby X is available, Released Mon D · Update and Restart | `available` | Update and Restart → `downloading` and restarts once it's downloaded and checked; turning Update automatically on downloads it. |
-| Oby X is available · Update and Restart | `downloading` | Downloaded and its checksum matches → `ready`. Update and Restart while it downloads restarts once it's ready (the button disables). |
-| Oby X is available · Update and Restart | `ready` | Update and Restart → Oby quits and opens the new build. Otherwise it installs when Oby quits. |
+| Oby X is available · Update and Restart | `downloading` | Downloaded and its checksum matches → `ready`. Update and Restart while it downloads restarts once it's ready (the button disables). 120 s with no progress → `idle`, the download cancelled. |
+| Oby X is available · Update and Restart | `ready` | Update and Restart → Oby quits and opens the new build; a second click in the same session does nothing, and if Oby is still running 300 s later → `idle`. Otherwise it installs when Oby quits. |
 
 The footer "Oby downloads updates in the background and installs them when you quit." shows while Update automatically is on (Sangam's v1 words).
 
@@ -40,6 +40,9 @@ The footer "Oby downloads updates in the background and installs them when you q
 
 - Offline, the feed or a zip missing, a file off the feed's host, a checksum that doesn't match `latest-mac.yml`, or a signature that doesn't meet the running app's: nothing installs, About shows Check for Updates again, and the reason goes to main's log. With Update automatically on, the next 6-hour look tries again.
 - A click while Oby already looks or downloads starts nothing twice.
+- Every busy phase has a deadline (`DEADLINES` in `shared/updates.ts`), and main holds one timer for the phase in force: a look with no answer fails after 90 s (`check_failed`); a download fails after 120 s with no progress event, counted from the last one or from its start, and is cancelled (`download_failed`); an install fails if Oby is still running 300 s after Update and Restart (`install_failed`). About then shows Check for Updates again.
+- Every failure has its code, `check_failed`, `download_failed` or `install_failed`, and main's log line names it first, then the reason (the updater's own message, or the deadline). An updater error during a download is `download_failed`, on a downloaded update `install_failed`, and anywhere else `check_failed`. An answer that comes after its deadline fired is taken as any other, and the state it leads to gets its own deadline.
+- Update and Restart runs the install once per session: main keeps a latch, set when it asks to restart and freed only when the state leaves `ready` (an `install_failed`), so a later update can still be installed by a click.
 - Turning Update automatically off once an update is downloaded doesn't take it back: Squirrel.Mac already holds it and installs it when Oby quits.
 
 ### Invariants and boundaries
@@ -52,7 +55,7 @@ The footer "Oby downloads updates in the background and installs them when you q
 
 ## Interfaces and dependencies
 
-- **Renderer ↔ main (preload `window.app`):** `updates(ask?)` with `'check'`, `'install'` or a boolean (Update automatically) answers `{auto, update}`; `onUpdate(fn)` gets each new `update`. The page is the only caller.
+- **Renderer ↔ main (preload `window.app`):** `updates(ask?)` with `'check'`, `'install'` or a boolean (Update automatically) answers `{auto, update}`; `onUpdate(fn)` gets each new `update`. The page is the only caller. An `idle` update may carry `error` (`check_failed`, `download_failed`, `install_failed`), which About doesn't show.
 - **electron-updater 6.8.12**, bundled into main (the app ships no `node_modules`), the `generic` provider, whole-zip downloads (no blockmaps). It needs `Contents/Resources/app-update.yml` (`apps/electron/build/app-update.yml`, through electron-builder.yml's `extraResources`) before any download, even with the feed set in code; `package.sh` refuses to notarize an app without it.
 - **What `scripts/package.sh` makes** (after notarizing and stapling): `dist/<name>-<version>-<arch>-mac.zip` per architecture (the arm64 one has `arm64` in its name: the updater picks it on Apple silicon, the other elsewhere) and `dist/latest-mac.yml` (version, each zip's sha512 and size, release date). The version is `apps/electron/package.json`'s.
 
@@ -74,6 +77,9 @@ The footer "Oby downloads updates in the background and installs them when you q
 - **UPDATES-8** A click or a look while Oby already looks or downloads starts nothing twice.
 - **UPDATES-9** A `latest-mac.yml` naming a file anywhere but https on `downloads.oby.dev` is refused: nothing downloads, About offers Check for Updates again.
 - **UPDATES-10** An update never moves the app. Squirrel.Mac renames an installed bundle after the update's executable (`renamedTargetIfNeededWithTargetURL`) and relaunches from where ShipIt was, so the executable in every build stays `Oby Electron`: `/Applications/Oby Electron.app` keeps its folder and Update and Restart reopens it, its obid and login item stay valid, and the menu says Oby. New installs are `Oby.app`, and stay there. Finder and Spotlight go by the file name, so updated installs may still show the old name there.
+- **UPDATES-15** (implemented) Given Oby is `checking`, when 90 s pass with no answer, then About shows Check for Updates and main's log says `check_failed`; an answer that comes later is taken, and its state gets its own deadline.
+- **UPDATES-16** (implemented) Given Oby is `downloading`, when 120 s pass with no progress event, then the download is cancelled and ends with `download_failed`; each progress event gives it 120 s again.
+- **UPDATES-17** (implemented) Given Update and Restart was clicked on a `ready` update, when it is clicked again in the same session, then nothing more happens; if Oby is still running 300 s later it ends with `install_failed`, and the next update installs on one click again.
 
 ### Test it when it's done (on a real Mac)
 

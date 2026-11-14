@@ -1,6 +1,9 @@
 import { type BrowserWindow } from 'electron';
 import updater from 'electron-updater';
-import { EVERY, FEED, next, onFeed, settings as updaterSettings, type Event, type Update } from '../shared/updates';
+import type { CancellationToken } from 'electron-updater';
+import {
+  DEADLINES, EVERY, FEED, failure, next, onFeed, settings as updaterSettings, type BusyState, type Event, type Update,
+} from '../shared/updates';
 import { settings, writeSettings } from './settings';
 import type { Trusted } from './obid';
 import { ipc } from './ipc';
@@ -17,16 +20,50 @@ const { autoUpdater } = updater;
 let update: Update = { state: 'idle' };
 let auto = true;
 let window: () => BrowserWindow | null = () => null;
+// Update and Restart ran this session: set until the state leaves ready (an install that failed)
+let installing = false;
+// the one deadline main holds, for the busy phase armed
+let armed: BusyState | null = null;
+let timer: ReturnType<typeof setTimeout> | undefined;
+// the current download's, so a stalled one is abandoned
+let download: CancellationToken | null = null;
+
+function arm(phase: BusyState | null) {
+  clearTimeout(timer);
+  armed = phase;
+  timer = phase ? setTimeout(() => expire(phase), DEADLINES[phase]) : undefined;
+}
+
+function expire(phase: BusyState) {
+  const code = failure(phase);
+  console.warn('update:', code, `no answer in ${DEADLINES[phase] / 1000} s`);
+  if (phase === 'downloading') download?.cancel();
+  on({ kind: 'failed', code });
+}
 
 function on(e: Event) {
-  const [u, action] = next(update, e, auto);
+  const [u, action, phase] = next(update, e, auto, installing);
   update = u;
+  if (u.state !== 'ready') installing = false;
+  if (phase !== armed) arm(phase);
   const w = window();
   if (w && !w.isDestroyed()) w.webContents.send('update', update);
-  // a failure comes as the updater's 'error'; null: it isn't running (not packaged), nothing to look for
-  if (action === 'check') autoUpdater.checkForUpdates().then((r) => { if (!r) on({ kind: 'failed' }); }, () => {});
-  else if (action === 'download') autoUpdater.downloadUpdate().catch(() => {});
-  else if (action === 'restart') autoUpdater.quitAndInstall();
+  // a failure comes as the updater's 'error'; null: it isn't running (not packaged), nothing to look for.
+  // With Update automatically on, the download starts inside the look, under the result's token
+  // (cancelled, its promise rejects: caught).
+  if (action === 'check') {
+    autoUpdater.checkForUpdates().then((r) => {
+      if (!r) return on({ kind: 'failed', code: failure(update.state) });
+      if (r.cancellationToken) download = r.cancellationToken;
+      r.downloadPromise?.catch(() => {});
+    }, () => {});
+  } else if (action === 'download') {
+    download = new updater.CancellationToken();
+    autoUpdater.downloadUpdate(download).catch(() => {});
+  } else if (action === 'restart') {
+    installing = true;
+    autoUpdater.quitAndInstall();
+  }
 }
 
 export function updating(trusted: Trusted, current: () => BrowserWindow | null) {
@@ -41,7 +78,13 @@ export function updating(trusted: Trusted, current: () => BrowserWindow | null) 
   autoUpdater.on('update-not-available', () => on({ kind: 'none' }));
   autoUpdater.on('update-available', (i) => on({ kind: 'found', version: i.version, ...date(i.releaseDate) }));
   autoUpdater.on('update-downloaded', (i) => on({ kind: 'downloaded', version: i.version, ...date(i.releaseDate) }));
-  autoUpdater.on('error', (err) => { console.warn('update:', err.message); on({ kind: 'failed' }); });
+  // a download that moves gets its full deadline again
+  autoUpdater.on('download-progress', () => { if (armed === 'downloading') arm('downloading'); });
+  autoUpdater.on('error', (err) => {
+    const code = failure(update.state);
+    console.warn('update:', code, err.message);
+    on({ kind: 'failed', code });
+  });
   // About: what it shows and Update automatically; with 'check' or 'install', the owner's click,
   // with true or false, Update automatically turned
   ipc(trusted).handle('updates', [orUndefined(oneOf('check', 'install', true, false))], (_e, ask) => {

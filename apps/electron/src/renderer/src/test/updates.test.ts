@@ -1,8 +1,61 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
-import { EVERY, FEED, next, onFeed, settings, type Event, type Update } from '../../../shared/updates';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DEADLINES, EVERY, FEED, failure, next, onFeed, settings, type Event, type Update } from '../../../shared/updates';
 
-// docs/contracts/updates.md: each test is named after its scenario
+// docs/contracts/updates.md: each test is named after its scenario. UPDATES-15 to 17 run main's
+// updater (main/updates.ts) for real over an app folder of its own, with Electron and
+// electron-updater stood in for, on fake timers.
+type Handler = (e: unknown, ...args: unknown[]) => unknown;
+const the = vi.hoisted(() => ({
+  handlers: new Map<string, Handler>(), userData: '',
+  // the updater's events main listens to, and the stand-in for electron-updater's autoUpdater
+  events: new Map<string, (...args: unknown[]) => void>(), updater: {} as Record<string, unknown>,
+}));
+vi.mock('electron', () => {
+  const capture = (name: string, f: Handler) => { the.handlers.set(name, f); };
+  return {
+    app: { getPath: () => the.userData, isPackaged: false, dock: { setBadge() {} } },
+    ipcMain: { on: capture, handle: capture },
+    BrowserWindow: class {}, dialog: {}, safeStorage: {}, shell: {},
+    Notification: class { static isSupported = () => true; },
+    powerMonitor: { on() {}, getSystemIdleState: () => 'active' },
+  };
+});
+vi.mock('electron-updater', () => ({
+  default: { get autoUpdater() { return the.updater; }, CancellationToken: class { cancel() {} } },
+}));
+
+const own = { own: true };
+const emit = (name: string, ...args: unknown[]) => the.events.get(name)!(...args);
+// what About shows now, from main's updates call
+const shown = async () => ((await the.handlers.get('updates')!(own)) as { update: Update }).update;
+const install = () => the.handlers.get('updates')!(own, 'install');
+
+// One launch of main's updater, Update automatically on: checkForUpdates answers with `check`
+async function launch(check: Promise<unknown>) {
+  vi.resetModules();
+  the.handlers.clear();
+  the.events.clear();
+  the.userData = mkdtempSync(join(tmpdir(), 'oby-updates-'));
+  the.updater = {
+    setFeedURL() {}, isUpdateSupported: () => true,
+    on: (name: string, f: (...args: unknown[]) => void) => { the.events.set(name, f); },
+    checkForUpdates: vi.fn(() => check), downloadUpdate: vi.fn(async () => []), quitAndInstall: vi.fn(),
+  };
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const { updating } = await import('../../../main/updates');
+  vi.useFakeTimers();
+  updating((e) => (e as { own?: boolean }).own === true, () => null);
+  return { warn, quitAndInstall: the.updater.quitAndInstall as ReturnType<typeof vi.fn> };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
 const idle: Update = { state: 'idle' };
 const found = { version: '0.2.0', date: '2026-10-27T12:00:00.000Z' };
 // the events in turn, from idle; what About shows after each, and what main did
@@ -44,8 +97,12 @@ describe('updates', () => {
 
   it('updates_4_a_failure_installs_nothing_and_offers_check_again', () => {
     for (const from of [{ state: 'checking' }, { state: 'downloading', restart: true, ...found }, { state: 'ready', ...found }] as Update[]) {
-      expect(next(from, { kind: 'failed' }, true)).toEqual([idle, null]);
+      const code = failure(from.state);
+      expect(next(from, { kind: 'failed', code }, true)).toEqual([{ state: 'idle', error: code }, null, null]);
     }
+    // the code names what failed: an error outside a look, a download or an install is a look's
+    expect((['checking', 'downloading', 'ready', 'idle', 'current', 'available'] as const).map(failure))
+      .toEqual(['check_failed', 'download_failed', 'install_failed', 'check_failed', 'check_failed', 'check_failed']);
     // with auto on, the next 6 hours look again
     expect(run(true, [{ kind: 'tick' }]).actions).toEqual(['check']);
   });
@@ -96,13 +153,84 @@ describe('updates', () => {
   });
 
   it('updates_8_nothing_starts_twice_while_it_looks_or_downloads', () => {
-    for (const from of [{ state: 'checking' }, { state: 'downloading', restart: false, ...found }, { state: 'ready', ...found }] as Update[]) {
+    const busy: [Update, string | null][] = [
+      [{ state: 'checking' }, 'checking'], [{ state: 'downloading', restart: false, ...found }, 'downloading'], [{ state: 'ready', ...found }, null],
+    ];
+    for (const [from, phase] of busy) {
       for (const e of [{ kind: 'check' }, { kind: 'tick' }, { kind: 'start' }, { kind: 'auto', on: true }] as Event[]) {
-        expect(next(from, e, true)).toEqual([from, null]);
+        expect(next(from, e, true)).toEqual([from, null, phase]);
       }
     }
     // a second Update and Restart while one downloads for it
     const downloading: Update = { state: 'downloading', restart: true, ...found };
-    expect(next(downloading, { kind: 'install' }, false)).toEqual([downloading, null]);
+    expect(next(downloading, { kind: 'install' }, false)).toEqual([downloading, null, 'downloading']);
+  });
+
+  it('updates_15_a_check_that_never_answers_ends', async () => {
+    const { warn } = await launch(new Promise(() => {}));
+    expect(DEADLINES.checking).toBe(90_000);
+    expect(await shown()).toEqual({ state: 'checking' });
+    vi.advanceTimersByTime(89_999);
+    expect(await shown()).toEqual({ state: 'checking' });
+    vi.advanceTimersByTime(1);
+    expect(await shown()).toEqual({ state: 'idle', error: 'check_failed' });
+    expect(warn).toHaveBeenCalledWith('update:', 'check_failed', 'no answer in 90 s');
+    // a late answer still gets a deadline
+    emit('update-available', { version: found.version, releaseDate: found.date });
+    expect(await shown()).toEqual({ state: 'downloading', restart: false, ...found });
+    vi.advanceTimersByTime(120_000);
+    expect(await shown()).toEqual({ state: 'idle', error: 'download_failed' });
+    // one timer, cleared: a look that answers leaves no deadline behind
+    await the.handlers.get('updates')!(own, 'check');
+    expect(await shown()).toEqual({ state: 'checking' });
+    warn.mockClear();
+    emit('update-not-available');
+    vi.advanceTimersByTime(90_000);
+    expect(await shown()).toEqual({ state: 'current' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('updates_16_a_stalled_download_ends', async () => {
+    const cancellationToken = { cancel: vi.fn() };
+    const { warn } = await launch(Promise.resolve({ cancellationToken }));
+    emit('update-available', { version: found.version, releaseDate: found.date });
+    expect(await shown()).toMatchObject({ state: 'downloading' });
+    // each progress event gives it its 120 s again
+    vi.advanceTimersByTime(100_000);
+    emit('download-progress', { percent: 10 });
+    vi.advanceTimersByTime(100_000);
+    emit('download-progress', { percent: 20 });
+    vi.advanceTimersByTime(119_999);
+    expect(await shown()).toMatchObject({ state: 'downloading' });
+    expect(cancellationToken.cancel).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(await shown()).toEqual({ state: 'idle', error: 'download_failed' });
+    expect(cancellationToken.cancel).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith('update:', 'download_failed', 'no answer in 120 s');
+  });
+
+  it('updates_17_a_second_install_does_nothing', async () => {
+    const ready: Update = { state: 'ready', ...found };
+    expect(next(ready, { kind: 'install' }, true, true)).toEqual([ready, null, 'installing']);
+    const { warn, quitAndInstall } = await launch(new Promise(() => {}));
+    const downloaded = async () => {
+      emit('update-available', { version: found.version, releaseDate: found.date });
+      emit('update-downloaded', { version: found.version, releaseDate: found.date });
+      expect(await shown()).toEqual(ready);
+    };
+    await downloaded();
+    await install();
+    await install();
+    expect(quitAndInstall).toHaveBeenCalledOnce();
+    // Oby is still running 300 s after Update and Restart: the install failed
+    vi.advanceTimersByTime(299_999);
+    expect(await shown()).toEqual(ready);
+    vi.advanceTimersByTime(1);
+    expect(await shown()).toEqual({ state: 'idle', error: 'install_failed' });
+    expect(warn).toHaveBeenCalledWith('update:', 'install_failed', 'no answer in 300 s');
+    // the latch is freed: a new ready update installs on one click
+    await downloaded();
+    await install();
+    expect(quitAndInstall).toHaveBeenCalledTimes(2);
   });
 });
