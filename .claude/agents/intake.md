@@ -70,9 +70,9 @@ For ACCEPT, rate:
   security path (`.claude/`, AGENTS.md, CI files, the check's files);
   `proofs` if it changes pure, synchronous decision logic in Rust (a pure
   function, a state machine transition, an encode/decode pair, an ordering
-  or arithmetic rule), which the factory then proves with Kani, the only
-  proof tool wired in. Never for async, I/O or concurrency code, and never
-  outside Rust. Any of them together, or `none`.
+  or arithmetic rule): Kani, the only proof tool wired in, proves it. No
+  `proofs` outside Rust. Never for async, I/O or concurrency code.
+  Any of them together, or `none`.
 
 ## Write intake.md
 
