@@ -43,6 +43,7 @@ pub mod groups;
 pub mod job;
 pub mod jobs;
 pub mod limits;
+pub mod mcp;
 pub mod memory;
 pub mod merge;
 pub mod meter;

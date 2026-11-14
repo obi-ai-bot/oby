@@ -72,6 +72,7 @@ const CANDIDATES: usize = 10;
 const DIGESTS: usize = 5;
 const INSTRUCTIONS: &str = "Tetrix, the code graph and memory for this work, through Oby: Oby holds the login and forwards your calls. Only the graph reads, earlier sessions' digests and save_session are offered. Candidate links are not confirmed facts.";
 const CONVERSATION_INSTRUCTIONS: &str = "Tetrix, the code graph and memory of the owner's work, through Oby: Oby holds the login and forwards your calls. Only the graph reads, earlier sessions' digests and save_session are offered. Candidate links are not confirmed facts.";
+const SERVER: &str = "Oby's Tetrix server";
 /// The upstream session every conversation's calls share: the graph reads and `save_session`.
 const CONVERSATIONS: &str = "conversations";
 
@@ -141,7 +142,7 @@ pub struct Tetrix {
     /// Held while the login changes, so one refresh runs at a time.
     changing: tokio::sync::Mutex<()>,
     /// The tools agents may call, as Tetrix last listed them for any job: what an agent gets
-    /// while Tetrix doesn't answer.
+    /// while Tetrix can't be reached.
     known: Mutex<Vec<Value>>,
 }
 
@@ -784,7 +785,7 @@ impl Tetrix {
             .header(header::ACCEPT, "application/json, text/event-stream")
             .json(
                 &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                "protocolVersion": crate::connections::MCP_VERSIONS[0], "capabilities": {},
+                "protocolVersion": crate::mcp::VERSIONS[0], "capabilities": {},
                 "clientInfo": {"name": "oby", "version": crate::api::API_VERSION}}}),
             )
             .send()
@@ -1126,7 +1127,7 @@ impl Tetrix {
         Ok(tools)
     }
 
-    /// What an agent lists while Tetrix doesn't answer: Tetrix's last listing, else the tools'
+    /// What an agent lists while Tetrix can't be reached: Tetrix's last listing, else the tools'
     /// names alone. Never none: each call asks Tetrix again.
     fn known(&self) -> Vec<Value> {
         let known = self.known.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1170,19 +1171,17 @@ impl Tetrix {
             other => other,
         }
         .map_err(org_hint)?;
-        Ok(connections.clean(answer))
+        Ok(crate::mcp::scrub(answer))
     }
 
     /// One JSON-RPC message from `job`'s agent to obid's Tetrix server: its answer, or none for
     /// a notification.
     async fn handle(&self, shared: &Shared, job: &str, body: Value) -> Option<Value> {
-        let method = body.get("method")?.as_str()?;
-        let rpc_id = body.get("id").cloned().filter(|id| !id.is_null())?;
-        let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
+        let (method, rpc_id, params) = crate::mcp::read(&body)?;
         let connections = &shared.connections;
         let result = match method {
-            "initialize" => hello(&params, INSTRUCTIONS),
-            "ping" => json!({}),
+            "initialize" => crate::mcp::hello(&params, "tetrix", INSTRUCTIONS),
+            "ping" => crate::mcp::ping(),
             // An agent lists its tools once, as it starts: Tetrix not answering then never leaves
             // it without them for the rest of the job.
             "tools/list" => {
@@ -1223,9 +1222,9 @@ impl Tetrix {
                     answer.unwrap_or_else(unreached)
                 }
             }
-            _ => return Some(unknown(rpc_id, method)),
+            _ => return Some(crate::mcp::unknown(rpc_id, method, SERVER)),
         };
-        Some(json!({"jsonrpc": "2.0", "id": rpc_id, "result": connections.clean(result)}))
+        Some(crate::mcp::ok(rpc_id, result))
     }
 
     /// One JSON-RPC message from a conversation's turn (crate::brain::harness; `endpoint` is
@@ -1240,13 +1239,11 @@ impl Tetrix {
         session: Option<&crate::brain::harness::Session>,
         body: Value,
     ) -> Option<Value> {
-        let method = body.get("method")?.as_str()?;
-        let rpc_id = body.get("id").cloned().filter(|id| !id.is_null())?;
-        let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
+        let (method, rpc_id, params) = crate::mcp::read(&body)?;
         let connections = &shared.connections;
         let result = match (method, session) {
-            ("initialize", _) => hello(&params, CONVERSATION_INSTRUCTIONS),
-            ("ping", _) => json!({}),
+            ("initialize", _) => crate::mcp::hello(&params, "tetrix", CONVERSATION_INSTRUCTIONS),
+            ("ping", _) => crate::mcp::ping(),
             ("tools/list", _) => {
                 let mut tools = self
                     .tools(connections, CONVERSATIONS)
@@ -1288,12 +1285,11 @@ impl Tetrix {
                 }
             }
             ("tools/call", None) => {
-                return Some(json!({"jsonrpc": "2.0", "id": rpc_id,
-                    "error": {"code": -32600, "message": "No turn of Oby's is under way: tools are called only in one."}}));
+                return Some(crate::mcp::refused(rpc_id, -32600, crate::mcp::NO_TURN));
             }
-            _ => return Some(unknown(rpc_id, method)),
+            _ => return Some(crate::mcp::unknown(rpc_id, method, SERVER)),
         };
-        Some(json!({"jsonrpc": "2.0", "id": rpc_id, "result": connections.clean(result)}))
+        Some(crate::mcp::ok(rpc_id, result))
     }
 
     /// Why `job` (or a conversation, `conversation-<id>`) can't send `tool` with `arguments` to
@@ -1701,21 +1697,6 @@ fn unreached(e: String) -> Value {
     } else {
         format!("Oby couldn't reach Tetrix: {e} Ask again later: each call tries Tetrix again.")
     })
-}
-
-/// The answer to `initialize` from obid's Tetrix server.
-fn hello(params: &Value, instructions: &str) -> Value {
-    let asked = params["protocolVersion"].as_str().unwrap_or("");
-    let versions = crate::connections::MCP_VERSIONS;
-    json!({"protocolVersion": if versions.contains(&asked) { asked } else { versions[0] },
-        "capabilities": {"tools": {"listChanged": false}},
-        "serverInfo": {"name": "tetrix", "version": crate::api::API_VERSION},
-        "instructions": instructions})
-}
-
-fn unknown(rpc_id: Value, method: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": rpc_id,
-        "error": {"code": -32601, "message": format!("Oby's Tetrix server doesn't answer {}.", method.chars().take(64).collect::<String>())}})
 }
 
 /// What an answer says, for a reader: its content's text, else its structured content.
