@@ -4,7 +4,7 @@
 Usage:
   gate <job-id>            write round-N/checks.md; exit 0 on PASS, 1 on FAIL
   gate <job-id> --merge    same, as round-N/merge-checks.md (job merge runs it)
-  gate --idle              deallocate the gate VM once it has been idle 30 minutes (job queue runs it)
+  gate --idle              deallocate the gate VM 30 minutes after its last gate ended (job queue runs it)
 
 The gate runs the main checkout's factory/checks.sh inside the job's worktree,
 so a branch can't change the checks it is judged by. It also fails when the
@@ -12,12 +12,18 @@ branch modifies or deletes a file matching config.json `protected_paths`
 (fnmatch patterns, where `*` also matches `/`). Adding new files is fine.
 
 The gate VM (docs/contracts/remote-gate.md). With config.json's `remote_gate`
-({"ssh_host": ..., "resource_group": ..., "vm": ...}), or the same JSON in
+({"ssh_host": ..., "resource_group": ..., "vm": ...}, and optionally "nsg" and
+"nsg_rule", by default <vm>NSG and ssh-from-owner), or the same JSON in
 FACTORY_REMOTE_GATE for one run, the gate reads the check's plan and runs its
 Linux groups (rust, electron, scan) on the VM with `ssh <host> oby-remote-gate
 <commit> origin/<base>`, starting the VM with `az vm start` when it is stopped
 and waiting for SSH, at most 180 seconds (FACTORY_REMOTE_REACH_SECONDS shortens
-that, for the tests only). Only after the VM's part passes does the Mac run its
+that, for the tests only). When SSH hasn't answered by then, the gate reads this
+Mac's public IPv4 from https://checkip.amazonaws.com (FACTORY_REMOTE_IP_URL
+replaces it, for the tests only) and, when it is one global address other than
+the SSH rule's source, sets that one rule's source to <ip>/32 with `az network
+nsg rule update` and waits for SSH once more, at most 60 seconds; checks.md
+says it moved the rule. Only after the VM's part passes does the Mac run its
 own: rust when the diff touches macOS-only code (macos_only: MACOS_ONLY, or a
 file naming target_os = "macos"), then swift and factory when planned, each with
 OBY_CHECK_ONLY through checks.sh. A diff touching the check's own files
@@ -26,9 +32,11 @@ the Mac, with no az, ssh or stamp. The whole check runs on the Mac as without a
 VM when the settings are invalid, the plan can't be read, the commit isn't on
 origin, the VM can't be reached in time, or oby-remote-gate couldn't judge or
 was cut off; checks.md says where each part ran (HOST, "## Where it ran") and
-why it fell back. Each remote use stamps `used` in jobs/remote-gate/state.json;
-`gate --idle` deallocates the VM once that stamp is 30 minutes old and no job
-is in `gate` or `merging`. Without `remote_gate` nothing here changes.
+why it fell back. Each use of the VM is recorded in jobs/remote-gate/state.json,
+under state.lock: `open` while the gate uses it, then `used`, when the last use
+ended. `gate --idle` drops an open use whose gate's pid is gone (as ended when it
+started) and deallocates the VM once no use is open and `used` is 30 minutes
+old, whatever stage any job is in. Without `remote_gate` nothing here changes.
 
 The Mac worker (REMOTE-13 to 16). With `remote_gate` on and config.json's `mac_worker` ({"ssh_host": ...}),
 or the same JSON in FACTORY_MAC_WORKER for one run, the Mac's part above (its rust, swift and factory) runs
@@ -39,8 +47,10 @@ are invalid, that part runs on this Mac as without it, and checks.md says `Fell 
 Mac: <why>`. No az, stamp or lock is ever used for it. Without `mac_worker` nothing here changes.
 """
 
+import fcntl
 import fnmatch
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -48,7 +58,9 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -96,6 +108,7 @@ MACOS_ONLY = (
 # on the Mac. A path ending in / stands for everything under it.
 CHECK_FILES = ("scripts/oby-check.sh", "scripts/oby-check-test.sh", "tools/oby-check-blok/")
 REMOTE_KEYS = ("ssh_host", "resource_group", "vm")
+RULE_KEYS = ("nsg", "nsg_rule")  # optional: the SSH rule the gate may move, by default <vm>NSG and ssh-from-owner
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SHA = re.compile(r"[0-9a-f]{40}")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")  # oby-remote-gate's rule for origin/<branch>
@@ -106,9 +119,11 @@ STOPPED = {"PowerState/deallocated", "PowerState/stopped"}
 REACH = min(180.0, float(os.environ.get("FACTORY_REMOTE_REACH_SECONDS") or 180))  # shorter only in the tests
 MAC_REACH = min(60.0, REACH)
 MAC_GATE = "oby-worker/bin/oby-remote-gate"  # home-relative: the same words in fish and bash
+AGAIN = min(60.0, REACH)  # the second SSH wait, once the rule moved
+IP_URL = os.environ.get("FACTORY_REMOTE_IP_URL") or "https://checkip.amazonaws.com"  # a file:// URL in the tests
 STATE = FACTORY / "jobs" / "remote-gate" / "state.json"
+LOCK = STATE.with_name("state.lock")
 IDLE = timedelta(minutes=30)
-BUSY = {"gate", "merging"}  # a job whose check, or merge, may still want the VM
 
 
 class Fallback(Exception):
@@ -198,9 +213,11 @@ def remote_config():
     if remote is None:
         return None, None
     if not isinstance(remote, dict) or not all(
-            isinstance(remote.get(k), str) and NAME.fullmatch(remote[k]) for k in REMOTE_KEYS):
-        return None, f"{where} needs {', '.join(REMOTE_KEYS)}, each matching {NAME.pattern}"
-    return remote, None
+            isinstance(remote.get(k), str) and NAME.fullmatch(remote[k]) for k in REMOTE_KEYS) or not all(
+            k not in remote or isinstance(remote[k], str) and NAME.fullmatch(remote[k]) for k in RULE_KEYS):
+        return None, (f"{where} needs {', '.join(REMOTE_KEYS)}, and {' and '.join(RULE_KEYS)} when set, "
+                      f"each matching {NAME.pattern}")
+    return {"nsg": f"{remote['vm']}NSG", "nsg_rule": "ssh-from-owner", **remote}, None
 
 
 def mac_worker_config():
@@ -233,23 +250,122 @@ def read_state():
     return state if isinstance(state, dict) else {}
 
 
-def write_state(**fields):
-    STATE.parent.mkdir(parents=True, exist_ok=True)
+def write_state(state):
+    """Replace state.json atomically. Only under state_lock()."""
     tmp = STATE.with_name(f".state-{os.getpid()}-{uuid.uuid4().hex}.json")
-    tmp.write_text(json.dumps({**read_state(), **fields}) + "\n")
+    tmp.write_text(json.dumps(state) + "\n")
     tmp.replace(STATE)
 
 
-def az(remote, action, *extra, timeout=60):
-    """`az vm <action>` on the VM: (True, its output) or (False, why it failed)."""
-    command = ["az", "vm", action, "--resource-group", remote["resource_group"], "--name", remote["vm"], *extra]
+@contextmanager
+def state_lock():
+    """Hold state.lock, so gates and `gate --idle` never lose each other's changes to state.json."""
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def open_uses(state):
+    """The uses of the VM still open: {use id: {"pid": ..., "started": ...}}. An old state.json has none."""
+    return dict(state["open"]) if isinstance(state.get("open"), dict) else {}
+
+
+def open_use():
+    """Record this gate's use of the VM as open, and return its id."""
+    use = str(uuid.uuid4())
+    with state_lock():
+        state = read_state()
+        write_state({**state, "open": {**open_uses(state), use: {"pid": os.getpid(), "started": utc()}}})
+    return use
+
+
+def close_use(use):
+    """Record the use as ended now: `used` is when the last use ended."""
+    with state_lock():
+        state = read_state()
+        write_state({**state, "open": {k: v for k, v in open_uses(state).items() if k != use}, "used": utc()})
+
+
+def gone(entry):
+    """Whether an open use's gate is no longer running: its pid is gone, or it names no pid."""
+    pid = entry.get("pid") if isinstance(entry, dict) else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return True
     try:
-        res = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def run_az(command, timeout=60):
+    """`az <command>`: (True, its output) or (False, why it failed)."""
+    try:
+        res = subprocess.run(["az", *command], capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
     if res.returncode != 0:
         return False, next((line for line in res.stderr.splitlines() if line.strip()), f"exit {res.returncode}")
     return True, res.stdout.strip()
+
+
+def az(remote, action, *extra, timeout=60):
+    """`az vm <action>` on the VM: (True, its output) or (False, why it failed)."""
+    return run_az(["vm", action, "--resource-group", remote["resource_group"], "--name", remote["vm"], *extra],
+                  timeout)
+
+
+def the_rule(remote):
+    """The `az network nsg rule` arguments naming the VM's SSH rule, and no other."""
+    return ["--resource-group", remote["resource_group"], "--nsg-name", remote["nsg"], "--name", remote["nsg_rule"]]
+
+
+def public_ip():
+    """This Mac's public IPv4 address from IP_URL, or None unless the answer is exactly one global address."""
+    try:
+        with urllib.request.urlopen(IP_URL, timeout=10) as res:
+            body = res.read(65)
+        if len(body) > 64:
+            return None
+        ip = ipaddress.IPv4Address(body.decode("ascii").strip())
+    except (OSError, ValueError):
+        return None
+    return ip if ip.is_global and not ip.is_multicast and not ip.is_reserved else None
+
+
+def follow_ip(remote, why, moves):
+    """SSH didn't answer (why): move the SSH rule's source to this Mac's IP when it changed, and Fallback unless
+    SSH then answers within AGAIN seconds. Writes only <ip>/32 into that one rule; adds the move to moves."""
+    rule = f"{remote['nsg']}/{remote['nsg_rule']}"
+    ip = public_ip()
+    if ip is None:
+        raise Fallback(f"{why}, and this Mac's public IP couldn't be read from {IP_URL}")
+    ok, out = run_az(["network", "nsg", "rule", "show", *the_rule(remote), "--output", "json"])
+    if not ok:
+        raise Fallback(f"{why}, and az couldn't read {rule}: {out}")
+    try:
+        shown = json.loads(out)
+    except ValueError:
+        shown = None
+    if not isinstance(shown, dict):
+        raise Fallback(f"{why}, and az's answer for {rule} wasn't readable JSON")
+    prefixes = shown.get("sourceAddressPrefixes") or []
+    source = shown.get("sourceAddressPrefix") or (prefixes[0] if len(prefixes) == 1 else ", ".join(prefixes))
+    if source in (str(ip), f"{ip}/32"):
+        raise Fallback(f"{why}, and this Mac's IP {ip} is already {rule}'s source")
+    ok, out = run_az(["network", "nsg", "rule", "update", *the_rule(remote), "--source-address-prefixes", f"{ip}/32"])
+    if not ok:
+        raise Fallback(f"{why}, and az couldn't update {rule}: {out}")
+    moved = f"Moved {rule}'s source from {source or 'none'} to {ip}/32: this Mac's IP changed"
+    try:
+        answers(remote, time.monotonic() + AGAIN, AGAIN)
+    except Fallback:
+        moves.append(f"{moved}; ssh still didn't answer within {AGAIN:.0f}s")
+        raise Fallback(f"{why}, nor within {AGAIN:.0f}s after moving {rule}'s source to {ip}/32")
+    moves.append(f"{moved}; the VM answered")
 
 
 def power(remote, timeout=60):
@@ -287,8 +403,8 @@ def on_origin(branch, worktree, commit, base):
         raise Fallback(f"not on origin: {commit[:7]} isn't on origin/{branch}")
 
 
-def reach(remote, log):
-    """Start the VM if it is stopped and wait until SSH answers, within REACH seconds, or Fallback."""
+def reach(remote, log, moves):
+    """Start the VM if it is stopped and wait until SSH answers, within REACH seconds, then follow_ip, or Fallback."""
     deadline = time.monotonic() + REACH
 
     def left():
@@ -309,7 +425,10 @@ def reach(remote, log):
         if time.monotonic() >= deadline:
             raise Fallback(f"{remote['vm']} was still {state or 'in no power state'} after {REACH:.0f}s")
         time.sleep(min(5.0, max(0.0, deadline - time.monotonic())))
-    answers(remote, deadline, REACH)
+    try:
+        answers(remote, deadline, REACH)
+    except Fallback as e:
+        follow_ip(remote, str(e), moves)
 
 
 def answers(remote, deadline, seconds):
@@ -352,14 +471,14 @@ def remote_gate(remote, words, groups, heading, log):
     return {"host": host, "groups": groups, "slot": slot and slot.group(1), "seconds": seconds, "code": code}
 
 
-def vm_part(remote, commit, base, groups, log):
-    """The Linux groups on the VM: a part that ended 0 or 1, or Fallback. Stamps `used` before and after."""
-    write_state(used=utc())
+def vm_part(remote, commit, base, groups, log, moves):
+    """The Linux groups on the VM: a part that ended 0 or 1, or Fallback. Its use of the VM is open meanwhile."""
+    use = open_use()
     try:
-        reach(remote, log)
+        reach(remote, log, moves)
         return remote_gate(remote, ["oby-remote-gate", commit, base], groups, " ".join(groups), log)
     finally:
-        write_state(used=utc())
+        close_use(use)
 
 
 def mac_worker_part(worker, invalid, commit, base, groups, labels, log):
@@ -398,9 +517,10 @@ def macos_only(worktree, base, touched):
 
 
 def remote_parts(remote, invalid, job, worktree, commit):
-    """The check's parts where they belong: (parts, the lines saying why a part fell back, log)."""
+    """The check's parts where they belong: (parts, the lines saying why a part fell back, the SSH rule's moves for
+    checks.md, log)."""
     base = f"origin/{CONFIG['base_branch']}"
-    log = []
+    log, moves = [], []
     try:
         if invalid:
             raise Fallback(invalid)
@@ -412,14 +532,14 @@ def remote_parts(remote, invalid, job, worktree, commit):
             why = f"the diff touches the check's own files: {named(own)}" if own else "no Linux group planned"
             code, out, seconds = run_checks(worktree)
             return [{"host": "mac", "groups": [f"the whole check ({why})"], "seconds": seconds,
-                     "code": code}], [], out
+                     "code": code}], [], moves, out
         on_origin(job.get("branch"), worktree, commit, base)
-        parts = [vm_part(remote, commit, base, linux, log)]
+        parts = [vm_part(remote, commit, base, linux, log, moves)]
     except Fallback as e:
         code, out, seconds = run_checks(worktree)
         log.append(f"==== mac: the whole check, after falling back: {e} ====\n{out}")
         return [{"host": "mac", "groups": ["the whole check"], "seconds": seconds, "code": code}], \
-            [f"Fell back to the Mac: {e}"], "\n".join(log)
+            [f"Fell back to the Mac: {e}"], moves, "\n".join(log)
     macos = macos_only(worktree, base, touched) if "rust" in planned else []
     mac = (["rust"] if macos else []) + [g for g in ("swift", "factory") if g in planned]
     labels = [g + (f" (the diff touches macOS-only code: {named(macos)})" if g == "rust" else "") for g in mac]
@@ -428,7 +548,7 @@ def remote_parts(remote, invalid, job, worktree, commit):
     if worker or worker_invalid:
         part, note = mac_worker_part(worker, worker_invalid, commit, base, mac, labels, log)
         if part:
-            return parts + [part], [], "\n".join(log)
+            return parts + [part], [], moves, "\n".join(log)
         notes = [note]
     for group, label in zip(mac, labels):
         if parts[0]["code"] != 0:
@@ -437,7 +557,7 @@ def remote_parts(remote, invalid, job, worktree, commit):
         code, out, seconds = run_checks(worktree, group)
         log.append(f"==== mac: OBY_CHECK_ONLY={label} ====\n{out}")
         parts.append({"host": "mac", "groups": [label], "seconds": seconds, "code": code})
-    return parts, notes, "\n".join(log)
+    return parts, notes, moves, "\n".join(log)
 
 
 def describe(part):
@@ -462,7 +582,7 @@ def gate(job_id, merge):
     protected = protected_changes(worktree)
     remote, invalid = remote_config()
     if remote or invalid:
-        parts, fell_back, log = remote_parts(remote, invalid, job, worktree, commit)
+        parts, fell_back, moves, log = remote_parts(remote, invalid, job, worktree, commit)
         ran = [p for p in parts if "code" in p]
         code = next((p["code"] for p in ran if p["code"] != 0), 0)
         seconds = sum(p["seconds"] for p in ran)
@@ -475,7 +595,7 @@ def gate(job_id, merge):
     tail = "\n".join(log.rstrip().splitlines()[-TAIL:])
     if remote or invalid:
         checked = [describe(p) for p in parts] + fell_back
-        where = ("## Where it ran\n" + "\n".join(f"- {describe(p)}" for p in parts)
+        where = ("## Where it ran\n" + "\n".join(f"- {line}" for line in [describe(p) for p in parts] + moves)
                  + "".join(f"\n\n{line}" for line in fell_back) + "\n\n")
     else:
         checked = [f"checks.sh {'passed' if code == 0 else f'failed with exit {code}'} in {seconds}s"]
@@ -500,36 +620,45 @@ def gate(job_id, merge):
 
 
 def idle():
-    """Deallocate the VM once its last use is IDLE old and no job is in a BUSY stage. Prints only what it did."""
+    """Deallocate the VM once no use of it is open and the last one ended IDLE ago, whatever stage any job is in.
+    A use whose gate is gone counts as ended when it started. Prints only what it did."""
     remote, invalid = remote_config()
     if invalid:
         print(f"gate --idle: {invalid}")
     if not remote:
         return 0
-    state = read_state()
-    used = state.get("used")
-    if not used or state.get("settled") == used:
-        return 0
-    try:
-        since = datetime.fromisoformat(used.replace("Z", "+00:00"))
-    except (AttributeError, ValueError):
-        return 0
-    if datetime.now(timezone.utc) - since < IDLE:
-        return 0
-    for path in sorted((FACTORY / "jobs").glob("*/job.json")):
-        if json.loads(path.read_text())["stage"] in BUSY:
+    with state_lock():
+        state = read_state()
+        uses = open_uses(state)
+        dead = [use for use, entry in uses.items() if gone(entry)]
+        for use in dead:
+            entry = uses.pop(use)
+            started = entry.get("started") if isinstance(entry, dict) else None
+            if isinstance(started, str) and started > str(state.get("used") or ""):
+                state["used"] = started
+        if dead:
+            state["open"] = uses
+            write_state(state)
+        used = state.get("used")
+        if uses or not used or state.get("settled") == used:
             return 0
-    ok, power_state = power(remote)
-    if not ok:
-        print(f"gate --idle: az couldn't read {remote['vm']}'s power state: {power_state}")
-        return 0
-    if power_state == "PowerState/running":
-        ok, why = az(remote, "deallocate", "--no-wait")
+        try:
+            since = datetime.fromisoformat(used.replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            return 0
+        if datetime.now(timezone.utc) - since < IDLE:
+            return 0
+        ok, power_state = power(remote)
         if not ok:
-            print(f"gate --idle: az couldn't deallocate {remote['vm']}: {why}")
+            print(f"gate --idle: az couldn't read {remote['vm']}'s power state: {power_state}")
             return 0
-        print(f"gate --idle: deallocating {remote['vm']}: no remote gate since {used}")
-    write_state(settled=used)
+        if power_state == "PowerState/running":
+            ok, why = az(remote, "deallocate", "--no-wait")
+            if not ok:
+                print(f"gate --idle: az couldn't deallocate {remote['vm']}: {why}")
+                return 0
+            print(f"gate --idle: deallocating {remote['vm']}: no remote gate since {used}")
+        write_state({**state, "settled": used})
     return 0
 
 
