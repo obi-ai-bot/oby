@@ -31,6 +31,7 @@ SETUP_MAC = FACTORY / "remote" / "setup-mac.sh"
 TIGHTEN = FACTORY / "remote" / "tighten.sh"
 CHECK = FACTORY.parent / "scripts" / "oby-check.sh"
 CI = FACTORY.parent / ".github" / "workflows" / "ci.yml"
+MODEL = FACTORY.parent / "docs" / "models" / "job_race.qnt"
 
 # The stand-in check: the plan prints $FAKE/groups' groups; a run records its slot, CARGO_TARGET_DIR,
 # OBY_CHECK_ONLY, its pid and a background child's (and in $FAKE/env its OBY_BUILD_JOBS, OBY_CHECK_CACHE
@@ -534,14 +535,17 @@ class SetupBuilder(unittest.TestCase):
         self.tool("ssh", f'if [ "$2 $3" = "bash -s" ]; then cat >"{self.sent}"; else cat >/dev/null; fi')
         self.log = self.dir / "sudo.log"
         # sudo: one line per call; `sudo -n -l -U` prints $dir/rights; `find ... ! -user root` prints a path when
-        # $dir/not-root exists; the builder's proof (`bash` as the builder) fails when $dir/proof-fails exists; `test`
-        # as the builder finds nothing but the `-w <path>` in $dir/writable.
+        # $dir/not-root exists; the builder's proof (`bash` as the builder) fails when $dir/proof-fails exists, its
+        # Quint proof (`bwrap` as the builder) when $dir/quint-fails does; `test` as the builder finds nothing but the
+        # `-w <path>` in $dir/writable.
         self.tool("sudo", f'printf "%s\\n" "$*" | tr "\\n" " " >>"{self.log}"; echo >>"{self.log}"\n'
                           f'if [ "$2 $3" = "-l -U" ]; then cat "{self.dir}/rights"; fi\n'
                           f'case "$*" in *"! -user root"*) if [ -e "{self.dir}/not-root" ]; then echo "$3"; fi;; esac\n'
                           f'if [ "$2 $5" = "-u bash" ] && [ -e "{self.dir}/proof-fails" ]; then exit 1; fi\n'
+                          f'if [ "$2 $5" = "-u bwrap" ] && [ -e "{self.dir}/quint-fails" ]; then exit 1; fi\n'
                           f'[ "$5" != test ] || [ "$6 $7" = "$(cat "{self.dir}/writable" 2>/dev/null)" ]')
         self.tool("id", "exit 1")
+        self.tool("java", 'echo \'openjdk version "21.0.9" 2025-10-21\' >&2')
         self.tool("getent", f'echo "oby-builder:x:1001:1001::{self.dir}/builder-home:/bin/bash"')
         self.rights("User oby-builder is not allowed to run sudo on oby-gate.")
         done = subprocess.run([str(SETUP)], env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}"),
@@ -634,7 +638,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn(f"-n install -o root -g root -m 644 {self.dir}/.ssh/authorized_keys {home}/.ssh/authorized_keys",
                       calls)
         self.assertIn(f"-n find {home} -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup "
-                      "! -name .kani -exec rm -rf {} +", calls)
+                      "! -name .kani ! -name .quint -exec rm -rf {} +", calls)
         self.assertFalse([c for c in calls if "-o oby-builder" in c and str(home) in c], calls)
         # As the builder: only checks, its clone in /srv/oby-builder, and the toolchain run from a scratch folder.
         for call in (c for c in calls if c.startswith("-n -u oby-builder -H ")):
@@ -643,8 +647,8 @@ class SetupBuilder(unittest.TestCase):
                 continue
             self.assertNotIn(str(home), words, call)
             self.assertFalse(re.search(r"rustup|curl|chmod|tighten|install", words), call)
-            self.assertTrue(words.startswith(("git clone ", "git -C /srv/oby-builder/repo.git ", "bash -c set -euo")),
-                            call)
+            self.assertTrue(words.startswith(("git clone ", "git -C /srv/oby-builder/repo.git ", "bash -c set -euo",
+                                              "bwrap --unshare-net ")), call)
         proof = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ")]
         self.assertEqual(len(proof), 1, calls)
         self.assertIn('export CARGO_HOME="$scratch/cargo"', proof[0])
@@ -653,7 +657,8 @@ class SetupBuilder(unittest.TestCase):
         checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in calls if " test -w " in c]
         kani = f"{home}/.kani/kani-" + re.search(r"^KANI=(\S+)$", self.sent.read_text(), re.M).group(1)
         self.assertEqual(checked, [str(home), f"{home}/.ssh", f"{home}/.ssh/authorized_keys", f"{home}/.cargo",
-                                   f"{home}/.cargo/bin", f"{home}/.rustup", f"{home}/.kani", kani, f"{kani}/bin"])
+                                   f"{home}/.cargo/bin", f"{home}/.rustup", f"{home}/.kani", kani, f"{kani}/bin",
+                                   f"{home}/.quint"])
         self.assertIn("setup.sh: oby-builder is set up", done.stdout)
 
     def test_remote_33_setup_stops_when_the_builder_can_still_write_its_logins(self):
@@ -675,16 +680,17 @@ class SetupBuilder(unittest.TestCase):
         self.assertIn("--no-modify-path", rust)
         self.assertIn("rustfmt,clippy", rust)
         self.assertFalse([c for c in calls if "-u oby-builder" in c and re.search(r"rustup |curl ", c)], calls)
-        self.assertNotIn(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani", calls)
+        self.assertNotIn(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani {home}/.quint", calls)
         # A toolchain with anything not root's in it (A00-31's, the builder's own) goes before the install.
         (self.dir / "not-root").touch()
         self.log.unlink()
         done = self.builder()
         self.assertEqual(done.returncode, 0, done.stdout)
         calls = self.calls()
-        removed = calls.index(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani")
+        removed = calls.index(f"-n rm -rf {home}/.cargo {home}/.rustup {home}/.kani {home}/.quint")
         self.assertLess(removed, next(i for i, c in enumerate(calls) if "rustup toolchain install" in c), calls)
-        self.assertIn(f"removing {home}/.cargo, {home}/.rustup and {home}/.kani: not all root's", done.stdout)
+        self.assertIn(f"removing {home}/.cargo, {home}/.rustup, {home}/.kani and {home}/.quint: not all root's",
+                      done.stdout)
 
     def test_remote_47_setup_installs_kani_for_the_builder_as_root(self):
         done = self.builder()
@@ -725,6 +731,86 @@ class SetupBuilder(unittest.TestCase):
         self.assertEqual(len([c for c in calls if "cargo install --locked kani-verifier" in c]), 1, calls)
         self.assertIn("cargo kani --version", calls[-1])
         self.assertFalse([c for c in calls if " test -w " in c], "setup went on after the proof failed")
+
+    def test_remote_49_setup_installs_quint_for_the_builder_as_root(self):
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        home = self.dir / "builder-home"
+        calls = self.calls()
+        quint = re.search(r"^QUINT=(\S+)$", self.sent.read_text(), re.M).group(1)
+        self.assertEqual(quint, "0.33.1")
+        [install] = [c for c in calls if "npm install" in c]
+        self.assertIn(f"npm install -g --prefix /usr/local/lib/quint/{quint} @informalsystems/quint@{quint}", install)
+        self.assertTrue(install.startswith("-n env npm_config_cache="), install)
+        self.assertNotIn("-u oby-builder", install)
+        cache = install.removeprefix("-n env npm_config_cache=").split()[0]
+        self.assertFalse(cache.startswith((str(home), str(self.dir / ".npm"))), install)
+        self.assertIn(f"-n rm -rf {cache}", calls)
+        self.assertIn(f"-n ln -sfn /usr/local/lib/quint/{quint}/bin/quint /usr/local/bin/quint", calls)
+        [warm] = [c for c in calls if c.startswith(f"-n env HOME={home} bwrap ")]
+        self.assertIn(" --unshare-pid ", warm)
+        self.assertIn(" --die-with-parent ", warm)
+        self.assertIn("quint run --max-steps=3 --invariant=", warm)
+        self.assertIn("quint verify --max-steps=3 --invariant=", warm)
+        self.assertFalse([c for c in calls if "-u oby-builder" in c and "npm" in c], calls)
+        kani = next(i for i, c in enumerate(calls) if "kani-verifier" in c)
+        installed = calls.index(install)
+        given = calls.index(f"-n chown -R -h root:root {home}/.quint")
+        tightened = next(i for i, c in enumerate(calls) if "tighten_writable" in c)
+        self.assertLess(kani, installed, calls)
+        self.assertLess(installed, calls.index(warm), calls)
+        self.assertLess(calls.index(warm), given, calls)
+        self.assertLess(given, tightened, calls)
+        self.assertIn(f"-n find {home} -mindepth 1 -maxdepth 1 ! -name .ssh ! -name .cargo ! -name .rustup "
+                      "! -name .kani ! -name .quint -exec rm -rf {} +", calls)
+        # The builder's proof: no network, its own process space, / read-only and a scratch /tmp.
+        [proof] = [c for c in calls if c.startswith("-n -u oby-builder -H bwrap ")]
+        self.assertLess(tightened, calls.index(proof), calls)
+        for word in ("--unshare-net", "--unshare-pid", "--die-with-parent", "--ro-bind / /", "--tmpfs /tmp",
+                     "java -version", "quint --version", "quint typecheck", "quint run --invariant=",
+                     "quint verify --max-steps=3 --invariant="):
+            self.assertIn(word, proof)
+        self.assertNotIn("--bind / /", proof.replace("--ro-bind / /", ""))
+        self.assertTrue(proof.split(" _ ", 1)[1].startswith(f"{quint} "), proof)
+        checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in calls if " test -w " in c]
+        self.assertIn(f"{home}/.quint", checked)
+        self.assertLess(calls.index(proof), calls.index(f"-n -u oby-builder -H test -w {home}"), calls)
+        lines = done.stdout.splitlines()
+        said = lines.index(f"setup.sh: oby-builder has quint {quint} and java 21.0.9")
+        self.assertTrue(lines[said + 1].startswith("setup.sh: oby-builder is set up: no sudo"), done.stdout)
+
+    def test_remote_49_setup_stops_when_quint_fails_for_the_builder(self):
+        (self.dir / "quint-fails").touch()
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+        self.assertNotIn("setup.sh: oby-builder has quint", done.stdout)
+        calls = self.calls()
+        self.assertTrue(calls[-1].startswith("-n -u oby-builder -H bwrap --unshare-net "), calls[-1])
+        self.assertIn("quint verify", calls[-1])
+        self.assertFalse([c for c in calls if " test -w " in c], "setup went on after the Quint proof failed")
+
+    def test_remote_49_setup_stops_when_the_builder_can_write_its_quint_folder(self):
+        home = self.dir / "builder-home"
+        (self.dir / "writable").write_text(f"-w {home}/.quint\n")
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertIn(f"setup.sh: oby-builder can still write {home}/.quint", done.stdout.splitlines())
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+
+    def test_remote_49_setup_checks_every_folder_in_the_quint_folder(self):
+        home = self.dir / "builder-home"
+        for name in ("apalache-dist-0.62.4", "rust-evaluator-v0.7.1"):
+            (home / ".quint" / name).mkdir(parents=True)
+        (home / ".quint" / "a-file").touch()
+        (self.dir / "writable").write_text(f"-w {home}/.quint/rust-evaluator-v0.7.1\n")
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        checked = [c.removeprefix("-n -u oby-builder -H test -w ") for c in self.calls() if " test -w " in c]
+        self.assertEqual(checked[-3:], [f"{home}/.quint", f"{home}/.quint/apalache-dist-0.62.4",
+                                        f"{home}/.quint/rust-evaluator-v0.7.1"])
+        self.assertIn(f"setup.sh: oby-builder can still write {home}/.quint/rust-evaluator-v0.7.1",
+                      done.stdout.splitlines())
 
 
 class Pins(unittest.TestCase):
@@ -773,6 +859,23 @@ class Pins(unittest.TestCase):
         self.assertEqual(len(arrays), 1, f"setup.sh needs exactly one `local packages=(...)`: {arrays}")
         missing = sorted(wanted - set(arrays[0].split()))
         self.assertEqual(missing, [], f"ci.yml installs {missing} with apt-get, and setup.sh doesn't")
+
+
+class SeedModel(unittest.TestCase):
+    """REMOTE-52: the seed design model says what code it models and what a model can't check."""
+
+    def test_remote_52_the_seed_model_names_what_it_models(self):
+        text = MODEL.read_text()
+        self.assertRegex(text, r"(?m)^module job_race_dev \{$")
+        self.assertRegex(text, r"(?m)^\s*val noLostRetry = ")
+        self.assertRegex(text, r"(?m)^\s*val noRetriedJobEverFinishes = ")
+        header = text.split("module job_race_dev", 1)[0]
+        self.assertTrue(header.strip() and all(line.startswith("//") for line in header.strip().splitlines()), header)
+        for word in ("core/crates/obid/src/jobs.rs", "work()", "_ if stopped", "core/crates/obid/src/job/lifecycle.rs",
+                     "NextRound", "end_done", "TASKS-22", "JOBSTATE-18", "12 steps", "violated",
+                     "the design, not that jobs.rs implements it"):
+            self.assertIn(word, " ".join(line.removeprefix("//").strip() for line in header.splitlines()), word)
+        self.assertNotRegex(header, r"\.rs:\d", "the header names code by line number")
 
 
 class Tighten(unittest.TestCase):
