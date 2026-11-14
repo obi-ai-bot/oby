@@ -647,7 +647,9 @@ pub fn resolve_bin(bin: &str) -> Option<PathBuf> {
 /// `obid __session -- <argv>` does ([`crate::sandbox::SESSION`]), so that a sandboxed process has
 /// no controlling terminal, and its process group (its id) holds everything it starts. Returns only
 /// when it couldn't: then nothing ran. With [`NICE`] in its environment, it runs at that nice, and
-/// the program doesn't see it.
+/// the program doesn't see it. On Linux it runs at an `oom_score_adj` of at least 500, never
+/// lowered, so the kernel's OOM kill takes it and what it starts before obid (LINUX-2); a score it
+/// can't read or write leaves it as it is.
 pub fn exec_in_own_session(argv: &[OsString]) -> std::io::Error {
     use std::os::unix::process::CommandExt;
     let Some((program, args)) = argv.split_first() else {
@@ -659,6 +661,18 @@ pub fn exec_in_own_session(argv: &[OsString]) -> std::io::Error {
     if let Some(nice) = std::env::var(NICE).ok().and_then(|n| n.parse().ok()) {
         // Raising one's own nice needs no privilege; one obid can't set leaves it as it is.
         let _ = rustix::process::setpriority_process(None, nice);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Raising one's own score needs no privilege either, and everything started inherits it.
+        let score = "/proc/self/oom_score_adj";
+        let read = std::fs::read_to_string(score).ok();
+        if read
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            .is_some_and(|s| s < 500)
+        {
+            let _ = std::fs::write(score, "500");
+        }
     }
     std::process::Command::new(program)
         .args(args)
