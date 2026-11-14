@@ -135,14 +135,14 @@ prove prints the first line, with the job id and round, on stdout.
 ### Feature and status
 
 - **Outcome:** every job whose branch changes Rust under `core/crates/` has its tests' strength measured on the commit its gate passed: cargo-mutants changes that code one small way at a time (`>` to `>=`, a body to a default value) and reruns the package's tests, and a change no test notices is a missed mutant, a test the job could add. The code reviewer and the approver read the result. It is advisory only: it never moves a job, and blocking on it is the owner's word.
-- **Status:** MUTANTS-1 to MUTANTS-11 are **implemented**: `factory/bin/mutants`, tested by `factory/tests/test_mutants.py`, the `cargo mutants` route in `factory/bin/test-run` and cargo-mutants' install in `factory/remote/setup.sh` (task A00-41). Two steps are the orchestrator's: adding `"mutants": {"budget_s": 1200}` to the protected `factory/config.json` (the code uses that default while the key is absent), and running the new `setup.sh` on the gate VM.
+- **Status:** MUTANTS-1 to MUTANTS-12 are **implemented**: `factory/bin/mutants`, tested by `factory/tests/test_mutants.py`, the `cargo mutants` route in `factory/bin/test-run` and cargo-mutants' install in `factory/remote/setup.sh` (tasks A00-41 and A00-43). Two steps are the orchestrator's: adding `"mutants": {"budget_s": 1200}` to the protected `factory/config.json` (the code uses that default while the key is absent), and running the new `setup.sh` on the gate VM.
 - **Scope:** `factory/bin/mutants`, its settings and `round-N/mutants.md`; test-run's route for `cargo mutants`; setup.sh's cargo-mutants pin and install; the factory skill, `reviewer-code` and the approver reading the file. **Out of scope:** any blocking mode, job stage or transition (`factory/bin/job`, `gate`, `route` and the dashboard are unchanged); `factory/config.json`; a nightly or whole-crate run; `.rs` files outside `core/crates/` (`tools/`); excluding `target_os = "macos"` code; fixing the gaps a run finds.
 
 ### Actors and ownership
 
 - **`factory/bin/mutants <job-id>`** runs the step and writes `round-N/mutants.md` and `round-N/mutants.log`. It reads job.json (never writing it or taking its lock), `round-N/checks.md` and the `config.json` beside it, and never modifies the job's worktree. It loads `factory/bin/job` beside it for the config and the job's files, and takes `end` and `KILL_AFTER` from `factory/bin/prove` rather than copying them.
-- **The factory skill** runs it after every passing gate, for every job, and spawns the reviewers once it has ended. Its result never moves the job.
-- **`reviewer-code`** may raise a missed mutant in shipping code the branch changed as a finding: a test to add. **The approver** quotes the `MUTANTS:` line in decision.md and never withholds APPROVE on it alone.
+- **The factory skill** starts it in the background in the same step that spawns the round's reviewers: after a passing gate, or for a `proofs` job after prove sends it to review. Nothing waits for it, and the skill stops a run still going, by its PID, when the job leaves the round. Its result never moves the job.
+- **`reviewer-code`** reads mutants.md if it is there when it looks, and otherwise notes "mutants still running"; it may raise a missed mutant in shipping code the branch changed as a finding: a test to add. **The approver** quotes the `MUTANTS:` line in decision.md, or writes `MUTANTS: not finished`, and never withholds APPROVE on it alone.
 - **The orchestrator** adds the budget to `config.json` on the owner's word and runs `setup.sh` on the VM.
 
 ### What mutants runs
@@ -186,7 +186,8 @@ The run's whole output is appended to `round-N/mutants.log` under a `==== <comma
 
 ### Failures and recovery
 
-- mutants deletes the round's earlier mutants.md before anything else and starts mutants.log empty, so a stopped run never leaves an old one behind.
+- mutants deletes the round's earlier mutants.md and any leftover `mutants.md.tmp` before anything else and starts mutants.log empty, so a stopped run never leaves an old one behind.
+- The result is written to `mutants.md.tmp` and renamed into place, so a reader sees no mutants.md or the whole of it.
 - A call past its budget gets prove's `end()`: SIGTERM by its test-run's PID, then SIGKILL 30 seconds later; test-run stops its own run's session, on the VM too.
 - SIGTERM or SIGINT to mutants ends the test-run it started, by that PID only, removes the scratch copy (`git worktree remove --force`, then `git worktree prune`) and exits 128 + signal, with no mutants.md. The scratch copy is removed the same way however mutants ends.
 - On exit 2, the skill tells the user what it said and goes on without it.
@@ -194,6 +195,7 @@ The run's whole output is appended to `round-N/mutants.log` under a `==== <comma
 ### Invariants and limits
 
 - Advisory: no verdict, count or timeout moves a job, writes job.json or takes its lock.
+- An unfinished or missing run holds nothing: no reviewer, approver or merge waits for it.
 - The run is of the gated commit only: the scratch copy is that commit, and test-run sends nothing uncommitted from the job's worktree.
 - No run is a clean result without cargo-mutants' own result line: a fall-back to a Mac without it, a failed baseline or a missing line is NO RESULT.
 - **Limits.** The Kani-covered rule matches names, not resolved paths: it misses a function a harness reaches only through another call, and can over-match a same-named function elsewhere in the crate. The run covers obid's Linux build, so a missed mutant in code only macOS compiles is noise. The run is budget-bound: a TIMEOUT counts only what was tested before it.
@@ -211,3 +213,4 @@ The run's whole output is appended to `round-N/mutants.log` under a `==== <comma
 - **MUTANTS-9** (implemented). Given missed, TIMEOUT, NO RESULT and SKIPPED runs, then job.json is byte for byte unchanged and no `.lock` file appears in the job's folder. Tests: `test_mutants_9_it_never_writes_job_json_or_takes_its_lock`.
 - **MUTANTS-10** (implemented). Given a worktree touching macOS-only code, then `test-run -- cargo mutants …` goes to a gate VM builder slot, never the Mac worker, and `sh -c "cargo mutants"` stays on this Mac, as for `cargo kani` (REMOTE-48). Tests: `test_mutants_10_a_mutants_run_with_macos_only_changes_goes_to_the_vm`, `test_mutants_10_a_mutants_run_after_another_command_stays_on_this_mac`, `test_mutants_10_a_mutants_run_goes_to_the_vm_not_the_mac_worker`.
 - **MUTANTS-11** (implemented). Given setup.sh's host script, then it holds `MUTANTS=27.1.0`; root installs `cargo install --locked cargo-mutants --version 27.1.0` into the builder's `.cargo` after its toolchain and before the tightening, unless `cargo install --list` holds `cargo-mutants v27.1.0:`; no `oby-builder` call installs it; one builder call checks `cargo mutants --version` is `cargo-mutants 27.1.0` with a Cargo home of its own, and setup stops before `is set up` when it isn't; `--pins` prints no cargo-mutants line. Tests: `test_mutants_11_setup_installs_cargo_mutants_for_the_builder_as_root`, `test_mutants_11_setup_stops_when_cargo_mutants_fails_for_the_builder`, `test_setup_pins_are_ci_yml_s`.
+- **MUTANTS-12** (implemented). Given a run that writes mutants.md, then a reader at any moment sees either no mutants.md or the whole of it, and a `mutants.md.tmp` left from a stopped run is gone after the next run. Tests: `test_mutants_12_mutants_md_appears_whole_by_a_rename`.
