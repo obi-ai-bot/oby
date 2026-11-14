@@ -44,10 +44,10 @@ describe('retired routes', () => {
     expect(count('doc-without-route').map(c => c.message)).toEqual([]);
     expect(count('gone-but-routed').map(c => c.message)).toEqual([]);
     const text = [
-      'A phone once paired a Watch with `POST /v1/watches`, and `GET /v1/nowhere` was promised.',
+      'A phone once sent its speech to `POST /v1/speech`, and `GET /v1/nowhere` was promised.',
       'A turn reaches `POST /v1/agent/mcp/conversation-<id>`.',
       '## Routes obid does not serve',
-      '- `POST /v1/watches` (gone 2026-11-02): the Swift runner\'s.',
+      '- `POST /v1/speech` (gone 2026-11-02): the Swift runner\'s.',
       '- `GET /v1/status` (gone 2026-11-02): listed by mistake.',
       '## After the list',
       'Then `PATCH /v1/elsewhere`.',
@@ -63,9 +63,6 @@ describe('retired routes', () => {
 
   it('retired_9_the_swift_client_calls_only_served_routes', () => {
     const exceptions = [
-      'GET /v1/watches', // R03-07, the Watch's pairing
-      'POST /v1/watches', // R03-07, the Watch's pairing
-      'DELETE /v1/watches/{}', // R03-07, the Watch's pairing
       'POST /v1/jobs/{}/proposals/{}/file', // the task page's file-a-proposal button: removing it changes a screen, its own task
     ];
     const swift = count('call-without-route').filter(c => config.swiftClient.some(d => c.source?.file.startsWith(`${d}/`)) && c.source!.file.endsWith('.swift'));

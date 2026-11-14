@@ -16,7 +16,7 @@ obi/
 ├── apps/
 │   ├── mac/         Swift: window, menu bar, approvals, character; a thin client of obid
 │   ├── ios/         Swift thin client
-│   ├── watch/       Swift thin client
+│   ├── watch/       Swift thin client: removed 2026-11-13, not built
 │   └── android/     Kotlin thin client, later
 ├── character/       The three.js mascot, unchanged
 ├── mcp/             The Oby MCP server
@@ -32,7 +32,7 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
 | `Engine/`, `Runner/`, `RunnerTests/` | deleted | The specification `core/` was ported from; deleted with the Swift Mac app by the owner's decision of 2026-11-02 (git history has them). `Package.swift` stays, for `oby-mcp`. |
 | `Mac/`, `MacTests/` | deleted | The Swift Mac app, deleted by the owner's decision of 2026-11-02: the Mac's app is `apps/electron/`. |
 | `iOS/`, `iOSTests/`, `LiveActivity/` | `apps/ios/` | |
-| `Watch/` | `apps/watch/` | |
+| `Watch/` | `apps/watch/`, removed | Not built since the Watch app was removed on 2026-11-13 (git history has it). |
 | `Shared/` | `apps/shared/` | Swift code the Apple shells share. |
 | `Oby.xcodeproj`, `Config/`, `Icon/` | under `apps/` | The restructure decides the exact paths; the Apple apps must keep building. |
 | `Android/` | `apps/android/` | |
@@ -45,9 +45,9 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
 ## 2. The boundary: obid and the shells
 
 ```
- apps/electron  apps/ios  apps/watch  mcp/
-     │             │          │        │
-     └─────────────┴──────────┼────────┘
+ apps/electron  apps/ios     mcp/   (apps/watch: removed 2026-11-13)
+     │             │          │
+     └─────────────┴──────────┤
                               │  HTTP + SSE: docs/runner-api.md
                             obid  ── Obi-to-Obi client ──►  Sphere (obi-sphere/server)
                               │
@@ -59,7 +59,7 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
 - **The runner API is the only way in.** Every shell talks to `obid` over HTTP and the `GET /v1/events` stream, as the apps always have. No shell links the engine, imports its types or reads its database; `obid` serves the same API, so the Mac, iPhone and Watch apps run against it with no change to their code. Whether a later version adds an in-process binding (UniFFI) is an open decision; Phase 1 is HTTP only.
 - **Change the API in the same pull request as the code** (AGENTS.md). New endpoints that only `obid` serves go in the "obid only" section of runner-api.md.
 - **Loopback and a token.** `obid` listens on 127.0.0.1 only, checks `Host`, and answers only requests with its API token; remote devices reach it through the gateway's allowlist, as today. On macOS it listens on `127.0.0.1:7777` unless its configuration says otherwise: the address the Mac app already uses for a runner on the same Mac (runner-api.md, "Reaching it" and "obid only: configuration"). The Oby app's own Swift runner (its login item) listens there too, so one Mac runs one of the two: when the address is taken, `obid` doesn't start and says why in one line; it never moves to another port by itself. Its API token is only ever in `home/api-token`, never in its environment or arguments (5.3).
-- **The Swift clients on `obid`.** `core/crates/obid/tests/swift_client.rs` builds the iPhone's and the Watch's own client code (`apps/shared/Runner.swift` and what it needs) and drives it against a running `obid`, so an API change those apps can't read fails there.
+- **The Swift clients on `obid`.** `core/crates/obid/tests/swift_client.rs` builds the iPhone's own client code (`apps/shared/Runner.swift` and what it needs) and drives it against a running `obid`, so an API change those apps can't read fails there.
 
 ## 3. Inside core/
 
