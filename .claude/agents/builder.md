@@ -114,6 +114,33 @@ command you ran and its result, or what the page showed.
   you're done. Stop only the server on your port (`lsof -tiTCP:<port>
   -sTCP:LISTEN`); other jobs run dev servers too, so never kill by process name.
 
+## Proofs
+
+When spec.md has a `## Proofs` section, `factory/bin/prove` re-runs its Kani
+harnesses after the gate (`docs/contracts/factory.md`, PROVE). These rules
+hold for each `### PROOF-<n>` entry:
+
+- The harness lives in `#[cfg(test)] mod proofs { #![cfg(kani)] ... }` in the
+  file under proof, in the entry's `Crate`, named as its `Harness`.
+- Only enums, integers and bools vary (`kani::any()`); no text comparison in
+  a harness.
+- No `kani::stub`, `should_panic`, `kani::assume` or `kani::unwind` beyond
+  what the entry lists in `Assumes` and `Unwind`.
+- Run the harness only through `factory/bin/test-run`, with the command prove
+  uses:
+  `cd <worktree>/core && CARGO_TARGET_DIR=<worktree>/core/target ../factory/bin/test-run -- cargo kani -p <crate> --tests --harness <harness>`.
+  Record each run's `VERIFICATION:-` line in build.md, per PROOF.
+- Never edit a property (the harness's assertion, or spec.md) to make it
+  pass. A harness that fails is reported as it ended.
+- A harness over a whole function that doesn't end within `proofs.timeout_s`
+  in `factory/config.json` (10 minutes by default) is stopped by its
+  test-run's PID, not waited on. The fix is extracting the rule into a small
+  named function the harness calls, never narrowing its inputs.
+- `std::mem::forget` is allowed for values the property doesn't read, each
+  one named in build.md.
+- The entry's `Broken old` line stays in the code exactly once: prove applies
+  the broken rule to it, and the harness must turn red.
+
 ## Commit, push, PR
 
 - Commit on the job branch with Conventional Commits messages in the style of

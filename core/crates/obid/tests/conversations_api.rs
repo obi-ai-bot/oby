@@ -104,8 +104,9 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
             .keys()
             .map(String::as_str)
             .collect();
-        // With `talkedOn`, once it has answered (docs/contracts/conversation-agent.md).
-        assert_eq!(keys.len(), 9, "{conversation}");
+        // With `talkedOn`, once it has answered (docs/contracts/conversation-agent.md), and
+        // `revision` (EVENTS-7).
+        assert_eq!(keys.len(), 10, "{conversation}");
         assert_eq!(conversation["talkedOn"], "stub");
         assert_eq!(conversation["tasks"], json!([]));
         assert_eq!(conversation["folders"], json!([]));
@@ -277,13 +278,19 @@ fn conversations_are_listed_paged_renamed_pinned_and_deleted() {
         404
     );
 
-    // Delete.
+    // Delete: its event carries the revision after its last (EVENTS-7).
+    let listed = conversations(&obid, "");
+    let last = &listed.iter().find(|l| l["id"] == c.as_str()).unwrap()["revision"];
+    let after = last.as_u64().unwrap() + 1;
     let deleted = call(&obid, "DELETE", &format!("/v1/conversations/{c}"), None);
     assert_eq!(deleted.status, 204, "{}", deleted.text);
     let gone = events_named(&events, "conversation", 10, |got| {
         got.last().is_some_and(|c| c["deleted"] == true)
     });
-    assert_eq!(gone.last().unwrap(), &json!({"id": c, "deleted": true}));
+    assert_eq!(
+        gone.last().unwrap(),
+        &json!({"id": c, "deleted": true, "revision": after})
+    );
     assert_eq!(ids(&conversations(&obid, "")), [&b, &a]);
     assert_eq!(
         call(&obid, "GET", &format!("/v1/conversation?id={c}"), None).status,
@@ -525,13 +532,14 @@ fn the_single_thread_from_before_becomes_the_first_conversation() {
         [
             json!({"id": id, "title": "Review oby PR #33", "pinned": false,
                 "created": "2026-10-11T09:12:00Z", "lastActivity": "2026-10-11T09:13:00Z",
-                "cursor": "0-1", "tasks": [], "folders": []})
+                "cursor": "0-1", "tasks": [], "folders": [], "revision": 0})
         ]
     );
     let moved = turns(&obid, "");
     let mut expected = old_thread();
     for turn in expected.as_array_mut().unwrap() {
         turn["conversation"] = json!(id);
+        turn["revision"] = json!(0);
     }
     assert_eq!(Value::Array(moved.clone()), expected);
     assert_eq!(turns(&obid, &format!("?id={id}")), moved);
@@ -777,7 +785,8 @@ fn past_200_conversations_the_oldest_unpinned_are_forgotten() {
         got.iter().any(|c| c["deleted"] == true)
     });
     assert!(
-        heard.contains(&json!({"id": ids[4], "deleted": true})),
+        // Kept before revisions, at 0: the one after it (EVENTS-7).
+        heard.contains(&json!({"id": ids[4], "deleted": true, "revision": 1})),
         "{heard:?}"
     );
     // Carrying on an old one doesn't forget any.
@@ -852,6 +861,41 @@ fn failed_turn_write_does_not_change_the_existing_conversation() {
     let mut restarted = start(&folder.0, &config, None);
     assert_eq!(turns(&restarted, &query), after);
     restarted.stop();
+}
+
+/// EVENTS-8: the owner's words come in a `turn` at revision 1, each `turnDelivery` of that turn
+/// is one more than the last, and `GET /v1/conversation` lists the last.
+#[test]
+fn events_8_turn_revision_goes_up() {
+    let folder = Folder::new("events-8");
+    let (obid, _) = harness_obid(&folder);
+    let events = follow_events(&obid);
+    let id = plan(&obid, json!({"said": "SAY Fine.", "new": true}))["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let heard = heard_until(&events, 30, |heard| {
+        heard
+            .iter()
+            .any(|(name, data)| name == "turnDelivery" && data["delivery"]["status"] == "answered")
+    });
+    let own = heard
+        .iter()
+        .find(|(name, data)| name == "turn" && data["who"] == "user")
+        .map(|(_, data)| data.clone())
+        .unwrap_or_else(|| panic!("{heard:?}"));
+    assert_eq!(own["revision"], 1, "{own}");
+    let moves: Vec<&Value> = heard
+        .iter()
+        .filter(|(name, data)| name == "turnDelivery" && data["id"] == own["id"])
+        .map(|(_, data)| &data["revision"])
+        .collect();
+    assert!(!moves.is_empty(), "{heard:?}");
+    let counted: Vec<Value> = (2..moves.len() as u64 + 2).map(|n| json!(n)).collect();
+    assert_eq!(moves, counted.iter().collect::<Vec<_>>(), "{heard:?}");
+    let listed = turns(&obid, &format!("?id={id}"));
+    let kept = listed.iter().find(|t| t["id"] == own["id"]).unwrap();
+    assert_eq!(&kept["revision"], *moves.last().unwrap(), "{kept}");
 }
 
 /// HOME-3: the owner's words a conversation couldn't keep on disk answer `500`, the apps hear of

@@ -11,8 +11,10 @@
   },
   "surface_reviewers": {
     "ui": { "ux": "sonnet", "ui": "haiku" },
-    "security": { "security": "opus" }
+    "security": { "security": "opus" },
+    "proofs": { "proofs": "opus" }
   },
+  "proofs": { "mode": "advisory", "timeout_s": 600 },
   "protected_paths": [
     "factory/checks.sh",
     "factory/config.json"

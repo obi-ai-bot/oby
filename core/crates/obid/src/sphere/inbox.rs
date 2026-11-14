@@ -154,6 +154,33 @@ pub mod action {
     /// Post in the Sphere's room as the owner's jobs start and end (ROOMS-17,
     /// docs/contracts/rooms.md): `target` empty, `payload` null.
     pub const SHARE_ROOM: &str = "share_room";
+    /// Trust a member's changed owner key (SPHERE-8, crate::sphere::pins): `target` the owner id,
+    /// `payload` `{"owner", "fingerprint"}`, the new key's fingerprint.
+    pub const TRUST_KEY: &str = "trust_key";
+}
+
+/// Oby's ask to trust `owner`'s changed owner key (SPHERE-8): obid's own fixed words with only the
+/// owner id and the new key's fingerprint, so nothing the Sphere or a card says goes on the card.
+pub fn trust_key_item(owner: &str, fingerprint: &str, now: i64) -> Item {
+    let mut item = confirm_item(
+        "",
+        format!("New key for {owner}: compare with them ({fingerprint})"),
+        // Home's card shows the title on one line: the fingerprint shows whole here.
+        format!(
+            "{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
+        ),
+        Confirmed {
+            action: action::TRUST_KEY.into(),
+            target: owner.into(),
+            payload: json!({"owner": owner, "fingerprint": fingerprint}),
+        },
+        now,
+    );
+    item.details = Some(vec![
+        format!("Trusts {fingerprint} as {owner}'s owner key and brings them back."),
+        format!("Keeps {owner} out until you trust a key of theirs."),
+    ]);
+    item
 }
 
 /// A `confirm` item: `title` says exactly what `Confirm` does, `confirmed` is what obid carries
@@ -419,6 +446,10 @@ pub struct Item {
     /// (crate::watch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<Box<Value>>,
+    /// One more each time obid sends it changed (an `inbox` event), as a job's `revision`
+    /// (EVENTS-9). Kept in its file.
+    #[serde(default)]
+    pub revision: u64,
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -444,6 +475,13 @@ pub fn arrival() -> u64 {
 }
 
 impl Item {
+    /// A copy to keep and send, one revision on: taken under the lock it changed under, as
+    /// [`crate::job::Job::revised`].
+    pub fn revised(&mut self) -> Item {
+        self.revision += 1;
+        self.clone()
+    }
+
     /// The order items arrived in: `arrived`, or for an item without it the start of its second.
     pub fn arrival_order(&self) -> u64 {
         self.arrived
@@ -516,6 +554,7 @@ impl Item {
             "happened": null,
             "why": null,
             "obi": self.obi,
+            "revision": self.revision,
         });
         if let Some(plugin) = &self.plugin {
             shown["plugin"] = plugin.clone();

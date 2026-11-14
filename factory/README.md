@@ -1,8 +1,9 @@
 # The software factory
 
 `/factory run` in Claude Code, from the repository root, builds the roadmap's tasks one pull request each:
-intake → spec → build → gate → review → approve. How to run it and what each piece does:
-`.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
+intake → spec → build → gate → prove → review → approve, where only a job whose intake names the `proofs`
+surface must pass through `prove`, and every other job may still go from gate straight to review. How to run it
+and what each piece does: `.claude/skills/factory/SKILL.md`. The roadmap and its 180 tasks: `queue/README.md`.
 
 ```
 config.json     concurrency, rounds, the active sprint, routing, protected paths, prices
@@ -12,6 +13,9 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 the gate VM and the macOS-only part on the Mac, falling back to the Mac; with `mac_worker` set too, that
                 macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; `gate --idle`
                 deallocates the idle VM (job queue runs it)
+bin/prove       re-runs the Kani harnesses a job's spec.md lists under `## Proofs` on the commit its gate passed, through
+                bin/test-run, checks each can fail on its declared broken rule and that the branch adds nothing that
+                games them → round-N/proofs.md; advisory by default (docs/contracts/factory.md, PROVE)
 bin/route       risk + surfaces → the job's reviewers and models
 bin/test-run    a builder's or approver's own test, clippy or build run at nice 15, half the cores; only runs that can
                 build Rust or Xcode code take turns on its own lock, other runs start at once; it refuses a run whose
