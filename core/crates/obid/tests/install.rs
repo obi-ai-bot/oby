@@ -550,6 +550,34 @@ fn the_systemd_unit_runs_obid_serve_with_the_config_and_survives_a_reboot() {
     }
 }
 
+/// LINUX-1: the unit caps obid and what it started at 90% of memory, keeps the service when the
+/// kernel kills one of them, and makes obid the kernel's last choice.
+#[test]
+fn linux_1_the_unit_protects_obid() {
+    let rig = Rig::linux("oom");
+    let out = rig.install(&[]);
+    assert!(out.status.success(), "{}", text(&out));
+    let unit = std::fs::read_to_string(rig.unit()).unwrap();
+    let lines: Vec<&str> = unit.lines().filter(|l| !l.starts_with('#')).collect();
+    let service = lines.iter().position(|l| *l == "[Service]").expect(&unit);
+    let install = lines.iter().position(|l| *l == "[Install]").expect(&unit);
+    for setting in ["MemoryMax=90%", "OOMPolicy=continue", "OOMScoreAdjust=-500"] {
+        let at = lines.iter().position(|l| *l == setting);
+        assert!(
+            at.is_some_and(|at| service < at && at < install),
+            "{setting} under [Service]: {unit}"
+        );
+    }
+    if let Some(analyze) = find_tool("systemd-analyze") {
+        let check = Command::new(analyze)
+            .args(["--user", "verify"])
+            .arg(rig.unit())
+            .output()
+            .unwrap();
+        assert!(check.status.success(), "{}", text(&check));
+    }
+}
+
 #[test]
 fn when_lingering_cant_be_turned_on_it_says_the_command_and_still_installs() {
     let rig = Rig::linux("linger");

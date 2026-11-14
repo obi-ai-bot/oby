@@ -82,10 +82,15 @@ RestartSec=5
 TimeoutStopSec=15
 # Stopping it ends everything it started.
 KillMode=control-group
+MemoryMax=90%
+OOMPolicy=continue
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=default.target
 ```
+
+The last three lines keep a runaway build from taking obid down ([contracts/linux-host.md](contracts/linux-host.md)). `MemoryMax=90%` caps obid and everything it started at 90% of the machine's memory. `OOMPolicy=continue` keeps the service running when the kernel kills one of its processes. `OOMScoreAdjust=-500` makes obid the kernel's last choice, where your user manager allows it, and obid starts its agents and checks at 500, so they go first. Running the installer again (an update) rewrites the unit, so an existing install gets these lines that way.
 
 **The Mac service** is a launch agent: `RunAtLoad`, and `KeepAlive` when it exits with an error, with its output in `~/Library/Logs/obid.log`. It starts when you log in.
 
