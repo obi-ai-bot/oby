@@ -9,7 +9,8 @@ owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). 
 the owner's MacBook Pro, for the macOS part ("The second Mac", below), off until the owner adds `mac_worker`.
 Task A00-19 made the VM's SSH rule follow the Mac's IP and its idle stop count only the VM's uses. Task A00-31
 sent builders' heavy Rust runs to the VM, in builder slots of their own ("Builders' runs", below), off until
-the owner sets `builder_slots`. The scenarios are [REMOTE-1 to 31](contracts/remote-gate.md).
+the owner sets `builder_slots`; A00-33 kept a builder run from holding a gate's lock, keeping a login or
+steering a later run. The scenarios are [REMOTE-1 to 34](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -27,7 +28,10 @@ the owner sets `builder_slots`. The scenarios are [REMOTE-1 to 31](contracts/rem
 - Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
   host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
   slots (`factory/remote/tighten.sh`), checks `oby-check-blok` with origin/dev's own `scripts/oby-check.sh`,
-  stops naming any path still writable by others, and prints their modes. Ubuntu's default umask (0002)
+  stops naming any path still writable by others, and prints their modes. `/srv/oby` itself is `0700`, the
+  ssh user's alone, and the gates' lock files `0600` ([REMOTE-32](contracts/remote-gate.md)); `oby-builder`'s
+  home (`0755`), `.ssh` (`0755`), `authorized_keys` (`0644`) and toolchain are root's
+  ([REMOTE-33, 34](contracts/remote-gate.md)). Ubuntu's default umask (0002)
   had left `~/.cargo`, `~/.cargo/bin` and `oby-check-blok` group-writable, so the check refused its tool
   (A00-09's gate); on 2026-11-13 the live VM was fixed by hand (`chmod go-w` on those three paths).
 
@@ -287,7 +291,7 @@ gate runs it, through `factory/checks.sh` under the check lock:
 
 The Mac's load sat at 31 to 37 on 10 cores with builders queued one at a time behind `test-run`'s lock while
 the VM idled between gates. Now `factory/bin/test-run` sends a heavy run that doesn't need macOS to the VM,
-with the builder's command line unchanged (REMOTE-22 to 31):
+with the builder's command line unchanged (REMOTE-22 to 34):
 
 - **Where it goes.** The gate's own rule, imported from `factory/bin/gate`, never copied: a Swift, Xcode or
   whole-check run, a worktree whose changes against its base touch a file in `MACOS_ONLY` or naming
@@ -297,16 +301,25 @@ with the builder's command line unchanged (REMOTE-22 to 31):
   SHA of the worktree's tree written from an index of its own (nothing gitignored), and on ssh's standard input
   `git diff --binary --full-index` between them, after gitleaks with the main checkout's `.gitleaks.toml`
   passed it. No environment, `CARGO_TARGET_DIR`, token or login.
-- **On the VM.** As `oby-builder`, a user with no sudo that `setup.sh` makes, with its own toolchain and
-  `/srv/oby-builder`: `oby-remote-gate --run` takes one of `builder_slots` slots, never a gate's, so a gate
-  never waits on a builder; applies the diff to the base, checks the tree's SHA, touches every file under
+- **On the VM.** As `oby-builder`, a user with no sudo that `setup.sh` makes, with `/srv/oby-builder` and a
+  toolchain root installed in its home; its home, `.ssh`, `authorized_keys` and toolchain are root's, so a run
+  can't add a key or change a later run's tools, and `/srv/oby` (`0700`) is closed to it, so it can't hold a
+  gate's lock: `oby-remote-gate --run` takes one of `builder_slots` slots, never a gate's, so a gate never
+  waits on a builder; empties the slot of all but its lock and `target` and the builder root of all but its
+  clone, its lock and the slots; writes the clone's settings afresh and runs every git call with hooks off;
+  adds the worktree afresh, applies the diff to the base, checks the tree's SHA, touches every file under
   `core/` and `tools/` (A00-23's rule, so another worktree's build in the slot's `target` never stands in for
   this one's, while dependencies stay built), and runs the command at nice 15, offline, with the slot's own
-  Cargo folder and `cores / (slots + builder_slots)` jobs.
+  Cargo build folder, a Cargo home of the slot's own (`CARGO_HOME=<slot>/cargo`, emptied with it, so `cargo
+  fetch` downloads the crates each run) and `cores / (slots + builder_slots)` jobs. What it leaves open (two
+  runs at once share one user, the kept `target`, processes or `cron` jobs that outlive a run, the clone's
+  objects, `/tmp`, the network during `cargo fetch`) is the contract's known-limits list; no merge depends on
+  a builder's result, since the gate runs everything again as another user.
 - **Fallback.** Anything before `running in builder slot <N>` (the VM unreachable after 3 minutes, no builder
   user, every builder slot busy for 10 minutes) runs it here exactly as before, with one `fell back to this
   Mac:` line. After it, the VM's exit code is the verdict. A stop or a dropped connection frees the slot.
-- **Turning it on.** Run `factory/remote/setup.sh oby-gate` again, then add `"slots": 4, "builder_slots": 8`
+- **Turning it on.** Run `factory/remote/setup.sh oby-gate` again (after A00-33 merges too, with no builder
+  run going: it makes `/srv/oby` `0700` and reinstalls `oby-builder`'s toolchain as root), then add `"slots": 4, "builder_slots": 8`
   (on the 64-core VM) to `remote_gate` in `factory/config.json`. Until then nothing changes.
 
 ## Still to build
