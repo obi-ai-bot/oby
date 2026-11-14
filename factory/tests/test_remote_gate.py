@@ -645,7 +645,7 @@ class SetupBuilder(unittest.TestCase):
             self.assertFalse(re.search(r"rustup|curl|chmod|tighten|install", words), call)
             self.assertTrue(words.startswith(("git clone ", "git -C /srv/oby-builder/repo.git ", "bash -c set -euo")),
                             call)
-        proof = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ")]
+        proof = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ") and "cargo kani --version" in c]
         self.assertEqual(len(proof), 1, calls)
         self.assertIn('export CARGO_HOME="$scratch/cargo"', proof[0])
         for word in ("cargo --version", "rustc --version", "mktemp -d"):
@@ -707,7 +707,7 @@ class SetupBuilder(unittest.TestCase):
         self.assertLess(rust, installed, calls)
         self.assertLess(installed, given, calls)
         self.assertLess(given, tightened, calls)
-        [proof] = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ")]
+        [proof] = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c ") and "cargo kani --version" in c]
         for word in ("cargo kani --version", "CARGO_NET_OFFLINE=true", "VERIFICATION:- SUCCESSFUL", "#[kani::proof]",
                      "kani::any()"):
             self.assertIn(word, proof)
@@ -725,6 +725,44 @@ class SetupBuilder(unittest.TestCase):
         self.assertEqual(len([c for c in calls if "cargo install --locked kani-verifier" in c]), 1, calls)
         self.assertIn("cargo kani --version", calls[-1])
         self.assertFalse([c for c in calls if " test -w " in c], "setup went on after the proof failed")
+
+    def test_mutants_11_setup_installs_cargo_mutants_for_the_builder_as_root(self):
+        self.assertIn("\nMUTANTS=27.1.0\n", self.sent.read_text())
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        home = self.dir / "builder-home"
+        calls = self.calls()
+        [install] = [c for c in calls if "cargo install --locked cargo-mutants --version" in c]
+        self.assertTrue(install.startswith(f"-n env RUSTUP_HOME={home}/.rustup CARGO_HOME={home}/.cargo bash -c "),
+                        install)
+        self.assertTrue(install.endswith(" _ 27.1.0"), install)
+        self.assertIn('grep -qx "cargo-mutants v$1:"', install)
+        self.assertFalse([c for c in calls if "-u oby-builder" in c and re.search(r"install.*cargo-mutants", c)],
+                         calls)
+        rust = next(i for i, c in enumerate(calls) if "rustup toolchain install" in c)
+        tightened = next(i for i, c in enumerate(calls) if "tighten_writable" in c)
+        self.assertLess(rust, calls.index(install), calls)
+        self.assertLess(calls.index(install), tightened, calls)
+        [check] = [c for c in calls if c.startswith("-n -u oby-builder -H bash -c set -euo")
+                   and "cargo mutants --version" in c]
+        self.assertIn('export CARGO_HOME="$scratch/cargo"', check)
+        self.assertIn('== "cargo-mutants $1"', check)
+        self.assertTrue(check.endswith(" _ 27.1.0"), check)
+        self.assertIn("setup.sh: oby-builder is set up", done.stdout)
+
+    def test_mutants_11_setup_stops_when_cargo_mutants_fails_for_the_builder(self):
+        # A sudo that fails only the builder's cargo-mutants check, and is the stand-in above for everything else.
+        (self.bin / "sudo").rename(self.bin / "stand-in-sudo")
+        self.tool("sudo", f'case "$*" in *"-u oby-builder -H bash -c "*"cargo mutants --version"*)\n'
+                          f'    printf "%s\\n" "$*" | tr "\\n" " " >>"{self.log}"; echo >>"{self.log}"; exit 1;;\n'
+                          f'esac\nexec "{self.bin}/stand-in-sudo" "$@"')
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
+        calls = self.calls()
+        self.assertIn("cargo mutants --version", calls[-1])
+        self.assertEqual(len([c for c in calls if "cargo kani --version" in c]), 1, calls)
+        self.assertFalse([c for c in calls if " test -w " in c], "setup went on after the check failed")
 
 
 class Pins(unittest.TestCase):

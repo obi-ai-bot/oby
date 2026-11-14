@@ -25,8 +25,9 @@
 # made afresh by root (0755) with a root-owned copy of the ssh user's authorized_keys (0644), rustup
 # with the pinned toolchain, rustfmt and clippy installed by root (--no-modify-path; a toolchain the
 # builder owned any part of is installed afresh), and Kani at its pin (cargo-kani in .cargo, its bundle in
-# .kani, its nightly in .rustup) installed by root and given to root, tightened with tighten.sh's rule and
-# proven to run for the builder, Kani offline on a scratch harness; setup stops naming any of its home, keys or toolchain the builder can still write, and
+# .kani, its nightly in .rustup) and cargo-mutants at its own pin (in .cargo), installed by root and given
+# to root, tightened with tighten.sh's rule and proven to run for the builder, Kani offline on a scratch
+# harness, cargo-mutants by its version; setup stops naming any of its home, keys or toolchain the builder can still write, and
 # it can't write /srv/oby. Run it again whenever: what is already at its pin is left as it is. It
 # writes no secret, token, key or login to the host, and changes no sshd setting, firewall or network
 # rule (the builder's authorized_keys holds public keys only). The host part runs under umask 022, and
@@ -64,6 +65,7 @@ node=$(pin node-version)
 gitleaks=$(pin GITLEAKS_VERSION)
 gitleaks_sha=$(pin GITLEAKS_SHA256)
 kani=0.68.0
+mutants=27.1.0
 bwrap=$(sed -nE 's/^[[:space:]]*(bwrap .*[^[:space:]])[[:space:]]*$/\1/p' "$ci" | sort -u)
 if [[ -z "$bwrap" || "$bwrap" == *$'\n'* ]]; then
     echo "setup.sh: $ci needs exactly one bwrap line, the proof bubblewrap works" >&2
@@ -92,6 +94,7 @@ fi' <"$here/oby-remote-gate"
 # nothing it runs reads the script.
 {
     printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap" KANI "$kani"
+    printf '%s=%q\n' MUTANTS "$mutants"
     cat "$here/tighten.sh"
     cat <<'REMOTE'
 # The gates' root (REMOTE-32): the ssh user's alone, 0700 even when it already exists, so no builder run can open
@@ -160,6 +163,15 @@ echo "setup.sh: installing kani $1"
 rm -rf "$KANI_HOME"
 cargo install --locked kani-verifier --version "$1"
 cargo kani setup' _ "$KANI"
+    # cargo-mutants for factory/bin/mutants' runs (A00-41), installed as root into .cargo. Left as it is at its pin.
+    sudo -n env RUSTUP_HOME="$home/.rustup" CARGO_HOME="$home/.cargo" bash -c 'set -euo pipefail
+export PATH="$CARGO_HOME/bin:$PATH"
+if grep -qx "cargo-mutants v$1:" <<<"$(cargo install --list)"; then
+    echo "setup.sh: cargo-mutants $1 already installed"
+    exit 0
+fi
+echo "setup.sh: installing cargo-mutants $1"
+cargo install --locked cargo-mutants --version "$1"' _ "$MUTANTS"
     # tar, run as root, keeps the owners the bundle's archive names: all of it is root's.
     sudo -n chown -R -h root:root "$home/.kani"
     # tighten.sh's own rule for what group or others may write, on its home's toolchain and its root.
@@ -199,6 +211,15 @@ if ! grep "VERIFICATION:- SUCCESSFUL" <<<"$proved"; then
     printf "%s\n" "$proved" "setup.sh: cargo kani did not prove the scratch harness"
     exit 1
 fi' _ "$KANI"
+    # cargo-mutants runs for the builder with a Cargo home of its own, at its pin.
+    as_builder bash -c 'set -euo pipefail
+scratch=$(mktemp -d)
+trap "rm -rf \"\$scratch\"" EXIT
+cd "$scratch"
+export CARGO_HOME="$scratch/cargo" PATH="$HOME/.cargo/bin:$PATH"
+mutants=$(cargo mutants --version)
+printf "%s\n" "$mutants"
+[[ "$mutants" == "cargo-mutants $1" ]] || { echo "setup.sh: cargo mutants is not at $1"; exit 1; }' _ "$MUTANTS"
     for path in "$home" "$home/.ssh" "$home/.ssh/authorized_keys" "$home/.cargo" "$home/.cargo/bin" "$home/.rustup" \
         "$home/.kani" "$home/.kani/kani-$KANI" "$home/.kani/kani-$KANI/bin"; do
         if as_builder test -w "$path"; then writable+=("$path"); fi
