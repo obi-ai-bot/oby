@@ -170,33 +170,12 @@ pub fn prepare_home(config: &Config) -> Result<(), StartError> {
         path: home.clone(),
         source,
     };
-    if home.is_dir() {
-        return keep_private(home).map_err(err);
+    if !home.is_dir() {
+        // `recursive` makes missing parents with the umask's mode; `home` itself gets 0700 even
+        // when it raced into existence another way.
+        store::make_private_dir(home).map_err(err)?;
     }
-    store::make_private_dir(home).map_err(err)?;
-    // `recursive` makes missing parents with the umask's mode; `home` itself gets 0700 even
-    // when it raced into existence another way.
-    keep_private(home).map_err(err)
-}
-
-/// A folder its group or others can reach is made its owner's alone again.
-fn keep_private(folder: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(folder)?.permissions().mode();
-        if mode & 0o077 != 0 {
-            tracing::warn!(
-                "{} was mode {:o}: making it 0700",
-                folder.display(),
-                mode & 0o777
-            );
-            std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = folder;
-    Ok(())
+    store::keep_private(home, 0o700).map_err(err)
 }
 
 /// The cleanup pass (docs/runner-api.md, `cleanup`): [`CLEAN_FIRST`] after obid starts, then
