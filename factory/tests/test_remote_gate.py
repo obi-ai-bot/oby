@@ -525,7 +525,8 @@ class BuilderRun(unittest.TestCase):
 
 class SetupBuilder(unittest.TestCase):
     """REMOTE-30: setup.sh's host script sets up oby-builder with no sudo. A stand-in ssh keeps the script setup.sh
-    sends; its builder function runs against stand-in sudo, id and getent, which record and run nothing."""
+    sends; its builder function runs against stand-in sudo, id and getent, which record and run nothing, and stand-in
+    curl and sha256sum, which record their calls in the same log and download nothing."""
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -546,6 +547,11 @@ class SetupBuilder(unittest.TestCase):
                           f'[ "$5" != test ] || [ "$6 $7" = "$(cat "{self.dir}/writable" 2>/dev/null)" ]')
         self.tool("id", "exit 1")
         self.tool("java", 'echo \'openjdk version "21.0.9" 2025-10-21\' >&2')
+        # curl writes an empty file where -o says; sha256sum keeps what it is asked to check in $dir/sums and fails
+        # when $dir/bad-sum exists.
+        self.tool("curl", f'echo "curl $*" >>"{self.log}"\n: >"$2"')
+        self.tool("sha256sum", f'echo "sha256sum $*" >>"{self.log}"\ncat >>"{self.dir}/sums"\n'
+                               f'[ ! -e "{self.dir}/bad-sum" ]')
         self.tool("getent", f'echo "oby-builder:x:1001:1001::{self.dir}/builder-home:/bin/bash"')
         self.rights("User oby-builder is not allowed to run sudo on oby-gate.")
         done = subprocess.run([str(SETUP)], env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}"),
@@ -741,17 +747,45 @@ class SetupBuilder(unittest.TestCase):
         self.assertEqual(quint, "0.33.1")
         [install] = [c for c in calls if "npm install" in c]
         self.assertIn(f"npm install -g --prefix /usr/local/lib/quint/{quint} @informalsystems/quint@{quint}", install)
+        self.assertTrue(install.endswith(" --ignore-scripts"), install)
         self.assertTrue(install.startswith("-n env npm_config_cache="), install)
         self.assertNotIn("-u oby-builder", install)
         cache = install.removeprefix("-n env npm_config_cache=").split()[0]
         self.assertFalse(cache.startswith((str(home), str(self.dir / ".npm"))), install)
         self.assertIn(f"-n rm -rf {cache}", calls)
         self.assertIn(f"-n ln -sfn /usr/local/lib/quint/{quint}/bin/quint /usr/local/bin/quint", calls)
+        # Apalache and the evaluator: fetched by the ssh user, checked against setup.sh's SHA-256s, unpacked by root.
+        sent = self.sent.read_text()
+        pins = {name: re.search(rf"^{name}=(\S+)$", sent, re.M).group(1)
+                for name in ("QUINT_APALACHE", "QUINT_APALACHE_SHA", "QUINT_EVALUATOR", "QUINT_EVALUATOR_SHA")}
+        self.assertEqual((pins["QUINT_APALACHE"], pins["QUINT_EVALUATOR"]), ("0.62.4", "v0.7.1"))
+        fetched = [c for c in calls if c.startswith("curl ")]
+        self.assertEqual([c.split()[-1] for c in fetched], [
+            "https://github.com/apalache-mc/apalache/releases/download/v0.62.4/apalache.tgz",
+            "https://github.com/quint-co/quint/releases/download/evaluator%2Fv0.7.1/"
+            "quint_evaluator-x86_64-unknown-linux-gnu.tar.gz"])
+        archives = [c.split()[-2] for c in fetched]
+        self.assertEqual((self.dir / "sums").read_text().splitlines(),
+                         [f"{pins['QUINT_APALACHE_SHA']}  {archives[0]}", f"{pins['QUINT_EVALUATOR_SHA']}  {archives[1]}"])
+        for name in ("QUINT_APALACHE_SHA", "QUINT_EVALUATOR_SHA"):
+            self.assertRegex(pins[name], r"^[0-9a-f]{64}$")
+        checked_sums = calls.index("sha256sum -c -")
+        apalache, evaluator = f"{home}/.quint/apalache-dist-0.62.4", f"{home}/.quint/rust-evaluator-v0.7.1"
+        unpacked = [calls.index(f"-n tar -xzf {archives[0]} --no-same-owner -C {apalache} apalache"),
+                    calls.index(f"-n tar -xzf {archives[1]} --no-same-owner -C {evaluator} quint_evaluator")]
+        made = calls.index(f"-n install -d -o root -g root -m 755 {home}/.quint {apalache} {evaluator}")
+        self.assertLess(max(calls.index(c) for c in fetched), checked_sums, calls)
+        self.assertLess(checked_sums, calls.index(f"-n rm -rf {home}/.quint"), calls)
+        self.assertLess(calls.index(f"-n rm -rf {home}/.quint"), made, calls)
+        self.assertLess(made, min(unpacked), calls)
+        # The warm-up: offline, / read-only, only .quint writable, no capability, its own process space.
         [warm] = [c for c in calls if c.startswith(f"-n env HOME={home} bwrap ")]
-        self.assertIn(" --unshare-pid ", warm)
-        self.assertIn(" --die-with-parent ", warm)
-        self.assertIn("quint run --max-steps=3 --invariant=", warm)
-        self.assertIn("quint verify --max-steps=3 --invariant=", warm)
+        for word in (" --unshare-net ", " --unshare-pid ", " --die-with-parent ", " --cap-drop ALL ",
+                     " --ro-bind / / ", " --tmpfs /tmp ", "quint run --max-steps=3 --invariant=",
+                     "quint verify --max-steps=3 --invariant="):
+            self.assertIn(word, warm)
+        self.assertEqual(re.findall(r"(?<!-ro)--bind (\S+) (\S+)", warm), [(f"{home}/.quint", f"{home}/.quint")])
+        self.assertLess(max(unpacked), calls.index(warm), calls)
         self.assertFalse([c for c in calls if "-u oby-builder" in c and "npm" in c], calls)
         kani = next(i for i, c in enumerate(calls) if "kani-verifier" in c)
         installed = calls.index(install)
@@ -778,6 +812,14 @@ class SetupBuilder(unittest.TestCase):
         lines = done.stdout.splitlines()
         said = lines.index(f"setup.sh: oby-builder has quint {quint} and java 21.0.9")
         self.assertTrue(lines[said + 1].startswith("setup.sh: oby-builder is set up: no sudo"), done.stdout)
+
+    def test_remote_49_setup_stops_when_a_quint_download_fails_its_checksum(self):
+        (self.dir / "bad-sum").touch()
+        done = self.builder()
+        self.assertNotEqual(done.returncode, 0, done.stdout)
+        calls = self.calls()
+        self.assertEqual(calls[-1], "sha256sum -c -", calls)
+        self.assertNotIn("setup.sh: oby-builder is set up", done.stdout)
 
     def test_remote_49_setup_stops_when_quint_fails_for_the_builder(self):
         (self.dir / "quint-fails").touch()

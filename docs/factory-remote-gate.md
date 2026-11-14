@@ -32,10 +32,12 @@ from its gates', off until the owner sets `builder_slots` in `mac_worker`. The s
   its `.rustup`, then proves a scratch harness offline as `oby-builder` ([REMOTE-47](contracts/remote-gate.md)).
   Gates don't need Kani.
 - For `oby-builder` only, setup also installs Quint at `setup.sh`'s own pin (0.33.1, not in `--pins`), root's
-  like Kani: `npm install -g` into `/usr/local/lib/quint/<pin>`, linked from `/usr/local/bin/quint`, with Java
-  from apt (`openjdk-21-jre-headless`). Root then runs one `quint run` and one `quint verify` on a tiny model with
-  `HOME` at the builder's home, under `bwrap --unshare-pid`, so Quint's Rust evaluator and Apalache land in its
-  `.quint` (given to root) at setup, never in a gate or a builder run. As `oby-builder`, with no network
+  like Kani: `npm install -g --ignore-scripts` into `/usr/local/lib/quint/<pin>`, linked from
+  `/usr/local/bin/quint`, with Java from apt (`openjdk-21-jre-headless`). Setup fetches what Quint would fetch by
+  itself, Apalache and its Rust evaluator, checks them against `setup.sh`'s SHA-256s and unpacks them into the
+  builder's `.quint` (given to root), so nothing downloads in a gate or a builder run. Root's warm-up, one
+  `quint run` and one `quint verify` on a tiny model, runs in a box: no network, `/` read-only, only `.quint`
+  writable, no capability, its processes ending with it. As `oby-builder`, with no network
   (`bwrap --unshare-net`) and `/` read-only, it proves Java 17 or newer, `quint --version` at the pin, and
   `quint typecheck`, `run` and `verify` on a scratch model ([REMOTE-49](contracts/remote-gate.md)). Gates don't need
   Quint. The seed design model is `docs/models/job_race.qnt` ([REMOTE-52](contracts/remote-gate.md)).

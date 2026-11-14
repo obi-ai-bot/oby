@@ -28,8 +28,9 @@
 # builder owned any part of is installed afresh), and Kani at its pin (cargo-kani in .cargo, its bundle in
 # .kani, its nightly in .rustup) installed by root and given to root, tightened with tighten.sh's rule and
 # proven to run for the builder, Kani offline on a scratch harness; Quint at its pin, installed by root with npm
-# into /usr/local/lib/quint/<pin> and linked from /usr/local/bin, its evaluator and Apalache fetched into .quint by
-# root on a tiny model and .quint given to root, then proven for the builder with no network and a read-only home
+# (--ignore-scripts) into /usr/local/lib/quint/<pin> and linked from /usr/local/bin, its evaluator and Apalache
+# checked against their SHA-256s and unpacked into .quint, warmed up offline in a box with / read-only, only .quint
+# writable and no capability, .quint given to root, then proven for the builder with no network and a read-only home
 # (typecheck, run and verify on a scratch model, Java 17 or newer); setup stops naming any of its home, keys or
 # toolchain the builder can still write, and it can't write /srv/oby. Run it again whenever: what is already at
 # its pin is left as it is. It writes no secret, token, key or login to the host, and changes no sshd setting,
@@ -69,6 +70,11 @@ gitleaks=$(pin GITLEAKS_VERSION)
 gitleaks_sha=$(pin GITLEAKS_SHA256)
 kani=0.68.0
 quint=0.33.1
+# What Quint 0.33.1 would fetch by itself, unchecked (apalache.js, rust/binaryManager.js), at their SHA-256s.
+quint_apalache=0.62.4
+quint_apalache_sha=8ac8488422c30d552735bae11b92a2d014d8e02e8608702acc08f9a2d8a9abb2
+quint_evaluator=v0.7.1
+quint_evaluator_sha=ce0502bdef65dc26c242a9e56379a9bb26de6f3db38f0e3989339d46a542f5eb
 bwrap=$(sed -nE 's/^[[:space:]]*(bwrap .*[^[:space:]])[[:space:]]*$/\1/p' "$ci" | sort -u)
 if [[ -z "$bwrap" || "$bwrap" == *$'\n'* ]]; then
     echo "setup.sh: $ci needs exactly one bwrap line, the proof bubblewrap works" >&2
@@ -97,7 +103,8 @@ fi' <"$here/oby-remote-gate"
 # nothing it runs reads the script.
 {
     printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap" KANI "$kani"
-    printf '%s=%q\n' QUINT "$quint"
+    printf '%s=%q\n' QUINT "$quint" QUINT_APALACHE "$quint_apalache" QUINT_APALACHE_SHA "$quint_apalache_sha" \
+        QUINT_EVALUATOR "$quint_evaluator" QUINT_EVALUATOR_SHA "$quint_evaluator_sha"
     cat "$here/tighten.sh"
     cat <<'REMOTE'
 # The gates' root (REMOTE-32): the ssh user's alone, 0700 even when it already exists, so no builder run can open
@@ -169,9 +176,11 @@ cargo kani setup' _ "$KANI"
     # tar, run as root, keeps the owners the bundle's archive names: all of it is root's.
     sudo -n chown -R -h root:root "$home/.kani"
     # Quint for builders' design models (A00-40), installed by root as Kani is: the npm package in a prefix of its pin,
-    # linked from /usr/local/bin, then its Rust evaluator and Apalache fetched into .quint on a tiny model, so a builder
-    # run, offline, downloads nothing. The warm-up's process space ends with it, Apalache's server included. Left as it
-    # is at its pin.
+    # with none of its dependencies' install scripts, linked from /usr/local/bin; its Rust evaluator and Apalache
+    # fetched here and checked against their SHA-256s into .quint, where Quint looks, so a builder run, offline,
+    # downloads nothing. Nothing from the npm tree or the downloads runs as root unboxed: the warm-up runs Quint offline
+    # on a tiny model with / read-only, only .quint writable and no capability, and its process space ends with it,
+    # Apalache's server included. Left as it is at its pin.
     local tiny
     tiny=$(cat <<'EOF'
 module tiny {
@@ -182,9 +191,11 @@ module tiny {
 }
 EOF
 )
+    local package="/usr/local/lib/quint/$QUINT/lib/node_modules/@informalsystems/quint/package.json"
+    local apalache="$home/.quint/apalache-dist-$QUINT_APALACHE" evaluator="$home/.quint/rust-evaluator-$QUINT_EVALUATOR"
     if [[ "$(readlink -f /usr/local/bin/quint 2>/dev/null)" == "/usr/local/lib/quint/$QUINT/"* ]] &&
-        [[ "$(quint --version 2>/dev/null)" == "$QUINT" ]] &&
-        compgen -G "$home/.quint/apalache-dist-*" >/dev/null && compgen -G "$home/.quint/rust-evaluator-*" >/dev/null; then
+        [[ "$(sed -nE 's/^  "version": "([^"]+)",$/\1/p' "$package" 2>/dev/null)" == "$QUINT" ]] &&
+        [[ -x "$apalache/apalache/bin/apalache-mc" && -x "$evaluator/quint_evaluator" ]]; then
         printf 'setup.sh: %s\n' "quint $QUINT already installed"
     else
         printf 'setup.sh: %s\n' "installing quint $QUINT"
@@ -192,11 +203,25 @@ EOF
         cache=$(mktemp -d)
         sudo -n rm -rf "/usr/local/lib/quint/$QUINT"
         sudo -n env npm_config_cache="$cache" \
-            npm install -g --prefix "/usr/local/lib/quint/$QUINT" "@informalsystems/quint@$QUINT"
+            npm install -g --prefix "/usr/local/lib/quint/$QUINT" "@informalsystems/quint@$QUINT" --ignore-scripts
         sudo -n rm -rf "$cache"
         sudo -n chown -R -h root:root "/usr/local/lib/quint/$QUINT"
         sudo -n ln -sfn "/usr/local/lib/quint/$QUINT/bin/quint" /usr/local/bin/quint
-        sudo -n env HOME="$home" bwrap --unshare-pid --die-with-parent --bind / / --dev /dev --proc /proc bash -c 'set -euo pipefail
+        local download asset=quint_evaluator-x86_64-unknown-linux-gnu.tar.gz
+        download=$(mktemp -d)
+        curl -fsSLo "$download/apalache.tgz" \
+            "https://github.com/apalache-mc/apalache/releases/download/v$QUINT_APALACHE/apalache.tgz"
+        curl -fsSLo "$download/evaluator.tar.gz" \
+            "https://github.com/quint-co/quint/releases/download/evaluator%2F$QUINT_EVALUATOR/$asset"
+        printf '%s  %s\n' "$QUINT_APALACHE_SHA" "$download/apalache.tgz" "$QUINT_EVALUATOR_SHA" "$download/evaluator.tar.gz" |
+            sha256sum -c -
+        sudo -n rm -rf "$home/.quint"
+        sudo -n install -d -o root -g root -m 755 "$home/.quint" "$apalache" "$evaluator"
+        sudo -n tar -xzf "$download/apalache.tgz" --no-same-owner -C "$apalache" apalache
+        sudo -n tar -xzf "$download/evaluator.tar.gz" --no-same-owner -C "$evaluator" quint_evaluator
+        rm -rf "$download"
+        sudo -n env HOME="$home" bwrap --unshare-net --unshare-pid --die-with-parent --cap-drop ALL --ro-bind / / \
+            --dev /dev --proc /proc --tmpfs /tmp --bind "$home/.quint" "$home/.quint" bash -c 'set -euo pipefail
 scratch=$(mktemp -d)
 trap "rm -rf \"\$scratch\"" EXIT
 cd "$scratch"
