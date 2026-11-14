@@ -1863,9 +1863,13 @@ impl Link {
     }
 
     /// One `trust_key` card for `owner`'s changed key, `fingerprint` (SPHERE-8): none while one for
-    /// it is open or after the owner's Cancel on one, and a card for an earlier key closes.
+    /// it is open, and a card for an earlier key closes. None at all after the owner's Cancel on one,
+    /// until that member leaves the Sphere and comes back.
     fn ask_to_trust(&self, owner: &str, fingerprint: &str) {
         let _one = self.trusting.lock().unwrap_or_else(|e| e.into_inner());
+        if self.pins.declined(owner) {
+            return;
+        }
         // Not for a key the owner trusted while this read ran.
         if self.pins.waiting(owner).as_deref() != Some(fingerprint) {
             return;
@@ -1873,13 +1877,24 @@ impl Link {
         self.close_trust_cards(|c| c.target == owner && c.payload["fingerprint"] != fingerprint);
         let item = inbox::trust_key_item(owner, fingerprint, time::now());
         let _ = self.add_new(item, |i| {
-            (i.done.is_none() || i.answer.as_deref() == Some(inbox::CANCEL))
+            i.done.is_none()
                 && i.confirm.as_deref().is_some_and(|c| {
                     c.action == inbox::action::TRUST_KEY
                         && c.target == owner
                         && c.payload["fingerprint"] == fingerprint
                 })
         });
+    }
+
+    /// The owner's Cancel on a `trust_key` card: no card for that member again until they leave the
+    /// Sphere and come back (SPHERE-8), kept in `pins.json`.
+    pub(super) fn trust_cancelled(&self, item: &Item) {
+        let _one = self.trusting.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = item.confirm.as_deref()
+            && c.action == inbox::action::TRUST_KEY
+        {
+            self.pins.decline(&c.target);
+        }
     }
 
     /// Closes the open `trust_key` cards `closes` picks, with no answer, and tells the apps.
@@ -2559,12 +2574,14 @@ impl Link {
                 relay.wake();
             }
         }
-        // A member who left is asked about no more (SPHERE-10).
-        self.close_trust_cards(|c| {
+        // A member who left is asked about no more (SPHERE-10), and once back can be again.
+        let left = |owner: &str| {
             !members
                 .iter()
-                .any(|m| m["status"] == "active" && m["owner"] == c.target.as_str())
-        });
+                .any(|m| m["status"] == "active" && m["owner"] == owner)
+        };
+        self.close_trust_cards(|c| left(&c.target));
+        self.pins.forget_declined(left);
         Ok(())
     }
 

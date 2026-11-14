@@ -227,6 +227,9 @@ impl Link {
                 {
                     tracing::warn!("No check for {repo} isn't remembered: {e}");
                 }
+                if answer == inbox::CANCEL {
+                    self.trust_cancelled(&item);
+                }
                 if answer == inbox::CONFIRM {
                     let done = match item.confirm.clone() {
                         Some(confirmed) => Box::pin(self.carry_out(*confirmed, signed_at)).await,

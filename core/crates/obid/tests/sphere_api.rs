@@ -2034,8 +2034,8 @@ fn ernestos_pin(obid: &Obid) -> Value {
 }
 
 /// SPHERE-8: a pinned member whose owner key changes becomes one `trust_key` Confirm, naming the
-/// owner and the new fingerprint, and no second one on the next read, after a restart or after
-/// Cancel. A third key closes it and one card stands for that key.
+/// owner and the new fingerprint, and no second one on the next read or after a restart. A third key
+/// closes it and one card stands for that key; Cancel on that one keeps the member out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sphere_8_a_changed_key_asks_once() {
     let folder = Folder::new("sphere-8");
@@ -2085,11 +2085,27 @@ async fn sphere_8_a_changed_key_asks_once() {
         let cards = trust_cards(&obid, "");
         assert_eq!(cards.len(), 1, "{cards:#?}");
         assert_eq!(cards[0]["id"], id.as_str());
-        // Cancel keeps the member out, and no card comes again for that key.
+    });
+    // A third key closes that card, with no answer, and one card stands for it.
+    let third = obi_protocol::keys::Keypair::from_seed_string("yet another owner key");
+    serve_owner_key(&sphere, &ernesto, &third, 3);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        assert_eq!(
+            cards[0]["confirm"]["payload"]["fingerprint"],
+            third.key_id()
+        );
+        let closed = trust_cards(&obid, "?state=done");
+        let closed = closed.iter().find(|i| i["id"] == id.as_str()).unwrap();
+        assert_eq!(closed["answer"], Value::Null);
+        // Cancel keeps the member out, and no card comes again.
+        let third_id = cards[0]["id"].as_str().unwrap();
         let cancelled = call(
             &obid,
             "POST",
-            &format!("/v1/inbox/{id}/answer"),
+            &format!("/v1/inbox/{third_id}/answer"),
             Some(&json!({"answer": "Cancel"})),
         );
         assert_eq!(cancelled.status, 200, "{}", cancelled.text);
@@ -2104,31 +2120,67 @@ async fn sphere_8_a_changed_key_asks_once() {
         );
         assert!(trust_cards(&obid, "").is_empty());
     });
-    // A third key: one card stands, for it.
-    let third = obi_protocol::keys::Keypair::from_seed_string("yet another owner key");
-    serve_owner_key(&sphere, &ernesto, &third, 3);
+}
+
+/// SPHERE-8, the owner's cap: after Cancel on a member's card, no card comes for that member's next
+/// key, after a restart too, until they leave the Sphere and come back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_8_after_cancel_no_card_until_the_member_leaves_and_comes_back() {
+    let folder = Folder::new("sphere-8-cancel");
+    let (sphere, mut obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| read_members(&obid));
+    let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
+    serve_owner_key(&sphere, &ernesto, &mallory, 2);
     tokio::task::block_in_place(|| {
         read_members(&obid);
         let cards = trust_cards(&obid, "");
         assert_eq!(cards.len(), 1, "{cards:#?}");
-        assert_eq!(
-            cards[0]["confirm"]["payload"]["fingerprint"],
-            third.key_id()
+        let id = cards[0]["id"].as_str().unwrap();
+        let cancelled = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{id}/answer"),
+            Some(&json!({"answer": "Cancel"})),
         );
-        let earlier = cards[0]["id"].as_str().unwrap().to_owned();
-        // And a fourth closes that one, with no answer.
-        let fourth = obi_protocol::keys::Keypair::from_seed_string("a fourth owner key");
-        serve_owner_key(&sphere, &ernesto, &fourth, 4);
+        assert_eq!(cancelled.status, 200, "{}", cancelled.text);
+    });
+    // Another key: no card.
+    let second = obi_protocol::keys::Keypair::from_seed_string("a second owner key");
+    serve_owner_key(&sphere, &ernesto, &second, 3);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        assert!(trust_cards(&obid, "").is_empty());
+    });
+    // Kept across a restart.
+    let status = obid.stop();
+    assert!(status.success(), "obid exited {status}");
+    let remote = folder.0.join("fixture/remote.git");
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    let third = obi_protocol::keys::Keypair::from_seed_string("a third owner key");
+    serve_owner_key(&sphere, &ernesto, &third, 4);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        assert!(trust_cards(&obid, "").is_empty());
+    });
+    // The member leaves the Sphere, then comes back with a new key: one card.
+    let gone = {
+        let mut state = sphere.lock();
+        let at = state
+            .members
+            .iter()
+            .position(|m| m["obi"] == "obi-ernesto")
+            .unwrap();
+        state.members.remove(at)
+    };
+    tokio::task::block_in_place(|| read_members(&obid));
+    sphere.lock().members.push(gone);
+    let back = obi_protocol::keys::Keypair::from_seed_string("a key after coming back");
+    serve_owner_key(&sphere, &ernesto, &back, 5);
+    tokio::task::block_in_place(|| {
         read_members(&obid);
         let cards = trust_cards(&obid, "");
         assert_eq!(cards.len(), 1, "{cards:#?}");
-        assert_eq!(
-            cards[0]["confirm"]["payload"]["fingerprint"],
-            fourth.key_id()
-        );
-        let closed = trust_cards(&obid, "?state=done");
-        let closed = closed.iter().find(|i| i["id"] == earlier.as_str()).unwrap();
-        assert_eq!(closed["answer"], Value::Null);
+        assert_eq!(cards[0]["confirm"]["payload"]["fingerprint"], back.key_id());
     });
 }
 
