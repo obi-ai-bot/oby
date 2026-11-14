@@ -246,8 +246,7 @@ fn kill_unless_replaced(leader: &Leader) {
 // background command) isn't ended: once the id is free, any process can lead a group with it.
 // Ending one needs its members recorded.
 pub fn reap(home: &Path) {
-    let records = &dir(home);
-    let live: Vec<Leader> = crate::store::load_dir::<Leader>(home, records)
+    let live: Vec<Leader> = crate::store::load_dir::<Leader>(home, &dir(home))
         .into_iter()
         .filter(alive)
         .collect();
@@ -264,7 +263,7 @@ pub fn reap(home: &Path) {
         std::thread::sleep(crate::process::STOPPING);
         live.iter().for_each(kill_unless_replaced);
     }
-    let _ = std::fs::remove_dir_all(records);
+    let _ = std::fs::remove_dir_all(dir(home));
 }
 
 /// The lock at `path` as a run wrote it, or none. Read without following a link and without

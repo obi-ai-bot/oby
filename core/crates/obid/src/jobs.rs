@@ -18528,7 +18528,7 @@ mod tests {
     /// no word of an answer anywhere.
     #[tokio::test]
     async fn usage_6_8_9_a_cursor_accounts_figure_from_its_login_to_what_is_kept() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
         let _only = STAND_IN_TAKEN.lock().await;
         #[derive(Clone, Default)]
@@ -18630,7 +18630,7 @@ mod tests {
     /// job: its window share is the 5-hour window's and the week's, and this may be neither.
     #[tokio::test]
     async fn usage_9_a_cursor_figure_gives_a_running_job_no_window_share() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{Answer, STAND_IN_TAKEN, TOKEN, body, stand_in};
         let _only = STAND_IN_TAKEN.lock().await;
         let root = std::env::temp_dir().join(format!("obid-share-{}", uuid::Uuid::new_v4()));
@@ -18696,7 +18696,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn keychain_8_a_slow_keychain_read_leaves_the_runtime_free() {
-        use crate::cursor_usage::STAND_IN;
+        use crate::cursor_usage::tests::STAND_IN;
         use crate::cursor_usage::tests::{RERUN, TOKEN, body, rerun, stand_in};
         if std::env::var_os(RERUN).is_none() {
             let root = std::env::temp_dir().join(format!("obid-slow-{}", uuid::Uuid::new_v4()));

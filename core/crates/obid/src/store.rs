@@ -46,7 +46,7 @@ impl Store {
         }
     }
 
-    /// Every job kept, oldest first. A file that doesn't read as a job is kept aside ([`load_dir`]).
+    /// Every job kept, oldest first. A job file that doesn't read is kept aside ([`load_dir`]).
     pub fn load_all(&self) -> Vec<Job> {
         let mut jobs = load_dir::<Job>(&self.home, &self.dir);
         jobs.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
@@ -97,13 +97,13 @@ pub fn load_dir<T: serde::de::DeserializeOwned>(home: &Path, dir: &Path) -> Vec<
         }
         match std::fs::read(&path).map(|bytes| serde_json::from_slice::<T>(&bytes)) {
             Ok(Ok(item)) => items.push(item),
-            Ok(Err(e)) => set_aside(home, &path, reason(&e)),
+            Ok(Err(e)) => set_aside(home, &path, &e),
             // Gone since the folder was read: a load beside this one kept it aside.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
                 tracing::warn!("can't read {}: {e}", path.display());
                 let why = e.kind().to_string();
-                list(&mut unreadable(), &path, why, modified(&path));
+                list(&mut unreadable(), &path, &why, modified(&path));
             }
         }
     }
@@ -118,22 +118,12 @@ pub fn unreadable() -> std::sync::MutexGuard<'static, Vec<serde_json::Value>> {
     LISTED.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn list(listed: &mut Vec<serde_json::Value>, path: &Path, error: String, since: i64) {
+fn list(listed: &mut Vec<serde_json::Value>, path: &Path, error: &str, since: i64) {
     let path = path.display().to_string();
     if !listed.iter().any(|u| u["path"] == *path) {
         let since = obi_protocol::time::format(since);
         listed.push(serde_json::json!({"path": path, "error": error, "since": since}));
     }
-}
-
-/// Why a file doesn't parse, never in serde's words: they can quote what the file holds.
-fn reason(e: &serde_json::Error) -> String {
-    let kind = match e.classify() {
-        serde_json::error::Category::Data => "not what obid expects",
-        serde_json::error::Category::Io => "can't be read",
-        _ => "not valid JSON",
-    };
-    format!("{kind} at line {} column {}", e.line(), e.column())
 }
 
 fn modified(path: &Path) -> i64 {
@@ -144,7 +134,13 @@ fn modified(path: &Path) -> i64 {
 
 /// Renames the file at `path` to `home/unreadable/<its folder>/<stem>-<seconds>.json`, its bytes
 /// as they are, never over a file kept there. One that can't move stays and is listed where it is.
-fn set_aside(home: &Path, path: &Path, error: String) {
+fn set_aside(home: &Path, path: &Path, e: &serde_json::Error) {
+    // Why, never in serde's words: they can quote what the file holds.
+    let kind = match e.classify() {
+        serde_json::error::Category::Data => "not what obid expects",
+        _ => "not valid JSON",
+    };
+    let error = format!("{kind} at line {} column {}", e.line(), e.column());
     let (now, mut listed) = (obi_protocol::time::now(), unreadable());
     let folder = path.parent().and_then(|p| p.strip_prefix(home).ok());
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -155,17 +151,15 @@ fn set_aside(home: &Path, path: &Path, error: String) {
         made => made.and_then(|()| std::fs::rename(path, &to)),
     };
     let (at, how) = match moved {
-        // A load beside this one kept it aside first.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => (path, format!("can't be kept aside: {e}")),
         Ok(()) => (to.as_path(), format!("kept aside as {}", to.display())),
     };
     tracing::warn!("{} doesn't read ({error}): {how}", path.display());
-    list(&mut listed, at, error, now);
+    list(&mut listed, at, &error, now);
 }
 
-/// Every file in `dir`, at any depth, kept aside at an earlier start: since the seconds in its
-/// name, or its last change.
+/// Every file under `dir` from an earlier start, since the seconds in its name or its last change.
 fn kept_aside(listed: &mut Vec<serde_json::Value>, dir: &Path) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
@@ -176,8 +170,7 @@ fn kept_aside(listed: &mut Vec<serde_json::Value>, dir: &Path) {
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
         let named = stem.rsplit_once('-').and_then(|(_, s)| s.parse().ok());
         let since = named.unwrap_or_else(|| modified(&path));
-        let why = "kept aside at an earlier start".into();
-        list(listed, &path, why, since);
+        list(listed, &path, "kept aside at an earlier start", since);
     }
 }
 
