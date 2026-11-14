@@ -411,6 +411,31 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
         self.assertEqual(self.run_calls(), [])
         self.assertEqual(self.vm_runs(), [])
 
+    # ---- MUTANTS-10 ------------------------------------------------------------------------------
+
+    def test_mutants_10_a_mutants_run_with_macos_only_changes_goes_to_the_vm(self):
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "mutants", "--in-diff", "mutants.diff", "-p", "obid")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(shlex.split(call["argv"][-1])[-7:],
+                         ["--", "cargo", "mutants", "--in-diff", "mutants.diff", "-p", "obid"])
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["mutants", "--in-diff", "mutants.diff", "-p", "obid"])
+        self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertNotIn("on this Mac:", err)
+        self.assertEqual(self.lines("mac-runs"), [])
+
+    def test_mutants_10_a_mutants_run_after_another_command_stays_on_this_mac(self):
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("sh", "-c", "cargo mutants")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("factory/bin/test-run: on this Mac: the worktree's changes touch macOS-only code: "
+                      "core/crates/obid/src/sandbox.rs", err.splitlines())
+        self.assertEqual([run.split(" | ", 1)[0] for run in self.lines("mac-runs")], ["cargo mutants"])
+        self.assertEqual(self.run_calls(), [])
+        self.assertEqual(self.vm_runs(), [])
+
     # ---- REMOTE-25 -------------------------------------------------------------------------------
 
     def test_remote_25_a_stopped_vm_that_doesnt_answer_falls_back(self):
