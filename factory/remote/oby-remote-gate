@@ -130,8 +130,10 @@ OFFLINE = {"CARGO_NET_OFFLINE": "true", "npm_config_offline": "true"}
 
 # Builder mode's git calls run no hook: an earlier run could have left one in its clone (REMOTE-34).
 HOOKS = []
-# The builder clone's config as setup.sh leaves it, written afresh before each builder run's git steps.
+# The builder clone's config as setup.sh leaves it, written afresh before each builder run's git steps. On the Mac
+# worker it keeps the two settings `git clone --bare` writes on macOS, MAC_CORE, after bare (REMOTE-45).
 BUILDER_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n[gc]\n\tauto = 0\n"
+MAC_CORE = "\tignorecase = true\n\tprecomposeunicode = true\n"
 
 child = None
 starting = False
@@ -277,9 +279,10 @@ def take_slot(name="slot", count=None, wait=None, waiting_line=None):
         time.sleep(1)
 
 
-def check_out(commit, base, worktree, touch=True, reset=False):
+def check_out(commit, base, worktree, touch=True, reset=None):
     """Fetch the commit and the base and make the slot's worktree (its files under core/ and tools/ touched,
-    unless not touch; the clone's config and attributes reset first when reset): an error to say, or None."""
+    unless not touch; the clone's config reset to the text reset and its attributes removed first, when given): an
+    error to say, or None."""
     repo = str(ROOT / "repo.git")
     fd = lock_file(ROOT / "repo.lock")
     try:
@@ -287,7 +290,7 @@ def check_out(commit, base, worktree, touch=True, reset=False):
         if reset:
             try:
                 written = ROOT / "repo.git" / "config.reset"
-                written.write_text(BUILDER_CONFIG)
+                written.write_text(reset)
                 os.replace(written, ROOT / "repo.git" / "config")
                 (ROOT / "repo.git" / "info" / "attributes").unlink(missing_ok=True)
             except OSError as error:
@@ -457,7 +460,8 @@ def builder_run(args, mac=False):
     if why:
         say(why)
         return 2
-    why = check_out(base, base, worktree, touch=False, reset=True)
+    config = BUILDER_CONFIG.replace("\tbare = true\n", "\tbare = true\n" + MAC_CORE) if mac else BUILDER_CONFIG
+    why = check_out(base, base, worktree, touch=False, reset=config)
     if why:
         say(why)
         return 2

@@ -243,6 +243,9 @@ Mac, one at a time under the check lock (15 to 27 minutes each, 2 h 22 min of th
    nothing, when one is missing or the Pro's Rust or Xcode differs from this Mac's; then makes
    `~/oby-worker`, installs the runner, builds `oby-check-blok` from `origin/dev`, tightens the modes on the
    check's path and prints them, and its versions. Run it again whenever: what is there is left as it is.
+   Run it again whenever `factory/remote/oby-remote-gate` changes on `dev` (and so in the main checkout): until
+   then every gate checks the Pro's runner against the main checkout's, finds a different sha256, runs its
+   macOS part on this Mac, and says so in `checks.md`, naming `setup-mac.sh`.
 3. **Turn it on:** add this key to `factory/config.json` (protected, so the owner's edit), beside
    `remote_gate`:
    `"mac_worker": { "ssh_host": "oby-mac-pro" }`
@@ -333,7 +336,9 @@ with the builder's command line unchanged (REMOTE-22 to 34):
   builder slot busy for 10 minutes), and a fallback from either host runs here, never on the other. Swift,
   Xcode and whole-check runs stay here, as does a run started with `test-run --here -- …`, for one that needs
   this Mac itself (its Keychain, the owner's real home). Builders there can do what that user can (the
-  contract's "Known limits on the Mac worker"): accepted with the count. To turn it on, run
+  contract's "Known limits on the Mac worker"): each gate checks the Pro's runner by its sha256 before using
+  it and falls back to this Mac when it changed, but the gates' slots and the tools they start stay open to
+  builders, accepted with the count. To turn it on, run
   `factory/remote/setup-mac.sh oby-mac-pro` again, then set `"mac_worker": {"ssh_host": "oby-mac-pro",
   "builder_slots": 2}`.
 
