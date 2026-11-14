@@ -66,6 +66,7 @@ Stop here and hand the merge to the owner: say on the PR that it touches a secur
   - the PR opens: `status:in-review`, and the PR link;
   - it waits on something: `status:blocked`, and what it waits on;
   - it merges: the status labels come off.
+- **An epic's checklist item**, only when the PR lands one: tick it, with the PR's link, in the same turn as the merge.
 - **The board:** "Oby — Roadmap" is cleared and its issues closed (AGENTS.md "How we work", the line on the task files). Move a row (Now, In review, Done) only where an item still has one.
 
 ## Outside this skill
