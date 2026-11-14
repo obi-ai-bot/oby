@@ -751,18 +751,8 @@ impl Conversations {
     }
 
     /// Oby's turn in the conversation `id`, with the artifacts it made (`{id, version}` each): its
-    /// brain's own words, which carry only what the conversation read (marked already).
-    pub fn append_made(
-        &self,
-        id: &str,
-        text: String,
-        jobs: Vec<String>,
-        artifacts: Vec<Value>,
-    ) -> Result<Turn, Error> {
-        self.append_asking(id, text, jobs, artifacts, None)
-    }
-
-    /// [`Self::append_made`], the turn asking `asked` when it does.
+    /// brain's own words, which carry only what the conversation read (marked already). The turn
+    /// asks `asked` when it does.
     pub fn append_asking(
         &self,
         id: &str,
@@ -2667,7 +2657,7 @@ mod tests {
             .unwrap()
             .conversation;
         conversations
-            .append_made(&id, "On it.".into(), vec![], vec![])
+            .append_asking(&id, "On it.".into(), vec![], vec![], None)
             .unwrap();
         conversations
             .job_ended(&id, "Done.".into(), "j1".into(), None)
