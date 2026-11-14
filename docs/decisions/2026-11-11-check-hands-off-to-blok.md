@@ -19,3 +19,7 @@ AGENTS.md's wording, not a quote.
 ## Where AGENTS.md states it
 
 - Build and run
+
+## Notes
+
+publishing.md, "Check workflow", quoted the owner's three answers: BLOK-1 "Yes, install it", BLOK-2 "Built-in only", BLOK-3 "Rework BLOK's transport".

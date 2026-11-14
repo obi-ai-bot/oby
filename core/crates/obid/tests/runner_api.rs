@@ -600,6 +600,7 @@ fn admission_4_a_job_waiting_on_a_check_takes_no_slot_and_a_retry_keeps_its_own(
 /// waits for one. With `maxRunning` 2, one job checks, two wait for that check, one runs and a fifth
 /// is queued: when the first ends, the fifth starts and the second checks with no slot; once its
 /// check ends it waits for a free slot while the third checks, and at no time do more than 2 run.
+/// Each check waits for the test to release it, so the order is set by state, never by the clock.
 #[test]
 fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     let folder = Folder::new("idle-back");
@@ -613,6 +614,14 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     assert_eq!(two.status, 200, "{}", two.text);
     let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
     let checking = |id: &str| job(&obid, id)["checks"][0]["steps"][0]["running"] == true;
+    let held = r#"i=0; until [ -e "$HOME/go" ] || [ $i -ge 1800 ]; do sleep 0.1; i=$((i+1)); done"#;
+    // A check with no declared secrets keeps its job's temporary folder, `<home>/tmp/<id>`, as its
+    // `HOME`, which its box lets it read where it hides the test's own folder: a `go` there ends
+    // it. Released only once that check runs.
+    let release = |id: &str| {
+        let go = obid.home.join("tmp").join(id).join("go");
+        std::fs::write(go, "").unwrap();
+    };
     let for_the_check = |id: &str| {
         within(60, "it waits for the check", || {
             (job(&obid, id)["step"] == "Waiting for another job's check to finish").then_some(())
@@ -624,13 +633,13 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
                   "check": check}),
         )
     };
-    let first = committing("a.txt", "sleep 15");
+    let first = committing("a.txt", held);
     within(60, "the first check runs", || {
         checking(&first).then_some(())
     });
-    let second = committing("b.txt", "sleep 3");
+    let second = committing("b.txt", held);
     for_the_check(&second);
-    let third = committing("c.txt", "sleep 60");
+    let third = committing("c.txt", held);
     for_the_check(&third);
     let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
     within(60, "the fourth runs", || {
@@ -647,15 +656,22 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
             .unwrap();
         most = most.max(running);
     };
-    within(90, "the second waits for a free slot", || {
-        count();
-        let body = job(&obid, &second);
-        (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
-    });
+    release(&first);
     // The first ended and gave its slot to the fifth: on Linux's box it may still be publishing.
     within(60, "the fifth runs", || {
         count();
         (job(&obid, &fifth)["status"] == "running").then_some(())
+    });
+    within(60, "the second checks", || {
+        count();
+        checking(&second).then_some(())
+    });
+    // Only now, with both slots taken, so the second can't take the first's freed one.
+    release(&second);
+    within(90, "the second waits for a free slot", || {
+        count();
+        let body = job(&obid, &second);
+        (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
     });
     // It gave the check's turn up first: the third checks meanwhile.
     within(30, "the third checks", || {
