@@ -2058,6 +2058,11 @@ async fn sphere_8_a_changed_key_asks_once() {
             card["title"],
             format!("New key for ernesto: compare with them ({fingerprint})")
         );
+        // Home shows the title on one line: the text carries the whole fingerprint too.
+        assert!(
+            card["text"].as_str().unwrap().contains(&fingerprint),
+            "{card:#}"
+        );
         assert_eq!(card["job"], "");
         assert_eq!(card["options"], json!(["Confirm", "Cancel"]));
         assert!(

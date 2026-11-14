@@ -529,6 +529,9 @@ pub struct Link {
     /// One save of an item or exchange at a time, so what reaches the disk and the apps never goes
     /// back to an older copy.
     saving: Mutex<()>,
+    /// One ask about, or trust of, a changed owner key at a time, so at most one `trust_key` card
+    /// stands open for an owner (SPHERE-8).
+    trusting: Mutex<()>,
     /// One token exchange at a time.
     tokening: tokio::sync::Mutex<()>,
     /// One key, card or join call at a time.
@@ -907,6 +910,7 @@ impl Link {
             outbox: Notify::new(),
             sending: tokio::sync::Mutex::new(()),
             saving: Mutex::new(()),
+            trusting: Mutex::new(()),
             tokening: tokio::sync::Mutex::new(()),
             joining: tokio::sync::Mutex::new(()),
             unread_key: unread,
@@ -1843,9 +1847,13 @@ impl Link {
     /// a signed `trust_key` Confirm: the cards asking about that owner's key close (SPHERE-10) and
     /// the directory is read again, so the member is back.
     pub(super) async fn trust_key(&self, owner: &str, fingerprint: &str) -> Result<Value, String> {
-        let pinned = self.pins.accept(owner, fingerprint, time::now())?;
-        // Before the read: a card it raises for yet another key stays.
-        self.close_trust_cards(|c| c.target == owner);
+        let pinned = {
+            let _one = self.trusting.lock().unwrap_or_else(|e| e.into_inner());
+            let pinned = self.pins.accept(owner, fingerprint, time::now())?;
+            // Before the read: a card it raises for yet another key stays.
+            self.close_trust_cards(|c| c.target == owner);
+            pinned
+        };
         if self.lock().membership.is_some()
             && let Err(e) = self.read_directory().await
         {
@@ -1857,6 +1865,7 @@ impl Link {
     /// One `trust_key` card for `owner`'s changed key, `fingerprint` (SPHERE-8): none while one for
     /// it is open or after the owner's Cancel on one, and a card for an earlier key closes.
     fn ask_to_trust(&self, owner: &str, fingerprint: &str) {
+        let _one = self.trusting.lock().unwrap_or_else(|e| e.into_inner());
         // Not for a key the owner trusted while this read ran.
         if self.pins.waiting(owner).as_deref() != Some(fingerprint) {
             return;

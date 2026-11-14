@@ -165,8 +165,9 @@ pub fn trust_key_item(owner: &str, fingerprint: &str, now: i64) -> Item {
     let mut item = confirm_item(
         "",
         format!("New key for {owner}: compare with them ({fingerprint})"),
+        // Home's card shows the title on one line: the fingerprint shows whole here.
         format!(
-            "{owner}'s owner key changed. Compare its fingerprint with them before you trust it."
+            "{owner}'s owner key changed. Compare its fingerprint with them before you trust it: {fingerprint}."
         ),
         Confirmed {
             action: action::TRUST_KEY.into(),
