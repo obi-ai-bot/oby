@@ -1,6 +1,6 @@
 # Checks
 
-Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20) and how a merge lands (CI-7, 8 and 21); the design behind it is [docs/ci-architecture.md](ci-architecture.md).
+Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20), the CLI canary (CI-14 to 16) and how a merge lands (CI-7, 8 and 21); the design behind it is [docs/ci-architecture.md](ci-architecture.md).
 
 ## What GitHub runs
 
@@ -54,6 +54,46 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 **Caches.** Only the nightly and on-demand runs save the Rust caches (`Swatinem/rust-cache`'s `save-if`), one `shared-key` per job kind: `lint`, `test-build`, `e2e`, `tools`. `rust-test` compiles nothing and has none. Every other run only restores them, because a pull request's caches are scoped to `refs/pull/<n>/merge` and no other pull request can read them. The pnpm and npm caches from `actions/setup-node` have no save switch and are left as they are, because they are small.
 
 **Billed minutes.** Measured on `ci.yml`'s green full run [43453425366](https://github.com/obi-ai-bot/oby/actions/runs/43453425366) (#2175 with `full-ci`, every lane reached because `.github/` changed, about 21 minutes from start to end), each job's duration from `gh run view <id> --json jobs` rounded up to the minute and summed: **66 billed minutes**. `plan` 1, `lint` 3, `rust-build` 8, `rust-test` 12 + 12 + 12 + 10, `e2e` 2, `control-plane` 1, `electron` 2, `tools` 2, `Check` 1. Each shard spends about 2 of its minutes downloading the 2.5 GB archive. A ready pull request into `dev` runs `plan`, `lint` and `Check`: **5 billed minutes**, taken from those three jobs of the same run, since no ready pull request without the label has run `ci.yml` yet.
+
+## The CLI canary
+
+`.github/workflows/cli-canary.yml` (the `CLI canary` workflow, docs/contracts/ci.md, CI-14 to 16) runs the newest Claude Code, Codex and cursor-agent through obid's real adapters every 6 hours (at minute 41) and on demand, so a release that breaks obid is found before the owner's first job is. It runs on GitHub's `ubuntu-latest`, never on a self-hosted runner, with no login, no real key and no secret. Each CLI comes from its vendor's own package into the run's `$RUNNER_TEMP` (`docs/cli-canary.md`, "Install commands"); one that fails to install leaves only that CLI `not installed`.
+
+On demand: `gh workflow run cli-canary.yml --ref dev`. Its one input, `force_fail` (`<cli>/<case>`, such as `codex/start`), makes that case fail with the why `forced`, for the proof runs; it reaches the cases only through an environment variable.
+
+| CLI | Checked for | How |
+| --- | --- | --- |
+| Claude Code | `start`, `permission_ask`, `stop`, `resume` | An own job whose login shell (a stand-in, `OBID_LOGIN_SHELL`) gives it `ANTHROPIC_BASE_URL` for `core/crates/obid/tests/agents/fake-model-server` and the key `dummy` |
+| Codex | the same four, and `rate_limits_updated` | A boxed job on a ChatGPT account signed in to the stand-in OpenAI (`core/crates/obid/tests/support/stand_in_openai.rs`), through obid's relay; the model's `x-codex-*` headers show as the account's `fiveHour` |
+| cursor-agent | `signed_out` | adapters.rs's `the_real_cursor_agent_signed_out_says_so`, with the installed binary first on `PATH`: its endpoint is Cursor's own backend, which no fake stands in for |
+
+Each case is a test in `core/crates/obid/tests/cli_canary.rs`. Start ends `done` with the fake's words; permission ask, in `ask`, shows the command as the job's permission, and the owner's signed Allow lets it run; stop leaves the job `stopped` while the model holds its answer; resume is Try again on that stopped job, whose new process sends the first task to the model again.
+
+**The report.** Each run uploads `cli-canary-report.json` as the artifact `cli-canary-report`, kept 14 days:
+
+```json
+{"run": 43460000000, "clis": {
+  "claude-code": {"version": "2.1.325", "cases": {"start": {"result": "passed", "why": ""}, "…": {}}},
+  "codex": {"version": "0.169.0", "cases": {"…": {}}},
+  "cursor-agent": {"version": "not installed", "cases": {"signed_out": {"result": "skipped", "why": "not installed"}}}}}
+```
+
+A version is the first word of the CLI's `--version` that starts with a digit, kept only when it matches `^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$`, else `unknown`. A result is `passed`, `failed` or `skipped` with a short why; when bubblewrap can't run on the runner, every case is `skipped` saying so. The run fails when any case failed.
+
+**Twice in a row.** The `drift` job compares the report with the latest completed run's on the same branch, forced or not. A case that failed in both on the same version opens one issue labelled `cli-drift` (`CLI drift: <cli> <version> <case>`), or, while one is open, comments on it with the pairs it doesn't name yet. A failure then a pass, a `skipped` case in either run, a new version, or no previous report opens nothing. The issue holds only the CLI, the version, the case and the two runs' links.
+
+**Permissions.** The workflow's own `permissions` are `{}`. `canary`, which installs and runs code nobody here reviewed, gets `contents: read` and no secret, and checks out with `persist-credentials: false`. `drift` gets `actions: read` (the previous run's artifact), `contents: read` and `issues: write`, and runs nothing from the CLIs. Every action is pinned by the same SHAs as `ci.yml`.
+
+**By hand**, on a Mac or a Linux machine with bubblewrap and socat, with the CLIs in a folder of your own:
+
+```sh
+npm install --prefix /tmp/cc @anthropic-ai/claude-code@latest @openai/codex@latest
+cd core
+CLI_CANARY_CLAUDE=/tmp/cc/node_modules/.bin/claude CLI_CANARY_CODEX=/tmp/cc/node_modules/.bin/codex \
+  cargo test -p obid --test cli_canary -- --include-ignored --test-threads=1
+```
+
+`CLI_CANARY_RESULTS=<folder>` writes each case's `<cli>/<case>.json`; a case whose variable is unset is `skipped` (`not installed`) and passes. The report and the rule's own tests (`ci_14_…` to `ci_16_…`) run with obid's other tests, with no CLI.
 
 ## What the Mac runs
 

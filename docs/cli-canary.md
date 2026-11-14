@@ -215,6 +215,17 @@ The canary should drive these through obid's adapters, as R01-11 says. Line numb
   - Reviewer and other stand-ins (`asking-reviewer`, `prying-reviewer`, `secretspec-agent`, …): obid's own rules, not CLI drift.
 - **Recorded transcripts.** `core/crates/obid/tests/fixtures/claude-rate-limit-scoped.json` and `claude-rate-limit-overage.json` hold real `rate_limit_event` lines. A runner can't make Claude Code send them, but obid's parsing of them stays tested. Replaying recorded streams in the stand-ins is #1098.
 
+## What R01-11 built
+
+The canary itself (docs/ci.md, "The CLI canary"; docs/contracts/ci.md, CI-14 to 16):
+
+- `.github/workflows/cli-canary.yml`: every 6 hours and on demand, the install commands above, the cases, the report and the two-in-a-row rule.
+- `core/crates/obid/tests/agents/fake-model-server`: the fake model, Anthropic's Messages API only, as "What the fake model must send" describes it, logging every request.
+- `core/crates/obid/tests/cli_canary.rs`: the cases of the table above that a runner can run, through obid's API, each recording its result; and the tests of the report and the rule.
+- `scripts/cli-canary.mjs`: the report and the rule, which opens or comments on one `cli-drift` issue.
+
+Codex doesn't reach the fake through a `-c` model provider, as the spike's driver did. Through obid, a Codex job on Linux is boxed and gets no model provider of the test's choosing, so the canary signs a Codex account in with ChatGPT and goes through obid's own ChatGPT relay to the stand-in OpenAI the ChatGPT tests use (`core/crates/obid/tests/support/stand_in_openai.rs`), which is both the sign-in issuer and the model. Claude Code reaches the fake model through an own job's login-shell environment (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY=dummy`). cursor-agent gets only the signed-out check.
+
 ## Open risks
 
 - **Claude Code's usage and limits need a real account.** No `rate_limit_event` came with a dummy key or token. obid's limit handling for Claude Code (LIMITS, USAGE) can't be checked on a runner, and it stays on the owner's Mac (#1099).
