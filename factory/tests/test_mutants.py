@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/mutants (docs/contracts/factory.md, MUTANTS-1 to 9), with a stand-in test-run, never cargo,
+"""factory/bin/mutants (docs/contracts/factory.md, MUTANTS-1 to 9 and 12), with a stand-in test-run, never cargo,
 cargo-mutants or a real host.
 
 Run from the repository root: python3 -m unittest discover -s factory/tests -p 'test_mutants.py' -v
@@ -498,6 +498,48 @@ class Mutants(unittest.TestCase):
                 self.assertTrue(self.mutants_md(d).startswith("MUTANTS: "))
                 self.assertEqual((d / "job.json").read_bytes(), before)
                 self.assertFalse((d / ".lock").exists())
+
+    # ---- MUTANTS-12 -----------------------------------------------------------------------------
+
+    def test_mutants_12_mutants_md_appears_whole_by_a_rename(self):
+        d = self.make_job("001-a00-99-rename", files={"docs/notes.md": "# Notes\n"})
+        rd = d / "round-1"
+        (rd / "mutants.md.tmp").write_text("MUTANTS: left from a stopped run\n")
+        record = self.dir / "writes.json"
+        res = subprocess.run(["python3", "-c", RECORDER, str(self.repo / "factory" / "bin" / "mutants"), d.name,
+                              str(record)], cwd=self.repo, env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        writes = [(op, *(Path(p).relative_to(rd).as_posix() for p in paths))
+                  for op, *paths in json.loads(record.read_text()) if Path(paths[0]).parent == rd]
+        self.assertNotIn("mutants.md", [w[1] for w in writes if w[0] == "write_text"])
+        self.assertIn(("write_text", "mutants.md.tmp"), writes)
+        self.assertEqual([w for w in writes if w[0] == "replace"], [("replace", "mutants.md.tmp", "mutants.md")])
+        self.assertTrue(self.mutants_md(d).startswith("MUTANTS: SKIPPED\n"))
+        self.assertFalse((rd / "mutants.md.tmp").exists())
+
+
+# Loads the throwaway repository's factory/bin/mutants as `job` is loaded, records the target of every
+# Path.write_text and Path.replace while its main() runs, and writes them as JSON to argv[3].
+RECORDER = """
+import importlib.machinery, importlib.util, json, pathlib, sys
+script, job_id, record = sys.argv[1:4]
+seen = []
+write_text, replace = pathlib.Path.write_text, pathlib.Path.replace
+def recorded_write_text(self, *args, **kwargs):
+    seen.append(["write_text", str(self)])
+    return write_text(self, *args, **kwargs)
+def recorded_replace(self, target):
+    seen.append(["replace", str(self), str(target)])
+    return replace(self, target)
+pathlib.Path.write_text, pathlib.Path.replace = recorded_write_text, recorded_replace
+loader = importlib.machinery.SourceFileLoader("mutants", script)
+module = importlib.util.module_from_spec(importlib.util.spec_from_loader("mutants", loader))
+loader.exec_module(module)
+code = module.main([job_id])
+pathlib.Path.write_text, pathlib.Path.replace = write_text, replace
+pathlib.Path(record).write_text(json.dumps(seen))
+sys.exit(code)
+"""
 
 
 if __name__ == "__main__":
