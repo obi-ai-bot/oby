@@ -89,6 +89,9 @@ pub struct OpenAi {
     pub origin: String,
     pub script: Arc<Mutex<Script>>,
     good: Arc<RsaKeyPair>,
+    /// Dropped with the stand-in, which ends its server: its listener, runtime and connections
+    /// would otherwise stay open for the rest of the test binary (macOS starts it with 256 files).
+    _stop: tokio::sync::oneshot::Sender<()>,
 }
 
 #[derive(Clone)]
@@ -143,6 +146,7 @@ impl OpenAi {
             good: good.clone(),
             other,
         };
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -159,13 +163,19 @@ impl OpenAi {
                     .route("/v1/responses", post(responses))
                     .with_state(shared);
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-                axum::serve(listener, app).await.unwrap();
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
             });
         });
         OpenAi {
             origin,
             script,
             good,
+            _stop: stop,
         }
     }
 
