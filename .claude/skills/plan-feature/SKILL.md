@@ -63,7 +63,7 @@ Each task is one worker PR into `dev`, sized for one agent run that a check can 
 - **Owns its files.** Two tasks that can run at once never touch the same file, contracts and `docs/runner-api.md` included, and each task changes its docs in its own PR (AGENTS.md). Tasks that share a file run in sequence; prefer fewer tasks in sequence over parallel ones that collide. Say which can run in parallel.
 - Carries its context as pointers, not pasted code: `path:line` on `origin/dev` of where to start, the existing function or pattern to reuse, the test to copy from, and what not to touch.
 - Depends on: other tasks by key, decisions by number, open PRs by number.
-- Starts with the draft's drift check (step 5), limited to the files this task relies on, so an agent that gets only this task still runs it.
+- Starts with the draft's drift check (step 5), carrying the stamp's sha and limited to the files this task relies on, so an agent that gets only this task still runs it.
 
 More than 6 tasks, more than two of obid, the Electron app and the phones, or several fixes that don't depend on each other: propose splitting the issue under Decisions needed, and say how.
 
@@ -83,7 +83,7 @@ Board: <Status>, <Area>, <Priority>.
 ## Risks                       (what could make an agent fail: environment, flaky tests, box limits, open PRs)
 ```
 
-`<sha>` is the `origin/dev` commit recorded in step 1.1. `<files>` are the real paths on `origin/dev` that "Already true on dev", the contract and the tasks rest on: the files read and cited, and the files the tasks will touch that already exist. The second line is the drift check, with the plan's own sha and files filled in, and it is the first thing run before any work from the draft. No output: the work starts. Any change in those files: the work stops until the plan is re-checked against the new code and re-stamped with the new sha.
+`<sha>` is the `origin/dev` commit recorded in step 1.1. `<files>` are the real paths on `origin/dev` that "Already true on dev", the contract and the tasks rest on: the files read and cited, and the files the tasks will touch that already exist. The line under the stamp is the drift check, with the plan's own sha and files filled in, and it is the first thing run before any work from the draft. No output: the work starts. Any change in those files: the work stops until the plan is re-checked against the new code and re-stamped with the new sha.
 
 Then stop. Don't edit the issue, the board or any code, and don't dispatch: the owner reads the draft, settles the decisions, and says what goes where. When they approve, the contract goes into the issue and the issue moves on the board (AGENTS.md, "Update the issue at every step").
 
