@@ -9,8 +9,9 @@ config.json     concurrency, rounds, the active sprint, routing, protected paths
 checks.sh       the gate's checks: scripts/oby-check.sh on the job's worktree
 bin/job         the only writer of jobs/<id>/job.json; reads the queue; refuses illegal moves; queues approved PRs
 bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `remote_gate` set, the Linux groups on
-                the gate VM and the macOS-only part on the Mac, falling back to the Mac; `gate --idle` deallocates the
-                idle VM (job queue runs it)
+                the gate VM and the macOS-only part on the Mac, falling back to the Mac; with `mac_worker` set too, that
+                macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; `gate --idle`
+                deallocates the idle VM (job queue runs it)
 bin/route       risk + surfaces → the job's reviewers and models
 bin/test-run    a builder's own test, clippy or build run at nice 15, half the cores; only runs that can build Rust or
                 Xcode code take turns on its own lock, other runs start at once
@@ -20,7 +21,7 @@ bin/child_session.py  runs a command in a session of its own and stops its lefto
                 and nightly
 bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
                 jobs/nightly/<stamp>.md, and a fix task on a failure
-remote/         the gate VM's side: setup.sh provisions the gate VM over SSH; tighten.sh is what setup runs last on the host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots there
+remote/         the gate VM's and the Mac worker's side: setup.sh provisions the gate VM over SSH, setup-mac.sh the Mac worker; tighten.sh is what each runs last on its host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots on the VM, and with --mac the macOS groups it is given in one of two slots on the Mac worker
 tests/          the factory's own tests, stdlib only, from the repository root: python3 -m unittest discover -s factory/tests;
                 the check runs them when bin/, checks.sh, tests/ or config.json change
 queue/tasks/    open tasks, one file each (R01-02.md)
@@ -52,6 +53,10 @@ swift, and rust when the diff touches a macOS-only path, on the Mac. It runs the
 VM can't be reached in 3 minutes, couldn't judge, or the commit isn't on origin. `FACTORY_REMOTE_GATE` (the same
 JSON) turns it on for one run. Each remote use stamps `jobs/remote-gate/state.json`, and `bin/job queue` runs
 `bin/gate --idle`, which deallocates the VM 30 minutes after its last use when no job is in `gate` or `merging`.
+With `mac_worker` (`{"ssh_host": "oby-mac-pro"}`, or `FACTORY_MAC_WORKER` for one run) also set, the Mac's part
+runs on that second Mac, set up by `remote/setup-mac.sh`, once the VM's part passed: in one call, `ssh
+oby-mac-pro oby-worker/bin/oby-remote-gate --mac <commit> origin/dev <group>...`. When it doesn't answer within
+60 seconds, both its slots are busy, it couldn't judge or was cut off, that part runs on this Mac as before.
 
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks

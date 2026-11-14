@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""factory/remote/oby-remote-gate's, setup.sh --pins' and tighten.sh's own tests, with no VM.
+"""factory/remote/oby-remote-gate's (its --mac mode too), setup.sh --pins', setup-mac.sh's and
+tighten.sh's own tests, with no VM and no Mac worker.
 
 Each RemoteGate test makes an origin repository whose scripts/oby-check.sh is a stand-in, and a
 root with repo.git cloned from it, as setup.sh makes /srv/oby. Each Tighten test runs the function
 setup.sh runs last on the host against a temporary home, root and gate, with this checkout's real
-scripts/oby-check.sh.
+scripts/oby-check.sh. The SetupMac tests run setup-mac.sh with a stand-in ssh that keeps the script
+it sends, and run that script against a temporary home.
 
 Run from the repository root: python3 factory/tests/test_remote_gate.py
 """
@@ -24,13 +26,15 @@ from pathlib import Path
 FACTORY = Path(__file__).resolve().parents[1]
 GATE = FACTORY / "remote" / "oby-remote-gate"
 SETUP = FACTORY / "remote" / "setup.sh"
+SETUP_MAC = FACTORY / "remote" / "setup-mac.sh"
 TIGHTEN = FACTORY / "remote" / "tighten.sh"
 CHECK = FACTORY.parent / "scripts" / "oby-check.sh"
 CI = FACTORY.parent / ".github" / "workflows" / "ci.yml"
 
 # The stand-in check: the plan prints $FAKE/groups' groups; a run records its slot, CARGO_TARGET_DIR,
-# OBY_CHECK_ONLY, its pid and a background child's, waits for $FAKE/release or $FAKE/release-<slot>,
-# and exits with $FAKE/exit-<group>'s code (0 without one).
+# OBY_CHECK_ONLY, its pid and a background child's (and in $FAKE/env its OBY_BUILD_JOBS, OBY_CHECK_CACHE
+# and PATH), waits for $FAKE/release or $FAKE/release-<slot>, and exits with $FAKE/exit-<group>'s code
+# (0 without one).
 FAKE_CHECK = """#!/bin/sh
 if [ -n "$OBY_CHECK_PLAN" ]; then
     for group in $(cat "$FAKE/groups"); do echo "oby-check: group $group"; done
@@ -39,6 +43,7 @@ if [ -n "$OBY_CHECK_PLAN" ]; then
 fi
 slot=$(basename "$(dirname "$PWD")")
 echo "$OBY_CHECK_ONLY ${CARGO_NET_OFFLINE:-unset} ${npm_config_offline:-unset}" >>"$FAKE/offline"
+echo "$OBY_CHECK_ONLY|$OBY_BUILD_JOBS|$OBY_CHECK_CACHE|$PATH" >>"$FAKE/env"
 sleep 300 >/dev/null 2>&1 &
 echo "$slot $CARGO_TARGET_DIR $OBY_CHECK_ONLY $$ $!" >>"$FAKE/runs"
 while [ ! -e "$FAKE/release" ] && [ ! -e "$FAKE/release-$slot" ]; do sleep 0.1; done
@@ -166,9 +171,11 @@ class RemoteGate(unittest.TestCase):
     def groups(self, *names):
         (self.fake / "groups").write_text(" ".join(names) + "\n")
 
-    def start(self, commit=None, base=None):
+    def start(self, commit=None, base=None, mac=None):
+        """oby-remote-gate, or with mac (a list of groups) oby-remote-gate --mac."""
+        args = [commit or self.commit, base or "origin/dev"]
         proc = subprocess.Popen(
-            [str(GATE), commit or self.commit, base or "origin/dev"],
+            [str(GATE), *(["--mac", *args, *mac] if mac is not None else args)],
             env=self.env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -274,6 +281,89 @@ class RemoteGate(unittest.TestCase):
         )
         # npm ci, before the electron group, still has the network.
         self.assertEqual((self.fake / "npm-offline").read_text(), "unset\n")
+
+
+    # ---- REMOTE-17: --mac --------------------------------------------------------------------
+
+    def test_remote_17_mac_runs_only_the_groups_given(self):
+        # The plan names other groups: --mac reads none, and runs these, in this order.
+        self.groups("rust", "electron", "scan")
+        (self.fake / "release").touch()
+        gate = self.start(base=self.base, mac=["swift", "factory", "rust"])
+        self.assertEqual(gate.finish(), 0, gate.output())
+        runs = self.runs()
+        self.assertEqual([run[2] for run in runs], ["swift", "factory", "rust"])
+        self.assertEqual({run[1] for run in runs}, {str(self.root / "slot-1" / "target")})
+        self.assertIn("oby-remote-gate: groups swift factory rust", gate.lines)
+        self.assertRegex(gate.lines[-1], r"^oby-remote-gate: passed in slot 1 after \d+s$")
+        self.assertEqual((self.fake / "offline").read_text().splitlines(),
+                         ["swift true true", "factory true true", "rust true true"])
+        jobs = str(max(1, (os.cpu_count() or 1) // 2))
+        home = Path.home()
+        for line in (self.fake / "env").read_text().splitlines():
+            group, build_jobs, cache, path = line.split("|", 3)
+            self.assertEqual((build_jobs, cache), (jobs, str(self.root / "slot-1" / "cache")), group)
+            self.assertTrue(path.startswith(f"{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:"), path)
+        self.assertFalse((self.root / "slot-3").exists(), "--mac made a third slot")
+
+    def test_remote_17_mac_both_slots_busy_ends_at_once(self):
+        held = []
+        for n in (1, 2):
+            (self.root / f"slot-{n}").mkdir()
+            fd = os.open(self.root / f"slot-{n}" / "lock", os.O_RDWR | os.O_CREAT, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held.append(fd)
+        # An origin that would fail any fetch, so a fetch would show.
+        self.env["OBY_REMOTE_URL"] = str(self.dir / "no-origin")
+        try:
+            started = time.monotonic()
+            gate = self.start(mac=["rust"])
+            self.assertEqual(gate.finish(seconds=10), 2, gate.output())
+            self.assertLess(time.monotonic() - started, 5)
+        finally:
+            for fd in held:
+                os.close(fd)
+        self.assertEqual(gate.lines, ["oby-remote-gate: both slots are busy"])
+        self.assertEqual(self.runs(), [])
+        self.assertFalse((self.root / "slot-3").exists(), "--mac looked past two slots")
+
+    def test_remote_17_mac_refuses_a_commit_not_on_origin(self):
+        missing = "0123456789abcdef0123456789abcdef01234567"
+        (self.fake / "release").touch()
+        gate = self.start(commit=missing, mac=["rust", "swift"])
+        self.assertEqual(gate.finish(), 2, gate.output())
+        self.assertIn(f"oby-remote-gate: {missing} isn't on origin", gate.lines)
+        self.assertEqual(self.runs(), [])
+
+    def test_remote_17_mac_dropped_connection_frees_the_slot(self):
+        gate = self.start(mac=["rust"])
+        self.wait_for_runs(1)
+        slot = gate.slot()
+        check, child = map(int, self.runs()[0][3:5])
+        gate.proc.stdin.close()
+        self.assertTrue(gone(check), f"the check {check} is still running after standard input closed")
+        self.assertTrue(gone(child), f"the check's child {child} is still running after standard input closed")
+        self.assertEqual(gate.finish(), 128 + signal.SIGHUP, gate.output())
+        fd = os.open(self.root / f"slot-{slot}" / "lock", os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+        (self.fake / "release").touch()
+        again = self.start(mac=["rust"])
+        self.assertEqual(again.slot(), slot)
+        self.assertEqual(again.finish(), 0, again.output())
+
+    def test_remote_17_mac_refuses_an_unknown_group(self):
+        (self.fake / "release").touch()
+        for groups, said in ((["rust", "electron"], "--mac runs only rust, swift, factory, not electron"),
+                             (["scan"], "--mac runs only rust, swift, factory, not scan"),
+                             ([], "--mac takes a commit, a base and one or more groups")):
+            gate = self.start(mac=groups)
+            self.assertEqual(gate.finish(), 2, gate.output())
+            self.assertIn(f"oby-remote-gate: {said}", gate.lines)
+        self.assertEqual(self.runs(), [])
+        self.assertFalse((self.root / "slot-1").exists(), "a usage error took a slot")
 
 
 class Pins(unittest.TestCase):
@@ -414,6 +504,108 @@ class Tighten(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0, done.stdout)
         self.assertIn("oby-check: failed: oby-check-blok (no oby-check-blok-nodes beside", done.stdout)
         self.assertFalse(self.marker.exists(), done.stdout)
+
+    def test_remote_18_tighten_covers_a_two_slot_root(self):
+        # The Mac worker's root: two slots, as setup-mac.sh makes it.
+        for n in (3, 4):
+            (self.root / f"slot-{n}").rmdir()
+            self.paths.remove(self.root / f"slot-{n}")
+        os.chmod(self.root, 0o777)
+        done = self.tighten()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("No such file", done.stdout)
+        for path in [*self.paths, self.home / ".rustup", self.root, self.gate]:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755, f"{path}\n{done.stdout}")
+        lines = done.stdout.splitlines()
+        for n in (1, 2):
+            self.assertTrue(any(line.startswith("drwxr-xr-x") and line.endswith(f"{self.root}/slot-{n}")
+                                for line in lines), done.stdout)
+        self.assertFalse(any(line.endswith(("/slot-3", "/slot-4", "/slot-*")) for line in lines), done.stdout)
+        # Under macOS's bash 3.2 too, which runs it on the Mac worker.
+        if Path("/bin/bash").exists():
+            os.chmod(self.root / "slot-2", 0o777)
+            done = subprocess.run(
+                ["/bin/bash", "-c", 'set -euo pipefail; . "$0"; tighten "$@"', str(TIGHTEN),
+                 *map(str, [self.home, self.root, self.gate, self.script, self.scratch])],
+                cwd=self.home, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stdout)
+            self.assertEqual((self.root / "slot-2").stat().st_mode & 0o777, 0o755, done.stdout)
+
+
+class SetupMac(unittest.TestCase):
+    """REMOTE-18: setup-mac.sh, with a stand-in ssh that keeps what it sends and runs nothing."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.bin = self.dir / "bin"
+        self.bin.mkdir()
+        self.sent = self.dir / "sent.sh"
+        self.tool("ssh", f'echo "$*" >"{self.dir}/ssh-args"\ncat >"{self.sent}"')
+        # This Mac's versions, as setup-mac.sh reads them.
+        self.tool("rustc", 'echo "rustc 1.99.1 (the Mac)"')
+        self.tool("xcodebuild", 'echo "Xcode 27.2"; echo "Build version 27A1"')
+        self.tool("node", "echo v24.0.0")
+        self.tool("gitleaks", "echo 8.30.1")
+        self.env = dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def tool(self, name, body, folder=None):
+        path = (folder or self.bin) / name
+        path.write_text(f"#!/bin/sh\n{body}\n")
+        path.chmod(0o755)
+
+    def setup_mac(self, *args):
+        return subprocess.run([str(SETUP_MAC), *args], env=self.env, capture_output=True, text=True, timeout=60)
+
+    def test_remote_18_setup_mac_uses_no_sudo_and_builds_from_origin_dev(self):
+        done = self.setup_mac()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # Through bash -s, never the host's login shell, to oby-mac-pro by default.
+        self.assertEqual((self.dir / "ssh-args").read_text(), "oby-mac-pro bash -s\n")
+        sent = self.sent.read_text()
+        self.assertEqual(subprocess.run(["bash", "-n", str(self.sent)]).returncode, 0)
+        self.assertNotRegex(sent, r"\bsudo\b")
+        self.assertNotRegex(SETUP_MAC.read_text(), r"\bsudo\b")
+        # oby-check-blok is built from the archive of origin/dev's commit in the clone, never a checked one.
+        self.assertIn('dev=$(git -C "$root/repo.git" rev-parse refs/remotes/origin/dev)', sent)
+        self.assertIn('git -C "$root/repo.git" archive "$dev" tools/oby-check-blok | tar -x -C "$tmp"', sent)
+        self.assertIn('cargo install --locked --quiet --path "$tmp/tools/oby-check-blok"', sent)
+        self.assertEqual(len(re.findall(r"cargo install", sent)), 1, sent)
+        # The one tighten.sh, run last with origin/dev's own check script on the two-slot root.
+        self.assertIn(TIGHTEN.read_text(), sent)
+        self.assertIn('tighten "$HOME" "$root" "$root/bin/oby-remote-gate" "$tmp/vet/scripts/oby-check.sh" "$tmp"',
+                      sent)
+        self.assertIn('mkdir -p "$root/slot-1" "$root/slot-2"', sent)
+        # This checkout's runner, sent whole.
+        found = re.search(r"^GATE_B64=(\S+)$", sent, re.MULTILINE)
+        decoded = subprocess.run(["base64", "--decode"], input=found.group(1).encode(), capture_output=True)
+        self.assertEqual(decoded.stdout, GATE.read_bytes())
+        self.assertEqual(self.setup_mac("another-mac").returncode, 0)
+        self.assertEqual((self.dir / "ssh-args").read_text(), "another-mac bash -s\n")
+
+    def test_remote_18_setup_mac_stops_on_a_rust_mismatch_before_writing(self):
+        self.assertEqual(self.setup_mac().returncode, 0)
+        # The host: its own rustc, and every tool there; its home gets nothing.
+        host = self.dir / "host-bin"
+        host.mkdir()
+        self.tool("rustc", 'echo "rustc 1.98.0 (the host)"', host)
+        for name in ("xcodebuild", "node", "gitleaks"):
+            shutil.copy(self.bin / name, host / name)
+        for name in ("git", "python3", "rustup", "cargo"):
+            self.tool(name, f'echo "{name} ran: $*" >>"{self.dir}/ran"', host)
+        self.tool("xcrun", 'echo "    iPhone 17 (0000) (Shutdown)"', host)
+        home = self.dir / "home"
+        home.mkdir()
+        done = subprocess.run(["bash", str(self.sent)], capture_output=True, text=True, timeout=60,
+                              env=dict(os.environ, HOME=str(home), PATH=f"{host}:/usr/bin:/bin"))
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        # Its rustc, or one Homebrew's folders hold, which come first there.
+        self.assertRegex(done.stdout, r"setup-mac.sh: rust: this host has rustc .*, the Mac rustc 1.99.1 \(the Mac\)")
+        self.assertIn("setup-mac.sh: nothing was written", done.stdout)
+        self.assertEqual(list(home.iterdir()), [])
+        self.assertFalse((self.dir / "ran").exists(), "a tool ran before the checks passed")
 
 
 if __name__ == "__main__":

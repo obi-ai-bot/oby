@@ -1,28 +1,32 @@
 # shellcheck shell=bash
-# What factory/remote/setup.sh runs last on the gate VM (docs/contracts/remote-gate.md, REMOTE-11): it
-# leaves nothing on the check's path writable by group or others. setup.sh sends this file to the host
-# ahead of its own function; reading it only defines tighten and what tighten uses, and runs nothing.
+# What factory/remote/setup.sh runs last on the gate VM, and setup-mac.sh on the second Mac
+# (docs/contracts/remote-gate.md, REMOTE-11 and 18): it leaves nothing on the check's path writable by
+# group or others. Each sends this file to the host ahead of its own function; reading it only defines
+# tighten and what tighten uses, and runs nothing. It runs under macOS's bash 3.2 too.
 #
 #   tighten <home> <root> <gate> <oby-check.sh> <scratch>
 #
 # It removes group and other write from every entry but a link under <home>/.cargo and <home>/.rustup,
-# and from <root> and its four slots (not what is in them); <gate> is installed root:root 0755 by setup's
-# first step, so it is only checked. Then it fails, naming each path, when any of them is still writable
+# and from <root> and the slot-* folders in it (not what is in them); <gate> is installed 0755 by setup's
+# earlier step, so it is only checked. Then it fails, naming each path, when any of them is still writable
 # by others or a binary is missing, and when <oby-check.sh>'s own rule refuses <home>/.cargo/bin's
 # oby-check-blok. Last, it prints their modes.
 
-# The entries but links under <home>/.cargo and <home>/.rustup, and <root> with its slots (not inside
-# them), that group or others may write, each ended by a NUL.
+# The entries but links under <home>/.cargo and <home>/.rustup, and <root> with the slots it has (not
+# inside them), that group or others may write, each ended by a NUL.
 tighten_writable() {
     local home=$1 root=$2 path deep=()
+    local shallow=("$root")
     for path in "$home/.cargo" "$home/.rustup"; do
         if [[ -e "$path" ]]; then deep+=("$path"); fi
     done
     if ((${#deep[@]})); then
         find "${deep[@]}" ! -type l \( -perm -020 -o -perm -002 \) -print0
     fi
-    find "$root" "$root/slot-1" "$root/slot-2" "$root/slot-3" "$root/slot-4" -prune \
-        ! -type l \( -perm -020 -o -perm -002 \) -print0
+    for path in "$root"/slot-*; do
+        if [[ -e "$path" ]]; then shallow+=("$path"); fi
+    done
+    find "${shallow[@]}" -prune ! -type l \( -perm -020 -o -perm -002 \) -print0
 }
 
 tighten() {
