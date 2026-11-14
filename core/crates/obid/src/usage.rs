@@ -10,7 +10,7 @@ use obi_protocol::time;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -58,6 +58,9 @@ pub struct Usage {
     /// said (USAGE-12): a window at 100% then doesn't read full ([`Usage::window_full`]). `None` in a
     /// report that says nothing of it (`/usage`, Codex's, a refusal), which keeps what was said.
     pub overage: Option<bool>,
+    /// What holds one model family's work or one job off it, until when (crate::limits::holds).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub holds: BTreeMap<String, i64>,
 }
 
 /// A window's share now: one whose reset has passed starts again from nothing.
@@ -234,8 +237,9 @@ impl Usages {
 
     /// Applies `update` to one account and saves every account. With `require_saved`, a change
     /// that isn't saved isn't applied either: the owner's changes are acknowledged only when kept.
-    /// A tool's report is applied anyway, so a fresh limit holds for this process.
-    fn change(
+    /// A tool's report is applied anyway, so a fresh limit holds for this process. A model's or a
+    /// job's hold gone by goes (crate::limits::holds).
+    pub(crate) fn change(
         &self,
         id: &str,
         require_saved: bool,
@@ -246,6 +250,7 @@ impl Usages {
         let value = next.entry(id.to_owned()).or_default();
         let was = value.clone();
         update(value);
+        value.holds.retain(|_, at| *at > time::now());
         let value = value.clone();
         let saved = serde_json::to_vec_pretty(&next)
             .map_err(std::io::Error::other)

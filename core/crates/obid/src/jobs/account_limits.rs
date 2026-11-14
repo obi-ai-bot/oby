@@ -4,6 +4,7 @@
 //! jobs, provider usage, and the scheduler. Clients only render and sign the offered choices.
 
 use super::*;
+use crate::limits::holds::{self, Holds};
 
 /// How long after its reset (or its question, with none known) an approved Resume on an account
 /// that has reported no usage since waits before it runs again anyway (#1645).
@@ -17,13 +18,6 @@ const RESUME_WAIT_NO_TIME: &str = "Waiting for ChatGPT's usage limit. It doesn't
 
 /// An approved Resume its account's weekly reserve alone holds.
 const RESERVE_WAIT: &str = "Waiting for the account's weekly reserve: it's past 80% of its week. Lift its reserve to resume now.";
-
-/// How long after a five-hour limit's reset its job resumes by itself, as Claude's desktop app
-/// does (LIMITS-5). The tool's clock and the Mac's may differ.
-const RESUME_AFTER_RESET: i64 = 90;
-
-/// How long a job waits for a limit whose end nobody knows before its account is tried again.
-const UNKNOWN_RESET: i64 = 60 * 60;
 
 /// What cut its run, as the session that resumes hears it (`continue_message`).
 const RESET_CAME: &str = "your account hit its usage limit, and that limit has reset";
@@ -128,8 +122,8 @@ impl Jobs {
     pub(super) async fn failover_for(&self, id: &str) -> Option<Failover> {
         let job = (self.get(id)).filter(|j| !j.named && self.account_failover())?;
         let (was, from) = crate::accounts::find(&self.config.agents.get(), &job.account)?;
-        let now = obi_protocol::time::now();
-        let held = |a: &str| (job.recovery.scoped_holds.iter()).any(|(h, at)| h == a && *at > now);
+        let (work, now) = (Work::of(&job), obi_protocol::time::now());
+        let held = |a: &str| self.holds().held(a, &work, now).is_some();
         let (tool, account) = (self
             .destinations(&job.agent, &job.account, std::slice::from_ref(&job))
             .await)
@@ -148,20 +142,18 @@ impl Jobs {
         ))
     }
 
+    /// The one table of what holds each account back (crate::limits::holds).
+    pub fn holds(&self) -> Holds<'_> {
+        Holds(&self.usage, &self.usage_changed)
+    }
+
     /// Job `id` hit `account`'s limit: the whole account's marks it full until `reset`; one
-    /// model's (USAGE-13) holds only this job off it until then, so its moves never come back to
-    /// it and, with nowhere left, it waits ([`Jobs::failover_for`]).
-    pub(super) fn limit_reached(&self, id: &str, account: &str, reset: Option<i64>, scoped: bool) {
+    /// model's (USAGE-13) holds this job, and that model's family, off it until then, so its moves
+    /// never come back to it and, with nowhere left, it waits ([`Jobs::failover_for`], LIMITS-21).
+    pub(super) fn limit_reached(&self, id: &str, on: &str, reset: Option<i64>, turn: &agent::Turn) {
+        let refused = Work::new(turn.family.as_deref(), Some(id), false);
         let now = obi_protocol::time::now();
-        if !scoped {
-            return self.mark_full(account, reset, now);
-        }
-        let until = reset.filter(|at| *at > now).unwrap_or(now + UNKNOWN_RESET);
-        self.update(id, |job| {
-            let holds = &mut job.recovery.scoped_holds;
-            holds.retain(|(held, at)| held != account && *at > now);
-            holds.push((account.to_owned(), until));
-        });
+        (self.holds()).apply(on, reset, turn.scoped.then_some(&refused), now);
     }
 
     /// A card from before LIMITS-15, pending or a Resume its account can't carry out, resolves
@@ -181,7 +173,7 @@ impl Jobs {
                     let at = self.limit_wait_until(
                         &job.account,
                         job.account_limit_reset,
-                        job.background(),
+                        &Work::of(&job),
                     );
                     let mut waits = false;
                     self.update(id, |job| {
@@ -223,15 +215,16 @@ impl Jobs {
         }
     }
 
-    /// When a job `account`'s limit stopped resumes there at the latest: 90 seconds after the reset
-    /// its tool said (LIMITS-5), else the one obid knows for `background` work (LIMITS-20), else in
-    /// an hour.
-    pub(super) fn limit_wait_until(&self, account: &str, reset: Option<i64>, bg: bool) -> i64 {
+    /// When `work` `account`'s limit stopped resumes there at the latest: 90 seconds after the
+    /// reset its tool said (LIMITS-5), else the one obid knows for it (LIMITS-20), else in an hour;
+    /// never before a hold on its family or on its job ends (LIMITS-21).
+    pub(super) fn limit_wait_until(&self, account: &str, reset: Option<i64>, work: &Work) -> i64 {
         let now = obi_protocol::time::now();
         let at = (reset.filter(|at| *at > now))
-            .or_else(|| self.usage.get(account).free_at(now, bg))
-            .unwrap_or(now + UNKNOWN_RESET);
-        at.max(now) + RESUME_AFTER_RESET
+            .or_else(|| self.usage.get(account).free_at(now, work.background))
+            .max(self.holds().scoped(account, work, now))
+            .unwrap_or(now + crate::usage::UNKNOWN_RESET);
+        holds::release_at(at.max(now))
     }
 
     /// When every signed-in account of `agent`'s tool (any, for none or `auto`) is at its limit
@@ -240,7 +233,7 @@ impl Jobs {
     pub(super) fn no_room(
         &self,
         agent: Option<&str>,
-        background: bool,
+        work: &Work,
     ) -> Option<(Tool, crate::config::Account, Option<Waiting>)> {
         let tools = match agent
             .map(str::trim)
@@ -257,10 +250,10 @@ impl Jobs {
             .filter(|(tool, a)| {
                 !self.being_changed(&a.id)
                     && signed_in(*tool, a, home.as_deref())
-                    && (!background || self.takes_background(a))
-                    && self.usage.get(&a.id).held_for(now, background).is_some()
+                    && (!work.background || self.takes_background(a))
+                    && self.holds().held(&a.id, work, now).is_some()
             })
-            .min_by_key(|(_, a)| self.limit_wait_until(&a.id, None, background))?;
+            .min_by_key(|(_, a)| self.limit_wait_until(&a.id, None, work))?;
         let wait = Waiting {
             kind: "cap".into(),
             text: String::new(),
@@ -278,7 +271,7 @@ impl Jobs {
             Some(wait) if wait.kind == "cap" => {
                 wait_for_reset(
                     job,
-                    self.limit_wait_until(&job.account, None, job.background()),
+                    self.limit_wait_until(&job.account, None, &Work::of(job)),
                 );
             }
             Some(wait) => {
@@ -317,11 +310,11 @@ impl Jobs {
                 continue;
             }
             let gone = !self.limit_source_is_connected(&job.agent, &job.account);
-            let usage = self.usage.get(&job.account);
-            if gone || usage.held_for(now, job.background()).is_some() {
+            let work = Work::of(&job);
+            if gone || self.holds().held(&job.account, &work, now).is_some() {
                 let at = match gone {
-                    true => now + UNKNOWN_RESET,
-                    false => self.limit_wait_until(&job.account, None, job.background()),
+                    true => now + crate::usage::UNKNOWN_RESET,
+                    false => self.limit_wait_until(&job.account, None, &work),
                 };
                 self.update(&id, |job| {
                     if waits(job) {
@@ -610,10 +603,10 @@ impl Jobs {
             .any(|j| j.background() && j.obi.is_none() && !j.read_only());
         let now = obi_protocol::time::now();
         let home = login_home();
-        let mut result = Vec::new();
+        let (mut result, any) = (Vec::new(), Work::new(None, None, background));
         for tool in Tool::ALL {
             for account in self.accounts(tool) {
-                let held = self.usage.get(&account.id).held_for(now, background);
+                let held = (self.holds()).held(&account.id, &any, now);
                 if account.id == from
                     || self.being_changed(&account.id)
                     || !signed_in(tool, &account, home.as_deref())

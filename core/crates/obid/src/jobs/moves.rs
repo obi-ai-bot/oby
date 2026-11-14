@@ -213,7 +213,7 @@ impl Jobs {
         let background = job.background();
         let (tool, chosen) = match crate::accounts::find(&self.config.agents.get(), &job.account) {
             Some(own) if account.is_none() && agent == Some(own.0.id()) => own,
-            _ => self.pick_for(agent, account, background)?,
+            _ => self.pick_for(agent, account, &Work::of(job))?,
         };
         if background && self.waits_for_yes(tool, &chosen) {
             return refused(format!("I need {}.", consent_words(&chosen.name)));
