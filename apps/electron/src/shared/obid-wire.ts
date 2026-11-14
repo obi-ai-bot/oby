@@ -224,6 +224,9 @@ export type Status = {
   running: number;
   // obid only: it takes working folders (on plans and conversations); an older obid sends none
   folders?: boolean;
+  // obid only: it takes a request key (`clientRequestId`) on messages, Stop and inbox answers
+  // (docs/contracts/receipts.md); an older obid sends none, and the app sends no key
+  receipts?: boolean;
   // obid only: the account new tasks go to (#1573), null for routing's own order; an older obid
   // sends none, and keeps no account's model either (#1574)
   defaultAccount?: string | null;

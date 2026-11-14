@@ -57,6 +57,30 @@ describe('signed words', () => {
     ] as const) expect(wordsOf(method, path, body), `${method} ${path} ${JSON.stringify(body)}`).toBeNull();
   });
 
+  it('words_1_a_request_key_signs_with_messages_and_inbox_answers_only', () => {
+    const key = 'click-1';
+    expect(wordsOf('POST', '/v1/jobs/j1/messages', { text: 'and this', conversation: true, clientRequestId: key })).toEqual(['and this']);
+    expect(wordsOf('POST', '/v1/jobs/j1/messages', { text: 'and this', attachments: ['/a'], clientRequestId: 'k'.repeat(128) })).toEqual(['and this']);
+    expect(wordsOf('POST', '/v1/inbox/i1/answer', { answer: 'SQLite', clientRequestId: key })).toEqual(['SQLite']);
+    expect(owners('POST', '/v1/inbox/i1/answer', { answer: 'SQLite', clientRequestId: key }, ['SQLite'], [])).toEqual([0]);
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    expect(wordsHeader(privateKey, 'd1', 'POST', '/v1/jobs/j1/messages', { text: 'and this', clientRequestId: key })).toMatch(/^d1 /);
+    for (const [path, words] of [['/v1/jobs/j1/messages', { text: 'and this' }], ['/v1/inbox/i1/answer', { answer: 'SQLite' }]] as const) {
+      // a key that isn't a string of 1 to 128 characters, or anything else along with it
+      for (const bad of ['', 'k'.repeat(129), 7, null, ['k']]) expect(wordsOf('POST', path, { ...words, clientRequestId: bad }), `${path} ${JSON.stringify(bad)}`).toBeNull();
+      expect(wordsOf('POST', path, { ...words, clientRequestId: key, requestId: key })).toBeNull();
+      expect(wordsOf('POST', path, { ...words, clientRequestId: key, mode: 'bypass' })).toBeNull();
+    }
+    // every other shape stays as it is
+    for (const [method, path, body] of [
+      ['POST', '/v1/plans', { said: 'Fix it', new: true, clientRequestId: key }], ['PATCH', '/v1/jobs/j1', { title: 'Mine', clientRequestId: key }],
+      ['POST', '/v1/jobs/j1/permission', { id: 'p1', decision: 'allow', clientRequestId: key }], ['POST', '/v1/jobs/j1/mode', { mode: 'bypass', clientRequestId: key }],
+      ['POST', '/v1/spheres/deskree/room', { text: 'Hi', clientRequestId: key }], ['POST', '/v1/obid/sphere/peers/dana/ask', { text: 'Hi', clientRequestId: key }],
+      ['POST', '/v1/accounts/a1/background', { given: true, clientRequestId: key }], ['POST', '/v1/jobs', { job: { task: 'x' }, clientRequestId: key }],
+      ['POST', '/v1/inbox/i1/answer', { later: '2026-10-30T10:00:00Z', clientRequestId: key }],
+    ] as const) expect(wordsOf(method, path, body), `${method} ${path}`).toBeNull();
+  });
+
   it('WORDS-13: the yes to work nobody’s watching on a ChatGPT login signs only by its own button’s label, in exactly its shape', () => {
     const path = '/v1/accounts/a1/background';
     expect(wordsOf('POST', path, { given: true })).toEqual([BACKGROUND_YES]);
