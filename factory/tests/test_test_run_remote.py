@@ -121,7 +121,10 @@ def gone(pid, seconds=15):
     return False
 
 
-class TestRunRemote(unittest.TestCase):
+class RemoteHarness:
+    """The throwaway repository, fake hosts and helpers, for a unittest.TestCase that mixes it in: this file's and
+    test_test_run_mac_worker.py's, which imports it without running these tests again."""
+
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp()).resolve()
         self.fake = self.dir / "fake"
@@ -287,6 +290,8 @@ class TestRunRemote(unittest.TestCase):
         self.assertEqual(len(self.run_calls()), tried)
         self.assertEqual(self.vm_runs(), [])
 
+
+class TestRunRemote(RemoteHarness, unittest.TestCase):
     # ---- REMOTE-22 -------------------------------------------------------------------------------
 
     def test_remote_22_a_test_run_lands_on_the_vm_in_a_builder_slot(self):
