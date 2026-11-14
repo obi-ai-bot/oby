@@ -105,8 +105,7 @@ fn config(folder: &Path, remote: &Path) -> Value {
         "agents": {"claude": {"bin": Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-claude"),
                               "accounts": [{"id": "stub", "name": "Stub", "configDir": folder.join("home/accounts/stub")}]}},
         "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()), "defaultBranch": "main", "pullRequests": true}],
-        "allowFileRemotes": true,
-        "telemetry": false
+        "allowFileRemotes": true
     })
 }
 
@@ -5544,18 +5543,43 @@ fn recording_config(folder: &Path, remote: &Path) -> (Value, PathBuf) {
     (config, account)
 }
 
-/// The last launch `folder/launches` recorded: its arguments and the names in its environment.
+/// The last run `folder/launches` recorded: its arguments and the names in its environment. obid
+/// reads the CLI's version in the background (CLIVERSIONS-1/3, `src/jobs/versions.rs`), so a
+/// `--version` call can land after the run: those are skipped, as is a call whose `args` aren't
+/// written yet, which can only be one of them.
 fn last_launch(folder: &Path) -> (Vec<String>, Vec<String>) {
     let calls = folder.join("launches/calls");
     let n = std::fs::read_dir(&calls).map_or(0, |dir| dir.count());
-    let lines = |file: &str| -> Vec<String> {
+    let lines = |n: usize, file: &str| -> Vec<String> {
         std::fs::read_to_string(calls.join(n.to_string()).join(file))
             .unwrap_or_default()
             .lines()
             .map(str::to_owned)
             .collect()
     };
-    (lines("args"), lines("input"))
+    (1..=n)
+        .rev()
+        .map(|n| (n, lines(n, "args")))
+        .find(|(_, args)| !args.is_empty() && args != &["--version"])
+        .map_or_else(Default::default, |(n, args)| (args, lines(n, "input")))
+}
+
+/// `last_launch` reads the run, not a `--version` read recorded after it, nor one still being
+/// written (the race behind `lanes_1_…`'s failure in R03-01's gate).
+#[test]
+fn last_launch_skips_a_version_read_recorded_after_the_run() {
+    let folder = Folder::new("last-launch");
+    let calls = folder.0.join("launches/calls");
+    for n in ["1", "2", "3"] {
+        std::fs::create_dir_all(calls.join(n)).unwrap();
+    }
+    std::fs::write(calls.join("1/args"), "-p\n--settings\n/tmp/settings.json\n").unwrap();
+    std::fs::write(calls.join("1/input"), "PATH\nCLAUDE_ENV_FILE").unwrap();
+    std::fs::write(calls.join("2/args"), "--version\n").unwrap();
+    std::fs::write(calls.join("2/input"), "PATH").unwrap();
+    let (args, env) = last_launch(&folder.0);
+    assert_eq!(args, ["-p", "--settings", "/tmp/settings.json"]);
+    assert_eq!(env, ["PATH", "CLAUDE_ENV_FILE"]);
 }
 
 /// Job `id`, ended, marked `untrusted` as a conversation that read something untrusted marks one,

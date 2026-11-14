@@ -71,7 +71,7 @@ async function setup(name, { seed = true, available = false, reset = now() + 360
   json(join(home, 'usage.json'), available ? { codex: room() } : (reset < now() ? { stub: room() } : {}));
   const port = await freePort();
   const config = {
-    listen: `127.0.0.1:${port}`, home, owner: 'wellington', telemetry: false,
+    listen: `127.0.0.1:${port}`, home, owner: 'wellington',
     claudeKeychain: false, cursorKeychain: false, allowFileRemotes: true,
     agents: {
       claude: { bin: join(agents, 'fake-claude'), accounts: [{ id: 'stub', name: 'Claude source', configDir: join(home, 'accounts/stub') }] },

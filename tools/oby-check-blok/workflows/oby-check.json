@@ -24,6 +24,12 @@
       "maxDuration": "20m"
     },
     {
+      "id": "factory-tests",
+      "use": "runtime.rust:factory-tests",
+      "description": "The factory's own tests (python3 -m unittest discover -s factory/tests).",
+      "maxDuration": "10m"
+    },
+    {
       "id": "secret-scan",
       "use": "runtime.rust:secret-scan",
       "description": "gitleaks on what changed. Nothing goes out unless it's clean.",

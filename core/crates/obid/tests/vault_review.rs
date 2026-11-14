@@ -87,8 +87,7 @@ async fn a_reviews_request_and_diff_reach_the_agent_without_the_vaults_secrets()
                                   "accounts": [{"id": "stub", "name": "Stub", "configDir": home.join("accounts/stub")}]}},
             "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
                        "defaultBranch": "main", "check": null}],
-            "allowFileRemotes": true,
-            "telemetry": false
+            "allowFileRemotes": true
         })
         .to_string(),
     )

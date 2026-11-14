@@ -17,7 +17,7 @@ use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::api::{ApiError, Shared};
+use crate::api::{ApiError, Shared, answer};
 use crate::events::Events;
 use crate::job::{Job, RoutineMark, Status, Waiting};
 use crate::jobs::{Jobs, NewJob};
@@ -1004,7 +1004,7 @@ fn pause_if_failing(shared: &Shared, routine: &Routine) {
         PAUSE_AFTER,
         obi_protocol::time::now(),
     );
-    shared.link.add_confirm(card);
+    let _ = shared.link.add_confirm(card);
 }
 
 /// Run now: a run for `now`, paused or not, that leaves its next time as it was.
@@ -1068,10 +1068,6 @@ pub fn spawn(shared: Arc<Shared>) {
             }
         }
     });
-}
-
-fn answer(status: StatusCode, value: Value) -> Response {
-    (status, axum::Json(value)).into_response()
 }
 
 fn unprocessable(why: impl Into<String>) -> ApiError {

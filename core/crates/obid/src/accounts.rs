@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::agent::Tool;
-use crate::api::{AccountJson, ApiError, Shared};
+use crate::api::{AccountJson, ApiError, Shared, answer};
 use crate::config::{Account, Agent, Agents};
 
 /// Where obid keeps what the API changed, under its home.
@@ -801,10 +801,6 @@ fn text_field<'a>(map: &'a Map<String, Value>, key: &str) -> Result<Option<&'a s
 
 fn no_account(id: &str) -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, format!("There's no account {id:?}."))
-}
-
-fn answer(status: StatusCode, value: impl Serialize) -> Response {
-    (status, axum::Json(value)).into_response()
 }
 
 /// Every account as the apps see it, worked out off obid's async runtime: whether an account is
@@ -2174,12 +2170,13 @@ impl Identity {
     }
 }
 
-/// A login started and not yet registered as a sign-in: dropped armed (its request ended), its
-/// whole process group is killed and its folder removed.
-struct Pending {
-    group: Option<u32>,
-    scratch: PathBuf,
-    armed: bool,
+/// A login started and not yet registered as a sign-in (gh's too, `github_login`): dropped armed
+/// (its request ended while it started), its whole group is killed (not yet reaped, so the id is
+/// still its) and its folder removed.
+pub(crate) struct Pending {
+    pub(crate) group: Option<u32>,
+    pub(crate) scratch: PathBuf,
+    pub(crate) armed: bool,
 }
 
 impl Drop for Pending {

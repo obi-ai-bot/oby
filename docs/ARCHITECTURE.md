@@ -93,7 +93,7 @@ The rules every component keeps:
 - **Oby merges only its own pull requests, only as its owner said** (AGENTS.md, "How work merges is learned, not fixed", and the owner's decision of 2026-10-24): a pull request a job of the owner's opened, once the review the repository's workflow names approved its head and the checks it names passed on that head, the way that workflow says, or on the owner's own tap where Oby hasn't learned one. By itself, never into `main`, `master` or `trunk` and never anyone else's pull request; on the owner's own Merge, into `main`, `master` or `trunk` and into another base than the learned workflow's (#1658), and anyone else's pull request on their word (proposed: Limits 2/3); and never for another Obi (docs/runner-api.md, "obid only: merging"). Deskree's own promotion rules (Xcode Cloud, `dev` to `main`, the three-review escalation) become configuration that changes what Oby checks and reports, never something that merges.
 - **Agents can't publish.** They run in sandboxed worktrees with no code-host login, no vault secret, and a clone whose push URL is invalid. Only the publish gate pushes, and only the owner's own work.
 - **Secrets stay in the vault.** No agent, plug-in or other Oby receives a vault secret, in any form. No vault secret and no token is ever in `obid`'s environment or arguments either, because other processes of the same user can read those (5.3, "What the sandbox can't hide").
-- **Telemetry is off** unless the owner turns it on.
+- **Oby sends no telemetry.**
 
 ## 5. Plug-ins
 

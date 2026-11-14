@@ -83,8 +83,11 @@ The tool runs only its built-in workflow (`tools/oby-check-blok/workflows/oby-ch
 its groups is asked with `OBY_CHECK_PLAN=1` and `OBY_CHECK_ONLY=<group>` and planned when it says
 `oby-check: group <group>`; then each planned group's node runs the script with `OBY_CHECK_ONLY`
 and `OBY_CHECK_INNER=1` set, so the script never hands it back. `OBY_CHECK_PATHS` and
-`OBY_CHECK_ALL` reach both (PUBLISHING-18). Four typed nodes, one at a time: `rust-affected-tests`,
-`swift-tests`, `ts-checks` and `secret-scan`. Each node's script output streams to stderr as it
+`OBY_CHECK_ALL` reach both (PUBLISHING-18). Five typed nodes, one at a time: `rust-affected-tests`,
+`swift-tests`, `ts-checks`, `factory-tests` and `secret-scan`. A branch whose script predates the
+`factory` group answers it `oby-check: invalid OBY_CHECK_ONLY` with exit 2: that group counts as not
+planned there, and any other planning failure, that answer for another group included, leaves the
+check not judged. Each node's script output streams to stderr as it
 comes (PUBLISHING-16), its own `couldn't judge:` line relayed as `oby-check: <group>: couldn't
 judge: …`, so obid reads only the check's own. It ends as the script did: `oby-check: passed`,
 exit 0; `oby-check: failed: <nodes>` on stderr, exit 1; or, with nothing failed and something not

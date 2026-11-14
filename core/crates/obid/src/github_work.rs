@@ -14,12 +14,12 @@ use std::time::Duration;
 
 use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use obi_protocol::time;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::api::{ApiError, Shared};
+use crate::api::{ApiError, Shared, answer};
 use crate::config::Config;
 use crate::events::Events;
 use crate::job::Job;
@@ -1644,10 +1644,6 @@ pub fn render(list: &str, repo: &str, number: u64, value: &Value, nonce: &str) -
         text.push_str(&format!("\nquoted-{nonce}>>>\n(Cut at the size limit.)"));
     }
     text + "\n"
-}
-
-fn answer(status: StatusCode, value: Value) -> Response {
-    (status, axum::Json(value)).into_response()
 }
 
 /// `GET /v1/github/work`.

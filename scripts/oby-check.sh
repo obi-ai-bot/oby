@@ -8,7 +8,7 @@
 #   scripts/oby-check.sh [base]    what changed since the merge base with base (default origin/dev),
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
 #                                  with OBY_CHECK_ALL=1, runs everything, whatever changed;
-#                                  with OBY_CHECK_ONLY=rust|electron|swift|scan, runs only that group;
+#                                  with OBY_CHECK_ONLY=rust|electron|swift|factory|scan, runs only that group;
 #                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
 #                                  obid sets it when it runs this on a job's base, which changed
 #                                  nothing, to see whether the base fails as the job does
@@ -25,7 +25,9 @@
 #                         (support, agents, plugins); tests/jobs_setup.rs for src/jobs/setup.rs,
 #                         sandbox.rs, egress.rs, process.rs or secretspec.rs, and, outside a job's
 #                         box, wherever tests/jobs_api.rs runs; tests/released_files.rs for
-#                         src/job.rs, config.rs or store.rs; every test of another touched crate
+#                         src/job.rs, config.rs or store.rs; every test of another touched crate;
+#                         an obid run whose failed tests are all on the flaky list
+#                         (core/.config/nextest.toml, which may only shrink) runs them once more
 #   docs/api/, obid's src/ files with a `.route(`, apps/electron/src (not its tests or mock), apps/shared,
 #   mcp/server            the Rust group above with tests/routes_guard.rs (docs/contracts/ci.md)
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
@@ -33,6 +35,8 @@
 #   mcp/, Package.swift   swift test
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #   scripts/oby-check*    scripts/oby-check-test.sh and the line limit below
+#   factory/bin/, factory/checks.sh, factory/tests/, factory/config.json
+#                         python3 -m unittest discover -s factory/tests, with no GitHub login
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
 # apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
@@ -148,7 +152,7 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # Dispatcher, not harness (AGENTS.md): how many production lines the Rust core may have outside the
 # Sphere. A cut lowers it. Raising it is the owner's word: this is the check, so a job's own change
 # to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
-obid_lines_limit=99052
+obid_lines_limit=99044
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
 jobs_rs_limit=15107
 # obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
@@ -209,10 +213,68 @@ tests_sleeps() {
         echo 0
     fi
 }
+# The flaky list (docs/contracts/ci.md, CI-26 to 28), from a copy of core/.config/nextest.toml on
+# stdin: an entry a line, its binary id, its test's full name and the task that fixes it, tab-separated,
+# or `malformed` and its first two lines for an override not in the list's shape. No file, no entry.
+flaky_list() {
+    local lines=() line i id test q="'"
+    # Each entry is these four lines: its task, its header, one exact test and two retries.
+    local comment='^# ([A-Z][A-Z0-9]*-[0-9]+): [^ ].*$'
+    local filter="filter = ${q}binary_id("
+    local named="^(obid(::[a-z0-9_]+)?)[)] & test[(]=([A-Za-z0-9_:]+)[)]${q}\$"
+    # Every override is an entry: a table or key naming overrides that isn't one is malformed.
+    local override="^[[:space:]]*([[].*overrides|[^=#${q}]*overrides[^=]*=)"
+    while IFS= read -r line || [[ -n "$line" ]]; do lines+=("$line"); done
+    for ((i = 0; i < ${#lines[@]}; i++)); do
+        line=${lines[i]}
+        [[ "$line" =~ $override ]] || continue
+        if [[ "$line" == '[[profile.ci.overrides]]' && "${lines[i + 1]}" == "$filter"* &&
+            "${lines[i + 1]#"$filter"}" =~ $named ]]; then
+            id=${BASH_REMATCH[1]} test=${BASH_REMATCH[3]}
+            if [[ "${lines[i + 2]}" == 'retries = 2' ]] && ((i > 0)) && [[ "${lines[i - 1]}" =~ $comment ]]; then
+                printf '%s\t%s\t%s\n' "$id" "$test" "${BASH_REMATCH[1]}"
+                continue
+            fi
+        fi
+        printf 'malformed\t%s %s\n' "$line" "${lines[i + 1]}"
+    done
+}
+flaky_at() { # base or tree: the flaky list there
+    if [[ "$1" == tree ]]; then
+        [[ ! -f core/.config/nextest.toml ]] || flaky_list <core/.config/nextest.toml
+    else
+        { git show "$1:core/.config/nextest.toml" 2>/dev/null || true; } | flaky_list
+    fi
+}
+# The failed tests a libtest run's output (stdin) names, a line each, only when every target it
+# started ended (a `test result:` for each `running N tests`) and the names are as many as its
+# summaries count failed. Else it fails: a crash, a build error or a garbled summary names nothing.
+failed_tests() {
+    awk '
+        /^running [0-9]+ tests?$/ { ran++ }
+        /^test result: / { ended++ }
+        /^test result: FAILED\. / { n = $0; sub(/ failed.*/, "", n); sub(/.* /, "", n); want += n; summaries++ }
+        names && /^    [^ ]+$/ { print substr($0, 5); got++; next }
+        { names = /^failures:$/ }
+        END { exit !(summaries && ran == ended && got == want) }'
+}
+# A failed run of binary `$1` (`obid` for the lib, `obid::<name>` for tests/<name>.rs), its output on
+# stdin: the tests to run once more, a line each, when every one it failed is on the flaky list at the
+# base and in the checked tree (CI-26). Else it fails, and nothing is retried (CI-27).
+flaky_retry() {
+    local names listed test
+    names=$(failed_tests) || return 1
+    listed=$(LC_ALL=C comm -12 <(flaky_at "$base" | cut -f1,2 | LC_ALL=C sort -u) \
+        <(flaky_at tree | cut -f1,2 | LC_ALL=C sort -u))
+    while IFS= read -r test; do
+        grep -qxF "$1	$test" <<<"$listed" || return 1
+    done <<<"$names"
+    printf '%s\n' "$names"
+}
 
 failed=() unjudged=()
 case "${OBY_CHECK_ONLY:-}" in
-    ''|rust|electron|swift|scan) ;;
+    ''|rust|electron|swift|factory|scan) ;;
     *) echo 'oby-check: invalid OBY_CHECK_ONLY' >&2; exit 2 ;;
 esac
 group=rust
@@ -244,7 +306,7 @@ plan_group() {
 # tail. Stopped (the check's 45 minutes), it names the binaries still running.
 # ponytail: the longest first by its source's lines; keep each binary's last time if that's off.
 test_binaries() {
-    local dir list status=0 exe name want got
+    local dir list status=0 exe name want got flaky again test
     # In TMPDIR, named: macOS's `mktemp -d` alone ignores TMPDIR, and a job's box can't write the
     # Mac's own temporary folder.
     dir=$(mktemp -d "${TMPDIR:-/tmp}/oby-check.XXXXXX")
@@ -279,6 +341,20 @@ test_binaries() {
     (cd core/crates/obid && tr '\n' '\0' <"$list" | RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" \
         xargs -0 -n 1 -P "$(((jobs + 1) / 2))" sh -c '"$2" --quiet >"$1/${2##*/}.out" 2>&1; echo $? >"$1/${2##*/}.status"' _ "$dir")
     trap - TERM
+    # Then, one at a time, a binary whose failed tests are all on the flaky list runs them once more,
+    # and passes if they do (CI-26, CI-27).
+    while IFS= read -r exe; do
+        name=${exe##*/}
+        [[ "$(cat "$dir/$name.status" 2>/dev/null)" == 101 ]] || continue
+        flaky=$(flaky_retry "obid::${name%-*}" <"$dir/$name.out") || continue
+        again=()
+        while IFS= read -r test; do again+=("$test"); done <<<"$flaky"
+        if (cd core/crates/obid && RUST_TEST_THREADS="${OBY_TEST_THREADS:-2}" "$exe" --quiet --exact "${again[@]}") \
+            </dev/null >"$dir/$name.again" 2>&1; then
+            echo 0 >"$dir/$name.status"
+            printf '%s\n' "$flaky" >"$dir/$name.flaky"
+        fi
+    done <"$list"
     for pass in ok failed; do
         while IFS= read -r exe; do
             name=${exe##*/}
@@ -290,11 +366,38 @@ test_binaries() {
             fi
             echo "     Running ${name%-*}"
             cat "$dir/$name.out"
+            if [[ -f "$dir/$name.again" ]]; then
+                echo "     Running ${name%-*} again, its listed flaky tests only"
+                cat "$dir/$name.again"
+            fi
+            [[ ! -f "$dir/$name.flaky" ]] || sed "s/^/retried flaky: obid::${name%-*} /" "$dir/$name.flaky"
             [[ $pass == ok ]] || echo "oby-check: tests/${name%-*}.rs failed" >&2
         done <"$list"
     done
     rm -rf "$dir"
     return "$status"
+}
+
+# obid's lib tests: cargo's command, with `--no-fail-fast`, so every target runs to its end and a
+# retry never stands in for one that didn't run. If the tests it failed are all on the flaky list, the
+# same targets run them once more, in place of its filters, and it passes if they do (CI-26, CI-27).
+lib_tests() {
+    local out flaky cargo_args=() again=() arg test
+    out=$(mktemp "${TMPDIR:-/tmp}/oby-check.XXXXXX")
+    if "$@" | tee "$out"; then
+        rm -f "$out"
+        return 0
+    fi
+    flaky=$(flaky_retry obid <"$out") || { rm -f "$out"; return 1; }
+    rm -f "$out"
+    for arg in "$@"; do
+        [[ "$arg" != -- ]] || break
+        cargo_args+=("$arg")
+    done
+    while IFS= read -r test; do again+=("$test"); done <<<"$flaky"
+    echo "oby-check: obid's lib tests again, their listed flaky tests only"
+    "${cargo_args[@]}" -- --exact "${again[@]}" || return 1
+    sed 's/^/retried flaky: obid /' <<<"$flaky"
 }
 
 # The top-level types a Swift test file declares, its suites, each after `$1`.
@@ -303,7 +406,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script=''
+rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script='' factory=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -366,6 +469,7 @@ while IFS= read -r file; do
     case "$file" in
         apps/electron/*) electron=1 ;;
         scripts/oby-check*) check_script=1 ;;
+        factory/bin/* | factory/checks.sh | factory/tests/* | factory/config.json) factory=1 ;;
     esac
 done <<< "$changed"
 # Not nested (the Mac's own check of a pull request), what plans tests/jobs_api.rs plans the setup's
@@ -379,7 +483,7 @@ fi
 # Electron app, swift test and the Apple apps' build (no suites named: build-for-testing). The secret
 # scan still covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1
+    rust=1 blok=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1 factory=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -423,6 +527,27 @@ if selected && [[ -n "$rust$check_script" ]]; then
     else
         echo "oby-check: obid's tests have $sleeps sleep calls, within their limit of $tests_sleep_limit"
     fi
+    # The flaky list may only shrink (CI-28): an entry the base's list hasn't comes with the task that
+    # fixes it, a file this change adds.
+    flaky_base=$(flaky_at "$base" | cut -f1,2)
+    flaky_tree=$(flaky_at tree)
+    flaky_bad=''
+    while IFS=$'\t' read -r id test key; do
+        if [[ "$id" == malformed ]]; then
+            echo "oby-check: core/.config/nextest.toml has an override that isn't a flaky list entry: $test: write it as the list's entries are (docs/contracts/ci.md, CI-28), or take it out" >&2
+            flaky_bad=1
+        elif [[ -n "$id" ]] && ! grep -qxF "$id	$test" <<<"$flaky_base"; then
+            if [[ ! -f "factory/queue/tasks/$key.md" ]] || git cat-file -e "$base:factory/queue/tasks/$key.md" 2>/dev/null; then
+                echo "oby-check: the flaky list's new entry $id $test names $key, a task this change doesn't add: add factory/queue/tasks/$key.md, the task that fixes it, in the same change, or take the entry out of core/.config/nextest.toml" >&2
+                flaky_bad=1
+            fi
+        fi
+    done <<<"$flaky_tree"
+    if [[ -n "$flaky_bad" ]]; then
+        failed+=("the flaky list")
+    else
+        echo "oby-check: the flaky list has $(grep -c . <<<"$flaky_tree" || true) tests, each new one with the task this change adds to fix it"
+    fi
 fi
 
 if selected && [[ -n "$blok" ]]; then
@@ -445,11 +570,11 @@ if selected && [[ -n "$rust" ]]; then
         step "${cargo[@]}" clippy "${manifest[@]}" "${packages[@]}" --all-targets -- -D warnings
     fi
     if [[ -n "$lib_all" ]]; then
-        step "${cargo[@]}" test "${manifest[@]}" -p obid --lib --bins
+        step lib_tests "${cargo[@]}" test "${manifest[@]}" --no-fail-fast -p obid --lib --bins
     elif [[ -n "$lib" ]]; then
         filters=()
         while IFS= read -r filter; do filters+=("$filter"); done < <(each "$lib")
-        step "${cargo[@]}" test "${manifest[@]}" -p obid --lib -- "${filters[@]}"
+        step lib_tests "${cargo[@]}" test "${manifest[@]}" --no-fail-fast -p obid --lib -- "${filters[@]}"
     fi
     binaries=()
     while IFS= read -r test; do
@@ -505,6 +630,16 @@ if selected && [[ -n "$electron" ]]; then
     step npm --prefix apps/electron run --silent typecheck
     step npm --prefix apps/electron run --silent test
     step npm --prefix apps/electron run --silent build
+fi
+
+# The factory's own tests (factory/tests), in a job's box too: they need no network, no lock and no
+# build, and nothing outside TMPDIR and the checkout. The owner's GitHub login stays out of them (their
+# gh is a stand-in), and Python writes no __pycache__ into the checkout.
+group=factory
+if selected && [[ -n "$factory" ]]; then
+    step env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+        GH_CONFIG_DIR=/nonexistent/oby-check-no-gh-login PYTHONDONTWRITEBYTECODE=1 \
+        python3 -m unittest discover -s factory/tests
 fi
 
 # What changed, committed or not, scanned for secrets with this repository's rules.

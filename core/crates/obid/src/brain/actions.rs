@@ -1192,7 +1192,7 @@ pub(super) fn confirm(
 ) {
     let item =
         crate::sphere::inbox::confirm_item(job, title, text, confirmed, obi_protocol::time::now());
-    shared.link.add_confirm(item);
+    let _ = shared.link.add_confirm(item);
 }
 
 #[cfg(test)]

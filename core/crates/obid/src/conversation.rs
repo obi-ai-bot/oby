@@ -1497,7 +1497,9 @@ impl Conversations {
         {
             thread.talk_account = None;
             if let Err(e) = self.write(thread) {
+                thread.talk_account = Some(account.to_owned());
                 tracing::warn!("conversation {}: its choice stays: {e}", thread.id);
+                continue;
             }
             self.events.send("conversation", thread.summary());
         }
@@ -2822,6 +2824,44 @@ mod tests {
         assert_eq!(threads[0].turns.last().unwrap().text, "accepted");
         assert!(!threads[0].turns.iter().any(|turn| turn.text == "rejected"));
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// HOME-3: a conversation whose removed account couldn't be forgotten on disk keeps its
+    /// choice in memory and says nothing; once the folder takes it, one event says it.
+    #[test]
+    fn home_3_a_forgotten_account_that_cant_be_kept_sends_no_event() {
+        let home = std::env::temp_dir().join(format!("obid-conversation-{}", uuid::Uuid::new_v4()));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(home.clone());
+        let events = crate::events::Events::new();
+        let conversations = super::Conversations::open(&home, events.clone());
+        let id = conversations.start_for("Talk").unwrap();
+        conversations
+            .change(&id, None, None, None, Some(Some("gone".into())))
+            .unwrap();
+        let saved = home.join("saved");
+        std::fs::rename(&conversations.dir, &saved).unwrap();
+        std::fs::write(&conversations.dir, b"not a directory").unwrap();
+        let mut received = events.subscribe();
+        conversations.forget_account("gone");
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(conversations.talk_account(&id).as_deref(), Some("gone"));
+        std::fs::remove_file(&conversations.dir).unwrap();
+        std::fs::rename(&saved, &conversations.dir).unwrap();
+        conversations.forget_account("gone");
+        let sent: Vec<_> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].name, "conversation");
+        assert_eq!(sent[0].data["id"], id.as_str());
+        assert_eq!(conversations.talk_account(&id), None);
     }
 
     #[test]

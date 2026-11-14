@@ -1048,6 +1048,7 @@ impl Link {
         use crate::jobs::PermissionNote;
         let now = time::now();
         let mut changed = Vec::new();
+        let mut new = None;
         {
             let mut state = self.lock();
             match note {
@@ -1059,10 +1060,7 @@ impl Link {
                             changed.push(other.clone());
                         }
                     }
-                    if !state.inbox.contains_key(&item.id) {
-                        state.inbox.insert(item.id.clone(), item.clone());
-                        changed.push(item);
-                    }
+                    new = Some(item);
                 }
                 PermissionNote::Settled {
                     job,
@@ -1080,6 +1078,9 @@ impl Link {
         }
         for item in &changed {
             self.save_item(item);
+        }
+        if let Some(item) = new {
+            self.add_once(item);
         }
     }
 
@@ -1117,34 +1118,20 @@ impl Link {
                     }
                 }
             }
-            for (work, known) in new.iter().zip(known) {
-                let item = inbox::github_item(work, known, now);
-                if !state.inbox.contains_key(&item.id) {
-                    state.inbox.insert(item.id.clone(), item.clone());
-                    changed.push(item);
-                }
-            }
         }
         for item in &changed {
             self.save_item(item);
+        }
+        for (work, known) in new.iter().zip(known) {
+            self.add_once(inbox::github_item(work, known, now));
         }
     }
 
     /// Items obid made (the owner's reviews ready to post, crate::jobs): each one that never was in
     /// the inbox, open or done.
     pub fn add_items(&self, items: Vec<Item>) {
-        let mut changed = Vec::new();
-        {
-            let mut state = self.lock();
-            for item in items {
-                if !state.inbox.contains_key(&item.id) {
-                    state.inbox.insert(item.id.clone(), item.clone());
-                    changed.push(item);
-                }
-            }
-        }
-        for item in &changed {
-            self.save_item(item);
+        for item in items {
+            self.add_once(item);
         }
     }
 
@@ -1442,23 +1429,13 @@ impl Link {
             },
             time::now(),
         );
-        let added = {
-            let mut state = self.lock();
-            let open = state.inbox.values().any(|i| {
-                i.kind == "confirm"
-                    && i.done.is_none()
-                    && i.confirm.as_ref().is_some_and(|c| {
-                        c.action == inbox::action::ADD_REPOSITORY && c.target == offer
-                    })
-            });
-            if !open {
-                state.inbox.insert(item.id.clone(), item.clone());
-            }
-            !open
-        };
-        if added {
-            self.save_item(&item);
-        }
+        let _ = self.add_new(item, |i| {
+            i.kind == "confirm"
+                && i.done.is_none()
+                && i.confirm
+                    .as_ref()
+                    .is_some_and(|c| c.action == inbox::action::ADD_REPOSITORY && c.target == offer)
+        });
         api(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("Adding {repo} waits for your Confirm in the inbox."),
@@ -1573,9 +1550,41 @@ impl Link {
         let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         let now = self.lock().inbox.get(&item.id).cloned();
         let item = now.as_ref().unwrap_or(item);
-        let kept = self.inbox.save(item).map_err(|e| e.to_string());
+        self.inbox.save(item).map_err(|e| e.to_string())?;
         self.events.send("inbox", self.shown(item));
-        kept
+        Ok(())
+    }
+
+    /// A new item obid made joins the inbox only once it's on disk, and only then do the apps hear
+    /// of it (docs/contracts/home.md, HOME-4): one whose save failed isn't there at all, and
+    /// obid logs why. `stands`: whether an item the inbox holds stands in its place (the same id,
+    /// or an open card for the same thing); then nothing is added, and that one is answered. Never
+    /// with this Link's state locked.
+    fn add_new(&self, item: Item, stands: impl Fn(&Item) -> bool) -> Result<Item, String> {
+        let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(open) = self.lock().inbox.values().find(|i| stands(i)) {
+            return Ok(open.clone());
+        }
+        if let Err(e) = self.inbox.save(&item) {
+            tracing::error!("can't keep inbox item {}: {e}", item.id);
+            return Err(e.to_string());
+        }
+        {
+            let mut state = self.lock();
+            if let Some(open) = state.inbox.values().find(|i| stands(i)) {
+                return Ok(open.clone());
+            }
+            state.inbox.insert(item.id.clone(), item.clone());
+        }
+        self.events.send("inbox", self.shown(&item));
+        Ok(item)
+    }
+
+    /// [`Link::add_new`] for an item with an id of its own: one the inbox already has, open or
+    /// done, stands.
+    fn add_once(&self, item: Item) {
+        let id = item.id.clone();
+        let _ = self.add_new(item, |i| i.id == id);
     }
 
     /// The inbox's sorts as they are now (crate::triage), over `inbox`.

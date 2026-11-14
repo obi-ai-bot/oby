@@ -366,8 +366,7 @@ impl Link {
                     "sphere: exchange {cid}: obid approved {repo}#{pr} and couldn't dismiss it ({failed}) though {why}: the owner removes {url} on GitHub"
                 );
                 let item = approval::dismissal_item(cid, &job, &repo, pr, &url, time::now());
-                self.lock().inbox.insert(item.id.clone(), item.clone());
-                self.save_item(&item);
+                let _ = self.add_new(item, |_| false);
             }
         }
     }

@@ -6,7 +6,7 @@ commit's Linux check groups in one of four slots there. Task A00-10 built the ga
 those groups on the VM, starts it when it is stopped, keeps the macOS-only part on the Mac and falls back to
 the Mac, and the Mac's `factory/bin/job queue` deallocates the VM once it is idle. Gates use the VM once the
 owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). The scenarios are
-[REMOTE-1 to 9](contracts/remote-gate.md).
+[REMOTE-1 to 12](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -18,7 +18,15 @@ owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). 
   minutes (`gate --idle`), and the owner's 05:00 UTC auto-shutdown stays as the safety net.
 - Set up by `factory/remote/setup.sh` with `.github/workflows/ci.yml`'s pins (Rust toolchain, Node major,
   gitleaks and its SHA-256, the bwrap proof), read from the checkout, never copied: `setup.sh --pins` prints
-  them. Run it again whenever: what is already at its pin is left as it is.
+  them. Run it again whenever: what is already at its pin is left as it is. It also installs every package
+  ci.yml installs with apt-get (today bubblewrap, slirp4netns and zsh, the last for the ChatGPT gate's test,
+  which runs `scripts/package.sh` with `/bin/zsh`), [REMOTE-12](contracts/remote-gate.md).
+- Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
+  host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
+  slots (`factory/remote/tighten.sh`), checks `oby-check-blok` with origin/dev's own `scripts/oby-check.sh`,
+  stops naming any path still writable by others, and prints their modes. Ubuntu's default umask (0002)
+  had left `~/.cargo`, `~/.cargo/bin` and `oby-check-blok` group-writable, so the check refused its tool
+  (A00-09's gate); on 2026-11-13 the live VM was fixed by hand (`chmod go-w` on those three paths).
 
 ## The problem in one picture
 
@@ -36,7 +44,8 @@ The Linux suite has been green since #2170, so most of the check no longer needs
  ─────────────────────────────────────                ─────────────────────────────────────
  factory/bin/gate <job>
    ├─ plan = OBY_CHECK_PLAN=1 oby-check.sh
-   ├─ remote? (remote_gate set, plan has rust, electron or scan, the commit on origin)
+   ├─ remote? (remote_gate set, plan has rust, electron or scan, the commit on origin;
+   │           a diff touching the check's own files runs the whole check on the Mac instead)
    │     ├─ az vm start (if deallocated) ───────────▶ boots in ~1 min, keeps its disk
    │     ├─ ssh oby-gate oby-remote-gate \
    │     │        <commit> <base> ──────────────────▶ the first free slot N of 4, or wait for one
@@ -44,8 +53,9 @@ The Linux suite has been green since #2170, so most of the check no longer needs
    │     │                                            worktree in slot N, its own CARGO_TARGET_DIR
    │     │                                            OBY_CHECK_ONLY=rust, electron, scan
    │     │  ◀─── output streamed, exit 0/1/2 ──────── 
-   │     └─ then on the Mac, once the VM's part passed: OBY_CHECK_ONLY=swift when planned,
-   │           and OBY_CHECK_ONLY=rust when the diff touches a macOS-only path
+   │     └─ then on the Mac, once the VM's part passed: OBY_CHECK_ONLY=rust when the diff
+   │           touches a macOS-only path, OBY_CHECK_ONLY=swift when planned,
+   │           and OBY_CHECK_ONLY=factory when planned
    └─ round-N/checks.md: verdict, commit, checks.sh hash, HOST: oby-gate | oby-gate, mac | mac
  factory/bin/job queue → gate --idle
    └─ idle 30 min, no job in gate or merging: az vm deallocate --no-wait ──▶ deallocated
@@ -69,7 +79,11 @@ The Linux suite has been green since #2170, so most of the check no longer needs
     `tests/jobs_setup.rs`, `tests/secretspec.rs`.
 
   When git can't tell, every touched file counts, and when in doubt a file joins the list. swift (which
-  `apps/` and `mcp/` reach) runs on the Mac whenever it is planned. The nightly full Mac run (R01-14) covers everything else
+  `apps/` and `mcp/` reach) and factory (the factory's own tests, which the VM never runs) run on the Mac
+  whenever they are planned. A diff touching the check's own files (`scripts/oby-check.sh`,
+  `scripts/oby-check-test.sh` or anything under `tools/oby-check-blok/`, REMOTE-10) runs the whole check
+  on the Mac, with no VM use: `oby-check-test.sh` expects macOS's plan, so on the VM it would fail the
+  change for the machine. The nightly full Mac run (R01-14) covers everything else
   every night. This is the same trade the owner accepted for merging in #2163.
 - **The VM needs no secrets.** `obi-ai-bot/oby` is public, so the VM fetches commits without a token.
   The check runs offline after `cargo fetch` and `npm ci`. No owner login, agent login or vault value
@@ -167,6 +181,9 @@ Steps 1 to 4 were done before A00-03 was built. After A00-10 merges:
 
 ## Still to build
 
+- **Re-run `factory/remote/setup.sh oby-gate` on the real VM**, starting it only for this and deallocating
+  it after, and record the modes it prints before and after (task A00-12's last step, not done by its pull
+  request).
 - **A check user without `sudo`** on the VM, separate from the admin user `oby` (a change to `setup.sh` and
   to how the gate reaches the VM).
 - **Records in `~/.oby-flow/pipelines/runs.jsonl`**, the file the pipelines viewer reads: each gate's host,

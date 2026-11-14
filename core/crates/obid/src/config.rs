@@ -8,8 +8,7 @@
 //!             "codex": {"bin": "codex", "accounts": [{"id": "work", "name": "Work", "configDir": "/abs/path/codex-work"}]},
 //!             "cursor": {"bin": "cursor-agent", "accounts": [{"id": "cursor", "name": "Cursor", "configDir": "/abs/path/cursor"}]}},
 //!  "repos": [{"repo": "obi-e2e/fixture-app", "remote": "file:///abs/path/remote.git", "defaultBranch": "main", "check": "node --test"}],
-//!  "allowFileRemotes": false,
-//!  "telemetry": false}
+//!  "allowFileRemotes": false}
 //! ```
 //!
 //! A top-level key the file doesn't know, or a key a later obid retired from a section, is ignored
@@ -65,8 +64,6 @@ struct File {
     repos: Vec<Repo>,
     #[serde(default)]
     allow_file_remotes: bool,
-    #[serde(default)]
-    telemetry: bool,
     /// Whether obid keeps the Mac from idle sleep while a job's worker runs (crate::power); true
     /// when left out.
     keep_awake: Option<bool>,
@@ -245,8 +242,6 @@ pub struct Config {
     /// the file), and GitHub's that gh can push to (crate::repos). Every copy shares them.
     pub repos: crate::repos::Repos,
     pub allow_file_remotes: bool,
-    /// False unless the owner turns it on; obid sends nothing to anyone otherwise.
-    pub telemetry: bool,
     /// Where the owner's vault is (crate::vault).
     pub vault: crate::vault::Location,
     /// Whether the configuration still says `{"store": "keychain"}`, which is the file since #1679:
@@ -574,7 +569,6 @@ impl Config {
             agents: crate::accounts::Live::new(file.agents),
             repos: crate::repos::Repos::new(file.repos),
             allow_file_remotes: file.allow_file_remotes,
-            telemetry: file.telemetry,
             vault_says_keychain: file.vault.as_ref().is_some_and(|v| v.store == "keychain"),
             vault,
             stall_after: std::time::Duration::from_secs(stall_after),
@@ -790,8 +784,7 @@ mod tests {
             "owner": "wellington",
             "agents": {"claude": {"bin": "claude", "accounts": [{"id": "default", "name": "Default", "configDir": null}]}},
             "repos": [{"repo": "obi-e2e/fixture-app", "remote": "https://github.com/obi-e2e/fixture-app.git", "defaultBranch": "main", "check": "node --test"}],
-            "allowFileRemotes": false,
-            "telemetry": false
+            "allowFileRemotes": false
         });
         for (key, value) in changes.as_object().unwrap() {
             if value.is_null() {
@@ -827,7 +820,6 @@ mod tests {
         );
         assert_eq!(config.repos.get()[0].check.as_deref(), Some("node --test"));
         assert!(!config.allow_file_remotes);
-        assert!(!config.telemetry);
     }
 
     #[test]
@@ -837,11 +829,9 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_is_off_unless_turned_on() {
-        let config = Config::parse(&with(serde_json::json!({"telemetry": null}))).unwrap();
-        assert!(!config.telemetry);
+    fn retired_1_an_old_telemetry_key_is_ignored_and_named() {
         let config = Config::parse(&with(serde_json::json!({"telemetry": true}))).unwrap();
-        assert!(config.telemetry);
+        assert!(config.ignored.contains(&"telemetry".to_owned()));
     }
 
     /// Conversations are agent sessions on Sonnet for 10 minutes a turn unless the owner says
@@ -1100,7 +1090,6 @@ mod tests {
             config.ignored,
             ["telemetri", "zzRetired", "conversation.harness"]
         );
-        assert!(!config.telemetry);
         let typos = [
             (
                 "agents",

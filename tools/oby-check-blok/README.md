@@ -44,9 +44,11 @@ Another project makes its check this workflow in four steps; obid needs no chang
    make it plan by groups: with `OBY_CHECK_PLAN=1` and `OBY_CHECK_ONLY=<group>` it runs nothing and
    prints `oby-check: group <group>` once when that group has work; with `OBY_CHECK_ONLY` alone it
    runs that group and exits 0 when it passed, else non-zero, and a line starting `couldn't judge: `
-   when it couldn't judge. The groups are `rust`, `electron`, `swift` and `scan` today (the nodes
-   `rust-affected-tests`, `ts-checks`, `swift-tests`, `secret-scan`), whatever each runs in that
-   project. Nothing passes unless `scan` planned work and passed.
+   when it couldn't judge. The groups are `rust`, `electron`, `swift`, `factory` and `scan` today (the
+   nodes `rust-affected-tests`, `ts-checks`, `swift-tests`, `factory-tests`, `secret-scan`), whatever
+   each runs in that project. A script that answers `factory` with `oby-check: invalid OBY_CHECK_ONLY`
+   and exit 2 (one older than that group) has it counted as not planned. Nothing passes unless `scan`
+   planned work and passed.
 3. Put the same hand-off at the script's top, after its `cd` to the repository's root: this
    repository's `scripts/oby-check.sh`, from `resolved()` to its `exec`. It resolves the first
    `oby-check-blok` on `PATH` once and runs that path only when it and the nodes binary beside it are
@@ -69,7 +71,7 @@ file's order, honoring BLOK's step settings:
 
 | Setting | What it does here |
 |---|---|
-| `use` | `runtime.rust:rust-affected-tests`, `runtime.rust:swift-tests`, `runtime.rust:ts-checks` or `runtime.rust:secret-scan`, each once |
+| `use` | `runtime.rust:rust-affected-tests`, `runtime.rust:swift-tests`, `runtime.rust:ts-checks`, `runtime.rust:factory-tests` or `runtime.rust:secret-scan`, each once |
 | `active: false` | skips the step; its group counts as not judged |
 | `stop: true` | halts the workflow after the step; later planned steps count as not judged |
 | `retry.maxAttempts` | tries again a node that couldn't judge (a transport error, a timeout), never a failure |
@@ -77,4 +79,4 @@ file's order, honoring BLOK's step settings:
 
 A planned group with no step, skipped or stopped is never a pass: the run folds to `unjudged`. A step this
 host can't run (`branch`, `switch`, `forEach`, `tryCatch`, `wait`, `loop`, `subworkflow`, a node that isn't
-one of the four) makes the whole run `unjudged`, with the reason, rather than running something else.
+one of the five) makes the whole run `unjudged`, with the reason, rather than running something else.

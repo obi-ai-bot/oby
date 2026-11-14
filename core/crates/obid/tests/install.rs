@@ -572,7 +572,6 @@ fn the_configuration_it_writes_is_obids_defaults() {
     assert_eq!(config.listen.to_string(), "127.0.0.1:7777");
     assert_eq!(config.home, rig.obid_home());
     assert_eq!(config.owner, user_name());
-    assert!(!config.telemetry);
     let claude = config
         .agents
         .get()
@@ -590,6 +589,28 @@ fn the_configuration_it_writes_is_obids_defaults() {
     );
     assert!(rig.prefix().join("share/web/index.html").is_file());
     assert_eq!(mode(&rig.prefix().join("bin/obid")), 0o755);
+}
+
+/// RETIRED-2 (docs/contracts/retired.md): a new configuration, install.sh's or obid's own first
+/// one, has no `telemetry` key.
+#[test]
+fn retired_2_a_new_configuration_has_no_telemetry_key() {
+    let rig = Rig::linux("retired-2");
+    let out = rig.install(&[]);
+    assert!(out.status.success(), "{}", text(&out));
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(rig.config()).unwrap()).unwrap();
+    assert!(
+        !written.as_object().unwrap().contains_key("telemetry"),
+        "{written}"
+    );
+    for codex in [false, true] {
+        let first = obid::app::default_config(&rig.obid_home(), "wellington", codex);
+        assert!(
+            !first.as_object().unwrap().contains_key("telemetry"),
+            "{first}"
+        );
+    }
 }
 
 #[test]
@@ -633,9 +654,9 @@ fn owner_listen_and_home_can_be_chosen_and_are_checked() {
 fn an_update_keeps_the_configuration_the_owner_edited() {
     let rig = Rig::linux("update");
     assert!(rig.install(&[]).status.success());
-    let edited = std::fs::read_to_string(rig.config())
-        .unwrap()
-        .replace("\"telemetry\": false", "\"telemetry\": true");
+    let installed = std::fs::read_to_string(rig.config()).unwrap();
+    let edited = installed.replace("\"name\": \"Default\"", "\"name\": \"Mine\"");
+    assert_ne!(edited, installed);
     std::fs::write(rig.config(), &edited).unwrap();
     rig.archive("#!/bin/sh\ncase \"$1\" in --version) echo \"obid 10.0.0-test\" ;; esac\n");
     let out = rig.install(&["--owner", "someone-else"]);

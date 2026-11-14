@@ -740,8 +740,7 @@ async fn a_received_reviews_check_gets_nothing() {
             "repos": [{"repo": "obi-e2e/fixture-app", "remote": format!("file://{}", remote.display()),
                        "defaultBranch": "main",
                        "check": "node -e \"console.log('token=' + (process.env.FAKE_CHECK_TOKEN ? 'SET' : 'unset'))\""}],
-            "allowFileRemotes": true,
-            "telemetry": false
+            "allowFileRemotes": true
         })
         .to_string(),
     )

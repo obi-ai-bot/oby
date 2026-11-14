@@ -421,6 +421,11 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// `value` as JSON, with `status`.
+pub fn answer(status: StatusCode, value: impl Serialize) -> Response {
+    (status, axum::Json(value)).into_response()
+}
+
 pub const NOT_LOOPBACK: &str = "This Oby answers only on 127.0.0.1.";
 pub const NO_TOKEN: &str = "This Oby answers only requests with its API token.";
 
