@@ -22862,6 +22862,9 @@ mod tests {
         job
     }
 
+    /// What JOBSTATE-3 expects of a job an end settled: its status, summary, next step and resume.
+    type Settled = (Status, String, Option<&'static str>, Option<i64>);
+
     /// JOBSTATE-3 (docs/contracts/job-state.md): how a run that didn't end done leaves its job, by
     /// its end's kind; every other field stays as it was.
     #[test]
@@ -22897,7 +22900,7 @@ mod tests {
         };
         let failed_end = || (Status::Failed, why.to_owned(), None, None);
         #[rustfmt::skip]
-        let cases: Vec<(&str, Job, End, (Status, String, Option<&str>, Option<i64>))> = vec![
+        let cases: Vec<(&str, Job, End, Settled)> = vec![
             ("failed with a session", at_work(Some("s")), failed(),
                 interrupted("Did half of it.", Some(crate::job::TRY_AGAIN), None)),
             ("failed with no session", at_work(None), failed(), failed_end()),
