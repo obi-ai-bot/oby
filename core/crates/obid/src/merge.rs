@@ -788,8 +788,8 @@ pub const MAC_LEFT: &str =
 
 /// What only the Mac builds and tests, outside any box: SwiftPM and Xcode can't nest in a job's
 /// sandbox. Swift, Swift packages and Xcode projects anywhere, and the folders scripts/oby-check.sh
-/// sends to the Apple apps and `swift test` (a test reads them from the script).
-const MAC_ONLY: [&str; 10] = [
+/// sends to the Apple apps (a test reads them from the script).
+const MAC_ONLY: [&str; 9] = [
     "apps/mac/",
     "apps/ios/",
     "apps/watch/",
@@ -799,7 +799,6 @@ const MAC_ONLY: [&str; 10] = [
     "Engine/",
     "Runner/",
     "RunnerTests/",
-    "mcp/",
 ];
 
 /// Whether a change to `path` needs the Mac's own tests ([`MAC_ONLY`]).
@@ -4049,8 +4048,8 @@ mod tests {
         }
     }
 
-    /// Everything scripts/oby-check.sh sends to the Apple apps or `swift test`, which a job's box
-    /// leaves for the Mac, is what only the Mac tests here.
+    /// Everything scripts/oby-check.sh sends to the Apple apps, which a job's box leaves for the
+    /// Mac, is what only the Mac tests here.
     #[test]
     fn merging_2_what_only_the_mac_tests_is_the_scripts() {
         let script = std::fs::read_to_string(
@@ -4066,7 +4065,7 @@ mod tests {
                 patterns += 1;
             }
         }
-        assert!(patterns >= 8, "{patterns}");
+        assert!(patterns >= 6, "{patterns}");
         for other in [
             "core/crates/obid/src/merge.rs",
             "apps/electron/src/x.ts",

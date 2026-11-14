@@ -463,7 +463,7 @@ rm core/crates/obid/tests/released_files.rs
 # an Electron test doesn't.
 code core/crates/obid/tests/routes_guard.rs 1
 for path in core/crates/obid/src/api.rs core/crates/obid/src/gateway.rs docs/api/routes.txt \
-    apps/electron/src/renderer/src/obid.ts apps/shared/Runner.swift mcp/server/Server.swift; do
+    apps/electron/src/renderer/src/obid.ts apps/shared/Runner.swift; do
     said=$(OBY_CHECK_PATHS=$path OBY_CHECK_PLAN=1 scripts/oby-check.sh HEAD 2>&1)
     grep -q -- '--test routes_guard' <<<"$said" || {
         echo "oby-check-test: a change to $path didn't plan tests/routes_guard.rs:" >&2
@@ -595,7 +595,7 @@ gone "$(cat "$fake/hangs.pid")" || {
 rm core/crates/obid/tests/hangs.rs
 
 # OBY_CHECK_ALL=1 plans everything, whatever changed: every test binary, the lib and bin tests,
-# every crate, this test, the iPhone build, swift test and the Electron app.
+# every crate, this test, the iPhone build and the Electron app.
 commit() { git add -A >/dev/null && git -c user.name=check -c user.email=check@example.invalid -c commit.gpgsign=false commit --quiet --allow-empty -m "$1"; }
 code core/crates/obid/tests/one.rs 1
 code core/crates/obi-protocol/src/lib.rs 1
@@ -608,12 +608,10 @@ for planned in '--test one' '-p obid --lib --bins' '-p obi-protocol' 'oby-check-
     }
 done
 if /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
-    for planned in 'build-for-testing' 'swift test'; do
-        grep -q -- "$planned" <<<"$said" || {
-            echo "oby-check-test: OBY_CHECK_ALL didn't plan \"$planned\": $said" >&2
-            exit 1
-        }
-    done
+    grep -q -- 'build-for-testing' <<<"$said" || {
+        echo "oby-check-test: OBY_CHECK_ALL didn't plan \"build-for-testing\": $said" >&2
+        exit 1
+    }
 else
     grep -q "don't run in a job's sandbox" <<<"$said" &&
         ! grep -qE '==> (xcodebuild|swift test)' <<<"$said" || {
@@ -733,7 +731,7 @@ for group in rust electron swift factory scan; do
     case "$group" in
         rust) wanted='cargo'; unwanted='apps/electron run\|==> gitleaks\|==> swift\|==> xcodebuild\|unittest' ;;
         electron) wanted='apps/electron run'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|==> swift\|==> xcodebuild\|unittest' ;;
-        swift) wanted='build-for-testing\|swift test\|Apple apps and swift test'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|apps/electron run\|unittest' ;;
+        swift) wanted="build-for-testing\|Apple apps don't run in a job's sandbox"; unwanted='==> cargo\|==> gitleaks\|Rust core has\|apps/electron run\|unittest' ;;
         factory) wanted='python3 -m unittest discover -s factory/tests'; unwanted='==> cargo\|==> gitleaks\|Rust core has\|apps/electron run\|==> swift\|==> xcodebuild' ;;
         scan) wanted='gitleaks'; unwanted='==> cargo\|Rust core has\|apps/electron run\|==> swift\|==> xcodebuild\|unittest' ;;
     esac

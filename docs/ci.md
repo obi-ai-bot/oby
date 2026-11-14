@@ -58,20 +58,19 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 
 ## What the Mac runs
 
-The Mac's `scripts/oby-check.sh` runs the suites each change reaches, tests included, before it merges (AGENTS.md, "Build and run"). The Apple suites (`xcodebuild`) and `swift test` run only on the Mac.
+The Mac's `scripts/oby-check.sh` runs the suites each change reaches, tests included, before it merges (AGENTS.md, "Build and run"). The Apple suites (`xcodebuild`) run only on the Mac.
 
 | Area | On a Mac |
 | --- | --- |
 | Rust core | In `core/`: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (workers: only the test binaries they touched; before a merge: all of obid, with `--no-fail-fast`). |
 | Plug-ins | In `core/`: `OBI_PLUGIN_HOST_REQUIRE_SANDBOX=1 cargo test --locked -p obi-plugin-api -p obi-plugin-host`. |
-| Swift package | `swift test` when `mcp/` or `Package.swift` change (`oby-mcp`). |
 | Electron app | In `apps/electron/`: `npm run typecheck`, `npm test`, `npm run build`. |
 | iPhone and Watch | `xcodebuild -project apps/Oby.xcodeproj -scheme ObyPhone -destination 'platform=iOS Simulator,name=iPhone 17' test`. |
 | E2E | `make e2e` with obi-sphere checked out beside this repository (or `OBI_SPHERE_DIR`). |
 | Secrets | `gitleaks git --log-opts=origin/dev..HEAD`. |
 | obi-sphere | In `server/`: `pnpm run check`, `pnpm test`, `pnpm run check:validators`, `pnpm run test:client`, and `pnpm run conformance` with `spec/` installed. |
 
-The route guard, obid's `tests/routes_guard.rs` (docs/contracts/ci.md, CI-9 to 11), fails when a route goes, when a client calls a path obid doesn't serve, or when the gateway's `ROUTES` lists one; `scripts/oby-check.sh` plans it for a change to `api.rs`, `gateway.rs`, another obid source with a `.route(`, `docs/api/`, or the clients' sources (`apps/electron/src` but its tests and mock, `apps/shared`, `mcp/server`). To add a route, commit its line in `docs/api/routes.txt` with it. `docs/api/dead-client-calls.txt`, the calls already dead when the guard came, only shrinks.
+The route guard, obid's `tests/routes_guard.rs` (docs/contracts/ci.md, CI-9 to 11), fails when a route goes, when a client calls a path obid doesn't serve, or when the gateway's `ROUTES` lists one; `scripts/oby-check.sh` plans it for a change to `api.rs`, `gateway.rs`, another obid source with a `.route(`, `docs/api/`, or the clients' sources (`apps/electron/src` but its tests and mock, `apps/shared`). To add a route, commit its line in `docs/api/routes.txt` with it. `docs/api/dead-client-calls.txt`, the calls already dead when the guard came, only shrinks.
 
 The Mac retries a failed obid test once, and only a test on the flaky list in `core/.config/nextest.toml` (docs/contracts/ci.md, CI-26 to 28): when every test a test binary or the lib's tests failed was on the list at the merge base and still is, those tests run once more alone, and the output says `retried flaky: <binary id> <test name>`. Any other failure isn't retried. The list only shrinks: a new entry comes with its fixing task file, `factory/queue/tasks/<KEY>.md`, in the same change, else the check fails naming `the flaky list`.
 
