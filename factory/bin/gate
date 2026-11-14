@@ -36,7 +36,12 @@ why it fell back. Each use of the VM is recorded in jobs/remote-gate/state.json,
 under state.lock: `open` while the gate uses it, then `used`, when the last use
 ended. `gate --idle` drops an open use whose gate's pid is gone (as ended when it
 started) and deallocates the VM once no use is open and `used` is 30 minutes
-old, whatever stage any job is in. Without `remote_gate` nothing here changes.
+old, whatever stage any job is in. Without `remote_gate` nothing here changes. Optional `slots` (1 to 64, by
+default 4) and `builder_slots` (0 to 64, by default 0) size the VM's gate and builders' slots, and `builder_user`
+(by default oby-builder) names the builders' user there; with either count set, the call is `oby-remote-gate
+--slots <n> --builder-slots <m> <commit> origin/<base>`. factory/bin/test-run imports this file for the macOS rule,
+the settings, reach and the uses (REMOTE-22 to 31): config.json and state.json are always the main checkout's,
+found from git's common folder, whichever copy runs.
 
 The Mac worker (REMOTE-13 to 16). With `remote_gate` on and config.json's `mac_worker` ({"ssh_host": ...}),
 or the same JSON in FACTORY_MAC_WORKER for one run, the Mac's part above (its rust, swift and factory) runs
@@ -64,7 +69,11 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+# The main checkout, whichever copy of this script runs: factory/bin/test-run imports a worktree's copy, and its
+# uses of the VM go into the same state.json as the gates'.
+REPO = Path(subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           cwd=Path(__file__).resolve().parent, capture_output=True, text=True,
+                           check=True).stdout.strip()).parent
 FACTORY = REPO / "factory"
 CONFIG = json.loads((FACTORY / "config.json").read_text())
 CHECKS = FACTORY / "checks.sh"
@@ -109,6 +118,10 @@ MACOS_ONLY = (
 CHECK_FILES = ("scripts/oby-check.sh", "scripts/oby-check-test.sh", "tools/oby-check-blok/")
 REMOTE_KEYS = ("ssh_host", "resource_group", "vm")
 RULE_KEYS = ("nsg", "nsg_rule")  # optional: the SSH rule the gate may move, by default <vm>NSG and ssh-from-owner
+# Optional: the VM's gate slots and builders' slots (factory/bin/test-run), as (lowest, highest, default), and the
+# builders' user there, which has no sudo.
+SIZES = {"slots": (1, 64, 4), "builder_slots": (0, 64, 0)}
+BUILDER_USER = "oby-builder"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SHA = re.compile(r"[0-9a-f]{40}")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")  # oby-remote-gate's rule for origin/<branch>
@@ -217,7 +230,18 @@ def remote_config():
             k not in remote or isinstance(remote[k], str) and NAME.fullmatch(remote[k]) for k in RULE_KEYS):
         return None, (f"{where} needs {', '.join(REMOTE_KEYS)}, and {' and '.join(RULE_KEYS)} when set, "
                       f"each matching {NAME.pattern}")
-    return {"nsg": f"{remote['vm']}NSG", "nsg_rule": "ssh-from-owner", **remote}, None
+    if not all(k not in remote or type(remote[k]) is int and low <= remote[k] <= high
+               for k, (low, high, _) in SIZES.items()) or not (
+            "builder_user" not in remote or isinstance(remote["builder_user"], str)
+            and NAME.fullmatch(remote["builder_user"])):
+        return None, (f"{where}'s slots must be a whole number from 1 to 64, builder_slots one from 0 to 64, and "
+                      f"builder_user match {NAME.pattern}, when set")
+    return {"nsg": f"{remote['vm']}NSG", "nsg_rule": "ssh-from-owner", "builder_user": BUILDER_USER, **remote}, None
+
+
+def sizes(remote):
+    """The VM's (gate slots, builders' slots): the settings', or 4 and 0."""
+    return tuple(remote.get(k, default) for k, (_, _, default) in SIZES.items())
 
 
 def mac_worker_config():
@@ -476,7 +500,10 @@ def vm_part(remote, commit, base, groups, log, moves):
     use = open_use()
     try:
         reach(remote, log, moves)
-        return remote_gate(remote, ["oby-remote-gate", commit, base], groups, " ".join(groups), log)
+        # Unset, the call is the one older VMs know; set, oby-remote-gate learns both counts.
+        slots, builders = sizes(remote)
+        sized = ["--slots", str(slots), "--builder-slots", str(builders)] if set(SIZES) & set(remote) else []
+        return remote_gate(remote, ["oby-remote-gate", *sized, commit, base], groups, " ".join(groups), log)
     finally:
         close_use(use)
 
@@ -503,12 +530,13 @@ def named(files):
     return ", ".join(files[:5]) + (f" and {len(files) - 5} more" if len(files) > 5 else "")
 
 
-def macos_only(worktree, base, touched):
-    """The touched files that count as macOS-only: those in MACOS_ONLY, and those whose copy on the branch or the
-    base names MACOS_CODE (a deleted file's too). When git can't tell, every touched file counts."""
+def macos_only(worktree, base, touched, head="HEAD"):
+    """The touched files that count as macOS-only: those in MACOS_ONLY, and those whose copy on the branch (head, a
+    commit or tree) or the base names MACOS_CODE (a deleted file's too). When git can't tell, every touched file
+    counts."""
     if not touched:
         return []
-    found = subprocess.run(["git", "--literal-pathspecs", "grep", "-l", "-E", MACOS_CODE, "HEAD", base, "--",
+    found = subprocess.run(["git", "--literal-pathspecs", "grep", "-l", "-E", MACOS_CODE, head, base, "--",
                             *touched], cwd=worktree, capture_output=True, text=True)
     if found.returncode > 1:
         return touched

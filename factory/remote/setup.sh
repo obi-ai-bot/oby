@@ -16,10 +16,17 @@
 # (every package ci.yml installs with apt-get is in the packages list, REMOTE-12); oby-check-blok,
 # built from origin/dev's commit, never from one being checked; this checkout's oby-remote-gate as
 # /usr/local/bin/oby-remote-gate; /srv/oby, the ssh user's, with a full bare clone (repo.git, gc.auto
-# 0) and slot-1 to slot-4. Run it again whenever: what is already at its pin is left as it is. It
+# 0) and slot-1 to slot-4 (oby-remote-gate makes more when --slots asks); and, for builders'
+# factory/bin/test-run runs, the user oby-builder, with /bin/bash, in no sudo or admin group and with no
+# sudoers entry (setup stops when `sudo -n -l -U oby-builder` shows it may run anything), logging in
+# with a copy of the ssh user's authorized_keys (600), its own /srv/oby-builder with a bare clone
+# (gc.auto 0; oby-remote-gate --run makes its builder-N slots), and rustup with the pinned toolchain,
+# rustfmt and clippy installed as that user in its home, both tightened with tighten.sh's rule; it
+# can't write /srv/oby. Run it again whenever: what is already at its pin is left as it is. It
 # writes no secret, token, key or login to the host, and changes no sshd setting, firewall or network
-# rule. The host part runs under umask 022, and setup ends by tightening, checking (with origin/dev's
-# own scripts/oby-check.sh) and printing the modes on the check's path (tighten.sh).
+# rule (the builder's authorized_keys holds public keys only). The host part runs under umask 022, and
+# setup tightens, checks (with origin/dev's own scripts/oby-check.sh) and prints the modes on the check's
+# path (tighten.sh), then sets up oby-builder.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -81,6 +88,47 @@ fi' <"$here/oby-remote-gate"
     printf '%s=%q\n' RUST "$rust" NODE "$node" GITLEAKS "$gitleaks" GITLEAKS_SHA "$gitleaks_sha" BWRAP "$bwrap"
     cat "$here/tighten.sh"
     cat <<'REMOTE'
+# The builders' user (REMOTE-30): factory/bin/test-run's runs log in as it, with the ssh user's keys. It has no sudo,
+# its own root (oby-remote-gate --run makes its builder-N slots there) and its own toolchain, and can't write the
+# gates' /srv/oby.
+builder() {
+    set -euo pipefail
+    local name=oby-builder root=/srv/oby-builder url=https://github.com/obi-ai-bot/oby.git home rights
+    as_builder() { (cd / && sudo -n -u "$name" -H "$@"); }
+    if ! id -u "$name" >/dev/null 2>&1; then
+        sudo -n useradd --create-home --shell /bin/bash "$name"
+        printf 'setup.sh: %s\n' "created the user $name"
+    fi
+    rights=$(sudo -n -l -U "$name" 2>&1 || true)
+    if ! grep -q "is not allowed to run sudo" <<<"$rights"; then
+        printf 'setup.sh: %s\n' "$name may run commands with sudo, and must not:" "$rights"
+        return 1
+    fi
+    home=$(getent passwd "$name" | cut -d: -f6)
+    sudo -n install -d -o "$name" -g "$name" -m 700 "$home/.ssh"
+    sudo -n install -o "$name" -g "$name" -m 600 "$HOME/.ssh/authorized_keys" "$home/.ssh/authorized_keys"
+    sudo -n install -d -o "$name" -g "$name" -m 755 "$root"
+    if ! as_builder test -d "$root/repo.git"; then
+        printf 'setup.sh: %s\n' "cloning $url into $root/repo.git"
+        as_builder git clone --bare --quiet "$url" "$root/repo.git"
+    fi
+    as_builder git -C "$root/repo.git" config gc.auto 0
+    as_builder bash -c 'set -euo pipefail
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v rustup >/dev/null; then
+    curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+fi
+rustup toolchain install "$1" --profile minimal --component rustfmt,clippy
+rustup default "$1"
+cargo --version' _ "$RUST"
+    # tighten.sh's own rule for what group or others may write, on its home's toolchain and its root.
+    as_builder bash -c "$(declare -f tighten_writable)"'
+tighten_writable "$HOME" "$1" | xargs -0 -r chmod go-w
+left=$(tighten_writable "$HOME" "$1" | tr "\0" " ")
+if [[ -n "$left" ]]; then echo "setup.sh: still writable by others: $left"; exit 1; fi' _ "$root"
+    printf 'setup.sh: %s\n' "$name is set up: no sudo, $root, rust $RUST"
+}
+
 setup() {
     set -euo pipefail
     umask 022
@@ -198,6 +246,7 @@ setup() {
     mkdir "$tmp/vet"
     git -C "$root/repo.git" archive "$dev" scripts/oby-check.sh | tar -x -C "$tmp/vet"
     tighten "$HOME" "$root" /usr/local/bin/oby-remote-gate "$tmp/vet/scripts/oby-check.sh" "$tmp"
+    builder
 }
 setup </dev/null
 REMOTE

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""factory/remote/oby-remote-gate's (its --mac mode too), setup.sh --pins', setup-mac.sh's and
-tighten.sh's own tests, with no VM and no Mac worker.
+"""factory/remote/oby-remote-gate's (its --mac mode too), setup.sh --pins', setup.sh's builder user's,
+setup-mac.sh's and tighten.sh's own tests, with no VM and no Mac worker.
 
 Each RemoteGate test makes an origin repository whose scripts/oby-check.sh is a stand-in, and a
 root with repo.git cloned from it, as setup.sh makes /srv/oby. Each Tighten test runs the function
@@ -171,9 +171,9 @@ class RemoteGate(unittest.TestCase):
     def groups(self, *names):
         (self.fake / "groups").write_text(" ".join(names) + "\n")
 
-    def start(self, commit=None, base=None, mac=None):
+    def start(self, commit=None, base=None, mac=None, counts=()):
         """oby-remote-gate, or with mac (a list of groups) oby-remote-gate --mac."""
-        args = [commit or self.commit, base or "origin/dev"]
+        args = [*counts, commit or self.commit, base or "origin/dev"]
         proc = subprocess.Popen(
             [str(GATE), *(["--mac", *args, *mac] if mac is not None else args)],
             env=self.env,
@@ -283,6 +283,30 @@ class RemoteGate(unittest.TestCase):
         self.assertEqual((self.fake / "npm-offline").read_text(), "unset\n")
 
 
+    # ---- REMOTE-28: --slots and --builder-slots ------------------------------------------------
+
+    def test_remote_28_slots_set_the_slot_count_and_the_core_share(self):
+        self.groups("rust")
+        counts = ("--slots", "2", "--builder-slots", "2")
+        two = [self.start(counts=counts) for _ in range(2)]
+        self.wait_for_runs(2)
+        self.assertEqual(sorted(gate.slot() for gate in two), [1, 2])
+        third = self.start(counts=counts)
+        third.wait_for(r"^oby-remote-gate: all 2 slots are busy; waiting$")
+        self.assertFalse((self.root / "slot-3").exists(), "a third gate slot was made")
+        jobs = str(max(1, (os.cpu_count() or 1) // 4))
+        self.assertEqual({line.split("|")[1] for line in (self.fake / "env").read_text().splitlines()}, {jobs})
+        (self.fake / "release").touch()
+        for gate in [*two, third]:
+            self.assertEqual(gate.finish(), 0, gate.output())
+        for counts, said in ((("--slots", "0", "--builder-slots", "2"), "--slots takes 1 to 64"),
+                             (("--slots", "4", "--builder-slots", "65"), "--slots takes 1 to 64"),
+                             (("--slots", "4"), "--slots and --builder-slots each take a number"),
+                             (("--slots", "x", "--builder-slots", "2"), "--slots and --builder-slots each take")):
+            gate = self.start(counts=counts)
+            self.assertEqual(gate.finish(), 2, gate.output())
+            self.assertTrue(any(line.startswith(f"oby-remote-gate: {said}") for line in gate.lines), gate.output())
+
     # ---- REMOTE-17: --mac --------------------------------------------------------------------
 
     def test_remote_17_mac_runs_only_the_groups_given(self):
@@ -364,6 +388,88 @@ class RemoteGate(unittest.TestCase):
             self.assertIn(f"oby-remote-gate: {said}", gate.lines)
         self.assertEqual(self.runs(), [])
         self.assertFalse((self.root / "slot-1").exists(), "a usage error took a slot")
+
+
+class SetupBuilder(unittest.TestCase):
+    """REMOTE-30: setup.sh's host script sets up oby-builder with no sudo. A stand-in ssh keeps the script setup.sh
+    sends; its builder function runs against stand-in sudo, id and getent, which record and run nothing."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.bin = self.dir / "bin"
+        self.bin.mkdir()
+        self.sent = self.dir / "sent.sh"
+        self.tool("ssh", f'if [ "$2 $3" = "bash -s" ]; then cat >"{self.sent}"; else cat >/dev/null; fi')
+        self.log = self.dir / "sudo.log"
+        # sudo: one line per call; `sudo -n -l -U` prints $dir/rights; `test` as the builder finds nothing.
+        self.tool("sudo", f'printf "%s\\n" "$*" | tr "\\n" " " >>"{self.log}"; echo >>"{self.log}"\n'
+                          f'if [ "$2 $3" = "-l -U" ]; then cat "{self.dir}/rights"; fi\n'
+                          '[ "$5" != test ]')
+        self.tool("id", "exit 1")
+        self.tool("getent", f'echo "oby-builder:x:1001:1001::{self.dir}/builder-home:/bin/bash"')
+        self.rights("User oby-builder is not allowed to run sudo on oby-gate.")
+        done = subprocess.run([str(SETUP)], env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}"),
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(subprocess.run(["bash", "-n", str(self.sent)]).returncode, 0)
+        # Everything the script defines, without its last line, which runs setup.
+        text = self.sent.read_text()
+        self.assertTrue(text.endswith("\nsetup </dev/null\n"), text[-200:])
+        self.functions = self.dir / "functions.sh"
+        self.functions.write_text(text.removesuffix("setup </dev/null\n"))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def tool(self, name, body):
+        path = self.bin / name
+        path.write_text(f"#!/bin/sh\n{body}\n")
+        path.chmod(0o755)
+
+    def rights(self, text):
+        (self.dir / "rights").write_text(text + "\n")
+
+    def builder(self):
+        return subprocess.run(["bash", "-c", '. "$0"; builder', str(self.functions)], cwd=self.dir,
+                              env=dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+                                       HOME=str(self.dir)),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+
+    def calls(self):
+        return [line.strip() for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def test_remote_30_setup_makes_a_builder_user_without_sudo(self):
+        self.assertIn("    builder\n}", self.sent.read_text())
+        done = self.builder()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        calls = self.calls()
+        self.assertEqual(calls[:2], ["-n useradd --create-home --shell /bin/bash oby-builder",
+                                     "-n -l -U oby-builder"])
+        self.assertFalse([c for c in calls if re.search(r"usermod|gpasswd|adduser|sudoers|visudo| -G ", c)], calls)
+        home = self.dir / "builder-home"
+        self.assertIn(f"-n install -o oby-builder -g oby-builder -m 600 {self.dir}/.ssh/authorized_keys "
+                      f"{home}/.ssh/authorized_keys", calls)
+        self.assertIn("-n install -d -o oby-builder -g oby-builder -m 755 /srv/oby-builder", calls)
+        self.assertIn("-n -u oby-builder -H git clone --bare --quiet https://github.com/obi-ai-bot/oby.git "
+                      "/srv/oby-builder/repo.git", calls)
+        self.assertIn("-n -u oby-builder -H git -C /srv/oby-builder/repo.git config gc.auto 0", calls)
+        rust = [c for c in calls if "rustup toolchain install" in c]
+        self.assertEqual(len(rust), 1, calls)
+        self.assertTrue(rust[0].startswith("-n -u oby-builder -H bash -c "), rust[0])
+        self.assertTrue(rust[0].endswith(" _ " + re.search(r"^RUST=(\S+)$", self.sent.read_text(), re.M).group(1)),
+                        rust[0])
+        tightened = [c for c in calls if "tighten_writable" in c]
+        self.assertEqual(len(tightened), 1, calls)
+        self.assertTrue(tightened[0].startswith("-n -u oby-builder -H bash -c "), tightened[0])
+        self.assertTrue(tightened[0].endswith(" _ /srv/oby-builder"), tightened[0])
+        self.assertFalse([c for c in calls if "/srv/oby " in c + " " or "/srv/oby/" in c], calls)
+
+    def test_remote_30_a_builder_user_with_sudo_stops_setup(self):
+        self.rights("User oby-builder may run the following commands on oby-gate:\n    (ALL) NOPASSWD: ALL")
+        done = self.builder()
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("setup.sh: oby-builder may run commands with sudo, and must not:", done.stdout)
+        self.assertEqual(self.calls()[-1], "-n -l -U oby-builder", "setup went on after the check")
 
 
 class Pins(unittest.TestCase):
