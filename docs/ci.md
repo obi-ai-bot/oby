@@ -101,3 +101,5 @@ Notarized builds of the Mac app are made on a Mac by `apps/electron/scripts/pack
 ## Releases
 
 Each release tag adds its own `core/crates/obid/tests/fixtures/released/<tag>/` (three jobs and a `config.json`, as the README there describes) in the release's pull request, so `tests/released_files.rs` proves today's obid still reads what that release wrote (docs/contracts/released-files.md).
+
+GitHub doesn't cut releases yet: the owner packages the Mac app by hand. R09-14 will, from a `v*` tag on `main`, as [release-in-ci.md](release-in-ci.md) says (what a release needs, the `release` environment and its secrets, and the cadence).
