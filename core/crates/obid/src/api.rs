@@ -665,6 +665,8 @@ pub struct Status {
     pub scanner: ScannerJson,
     /// Each tool's binary and version (crate::cli_versions). Older obids don't send it.
     pub tools: Vec<ToolJson>,
+    /// The files obid kept aside or couldn't read, never loaded (HOME-8). Older obids don't send it.
+    pub unreadable: Vec<serde_json::Value>,
 }
 
 /// `status.tools[]`: the binary's absolute path and what its `--version` said, each null when
@@ -1070,6 +1072,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                 }
             })
             .collect(),
+        unreadable: crate::store::unreadable().clone(),
     }))
 }
 
@@ -1089,6 +1092,7 @@ pub fn disk_free(path: &Path) -> u64 {
 
 /// [`disk_usage`], stopping early once `cancelled` is set.
 fn disk_usage_unless(path: &Path, cancelled: &AtomicBool) -> u64 {
+    use std::os::unix::fs::MetadataExt;
     let mut seen = std::collections::HashSet::new();
     let mut total = 0u64;
     let mut stack = vec![path.to_path_buf()];
@@ -1099,19 +1103,10 @@ fn disk_usage_unless(path: &Path, cancelled: &AtomicBool) -> u64 {
         let Ok(meta) = std::fs::symlink_metadata(&next) else {
             continue;
         };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if meta.nlink() > 1 && !meta.is_dir() && !seen.insert((meta.dev(), meta.ino())) {
-                continue;
-            }
-            total += meta.blocks() * 512;
+        if meta.nlink() > 1 && !meta.is_dir() && !seen.insert((meta.dev(), meta.ino())) {
+            continue;
         }
-        #[cfg(not(unix))]
-        {
-            let _ = &mut seen;
-            total += meta.len();
-        }
+        total += meta.blocks() * 512;
         if meta.is_dir()
             && let Ok(entries) = std::fs::read_dir(&next)
         {

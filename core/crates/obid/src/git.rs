@@ -296,8 +296,8 @@ pub fn clone_path(home: &Path, repo: &str) -> PathBuf {
     path
 }
 
-/// Makes the clone of `repo` from `remote` if there is none, with its push URL invalid, then
-/// fetches `refspecs` from origin. Answers the clone's path.
+/// Makes the clone of `repo` from `remote` if there is none, holds it (one made before too) to
+/// obid's settings, obid's invalid push URL its only one, then fetches `refspecs` from origin.
 pub async fn ensure_clone(
     home: &Path,
     repo: &str,
@@ -323,9 +323,9 @@ pub async fn ensure_clone(
         std::fs::rename(&partial, &clone)
             .map_err(|e| GitError(format!("can't move the clone into place: {e}")))?;
     } else {
-        // A clone made before is held to the same rules.
         git(&clone, &["config", "remote.origin.url", remote]).await?;
-        git(&clone, &["config", "remote.origin.pushurl", NO_PUSH_URL]).await?;
+        let key = "remote.origin.pushurl";
+        git(&clone, &["config", "--replace-all", key, NO_PUSH_URL]).await?;
     }
     // No automatic maintenance: after an agent's commit it packs refs into packed-refs, which the
     // job sandbox doesn't let it write, and the agent spends a turn on the error.
@@ -1486,6 +1486,92 @@ mod tests {
             .unwrap();
         let clone = ensure_clone(&home, "o/r", &url, &[]).await.unwrap();
         assert_eq!(setting(clone, "maintenance.auto").await, "false");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// LANES-2: a clone whose own settings name real push URLs, several of them, is held to
+    /// obid's invalid one alone when obid gets it ready, so an agent's push reaches none of them,
+    /// on every git: older than 2.46 too, where the environment can't clear the clone's list.
+    #[tokio::test]
+    async fn lanes_2_an_agents_push_never_reaches_the_clones_push_url() {
+        let root = std::env::temp_dir().join(format!("obid-lanes-2-push-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (source, remote, other) = (
+            root.join("source"),
+            root.join("remote.git"),
+            root.join("other.git"),
+        );
+        std::fs::create_dir_all(&source).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "first",
+            ],
+        ] {
+            git(&source, args).await.unwrap();
+        }
+        for (bare, from) in [(&remote, Some(&source)), (&other, None)] {
+            let mut args = vec!["-c", "init.defaultBranch=main"];
+            match from {
+                Some(from) => args.extend(["clone", "-q", "--bare", from.to_str().unwrap()]),
+                None => args.extend(["init", "-q", "--bare"]),
+            }
+            args.push(bare.to_str().unwrap());
+            git(&root, &args).await.unwrap();
+        }
+        let home = root.join("home");
+        let url = format!("file://{}", remote.display());
+        let clone = ensure_clone(&home, "o/r", &url, &[]).await.unwrap();
+        let other_url = format!("file://{}", other.display());
+        git(&clone, &["config", "remote.origin.pushurl", &url])
+            .await
+            .unwrap();
+        git(
+            &clone,
+            &["config", "--add", "remote.origin.pushurl", &other_url],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            git(&clone, &["config", "--get-all", "remote.origin.pushurl"])
+                .await
+                .unwrap(),
+            format!("{url}\n{other_url}")
+        );
+
+        ensure_clone(&home, "o/r", &url, &[]).await.unwrap();
+        let temp = root.join("tmp");
+        std::fs::create_dir_all(&temp).unwrap();
+        let pushed = std::process::Command::new("git")
+            .current_dir(&clone)
+            .args(["push", "origin", "HEAD:refs/heads/agent"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin")
+            .envs(crate::process::no_publish_env(&temp))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&pushed.stderr);
+        assert!(!pushed.status.success(), "{stderr}");
+        assert!(stderr.contains("obid-agents-cannot-push"), "{stderr}");
+        for bare in [&remote, &other] {
+            let found = git(bare, &["show-ref", "--verify", "refs/heads/agent"]).await;
+            assert!(found.is_err(), "{}: {found:?}", bare.display());
+        }
+        assert_eq!(
+            git(&clone, &["config", "--get-all", "remote.origin.pushurl"])
+                .await
+                .unwrap(),
+            NO_PUSH_URL
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

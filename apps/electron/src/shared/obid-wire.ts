@@ -230,6 +230,8 @@ export type Status = {
   // obid only: the account new tasks go to (#1573), null for routing's own order; an older obid
   // sends none, and keeps no account's model either (#1574)
   defaultAccount?: string | null;
+  // obid only: the files it kept aside or couldn't read, never loaded (HOME-8); an older obid sends none
+  unreadable?: { path: string; error: string; since: string }[];
 };
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then
