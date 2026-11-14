@@ -824,8 +824,8 @@ fn merging_26_no_merge_card_while_obys_review_is_at_work() {
     assert_eq!(job(&obid)["mergeNeedsYou"], false, "{}", job(&obid));
 }
 
-/// MERGING-26: a review its account's limit stopped stays named while the owner decides, and isn't
-/// at work: the pull request's card shows.
+/// MERGING-26: a review the owner kept stopped at its account's limit in an older release
+/// (LIMITS-26) stays named, and isn't at work: the pull request's card shows.
 #[test]
 fn merging_26_a_review_stopped_at_its_limit_leaves_the_card() {
     let folder = Folder::new("review-at-limit");
@@ -840,6 +840,7 @@ fn merging_26_a_review_stopped_at_its_limit_leaves_the_card() {
     review.status = obid::job::Status::Interrupted;
     review.review_of = Some(ID.into());
     review.account_limit_blocked = true;
+    review.account_limit_choice = Some(obid::limits::legacy::Choice::Stop);
     let mut author = published();
     author.base = Some("main".into());
     author.reviewing = Some(review.id.clone());
