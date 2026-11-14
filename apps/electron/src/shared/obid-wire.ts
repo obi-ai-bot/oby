@@ -247,6 +247,8 @@ export type Status = {
   defaultAccount?: string | null;
   // obid only: the files it kept aside or couldn't read, never loaded (HOME-8); an older obid sends none
   unreadable?: { path: string; error: string; since: string }[];
+  // obid only: the optional features it serves, by name (docs/contracts/capabilities.md); an obid before R06-01 sends none
+  capabilities?: string[];
 };
 
 // obid only: "GET /v1/repos", the repositories a job may start in: the listed ones first, then
