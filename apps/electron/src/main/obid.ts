@@ -359,15 +359,28 @@ export async function obid(method: string, path: string, body?: unknown, words?:
   return r instanceof Response ? { status: r.status, text: await r.text() } : r;
 }
 
+// Whether obid takes a request key (`receipts` on GET /v1/status, docs/contracts/receipts.md), as
+// main itself last read it, never as the page says: a read that fails keeps the last one this run,
+// and none yet is no
+let receipts = false;
+export async function takesKeys(): Promise<boolean> {
+  const r = await obid('GET', '/v1/status');
+  if (r.status === 200) {
+    try { receipts = (JSON.parse(r.text) as { receipts?: unknown }).receipts === true; } catch { /* keeps the last */ }
+  }
+  return receipts;
+}
+
 // The page's own frame only: no other page, or frame in it, gets obid
 export type Trusted = (e: IpcMainEvent | IpcMainInvokeEvent) => boolean;
 
-export function bridge(trusted: Trusted, ownersWords: (method: string, path: string, body: unknown) => Promise<Answer>) {
+export function bridge(trusted: Trusted, ownersWords: (method: string, path: string, body: unknown, owners: boolean) => Promise<Answer>) {
   // one call: obid's status and body, or why it didn't answer. owners: the preload saw the owner's
-  // own keystroke or click hold its words, so main signs them (device.ts)
+  // own keystroke or click hold its words, so main signs them; and a keyed request main signed
+  // that obid didn't answer, sent again as it was, is signed again (device.ts, WORDS-16)
   ipcMain.handle('obid', async (e, method: string, path: string, body?: unknown, owners?: unknown): Promise<Answer> => {
     if (!trusted(e)) return { status: 403, text: '' };
-    return owners === true ? ownersWords(method, path, body) : obid(method, path, body);
+    return ownersWords(method, path, body, owners === true);
   });
 
   // the splash's Open Login Items, when obid waits for that approval

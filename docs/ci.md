@@ -10,6 +10,7 @@ Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) an
 | --- | --- |
 | `plan` | Which lanes the change reaches (below), and gitleaks with `.gitleaks.toml` over the commits the run brings: a pull request's from its merge base, the merge queue's from the group's base. A nightly or on-demand run on `dev` has no earlier commit and scans its head commit alone. A finding fails `plan`. |
 | `lint` | In `core/`: `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`. |
+| `limits` | `OBY_CHECK_ONLY=limits scripts/oby-check.sh <base>` on the checked commit, with full history: obid's line limits, `jobs.rs`'s and the tests' sleeps, and the flaky list's guard, judged by the script's own counting (docs/contracts/ci.md, CI-35). The base is `merge_group.base_sha` in the queue, `pull_request.base.sha` on a pull request, and the commit itself nightly and on demand. It installs nothing. |
 | `rust-build` | One `cargo nextest archive --workspace --locked` of `core/`, uploaded and kept 1 day. |
 | `rust-test` (1/4 to 4/4) | The archive's tests, a quarter each (`--partition slice:k/4`), with `--profile ci --no-fail-fast`, bubblewrap and gitleaks set up. Each uploads its JUnit report, pass or fail, kept 14 days. |
 | `e2e` | `make e2e`: stub agents, against the oby-sphere commit in `e2e/oby-sphere.ref`. |
@@ -45,7 +46,7 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 | any other path | every lane |
 | a diff that can't be read (a missing commit, `git diff` failing) | every lane |
 
-`lint`, `rust-build` and `rust-test` follow `rust`, and `e2e`, `electron`, `control-plane` and `tools` their own lanes.
+`lint`, `rust-build` and `rust-test` follow `rust`, and so does `limits` in the runs that test (not on a ready pull request into `dev`); `e2e`, `electron`, `control-plane` and `tools` follow their own lanes.
 
 **`Check`'s rule.** It fails when `plan` didn't succeed (so skipped lanes can never pass over a broken plan), or when any job failed or was cancelled; a skipped job passes. Its step summary shows the mode, the lanes, each job's result, each failed shard with its failing tests (from that shard's JUnit), and under "Flaky" every test that passed only on its retry.
 
@@ -79,6 +80,8 @@ The Mac retries a failed obid test once, and only a test on the flaky list in `c
 A merge into `dev` goes through GitHub's merge queue and needs its `Check` (docs/contracts/ci.md, CI-7, 8 and 21). `dev`'s ruleset asks for a pull request with 0 approvals and the required status check `Check`, and queues it: squash, build concurrency 1, a minimum group of 2 with a 15-minute wait, a maximum group of 5, every entry must pass, and a status-check timeout of 60 minutes. The queue tests each group on top of `dev` and squash-merges its pull requests in order, so the code that lands is the code that was tested; a group whose `Check` fails merges nothing.
 
 Oby (MERGING-41) and the factory (`job merge`, CI-23) hand an approved pull request to GitHub with `gh pr merge --auto --match-head-commit <head>`, which queues it pinned to the head that was reviewed. A pull request into `main` needs `Check` green, with no queue.
+
+The queue's `limits` job judges obid's line limits on the group's combined code (CI-35), so two pull requests that each fit can't put `dev` past a limit together. The script's other rules come along on that code too: a group more than 1,000 lines under the line limit, or under the sleep limit, fails until a pull request lowers the limit.
 
 The Mac's check still gates each pull request before approval, and the nightly full Mac run (CI-29) checks `dev` as merged.
 
