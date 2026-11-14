@@ -548,7 +548,7 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
  "maxRunning": 6, "running": 4, "defaultAgent": "auto", "defaultAccount": null,
  "clearedAt": "2026-10-10T08:12:00Z",
  "github": "app", "checks": "ok", "permissions": {"mode": "sandbox"},
- "scanner": {"gitleaks": true}, "receipts": true,
+ "scanner": {"gitleaks": true}, "receipts": true, "capabilities": ["folders-v1"],
  "tools": [{"agent": "claude", "path": "/Users/me/.local/bin/claude", "version": "2.1.317"},
            {"agent": "codex", "path": "/opt/homebrew/bin/codex", "version": "0.163.0"},
            {"agent": "cursor", "path": null, "version": null}],
@@ -581,7 +581,13 @@ There's no draft to confirm any more: the work the brain plans starts as it's pl
 
 `unreadable` (obid only, add-only, R02-12, docs/contracts/home.md HOME-8 and HOME-9): the files obid didn't load, always present and `[]` when there are none. It covers every folder obid reads one `*.json` file per record from: `home/jobs` (and `home/jobs/groups`), `home/conversations`, `home/inbox`, `home/exchanges`, `home/routines` and `home/failures`. A file whose bytes don't parse is moved, with `rename` and its bytes unchanged, to `home/unreadable/<its folder>/<name>-<unix seconds>.json`; one obid can't read, or can't move (the folder can't be made, the name is taken), stays where it is. Each entry is `{"path", "error", "since"}`: `path` is the file's absolute path now, `since` when it was kept aside (the seconds in its name, else the file's last change), and `error` a short reason that never quotes the file: `not valid JSON at line L column C`, `not what obid expects at line L column C`, an I/O error's kind (`permission denied`), or `kept aside at an earlier start` for a file found in `home/unreadable/` at a later start. obid never loads, repairs or deletes a file under `home/unreadable/`, and a conversation whose file is there keeps its folders. Older runners don't send the key.
 
-`folders` (obid only, #1572): `true` when obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}` (obid only: working folders, below). Older runners don't send the key, and refuse `folders` with a `400`: an app sends none until it reads `true`.
+`folders` (obid only, #1572): `true` when obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}` (obid only: working folders, below). Older runners don't send the key, and refuse `folders` with a `400`: an app sends none until it reads `true`. `folders-v1` in `capabilities` announces the same thing.
+
+`capabilities` (obid only, add-only, R06-01, [docs/contracts/capabilities.md](contracts/capabilities.md)): the optional features obid serves, by stable name, sorted, with no duplicate, always present. A name means one behaviour forever: a changed behaviour gets a new name (`-v2`). The table below lists every name obid serves. A client hides an action whose name is missing. Older runners don't send the key: such a client falls back to that feature's own key (for example `folders`) or treats the feature as absent.
+
+| Name | What it means | Since |
+|---|---|---|
+| `folders-v1` | obid takes working folders: `folders` on `POST /v1/plans`, on conversations and on `PATCH /v1/conversations/{id}`, the same behaviour `folders: true` announces. | The behaviour since #1572, listed since R06-01 |
 
 `cleanup` is the runner's job-worktree disk usage and cleanup status. `path` is the worktree folder, `bytes` is its allocated disk usage, and `lastRun` is when the last cleanup pass completed, or null before the first pass. The runner runs cleanup at startup and every three hours. It removes a worktree only for a settled job finished more than 24 hours ago (merged, closed, dismissed or stopped), or immediately after an Oby review job has a verdict; open pull requests, jobs needing the user, queued or waiting jobs, and worktrees in use by an agent, check, publish or merge are kept. Older runners don't send the key. obid answers before it has measured a big worktrees folder (it waits for the walk 200 ms at most) and leaves `cleanup` out until the walk ends, then sends it as the `cleanup` event.
 
