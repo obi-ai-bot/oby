@@ -47,6 +47,16 @@ on stderr (exit 1), or, with nothing failed and something not judged, a `couldn'
 (exit 2). A failed node wins over one not judged, then passed; a node that couldn't start or answer
 is not judged; nothing passes unless `secret-scan` passed.
 
+Each step's limit is its `maxDuration` in the workflow file, enforced by the node itself (CI-33,
+[ci](contracts/ci.md)): past it, the node sends SIGTERM to the group's script and every process
+descended from it (found by parent id, in the check's own process group), relays what the script says
+for up to 30 seconds, sends SIGKILL to what's left, and answers `couldn't judge` with `ran past its
+maxDuration of <N>s`, followed by the test binaries the script named as still running (`: tests/<name>.rs, …
+were still running`). The host's own timeout is the limit plus 60 seconds. A full run (`check` with
+`OBY_CHECK_ALL`) gives the Rust group (`rust-affected-tests`) the full-run limit, 60 minutes
+(`FULL_RUN_RUST_LIMIT`, CI-34); every other step, and the Rust group of a gate's check or obid's,
+keeps the workflow's (`rust-affected-tests` 45 minutes).
+
 The host speaks BLOK's gRPC (the pinned BLOK Rust SDK's `NodeRuntime`) to `oby-check-blok-nodes`,
 found beside it, over that child's stdin and stdout: no port and no socket, so it runs in a box
 with no network at all, another Oby's job's included. It waits up to 60 seconds for their first
