@@ -66,7 +66,7 @@ So work runs in two lanes, step by step in [docs/contracts/lanes.md](docs/contra
 - The Swift Mac app, with `Engine/`, `Runner/` and `RunnerTests/`, is deleted, and git history is its archive: all desktop work is the Electron app's ([why](docs/decisions/2026-11-02-swift-mac-app-deleted.md)).
 - The iPhone and Apple Watch apps stay in Swift on obid's API, so that API stays add-only ("Non-negotiable", above).
 - Work from this repository is Oby only: Dmytro owns the Obysphere (obi-ai-bot/obi-sphere: its server, spec and deploys) ([why](docs/decisions/2026-10-26-work-here-is-oby-only.md)). Don't open pull requests there or deploy it unless the owner asks.
-- Update the issue at every step, in the same turn: `status:in-progress` and the branch name when work starts; `status:in-review` and the pull request link when it's open; `status:blocked` and what it waits on; status labels off when it's merged. Move it on the board too (Now, In review, Done).
+- Track the work at every step, in the same turn: its task file, or a GitHub issue's `status:*` labels and links, and the board where an item still has a row. The steps are in [.claude/skills/ship/SKILL.md](.claude/skills/ship/SKILL.md).
 - Commits follow Conventional Commits. Agents commit unsigned in their worktree (they have no signing key); commits are signed when Oby pushes them. Report the checks you actually ran and what they printed.
 
 ## Business behavior contracts and code design
