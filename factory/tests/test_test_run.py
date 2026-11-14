@@ -62,8 +62,10 @@ class TestRun(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         self.lock = self.dir / "test-run.lock"
-        self.env = {k: v for k, v in os.environ.items() if k not in CORE_VARS}
+        # The gate runs these tests with CARGO_TARGET_DIR at the shared folder, which test-run refuses.
+        self.env = {k: v for k, v in os.environ.items() if k not in (*CORE_VARS, "CARGO_TARGET_DIR")}
         self.env["OBY_TEST_RUN_LOCK"] = str(self.lock)
+        self.env["CARGO_TARGET_DIR_FACTORY"] = str(self.dir / "core-target")
         bin_dir = self.dir / "bin"
         bin_dir.mkdir()
         cargo = bin_dir / "cargo"
@@ -178,6 +180,24 @@ class TestRun(unittest.TestCase):
             os.close(fd)
         proc.send_signal(signal.SIGTERM)
         proc.communicate(timeout=10)
+
+    def test_shared_cargo_folder_is_refused(self):
+        shared = self.dir / "core-target"
+        shared.mkdir()
+        marker = self.dir / "marker"
+        for target in (str(shared), f"{shared}/"):
+            self.env["CARGO_TARGET_DIR"] = target
+            code, _, err = self.run_test_run("cargo", "test", str(marker))
+            self.assertEqual(code, 2, err)
+            self.assertFalse(marker.exists(), f"cargo test ran with CARGO_TARGET_DIR={target}")
+            self.assertIn("core/target", err)
+            self.assertEqual(self.lock.read_text() if self.lock.exists() else "", "", "test-run wrote a holder line")
+        other = self.dir / "own-target"
+        other.mkdir()
+        self.env["CARGO_TARGET_DIR"] = str(other)
+        code, _, err = self.run_test_run("cargo", "test", str(marker))
+        self.assertEqual(code, 0, err)
+        self.assertTrue(marker.exists())
 
     def test_light_run_does_not_wait_for_the_lock(self):
         holder = self.start("cargo", "sleep")
