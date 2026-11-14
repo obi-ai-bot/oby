@@ -23,7 +23,7 @@ What's cut leaves the code, not the history: it stays in git, and Sangam's desig
 - The Obysphere: `sphere/link`, `exchange`, `inbox`, `decisions`, `membership`, `pins`, `routes`, `approval`, `answering`, `sharing` (the rules for answering other Obys, not compute sharing). (`channel` and `sealed` went with compute sharing on 2026-10-27; the phone relay's frames are `relay/frame.rs`.)
 - The conversation as a Claude Code (or Codex) session with an `oby` MCP server: `brain/harness`, `harness_codex`, `tools`, `actions`, `plan` (its checks). This already exists; only the plan loop around it goes.
 - The Mac app's window, side panel, tasks, conversations, decisions, accounts, models, Tetrix, Obysphere, first launch, updates.
-- The iPhone app and what serves it (`relay`, `push`, `gateway`, `devices`, `approval`, `PairingView`): back after 0.4.1, pairing through the Obysphere with no Tailscale (#1421's work), hiding what the Mac's launch build hides. The Watch app stays parked, not cut and not worked on.
+- The iPhone app and what serves it (`relay`, `push`, `gateway`, `devices`, `approval`, `PairingView`): back after 0.4.1, pairing through the Obysphere with no Tailscale (#1421's work), hiding what the Mac's launch build hides. The Watch app was removed from the iPhone build on 2026-11-13 (the owner's decision, docs/decisions/2026-11-13-roadmap-answers.md, R03-07); git history is its archive.
 
 ## Batches
 
@@ -50,6 +50,7 @@ About 45k of obid's 131k source lines, and about 33k lines of Swift, leave.
 - **Tetrix stays** and has to be flawless: it's why Oby exists (the owner, 2026-10-25).
 - **The iPhone waited** until the Mac app was right (the owner, 2026-10-25); after 0.4.1 it's back, as the Mac's launch build (the owner, 2026-10-26).
 - **Slack goes:** GitHub is the only outside connection, and Obys do the talking (the owner, 2026-10-25).
+- **The Watch app goes:** removed from the iPhone build, with its rows in the iPhone's Settings and nothing in their place (the owner, 2026-11-13, R03-07).
 
 ## Still open
 
