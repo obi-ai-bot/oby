@@ -1030,6 +1030,7 @@ pub fn permission_item_id(job: &str, permission: &str) -> String {
 
 /// Where the inbox is kept.
 pub struct Inbox {
+    home: PathBuf,
     dir: PathBuf,
 }
 
@@ -1040,7 +1041,8 @@ impl Inbox {
         if let Err(e) = store::make_private_dir(&dir) {
             tracing::error!("can't make {}: {e}", dir.display());
         }
-        Inbox { dir }
+        let home = home.to_owned();
+        Inbox { home, dir }
     }
 
     /// Item ids obid makes are `obi-<uuid>`, `<job>-permission-<p…>` and `ev-<plug-in id>-<hex>`:
@@ -1051,7 +1053,7 @@ impl Inbox {
     }
 
     pub fn load_all(&self) -> Vec<Item> {
-        store::load_dir(&self.dir)
+        store::load_dir(&self.home, &self.dir)
     }
 }
 
