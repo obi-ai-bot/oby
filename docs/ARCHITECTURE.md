@@ -1,10 +1,9 @@
 # Oby's architecture
 
-How Oby is put together once the engine runs as the Rust daemon `obid`, where every piece lives, which lines nothing crosses, and who edits what while Phase 1 is under way. It follows the plan in [docs/NEXT-STEPS.md](NEXT-STEPS.md) (section 4, "Target layout"); the contracts it relies on are:
+How Oby is put together with the engine running as the Rust daemon `obid`: where every piece lives, which lines nothing crosses, and which module of `obid` owns each kind of its state (section 6). The contracts it relies on are:
 
 - [docs/runner-api.md](runner-api.md): the API between `obid` and every shell, including its "obid only" section.
 - The Obi-to-Obi protocol v0.1: `spec/` in [obi-ai-bot/obi-sphere](https://github.com/obi-ai-bot/obi-sphere).
-- [e2e/SCENARIO.md](../e2e/SCENARIO.md): the run that says Phase 1 is done.
 
 Decided and not reopened here: the product is Oby (apps, bundle ids, `window.oby`); Apache-2.0; the engine moves from Swift to `obid` behind the existing runner API; the UI shells stay native and thin; the Sphere server is TypeScript on Cloudflare Workers with D1; Tetrix is an optional plug-in; Deskree's own pipeline rules become configuration. The GitHub org, the repository names and the daemon keep the `obi` spelling.
 
@@ -14,7 +13,6 @@ Decided and not reopened here: the product is Oby (apps, bundle ids, `window.oby
 obi/
 ├── core/            Rust: the daemon obid and its crates (section 3)
 ├── apps/
-│   ├── web/         TypeScript universal client, served by obid
 │   ├── mac/         Swift: window, menu bar, approvals, character; a thin client of obid
 │   ├── ios/         Swift thin client
 │   ├── watch/       Swift thin client: removed 2026-11-13, not built
@@ -26,7 +24,7 @@ obi/
 └── Makefile         make e2e, make e2e-live
 ```
 
-Where today's folders go. Moves happen in the restructure workstream (section 6), with `git mv` so history follows:
+Where today's folders go. Moves happen with `git mv`, so history follows:
 
 | Today | Target | Note |
 |---|---|---|
@@ -39,17 +37,17 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
 | `Android/` | `apps/android/` | |
 | `Character/` | `character/` | Differs only by case: on macOS move it through a temporary name (`git mv Character character.tmp && git mv character.tmp character`). |
 | `MCP/`, `MCPTests/` | `mcp/` | `MCP` to `mcp` differs only by case too: same two-step move. |
-| `Desktop/` | stays | Open: `apps/web` may replace it (NEXT-STEPS.md, open decisions). |
+| `Desktop/` | stays | |
 | `cloud/control-plane/` | stays | Open: whether it merges into the Sphere server. |
 | `spikes/`, `scripts/`, `docs/` | stay | |
 
 ## 2. The boundary: obid and the shells
 
 ```
- apps/electron  apps/ios  apps/web  mcp/   (apps/watch: removed 2026-11-13)
-     │          │           │           │        │
-     └──────────┴─── HTTP + SSE: docs/runner-api.md ───┘
-                              │
+ apps/electron  apps/ios     mcp/   (apps/watch: removed 2026-11-13)
+     │             │          │
+     └─────────────┴──────────┤
+                              │  HTTP + SSE: docs/runner-api.md
                             obid  ── Obi-to-Obi client ──►  Sphere (obi-sphere/server)
                               │
              agents (Claude Code, Codex, Cursor) in sandboxed worktrees
@@ -57,16 +55,16 @@ Where today's folders go. Moves happen in the restructure workstream (section 6)
                        plug-ins (out of process)
 ```
 
-- **The runner API is the only way in.** Every shell talks to `obid` over HTTP and the `GET /v1/events` stream, as the apps always have. No shell links the engine, imports its types or reads its database; `obid` serves the same API, so the Mac, iPhone and Watch apps run against it with no change to their code. Whether a later version adds an in-process binding (UniFFI) is an open decision; Phase 1 is HTTP only.
+- **The runner API is the only way in.** Every shell talks to `obid` over HTTP and the `GET /v1/events` stream, as the apps always have. No shell links the engine, imports its types or reads its database; `obid` serves the same API, so the Mac, iPhone and Watch apps run against it with no change to their code. Whether a later version adds an in-process binding (UniFFI) is an open decision; today it is HTTP only.
 - **Change the API in the same pull request as the code** (AGENTS.md). New endpoints that only `obid` serves go in the "obid only" section of runner-api.md.
-- **Loopback and a token.** `obid` listens on 127.0.0.1 only, checks `Host`, and answers only requests with its API token; remote devices reach it through the gateway's allowlist, as today. The web app (`apps/web`) is no exception: the page sends the token on every API call, from the browser's session storage for its own origin. The one thing obid opens without the token is reading the web app's own files under `/app/`, which hold no data, with a page session: a random value obid keeps in memory, opened by signing in with the token and ended by signing out or a restart. It exists because a browser can't send a header when it opens a page and #492 keeps the page closed without the token; it admits nothing under `/v1`, since anything on the machine can replay a cookie and the headers a browser adds (runner-api.md, "obid only: the web app"). On macOS it listens on `127.0.0.1:7777` unless its configuration says otherwise: the address the Mac app already uses for a runner on the same Mac (runner-api.md, "Reaching it" and "obid only: configuration"). The Oby app's own Swift runner (its login item) listens there too, so one Mac runs one of the two: when the address is taken, `obid` doesn't start and says why in one line; it never moves to another port by itself. Its API token is only ever in `home/api-token`, never in its environment or arguments (5.3).
+- **Loopback and a token.** `obid` listens on 127.0.0.1 only, checks `Host`, and answers only requests with its API token; remote devices reach it through the gateway's allowlist, as today. On macOS it listens on `127.0.0.1:7777` unless its configuration says otherwise: the address the Mac app already uses for a runner on the same Mac (runner-api.md, "Reaching it" and "obid only: configuration"). The Oby app's own Swift runner (its login item) listens there too, so one Mac runs one of the two: when the address is taken, `obid` doesn't start and says why in one line; it never moves to another port by itself. Its API token is only ever in `home/api-token`, never in its environment or arguments (5.3).
 - **The Swift clients on `obid`.** `core/crates/obid/tests/swift_client.rs` builds the iPhone's own client code (`apps/shared/Runner.swift` and what it needs) and drives it against a running `obid`, so an API change those apps can't read fails there.
 
 ## 3. Inside core/
 
 `core/` is one Cargo workspace whose root `core/Cargo.toml` lists `members = ["crates/*"]`, so a new crate joins it without editing the root, and declares the shared dependency versions under `[workspace.dependencies]` (serde, serde_json, tokio, thiserror, tracing, async-trait). Crates use `workspace = true` for those.
 
-| Crate | What | Owner in Phase 1 |
+| Crate | What | Owner |
 |---|---|---|
 | `core/crates/obid/` | The daemon: configuration, the runner API and event stream, jobs, worktrees and sandbox, agent adapters (Claude Code stream-json first, then Codex app-server, then ACP), the planner, decision memory, the inbox, the publish gate (secret scan), the merge (by the owner's learned workflow, or their tap), the vault, accounts and usage. | Rust core |
 | `core/crates/obi-protocol/` | Obi-to-Obi protocol v0.1: types, canonical JSON, Ed25519 signing and checks, the agent card, the token exchange, the Sphere client. Tested against obi-sphere's conformance suite (`--impl`). | Rust core |
@@ -108,57 +106,34 @@ explicit tool reads remain accessible. Unboxed Claude login refresh uses a priva
 `obid-refresh-*` scratch folder under obid's home, removed after refresh.
 The own lane's vendor sandbox is separate from these box rules.
 
-## 6. Phase 1: workstreams and who edits what
+## 6. State ownership
 
-_History: this is how phase 1 was split. The plug-in boundary's workstream below (its crates, `plugins/`, `GET` and `PUT /v1/obid/plugins`) was removed with plug-ins on 2026-10-27 (section 5)._
+Which module of `obid` writes each kind of its state, where that state is kept and who reads it, so a new field or rule goes into the module that owns its row. Module names are under `core/crates/obid/src/`. "Stored in" is a file in obid's home (`home/…`), or memory, which a restart loses. "Target after R04" is what the R04 task files in `factory/queue/` change (`factory/queue/tasks/`, then `factory/queue/done/` once built), and "same" where they change nothing; `job/lifecycle.rs` and `job/chain.rs` are targets, not files yet.
 
-Four workstreams run in parallel and don't talk to each other. Each edits only what it owns; anything two of them share changes through the lead, in its own pull request, before either relies on the change. Every pull request goes into `dev`, and none merges another's.
+| State | Owning module (writes it) | Stored in | Read by | Target after R04 |
+|---|---|---|---|---|
+| Job lifecycle: `status` and its side fields (`phase`, `step`, `reason`, `next_step`, `asked`) | `jobs.rs`, `jobs/account_limits.rs` and `jobs/retry.rs`, and through `next_round` also `jobs/moves.rs` and `jobs/after_pr.rs` (every write in the list below), saved through `Jobs::keep` (`jobs/keep.rs`) by `store.rs` | `home/jobs/<id>.json` | the runner API (`routes.rs`, `api.rs`), `publish.rs`, `merge.rs`, `routines.rs`, the brain (`brain/briefing.rs`) and every `jobs/` module | `job/lifecycle.rs` (target, R04-03 to R04-08): the one writer of status and its side fields, with `Job.status` private to the job module (R04-08) |
+| Task chain and branch: `follow_up_of`, `branch`, `made_branch`, `start_from` | `jobs.rs`: `create` and `follow_up` decide them; the comparisons in the list below read the chain | `home/jobs/<id>.json` | `jobs.rs`, `jobs/account_limits.rs`, `jobs/after_pr.rs`, `publish.rs`, `review.rs`, `task_conversation.rs` | `job/chain.rs` (target, R04-09 and R04-10): the chain's branch decided in one function and stored once |
+| Recovery counters: `Job.recovery` (`errors`, `stalls`, `tries`, `restarts`, `limit_resumes`, `renewed`, `scoped_holds`, `cut`) | `jobs.rs` (`open`, `crashed`, `run_owner_job`, the stall checks), `jobs/retry.rs` and `jobs/account_limits.rs` | `home/jobs/<id>.json` | `jobs.rs`, `jobs/retry.rs`, `jobs/account_limits.rs` | same |
+| Account-limit wait: `resumes_at`, `waiting`, the `account_limit_*` fields, and the owner's decisions | the job's fields: `jobs/account_limits.rs`, `jobs.rs`, and `jobs/moves.rs` (a move ends the wait); the decisions: `account_limits.rs` (`Decisions`), each saved before it is acted on | the job's: `home/jobs/<id>.json`; the decisions: `home/limit-decisions.json` | `jobs.rs`, `jobs/account_limits.rs`, the runner API (`routes.rs`), and `job.rs`, which mirrors the decision into the job's JSON | same |
+| Trust mark: `untrusted`, `unsigned`, `foreign`, `foreign_by_api`, `reached` (where it is written and kept, not its rules) | `jobs.rs`: `create` (a follow-up inherits its job's) `Jobs::mark` (through `Job::note_mark`, `job.rs`) and `mark_unsigned`; `carry_marks` (`jobs/keep.rs`) keeps a mark when a save fails | `home/jobs/<id>.json` | `merge.rs`, `review.rs`, `jobs/lanes.rs` and `jobs.rs` | same |
+| Conversation turns | `conversation.rs` (`Conversations`), called by the brain (`brain/mod.rs`, `brain/ask.rs`, `brain/recap.rs`), `routines.rs`, `task_conversation.rs` and the runner API (`routes.rs`) | `home/conversations/<id>.json` | the runner API, the brain (`brain/briefing.rs`) | same |
+| Inbox items | `sphere/inbox.rs` (`Inbox::save`, and the items it builds), called by the Sphere link (`sphere/link.rs` and its `sphere/link/` modules), which also holds them in memory; `jobs.rs` and `review.rs` hand it items through the link's `add_items` (`sphere/link.rs`) | one file per item in `home/inbox/` | the runner API (`sphere/routes.rs`), the brain (`brain/briefing.rs`), `sphere/link/inbox_actions.rs` | same |
+| Vault | `vault.rs` (its own store) | `home/vault/secrets.json` (its use log, `home/vault/uses.jsonl`, is `connections.rs`'s) | `secrets.rs` (redaction), `scan.rs`, `connections.rs`, `tetrix.rs`, `chatgpt.rs` | same |
+| Transcripts | `transcript.rs` (`Transcripts`), fed by `jobs.rs` from the agent adapters' events | `home/jobs/<id>/transcript.jsonl` and `home/jobs/<id>/transcript-detail.jsonl` | the runner API (`GET /v1/jobs/{id}/transcript`, `routes.rs`), `activity.rs`, `jobs/moves.rs` | same, plus each job's transition log, `home/jobs/<id>/events.jsonl`, appended by `Jobs::apply` (target, R04-13) |
+| In-memory `State` sets in `jobs.rs`: `workers`, `publishing`, `followed`, `handed`, `idle`, `returning` (its other in-memory fields, such as `asks` and `held`, are left out here) | `workers` and `publishing`: `jobs.rs` (`schedule`, `spawn_worker`, `publish_job`, `crashed`); `followed`: `jobs.rs`'s pull-request follower; `handed`: `jobs/by_github.rs`; `idle` and `returning`: `jobs/slots.rs` | memory | `jobs.rs` and its `jobs/` modules | same |
 
-| Workstream | Owns (may edit) | Must not touch |
-|---|---|---|
-| **Sphere server** (obi-sphere) | `obi-sphere/server/**`, the server's own CI workflow | `obi-sphere/spec/**` (changes go to the lead), anything in this repository |
-| **Rust core** (`obid`) | `core/**` except the plug-in crates (including wiring `PluginHost` into `obid` and serving `GET` and `PUT /v1/obid/plugins` with it), the step bodies in `e2e/run.mjs` (the `run` of each entry in `steps`) and helper files it adds under `e2e/lib/`, new endpoints in runner-api.md's "obid only" section, `.github/workflows/core.yml`, installing the bundled plug-ins at start (5.3, step 1), and the Mac app's client test (below): `core/crates/obid/tests/mac_client.rs` and the files it adds under `core/crates/obid/tests/mac-client/` | `Engine/`, `Runner/`, `RunnerTests/` (frozen), `apps/**`, `plugins/**`, `core/crates/obi-plugin-*`, the lead's files below |
-| **Repository restructure** | The moves in section 1 and the path changes they need (`Oby.xcodeproj`, the `path:` of `Package.swift` targets whose folders move, like `MCP/`, and the comments in `Package.swift`; paths in `.github/workflows/apple.yml`; scripts and docs links that name moved folders). In the frozen engine, only the hard-coded paths that point at moved folders, a bug fix the freeze allows: the path constants in `Engine/AppleChecks.swift` (`folders`, `promptedFolders`) and the paths in its `AppleCheck.agentLine`, `Engine/Checks.swift` (the `-project` arguments and the scheme path), `Engine/XcodeBuild.swift` (its paths) and `Engine/Review.swift` (the `securityPath` roots), and the `RunnerTests` assertions that name those paths (including the one in `RunnerTests/AppleCheckTests.swift` that quotes `AppleCheck.agentLine`'s text). In runner-api.md, only the sentences that list the apps' folders. | `core/`, `plugins/`, `e2e/`, `Makefile`, everything else in `Engine/`, `Runner/` and `RunnerTests/`, anything else in `Package.swift`, the rest of runner-api.md |
-| **Plug-in boundary** | `plugins/**`, `core/crates/obi-plugin-api/**`, `core/crates/obi-plugin-host/**` | `core/Cargo.toml` (the `crates/*` glob picks its crates up), the rest of `core/`, `Engine/TetrixUse.swift` (frozen: it is the specification for the Tetrix plug-in) |
-| **Lead** (Phase 0) | This document, `e2e/SCENARIO.md`, `e2e/fixtures/**`, `e2e/stub-agent/**`, the rest of `e2e/run.mjs` (preflight, the step loop, process handling), `e2e/lib/fixture.mjs`, `e2e/lib/scenario.mjs`, `e2e/lib/scenario-doc.mjs`, `e2e/lib/snapshot.mjs` (the scenario's fixed values and the checks' definitions), the `Makefile`, `.github/workflows/e2e.yml`, `docs/ci.md` (the list of every workflow and what each runs), `obi-sphere/spec/**`, and, for the bug fix for the five tests that already fail on `dev` under `swift test` (below), `RunnerTests/StartWhenTests.swift`, `RunnerTests/VaultTests.swift` and, in the frozen engine, only the clock `Engine/StartWhen.swift` reads and how `Engine/Publish.swift` runs gitleaks. Once the restructure is in `dev`: the old-layout paths left in `docs/runner-api.md` (beyond the sentences that list the apps' folders, which are the restructure's) and in `docs/research/` | |
+Storage is unchanged in R04: one JSON file per job, per conversation and per inbox item. The move to one SQLite file is planned (R04-15, the owner's "Yes, plan the move" in `docs/decisions/2026-11-13-roadmap-answers.md`), not built in R04.
 
-Shared files and how they are shared:
+Where the job lifecycle is written today (test modules left out):
 
-- `core/Cargo.toml` and `core/Cargo.lock`: the Rust core creates them first. The plug-in boundary uses only `[workspace.dependencies]`; when it needs another dependency it asks the core's owner to add it there. A conflict in `Cargo.lock` is settled by regenerating it.
-- runner-api.md: the Rust core adds endpoints to "obid only"; the plug-in endpoints there are already written.
-- `.github/workflows/`: each workstream adds its own file and edits only its own. `e2e.yml` and the `Makefile` are the lead's and already build `obid` for `make e2e` (`cargo build --locked -p obid` in `core/` once `core/Cargo.toml` exists, with a stable Rust toolchain in CI), so no workstream needs to edit them to reach its done-when; a change one needs goes to the lead.
+- `.status = Status::` in `jobs.rs`: `open` (a restart), `crashed`, `stop`, `answer_parked`, `answer_kept_question`, `work` (its end), `run_obi_review`, `run_owner_job`, `end_done` and `next_round`; in `jobs/account_limits.rs`: `wait_for_reset`; in `jobs/retry.rs`: `queued`.
+- `next_round` (`jobs.rs`) queues a job for another round, and is called from `jobs.rs` (`message_as`, `review_round_again`, `reviewed`), `jobs/account_limits.rs` (`Failover::apply`, `settle`, `resume_limit_waits`, `apply_limit_job`), `jobs/after_pr.rs` (`after_pr`) and `jobs/moves.rs` (`move_to`).
+- `store.save(` of a job: `Jobs::keep` (`jobs/keep.rs`), the path every `Jobs::update` takes; `open` in `jobs.rs` (a restart); `apply_limit_job` and `reask_limit_job` in `jobs/account_limits.rs`. The vault's `add` (`vault.rs`) saves to the vault's own store, not a job.
+- The `.status = Status::` lines in `routines.rs`, `jobs/research.rs` and `jobs/unjudged.rs` are in their test modules only.
 
-The five tests that already fail on `dev` under `swift test` (four date-dependent `StartWhenTests`, and `VaultTests`' `theSquashCommitIsScannedBeforeTheMerge`) are fixed by a separate bug-fix pull request from the lead, without weakening them (for example, the date-dependent tests get an injected clock, and the gitleaks test stops depending on the machine's gitleaks configuration and version while still asserting that the scan runs before the merge). No workstream fixes, skips or deletes them.
+Where `follow_up_of` is compared with a branch today (test modules left out):
 
-What waits on what (everything else runs in parallel):
-
-1. `core/Cargo.toml` (the workspace) comes in the Rust core's first pull request. The plug-in boundary's crates build only inside it, so its first Rust pull request follows that one; until then it works on `plugins/tetrix/` (manifest, docs) and its tests' plug-ins.
-2. The plug-in boundary's first Rust pull request is the two crates with section 5.5's signatures and a host that finds no plug-ins.
-3. The Rust core wires `PluginHost` into `obid` (start and shutdown, `GET` and `PUT /v1/obid/plugins`, context for dispatch, plan and review, agent MCP servers, events into `pluginEvent` inbox items) once (2) is in `dev`, and does everything else before that.
-4. The plug-in boundary's done-when goes through `obid`'s routes, so it is reached once (3) is in `dev`.
-5. The repository restructure's done-when includes `swift test` passing for the frozen engine, so it is reached once the lead's bug fix for the five tests that already fail on `dev` (above) is in `dev`. Until then its pull requests show `swift test` failing in those five tests only, exactly as on `dev`.
-
-### Order and done-when
-
-**Sphere server.** The protocol types and checks against the conformance suite first (the server's checker passes `run.mjs --impl` for envelopes and cards and produces chains that pass it), then Spheres, tokens, invitations and the directory, then policy, send, deliveries and the audit chain, then `pnpm run local`. Done when steps 1, 3, 5 and 7 of SCENARIO.md pass against it with a scripted client, and the conformance suite passes.
-
-**Rust core.** The workspace (`core/Cargo.toml`, `core/Cargo.lock`) and the runner API skeleton serving `GET /v1/status` and the configuration file first, then jobs, worktrees, the sandbox and the Claude Code adapter (stream-json) running the stub agent, then `obi-protocol` (passing the conformance suite with `--impl`), then Sphere membership, exchanges, the inbox item, decisions and the Obi-to-Obi review job with its publish gate, then the step bodies in `e2e/run.mjs`, then the plug-in host's wiring and routes (once the plug-in crates are in `dev`). Done when:
-
-- **The scenario's `obid` steps pass with the stub adapter**: steps 2 to 8 of SCENARIO.md, with the Sphere server's steps, under `make e2e` on Linux and macOS.
-- **The Swift clients pair with `obid` and list its jobs**, shown by `core/crates/obid/tests/swift_client.rs` (section 2).
-- **`obid`'s side of 5.3 and 5.4**: its API token only from `home/api-token`, never from its environment or arguments, and no vault secret there either; `listen` defaulting to `127.0.0.1:7777` on macOS and refusing to start when the address is taken; the bundled plug-ins installed into `home/plugins/<id>` at start when missing, disabled, before `PluginHost::start` (a folder already there left as it is); and the log layer that takes the vault's secrets and their encoded forms out of the `obi_plugin` target. Each has a test.
-- **The API-level tests for every feature `obid` implements pass**: the `RunnerTests` ported to it (`core/crates/obid/tests/PORTING.md`) and its own. Among those features: the job sandbox, with a test that shows an agent and the repository's check can't write outside the job's worktree, the worktree's git directory and the job's temporary folder, can't read `obid`'s `home` beyond the worktree and the clone's git common directory, nor reach the network for the check, on Linux and on macOS, and on macOS can't reach preferences outside their own `HOME`, the pasteboard or the keychain as section 5.3 says (runner-api.md, "The job sandbox"), and that nothing the agent or the check started is left running when the job stops or ends, a descendant that called `setsid` included, on Linux and on macOS; and `GET` and `PUT /v1/obid/plugins`, answering as runner-api.md says with the host from `obi-plugin-host`.
-
-What `obid` doesn't implement yet is not part of this done-when. Each feature group whose `RunnerTests` stay unported (the 39 API-level tests PORTING.md lists as not ported: plans and the brain, the LAN gateway and pairing, the Watch API, speech, Mac and Apple checks, the owner's publishing, the vault, `startWhen`, usage, move, questions, Xcode Cloud, connections, and the rest) becomes **one GitHub issue per feature group** in obi-ai-bot/obi, labeled `core-port`, naming the Swift source to port and the `RunnerTests` that specify it. They are filed: [#442](https://github.com/obi-ai-bot/obi/issues/442) to [#458](https://github.com/obi-ai-bot/obi/issues/458), [label `core-port`](https://github.com/obi-ai-bot/obi/issues?q=label%3Acore-port), seventeen groups that between them name all 39 tests. The Rust core links each issue from its rows in PORTING.md, and files one the same way for any group that has none, when a test is added to the not-ported list.
-
-**Repository restructure.** The moves in section 1, one area per pull request, the case-only renames (`Character/`, `MCP/`) each through a temporary name. Done when the Mac, iPhone and Watch apps build from their new places, `swift test` still passes for the frozen engine, and no folder differs from another only by case.
-
-**Plug-in boundary.** The crates with the types, traits, wire protocol and a host that finds no plug-ins first (exactly section 5.5's signatures), then the host's discovery, sandbox and lifecycle behind them (`list` and `set_enabled` are what the Rust core's `GET` and `PUT /v1/obid/plugins` call), then `plugins/tetrix` as an `agent-mcp` plug-in, disabled. Done when:
-
-- `obid` runs with no plug-ins enabled, and Tetrix is enabled and disabled through `PUT /v1/obid/plugins/tetrix` like any plug-in (the route is the Rust core's, the host behind it this workstream's).
-- A test plug-in of each kind passes the host's tests.
-- `plugins/tetrix/obi-plugin.json` takes its MCP URL from its settings (`"urlFromConfig": "url"`, the `url` key required with no default, and no placeholder URL or host in the manifest), and `obi-plugin-api` and `obi-plugin-host` implement `urlFromConfig` as 5.2 says: enabling Tetrix without a `url` answers `422`.
-- The restart policy of 5.3 step 5 has a test: a plug-in that fails is restarted after 1 second, then after 2 seconds, and its third failure in a row makes it `failed`, with no fourth start.
-- The plug-in sandbox's tests from inside the sandbox (5.3 step 3), on Linux and on macOS: writes only to the data folder, no reads of `home` beyond its two folders, only the four environment variables; on macOS, no preference read or write through `cfprefsd` outside its own `HOME`, no pasteboard and no keychain through `securityd` as 5.3 says. What Seatbelt can't enforce is listed in 5.3 and runner-api.md, "The job sandbox", with the test that shows it, and tracked in [#439](https://github.com/obi-ai-bot/obi/issues/439).
-- A test that a plug-in disabled, and one still running when `obid` shuts down, leave no process running, including a descendant that called `setsid` (5.3 step 6), on Linux and on macOS.
-- The host logs only to the `obi_plugin` target and writes no log of its own (5.4).
+- `jobs.rs`: `create` (a follow-up's `start_from`, and a branch of its own unless it carries one on), `follow_up` (its `carries`: whether the follow-up keeps its job's branch), `message_as`, `review_round_again`, `reviewed`, `review_left_to_owner`, `chain_tip`, `publish_action_of`, `undeletable_in` and `done_with`, with the helpers `follows_up` and `same_branch`; and the function `carries`, which says whether a job still carries its pull request.
+- `jobs/account_limits.rs`: `apply_limit_job`.
+- `jobs/after_pr.rs`: `may_round` (through `same_branch`).

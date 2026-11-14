@@ -1038,6 +1038,7 @@ mod tests {
             start: None,
             github: None,
             watch: None,
+            extra: Default::default(),
         };
         let briefing = briefing(vec![old, done, failed, running], vec![permission]);
         let text = briefing.text();

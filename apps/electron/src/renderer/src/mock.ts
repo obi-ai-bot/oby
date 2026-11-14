@@ -1,6 +1,6 @@
 import { BRANDS, type Brand } from './brands';
 import { everything, onObid } from './lean';
-import type { AskMark, RoomPost } from '../../shared/obid-wire';
+import { isAgent, type AskMark, type RoomPost } from '../../shared/obid-wire';
 
 // Mock data until the app talks to Oby's engine. The shapes follow the Mac
 // app on dev (Engine/Jobs.swift Job, Engine/Conversation.swift Turn,
@@ -13,6 +13,9 @@ export const AGENTS: Record<Agent, { name: string; brand: Brand }> = {
   codex: { name: 'Codex', brand: BRANDS.openai },
   cursor: { name: 'Cursor', brand: BRANDS.cursor },
 };
+// An agent by obid's id: one this build doesn't know (docs/contracts/wire.md, WIRE-4) by that id,
+// with a plain gray circle
+export const agentOf = (id: string): { name: string; brand: Brand } => (isAgent(id) ? AGENTS[id] : { name: id, brand: BRANDS.circle });
 
 // Job.status on the Mac. queued and running show as running here; a job
 // with an ask needs you whatever its status.
@@ -25,7 +28,7 @@ export type StageState = 'done' | 'current' | 'upcoming' | 'failed' | 'skipped';
 // take ("≈ 3m"), what it's doing in a plain sentence (sub), and what hangs
 // under it on the timeline: the job's activity (under Work) or its checks.
 export type Stage = {
-  id: StageId; title: string; detail?: string; state: StageState;
+  id: StageId; title: string; detail?: string; state: StageState | (string & {});
   took?: string; sub?: string; activity?: boolean; checks?: CheckRow[];
 };
 
@@ -34,7 +37,7 @@ export type Stage = {
 // A tool call: the verb and what it touched ("Running" `xcodebuild test`).
 export type ToolCall = { verb: string; path?: string; text?: string; took?: string; running?: boolean };
 // A few plain groups of the agent's work; only the running one opens.
-export type ToolGroup = { title: string; state: 'done' | 'running' | 'failed'; took?: string; meta?: string; tools?: ToolCall[] };
+export type ToolGroup = { title: string; state: 'done' | 'running' | 'failed' | (string & {}); took?: string; meta?: string; tools?: ToolCall[] };
 // A check (or the secret scan, or the push) under its stage.
 export type CheckRow = {
   name: string; mono?: boolean; state: 'done' | 'running' | 'upcoming' | 'failed' | 'skipped';
@@ -72,6 +75,8 @@ export type Ask = {
   // that steers it (never a button of the model's recommendation)
   fullText?: boolean;
   steer?: boolean;
+  // obid's kind this build doesn't know (docs/contracts/wire.md, WIRE-2): its kind as the label, gray, nothing to answer
+  unknown?: boolean;
 };
 // a Question's own words for the agent, in place of its options (as on his "Go with this plan?")
 export const TELL = 'Tell it something';
@@ -98,7 +103,7 @@ export type Job = {
   who?: string;        // the person it's for, shown before the title
   from?: Brand;        // where it came from (GitHub, Slack, Gmail…); none when you asked Oby
   request: string;     // your own words, or the message it came from
-  agent: Agent;
+  agent: Agent | (string & {});  // obid's; one this build doesn't know shows by agentOf
   account: string;     // which of the accounts it runs on (Personal, Deskree, or someone's shared one)
   on?: string;         // whose Mac it runs on, when not this one ("Wellington’s Mac")
   model: string;
@@ -107,7 +112,7 @@ export type Job = {
   base: string;
   check?: string;      // "Done when": the command that has to pass
   repoCheck?: string | null;  // obid only: its repository's check now, which Change check starts from
-  status: JobStatus;
+  status: JobStatus | (string & {});
   step: string;        // the live line, e.g. "Running swift test"
   waiting?: Waiting;   // why a queued job hasn't started, as the runner says it (#238)
   round?: [number, number];
@@ -563,7 +568,7 @@ export const JOBS: Job[] = [
 ];
 
 // Done and out of Home: the archive (Home's Archived), most recent first.
-export type Archived = { id: string; type: string; title: string; who?: string; agent: Agent; finished: number };
+export type Archived = { id: string; type: string; title: string; who?: string; agent: Agent | (string & {}); finished: number };
 // archived (done over 3 days ago, so off Home under the default rule)
 export const ARCHIVE: Archived[] = [
   { id: 'a1', type: 'review', who: 'Ernesto', title: '#401 queue metrics', agent: 'claude', finished: 3 * 24 * 60 + 26 * 60 },
@@ -688,7 +693,7 @@ export function threadOf(j: Job): Message[] {
   // nothing said in the chat about it (it came from elsewhere): Oby's word when it started it
   if (!replies.length) {
     const repo = j.repo.includes('/') ? ` in ${j.repo.split('/')[1]}` : '';
-    replies.push({ who: 'oby', text: `On it. ${AGENTS[j.agent].name} has it${repo} on ${j.account}.`, ago: j.created, jobs: [j.id] });
+    replies.push({ who: 'oby', text: `On it. ${agentOf(j.agent).name} has it${repo} on ${j.account}.`, ago: j.created, jobs: [j.id] });
   }
   // done: the agent's report, unless Oby already said it in the chat
   if (j.summary && j.finished != null && !replies.some((r) => r.ago <= j.finished!)) {

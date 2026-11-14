@@ -7,8 +7,9 @@ those groups on the VM, starts it when it is stopped, keeps the macOS-only part 
 the Mac, and the Mac's `factory/bin/job queue` deallocates the VM once it is idle. Gates use the VM once the
 owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). Task A00-18 added a second Mac,
 the owner's MacBook Pro, for the macOS part ("The second Mac", below), off until the owner adds `mac_worker`.
-Task A00-19 made the VM's SSH rule follow the Mac's IP and its idle stop count only the VM's uses. The
-scenarios are [REMOTE-1 to 21](contracts/remote-gate.md).
+Task A00-19 made the VM's SSH rule follow the Mac's IP and its idle stop count only the VM's uses. Task A00-31
+sent builders' heavy Rust runs to the VM, in builder slots of their own ("Builders' runs", below), off until
+the owner sets `builder_slots`. The scenarios are [REMOTE-1 to 31](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -282,10 +283,36 @@ gate runs it, through `factory/checks.sh` under the check lock:
 - **The same trust as the VM.** The Pro runs code the factory's agents wrote, as this Mac's gate does, in
   the owner's own account there. It holds no factory secret, and the check runs offline after `cargo fetch`.
 
+## Builders' runs
+
+The Mac's load sat at 31 to 37 on 10 cores with builders queued one at a time behind `test-run`'s lock while
+the VM idled between gates. Now `factory/bin/test-run` sends a heavy run that doesn't need macOS to the VM,
+with the builder's command line unchanged (REMOTE-22 to 31):
+
+- **Where it goes.** The gate's own rule, imported from `factory/bin/gate`, never copied: a Swift, Xcode or
+  whole-check run, a worktree whose changes against its base touch a file in `MACOS_ONLY` or naming
+  `target_os = "macos"`, or a `--test` that is such a file, stays here under the lock, with one `on this Mac:`
+  line.
+- **What goes.** The merge-base with `origin/dev` (on origin, so the VM fetches it with no credential), the
+  SHA of the worktree's tree written from an index of its own (nothing gitignored), and on ssh's standard input
+  `git diff --binary --full-index` between them, after gitleaks with the main checkout's `.gitleaks.toml`
+  passed it. No environment, `CARGO_TARGET_DIR`, token or login.
+- **On the VM.** As `oby-builder`, a user with no sudo that `setup.sh` makes, with its own toolchain and
+  `/srv/oby-builder`: `oby-remote-gate --run` takes one of `builder_slots` slots, never a gate's, so a gate
+  never waits on a builder; applies the diff to the base, checks the tree's SHA, touches every file under
+  `core/` and `tools/` (A00-23's rule, so another worktree's build in the slot's `target` never stands in for
+  this one's, while dependencies stay built), and runs the command at nice 15, offline, with the slot's own
+  Cargo folder and `cores / (slots + builder_slots)` jobs.
+- **Fallback.** Anything before `running in builder slot <N>` (the VM unreachable after 3 minutes, no builder
+  user, every builder slot busy for 10 minutes) runs it here exactly as before, with one `fell back to this
+  Mac:` line. After it, the VM's exit code is the verdict. A stop or a dropped connection frees the slot.
+- **Turning it on.** Run `factory/remote/setup.sh oby-gate` again, then add `"slots": 4, "builder_slots": 8`
+  (on the 64-core VM) to `remote_gate` in `factory/config.json`. Until then nothing changes.
+
 ## Still to build
 
-- **Builders' test runs on the Pro:** `factory/bin/test-run` sending a builder's run of a pushed commit to the
-  Pro when the builder lock here is taken and the Pro has a free slot.
+- **Builders' macOS-only runs on the Pro:** `factory/bin/test-run` sending a builder's macOS-only run to the
+  Pro when the builder lock here is taken and the Pro has a free slot (its Linux-able runs go to the VM).
 - **The nightly check on the Pro:** `factory/bin/nightly` running there when it's free, so the nightly full
   check doesn't hold this Mac's lock for an hour.
 - **Whole checks on the Pro:** a change to the check's own files, a gate with no Linux group planned, and a
@@ -294,8 +321,8 @@ gate runs it, through `factory/checks.sh` under the check lock:
 - **Re-run `factory/remote/setup.sh oby-gate` on the real VM**, starting it only for this and deallocating
   it after, and record the modes it prints before and after (task A00-12's last step, not done by its pull
   request).
-- **A check user without `sudo`** on the VM, separate from the admin user `oby` (a change to `setup.sh` and
-  to how the gate reaches the VM).
+- **A check user without `sudo` for the gates** on the VM, as builders' runs already have (`oby-builder`): a
+  change to how the gate reaches the VM.
 - **Records in `~/.oby-flow/pipelines/runs.jsonl`**, the file the pipelines viewer reads: each gate's host,
   slot, commit, verdict and times.
 - **The dashboard header:** the VM's state and its four slots in `factory/dashboard.html`.

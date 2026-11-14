@@ -51,6 +51,7 @@ About 45k of obid's 131k source lines, and about 33k lines of Swift, leave.
 - **Tetrix stays** and has to be flawless: it's why Oby exists (the owner, 2026-10-25).
 - **The iPhone waited** until the Mac app was right (the owner, 2026-10-25); after 0.4.1 it's back, as the Mac's launch build (the owner, 2026-10-26).
 - **Slack goes:** GitHub is the only outside connection, and Obys do the talking (the owner, 2026-10-25).
+- **`apps/web` goes:** nothing has served it since #1510, so it leaves the repository and git history is its archive, as for the Swift Mac app. A future browser client is the Electron renderer running on a web runtime: the same UI, only the bridge differs. The owner closes #1290, #1291, #1198, #1170 and #1114 and retargets #1228 to the iPhone and Electron ([R03-06](decisions/2026-11-13-roadmap-answers.md#r03-06-q008); the owner, 2026-11-13).
 - **The Watch app goes:** removed from the iPhone build, with its rows in the iPhone's Settings and nothing in their place (the owner, 2026-11-13, R03-07).
 - **Routines stay:** obid's `routines` and their routes are kept, and batch 2 no longer cuts them; the [answer](decisions/2026-11-13-roadmap-answers.md#r13-01-q011) notes they should work as OpenBot's do (the owner, 2026-11-13).
 

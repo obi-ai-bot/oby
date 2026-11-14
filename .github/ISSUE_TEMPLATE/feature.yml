@@ -14,6 +14,17 @@ body:
       placeholder: FirstRun.tsx, the Tools step
     validations:
       required: true
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Lane
+      description: "Whose work this is (AGENTS.md, \"Dispatcher, not harness\"). agent: reading, editing, running commands, a turn's retries and context; it stays in the CLI. dispatcher: which agent, account and worktree; start, stop and resume; the work's state; asking the owner; showing what was done. between-owners: another Oby's request or text from outside; typed, quoted and boxed."
+      options:
+        - agent
+        - dispatcher
+        - between-owners
+    validations:
+      required: true
   - type: textarea
     id: outcome
     attributes:

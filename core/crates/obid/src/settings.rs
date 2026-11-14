@@ -3,9 +3,8 @@
 //! the owner's check-in (docs/runner-api.md, "obid only: check-ins (#1116)"), and the
 //! repositories the owner said No check for (#1062).
 
-use std::path::{Path, PathBuf};
-
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,22 +84,17 @@ impl Limits {
 /// The limits in force now: what obid's settings say, once read ([`use_limits`]).
 /// ponytail: one per process, set from the one home obid serves; per-home if one obid ever
 /// serves several.
-static LIMITS: std::sync::RwLock<Limits> = std::sync::RwLock::new(Limits {
-    rounds: None,
-    max_running: None,
-    folders: None,
-    routines: None,
-    accounts: None,
-});
+static LIMITS: std::sync::RwLock<Option<Limits>> = std::sync::RwLock::new(None);
 
 /// The limits in force now.
 pub fn limits() -> Limits {
-    *LIMITS.read().unwrap_or_else(|e| e.into_inner())
+    let limits = LIMITS.read().unwrap_or_else(|e| e.into_inner());
+    limits.unwrap_or_default()
 }
 
 /// Puts `limits` in force: when obid starts, and when the owner changes them.
 pub fn use_limits(limits: Limits) {
-    *LIMITS.write().unwrap_or_else(|e| e.into_inner()) = limits;
+    *LIMITS.write().unwrap_or_else(|e| e.into_inner()) = Some(limits);
 }
 
 /// Whether obid moves work past an account's usage limit to another account with room by itself,
@@ -153,6 +147,9 @@ pub struct Settings {
     /// by account id. No entry: they haven't been asked, and it's a no.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub background_consent: BTreeMap<String, BackgroundConsent>,
+    /// Keys this obid doesn't know (a newer one's), kept as they were when it saves (HOME-11).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The owner's answer about one ChatGPT login: a yes only from a signed click in an app of theirs
@@ -314,20 +311,7 @@ pub fn valid_default_agent(agent: &str) -> bool {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings {
-            default_agent: default_agent(),
-            default_account: None,
-            chatgpt_welcomed: false,
-            talk_account: None,
-            tuning: BTreeMap::new(),
-            max_running: default_max_running(),
-            check_in: None,
-            check_in_sent: None,
-            account_failover: None,
-            no_check: Vec::new(),
-            limits: Limits::default(),
-            background_consent: BTreeMap::new(),
-        }
+        serde_json::from_str("{}").expect("every setting has a default")
     }
 }
 
@@ -336,20 +320,40 @@ pub fn path(home: &Path) -> PathBuf {
     home.join("settings.json")
 }
 
+/// `bytes`, a JSON object, read one key at a time (HOME-11): the settings of the keys whose values
+/// read, keys obid doesn't know in `extra`, and the keys whose values didn't read.
+fn decode(bytes: &[u8]) -> serde_json::Result<(Settings, Vec<String>)> {
+    let object: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(bytes)?;
+    let (mut read, mut bad) = (serde_json::Map::new(), Vec::new());
+    for (key, value) in object {
+        match serde_json::from_value::<Settings>(serde_json::json!({ key.as_str(): &value })) {
+            Ok(_) => drop(read.insert(key, value)),
+            Err(_) => bad.push(key),
+        }
+    }
+    Ok((serde_json::from_value(read.into())?, bad))
+}
+
 /// The settings kept in `home`, or the defaults when there are none. A file that doesn't read, or
-/// holds a value out of range, gives the defaults for what it can't say, and is logged.
+/// a value that doesn't read or is out of range, gives the defaults for what it can't say, logged.
 pub fn load(home: &Path) -> Settings {
     let file = path(home);
-    let mut settings = match std::fs::read(&file) {
+    let mut settings = match std::fs::read(&file).map(|bytes| decode(&bytes)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
         Err(e) => {
             tracing::warn!("can't read {}: {e}", file.display());
             Settings::default()
         }
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        Ok(Err(e)) => {
             tracing::warn!("{} doesn't read: {e}", file.display());
             Settings::default()
-        }),
+        }
+        Ok(Ok((settings, bad))) => {
+            for key in bad {
+                tracing::warn!("{} has a {key} that doesn't read: default", file.display());
+            }
+            settings
+        }
     };
     if !(1..=settings.limits.max_running()).contains(&settings.max_running) {
         tracing::warn!(
@@ -367,8 +371,10 @@ pub fn load(home: &Path) -> Settings {
     settings
 }
 
-/// Keeps `settings` in `home`.
+/// Keeps `settings` in `home`: a file there that didn't wholly read is copied aside first (HOME-12).
 pub fn save(home: &Path, settings: &Settings) -> std::io::Result<()> {
+    let reads = |b: &[u8]| decode(b).is_ok_and(|(_, bad)| bad.is_empty());
+    crate::store::keep_aside_unless(&path(home), reads)?;
     let text = serde_json::to_vec_pretty(settings).map_err(std::io::Error::other)?;
     crate::store::write_private(&path(home), &text)
 }
@@ -493,6 +499,85 @@ mod tests {
         assert_eq!(load(&home).max_running, 6);
         std::fs::write(path(&home), "{}").unwrap();
         assert_eq!(load(&home).max_running, 6);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Serde's own defaults are the settings' defaults.
+    #[test]
+    fn the_defaults_are_serdes() {
+        let settings = Settings::default();
+        assert_eq!(settings.default_agent, "auto");
+        assert_eq!(settings.max_running, crate::api::MAX_RUNNING);
+        assert!(settings.extra.is_empty());
+    }
+
+    /// A home of the test's own, with `settings.json` holding `text` when there's one.
+    fn home_with(name: &str, text: Option<&str>) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("obid-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        if let Some(text) = text {
+            std::fs::write(path(&home), text).unwrap();
+        }
+        home
+    }
+
+    /// The `settings.json.unreadable-*` copies in `home`, each with what it holds.
+    fn kept_aside(home: &Path) -> Vec<String> {
+        std::fs::read_dir(home)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name();
+                name.to_string_lossy()
+                    .starts_with("settings.json.unreadable-")
+            })
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect()
+    }
+
+    /// HOME-11 (docs/contracts/home.md): a value that doesn't read is its default, alone; every
+    /// other one, and a key obid doesn't know, is kept, and the file is copied aside before a save
+    /// writes the default over it.
+    #[test]
+    fn home_11_a_bad_setting_resets_only_itself() {
+        let text =
+            r#"{"maxRunning": "lots", "defaultAccount": "work", "fromANewerObid": {"a": 1}}"#;
+        let home = home_with("settings-bad", Some(text));
+        let settings = load(&home);
+        assert_eq!(settings.max_running, crate::api::MAX_RUNNING);
+        assert_eq!(settings.default_account.as_deref(), Some("work"));
+        assert_eq!(
+            settings.extra.get("fromANewerObid"),
+            Some(&serde_json::json!({"a": 1}))
+        );
+        update(&home, |s| s.talk_account = Some("personal".into())).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path(&home)).unwrap()).unwrap();
+        assert_eq!(saved["fromANewerObid"], serde_json::json!({"a": 1}));
+        assert_eq!(saved["defaultAccount"], "work");
+        assert_eq!(saved["talkAccount"], "personal");
+        assert_eq!(saved["maxRunning"], crate::api::MAX_RUNNING);
+        assert_eq!(kept_aside(&home), [text]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// HOME-12 (docs/contracts/home.md): a `settings.json` that doesn't read is copied aside before
+    /// the first save writes over it, once; with no file, nothing is.
+    #[test]
+    fn home_12_an_unreadable_settings_file_is_kept() {
+        let home = home_with("settings-unreadable", Some("{\"maxRunning\": 3,"));
+        update(&home, |s| s.default_agent = "codex".into()).unwrap();
+        assert_eq!(kept_aside(&home), ["{\"maxRunning\": 3,"]);
+        assert_eq!(load(&home).default_agent, "codex");
+        update(&home, |s| s.default_account = Some("work".into())).unwrap();
+        assert_eq!(kept_aside(&home).len(), 1, "a file that reads isn't copied");
+        assert_eq!(load(&home).default_account.as_deref(), Some("work"));
+        let _ = std::fs::remove_dir_all(&home);
+
+        let home = home_with("settings-none", None);
+        update(&home, |s| s.default_agent = "codex".into()).unwrap();
+        assert!(kept_aside(&home).is_empty());
+        assert_eq!(load(&home).default_agent, "codex");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

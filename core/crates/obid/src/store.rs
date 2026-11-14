@@ -1,5 +1,7 @@
 //! Where obid keeps its jobs: one JSON file per job in `home/jobs/` (0600), written whole and
-//! renamed into place, so a crash leaves the old version or the new one, never half of one.
+//! renamed into place, so a crash leaves the old version or the new one, never half of one. It owns
+//! the files, never what's in them: it decides no status and changes no field of the job it's
+//! handed (docs/ARCHITECTURE.md, "State ownership").
 
 use std::path::{Path, PathBuf};
 
@@ -177,6 +179,21 @@ fn kept_aside(listed: &mut Vec<serde_json::Value>, dir: &Path) {
         let since = named.unwrap_or_else(|| modified(&path));
         list(listed, &path, "kept aside at an earlier start", since);
     }
+}
+
+/// Before a save writes over `file`: one that `reads` doesn't take, or that can't be read, is
+/// copied to `<its name>.unreadable-<seconds>` beside it first (PERMISSIONS-4, HOME-11, HOME-12).
+pub fn keep_aside_unless(file: &Path, reads: impl FnOnce(&[u8]) -> bool) -> std::io::Result<()> {
+    let missing = |e: std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+    if std::fs::read(file).map_or_else(missing, |bytes| reads(&bytes)) {
+        return Ok(());
+    }
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    let aside = file.with_file_name(format!("{name}.unreadable-{}", obi_protocol::time::now()));
+    std::fs::copy(file, &aside)?;
+    let (file, kept) = (file.display(), aside.display());
+    tracing::warn!("{file} didn't read: kept as {kept}");
+    Ok(())
 }
 
 #[cfg(test)]
