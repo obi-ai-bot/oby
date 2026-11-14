@@ -25,5 +25,5 @@
     "claude-haiku-5-5":  { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01 }
   },
   "remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate", "slots": 4, "builder_slots": 8 },
-  "mac_worker": { "ssh_host": "oby-mac-pro" }
+  "mac_worker": { "ssh_host": "oby-mac-pro", "builder_slots": 2 }
 }
