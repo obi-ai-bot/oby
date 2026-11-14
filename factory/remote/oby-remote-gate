@@ -6,6 +6,7 @@ Usage:
   oby-remote-gate [--slots <n> --builder-slots <m>] <commit> <base>
   oby-remote-gate --mac <commit> <base> <group>...
   oby-remote-gate --run --slots <n> --builder-slots <m> --wait <seconds> <base> <tree> <folder> -- <command>...
+  oby-remote-gate --mac --run --slots <n> --builder-slots <m> --wait <seconds> <base> <tree> <folder> -- <command>...
 
   <commit>  the commit to check: its full 40-character SHA, which origin must have
   <base>    what the check compares it with: origin/<branch>, or a full 40-character SHA
@@ -82,6 +83,14 @@ the cores / (slots + builder slots). Output is relayed as it comes; the last lin
 builder slot <N> after <s>s`, and it exits with the command's code (128 + signal when stopped).
 Anything that fails before the `running in` line exits 2 with a line saying why.
 
+Builder mode on the Mac worker (--mac --run, REMOTE-35 to 42), for factory/bin/test-run's macOS-only
+runs, as the user the gates run as there. The same builder mode, with these differences: <root> is
+~/oby-worker/builders (factory/remote/setup-mac.sh makes it, with its own repo.git), so its builder-N
+slots, clone and locks are apart from the gates' slot-1 and slot-2, and nothing else under ~/oby-worker
+is opened or made; /opt/homebrew/bin and /usr/local/bin follow ~/.cargo/bin on PATH, as in Mac mode;
+and the caller passes --slots 2 (the Mac's gate slots), so the gates keep their cores / 2 and each
+builder gets the cores / (2 + builder slots) at nice 15.
+
 OBY_REMOTE_ROOT and OBY_REMOTE_URL point it at another root and origin, for the tests.
 """
 
@@ -121,8 +130,10 @@ OFFLINE = {"CARGO_NET_OFFLINE": "true", "npm_config_offline": "true"}
 
 # Builder mode's git calls run no hook: an earlier run could have left one in its clone (REMOTE-34).
 HOOKS = []
-# The builder clone's config as setup.sh leaves it, written afresh before each builder run's git steps.
+# The builder clone's config as setup.sh leaves it, written afresh before each builder run's git steps. On the Mac
+# worker it keeps the two settings `git clone --bare` writes on macOS, MAC_CORE, after bare (REMOTE-45).
 BUILDER_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n[gc]\n\tauto = 0\n"
+MAC_CORE = "\tignorecase = true\n\tprecomposeunicode = true\n"
 
 child = None
 starting = False
@@ -268,9 +279,10 @@ def take_slot(name="slot", count=None, wait=None, waiting_line=None):
         time.sleep(1)
 
 
-def check_out(commit, base, worktree, touch=True, reset=False):
+def check_out(commit, base, worktree, touch=True, reset=None):
     """Fetch the commit and the base and make the slot's worktree (its files under core/ and tools/ touched,
-    unless not touch; the clone's config and attributes reset first when reset): an error to say, or None."""
+    unless not touch; the clone's config reset to the text reset and its attributes removed first, when given): an
+    error to say, or None."""
     repo = str(ROOT / "repo.git")
     fd = lock_file(ROOT / "repo.lock")
     try:
@@ -278,7 +290,7 @@ def check_out(commit, base, worktree, touch=True, reset=False):
         if reset:
             try:
                 written = ROOT / "repo.git" / "config.reset"
-                written.write_text(BUILDER_CONFIG)
+                written.write_text(reset)
                 os.replace(written, ROOT / "repo.git" / "config")
                 (ROOT / "repo.git" / "info" / "attributes").unlink(missing_ok=True)
             except OSError as error:
@@ -375,6 +387,12 @@ def read_payload():
     return bytes(data), None
 
 
+def first_on_path(env, mac):
+    """PATH with ~/.cargo/bin first, then on a Mac Homebrew's folders: a command over ssh reads no profile."""
+    first = [Path.home() / ".cargo" / "bin", *(["/opt/homebrew/bin", "/usr/local/bin"] if mac else [])]
+    return os.pathsep.join([*map(str, first), env.get("PATH", "")])
+
+
 def remove(path):
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
@@ -401,10 +419,11 @@ def start_clean(place):
     return None
 
 
-def builder_run(args):
-    """--run: a builder's command on its worktree's tree, in a builder slot. Its exit code, or 2 before it ran."""
+def builder_run(args, mac=False):
+    """--run, or --mac --run on the Mac worker: a builder's command on its worktree's tree, in a builder slot. Its
+    exit code, or 2 before it ran."""
     global ROOT, HOOKS
-    ROOT = BUILDER_ROOT
+    ROOT = MAC_ROOT / "builders" if mac else BUILDER_ROOT
     HOOKS = ["-c", "core.hooksPath=/dev/null"]
     args, why = counts(args)
     if why:
@@ -419,7 +438,8 @@ def builder_run(args):
     if not (FOLDER.fullmatch(folder) and not folder.startswith("/") and ".." not in folder.split("/")):
         return usage(f"the folder isn't a relative path inside the worktree: {folder}")
     if not (ROOT / "repo.git").is_dir():
-        print(f"{NAME}: {ROOT / 'repo.git'} is missing: run factory/remote/setup.sh from the Mac first", file=sys.stderr)
+        setup = "setup-mac.sh" if mac else "setup.sh"
+        print(f"{NAME}: {ROOT / 'repo.git'} is missing: run factory/remote/{setup} from the Mac first", file=sys.stderr)
         return 2
     payload, why = read_payload()
     if why:
@@ -440,7 +460,8 @@ def builder_run(args):
     if why:
         say(why)
         return 2
-    why = check_out(base, base, worktree, touch=False, reset=True)
+    config = BUILDER_CONFIG.replace("\tbare = true\n", "\tbare = true\n" + MAC_CORE) if mac else BUILDER_CONFIG
+    why = check_out(base, base, worktree, touch=False, reset=config)
     if why:
         say(why)
         return 2
@@ -463,7 +484,7 @@ def builder_run(args):
     env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_CHECK_")}
     env.update(OFFLINE, CARGO_TARGET_DIR=str(place / "target"), CARGO_HOME=str(place / "cargo"),
                **dict.fromkeys(CORE_VARS, share()))
-    env["PATH"] = os.pathsep.join([str(Path.home() / ".cargo" / "bin"), env.get("PATH", "")])
+    env["PATH"] = first_on_path(env, mac)
     why = prepare("rust", worktree, {k: v for k, v in env.items() if k not in OFFLINE})
     if why:
         say(why)
@@ -488,6 +509,8 @@ def main(argv):
     global ROOT, SLOTS
     if argv[1:2] == ["--run"]:
         return builder_run(argv[2:])
+    if argv[1:3] == ["--mac", "--run"]:
+        return builder_run(argv[3:], mac=True)
     mac = argv[1:2] == ["--mac"]
     if mac:
         ROOT, SLOTS = MAC_ROOT, MAC_SLOTS
@@ -534,9 +557,7 @@ def main(argv):
     env["CARGO_TARGET_DIR"] = str(folder / "target")
     env["OBY_CHECK_CACHE"] = str(folder / "cache")
     env["OBY_BUILD_JOBS"] = str(max(1, (os.cpu_count() or 1) // SLOTS)) if mac else share()
-    # A command over ssh reads no profile: on a Mac, Homebrew's folders too.
-    first = [Path.home() / ".cargo" / "bin", *(["/opt/homebrew/bin", "/usr/local/bin"] if mac else [])]
-    env["PATH"] = os.pathsep.join([*map(str, first), env.get("PATH", "")])
+    env["PATH"] = first_on_path(env, mac)
     check = str(worktree / "scripts" / "oby-check.sh")
     if mac:
         groups = given

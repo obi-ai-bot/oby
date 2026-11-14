@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16, 19 to 21, 28), with a fake `az`, `ssh` and IP
-lookup, never the VM, its network rule, the Mac worker or the network.
+"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16, 19 to 21, 28, 43, 44), with a fake `az`,
+`ssh` and IP lookup, never the VM, its network rule, the Mac worker or the network.
 
 Run from the repository root: python3 factory/tests/test_gate_remote.py
 Each test builds a throwaway repository: a bare `origin` with a `dev` branch whose scripts/oby-check.sh is a
@@ -10,6 +10,7 @@ stand-in factory/checks.sh, and a job whose worktree is another clone on a pushe
 from a file:// URL (FACTORY_REMOTE_IP_URL).
 """
 
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from pathlib import Path
 FACTORY = Path(__file__).resolve().parents[1]
 REMOTE = json.dumps({"ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate"})
 PRO = json.dumps({"ssh_host": "oby-mac-pro"})
+CHECK = "/usr/bin/shasum -a 256 oby-worker/bin/oby-remote-gate"  # the gate's check of the Mac worker's runner
 JOB_ID = "001-a00-01-something"
 OLD_IP, NEW_IP = "8.8.4.4", "1.1.1.1"  # this Mac's IP before and after it changes: global, but no one's home
 
@@ -77,10 +79,12 @@ sys.exit(int(code.read_text()) if code.exists() else 0)
 
 # oby-gate: `ssh ... true` exits 255 while $FAKE/rule-source isn't $FAKE/ip (as /32 or bare), else with
 # $FAKE/ssh-reach's code; the remote gate copies $FAKE_STATE to $FAKE/state-during-run, prints a slot and exits with
-# $FAKE/remote-exit's. oby-mac-pro: `true` exits with $FAKE/pro-reach's code; with $FAKE/pro-busy its gate says
-# both slots are busy and exits 2, else it prints slot 1 and exits with $FAKE/pro-exit's code.
+# $FAKE/remote-exit's. oby-mac-pro: `true` exits with $FAKE/pro-reach's code; a command starting /usr/bin/shasum
+# runs through sh in $FAKE/pro-home (its cwd and HOME), its output and exit code passed through; with
+# $FAKE/pro-busy its gate says both slots are busy and exits 2, else it prints slot 1 and exits with
+# $FAKE/pro-exit's code.
 FAKE_SSH = """#!/usr/bin/env python3
-import json, os, shutil, stat, sys
+import json, os, shutil, stat, subprocess, sys
 from pathlib import Path
 fake = Path(os.environ["FAKE"])
 with open(fake / "ssh.log", "a") as log:
@@ -90,6 +94,9 @@ def read(name, default):
 if sys.argv[-2] == "oby-mac-pro":
     if sys.argv[-1] == "true":
         sys.exit(read("pro-reach", 0))
+    if sys.argv[-1].startswith("/usr/bin/shasum"):
+        home = fake / "pro-home"
+        sys.exit(subprocess.run(["sh", "-c", sys.argv[-1]], cwd=home, env=dict(os.environ, HOME=str(home))).returncode)
     if (fake / "pro-busy").exists():
         print("oby-remote-gate: both slots are busy")
         sys.exit(2)
@@ -158,6 +165,12 @@ class GateRemote(unittest.TestCase):
             shutil.copy2(FACTORY / "bin" / name, self.repo / "factory" / "bin" / name)
         shutil.copy2(FACTORY / "config.json", self.repo / "factory" / "config.json")
         (self.repo / "factory" / "checks.sh").write_text(STAND_IN)
+        # The runner the gate checks the Mac worker's against (REMOTE-43), and the worker's copy of it.
+        self.runner = self.repo / "factory" / "remote" / "oby-remote-gate"
+        self.pro_runner = self.fake / "pro-home" / "oby-worker" / "bin" / "oby-remote-gate"
+        for copy in (self.runner, self.pro_runner):
+            copy.parent.mkdir(parents=True)
+            shutil.copy2(FACTORY / "remote" / "oby-remote-gate", copy)
         # The job's worktree, on a branch pushed to origin.
         self.worktree = self.dir / "worktree"
         self.git(self.dir, "clone", "-q", "-b", "dev", str(origin), str(self.worktree))
@@ -257,6 +270,10 @@ class GateRemote(unittest.TestCase):
 
     def pro_calls(self):
         return [call for call in self.ssh_calls() if "oby-mac-pro" in call["argv"]]
+
+    def pro_gate_calls(self):
+        """The Mac worker's calls but its `true` probe and its runner check."""
+        return [call for call in self.pro_calls() if call["argv"][-1] not in ("true", CHECK)]
 
     def config(self, **keys):
         """The test's config.json: the real one, with these keys set, or dropped when None."""
@@ -459,7 +476,7 @@ class GateRemote(unittest.TestCase):
         commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
         code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
         self.assertEqual(code, 0, out + err)
-        [call] = [call for call in self.pro_calls() if call["argv"][-1] != "true"]
+        [call] = self.pro_gate_calls()
         self.assertEqual(call["argv"][-2:],
                          ["oby-mac-pro", f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust"])
         for option in ("BatchMode=yes", "ForwardAgent=no", "ConnectTimeout=10"):
@@ -482,7 +499,7 @@ class GateRemote(unittest.TestCase):
         self.assertEqual((self.header()["GATE"], self.header()["HOST"]), ("FAIL", "oby-gate, oby-mac-pro"))
         self.assertIn(f"- oby-mac-pro: {self.SANDBOX} in slot 1: failed with exit 1 in", self.checks())
         self.assertEqual(self.lines("mac-runs"), [], "this Mac ran the part again after the Mac worker's failure")
-        self.assertEqual(len([call for call in self.pro_calls() if call["argv"][-1] != "true"]), 1)
+        self.assertEqual(len(self.pro_gate_calls()), 1)
         self.assertNotIn("Fell back", self.checks())
 
     def test_remote_13_swift_and_factory_run_on_the_mac_worker(self):
@@ -492,7 +509,7 @@ class GateRemote(unittest.TestCase):
         commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
         code, out, err = self.gate(FACTORY_MAC_WORKER=None)
         self.assertEqual(code, 0, out + err)
-        [call] = [call for call in self.pro_calls() if call["argv"][-1] != "true"]
+        [call] = self.pro_gate_calls()
         self.assertEqual(call["argv"][-1],
                          f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust swift factory")
         self.assertEqual(self.lines("mac-runs"), [])
@@ -537,7 +554,7 @@ class GateRemote(unittest.TestCase):
         (self.fake / "pro-reach").write_text("255\n")
         self.assert_the_macos_part_fell_back("ssh oby-mac-pro didn't answer within 1s",
                                              FACTORY_REMOTE_REACH_SECONDS="1")
-        self.assertEqual([call for call in self.pro_calls() if call["argv"][-1] != "true"], [])
+        self.assertEqual(self.pro_gate_calls(), [])
         self.assertGreater(len(self.pro_calls()), 0)
 
     def test_remote_14_a_busy_mac_worker_falls_back_to_this_mac(self):
@@ -615,6 +632,70 @@ class GateRemote(unittest.TestCase):
             self.assertEqual(self.header()["HOST"], "oby-gate, mac")
             self.assertIn(f"\n- Fell back from the Mac worker to this Mac: {why}\n", self.checks())
             self.assertEqual([call["argv"][-2] for call in self.ssh_calls()], ["oby-gate"] * len(self.ssh_calls()))
+
+    # ---- REMOTE-43 ------------------------------------------------------------------------------
+
+    def changed_runner(self):
+        """The fallback's reason when the worker's runner and this checkout's differ, from their sha256."""
+        there, here = (hashlib.sha256(path.read_bytes()).hexdigest()[:12] for path in (self.pro_runner, self.runner))
+        self.assertNotEqual(there, here)
+        return (f"its oby-worker/bin/oby-remote-gate isn't this checkout's factory/remote/oby-remote-gate (sha256 "
+                f"{there} there, {here} here): run factory/remote/setup-mac.sh oby-mac-pro to put it back")
+
+    def test_remote_43_a_rewritten_runner_is_refused_and_the_gate_falls_back(self):
+        with open(self.pro_runner, "a") as runner:
+            runner.write('print("oby-remote-gate: passed in slot 1 after 1s")\n')
+        self.assert_the_macos_part_fell_back(self.changed_runner())
+        self.assertEqual([call["argv"][-1] for call in self.pro_calls()], ["true", CHECK] * 2)
+        self.assertEqual(self.pro_gate_calls(), [])
+
+    def test_remote_43_an_untouched_runner_runs_the_macos_part_there(self):
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([call["argv"][-1] for call in self.pro_calls()],
+                         ["true", CHECK, f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust"])
+        check = self.pro_calls()[1]
+        for option in ("BatchMode=yes", "ForwardAgent=no", "ConnectTimeout=10"):
+            self.assertIn(option, check["argv"])
+        self.assertFalse(check["stdin_pipe"], "the runner check's standard input isn't /dev/null")
+        self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+        self.assertEqual(self.lines("mac-runs"), [])
+        self.assertNotIn("Fell back", self.checks())
+
+    def test_remote_43_a_runner_dev_moved_on_from_falls_back_until_setup_runs_again(self):
+        commit = self.change("core/crates/obid/src/sandbox.rs", push=True)
+        with open(self.runner, "a") as runner:
+            runner.write("# dev moved on\n")
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.header()["HOST"], "oby-gate, mac")
+        self.assertIn(f"\n- Fell back from oby-mac-pro to this Mac: {self.changed_runner()}\n", self.checks())
+        self.assertEqual(self.pro_gate_calls(), [])
+        self.assertEqual(self.lines("mac-runs"), ["rust"])
+        # setup-mac.sh puts this checkout's runner there: the part runs there again.
+        shutil.copy2(self.runner, self.pro_runner)
+        self.forget()
+        code, out, err = self.gate(FACTORY_MAC_WORKER=PRO)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual([call["argv"][-1] for call in self.pro_gate_calls()],
+                         [f"oby-worker/bin/oby-remote-gate --mac {commit} origin/dev rust"])
+        self.assertEqual(self.header()["HOST"], "oby-gate, oby-mac-pro")
+        self.assertEqual(self.lines("mac-runs"), [])
+
+    # ---- REMOTE-44 ------------------------------------------------------------------------------
+
+    def test_remote_44_an_unreadable_runner_falls_back_to_this_mac(self):
+        self.pro_runner.unlink()
+        self.assert_the_macos_part_fell_back("couldn't read the sha256 of its oby-worker/bin/oby-remote-gate (ssh "
+                                             "ended 1): run factory/remote/setup-mac.sh oby-mac-pro to put it back")
+        self.assertEqual(self.pro_gate_calls(), [])
+
+    def test_remote_44_no_runner_in_this_checkout_falls_back_to_this_mac(self):
+        self.runner.unlink()
+        self.assert_the_macos_part_fell_back("this checkout has no factory/remote/oby-remote-gate to check its runner "
+                                             "against")
+        self.assertEqual(self.pro_gate_calls(), [])
 
     # ---- REMOTE-5 --------------------------------------------------------------------------------
 

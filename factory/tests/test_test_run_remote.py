@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/test-run's builder path to the gate VM (REMOTE-22 to 29 and 31), with a fake `az` and `ssh`, never
+"""factory/bin/test-run's builder path to the gate VM (REMOTE-22 to 29, 31 and 46), with a fake `az` and `ssh`, never
 the VM or the network.
 
 Run from the repository root: python3 factory/tests/test_test_run_remote.py
@@ -35,6 +35,8 @@ OBY_REMOTE_GATE = FACTORY / "remote" / "oby-remote-gate"
 KEYS = {"ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate"}
 IP = "8.8.4.4"
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
+# Words a builder's command can hold that a quoting fish and bash read differently could change (REMOTE-46).
+AWKWARD = ["foo\\", "a\\b", "it's", "a b", ""]
 
 # `ssh ... true` exits with $FAKE/ssh-reach's code (0 without it). With $FAKE/no-user, a call with -l is refused as
 # sshd refuses an unknown user. Any other command runs through sh in a session of its own, its standard input
@@ -121,7 +123,10 @@ def gone(pid, seconds=15):
     return False
 
 
-class TestRunRemote(unittest.TestCase):
+class RemoteHarness:
+    """The throwaway repository, fake hosts and helpers, for a unittest.TestCase that mixes it in: this file's and
+    test_test_run_mac_worker.py's, which imports it without running these tests again."""
+
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp()).resolve()
         self.fake = self.dir / "fake"
@@ -287,6 +292,8 @@ class TestRunRemote(unittest.TestCase):
         self.assertEqual(len(self.run_calls()), tried)
         self.assertEqual(self.vm_runs(), [])
 
+
+class TestRunRemote(RemoteHarness, unittest.TestCase):
     # ---- REMOTE-22 -------------------------------------------------------------------------------
 
     def test_remote_22_a_test_run_lands_on_the_vm_in_a_builder_slot(self):
@@ -552,6 +559,18 @@ class TestRunRemote(unittest.TestCase):
         (self.fake / "hold").unlink()
         out, err = proc.communicate(timeout=60)
         self.assertEqual(proc.returncode, 0, out + err)
+
+    # ---- REMOTE-46 -------------------------------------------------------------------------------
+
+    def test_remote_46_words_reach_the_vm_unchanged(self):
+        self.write("core/crates/obid/src/gateway.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "test", "--test", "one", "--", *AWKWARD)
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(call["argv"][-4:-1], ["-l", "oby-builder", "oby-gate"])
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["test", "--test", "one", "--", *AWKWARD])
+        self.assertEqual(self.lines("mac-runs"), [])
 
 
 if __name__ == "__main__":

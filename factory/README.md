@@ -78,6 +78,12 @@ builder slot of its own, at nice 15, offline, with its own Cargo folder. Its out
 anything that stops it before it starts there (the VM unreachable, no builder user, every builder slot busy
 for 10 minutes) says `fell back to this Mac: <why>` and runs here as before. Its use of the VM is recorded in the
 main checkout's `jobs/remote-gate/state.json` like a gate's.
+With `builder_slots` in `mac_worker` too (after `remote/setup-mac.sh` again), a run that stays here only because it
+needs macOS (macOS-only code, or a macOS-only `--test`) goes to the Mac worker instead, saying `to the Mac worker
+<host>: <why>`: `ssh oby-mac-pro oby-worker/bin/oby-remote-gate --mac --run …` runs it in a builder slot of its
+own under `~/oby-worker/builders`, never a gate's, with the same output, exit code and fallback to this Mac. A run
+that needs this Mac itself (its Keychain, the owner's real home) says so with `bin/test-run --here -- <command>`:
+it stays here under the lock and calls no host.
 
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks

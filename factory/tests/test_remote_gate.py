@@ -449,7 +449,7 @@ else:
 
 
 class BuilderRun(unittest.TestCase):
-    """REMOTE-34: oby-remote-gate --run against a temporary origin and builder root, with a stand-in cargo in a
+    """REMOTE-34 and 45: oby-remote-gate --run against a temporary origin and builder root, with a stand-in cargo in a
     temporary home's ~/.cargo/bin."""
 
     def setUp(self):
@@ -511,6 +511,15 @@ class BuilderRun(unittest.TestCase):
         self.assertNotIn("hooksPath", second["config"])
         self.assertIn("bare = true", second["config"])
         self.assertFalse(second["attributes"], "the first run's info/attributes is still there")
+
+    def test_remote_45_the_vms_builder_clone_config_is_unchanged(self):
+        # git clone --bare wrote this Mac's own settings into the clone; on the VM the reset writes setup.sh's text.
+        (self.fake / "first").touch()
+        code, out = self.builder_run()
+        self.assertEqual(code, 0, out)
+        config = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n[gc]\n\tauto = 0\n"
+        self.assertEqual(json.loads((self.fake / "second").read_text())["config"], config)
+        self.assertEqual((self.root / "repo.git" / "config").read_text(), config)
 
 
 class SetupBuilder(unittest.TestCase):

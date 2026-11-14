@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // startObid itself, on a fake launchd, lsof and port: nothing here reaches the Mac's.
@@ -7,11 +7,14 @@ const TAKEN = 'Something other than your Oby engine answers';
 const mac = vi.hoisted(() => ({
   jobs: {} as Record<string, string>, pids: [] as string[], answers: false, loginItem: 'not-registered',
   calls: [] as string[][], registered: [] as boolean[], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true,
+  // the app's own folder and version, and its app.exit calls (runMarker.ts)
+  userData: '/nonexistent', version: '1.0.0', exits: [] as number[],
 }));
 
 vi.mock('electron', () => ({
   app: {
-    isPackaged: true, isInApplicationsFolder: () => mac.inApplications, getPath: () => '/nonexistent',
+    isPackaged: true, isInApplicationsFolder: () => mac.inApplications, getPath: () => mac.userData,
+    getVersion: () => mac.version, on: () => {}, exit: (code: number) => { mac.exits.push(code); },
     getLoginItemSettings: () => ({ status: mac.loginItem }),
     setLoginItemSettings: ({ openAtLogin }: { openAtLogin: boolean }) => {
       mac.registered.push(openAtLogin);
@@ -79,7 +82,7 @@ const stopped = 'state = not running\nlast exit code = 0';
 
 beforeEach(() => {
   rmSync(HOME, { recursive: true, force: true });
-  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true });
+  Object.assign(mac, { jobs: {}, pids: [], answers: false, loginItem: 'not-registered', calls: [], registered: [], refuse: false, lingers: 0, hangs: false, printHangs: false, inApplications: true, userData: '/nonexistent', version: '1.0.0', exits: [] });
   Object.defineProperty(process, 'platform', { value: 'darwin' });
   vi.stubGlobal('fetch', async () => {
     // as undici says it
@@ -239,5 +242,143 @@ describe('the engine while the window is open', () => {
     const call = await adopted();
     Object.assign(mac, { pids: [], answers: false, jobs: {} });
     expect(await call()).toEqual({ status: 0, text: 'Nothing answers on 127.0.0.1:7777: obid isn’t running.' });
+  });
+});
+
+// runMarker.ts on a userData folder of the test's own
+describe('the app’s own run records', () => {
+  let records: typeof import('../../../main/runMarker');
+  const kept = (name: string) => readFileSync(`${mac.userData}/${name}`, 'utf8');
+  const lines = () => kept('crashes.jsonl').trim().split('\n').map((l) => JSON.parse(l));
+  // the window's page: its reloads counted
+  const page = () => { const p = { reloads: 0, reload: () => { p.reloads++; }, isDestroyed: () => false }; return p; };
+  beforeEach(async () => {
+    mac.userData = mkdtempSync(`${process.env.TMPDIR ?? '/tmp'}/oby-run-records-`);
+    vi.resetModules();
+    records = await import('../../../main/runMarker');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    chmodSync(mac.userData, 0o700);
+    rmSync(mac.userData, { recursive: true, force: true });
+  });
+
+  it('engine_17_a_gone_renderer_is_recorded', () => {
+    const p = page();
+    records.rendererGone({ reason: 'crashed', exitCode: 11 }, p);
+    expect(lines()).toEqual([{ kind: 'renderer', reason: 'crashed', exitCode: 11, time: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/) }]);
+    expect(p.reloads).toBe(1);
+    // gone again before that reload loaded: recorded, not reloaded
+    records.rendererGone({ reason: 'oom', exitCode: 0 }, p);
+    expect(lines().map((l) => l.reason)).toEqual(['crashed', 'oom']);
+    expect(p.reloads).toBe(1);
+    // once a page loaded, it may be reloaded once again
+    records.windowLoaded();
+    records.rendererGone({ reason: 'killed', exitCode: 9 }, p);
+    expect(p.reloads).toBe(2);
+    // a clean exit is recorded, never reloaded
+    records.windowLoaded();
+    records.rendererGone({ reason: 'clean-exit', exitCode: 0 }, p);
+    expect(lines()).toHaveLength(4);
+    expect(p.reloads).toBe(2);
+    // another page's renderer, or a closed window's: recorded only
+    records.rendererGone({ reason: 'crashed', exitCode: 11 }, null);
+    records.rendererGone({ reason: 'crashed', exitCode: 11 }, { ...p, isDestroyed: () => true });
+    expect(lines()).toHaveLength(6);
+    expect(p.reloads).toBe(2);
+  });
+
+  it('engine_17_a_gone_child_is_recorded_with_nothing_else', () => {
+    records.childGone({ type: 'GPU', reason: 'crashed', exitCode: 5, serviceName: 'gpu', name: 'GPU Process' } as never);
+    expect(lines()).toEqual([{ kind: 'GPU', reason: 'crashed', exitCode: 5, time: expect.any(String) }]);
+  });
+
+  it('engine_17_crash_lines_are_bounded_and_the_files_are_private', () => {
+    records.started(false);
+    for (let i = 0; i < 150; i++) records.childGone({ type: 'Utility', reason: 'crashed', exitCode: i });
+    const kept = lines();
+    expect(kept).toHaveLength(100);
+    expect(kept[0].exitCode).toBe(50);
+    expect(kept[99].exitCode).toBe(149);
+    for (const name of ['run-marker', 'start-attempts.json', 'crashes.jsonl']) expect(statSync(`${mac.userData}/${name}`).mode & 0o777).toBe(0o600);
+    // a malformed line is skipped when read
+    writeFileSync(`${mac.userData}/crashes.jsonl`, 'not json\n{"kind":"GPU","reason":"oom","exitCode":1,"time":"t"}\n[]\n');
+    expect(records.runRecords().crashes).toEqual([{ kind: 'GPU', reason: 'oom', exitCode: 1, time: 't' }]);
+  });
+
+  it('engine_18_a_hung_quit_ends_at_30_s', () => {
+    vi.useFakeTimers();
+    records.started(false);
+    records.quitting();
+    // a second before-quit starts no second timer
+    records.quitting();
+    expect(kept('run-marker')).toBe('quitting');
+    vi.advanceTimersByTime(29_900);
+    expect(mac.exits).toEqual([]);
+    vi.advanceTimersByTime(100);
+    expect(mac.exits).toHaveLength(1);
+    expect(kept('run-marker')).toBe('quit_timeout');
+    expect(lines()).toEqual([{ kind: 'app', reason: 'quit_timeout', time: expect.any(String) }]);
+    vi.advanceTimersByTime(60_000);
+    expect(mac.exits).toHaveLength(1);
+    // the next start adds no unclean exit for it
+    records.started(false);
+    expect(lines()).toHaveLength(1);
+  });
+
+  it('engine_18_a_quit_that_ends_in_time_is_clean', () => {
+    vi.useFakeTimers();
+    records.quitting();
+    vi.advanceTimersByTime(10_000);
+    records.quit();
+    vi.advanceTimersByTime(60_000);
+    expect(mac.exits).toEqual([]);
+    expect(kept('run-marker')).toBe('clean');
+  });
+
+  it('engine_19_failed_starts_are_counted', () => {
+    writeFileSync(`${mac.userData}/start-attempts.json`, JSON.stringify({ '0.9.0': 7 }));
+    for (let i = 0; i < 3; i++) records.started(false);
+    expect(records.runRecords().attempts).toBe(3);
+    records.started(false);
+    expect(JSON.parse(kept('start-attempts.json'))).toEqual({ '0.9.0': 7, '1.0.0': 4 });
+    // a --background start opens no window: it doesn't count
+    records.started(true);
+    expect(records.runRecords().attempts).toBe(4);
+    // the window's page loaded
+    records.windowLoaded();
+    expect(JSON.parse(kept('start-attempts.json'))).toEqual({ '0.9.0': 7, '1.0.0': 0 });
+  });
+
+  it.each([['running', 1], ['quitting', 1], ['clean', 0], ['quit_timeout', 0]])('engine_19_a_start_after_%s_records_an_unclean_exit_%i_times', (previous, times) => {
+    writeFileSync(`${mac.userData}/run-marker`, previous);
+    records.started(false);
+    expect(records.runRecords().crashes).toEqual(times ? [{ kind: 'app', reason: 'unclean_exit', previous, time: expect.any(String) }] : []);
+    expect(records.runRecords().marker).toBe('running');
+  });
+
+  it.each([
+    ['unwritable', () => chmodSync(mac.userData, 0o500)],
+    ['linked', () => {
+      const elsewhere = `${mac.userData}/elsewhere`;
+      writeFileSync(elsewhere, 'running');
+      for (const name of ['run-marker', 'start-attempts.json', 'crashes.jsonl']) symlinkSync(elsewhere, `${mac.userData}/${name}`);
+    }],
+  ])('engine_19_an_%s_folder_never_stops_a_start_a_crash_or_a_quit', (_, make) => {
+    vi.useFakeTimers();
+    make();
+    const p = page();
+    expect(() => {
+      records.started(false);
+      records.windowLoaded();
+      records.rendererGone({ reason: 'crashed', exitCode: 11 }, p);
+      records.childGone({ type: 'GPU', reason: 'crashed', exitCode: 5 });
+      records.quitting();
+      vi.advanceTimersByTime(30_000);
+      records.quit();
+    }).not.toThrow();
+    expect(p.reloads).toBe(1);
+    expect(mac.exits).toHaveLength(1);
+    expect(records.runRecords()).toEqual({ marker: null, attempts: 0, crashes: [] });
   });
 });
