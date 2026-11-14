@@ -3,7 +3,7 @@
   "max_rounds": 3,
   "base_branch": "dev",
   "merge_method": "squash",
-  "sprint": 1,
+  "sprint": 2,
   "routing": {
     "low":    { "code": "haiku" },
     "medium": { "code": "sonnet" },
