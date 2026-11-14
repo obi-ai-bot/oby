@@ -7,7 +7,7 @@ import { ApiError, api, type SignIn, type Status } from './obid';
 const TOOLS: Agent[] = ['claude', 'codex', 'cursor'];
 export type Found = NonNullable<Status['availableLogins']>[number];
 
-export const toolRows = (accounts: { agent: Agent }[], found: Found[]) => TOOLS.map((agent) => ({
+export const toolRows = (accounts: { agent: string }[], found: Found[]) => TOOLS.map((agent) => ({
   agent,
   added: accounts.filter((a) => a.agent === agent).length,
   found: found.filter((l) => l.agent === agent),

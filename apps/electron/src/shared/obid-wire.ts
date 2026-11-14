@@ -1,9 +1,23 @@
 // Shared wire types and Server-Sent Events framing for obid's API (docs/runner-api.md),
 // used by both Electron's main process (main/notify.ts) and renderer (renderer/src/obid.ts).
 
-export type Agent = 'claude' | 'codex' | 'cursor';
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'stopped' | 'interrupted';
-export type StageState = 'done' | 'current' | 'upcoming' | 'failed' | 'skipped';
+// A value obid sends that this build doesn't know is typed as possible (docs/contracts/wire.md):
+// each reader shows it neutral, by these lists of the values it knows, written here once.
+const knows = <T extends string>(list: readonly T[]) => (value: string): value is T => (list as readonly string[]).includes(value);
+export const AGENT_IDS = ['claude', 'codex', 'cursor'] as const;
+export type KnownAgent = typeof AGENT_IDS[number];
+export const isAgent = knows(AGENT_IDS);
+export type Agent = KnownAgent | (string & {});
+export const JOB_STATUSES = ['queued', 'running', 'done', 'failed', 'stopped', 'interrupted'] as const;
+export const isJobStatus = knows(JOB_STATUSES);
+export type JobStatus = typeof JOB_STATUSES[number] | (string & {});
+// every kind in docs/runner-api.md's "Inbox item", and the two more this app reads
+export const INBOX_KINDS = [
+  'question', 'review', 'failed', 'limit', 'merge', 'audit', 'failure', 'start', 'permission', 'plan', 'agentQuestion', 'confirm',
+  'github', 'watch', 'listen', 'obiRequest', 'routine',
+] as const;
+export const isInboxKind = knows(INBOX_KINDS);
+export type StageState = 'done' | 'current' | 'upcoming' | 'failed' | 'skipped' | (string & {});
 // obid only (#733): a reached stage's times, in RFC 3339 and seconds; estimate, a range in seconds
 export type Stage = {
   id: string; title: string; state: StageState; detail?: string | null;
@@ -14,16 +28,17 @@ export type ActivityCounts = Partial<Record<'read' | 'search' | 'edit' | 'comman
 export type Activity = {
   counts: ActivityCounts;
   groups: {
-    id: string; title: string; by: 'agent' | 'obid'; state: 'running' | 'done' | 'failed'; started: string; finished?: string | null;
+    id: string; title: string; by: 'agent' | 'obid' | (string & {});
+    state: 'running' | 'done' | 'failed' | (string & {}); started: string; finished?: string | null;
     files?: string[]; diff?: { added: number; removed: number } | null;
     tools?: { tool: string; kind: string; summary: string; state: string; started: string; seconds?: number | null }[];
   }[];
 };
 // One entry of a job's session (GET /v1/jobs/{id}/transcript, obid only)
 export type TranscriptEntry = {
-  n: number; at: string; kind: 'tool' | 'said' | 'thought' | 'you' | 'plan' | 'start'; summary: string; text?: string;
-  tool?: string; activity?: string; state?: 'running' | 'done' | 'failed' | 'declined'; seconds?: number; exit?: number; added?: number; removed?: number;
-  todos?: { text: string; state: 'pending' | 'running' | 'done' }[];
+  n: number; at: string; kind: 'tool' | 'said' | 'thought' | 'you' | 'plan' | 'start' | (string & {}); summary: string; text?: string;
+  tool?: string; activity?: string; state?: 'running' | 'done' | 'failed' | 'declined' | (string & {}); seconds?: number; exit?: number; added?: number; removed?: number;
+  todos?: { text: string; state: 'pending' | 'running' | 'done' | (string & {}) }[];
   // this app's, not obid's: it came from a fetch, not an event (liveTask.ts, withLine)
   fetched?: boolean;
 };
@@ -79,7 +94,7 @@ export type Job = {
   waiting?: { kind: string; text: string; reserved?: string[] | null } | null;
   // The account-wide question is shown once. Its settled choice remains authoritative while
   // the job is stopped, so an ordinary interruption card must not ask the owner again.
-  accountLimit?: { decision: string | null; state: 'pending' | 'resume' | 'stop' | 'move'; resetAt: string | null } | null;
+  accountLimit?: { decision: string | null; state: 'pending' | 'resume' | 'stop' | 'move' | (string & {}); resetAt: string | null } | null;
   // obid only: the conversation whose words started it (#493), and the user's turn there whose
   // words started it or offered it (oby_offer)
   conversation?: string | null;
@@ -91,7 +106,7 @@ export type Job = {
   outgoing?: Outgoing[];
   activity?: Activity;
   context?: string;
-  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' };
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; costUsd?: number; priced?: 'plan' | 'api' | (string & {}) };
   windowShare?: { fiveHour: number | null; sevenDay: number | null; estimate: true };
   estimate?: { low: number; high: number; basis: string; samples: number; firstGiven?: { low: number; high: number } };
   // one more each time obid sends it changed: of two copies, the higher is the newer (#1709);
@@ -110,7 +125,7 @@ export type InboxItem = {
   job: string;
   // obid only: how it's sorted (what needs the owner first), the GitHub item a github offer is
   // about (its title quoted, people's words), and the review a listen item posts on Approve
-  triage?: 'needs_you' | 'fyi' | 'ignore' | 'pending';
+  triage?: 'needs_you' | 'fyi' | 'ignore' | 'pending' | (string & {});
   github?: { list: string; repo: string; number: number; author: string | null; url: string; quoted?: { title?: string } | null } | null;
   watch?: { review?: string | null } | null;
   title: string;
@@ -118,7 +133,7 @@ export type InboxItem = {
   options: string[];
   details: string[] | null;
   created: string;
-  state: 'open' | 'later' | 'done';
+  state: 'open' | 'later' | 'done' | (string & {});
   later: string | null;
   headline: string | null;
   recommended: number | null;
@@ -167,7 +182,7 @@ export type Conversation = { id: string; title: string; pinned: boolean; created
 // obid only: "GET /v1/github/work", what GitHub wants from the owner, the keys this app reads.
 // Everything in an item is GitHub's data: shown as text, never acted on.
 export type GitHubWorkItem = {
-  id: string; list: 'reviews' | 'assigned' | 'mine'; repo: string; number: number; title: string; url: string; author: string | null;
+  id: string; list: 'reviews' | 'assigned' | 'mine' | (string & {}); repo: string; number: number; title: string; url: string; author: string | null;
   updated: string; draft: boolean | null; checks: string | null; reviewDecision: string | null; fork?: boolean | null;
   board: { project: string; column: string } | null; known: boolean; job: string | null;
 };
@@ -240,7 +255,7 @@ export type Status = {
 export type Repo = { repo: string; defaultBranch: string; listed: boolean; check?: string | null; noCheck?: boolean };
 
 // A rule Always allow saved (or a deny), for a repository or `conversations` ("GET /v1/permissions/rules")
-export type SavedRule = { id: string; rule: string; repo: string; decision: 'allow' | 'deny' };
+export type SavedRule = { id: string; rule: string; repo: string; decision: 'allow' | 'deny' | (string & {}) };
 
 // A sign-in under way: the page to open, and the code to type there (Codex's, GitHub's) or, with
 // pasteCode, the code that page shows, to send back (Claude Code's)
@@ -273,7 +288,7 @@ export type PlanAnswer = (
 // "GET /v1/events": what a turn of the conversation is doing as it happens. step: an action of
 // the turn (`turn` is the user's turn); thinking: its brain at work; delta: a piece of its words
 // as they're written (obid only: the conversation harness)
-export type Step = { turn: string; conversation?: string; index: number; text: string; state: 'running' | 'done' | 'failed' };
+export type Step = { turn: string; conversation?: string; index: number; text: string; state: 'running' | 'done' | 'failed' | (string & {}) };
 export type Delta = { turn: string; conversation: string; text: string };
 
 // The events this app follows; any other is ignored.
@@ -283,13 +298,13 @@ export type RoomRef = { kind: string; repo?: string; pr?: number; issue?: number
 export type RoomPost = {
   id: string; seq: number | null; recordedAt: string | null; from: string; owner: string;
   // the room's: working_on, done, found, need or say; a thread's: the protocol's type. An open string
-  kind: string; by: 'obi' | 'owner'; createdAt: string; replyTo: string | null;
-  text: string; about: RoomRef[]; state: 'sent' | 'waiting' | 'refused'; error: string | null;
+  kind: string; by: 'obi' | 'owner' | (string & {}); createdAt: string; replyTo: string | null;
+  text: string; about: RoomRef[]; state: 'sent' | 'waiting' | 'refused' | (string & {}); error: string | null;
   // whether the owner compared the sender's owner's key, as on the members list; left out by an obid
   // from before it. kind and by are what the sender says of itself, and no such check.
   verified?: boolean;
 };
-export type RoomAnswer = { room: 'available' | 'unavailable'; posts: unknown[] };
+export type RoomAnswer = { room: 'available' | 'unavailable' | (string & {}); posts: unknown[] };
 // One post as this app can show it, or null: a field that isn't what the API says would take the
 // page down, in a place others write to.
 export function roomPostOf(value: unknown): RoomPost | null {

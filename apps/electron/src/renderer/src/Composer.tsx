@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronLeft, File, FolderGit2, FolderOpen, Gauge, Laptop, ListChecks, Plus, Search, Settings, Square, X } from 'lucide-react';
 import { ObyIcon, OwnerAvatar } from './ObyFace';
-import { AGENTS, OBYS, PLACES, SHARED_WITH_ME, type Attachments } from './mock';
+import { OBYS, agentOf, PLACES, SHARED_WITH_ME, type Attachments } from './mock';
 
 import MessageEditor, { type EditorHandle, type MentionKey } from './MessageEditor';
 import { mentioned } from './textTokens';
@@ -657,10 +657,10 @@ export function UsagePanel({ onClose, onBlur }: { onClose: () => void; onBlur: (
         const week = weekWords(a), bar = a.signedIn === false ? null : barOf(a);
         return (
           <div key={a.id} className="usage-row">
-            <BrandMark brand={AGENTS[a.agent].brand} size={16} mono />
+            <BrandMark brand={agentOf(a.agent).brand} size={16} mono />
             <span className="usage-text">
               <span className="usage-line">
-                <span className="usage-name">{AGENTS[a.agent].name} · {a.name}</span>
+                <span className="usage-name">{agentOf(a.agent).name} · {a.name}</span>
                 {bar != null && <>
                   {a.sessionResets && <span className="usage-about">Resets {a.sessionResets}</span>}
                   <span className={`usage-used ${fullness(bar)}`.trim()}>{bar}%</span>
