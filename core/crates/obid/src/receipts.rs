@@ -2,8 +2,8 @@
 //! restarts, which request key got which answer, so the same request sent again gets the first
 //! answer, not a second job. One file per key, `home/receipts/<sha256 of the key>.json` (0600),
 //! holding the body's hash and the answer with the secrets obid knows taken out: never the body.
-//! `POST /v1/jobs` uses them (R02-04), and so do a conversation's `oby_dispatch` and `oby_tell_job`
-//! and obid's own Try again ([`once`], R02-06); the other routes come with R02-05.
+//! `POST /v1/jobs` (R02-04), a job's messages, stop and move and the inbox answer (R02-05) use
+//! them, as do `oby_dispatch`, `oby_tell_job` and obid's own Try again ([`once`], R02-06).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -694,16 +694,18 @@ describe('obid\'s answers over the events that came meanwhile', () => {
       expect(ask(tasks)).toMatchObject({ options: ['Give it another round', 'Stop here'] });
       expect(tasks.dev!.get().find((x) => x.id === 'j1')!.status).toBe('needs');
     });
-    it('one that never started asks again what it was asked: it has no session to pick up', async () => {
+    it('TASKS-20: one that never started is tried again with the Try-again words, as itself', async () => {
       const { live, event } = await failed();
       event('job', job({ status: 'failed', step: 'Failed', session: null, moves: [], title: 'Rebase 391', request: 'yes, do that', revision: 2 }));
-      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ id: 'j2', followUpOf: 'j1', status: 'running', revision: 1 }) };
-      answers['GET /v1/jobs/j1'] = { status: 200, body: job({ status: 'failed', session: null, revision: 2 }) };
+      answers['POST /v1/jobs/j1/messages'] = { status: 200, body: job({ status: 'running', step: 'Working', session: null, revision: 3 }) };
       await live.answerJob('j1', 'Give it another round');
       const told = calls.find((c) => c.path === '/v1/jobs/j1/messages')!;
-      expect(JSON.stringify(told.body)).toContain('Rebase 391');
-      expect(JSON.stringify(told.body)).toContain('yes, do that');
-      expect(JSON.stringify(told.body)).not.toContain('Try again');
+      expect(told.body).toEqual({ text: TRY_AGAIN });
+      expect(JSON.stringify(told.body)).not.toContain('Rebase 391');
+      expect(JSON.stringify(told.body)).not.toContain('yes, do that');
+      // signed as the owner's, as on a task that started
+      expect(owners('POST', told.path, told.body, ['Give it another round'], [])).toEqual([0]);
+      expect(live.liveState().jobs.j1.status).toBe('running');
     });
     it('one moved to another account picks up with the Try-again words', async () => {
       const { live, event } = await failed();

@@ -962,42 +962,25 @@ async fn walk_ended(
 /// obid is starting, or the moment it says it listens, is kept until [`StopSignal::wait`] reads
 /// it, and obid stops with exit 0 rather than being killed.
 pub struct StopSignal {
-    #[cfg(unix)]
     term: tokio::signal::unix::Signal,
-    #[cfg(unix)]
     int: tokio::signal::unix::Signal,
 }
 
 impl StopSignal {
     /// Catches SIGTERM and SIGINT from now on. Call it inside a Tokio runtime (`Runtime::enter`).
     pub fn install() -> std::io::Result<StopSignal> {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{SignalKind, signal};
-            Ok(StopSignal {
-                term: signal(SignalKind::terminate())?,
-                int: signal(SignalKind::interrupt())?,
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            Ok(StopSignal {})
-        }
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(StopSignal {
+            term: signal(SignalKind::terminate())?,
+            int: signal(SignalKind::interrupt())?,
+        })
     }
 
     /// Resolves on the first SIGTERM or SIGINT since [`StopSignal::install`].
     pub async fn wait(mut self) {
-        #[cfg(unix)]
-        {
-            tokio::select! {
-                _ = self.term.recv() => tracing::info!("SIGTERM: stopping"),
-                _ = self.int.recv() => tracing::info!("SIGINT: stopping"),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = &mut self;
-            let _ = tokio::signal::ctrl_c().await;
+        tokio::select! {
+            _ = self.term.recv() => tracing::info!("SIGTERM: stopping"),
+            _ = self.int.recv() => tracing::info!("SIGINT: stopping"),
         }
     }
 }

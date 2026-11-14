@@ -3,8 +3,8 @@ use blok::grpc_server::proto::{
     node_runtime_client::NodeRuntimeClient, ExecuteRequest, HealthRequest, NodeRef,
 };
 use oby_check_blok::{
-    check_command, fold, parse_workflow, text_output, CheckInput, CheckResult, Step, Verdict,
-    DEFAULT_WORKFLOW, GROUPS,
+    check_command, fold, parse_workflow, step_limit, text_output, CheckInput, CheckResult, Step,
+    Verdict, DEFAULT_WORKFLOW, GROUPS,
 };
 use serde::Serialize;
 use std::io::Read;
@@ -33,6 +33,9 @@ struct Run {
 
 // How long the nodes child may take to report its port, then to answer (a cold Mac is slow).
 const STARTUP: Duration = Duration::from_secs(60);
+// The host's backstop past a step's limit: the node stops its own script then (CI-33) and answers
+// first.
+const BACKSTOP: Duration = Duration::from_secs(60);
 
 // The workflow file: OBY_CHECK_WORKFLOW, else the copy the pipelines editor saves, else this tool's
 // own. The real check (`check`) runs only its own (BLOK-2).
@@ -71,6 +74,9 @@ async fn workflow(
                 .env_remove("OBY_CHECK_PATHS");
         }
     };
+    // A full run (`check` with OBY_CHECK_ALL, as the script's `-n`) gives its Rust group the full-run
+    // limit (CI-34); the shadow and affected runs keep the workflow's.
+    let full_run = check && std::env::var_os("OBY_CHECK_ALL").is_some_and(|v| !v.is_empty());
     let mut needed = vec![];
     let mut has_steps = false;
     let mut has_groups = false;
@@ -176,7 +182,7 @@ async fn workflow(
             let mut result = CheckResult::unjudged("never ran", 0.0);
             // Retries are for a node that couldn't judge (a transport error, a timeout), never a failure.
             for _ in 0..step.attempts {
-                result = execute(&mut client, step, &token).await?;
+                result = execute(&mut client, step, &token, step_limit(step, full_run)).await?;
                 if result.verdict != Verdict::Unjudged {
                     break;
                 }
@@ -198,20 +204,23 @@ async fn execute(
     client: &mut NodeRuntimeClient<tonic::transport::Channel>,
     step: &Step,
     token: &str,
+    max: Option<Duration>,
 ) -> Result<CheckResult> {
     let start = Instant::now();
+    // The node enforces the limit itself (CI-33); a request without one has none.
+    let max_ms = max.map(|max| max.as_millis() as u64);
     let request = ExecuteRequest {
         node: Some(NodeRef {
             name: step.node.into(),
             r#type: "runtime.rust".into(),
             version: String::new(),
         }),
-        inputs: serde_json::to_vec(&serde_json::json!({"token": token}))?,
+        inputs: serde_json::to_vec(&serde_json::json!({"token": token, "max_ms": max_ms}))?,
         ..Default::default()
     };
     let call = client.execute(request);
-    let answer = match step.max {
-        Some(max) => match tokio::time::timeout(max, call).await {
+    let answer = match max {
+        Some(max) => match tokio::time::timeout(max + BACKSTOP, call).await {
             Ok(answer) => answer,
             Err(_) => {
                 return Ok(CheckResult::unjudged(

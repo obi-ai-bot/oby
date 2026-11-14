@@ -17,13 +17,9 @@ const PLAN: &str = "/aiserver.v1.DashboardService/GetPlanInfo";
 /// How long each of the two requests gets.
 const LIMIT: Duration = Duration::from_secs(10);
 
-/// A stand-in for [`HOST`], in obid's own unit tests only: no build of obid can be pointed elsewhere.
-#[cfg(test)]
-pub(crate) static STAND_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
 fn host() -> String {
     #[cfg(test)]
-    if let Some(host) = STAND_IN.lock().unwrap().clone() {
+    if let Some(host) = tests::STAND_IN.lock().unwrap().clone() {
         return host;
     }
     HOST.to_owned()
@@ -88,6 +84,8 @@ pub(crate) mod tests {
     pub(crate) const TOKEN: &str = "cursor-test-access-token-0123456789";
     /// Set in a run of this test binary made by [`rerun`].
     pub(crate) const RERUN: &str = "OBID_TEST_RERUN";
+    /// A stand-in for [`HOST`], in obid's own unit tests only: no build of obid can be pointed elsewhere.
+    pub(crate) static STAND_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     /// One test at a time points [`STAND_IN`] at its own stand-in.
     pub(crate) static STAND_IN_TAKEN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
