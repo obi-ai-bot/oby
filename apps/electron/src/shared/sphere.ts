@@ -258,6 +258,11 @@ export const starterRule = (): Rule => ({ id: STARTER, from_owner: '*', to_owner
 const NOT_JOINED = 'This Oby isn’t in an Obysphere.';
 const ONLY_ADMINS = 'Only the Obysphere’s admins can change its rules.';
 const CHANGED = 'The rules changed meanwhile: these are the rules as they are now.';
+// Text from the Sphere as one line of plain text, at most 300 characters: no control or direction
+// characters. Data, for the page to show as text, never markup or anything an agent reads.
+const plainLine = (v: unknown) =>
+  // eslint-disable-next-line no-control-regex
+  (typeof v === 'string' ? [...v.replace(/[\u0000-\u001F\u007F\u202A-\u202E\u2066-\u2069]+/g, ' ').trim()].slice(0, 300).join('') : '');
 const refusal = (sphere: string | null, refused: PolicyAnswer['refused'], why: string): PolicyAnswer => ({ sphere, policy: null, admin: false, refused, why });
 const failed = (sphere: string | null, e: unknown) => refusal(sphere, 'failed', e instanceof Error ? e.message : String(e));
 
@@ -315,7 +320,7 @@ export async function writePolicy(call: Call, ownerKey: () => KeyObject, rules: 
     if (now.refused || !now.policy) return now;
     return now.policy.version !== expectedVersion
       ? { ...now, refused: 'changed', why: CHANGED }
-      : { ...now, refused: 'failed', why: String(said.message ?? `the Obysphere answered ${r.status}`) };
+      : { ...now, refused: 'failed', why: plainLine(said.message) || `the Obysphere answered ${r.status}` };
   } catch (e) {
     return failed(sphere, e);
   }

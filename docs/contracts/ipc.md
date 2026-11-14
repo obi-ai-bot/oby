@@ -60,7 +60,7 @@ A decoder answers `{ value }` or `undefined` when it can't read the value, so `o
 | `settings.ts` | `local-setting` | `handle` | `rowKey`, `rowValue` | `null` |
 | `sphere.ts` | `sphere-leave` | `handle` | none | `'Not this app’s page.'` |
 | `sphere.ts` | `sphere-policy` | `handle` | none | `null` |
-| `sphere.ts` | `sphere-set-policy` | `handle` | `safeInteger` | `null` |
+| `sphere.ts` | `sphere-set-policy` | `handle` | `safeInteger` | `null` (with no click main saw: a `failed` answer, [sphere-policy.md](sphere-policy.md) POLICY-4) |
 
 ### Failures and recovery
 

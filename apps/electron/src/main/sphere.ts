@@ -3,6 +3,7 @@ import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { keptKey } from './device';
 import { obid, type Trusted } from './obid';
 import { ipc } from './ipc';
+import { takeInput } from './words';
 import { safeInteger } from '../shared/decode';
 import { NotThisKey, addStarterRule, join, joinWarning, keepMembership, leave, parseInvite, readPolicy, type PolicyAnswer } from '../shared/sphere';
 
@@ -86,8 +87,12 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
   // The Obysphere's rules (docs/contracts/sphere-policy.md): read, and the members rule added at the
   // version the page read. The page sends only that version; main reads the rules again, signs and
   // writes. It answers a PolicyAnswer, never a token, and opens no dialog: the page says why.
-  const policy = (f: () => Promise<PolicyAnswer>) => f().catch((e): PolicyAnswer => (
-    { sphere: null, policy: null, admin: false, refused: 'failed', why: e instanceof Error ? e.message : String(e) }));
+  const failed = (why: string): PolicyAnswer => ({ sphere: null, policy: null, admin: false, refused: 'failed', why });
+  const policy = (f: () => Promise<PolicyAnswer>) => f().catch((e) => failed(e instanceof Error ? e.message : String(e)));
   ipc(trusted).handle('sphere-policy', [], () => policy(() => readPolicy(obid, ownerKey)), null);
-  ipc(trusted).handle('sphere-set-policy', [safeInteger], (_e, version) => policy(() => addStarterRule(obid, ownerKey, version)), null);
+  // A write, with the owner key's admin token, only right after a click or key main saw itself
+  // (words.ts, takeInput), one write each, as Publish: a script that took the page over can't add
+  // the rule by itself (POLICY-4)
+  ipc(trusted).handle('sphere-set-policy', [safeInteger], async (_e, version) => (
+    takeInput() ? policy(() => addStarterRule(obid, ownerKey, version)) : failed('Adding the rule takes your own click.')), null);
 }

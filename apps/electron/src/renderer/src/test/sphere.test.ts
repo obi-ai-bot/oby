@@ -311,6 +311,13 @@ describe('the Obysphere\'s rules', () => {
     const named = fakeSphere({ onPut: () => new Response(JSON.stringify({ error: { code: 'conflict', message: said } }), { status: 409 }) });
     const f = await writePolicy(fakeObid('wellington', 'joined').call, () => key, [{ ...starterRule(), from_owner: 'nobody' }], 0, named.http);
     expect(f).toMatchObject({ refused: 'failed', why: said, policy: { version: 0, rules: [] } });
+    // the Sphere's words reach the page as one line of plain text, at most 300 characters
+    const odd = fakeSphere({ onPut: () => new Response(JSON.stringify({ error: { code: 'conflict', message: `bad\nline\u202Eevil\u0007 ${'x'.repeat(400)}` } }), { status: 409 }) });
+    const plain = await writePolicy(fakeObid('wellington', 'joined').call, () => key, [], 0, odd.http);
+    expect(plain.why).toMatch(/^bad line evil +x+$/);
+    expect([...plain.why!]).toHaveLength(300);
+    const none = fakeSphere({ onPut: () => new Response(JSON.stringify({ error: { code: 'conflict', message: { html: '<b>' } } }), { status: 409 }) });
+    expect((await writePolicy(fakeObid('wellington', 'joined').call, () => key, [], 0, none.http)).why).toBe('the Obysphere answered 409');
     // the starter rule at a version the page read before a change: nothing asked for admin
     const moved = fakeSphere({ version: 5, rules: [OTHER] });
     const m = await addStarterRule(fakeObid('wellington', 'joined').call, () => key, 4, moved.http);

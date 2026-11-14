@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { anything, boolean, flag, https, method, oneOf, optional, orUndefined, safeInteger, string, v1Path } from '../../../shared/decode';
+import { input, takeInput } from '../../../main/words';
 
 // docs/contracts/ipc.md: every channel the page reaches main on, through main's one helper
 // (main/ipc.ts). Main's own index.ts and the modules it registers channels from, run for real,
@@ -267,6 +268,25 @@ describe('IPC-3', () => {
       expect(orUndefined(string)(v)).toEqual({ value: typeof v === 'string' ? v : undefined });
       expect(anything(v)).toEqual({ value: v });
     }
+  });
+});
+
+describe('POLICY-4', () => {
+  it('policy_4_the_members_rule_is_written_only_right_after_a_click_main_saw', async () => {
+    while (takeInput()) { /* other tests' */ }
+    const before = the.policies;
+    // the page alone, with no click or key main saw: refused, and nothing written
+    expect(await call('sphere-set-policy', own(), 0)).toEqual({ sphere: null, policy: null, admin: false, refused: 'failed', why: 'Adding the rule takes your own click.' });
+    expect(the.policies).toBe(before);
+    // a click: one write, and only one
+    input();
+    await call('sphere-set-policy', own(), 0);
+    expect(the.policies).toBe(before + 1);
+    expect(await call('sphere-set-policy', own(), 0)).toMatchObject({ refused: 'failed' });
+    expect(the.policies).toBe(before + 1);
+    // reading takes none
+    await call('sphere-policy', own());
+    expect(the.policies).toBe(before + 2);
   });
 });
 

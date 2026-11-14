@@ -128,7 +128,8 @@ contextBridge.exposeInMainWorld('app', {
   },
   sphereLeave: () => ipcRenderer.invoke('sphere-leave') as Promise<string | null>,
   // the Obysphere's rules (main/sphere.ts, docs/contracts/sphere-policy.md): read, and the members
-  // rule added. The page sends only the version it read; main decides what it signs. null: refused
+  // rule added, right after the owner's click. The page sends only the version it read; main decides
+  // what it signs. null: refused
   spherePolicy: () => ipcRenderer.invoke('sphere-policy') as Promise<PolicyAnswer | null>,
   sphereSetPolicy: (version: number) => ipcRenderer.invoke('sphere-set-policy', version) as Promise<PolicyAnswer | null>,
   // obid, through main, which holds its token (main/obid.ts): one call, and the event stream's

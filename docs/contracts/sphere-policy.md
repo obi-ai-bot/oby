@@ -13,7 +13,7 @@ The business behavior contract for reading and writing an Obysphere's policy fro
 ### Actors and ownership
 
 - **Main** (the Electron app's main process) holds the owner key (`ownerKey()` in `src/main/sphere.ts`) and is the only place a token for the policy exists. For each call it makes the owner's own new 5-minute assertion, exchanges it at the Sphere for a short-lived token (`directory:read` to read, `admin directory:read` to write) and calls the Sphere with it. It decides what it signs and writes: the rules it reads again, with the members rule added.
-- **The page** sends only the version it read (`window.app.sphereSetPolicy(version)`) and gets back a `PolicyAnswer`: `{ sphere, policy, admin, refused, why }`. It never gets a token or the key, and can't hand main rules, a scope or an address.
+- **The page** sends only the version it read (`window.app.sphereSetPolicy(version)`), right after the owner's click, and gets back a `PolicyAnswer`: `{ sphere, policy, admin, refused, why }`. It never gets a token or the key, and can't hand main rules, a scope or an address.
 - **obid** holds nothing new: main reads its membership (`GET /v1/obid/sphere`: `url`, `sphere`, `owner`) and nothing else. It has no policy route and never holds an owner or admin token.
 - **The Obysphere** says who may write (its `admins`, and the `admin` it grants or leaves out of an exchange) and keeps the policy's version.
 
@@ -27,12 +27,13 @@ The business behavior contract for reading and writing an Obysphere's policy fro
 | The page asks | What main does | `refused` |
 |---|---|---|
 | Read | A `directory:read` token; `GET /v0.1/spheres/{sphere}` and `GET …/policy` with it. `admin` is true only when the Sphere's `admins` lists this owner. | `null` |
-| The members rule, at the version read | Reads again. A version other than the page's: nothing asked for `admin`, the policy as now. | `changed` |
+| The members rule, with no click or key main saw itself just before (`takeInput` in `src/main/words.ts`, as Publish) | Nothing: no owner key used, nothing read or written. "Adding the rule takes your own click." Each click or key allows one write. | `failed` |
+| The members rule, at the version read, right after a click | Reads again. A version other than the page's: nothing asked for `admin`, the policy as now. | `changed` |
 | | The owner isn't in `admins`: nothing asked for `admin`. | `not_admin` |
 | | A rule with id `members-ask` is there already: nothing written, the policy as read. | `null` |
 | | Else a new assertion asking `admin directory:read`; with `admin` granted, one `PUT …/policy` with `{expected_version, rules}`: every rule as read, in order, then the members rule. The new policy, `admin` true. | `null` |
 | A write whose exchange doesn't grant `admin`, or whose `PUT` is `403` | No `PUT` (or nothing replaced). "Only the Obysphere's admins can change its rules." | `not_admin` |
-| A write answered `409` `conflict` | The policy read again with a new `directory:read` token, never the admin one. A version other than the one written at: nothing more written, the policy as now, "The rules changed meanwhile: …". The same version: the Sphere's `message` as `why`, passed on unparsed. | `changed` / `failed` |
+| A write answered `409` `conflict` | The policy read again with a new `directory:read` token, never the admin one. A version other than the one written at: nothing more written, the policy as now, "The rules changed meanwhile: …". The same version: the Sphere's `message` as `why`, never parsed, as one line of plain text (control and direction characters made spaces, at most 300 characters). | `changed` / `failed` |
 
 The members rule is `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "actions": ["question", "review_request"], "repos": ["*"]}` (ask-an-oby.md). These words are carried in `why` until R10-07's screen sets what a person reads.
 
@@ -43,7 +44,8 @@ The members rule is `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "
 
 ### Invariants and boundaries
 
-- The owner key never leaves main, and is used only inside these calls, through the `ownerKey` thunk.
+- The owner key never leaves main, and is used only inside these calls, through the `ownerKey` thunk. It signs a write's `admin` assertion only right after a click or key main saw reach the window itself (`before-mouse-event`, `before-input-event`), one write each: a script that took the page over can't add the rule on its own ([signed-words.md](signed-words.md)).
+- `why` is data for the page to show as text only (no HTML or markdown), never given to an agent: the Sphere's own words in it are one plain line.
 - Each write makes a new assertion (a new `jti`) and a new exchange. The admin token is sent on exactly one request, the `PUT`, and then dropped: not kept, logged or answered. No token or assertion appears in any `why` or answer.
 - Every request to the Sphere uses `redirect: 'error'`: a redirect would carry an assertion or a token to another address.
 - Nothing is kept between calls: no policy, admin flag or token in main.
@@ -59,7 +61,7 @@ The members rule is `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "
 - **POLICY-1** Given an admin owner on a local obi-sphere with policy `[]` at version 0, when main adds the members rule at version 0, then the answer is version 1 with `refused` `null`, `GET …/policy` lists `members-ask`, and the next member question crosses instead of `policy_denied`; rules already there stay first and unchanged, and a `members-ask` already there writes nothing. `policy_1_the_starter_rule_lets_members_ask` in `apps/electron/scripts/test-sphere.mjs` (a real obi-sphere and two real obids, `npm run test:sphere`) and in `apps/electron/src/renderer/src/test/sphere.test.ts` (a fake Sphere).
 - **POLICY-2** Given a member who isn't an admin, when the page asks to write, then no `PUT` is sent (an exchange that leaves `admin` out sends none, and the members rule for an owner not in `admins` never asks for `admin`) and the answer is `not_admin`, its words naming the admins; not joined answers `not_joined` with no owner key used and nothing sent. `policy_2_a_member_cannot_write` in `sphere.test.ts`.
 - **POLICY-3** Given the policy changed since it was read, when main writes at the old version, then nothing is replaced, the policy is read again with a new `directory:read` token, and the answer is `changed` with the new policy and "changed meanwhile"; a `409 conflict` at an unchanged version answers `failed` with the Sphere's message. `policy_3_a_stale_version_replaces_nothing` in `test-sphere.mjs` (a real obi-sphere) and in `sphere.test.ts`.
-- **POLICY-4** Given any policy write, when it runs, then every request has `redirect: 'error'`, each write makes its own exchange with a new `jti`, the admin token is on exactly one request (the `PUT`), no answer carries a token or an assertion, and the preload names no `ownerKey`, `assertion` or `access_token`. `policy_4_the_owner_key_stays_in_main` in `sphere.test.ts`.
+- **POLICY-4** Given any policy write, when it runs, then every request has `redirect: 'error'`, each write makes its own exchange with a new `jti`, the admin token is on exactly one request (the `PUT`), no answer carries a token or an assertion, and the preload names no `ownerKey`, `assertion` or `access_token`; a write the page asks for with no click or key main saw itself just before is refused (`failed`, "Adding the rule takes your own click.") and writes nothing, and one click allows one write. `policy_4_the_owner_key_stays_in_main` in `sphere.test.ts`, `policy_4_the_members_rule_is_written_only_right_after_a_click_main_saw` in `apps/electron/src/renderer/src/test/ipc.test.ts`.
 - **POLICY-5 to 7** (R10-07, to come): the screen that shows the rules, its button, and the offer on a `policy_denied` refusal.
 
 ### Test it when it's done (on a real Mac)
