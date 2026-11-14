@@ -74,7 +74,9 @@ uncommitted and new files that aren't ignored) touch macOS-only code by the
 gate's own rule (factory/bin/gate's MACOS_ONLY, or a file whose copy here or on
 the base names target_os = "macos"); or when a `--test <name>` names such a
 core/crates/*/tests/<name>.rs. Then it says `factory/bin/test-run: on this Mac:
-<why>` and runs here as above.
+<why>` and runs here as above. A command whose first two words are cargo and
+kani isn't held to the worktree's macOS-only rule, as its proof checks obid's
+Linux build only (REMOTE-36); every other rule holds for it.
 
 What is sent: the base's SHA, which is on origin, and the SHA of the worktree's
 tree, written from an index of its own (seeded from HEAD, then `git add -A`, so
@@ -220,7 +222,8 @@ def to_send(gate, command):
         git("add", "-A", cwd=top, env=env)
         tree = git("write-tree", cwd=top, env=env)
     touched = git("diff", "--name-only", "--no-renames", base, tree, cwd=top).splitlines()
-    macos = gate.macos_only(top, base, touched, tree)
+    # A Kani proof checks obid's Linux build, so macOS-only changes don't keep it here (REMOTE-36).
+    macos = [] if names[:2] == ["cargo", "kani"] else gate.macos_only(top, base, touched, tree)
     if macos:
         raise Here(f"the worktree's changes touch macOS-only code: {gate.named(macos)}")
     tests = [names[i + 1] for i, name in enumerate(names[:-1]) if name == "--test"]

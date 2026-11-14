@@ -371,6 +371,31 @@ class TestRunRemote(unittest.TestCase):
         self.assert_on_this_mac(self.run_test_run("cargo", "test", "-p", "obid", "--test", "sandbox"),
                                 "on this Mac: its test is macOS-only: core/crates/obid/tests/sandbox.rs")
 
+    # ---- REMOTE-36 -------------------------------------------------------------------------------
+
+    def test_remote_36_a_kani_run_with_macos_only_changes_goes_to_the_vm(self):
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "kani", "-p", "obid", "--tests", "--harness", "h")
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assertEqual(shlex.split(call["argv"][-1])[-8:],
+                         ["--", "cargo", "kani", "-p", "obid", "--tests", "--harness", "h"])
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["kani", "-p", "obid", "--tests", "--harness", "h"])
+        self.assertIn("oby-remote-gate: running in builder slot 1", out)
+        self.assertNotIn("on this Mac:", err)
+        self.assertEqual(self.lines("mac-runs"), [])
+
+    def test_remote_36_a_kani_run_after_another_command_stays_on_this_mac(self):
+        self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
+        code, out, err, _ = self.run_test_run("sh", "-c", "cargo kani && cargo test")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("factory/bin/test-run: on this Mac: the worktree's changes touch macOS-only code: "
+                      "core/crates/obid/src/sandbox.rs", err.splitlines())
+        self.assertEqual([run.split(" | ", 1)[0] for run in self.lines("mac-runs")], ["cargo kani", "cargo test"])
+        self.assertEqual(self.run_calls(), [])
+        self.assertEqual(self.vm_runs(), [])
+
     # ---- REMOTE-25 -------------------------------------------------------------------------------
 
     def test_remote_25_a_stopped_vm_that_doesnt_answer_falls_back(self):
