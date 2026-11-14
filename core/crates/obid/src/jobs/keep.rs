@@ -24,17 +24,40 @@ impl Jobs {
             return Err(e.to_string());
         }
         state.unkept.remove(id);
-        state.jobs.insert(id.to_owned(), next.clone());
-        Ok(next)
+        state.jobs.insert(id.to_owned(), next);
+        self.carry_on(state, id);
+        Ok(state.jobs[id].clone())
     }
 
-    /// Keeps a new job and tells the apps; one not saved doesn't exist, nor its place (HOME-2).
+    /// [`chain::mark_carried`] from job `id` up the jobs it follows up: each whose flag flipped is
+    /// kept again and told to the apps, so their `canPublish` follows (PUBLISHING-36).
+    pub(super) fn carry_on(&self, state: &mut State, id: &str) {
+        for other in chain::mark_carried(&mut state.jobs, id) {
+            let mut job = state.jobs[&other].clone();
+            if let Ok(job) = self.keep(state, &other, job.revised()) {
+                self.events.send("job", job.to_json());
+            }
+        }
+    }
+
+    /// Keeps a new job in its chain (PUBLISHING-37) and tells the apps; one not saved doesn't
+    /// exist, nor its place (HOME-2). A follow-up's file is kept first, then its root's record.
     pub(super) fn insert(&self, mut job: Job) -> Result<Job, String> {
         let (mut state, id) = (self.lock(), job.id.clone());
+        chain::join(&state.jobs, &mut job);
         let kept = self.keep(&mut state, &id, job.revised());
         if kept.is_err() {
             state.jobs.remove(&id);
             state.unkept.remove(&id);
+            self.carry_on(&mut state, job.follow_up_of.as_deref().unwrap_or_default());
+        } else if job.follow_up_of.is_some()
+            && let Some(mut root) = chain::renewed(&state.jobs, chain::of(&job))
+        {
+            // One that doesn't save stays as it was, its file too: the next start renews it.
+            let root_id = root.id.clone();
+            if self.keep(&mut state, &root_id, root.revised()).is_err() {
+                state.unkept.remove(&root_id);
+            }
         }
         drop(state);
         let job = kept?;

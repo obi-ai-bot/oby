@@ -137,10 +137,14 @@ pub fn for_alerts(jobs: &[Job], inbox: &[Value]) -> Result<(Vec<Job>, Vec<Value>
         return Ok(as_they_are());
     };
     let bytes = serde_json::to_vec(&(jobs, inbox)).map_err(|e| e.to_string())?;
-    match vault.scrubbed(&bytes)? {
-        None => Ok(as_they_are()),
-        Some(clean) => serde_json::from_slice(&clean).map_err(|e| e.to_string()),
-    }
+    let Some(clean) = vault.scrubbed(&bytes)? else {
+        return Ok(as_they_are());
+    };
+    let (mut scrubbed, inbox): (Vec<Job>, Vec<Value>) =
+        serde_json::from_slice(&clean).map_err(|e| e.to_string())?;
+    // A scrub never turns a carried job's Ready alert back on (PUBLISHING-36).
+    crate::job::chain::carried_onto(jobs, &mut scrubbed);
+    Ok((scrubbed, inbox))
 }
 
 /// A job whose alert changes, and what it needs now (none: clear it).
@@ -1795,6 +1799,51 @@ mod tests {
         kept.unjudged = None;
         assert!(kept.needs_you());
         assert_eq!(notice(&kept), Some(Notice::Ready));
+    }
+
+    /// PUBLISHING-36: a done job Publish would go out for, but that a follow-up carries the branch
+    /// of, raises no Ready notice or alert and doesn't need the owner; the vault's scrub, a serde
+    /// round trip that drops `carried`, keeps it so ([`for_alerts`]).
+    #[test]
+    fn publishing_36_a_carried_job_raises_no_ready_alert() {
+        let mut ready = job("r1");
+        ready.status = Status::Done;
+        ready.base = Some("dev".into());
+        ready.commits = Some(1);
+        ready.checked_head = Some("a".repeat(40));
+        assert_eq!(notice(&ready), Some(Notice::Ready));
+        assert!(!wanted(std::slice::from_ref(&ready), &[]).is_empty());
+        let mut jobs = vec![ready.clone()];
+        let mut follow_up = job("r2");
+        (follow_up.status, follow_up.follow_up_of) = (Status::Running, Some("r1".into()));
+        follow_up.branch = ready.branch.clone();
+        let mut map: HashMap<String, Job> = [ready, follow_up]
+            .into_iter()
+            .map(|j| (j.id.clone(), j))
+            .collect();
+        assert_eq!(crate::job::chain::mark_carried(&mut map, "r2"), ["r1"]);
+        jobs[0] = map["r1"].clone();
+        let carried = &jobs[0];
+        assert!(carried.publishable() && !carried.can_publish() && !carried.needs_you());
+        assert_eq!(notice(carried), None);
+        let ready_alert = alert(carried, Notice::Ready).0;
+        let said = |jobs: &[Job]| {
+            wanted(jobs, &[])
+                .into_iter()
+                .map(|(_, a)| a.title)
+                .collect::<Vec<_>>()
+        };
+        assert!(!said(&jobs).contains(&ready_alert), "{:?}", said(&jobs));
+        // Scrubbed, as the vault's scrub reads them back: `carried` is put back on each.
+        let mut scrubbed: Vec<Job> =
+            serde_json::from_slice(&serde_json::to_vec(&jobs).unwrap()).unwrap();
+        assert!(!scrubbed[0].carried);
+        crate::job::chain::carried_onto(&jobs, &mut scrubbed);
+        assert!(scrubbed[0].carried);
+        assert!(!said(&scrubbed).contains(&ready_alert));
+        let (alerting, _) = for_alerts(&jobs, &[]).unwrap();
+        assert!(alerting[0].carried);
+        assert_eq!(notice(&alerting[0]), None);
     }
 
     /// A merge left to the owner alerts once, titled as its card; one waiting on a second review

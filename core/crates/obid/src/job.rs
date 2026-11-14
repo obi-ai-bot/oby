@@ -609,6 +609,15 @@ pub struct Job {
     /// design, the owner's decision of 2026-10-18).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up_of: Option<String>,
+    /// Its task chain's id, the chain's root job's (`chain` in the API, PUBLISHING-37).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
+    /// On a chain's root only: what the chain keeps ([`chain::Record`]). Never in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_record: Option<chain::Record>,
+    /// A follow-up carries its branch on, as Publish asks (PUBLISHING-36): never kept or in the API.
+    #[serde(skip)]
+    pub carried: bool,
     /// Why its pull request's head holds another job's push it doesn't follow up, so its review
     /// can't count for that work (crate::jobs, `unfollowed_why`; MERGING-23): set by obid right
     /// before a merge is weighed, never kept.
@@ -1326,7 +1335,7 @@ impl Job {
     /// offers Publish when that failed. Not once dismissed, never on a review or research job,
     /// never once its pull request was merged or closed, and only while its branch is at the
     /// commit its check passed on, as far as obid knows (`checked_head`, PUBLISHING-2).
-    pub fn can_publish(&self) -> bool {
+    pub fn publishable(&self) -> bool {
         self.status == Status::Done
             && self.kind != "research"
             && self.kind != "review"
@@ -1335,6 +1344,11 @@ impl Job {
             && self.dismissed.is_none()
             && self.pull_request_open()
             && self.checked_head.is_some()
+    }
+
+    /// [`Job::publishable`] while no follow-up carries its branch on (PUBLISHING-36).
+    pub fn can_publish(&self) -> bool {
+        self.publishable() && !self.carried
     }
 
     /// Ended with commits that aren't on its pull request, which [`Job::can_publish`] doesn't offer:
@@ -1708,6 +1722,7 @@ impl Job {
         // commit (`checked_head`, kept in its file only), so the apps follow obid, never guess (#1772).
         value["canPublish"] = json!(self.can_publish());
         value["canPublishAnyway"] = json!(self.can_publish_anyway());
+        value["chain"] = json!(self.chain);
         // Jobs run only on this Mac now (compute sharing is gone): null, for the apps that decode it.
         value["runsOn"] = Value::Null;
         value["nextStep"] = json!(self.next_step);
@@ -2436,6 +2451,7 @@ mod tests {
             "conversation",
             "turn",
             "followUpOf",
+            "chain",
             "reason",
             "stoppedBy",
             "nextStep",
@@ -2448,8 +2464,8 @@ mod tests {
         ] {
             assert_eq!(object.get(key), Some(&Value::Null), "{key}");
         }
-        // The Swift runner's 65 keys, obid's twenty-six, `supervised` and `revision`.
-        assert_eq!(object.len(), 93);
+        // The Swift runner's 65 keys, obid's twenty-seven, `supervised` and `revision`.
+        assert_eq!(object.len(), 94);
         assert_eq!(value["canPublish"], false);
         assert_eq!(value["supervised"], json!([]));
         assert_eq!(value["revision"], 0);

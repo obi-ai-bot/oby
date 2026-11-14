@@ -895,6 +895,7 @@ impl Jobs {
                 .save(&next)
                 .map_err(|e| format!("Couldn't save the job: {e}"))?;
             state.jobs.insert(id.to_owned(), next.clone());
+            self.carry_on(&mut state, id);
             next
         };
         self.events.send("job", changed.to_json());
@@ -936,6 +937,7 @@ impl Jobs {
                 return;
             }
             state.jobs.insert(id.to_owned(), next.clone());
+            self.carry_on(&mut state, id);
             next
         };
         self.events.send("job", changed.to_json());

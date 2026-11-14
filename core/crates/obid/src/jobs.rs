@@ -1309,6 +1309,13 @@ impl Jobs {
             }
             jobs.insert(job.id.clone(), job);
         }
+        // Task chains, once (PUBLISHING-37): a file that doesn't save is built again next start.
+        for id in chain::settle(&mut jobs) {
+            let _ = store.save(&jobs[&id]);
+        }
+        for id in jobs.keys().cloned().collect::<Vec<_>>() {
+            chain::mark_carried(&mut jobs, &id);
+        }
         let identity = commit_identity(&config.owner);
         let kept = crate::settings::load(&config.home);
         crate::settings::use_limits(kept.limits);
@@ -1810,15 +1817,14 @@ impl Jobs {
     /// Where work lives that a marked clone could hold, each path as given and resolved: the git
     /// folder each worktree's `.git` file points to (every job's, and every one in
     /// `home/worktrees`, whatever the jobs say); a marked clone's own worktree folder whose
-    /// worktree is still there; and the clone a job keeps to ([`Job::clone_root`], its own or
-    /// along its follow-ups, [`moved_clone_of`]) while it's yet to end, has a worktree, or isn't
+    /// worktree is still there; and the clone a job keeps to ([`Job::clone_root`], its own or its
+    /// chain's, [`chain::Record::clone_root`]) while it's yet to end, has a worktree, or isn't
     /// merged, so a follow-up still finds its branch. True as well when a
     /// worktree's `.git` or a job's file didn't read, so nothing is taken as unused.
     fn marked_in_use(&self) -> (Vec<PathBuf>, bool) {
         let home = &self.config.home;
         let (mut worktrees, roots, mut unsure) = {
             let state = self.lock();
-            let get = |id: &str| state.jobs.get(id).cloned();
             let has_worktree = |job: &Job| {
                 self.worktree_path(&job.id).exists()
                     || job
@@ -1842,7 +1848,7 @@ impl Jobs {
                     job.clone_root
                         .clone()
                         .into_iter()
-                        .chain(moved_clone_of(job, get))
+                        .chain(chain::refreshed(&state.jobs, chain::of(job)).clone_root)
                 })
                 .map(PathBuf::from)
                 .collect();
@@ -3648,6 +3654,7 @@ impl Jobs {
                 return Err(Refused(why).into());
             }
             state.jobs.insert(job.id.clone(), job.clone());
+            self.carry_on(&mut state, &job.id);
         }
         // The first job in one of GitHub's repositories makes it one of obid's (crate::repos).
         if let Err(why) = self.config.repos.keep(&repo) {
@@ -4191,8 +4198,7 @@ impl Jobs {
                         unheard.remove(0);
                     }
                     // It follows the newest follow-up on the branch (MERGING-23): its account,
-                    // agent, mode and report are that one's; its branch is the task's, which that
-                    // one carries on.
+                    // agent, mode and report are that one's; its branch is its chain's.
                     let tip = chain_tip(&self.lock().jobs, id);
                     let tip = self.get(&tip).unwrap_or_else(|| job.clone());
                     let from_tip = follow_up(&tip, text);
@@ -4203,6 +4209,7 @@ impl Jobs {
                         earlier: from_tip.earlier,
                         ..follow_up(&job, text)
                     };
+                    chain::place(&self.lock().jobs, &job, &mut next);
                     // The owner's own words to their job carry its mode on, Bypass too: they
                     // chose it for this work, and a follow-up is more of it ([`follow_up`] drops
                     // Bypass only for what the brain starts).
@@ -6081,6 +6088,7 @@ impl Jobs {
             }
             let stays = branch_shared(&state.jobs, &job, self.default_branch(&job.repo).as_deref());
             state.jobs.remove(id);
+            self.carry_on(&mut state, job.follow_up_of.as_deref().unwrap_or_default());
             state.asks.remove(id);
             state.followed.remove(id);
             state.unkept.remove(id);
@@ -9080,6 +9088,13 @@ impl Jobs {
             return;
         }
         let root_text = root.to_string_lossy().into_owned();
+        // Every chain with work on its branch keeps to it too, worktree or not (PUBLISHING-35).
+        {
+            let mut state = self.lock();
+            for mut chain in chain::moved(&state.jobs, &repo.repo, &root_text) {
+                let _ = self.keep(&mut state, &chain.id.clone(), chain.revised());
+            }
+        }
         for other in &users {
             if let Some(worktree) = &other.worktree
                 && Path::new(worktree).exists()
@@ -9601,9 +9616,10 @@ impl Jobs {
             // That may have moved its task's clone aside, as it stood: a follow-up that starts from
             // its task's branch carries on there, with that branch and its commits, as one started
             // after the move does (PUBLISHING-15).
+            let moved = chain::refreshed(&self.lock().jobs, chain::of(&job)).clone_root;
             if job.clone_root.is_none()
                 && job.start_from.is_some()
-                && let Some(root) = moved_clone_of(&job, |of| self.get(of))
+                && let Some(root) = moved
             {
                 self.update(id, |job| job.clone_root = Some(root.clone()));
                 job.clone_root = Some(root);
@@ -11097,9 +11113,9 @@ impl Jobs {
             // untrusted, publishes by itself like any other, after its checks and the secret scan
             // (the owner's decision of 2026-10-24, replacing 2026-10-23's by hand), and merging
             // still waits for a review.
-            if !ended.can_publish() || (!made_now && job.publish_error.is_some()) {
+            if !ended.publishable() || (!made_now && job.publish_error.is_some()) {
                 // Still waiting for Publish by hand: why its own publish failed still holds.
-                let waiting = ended.can_publish();
+                let waiting = ended.publishable();
                 self.end_done(id, ours, commits, pushed, |job| {
                     if !waiting {
                         job.publish_error = None;
@@ -12480,7 +12496,7 @@ impl Jobs {
                 let line = Failure::AlreadyOnBase(base).line();
                 self.update(id, |job| {
                     job.publish_step = None;
-                    if job.can_publish() {
+                    if job.publishable() {
                         job.summary = format!("{line}\n\n{}", job.summary);
                         job.commits = Some(0);
                         job.publish_error = None;
@@ -12498,7 +12514,7 @@ impl Jobs {
                     if pushed {
                         job.pushed = job.commits;
                     }
-                    if job.can_publish() {
+                    if job.publishable() {
                         job.publish_error = Some(line.clone());
                     }
                 });
@@ -13368,21 +13384,6 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Where the clone `job` follows up on was moved to, from the nearest job back along its follow-ups
-/// that has one: one between them that failed before it had a worktree has none of its own.
-fn moved_clone_of(job: &Job, get: impl Fn(&str) -> Option<Job>) -> Option<String> {
-    let mut of = job.follow_up_of.clone();
-    // A chain is short; this only stops a loop.
-    for _ in 0..64 {
-        let earlier = get(of.as_deref()?)?;
-        if earlier.clone_root.is_some() {
-            return earlier.clone_root;
-        }
-        of = earlier.follow_up_of;
-    }
-    None
-}
-
 /// Whether the follower carries `job`'s pull request on (crate::merge): done, published, the
 /// owner's own (never another Obi's), not let go, and not a review or research job.
 fn carries(job: &Job) -> bool {
@@ -13485,7 +13486,7 @@ fn publish_action_of(
         && job.kind != "research"
         && job.dismissed.is_none()
         && job.pull_request_open();
-    match (&job.base, job.can_publish() || anyway, carried) {
+    match (&job.base, job.publishable() || anyway, carried) {
         (Some(_), true, Some(next)) if !by_hand.anyway => Err(format!(
             "Its follow-up {} carries its branch on: publish that one instead.",
             next.short_title()
@@ -14386,11 +14387,8 @@ pub fn not_continuable(job: &Job) -> Option<&'static str> {
 /// isn't carried here: a follow-up the brain starts (`oby_tell_job`) gets
 /// the owner's default mode, so only the owner's own choice starts a job that never asks (their
 /// default, their Confirm, or their own words to the job, [`Jobs::message`], which keep its mode).
-/// When `job` has commits that aren't merged, the follow-up
-/// starts from its branch head, so its agent has that work: on that very branch while its pull
-/// request is open (publishing updates it), else on a branch of its own.
+/// Where it starts, and on which branch, is its chain's ([`chain::place`], [`Jobs::message`]).
 pub fn follow_up(job: &Job, words: &str) -> NewJob {
-    let unmerged = job.commits.unwrap_or(0) > 0 && !job.merged();
     // A follow-up of a follow-up keeps one "Follow-up: ".
     let title = crate::brain::briefing::line(
         &format!(
@@ -14420,7 +14418,6 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
     if let Some(url) = &job.published {
         did.push(format!("Pull request: {url}"));
     }
-    let carries = unmerged && job.published.is_some() && job.pull_request_open();
     NewJob {
         repo: job.repo.clone(),
         kind: job.kind.clone(),
@@ -14437,9 +14434,6 @@ pub fn follow_up(job: &Job, words: &str) -> NewJob {
         complex: job.complex,
         mode: job.mode.clone().filter(|m| m != "bypass"),
         conversation: job.conversation.clone(),
-        branch: carries.then(|| job.branch.clone()),
-        made_branch: carries && job.made_branch,
-        start_from: unmerged.then(|| job.branch.clone()),
         follow_up_of: Some(job.id.clone()),
         earlier: Some(crate::secrets::known().redact(&did.join("\n"))),
         ..NewJob::default()
@@ -14968,31 +14962,6 @@ pub fn owner_review_item(
 #[cfg(test)]
 mod tests {
     use super::own_refs::{own_refs, settle_own_refs};
-
-    /// PUBLISHING-15
-    #[test]
-    fn publishing_15_a_follow_up_finds_a_moved_clone_along_its_chain() {
-        let make = |id: &str, of: Option<&str>, root: Option<&str>| {
-            let mut job = Job::new(
-                id.into(),
-                "o/r".into(),
-                "fix".into(),
-                "x".into(),
-                "claude".into(),
-                "a".into(),
-            );
-            job.follow_up_of = of.map(str::to_owned);
-            job.clone_root = root.map(str::to_owned);
-            job
-        };
-        let task = make("task", None, Some("/marked/1"));
-        let failed = make("failed", Some("task"), None);
-        let next = make("next", Some("failed"), None);
-        let get = |id: &str| [&task, &failed].into_iter().find(|j| j.id == id).cloned();
-        assert_eq!(moved_clone_of(&next, get).as_deref(), Some("/marked/1"));
-        assert_eq!(moved_clone_of(&failed, get).as_deref(), Some("/marked/1"));
-        assert_eq!(moved_clone_of(&task, get), None);
-    }
 
     /// PERMISSIONS-2 (docs/contracts/permissions.md): a Claude Code job starts with its telemetry
     /// and error reports off, in obid's box and in its own lane alike.
@@ -17514,11 +17483,11 @@ mod tests {
         assert!(!standing_rules(&job).unwrap().contains("GOAL MET"));
     }
 
-    /// A follow-up starts from the first job's unmerged work: on its branch while its pull request
-    /// is open, on one of its own otherwise; from its base when there's no such work. Bypass isn't
+    /// A follow-up's branch and start are its chain's (`job::chain::place`, PUBLISHING-33, 34, 27),
+    /// never the one job's: `follow_up` sets none of them, whatever that job did. Bypass isn't
     /// carried.
     #[test]
-    fn a_follow_up_starts_where_the_first_jobs_work_is() {
+    fn a_follow_up_leaves_its_branch_to_its_chain() {
         let mut job = Job::new(
             "j".into(),
             "o/r".into(),
@@ -17534,35 +17503,13 @@ mod tests {
         assert_eq!((next.branch, next.start_from), (None, None));
         assert_eq!(next.mode, None);
         assert_eq!(next.title.as_deref(), Some("Follow-up: Fix it"));
+        assert_eq!(next.follow_up_of.as_deref(), Some("j"));
         job.commits = Some(2);
-        let next = follow_up(&job, "and the docs");
-        assert_eq!(
-            (next.branch, next.start_from),
-            (None, Some("oby/fix-j".into()))
-        );
         job.published = Some("https://github.com/o/r/pull/7".into());
-        // PUBLISHING-13: a branch obid made for the first job stays its own only where it's carried
         job.made_branch = true;
         let next = follow_up(&job, "and the docs");
-        assert!(next.made_branch);
-        assert_eq!(
-            (next.branch, next.start_from),
-            (Some("oby/fix-j".into()), Some("oby/fix-j".into()))
-        );
-        job.pull_request = Some(crate::github::PullRequest {
-            state: "CLOSED".into(),
-            review_decision: None,
-            base: "main".into(),
-            merged_at: None,
-            checked_at: 0,
-            head: None,
-        });
-        let next = follow_up(&job, "and the docs");
+        assert_eq!((next.branch, next.start_from), (None, None));
         assert!(!next.made_branch);
-        assert_eq!(
-            (next.branch, next.start_from),
-            (None, Some("oby/fix-j".into()))
-        );
     }
 
     /// Only the owner's own words start a follow-up: an event turn's, and an owner's turn that
