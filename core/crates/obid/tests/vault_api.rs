@@ -175,6 +175,13 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
         json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "Nothing secret here."}),
     );
     ended(&obid, &clean);
+    // obid saves the job once more after `/wait` may have answered: its cleanup pass, 30 seconds
+    // after obid started or at a job's end, keeps what freeing its builds freed (CLEANUP-1,
+    // `Jobs::clean_worktrees`). That save shows as `buildFreed`, so it's waited for.
+    within(60, "the cleanup pass kept its buildFreed", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None).body;
+        job.get("buildFreed").map(|_| ())
+    });
     let before = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None);
     assert_eq!(before.status, 200, "{}", before.text);
 
@@ -187,9 +194,33 @@ fn the_apis_json_has_the_vaults_secrets_taken_out() {
     let (code, out, _) = vault(&path, &["list"], None);
     assert_eq!((code, out.as_str()), (0, "staging-api-key\n"));
 
-    // A clean answer is as it was.
+    // A clean answer is as it was, byte for byte but its revision. Leaving the revision out covers
+    // a save that changes nothing else: `Jobs::metered` → `Jobs::keep_peaks` saves a measured
+    // job's peaks again once its worker is gone, grown or not, and nothing in the answer marks
+    // that save's end; waiting for `revision` to stop changing would be a guess about timing. A
+    // peak kept for the first time would add `peakRss` too: `metered` runs before the job's end
+    // wakes the cleanup pass, so the wait for `buildFreed` above is what keeps it before `before`,
+    // unless a pass woken otherwise (30 seconds after obid started, or by another job) ran in
+    // between, or a reading under way (`Jobs::measure`) keeps its peak late. Adding a vault
+    // secret saves no job: answers are redacted as they're written.
     let after = call(&obid, "GET", &format!("/v1/jobs/{clean}"), None);
-    assert_eq!(after.text, before.text);
+    let revision = |text: &str| -> u64 {
+        assert_eq!(text.matches("\"revision\":").count(), 1, "{text}");
+        let (_, rest) = text.split_once("\"revision\":").unwrap();
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse().unwrap()
+    };
+    let (was, is) = (revision(&before.text), revision(&after.text));
+    assert!(is >= was, "{}\n{}", before.text, after.text);
+    assert_eq!(
+        after.text,
+        before.text.replace(
+            &format!("\"revision\":{was}"),
+            &format!("\"revision\":{is}")
+        )
+    );
 
     let events = follow_events(&obid);
     let percent: String = value.bytes().map(|b| format!("%{b:02X}")).collect();
@@ -421,20 +452,61 @@ fn obid_answers_while_the_vault_scan_reads_a_big_file() {
         &obid,
         json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "BIG"}),
     );
-    let mut slowest = std::time::Duration::ZERO;
+    // Each answer: when it was asked, how long it took and the publish step it showed.
+    let mut answers = Vec::new();
     loop {
         let asked = std::time::Instant::now();
         let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
-        slowest = slowest.max(asked.elapsed());
+        let step = job["publishStep"].as_str().map(str::to_owned);
+        answers.push((asked, asked.elapsed(), step));
         if ["done", "failed", "stopped"].contains(&job["status"].as_str().unwrap_or("")) {
             assert_eq!(job["status"], "done", "{job}\n{}", obid.log());
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    // The scan window: from the first answer showing the scan to the first after it showing a
+    // later step or the job's end, that one's wait included, since a stalled answer asked during
+    // the scan comes back after it.
+    let scanning = |step: &Option<String>| step.as_deref() == Some("scan");
+    let first = answers.iter().position(|(_, _, step)| scanning(step));
+    let last = first.and_then(|first| {
+        let after = answers[first..]
+            .iter()
+            .position(|(_, _, step)| !scanning(step))?;
+        Some(first + after)
+    });
+    let (Some(first), Some(last)) = (first, last) else {
+        panic!(
+            "no answer showed the scan and a later step: too short to judge\n{}",
+            obid.log()
+        );
+    };
+    let window = answers[last].0 + answers[last].1 - answers[first].0;
+    let slowest = answers[first..=last]
+        .iter()
+        .map(|(_, took, _)| *took)
+        .max()
+        .unwrap();
+    // A stalled answer lasts about as long as a piece of the scan (#749 put back: `off_runtime`
+    // running its work inline). On a Mac's debug build, the slowest answer in the window took at
+    // most 0.4% of it unstalled (14 ms of 6.3 s alone, 0.28 s of 76 s on a busy Mac, 50 ms of 31
+    // to 60 s with four copies of this binary at once) and at least 72% stalled (4.4 to 9.2 s of
+    // 6.1 to 12.3 s alone, 29 to 44 s of 36 to 55 s with four at once): the stall failed 7 runs
+    // of 7 there. A quarter parts them; a window of 3 s, half the shortest measured, is the least
+    // a stall shows in. Only an answer the stall holds shows it, so finding one is likely, not
+    // certain: on a 64-core Linux VM the stall failed 4 runs of 4 at once but 1 of 2 alone, the
+    // other run's answers all falling between the stall's pieces.
+    const FRACTION: f64 = 0.25;
+    const FLOOR: std::time::Duration = std::time::Duration::from_secs(3);
     assert!(
-        slowest.as_secs() < 5,
-        "an answer took {slowest:?}\n{}",
+        window >= FLOOR,
+        "the scan took {window:?}, under {FLOOR:?}: too short to judge\n{}",
+        obid.log()
+    );
+    assert!(
+        slowest < window.mul_f64(FRACTION),
+        "an answer took {slowest:?} of the scan's {window:?}\n{}",
         obid.log()
     );
 }
