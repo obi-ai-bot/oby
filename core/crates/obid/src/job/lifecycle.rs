@@ -152,8 +152,10 @@ pub enum Change {
 pub fn transition(job: &Job, cmd: &Command) -> Result<Change, Refused> {
     Ok(match cmd {
         Command::NextRound => Change::Round {
-            round: job.current_round() + 1,
-            rounds: job.rounds.map(|r| if r > 1 { r + 1 } else { r }),
+            round: job.current_round().saturating_add(1),
+            rounds: job
+                .rounds
+                .map(|r| if r > 1 { r.saturating_add(1) } else { r }),
         },
         Command::RunEnded(end) => ended(job, end),
     })
@@ -427,6 +429,23 @@ mod tests {
                 merge_needs_you, merged_by, sending, auto_merge, auto_merge_refused, extra,
             ],
         }
+    }
+
+    /// JOBSTATE-7: at `u32::MAX` a new round keeps the round and its count there, never wrapping.
+    #[test]
+    fn jobstate_7_a_new_round_at_the_maximum_stays_there() {
+        let job = Job {
+            round: Some(u32::MAX),
+            rounds: Some(u32::MAX),
+            ..Job::default()
+        };
+        let mut after = job.clone();
+        transition(&job, &Command::NextRound)
+            .unwrap()
+            .apply(&mut after);
+        assert_eq!(after.round, Some(u32::MAX));
+        assert_eq!(after.rounds, Some(u32::MAX));
+        assert_eq!(after.status, Status::Queued);
     }
 }
 
