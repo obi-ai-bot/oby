@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import Said from './Said';
 import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { BrandMark } from './brands';
 import StatusDot from './StatusDot';
@@ -119,7 +120,8 @@ export default function TaskCard({ task, alone = false, onOpen, onSession, style
           {/* done: what it produced first; how it got there after */}
           {ended && (j.summary || result) && (
             <Section title="Result">
-              {j.summary && <p className="tc-report">{j.summary}</p>}
+              {/* the agent's summary is Markdown (obid quotes it as such): read as the conversation reads it (TASKS-33) */}
+              {j.summary && <div className="tc-report tc-said"><Said text={j.summary} /></div>}
               {result}
               {/* every outgoing action, as it happened */}
               {page?.outgoing && (
