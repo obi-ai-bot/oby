@@ -31,6 +31,14 @@ from its gates', off until the owner sets `builder_slots` in `mac_worker`. The s
   out), root's like its toolchain: `cargo-kani` in its `.cargo`, the bundle in its `.kani`, Kani's nightly in
   its `.rustup`, then proves a scratch harness offline as `oby-builder` ([REMOTE-47](contracts/remote-gate.md)).
   Gates don't need Kani.
+- For `oby-builder` only, setup also installs Quint at `setup.sh`'s own pin (0.33.1, not in `--pins`), root's
+  like Kani: `npm install -g` into `/usr/local/lib/quint/<pin>`, linked from `/usr/local/bin/quint`, with Java
+  from apt (`openjdk-21-jre-headless`). Root then runs one `quint run` and one `quint verify` on a tiny model with
+  `HOME` at the builder's home, under `bwrap --unshare-pid`, so Quint's Rust evaluator and Apalache land in its
+  `.quint` (given to root) at setup, never in a gate or a builder run. As `oby-builder`, with no network
+  (`bwrap --unshare-net`) and `/` read-only, it proves Java 17 or newer, `quint --version` at the pin, and
+  `quint typecheck`, `run` and `verify` on a scratch model ([REMOTE-49](contracts/remote-gate.md)). Gates don't need
+  Quint. The seed design model is `docs/models/job_race.qnt` ([REMOTE-52](contracts/remote-gate.md)).
 - Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
   host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
   slots (`factory/remote/tighten.sh`), checks `oby-check-blok` with origin/dev's own `scripts/oby-check.sh`,
@@ -307,15 +315,16 @@ with the builder's command line unchanged (REMOTE-22 to 34):
   `target_os = "macos"`, or a `--test` that is such a file, stays here under the lock, with one `on this Mac:`
   line. A run whose first two words are `cargo kani` isn't held to the worktree's macOS-only rule
   ([REMOTE-48](contracts/remote-gate.md)), so it goes to the VM, never the Mac worker: its proof covers obid's Linux
-  build only.
+  build only. Nor is a run whose first word is `quint`, a design model's check and no platform code
+  ([REMOTE-50](contracts/remote-gate.md)); it counts as heavy, so a fallback here takes the lock.
 - **What goes.** The merge-base with `origin/dev` (on origin, so the VM fetches it with no credential), the
   SHA of the worktree's tree written from an index of its own (nothing gitignored), and on ssh's standard input
   `git diff --binary --full-index` between them, after gitleaks with the main checkout's `.gitleaks.toml`
   passed it. No environment, `CARGO_TARGET_DIR`, token or login.
 - **On the VM.** As `oby-builder`, a user with no sudo that `setup.sh` makes, with `/srv/oby-builder` and a
-  toolchain and Kani root installed in its home; its home, `.ssh`, `authorized_keys` and toolchain are root's, so a run
-  can't add a key or change a later run's tools, and `/srv/oby` (`0700`) is closed to it, so it can't hold a
-  gate's lock: `oby-remote-gate --run` takes one of `builder_slots` slots, never a gate's, so a gate never
+  toolchain, Kani and Quint's downloads (`.quint`) root installed in its home, and Quint and Java on the
+  system's PATH; its home, `.ssh`, `authorized_keys` and toolchain are root's, so a run can't add a key or
+  change a later run's tools, and `/srv/oby` (`0700`) is closed to it, so it can't hold a gate's lock: `oby-remote-gate --run` takes one of `builder_slots` slots, never a gate's, so a gate never
   waits on a builder; empties the slot of all but its lock and `target` and the builder root of all but its
   clone, its lock and the slots; writes the clone's settings afresh and runs every git call with hooks off;
   adds the worktree afresh, applies the diff to the base, checks the tree's SHA, touches every file under
