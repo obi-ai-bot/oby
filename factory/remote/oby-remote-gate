@@ -69,8 +69,9 @@ gate's slot), each with its own lock, worktree and Cargo build folder (builder-N
 most --wait seconds, then says `all builder slots are busy` and exits 2. Each run starts in a slot
 emptied of all but its lock and its target folder (a target that isn't a real folder goes too), so
 its worktree is added afresh. In the slot: the checkout above on <base> (fetched by its SHA), `git
-apply --index --binary` of the payload, a check that `git write-tree` is <tree>, then every file under core/ and tools/ in the index gets the current time, and
-`cargo fetch --locked`. If the command's program (and for `cargo nextest`, cargo-nextest) is on PATH,
+apply --index --binary` of the payload, a check that `git write-tree` is <tree>, then every file under
+core/ and tools/ in the index gets the current time, and `cargo fetch --locked`. If the command's
+program (and for `cargo nextest`, cargo-nextest) is on PATH,
 ~/.cargo/bin first, it says `running in builder slot <N>` and runs the command's words, with no shell,
 from <slot>/worktree/<folder> under `nice -n 15`, offline, with CARGO_TARGET_DIR=<slot>/target and
 OBY_BUILD_JOBS, CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS at the cores / (slots +
