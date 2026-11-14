@@ -54,7 +54,7 @@ The business behavior contract for the Electron app joining an Obysphere someone
 
 ## Interfaces and dependencies
 
-- **obid:** `GET /v1/obid/sphere`, `POST /v1/obid/sphere/key`, `POST /v1/obid/sphere/card`, `POST /v1/obid/sphere/join`, `GET /v1/obid/sphere/members`, `DELETE /v1/obid/sphere` (docs/runner-api.md); a changed owner key's `confirm` item, action `trust_key`, target the owner id, payload `{"owner", "fingerprint"}`, carried out on the owner's signed Confirm as `POST /v1/obid/sphere/pins/{owner}` does (docs/runner-api.md, "Pinned owner keys").
+- **obid:** `GET /v1/obid/sphere`, `POST /v1/obid/sphere/key`, `POST /v1/obid/sphere/card`, `POST /v1/obid/sphere/join`, `GET /v1/obid/sphere/members`, `DELETE /v1/obid/sphere` (docs/runner-api.md); a changed owner key's `confirm` item, action `trust_key`, target the owner id, payload `{"owner", "fingerprint"}`, carried out on the owner's signed Confirm as `POST /v1/obid/sphere/pins/{owner}` does (docs/api/obysphere.md, "Pinned owner keys").
 - **The Obysphere server** (obi-ai-bot/obi-sphere, Dmytro's): the invite link (`sphere-api.md` 2.1, read as its conformance vectors say, `test/fixtures/invite-link-vectors.json`, copied from obi-sphere `dev` at `bf51687c`), the owner token exchange and a member's revoke.
 - **Renderer ↔ main (preload `window.app`):** `onSphere(fn)` gets `{sphere, name}` once main joined; `sphereLeave()` answers why the Obysphere wasn't told, or null.
 

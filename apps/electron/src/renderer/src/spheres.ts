@@ -4,6 +4,7 @@ import { OBYS } from './mock';
 import { everything, onObid } from './lean';
 import { forgetRoom, lookAtRoom } from './room';
 import { forgetThreads } from './peers';
+import type { Rule } from '../../shared/sphere';
 
 // The Obyspheres you're in: each a place where your Oby works with other
 // people's. Its picture in the icon strip is its logo (an image you gave it,
@@ -116,4 +117,25 @@ if (onObid && window.app?.onSphere) {
   void loadLive();
   // ponytail: a teammate who just joined shows within a minute; obid has no event for the directory
   setInterval(() => void loadLive(), 60_000);
+}
+
+// A rule of the Obysphere's (docs/contracts/sphere-policy.md), in the words its settings list it
+// with: who may ask whom, what and where. One with anything else in it (from_classes, an action
+// this version doesn't know) shows by its id, since partial words would say more than it allows.
+const ACTIONS = new Map([['question', 'questions'], ['review_request', 'reviews'], ['handoff', 'handoffs'], ['run_request', 'runs'], ['share_offer', 'share offers'], ['introduction', 'introductions']]);
+const RULE_KEYS = ['id', 'from_owner', 'to_owner', 'actions', 'repos'];
+const someStrings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string');
+export function ruleWords(rule: Rule): { label: string; about: string } {
+  const { from_owner: from, to_owner: to, actions, repos } = rule;
+  if (typeof from !== 'string' || typeof to !== 'string' || !someStrings(actions) || !actions.every((a) => ACTIONS.has(a))
+    || !someStrings(repos) || Object.keys(rule).some((k) => !RULE_KEYS.includes(k))) {
+    return { label: rule.id, about: 'Oby can’t put this rule in words yet.' };
+  }
+  const what = actions.map((a) => ACTIONS.get(a)!);
+  const listed = what.length > 1 ? `${what.slice(0, -1).join(', ')} and ${what.at(-1)}` : what[0];
+  const where = repos.length === 1 && repos[0] === '*' ? 'every repository' : repos.join(', ');
+  return {
+    label: `${from === '*' ? 'Every member' : from} may ask ${to === '*' ? 'every other member’s Oby' : `${to}’s Oby`}`,
+    about: `${listed[0].toUpperCase()}${listed.slice(1)}, in ${where}.`,
+  };
 }
