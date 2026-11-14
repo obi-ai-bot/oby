@@ -475,6 +475,54 @@ grep -q 'found 0 of the [0-9]* test binaries cargo built' <<<"$ran" || {
     exit 1
 }
 rm core/crates/obid/tests/slow.rs
+# CI-33: stopped with SIGTERM to it and every process descended from it (found by parent id, as
+# oby-check-blok's node stops a group past its limit), it names the binary still running, exits 143
+# and leaves nothing behind.
+printf '#!/bin/bash\necho $$ >"%s/hangs.pid"\nexec sleep 300\n' "$fake" >"$fake/hangs-0123abcd"
+chmod +x "$fake/hangs-0123abcd"
+code core/crates/obid/tests/hangs.rs 1
+descendants() { # a process and every one under it, parents first
+    local child
+    echo "$1"
+    for child in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p { print $1 }'); do descendants "$child"; done
+}
+gone() { # a pid: it ended within 5 seconds
+    local n
+    for ((n = 0; n < 50; n++)); do
+        kill -0 "$1" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    return 1
+}
+env -u OBY_CHECK_PLAN PATH="$fake:$PATH" TMPDIR="$fake/tmp" OBY_BUILD_JOBS=2 scripts/oby-check.sh HEAD >"$fake/hangs.said" 2>&1 &
+checking=$!
+for ((n = 0; n < 300; n++)); do
+    [[ -f "$fake/hangs.pid" ]] && compgen -G "$fake/tmp/oby-check.*/hangs-0123abcd.out" >/dev/null && break
+    sleep 0.1
+done
+[[ -f "$fake/hangs.pid" ]] || {
+    kill -KILL $(descendants "$checking") 2>/dev/null || true
+    echo "oby-check-test: CI-33: the hanging test binary never started: $(cat "$fake/hangs.said")" >&2
+    exit 1
+}
+kill -TERM $(descendants "$checking") 2>/dev/null || true
+stopped=0
+wait "$checking" || stopped=$?
+ran=$(cat "$fake/hangs.said")
+[[ $stopped == 143 ]] || {
+    echo "oby-check-test: CI-33: a stopped check exited $stopped, not 143: $ran" >&2
+    exit 1
+}
+grep -q 'oby-check: tests/hangs.rs was still running' <<<"$ran" || {
+    echo "oby-check-test: CI-33: a stopped check didn't name the binary still running: $ran" >&2
+    exit 1
+}
+gone "$(cat "$fake/hangs.pid")" || {
+    kill -KILL "$(cat "$fake/hangs.pid")" 2>/dev/null || true
+    echo "oby-check-test: CI-33: the hanging test binary outlived the stopped check" >&2
+    exit 1
+}
+rm core/crates/obid/tests/hangs.rs
 
 # OBY_CHECK_ALL=1 plans everything, whatever changed: every test binary, the lib and bin tests,
 # every crate, this test, the iPhone build, swift test and the Electron app.

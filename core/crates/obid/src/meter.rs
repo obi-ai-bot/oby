@@ -101,13 +101,7 @@ pub fn tree_rss(table: &[Process], roots: &[u32]) -> u64 {
     tree_sum(table, roots, |p| p.rss)
 }
 
-/// The CPU time `roots`' trees have used together, in nanoseconds, each process counted once as
-/// [`tree_rss`] counts it. A process that ended takes its time with it.
-pub fn tree_cpu(table: &[Process], roots: &[u32]) -> u64 {
-    tree_sum(table, roots, |p| p.cpu)
-}
-
-/// The CPU time `pgid`'s tree has used now ([`tree_cpu`]), or `None` when it can't be read.
+/// The CPU time `pgid`'s tree has used now ([`known_tree_cpu`]), or `None` when it can't be read.
 pub async fn group_cpu(pgid: u32) -> Option<u64> {
     tokio::task::spawn_blocking(move || known_tree_cpu(&processes(), &[pgid]))
         .await
@@ -115,9 +109,11 @@ pub async fn group_cpu(pgid: u32) -> Option<u64> {
         .flatten()
 }
 
-/// [`tree_cpu`], or `None` when it can't be told: an empty table, or a process in the tree whose
-/// CPU time couldn't be read (a read that failed isn't an idle 0, which Linux's ticks can give):
-/// a check whose CPU is unknown isn't stopped as idle (PUBLISHING-29).
+/// The CPU time `roots`' trees have used together, in nanoseconds, each process counted once as
+/// [`tree_rss`] counts it (a process that ended takes its time with it), or `None` when it can't be
+/// told: an empty table, or a process in the tree whose CPU time couldn't be read (a read that
+/// failed isn't an idle 0, which Linux's ticks can give): a check whose CPU is unknown isn't
+/// stopped as idle (PUBLISHING-29).
 pub fn known_tree_cpu(table: &[Process], roots: &[u32]) -> Option<u64> {
     let unread = std::cell::Cell::new(table.is_empty());
     let total = tree_sum(table, roots, |p| {
@@ -186,8 +182,6 @@ fn read_machine() -> Option<Machine> {
         let psi = std::fs::read_to_string("/proc/pressure/memory").unwrap_or_default();
         linux_machine(&meminfo, &psi)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    None
 }
 
 /// Every process now; empty when they can't be listed.
@@ -250,8 +244,6 @@ pub fn processes() -> Vec<Process> {
             })
             .collect()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    Vec::new()
 }
 
 #[cfg(target_os = "macos")]
@@ -458,6 +450,12 @@ fn parse_status(pid: u32, status: &str) -> Option<Process> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CPU time `roots`' trees have used together, in nanoseconds, each process counted once as
+    /// [`tree_rss`] counts it. A process that ended takes its time with it.
+    fn tree_cpu(table: &[Process], roots: &[u32]) -> u64 {
+        tree_sum(table, roots, |p| p.cpu)
+    }
 
     const VM_STAT: &str = "Mach Virtual Memory Statistics: (page size of 16384 bytes)
 Pages free:                                    14483.

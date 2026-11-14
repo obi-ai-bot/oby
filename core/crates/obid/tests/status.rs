@@ -794,6 +794,96 @@ fn cleanup_bytes_are_measured_at_start_not_per_request() {
     }
 }
 
+/// The two job files HOME-8 and HOME-9 write: one that isn't JSON, one that isn't a job.
+const BROKEN: &[u8] = b"{\"id\": \"broken\",";
+const SHAPED: &[u8] = br#"{"id":"shaped","created":"MARKER-7f3a"}"#;
+
+/// `GET /v1/status`'s `unreadable` and `GET /v1/jobs` as text, checked as HOME-8 and HOME-9 say:
+/// both files listed under `home/unreadable/jobs/` with their bytes, and neither loaded.
+fn kept_aside(obid: &Obid, home: &Path) -> Vec<String> {
+    let status = get_status(obid, "127.0.0.1", TOKEN);
+    assert_eq!(status.status, 200, "{}", status.body);
+    assert!(
+        !status.body.to_string().contains("MARKER-7f3a"),
+        "{}",
+        status.body
+    );
+    let aside = home.join("unreadable/jobs");
+    let mut paths = Vec::new();
+    for entry in status.body["unreadable"].as_array().unwrap() {
+        let path = PathBuf::from(entry["path"].as_str().unwrap());
+        assert!(
+            path.is_absolute() && path.parent() == Some(aside.as_path()),
+            "{entry}"
+        );
+        assert!(!entry["error"].as_str().unwrap().is_empty(), "{entry}");
+        let since = entry["since"].as_str().unwrap();
+        assert!(since.len() == 20 && since.ends_with('Z'), "{entry}");
+        paths.push(path.display().to_string());
+    }
+    let mut bytes: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    bytes.sort();
+    assert_eq!(bytes, [BROKEN.to_vec(), SHAPED.to_vec()]);
+    let held = std::fs::read_dir(&aside).unwrap().count();
+    assert_eq!(
+        held, 2,
+        "home/unreadable/jobs holds the two files and no more"
+    );
+    for name in ["broken.json", "shaped.json"] {
+        assert!(
+            !home.join("jobs").join(name).exists(),
+            "{name} is still in home/jobs"
+        );
+    }
+    let bearer = format!("Bearer {TOKEN}");
+    let headers = [("Host", "127.0.0.1"), ("Authorization", bearer.as_str())];
+    let jobs = request(obid.port, "GET", "/v1/jobs", &headers);
+    assert_eq!(jobs.status, 200, "{}", jobs.body);
+    let jobs = jobs.body.to_string();
+    assert!(
+        !jobs.contains("broken") && !jobs.contains("shaped"),
+        "{jobs}"
+    );
+    paths.sort();
+    paths
+}
+
+/// HOME-8: a job file that isn't JSON and one that isn't a job are moved, bytes unchanged, to
+/// `home/unreadable/jobs/`, listed in `GET /v1/status`'s `unreadable` (none of what they hold),
+/// and never loaded.
+#[test]
+fn home_8_an_unreadable_job_is_kept_aside() {
+    let folder = Folder::new("home-8");
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::write(home.join("jobs/broken.json"), BROKEN).unwrap();
+    std::fs::write(home.join("jobs/shaped.json"), SHAPED).unwrap();
+    let obid = start(&folder.0, &config(&folder.0, 0), Some(TOKEN));
+    assert_eq!(kept_aside(&obid, &home).len(), 2);
+}
+
+/// HOME-9: after a restart, the files kept aside are listed again, as they were, and nothing is
+/// loaded, moved again or put back.
+#[cfg(unix)]
+#[test]
+fn home_9_a_quarantined_file_stays_listed() {
+    let folder = Folder::new("home-9");
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    std::fs::write(home.join("jobs/broken.json"), BROKEN).unwrap();
+    std::fs::write(home.join("jobs/shaped.json"), SHAPED).unwrap();
+    let config = config(&folder.0, 0);
+    let mut obid = start(&folder.0, &config, Some(TOKEN));
+    let first = kept_aside(&obid, &home);
+    send("TERM", obid.child.id());
+    assert_eq!(
+        exit_within_10_seconds(&mut obid.child, "SIGTERM").code(),
+        Some(0)
+    );
+    let obid = start(&folder.0, &config, Some(TOKEN));
+    assert_eq!(kept_aside(&obid, &home), first);
+}
+
 /// home holds the token, keys, clones and the database: obid makes it 0700, and tightens one that
 /// is there already with group or world access.
 #[cfg(unix)]
