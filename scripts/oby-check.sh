@@ -160,7 +160,7 @@ jobs_rs_limit=15107
 # obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
 tests_sleep_limit=205
 # AGENTS.md may only shrink: a cut lowers this, and raising it is the owner's word (docs/contracts/ci.md, CI-36 to 38).
-agents_md_bytes_limit=49717
+agents_md_bytes_limit=49661
 # A job's check runs the base's copy of this script on the commit (PUBLISHING-7). A branch that
 # changed a limit since it started from its merge base (a cut lowers it) is held to its own number,
 # but never to one higher than the running copy's; one that didn't gets the running copy's, an
