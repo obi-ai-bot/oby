@@ -1,9 +1,9 @@
 {
-  "concurrency": 6,
+  "concurrency": 12,
   "max_rounds": 3,
   "base_branch": "dev",
   "merge_method": "squash",
-  "sprint": 2,
+  "sprint": 10,
   "routing": {
     "low":    { "code": "haiku" },
     "medium": { "code": "sonnet" },
@@ -24,5 +24,6 @@
     "claude-sonnet-5-5": { "input": 2.0,  "output": 10.0, "cache_write_5m": 2.5,  "cache_write_1h": 4.0,  "cache_read": 0.20 },
     "claude-haiku-5-5":  { "input": 0.10, "output": 0.50, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01 }
   },
-  "remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate" }
+  "remote_gate": { "ssh_host": "oby-gate", "resource_group": "oby-factory", "vm": "oby-gate" },
+  "mac_worker": { "ssh_host": "oby-mac-pro" }
 }
