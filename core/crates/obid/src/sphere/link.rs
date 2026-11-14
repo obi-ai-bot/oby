@@ -1545,13 +1545,21 @@ impl Link {
         }
     }
 
-    /// [`Link::save_item`], saying whether it was kept on disk.
+    /// [`Link::save_item`], saying whether it was kept on disk. It goes one revision on, and back
+    /// when it wasn't kept, so no revision is sent that isn't on disk (EVENTS-9).
     fn keep_item(&self, item: &Item) -> Result<(), String> {
         let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
-        let now = self.lock().inbox.get(&item.id).cloned();
-        let item = now.as_ref().unwrap_or(item);
-        self.inbox.save(item).map_err(|e| e.to_string())?;
-        self.events.send("inbox", self.shown(item));
+        let (item, held) = match self.lock().inbox.get_mut(&item.id) {
+            Some(now) => (now.revised(), true),
+            None => (item.clone().revised(), false),
+        };
+        if let Err(e) = self.inbox.save(&item) {
+            if held && let Some(now) = self.lock().inbox.get_mut(&item.id) {
+                now.revision = item.revision - 1;
+            }
+            return Err(e.to_string());
+        }
+        self.events.send("inbox", self.shown(&item));
         Ok(())
     }
 
@@ -1560,11 +1568,12 @@ impl Link {
     /// obid logs why. `stands`: whether an item the inbox holds stands in its place (the same id,
     /// or an open card for the same thing); then nothing is added, and that one is answered. Never
     /// with this Link's state locked.
-    fn add_new(&self, item: Item, stands: impl Fn(&Item) -> bool) -> Result<Item, String> {
+    fn add_new(&self, mut item: Item, stands: impl Fn(&Item) -> bool) -> Result<Item, String> {
         let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(open) = self.lock().inbox.values().find(|i| stands(i)) {
             return Ok(open.clone());
         }
+        let item = item.revised();
         if let Err(e) = self.inbox.save(&item) {
             tracing::error!("can't keep inbox item {}: {e}", item.id);
             return Err(e.to_string());
@@ -1625,12 +1634,12 @@ impl Link {
         self.retell(&self.triage.keep(sorts));
     }
 
-    /// The apps hear these items again, as they are now: their sort changed, nothing else.
+    /// The apps hear these items again, as they are now, kept one revision on (EVENTS-9): their
+    /// sort changed, nothing else.
     pub fn retell(&self, ids: &[String]) {
-        let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         for id in ids {
             if let Some(item) = self.item(id) {
-                self.events.send("inbox", self.shown(&item));
+                self.save_item(&item);
             }
         }
     }
@@ -3481,6 +3490,7 @@ mod tests {
             start: None,
             github: None,
             watch: None,
+            revision: 0,
             extra: Default::default(),
         };
         link.lock().inbox.insert(legacy.id.clone(), legacy.clone());
@@ -3660,6 +3670,47 @@ mod tests {
         let kept = Exchanges::open(&home).load_all();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].state, "declined");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// EVENTS-9: an item told again for a changed sort goes one revision on, kept on disk and in
+    /// memory, so an app keeping the newer never drops the re-sort.
+    #[tokio::test]
+    async fn events_9_a_retold_item_is_saved_one_revision_on() {
+        let home = std::env::temp_dir().join(format!("obid-link-retell-{}", uuid::Uuid::new_v4()));
+        let config = Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": home, "owner": "wellington"}).to_string(),
+        )
+        .unwrap();
+        let events = Events::new();
+        let jobs = Jobs::open(config.clone(), events.clone(), Err("no sandbox".into())).unwrap();
+        let (_stop, stopping) = watch::channel(false);
+        let link = Link::open(config, jobs, events.clone(), stopping);
+        let id = "retold-1".to_owned();
+        link.add_once(Item {
+            id: id.clone(),
+            kind: "failed".into(),
+            title: "It broke".into(),
+            options: vec![inbox::DISMISS.into()],
+            created: time::now(),
+            ..Item::default()
+        });
+        let kept = || {
+            let all = Inbox::open(&home).load_all();
+            all.iter().find(|i| i.id == id).unwrap().revision
+        };
+        assert_eq!((link.item(&id).unwrap().revision, kept()), (1, 1));
+        let mut heard = events.subscribe();
+        for revision in [2, 3] {
+            link.retell(std::slice::from_ref(&id));
+            let told: Vec<Value> = std::iter::from_fn(|| heard.try_recv().ok())
+                .filter(|e| e.name == "inbox" && e.data["id"] == id.as_str())
+                .map(|e| e.data["revision"].clone())
+                .collect();
+            assert_eq!(told, [json!(revision)]);
+            assert_eq!(link.item(&id).unwrap().revision, revision);
+            assert_eq!(kept(), revision);
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 
