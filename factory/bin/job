@@ -813,9 +813,28 @@ def in_queue(pr):
     return pr["isInMergeQueue"] or pr["autoMergeRequest"] is not None
 
 
+def has_merge_queue():
+    """Whether GitHub's rules for BASE include a merge queue; False when they can't be read."""
+    try:
+        rules = gh_json("api", f"repos/{{owner}}/{{repo}}/rules/branches/{BASE}")
+    except (Refused, ValueError):
+        return False
+    return isinstance(rules, list) and any(isinstance(r, dict) and r.get("type") == "merge_queue" for r in rules)
+
+
 def auto_merge(job, head):
-    """Hand the PR to GitHub pinned to `head`: it merges now, or once the queue's checks pass."""
-    gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}", "--auto", "--match-head-commit", head)
+    """Hand the PR to GitHub pinned to `head`: it merges now, or once the queue's checks pass.
+    A base with a merge queue takes no merge method: GitHub refuses one there, so a refusal naming the
+    queue is tried once more without it."""
+    call = ["pr", "merge", str(job["pr"]), "--auto", "--match-head-commit", head]
+    if has_merge_queue():
+        return gh(*call)
+    try:
+        gh("pr", "merge", str(job["pr"]), f"--{CONFIG['merge_method']}", "--auto", "--match-head-commit", head)
+    except Refused as e:
+        if "merge queue" not in str(e).lower():
+            raise
+        gh(*call)
 
 
 def disarm(job, pr):
