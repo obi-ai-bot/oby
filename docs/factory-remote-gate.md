@@ -25,6 +25,10 @@ steering a later run. The scenarios are [REMOTE-1 to 34](contracts/remote-gate.m
   them. Run it again whenever: what is already at its pin is left as it is. It also installs every package
   ci.yml installs with apt-get (today bubblewrap, slirp4netns and zsh, the last for the ChatGPT gate's test,
   which runs `scripts/package.sh` with `/bin/zsh`), [REMOTE-12](contracts/remote-gate.md).
+- For `oby-builder` only, setup also installs Kani at `setup.sh`'s own pin (not ci.yml's; `--pins` leaves it
+  out), root's like its toolchain: `cargo-kani` in its `.cargo`, the bundle in its `.kani`, Kani's nightly in
+  its `.rustup`, then proves a scratch harness offline as `oby-builder` ([REMOTE-35](contracts/remote-gate.md)).
+  Gates don't need Kani.
 - Nothing on the check's path is writable by others ([REMOTE-11](contracts/remote-gate.md)): setup runs its
   host part under umask 022, removes group and other write from `~/.cargo`, `~/.rustup`, `/srv/oby` and its
   slots (`factory/remote/tighten.sh`), checks `oby-check-blok` with origin/dev's own `scripts/oby-check.sh`,
@@ -296,13 +300,14 @@ with the builder's command line unchanged (REMOTE-22 to 34):
 - **Where it goes.** The gate's own rule, imported from `factory/bin/gate`, never copied: a Swift, Xcode or
   whole-check run, a worktree whose changes against its base touch a file in `MACOS_ONLY` or naming
   `target_os = "macos"`, or a `--test` that is such a file, stays here under the lock, with one `on this Mac:`
-  line.
+  line. A run whose first two words are `cargo kani` isn't held to the worktree's macOS-only rule
+  ([REMOTE-36](contracts/remote-gate.md)): its proof covers obid's Linux build only.
 - **What goes.** The merge-base with `origin/dev` (on origin, so the VM fetches it with no credential), the
   SHA of the worktree's tree written from an index of its own (nothing gitignored), and on ssh's standard input
   `git diff --binary --full-index` between them, after gitleaks with the main checkout's `.gitleaks.toml`
   passed it. No environment, `CARGO_TARGET_DIR`, token or login.
 - **On the VM.** As `oby-builder`, a user with no sudo that `setup.sh` makes, with `/srv/oby-builder` and a
-  toolchain root installed in its home; its home, `.ssh`, `authorized_keys` and toolchain are root's, so a run
+  toolchain and Kani root installed in its home; its home, `.ssh`, `authorized_keys` and toolchain are root's, so a run
   can't add a key or change a later run's tools, and `/srv/oby` (`0700`) is closed to it, so it can't hold a
   gate's lock: `oby-remote-gate --run` takes one of `builder_slots` slots, never a gate's, so a gate never
   waits on a builder; empties the slot of all but its lock and `target` and the builder root of all but its
@@ -319,7 +324,8 @@ with the builder's command line unchanged (REMOTE-22 to 34):
   user, every builder slot busy for 10 minutes) runs it here exactly as before, with one `fell back to this
   Mac:` line. After it, the VM's exit code is the verdict. A stop or a dropped connection frees the slot.
 - **Turning it on.** Run `factory/remote/setup.sh oby-gate` again (after A00-33 merges too, with no builder
-  run going: it makes `/srv/oby` `0700` and reinstalls `oby-builder`'s toolchain as root), then add `"slots": 4, "builder_slots": 8`
+  run going: it makes `/srv/oby` `0700` and reinstalls `oby-builder`'s toolchain as root; and after A00-35 merges, with no builder run going, so
+  builders have Kani), then add `"slots": 4, "builder_slots": 8`
   (on the 64-core VM) to `remote_gate` in `factory/config.json`. Until then nothing changes.
 
 ## Still to build
