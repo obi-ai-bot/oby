@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Run cargo-mutants on a job's Rust diff at the commit its gate passed: round-N/mutants.md (docs/contracts/factory.md,
+MUTANTS). Advisory: what it finds is for reviewer-code and the approver, and never moves a job.
+
+Usage:
+  mutants <job-id>    write round-N/mutants.md and exit 0, whatever it says; 2 when it can't start (no round, no
+                      passing checks.md, invalid settings)
+
+It reads the job's job.json (never writing it or taking its lock), round-N/checks.md and config.json beside it:
+
+  a. with <mb> the merge base of origin/<base> and the commit, a branch that changes no `.rs` file under
+     core/crates/<dir>/ is SKIPPED, with nothing run;
+  b. otherwise, in one scratch worktree at the commit, core/mutants.diff holds the branch's `.rs` diff relative to
+     core/, and one `test-run -- cargo mutants --in-diff mutants.diff -p <pkg>... -j 1 --no-times --caught --unviable
+     --colors never` runs from its core/, the packages those of the touched crates, sorted;
+  c. each mutant line it prints is counted by its outcome, but those whose line, at the commit, sits in code under
+     #[cfg(kani)] or #[cfg(test)], which are EXCLUDED; a missed mutant in a function a #[kani::proof] harness of the
+     same crate calls by name is listed apart.
+
+Its setting is config.json's `mutants.budget_s` (a positive integer, by default 1200): a run past it is stopped and
+written as TIMEOUT, with what it tested so far. A run with no result line, or one that ended other than 0, 2 or 3, is
+NO RESULT, never a count. The run's output is appended to round-N/mutants.log. SIGTERM or SIGINT stops the test-run
+it started, by its PID, removes the scratch copy and exits 128 + signal, with no mutants.md.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parent
+BUDGET = 1200  # seconds, when config.json has no mutants.budget_s
+MUTANT = re.compile(r"^(MISSED|caught|unviable|TIMEOUT)\s+(\S+?):(\d+):(\d+): (.+)$")
+RESULT = re.compile(r"^\d+ mutants? tested")
+OUTCOMES = {"caught": "caught", "MISSED": "missed", "TIMEOUT": "timeout", "unviable": "unviable"}
+CFG = ("#[cfg(kani)]", "#[cfg(test)]")
+INNER = ("#![cfg(kani)]", "#![cfg(test)]")
+CRATE = re.compile(r"core/crates/([^/]+)/")
+
+
+def load(name):
+    """factory/bin/<name> beside this file, as a module."""
+    loader = importlib.machinery.SourceFileLoader(name, str(BIN / name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(module)
+    return module
+
+
+JOB = load("job")
+PROVE = load("prove")
+end, KILL_AFTER = PROVE.end, PROVE.KILL_AFTER  # SIGTERM by PID, then SIGKILL KILL_AFTER seconds later
+
+
+class Stopped(BaseException):
+    """SIGTERM or SIGINT arrived."""
+
+
+def stop(signum, _):
+    raise Stopped(signum)
+
+
+def die(msg):
+    print(f"mutants: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def git(cwd, *args):
+    res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if res.returncode != 0:
+        die(f"`git {' '.join(args)}` failed: {res.stderr.strip()}")
+    return res.stdout
+
+
+def settings():
+    """budget_s from config.json's `mutants`, or exit 2 naming the field that is wrong."""
+    mutants = JOB.CONFIG.get("mutants", {})
+    if not isinstance(mutants, dict):
+        die(f"config.json's mutants must be an object, not {json.dumps(mutants)}")
+    budget = mutants.get("budget_s", BUDGET)
+    if type(budget) is not int or budget < 1:
+        die(f"config.json's mutants.budget_s must be a positive integer, not {json.dumps(budget)}")
+    return budget
+
+
+def squash(text):
+    return re.sub(r"\s", "", text)
+
+
+# ---- What the commit holds ---------------------------------------------------
+
+
+def shown(worktree, commit, path):
+    """The file's lines at the commit, or None when it has no such file."""
+    res = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=worktree, capture_output=True, text=True)
+    return res.stdout.splitlines() if res.returncode == 0 else None
+
+
+def crates(worktree, mb, commit):
+    """{dir: package name} for each core/crates/<dir>/ whose `.rs` files the branch changes."""
+    names = git(worktree, "diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", mb, commit,
+                "--", "*.rs").split("\0")
+    found = {}
+    for d in sorted({m.group(1) for m in map(CRATE.match, filter(None, names)) if m}):
+        manifest = git(worktree, "show", f"{commit}:core/crates/{d}/Cargo.toml")
+        name = re.search(r'^\s*name\s*=\s*"([^"]+)"', manifest, re.M)
+        if not name:
+            die(f"core/crates/{d}/Cargo.toml has no package name at {commit}")
+        found[d] = name.group(1)
+    return found
+
+
+def cfg_states(lines):
+    """For each line, whether its start sits in code under #[cfg(kani)] or #[cfg(test)], and where that changes on
+    it: [(state, [(column, state after)])]. An item's attributes count up to its `{`, or its `;`, `,` or `}` outside
+    brackets (a field's or an arm's). Braces are counted with no regard to strings or comments."""
+    first = next((squash(line) for line in lines if line.strip() and not line.strip().startswith("//")), "")
+    if first in INNER:
+        return [(True, []) for _ in lines]
+    stack, attrs, pending, nest, fresh, states = [], [], False, 0, False, []
+    for line in lines:
+        text, sq = line.strip(), squash(line)
+        if sq in INNER and fresh and stack:
+            stack[-1] = True
+        if text.startswith("#[") and text.endswith("]"):
+            attrs.append(sq)
+        elif text and not text.startswith("//"):
+            if any(c in a for a in attrs for c in CFG) or any(c in sq for c in CFG):
+                pending, nest = True, 0
+            attrs = []
+        start, events = any(stack), []
+        for col, ch in enumerate(line, 1):
+            if ch == "{":
+                stack.append(pending)
+                pending = False
+                events.append((col, any(stack)))
+            elif ch == "}" and stack:
+                stack.pop()
+                pending = False
+                events.append((col, any(stack)))
+            elif pending and ch in "([":
+                nest += 1
+            elif pending and ch in ")]":
+                nest -= 1
+            elif pending and ch in ";,}" and nest <= 0:
+                pending = False
+        if text:
+            fresh = bool(events) and line.rstrip().endswith("{")
+        states.append((start, events))
+    return states
+
+
+def under_cfg(states, line, col):
+    """Whether line:col (both from 1) sits in code under #[cfg(kani)] or #[cfg(test)]."""
+    if not 1 <= line <= len(states):
+        return False
+    state, events = states[line - 1]
+    for at, after in events:
+        if at <= col:
+            state = after
+    return state
+
+
+def proof_bodies(worktree, commit, crate_dir):
+    """The text of every fn body under #[kani::proof] in the crate's `.rs` files at the commit."""
+    listed = git(worktree, "ls-tree", "-r", "--name-only", "-z", commit, "--", f"core/crates/{crate_dir}/")
+    bodies = []
+    for path in (p for p in listed.split("\0") if p.endswith(".rs")):
+        lines = shown(worktree, commit, path) or []
+        for i, line in enumerate(lines):
+            if not (line.strip().startswith("#[") and "#[kani::proof]" in squash(line)):
+                continue
+            item = next((k for k in range(i + 1, len(lines)) if not lines[k].strip().startswith("#[")), None)
+            if item is None or not re.search(r"\bfn\b", lines[item]):
+                continue
+            text, depth, body = "\n".join(lines[item:]), 0, None
+            for k, ch in enumerate(text):
+                if ch == "{":
+                    depth += 1
+                    body = k if body is None else body
+                elif ch == "}" and body is not None:
+                    depth -= 1
+                    if depth == 0:
+                        bodies.append(text[body:k + 1])
+                        break
+    return bodies
+
+
+def function_of(change):
+    """The function a mutant's change names, by its last `::` segment with any <...> removed, or None."""
+    m = re.match(r"^.* in (.+)$", change)
+    m = m or re.match(r"^replace (.+?)(?: -> | with )", change)
+    if not m:
+        return None
+    name = m.group(1)
+    while re.search(r"<[^<>]*>", name):
+        name = re.sub(r"<[^<>]*>", "", name)
+    name = name.split("::")[-1].strip()
+    return name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) else None
+
+
+def called(name, bodies):
+    pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(::<[^()]*>)?\(")
+    return any(pattern.search(body) for body in bodies)
+
+
+# ---- The run -----------------------------------------------------------------
+
+
+class Run:
+    """The one test-run call: its exit code, output, seconds and whether it ran past its budget."""
+
+    current = None  # the test-run running now, for a stop
+
+    def __init__(self, scratch, command, budget):
+        out = Path(tempfile.mkstemp(prefix="mutants-", suffix=".out")[1])
+        start, self.timed_out, self.code, self.error = time.monotonic(), False, None, None
+        try:
+            with out.open("w") as sink:
+                env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "core" / "target"))
+                try:
+                    Run.current = subprocess.Popen([str(BIN / "test-run"), "--", *command], cwd=scratch / "core",
+                                                   env=env, stdin=subprocess.DEVNULL, stdout=sink,
+                                                   stderr=subprocess.STDOUT)
+                except OSError as e:
+                    self.error = f"test-run couldn't start: {e}"
+                else:
+                    try:
+                        self.code = Run.current.wait(timeout=budget)
+                    except subprocess.TimeoutExpired:
+                        self.timed_out = True
+                        self.code = end(Run.current)
+                    Run.current = None
+            self.output = out.read_text(errors="replace")
+        finally:
+            out.unlink(missing_ok=True)
+        self.seconds = time.monotonic() - start
+        self.code = 128 - self.code if self.code is not None and self.code < 0 else self.code
+
+
+def run_in_scratch(worktree, mb, commit, command, budget):
+    """The run in one scratch worktree at the commit, removed afterwards whatever happens."""
+    holder = Path(tempfile.mkdtemp(prefix="mutants-")).resolve()
+    scratch = holder / "scratch"
+    try:
+        git(worktree, "worktree", "add", "--detach", str(scratch), commit)
+        diff = git(scratch, "diff", "--relative=core", "--no-renames", "--no-color", "--no-ext-diff", mb, commit,
+                   "--", "*.rs")
+        (scratch / "core" / "mutants.diff").write_text(diff)
+        return Run(scratch, command, budget)
+    except Stopped:
+        if Run.current is not None and Run.current.poll() is None:
+            end(Run.current)
+        raise
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(scratch)], cwd=worktree, capture_output=True)
+        subprocess.run(["git", "worktree", "prune"], cwd=worktree, capture_output=True)
+        shutil.rmtree(holder, ignore_errors=True)
+
+
+def no_result_why(run, has_result):
+    fell = next((line.split("fell back to this Mac: ", 1)[1] for line in run.output.splitlines()
+                 if "test-run: fell back to this Mac: " in line), None)
+    if run.error:
+        why = run.error
+    elif "no such command: `mutants`" in run.output:
+        why = "cargo-mutants isn't installed where it ran (no such command: `mutants`)"
+    elif run.code == 4:
+        why = "the unmutated baseline failed: its tests don't pass before any mutant"
+    elif not has_result:
+        why = "its output has no result line"
+    else:
+        why = f"cargo-mutants ended {run.code}"
+    return why + (f"; test-run fell back to this Mac: {fell}" if fell else "")
+
+
+def judge(worktree, commit, run, budget):
+    """(first-line value, WHY or None, excluded count, missed lines, Kani-covered missed lines)."""
+    counts = dict.fromkeys(OUTCOMES.values(), 0)
+    excluded, missed, covered = 0, [], []
+    states, bodies = {}, {}
+    has_result = False
+    for line in run.output.splitlines():
+        line = line.rstrip()
+        if RESULT.match(line) or "No mutants to filter" in line:
+            has_result = True
+        m = MUTANT.match(line)
+        if not m:
+            continue
+        outcome, path, n, col, change = m.group(1), m.group(2), int(m.group(3)), int(m.group(4)), m.group(5)
+        repo_path = f"core/{path}"
+        if repo_path not in states:
+            lines = shown(worktree, commit, repo_path)
+            states[repo_path] = cfg_states(lines) if lines is not None else []
+        if under_cfg(states[repo_path], n, col):
+            excluded += 1
+            continue
+        counts[OUTCOMES[outcome]] += 1
+        if outcome != "MISSED":
+            continue
+        crate = CRATE.match(repo_path)
+        name = function_of(change)
+        if crate and crate.group(1) not in bodies:
+            bodies[crate.group(1)] = proof_bodies(worktree, commit, crate.group(1))
+        if crate and name and called(name, bodies[crate.group(1)]):
+            covered.append(f"- {repo_path}:{n}: {change} (no test notices; {name} is called by a #[kani::proof] "
+                           "harness)")
+        else:
+            missed.append(f"- {repo_path}:{n}: {change} (no test notices)")
+    tally = ", ".join(f"{counts[k]} {k}" for k in ("caught", "missed", "timeout", "unviable"))
+    if run.timed_out:
+        return f"TIMEOUT after {budget}s: {tally}", None, excluded, missed, covered
+    if run.error is None and has_result and run.code in (0, 2, 3):
+        return tally, None, excluded, missed, covered
+    code = run.code if run.code is not None else "-"
+    return f"NO RESULT (exit {code})", no_result_why(run, has_result), excluded, None, None
+
+
+def mutants(job_id):
+    budget = settings()
+    job_path = JOB.job_dir(job_id) / "job.json"
+    if not job_path.exists():
+        die(f"no job {job_id}")
+    job = json.loads(job_path.read_text())
+    if job["round"] < 1:
+        die(f"{job_id} hasn't started a build round")
+    rd = JOB.round_dir(job)
+    checks = rd / "checks.md"
+    if not checks.exists() or JOB.header(checks).get("GATE") != "PASS":
+        die(f"round-{job['round']}/checks.md doesn't say GATE: PASS: run factory/bin/gate {job_id} first")
+    commit = JOB.header(checks).get("COMMIT", "")
+    (rd / "mutants.md").unlink(missing_ok=True)
+    log = rd / "mutants.log"
+    log.write_text("")
+
+    worktree = job["worktree"]
+    mb = git(worktree, "merge-base", f"origin/{JOB.BASE}", commit).strip()
+    packages = sorted(crates(worktree, mb, commit).values())
+    seconds = command_text = "-"
+    excluded, missed, covered = 0, None, None
+    if not packages:
+        value, why = "SKIPPED", "no .rs file under core/crates/ changed"
+    else:
+        command = ["cargo", "mutants", "--in-diff", "mutants.diff",
+                   *(word for pkg in packages for word in ("-p", pkg)),
+                   "-j", "1", "--no-times", "--caught", "--unviable", "--colors", "never"]
+        run = run_in_scratch(worktree, mb, commit, command, budget)
+        value, why, excluded, missed, covered = judge(worktree, commit, run, budget)
+        seconds, command_text = f"{run.seconds:.1f}", f"`{BIN / 'test-run'} -- {' '.join(command)}`"
+        with log.open("a") as f:
+            f.write(f"==== {' '.join(command)} ({value}, {seconds}s) ====\n{run.output}\n")
+
+    text = (f"MUTANTS: {value}\nCOMMIT: {commit}\nBUDGET: {budget}s\nVM SECONDS: {seconds}\nCOMMAND: {command_text}\n"
+            f"EXCLUDED: {excluded} under #[cfg(kani)] or #[cfg(test)]\n" + (f"WHY: {why}\n" if why else ""))
+    if missed is not None:
+        text += ("\n## Missed\n" + ("\n".join(missed) if missed else "None.") + "\n"
+                 "\n## Missed in functions a Kani proof calls\n" + ("\n".join(covered) if covered else "None.") + "\n")
+    (rd / "mutants.md").write_text(text)
+    print(f"MUTANTS: {value} ({job_id} round {job['round']})")
+    return 0
+
+
+def main(argv):
+    if len(argv) != 1 or argv[0].startswith("-"):
+        die(__doc__.strip())
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        return mutants(argv[0])
+    except Stopped as e:
+        return 128 + e.args[0]
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
