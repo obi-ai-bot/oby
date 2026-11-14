@@ -1152,7 +1152,7 @@ impl Jobs {
         let stopped_cleanly = std::fs::remove_file(&clean).is_ok();
         // What its agents and checks it left running end before any job is picked up again, so
         // none goes on writing beside the job's next run (crate::groups).
-        crate::groups::reap(&crate::groups::dir(&config.home));
+        crate::groups::reap(&config.home);
         let now = obi_protocol::time::now();
         let mut jobs = HashMap::new();
         for mut job in store.load_all() {

@@ -239,14 +239,15 @@ fn kill_unless_replaced(leader: &Leader) {
     }
 }
 
-/// At obid's start, before any job is picked up again: every group recorded in `records` whose
-/// leader is still the process recorded ends (SIGTERM, then SIGKILL), and the records go. A leader
-/// that's gone or another process now is left alone.
+/// At obid's start, before any job is picked up again: every group recorded in `home/jobs/groups`
+/// whose leader is still the process recorded ends (SIGTERM, then SIGKILL), and the records go. A
+/// leader that's gone or another process now is left alone.
 // ponytail: a group whose leader ended but whose members still run (a `claudeOwnSandbox` run's
 // background command) isn't ended: once the id is free, any process can lead a group with it.
 // Ending one needs its members recorded.
-pub fn reap(records: &Path) {
-    let live: Vec<Leader> = crate::store::load_dir::<Leader>(records)
+pub fn reap(home: &Path) {
+    let records = &dir(home);
+    let live: Vec<Leader> = crate::store::load_dir::<Leader>(home, records)
         .into_iter()
         .filter(alive)
         .collect();
@@ -330,7 +331,8 @@ mod tests {
     /// another process now (it started at another time: the id was reused) is never signalled.
     #[tokio::test]
     async fn a_reused_id_is_never_signalled() {
-        let records = folder("reap");
+        let home = folder("reap");
+        let records = dir(&home);
         let recording = Recording {
             records: records.clone(),
             job: "j1".into(),
@@ -354,7 +356,7 @@ mod tests {
         )
         .unwrap();
 
-        reap(&records);
+        reap(&home);
         assert!(left.wait().unwrap().code().is_none(), "ended by a signal");
         assert!(
             other.try_wait().unwrap().is_none(),

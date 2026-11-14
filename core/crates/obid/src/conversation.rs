@@ -469,7 +469,7 @@ impl Conversations {
         if let Err(e) = crate::store::make_private_dir(&dir) {
             tracing::warn!("can't make {}: {e}", dir.display());
         }
-        let threads: Vec<Thread> = crate::store::load_dir::<Thread>(&dir)
+        let threads: Vec<Thread> = crate::store::load_dir::<Thread>(home, &dir)
             .into_iter()
             .filter(|t| {
                 let named = is_id(&t.id) && dir.join(format!("{}.json", t.id)).is_file();
@@ -498,8 +498,11 @@ impl Conversations {
         conversations.prune(&mut conversations.lock());
         conversations.end_forgotten();
         // Every recorded run is swept (none runs yet); a deleted one's folders go once none is left.
+        // One whose file was kept aside, named `<id>-<seconds>.json`, isn't deleted (HOME-13).
         let next = conversations.next.lock().map(|next| next.clone());
         let next = next.unwrap_or_else(|e| e.into_inner().clone());
+        let aside = std::fs::read_dir(home.join("unreadable/conversations")).into_iter();
+        let aside: Vec<_> = aside.flatten().flatten().map(|e| e.file_name()).collect();
         let entries = std::fs::read_dir(&conversations.dir).into_iter().flatten();
         for entry in entries.flatten() {
             let (id, place) = (entry.file_name(), entry.path());
@@ -507,6 +510,7 @@ impl Conversations {
             let json = std::fs::symlink_metadata(conversations.dir.join(format!("{id}.json")));
             let gone = json.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
             let ours = is_id(&id) && place.is_dir();
+            let gone = gone && !aside.iter().any(|n| n.to_string_lossy().starts_with(&*id));
             if ours && runs_swept(&place, true) && gone && next.as_deref() != Some(&*id) {
                 let _ = std::fs::remove_dir_all(place);
             }
@@ -2330,6 +2334,32 @@ mod tests {
         dismissed["dismissed"] = json!("2026-10-17T00:00:00Z");
         assert_eq!(job_report(&dismissed), None);
         crate::secrets::known().forget("vault TEST_351");
+    }
+
+    /// HOME-13: a conversation whose file doesn't read is kept aside in `home/unreadable`, and its
+    /// folders stay through that start and the next: its file isn't gone, only set aside.
+    #[test]
+    fn home_13_a_kept_aside_conversation_keeps_its_folders() {
+        let home = std::env::temp_dir().join(format!("obid-home-13-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let open = || super::Conversations::open(&home, crate::events::Events::new());
+        let id = open().start_for("Broken").unwrap();
+        let room = home.join("conversations").join(&id).join("room");
+        std::fs::create_dir_all(&room).unwrap();
+        let file = home.join("conversations").join(format!("{id}.json"));
+        std::fs::write(&file, "{").unwrap();
+        let aside = home.join("unreadable/conversations");
+        for start in ["the start that kept it aside", "the next start"] {
+            drop(open());
+            assert!(room.is_dir(), "{start} removed its folders");
+            assert!(!file.exists(), "{start} left its file in place");
+            let kept: Vec<_> = std::fs::read_dir(&aside).unwrap().flatten().collect();
+            assert_eq!(kept.len(), 1, "{start}");
+            let name = kept[0].file_name().to_string_lossy().into_owned();
+            assert!(name.starts_with(&format!("{id}-")), "{name}");
+            assert_eq!(std::fs::read(kept[0].path()).unwrap(), b"{");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// LANES-16: deleting a conversation ends its waiting session with no lock of the
