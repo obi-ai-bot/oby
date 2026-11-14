@@ -1749,9 +1749,36 @@ pub async fn delete_branch(gh: &Path, job: &Job) -> Result<Outgoing, String> {
 }
 
 /// Keeps `mark` on the job (`Job::sending`): one per kind, a new one in place of the one before.
-pub fn mark(job: &mut Job, mark: crate::job::Sending) {
+/// Nothing is sent for a pull request obid recorded as merged ([`merged_for_good`]): whether it
+/// was kept.
+pub fn mark(job: &mut Job, mark: crate::job::Sending) -> bool {
+    if merged_for_good(job) {
+        return false;
+    }
     job.sending.retain(|s| s.action != mark.action);
     job.sending.push(mark);
+    true
+}
+
+/// Whether obid recorded the job's pull request as merged (`mergedBy`, `MERGED`): for good, since
+/// GitHub never reopens a merged pull request. A read that started before obid's merge doesn't set
+/// it back open, nothing is sent for it again, and who had it merged stays (MERGING-2).
+pub fn merged_for_good(job: &Job) -> bool {
+    job.merged_by.is_some()
+        && job
+            .pull_request
+            .as_ref()
+            .is_some_and(|pr| pr.state == "MERGED")
+}
+
+/// A read of the job's pull request, `pr`, kept on it, unless it would set back open what obid
+/// recorded as merged ([`merged_for_good`]): whether it was kept.
+pub fn keep_read(job: &mut Job, pr: &PullRequest) -> bool {
+    if pr.is_open() && merged_for_good(job) {
+        return false;
+    }
+    job.pull_request = Some(pr.clone());
+    true
 }
 
 /// Takes the job's mark of `action` off, if it has one.
@@ -4847,6 +4874,49 @@ esac
             (stopped.options, stopped.text),
             (vec![DISMISS.to_owned()], REQUIRES_PERSON.to_owned())
         );
+    }
+
+    /// MERGING-2: once obid noted the owner's Merge, a read of the pull request that started before
+    /// it doesn't set it back open, and the workflow they had it remember merges nothing more:
+    /// `mergedBy` stays the owner's.
+    #[test]
+    fn merging_2_a_read_from_before_the_owners_merge_doesnt_undo_it() {
+        let mut job = job();
+        let (earlier, _) = read(&view(|_| {}), &approved());
+        assert!(keep_read(&mut job, &earlier));
+        let owner = MergedBy {
+            by: "owner".into(),
+            memory: None,
+            at: 1,
+        };
+        let merged = Merged {
+            method: Method::Squash,
+            outgoing: vec![Outgoing::new("merge", REPO, URL, Some("dev"))],
+        };
+        note(&mut job, &Ok(merged), owner);
+        assert!(merged_for_good(&job));
+        // The read lands after the merge: it's kept off.
+        assert!(!keep_read(&mut job, &earlier));
+        assert_eq!(job.pull_request.as_ref().unwrap().state, "MERGED");
+        // The remembered workflow's merge finds nothing to send.
+        let by = MergedBy {
+            by: "memory".into(),
+            memory: Some("m1a2b3c4d".into()),
+            at: 2,
+        };
+        let again = crate::job::Sending {
+            action: "merge".into(),
+            head: head(),
+            by: Some(by),
+            login: None,
+        };
+        assert!(!mark(&mut job, again));
+        assert!(job.sending.is_empty());
+        assert_eq!(job.merged_by.as_ref().unwrap().by, "owner");
+        // A read that says merged is still kept.
+        let mut later = earlier.clone();
+        later.state = "MERGED".into();
+        assert!(keep_read(&mut job, &later));
     }
 
     /// A merged pull request settles an approval mark only from reviews that read: unread, the
