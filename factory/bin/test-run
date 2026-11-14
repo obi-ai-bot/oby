@@ -2,10 +2,14 @@
 """Run a builder's own test, clippy or build run so that it yields to the gates.
 
 Usage:
-  factory/bin/test-run -- <command> [args...]
+  factory/bin/test-run [--here] -- <command> [args...]
+
+  --here    the run needs this Mac itself (its Keychain, the owner's real home): it runs here, under the
+            lock, and goes to neither the gate VM nor the Mac worker
 
 e.g.
   factory/bin/test-run -- cargo test -p obid --test jobs_api
+  factory/bin/test-run --here -- cargo test -p obid vault::
   factory/bin/test-run -- npm test
 
 Heavy and light. Only a run that can build Rust or Xcode code takes turns. The
@@ -104,6 +108,23 @@ slot busy for 600 seconds, a payload that doesn't apply), it says
 lock included. SIGTERM or SIGINT stops ssh, which ends the run's session on the
 VM and frees its slot, and test-run exits 128 + signal. A run whose
 CARGO_TARGET_DIR is the shared folder is still refused first.
+
+The Mac worker (REMOTE-35 to 42). With config.json's `mac_worker` (or
+FACTORY_MAC_WORKER) valid and its `builder_slots` 1 or more, a heavy run that stays
+here above only because of macOS-only code or a macOS-only `--test` goes to the
+Mac worker instead, with or without the VM: it says `factory/bin/test-run: to the
+Mac worker <host>: <why>` and sends the same base, tree, folder and scanned
+payload, through `ssh <the gate's ssh options> <ssh_host> oby-worker/bin/
+oby-remote-gate --mac --run --slots 2 --builder-slots <m> --wait 600 <base>
+<tree> <folder> -- <command>`, quoted, with no -l. It runs there in a builder
+slot of its own under ~/oby-worker/builders, never a gate's. No use is opened in
+state.json, and nothing is started or probed first. Streaming, the `running in
+builder slot <N>` line, exit codes, stops and the fallback to this Mac before
+that line are as for the VM. A run with a Mac word stays here, as does any run
+with `--here`, which says `factory/bin/test-run: on this Mac: the run asked for
+this Mac (--here)` and calls no host. A fallback from either host runs here,
+never on the other. With `mac_worker` missing, invalid or its `builder_slots`
+0, nothing above changes.
 """
 
 import fcntl
@@ -133,6 +154,7 @@ MAC_WORDS = ("swift", "xcodebuild", "oby-check.sh", "oby-check-blok")  # never s
 WAIT = min(600, int(os.environ.get("FACTORY_BUILDER_WAIT_SECONDS") or 600))  # lower only in the tests
 FOLDER = re.compile(r"[A-Za-z0-9._/-]+")  # oby-remote-gate's rule for the run's folder
 RUNNING = re.compile(r"oby-remote-gate: running in builder slot \d+")
+MAC_SLOTS = 2  # the Mac worker's gate slots, oby-remote-gate's MAC_SLOTS
 
 
 class Here(Exception):
@@ -205,8 +227,10 @@ def git(*args, cwd=None, env=None, text=True):
     return res.stdout.strip() if text else res.stdout
 
 
-def to_send(gate, command):
-    """What goes to the VM for this run, (base, tree, folder, payload), or Here."""
+def to_send(gate, command, vm, mac):
+    """Where this run goes and what goes there, (the macOS reason for the Mac worker or None for the VM, base, tree,
+    folder, payload); None to keep it here unsaid (no VM for a run that doesn't need macOS); or Here. vm and mac say
+    whether the VM's and the Mac worker's builder slots are on."""
     names = word_names(command)
     said = [name for name in names if name in MAC_WORDS]
     if said:
@@ -221,21 +245,23 @@ def to_send(gate, command):
         tree = git("write-tree", cwd=top, env=env)
     touched = git("diff", "--name-only", "--no-renames", base, tree, cwd=top).splitlines()
     macos = gate.macos_only(top, base, touched, tree)
-    if macos:
-        raise Here(f"the worktree's changes touch macOS-only code: {gate.named(macos)}")
+    why = f"the worktree's changes touch macOS-only code: {gate.named(macos)}" if macos else None
     tests = [names[i + 1] for i, name in enumerate(names[:-1]) if name == "--test"]
     tests += [name.removeprefix("--test=") for name in names if name.startswith("--test=")]
-    if tests:
+    if tests and not why:
         listed = git("ls-tree", "-r", "--name-only", tree, "--", "core/crates", cwd=top).splitlines()
         wanted = {f"tests/{name}.rs" for name in tests}
         files = [f for f in listed if re.fullmatch(r"core/crates/[^/]+/tests/[^/]+\.rs", f)
                  and f.split("/", 3)[3] in wanted]
         macos = gate.macos_only(top, base, files, tree)
-        if macos:
-            raise Here(f"its test is macOS-only: {gate.named(macos)}")
+        why = f"its test is macOS-only: {gate.named(macos)}" if macos else None
+    if why and not mac:
+        raise Here(why)
+    if not (why or vm):
+        return None
     folder = os.path.relpath(os.path.realpath(os.getcwd()), os.path.realpath(top))
     if not (FOLDER.fullmatch(folder) and ".." not in folder.split("/")):
-        raise Here(f"its folder, {folder}, can't be named to the VM")
+        raise Here(f"its folder, {folder}, can't be named to the {'Mac worker' if why else 'VM'}")
     if not (gate.SHA.fullmatch(base) and gate.SHA.fullmatch(tree)):
         raise Here(f"the base or the tree isn't a full SHA: {base} {tree}")
     payload = git("diff", "--binary", "--full-index", base, tree, cwd=top, text=False)
@@ -248,7 +274,7 @@ def to_send(gate, command):
     if found.returncode != 0:
         sys.stderr.buffer.write(found.stdout)
         raise Here(f"the secret scan found a secret in the changes, or couldn't run (gitleaks exit {found.returncode})")
-    return base, tree, folder, payload
+    return why, base, tree, folder, payload
 
 
 def send(stdin, payload):
@@ -260,12 +286,11 @@ def send(stdin, payload):
         pass
 
 
-def remote_run(gate, remote, base, tree, folder, payload, command):
-    """The run on the VM: its exit code once it started there, or gate.Fallback."""
-    slots, builders = gate.sizes(remote)
-    words = ["oby-remote-gate", "--run", "--slots", str(slots), "--builder-slots", str(builders), "--wait",
-             str(WAIT), base, tree, folder, "--", *command]
-    argv = ["ssh", *gate.SSH, "-l", remote["builder_user"], remote["ssh_host"], shlex.join(words)]
+def remote_run(gate, host, user, runner, base, tree, folder, payload, command):
+    """The run on the VM, or the Mac worker (user None: the one SSH logs in as), through its runner's words: its exit
+    code once it started there, or gate.Fallback."""
+    words = [*runner, "--wait", str(WAIT), base, tree, folder, "--", *command]
+    argv = ["ssh", *gate.SSH, *(["-l", user] if user else []), host, shlex.join(words)]
     try:
         proc = child_session.start(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except OSError as e:
@@ -287,22 +312,12 @@ def remote_run(gate, remote, base, tree, folder, payload, command):
         return code
     if last == "oby-remote-gate: all builder slots are busy":
         raise gate.Fallback(f"all builder slots were busy for {WAIT}s")
-    host = f"{remote['builder_user']}@{remote['ssh_host']}"
-    raise gate.Fallback(f"ssh {host} ended {code} before the run started" + (f": {last}" if last else ""))
+    who = f"{user}@{host}" if user else host
+    raise gate.Fallback(f"ssh {who} ended {code} before the run started" + (f": {last}" if last else ""))
 
 
-def on_the_vm(command):
-    """Run a heavy command on the gate VM: its exit code, or None to run it on this Mac (having said why when the
-    builder path is on)."""
-    gate = load_gate()
-    remote, _ = gate.remote_config()
-    if not remote or gate.sizes(remote)[1] < 1:
-        return None
-    try:
-        sent = to_send(gate, command)
-    except Here as e:
-        print(f"{NAME}: on this Mac: {e}", file=sys.stderr, flush=True)
-        return None
+def on_the_vm(gate, remote, sent, command):
+    """The run on the gate VM, its use open meanwhile: its exit code, or gate.Fallback."""
     use = gate.open_use()
     try:
         log, moves = [], []
@@ -311,19 +326,54 @@ def on_the_vm(command):
         finally:
             for line in log + moves:
                 print(f"{NAME}: {line}", file=sys.stderr, flush=True)
-        return remote_run(gate, remote, *sent, command)
-    except gate.Fallback as e:
-        print(f"{NAME}: fell back to this Mac: {e}", file=sys.stderr, flush=True)
-        return None
+        slots, builders = gate.sizes(remote)
+        runner = ["oby-remote-gate", "--run", "--slots", str(slots), "--builder-slots", str(builders)]
+        return remote_run(gate, remote["ssh_host"], remote["builder_user"], runner, *sent, command)
     finally:
         gate.close_use(use)
 
 
+def on_the_mac_worker(gate, worker, why, sent, command):
+    """The run on the Mac worker, in a builder slot of its own: no use, reach or probe. Its exit code, or
+    gate.Fallback."""
+    print(f"{NAME}: to the Mac worker {worker['ssh_host']}: {why}", file=sys.stderr, flush=True)
+    runner = [gate.MAC_GATE, "--mac", "--run", "--slots", str(MAC_SLOTS), "--builder-slots",
+              str(worker["builder_slots"])]
+    return remote_run(gate, worker["ssh_host"], None, runner, *sent, command)
+
+
+def elsewhere(command):
+    """Run a heavy command on the gate VM, or a macOS-only one on the Mac worker: its exit code, or None to run it on
+    this Mac (having said why when a builder path is on)."""
+    gate = load_gate()
+    remote, _ = gate.remote_config()
+    worker, _ = gate.mac_worker_config()
+    vm = bool(remote) and gate.sizes(remote)[1] >= 1
+    mac = bool(worker) and worker["builder_slots"] >= 1
+    if not (vm or mac):
+        return None
+    try:
+        sent = to_send(gate, command, vm, mac)
+    except Here as e:
+        print(f"{NAME}: on this Mac: {e}", file=sys.stderr, flush=True)
+        return None
+    if sent is None:
+        return None
+    why, *sent = sent
+    try:
+        return on_the_mac_worker(gate, worker, why, sent, command) if why else on_the_vm(gate, remote, sent, command)
+    except gate.Fallback as e:
+        print(f"{NAME}: fell back to this Mac: {e}", file=sys.stderr, flush=True)
+        return None
+
+
 def main(argv):
-    if len(argv) < 3 or argv[1] != "--":
+    here = argv[1:2] == ["--here"]
+    rest = argv[2:] if here else argv[1:]
+    if len(rest) < 2 or rest[0] != "--":
         print(__doc__, file=sys.stderr)
         return 2
-    command = argv[2:]
+    command = rest[1:]
     target = os.environ.get("CARGO_TARGET_DIR")
     if target and os.path.realpath(target) == os.path.realpath(SHARED):
         print(
@@ -334,7 +384,9 @@ def main(argv):
         return 2
     child_session.handle_stops()
     if heavy(command):
-        code = on_the_vm(command)
+        if here:
+            print(f"{NAME}: on this Mac: the run asked for this Mac (--here)", file=sys.stderr, flush=True)
+        code = None if here else elsewhere(command)
         if code is not None:
             return code
         fd = lock()
