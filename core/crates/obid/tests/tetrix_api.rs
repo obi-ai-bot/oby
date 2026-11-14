@@ -1581,3 +1581,167 @@ fn switching_tetrix_servers_takes_back_the_old_login() {
         assert!(!obid.log().contains(secret), "{secret} in the log");
     }
 }
+
+/// The method AGENTMCP-2 sends: 80 characters that no agent MCP server of obid's serves (the job's
+/// is fake-claude's MCP_SHAPE).
+fn unserved() -> String {
+    format!("x/{}", "y".repeat(78))
+}
+
+/// What each of obid's four agent MCP endpoints answered (docs/contracts/agent-mcp.md), by name:
+/// `initialize` asking 2025-03-26, then 1999-01-01, then [`unserved`]. A running job's agent asks
+/// its broker and Tetrix's server with its broker token (fake-claude's MCP_SHAPE); a conversation's
+/// turn asks its tools and Tetrix's server with its turn's token (fake-harness's MCP).
+fn agent_mcp_answers(name: &str) -> Vec<(&'static str, Vec<Value>)> {
+    let folder = Folder::new(&format!("{name}-job"));
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, _) = fake_tetrix();
+    let mut config = config(&folder.0, &remote, &fake_claude());
+    config["repos"][0]["check"] = Value::Null;
+    let obid = start(&folder.0, &config, None);
+    sign_in(&obid, &base);
+    let made = call(
+        &obid,
+        "POST",
+        "/v1/jobs",
+        Some(
+            &json!({"job": {"repo": "obi-e2e/fixture-app", "kind": "build", "task": "REPORT MCP_SHAPE"}}),
+        ),
+    );
+    assert_eq!(made.status, 201, "{}", made.text);
+    let id = made.body["id"].as_str().unwrap().to_owned();
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}/wait"), None).body;
+    let report: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            obid.home
+                .join("worktrees")
+                .join(&id)
+                .join(".obi/report.json"),
+        )
+        .unwrap_or_else(|e| panic!("{e}: {job}")),
+    )
+    .unwrap();
+    let shapes = |server: &str| -> Vec<Value> {
+        report["shapes"][server]
+            .as_array()
+            .unwrap_or_else(|| panic!("no {server} answers: {report}"))
+            .clone()
+    };
+    let mut answers = vec![
+        ("broker", shapes("oby")),
+        ("tetrix for a job", shapes("tetrix")),
+    ];
+
+    let folder = Folder::new(&format!("{name}-conversation"));
+    let remote = fixture(&folder.0.join("fixture"));
+    let (base, _) = fake_tetrix();
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agents/fake-harness");
+    let mut conversing = support::config(&folder.0, &remote, &harness);
+    conversing["conversation"] = json!({"agent": "claude"});
+    let account = folder.0.join("home/accounts/stub");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+    let obid = start(&folder.0, &conversing, None);
+    sign_in(&obid, &base);
+    let first = call(
+        &obid,
+        "POST",
+        "/v1/plans",
+        Some(&json!({"said": "SAY Hi.", "new": true})),
+    );
+    let conversation = first.body["conversation"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", first.text))
+        .to_owned();
+    let room = obid
+        .home
+        .join("conversations")
+        .join(&conversation)
+        .join("room");
+    let ask = |server: &str, method: &str, params: Value| -> Value {
+        let said = format!("MCP {server} {method} {params}");
+        let answer = call(
+            &obid,
+            "POST",
+            "/v1/plans",
+            Some(&json!({"said": said, "conversation": conversation})),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text);
+        serde_json::from_slice(&std::fs::read(room.join("mcp-answer.json")).unwrap()).unwrap()
+    };
+    for (endpoint, server) in [("tools", "oby"), ("tetrix for a conversation", "tetrix")] {
+        let answered = vec![
+            ask(
+                server,
+                "initialize",
+                json!({"protocolVersion": "2025-03-26"}),
+            ),
+            ask(
+                server,
+                "initialize",
+                json!({"protocolVersion": "1999-01-01"}),
+            ),
+            ask(server, &unserved(), json!({})),
+        ];
+        answers.push((endpoint, answered));
+    }
+    answers
+}
+
+/// AGENTMCP-1 (docs/contracts/agent-mcp.md): every agent MCP server of obid's answers the protocol
+/// version an agent asks for when obid speaks it, else obid's newest.
+#[test]
+fn agentmcp_1_every_server_answers_the_same_versions() {
+    let answers = agent_mcp_answers("agentmcp-1");
+    assert_eq!(answers.len(), 4);
+    for (endpoint, answered) in &answers {
+        let known = &answered[0];
+        assert_eq!(
+            known["result"]["protocolVersion"], "2025-03-26",
+            "{endpoint}: {known}"
+        );
+        let unknown = &answered[1];
+        assert_eq!(
+            unknown["result"]["protocolVersion"], "2025-06-18",
+            "{endpoint}: {unknown}"
+        );
+    }
+}
+
+/// AGENTMCP-2 (docs/contracts/agent-mcp.md): a method an agent MCP server of obid's doesn't serve
+/// is error -32601 naming its first 64 characters, in the same shape on every server.
+#[test]
+fn agentmcp_2_an_unknown_method_is_the_same_error_everywhere() {
+    let answers = agent_mcp_answers("agentmcp-2");
+    assert_eq!(answers.len(), 4);
+    let method = unserved();
+    let keys = |value: &Value| -> Vec<String> {
+        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    };
+    for (endpoint, answered) in &answers {
+        let answer = &answered[2];
+        let server = match *endpoint {
+            "broker" => "Oby's broker",
+            "tools" => "Oby's tools server",
+            _ => "Oby's Tetrix server",
+        };
+        assert_eq!(answer["error"]["code"], -32601, "{endpoint}: {answer}");
+        assert_eq!(
+            answer["error"]["message"],
+            format!("{server} doesn't answer {}.", &method[..64]),
+            "{endpoint}: {answer}"
+        );
+        assert_eq!(
+            keys(answer),
+            ["error", "id", "jsonrpc"],
+            "{endpoint}: {answer}"
+        );
+        assert_eq!(
+            keys(&answer["error"]),
+            ["code", "message"],
+            "{endpoint}: {answer}"
+        );
+    }
+}
