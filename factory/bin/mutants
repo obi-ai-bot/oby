@@ -11,8 +11,8 @@ It reads the job's job.json (never writing it or taking its lock), round-N/check
   a. with <mb> the merge base of origin/<base> and the commit, a branch that changes no `.rs` file under
      core/crates/<dir>/ is SKIPPED, with nothing run;
   b. otherwise, in one scratch worktree at the commit, core/mutants.diff holds the branch's `.rs` diff relative to
-     core/, and one `test-run -- cargo mutants --in-diff mutants.diff -p <pkg>... -j 1 --no-times --caught --unviable
-     --colors never` runs from its core/, the packages those of the touched crates, sorted;
+     core/, and one `test-run -- cargo mutants --in-place --in-diff mutants.diff -p <pkg>... -j 1 --no-times --caught
+     --unviable --colors never` runs from its core/, the packages those of the touched crates, sorted;
   c. each mutant line it prints is counted by its outcome, but those whose line, at the commit, sits in code under
      #[cfg(kani)] or #[cfg(test)], which are EXCLUDED; a missed mutant in a function a #[kani::proof] harness of the
      same crate calls by name is listed apart.
@@ -348,9 +348,9 @@ def mutants(job_id):
     if not packages:
         value, why = "SKIPPED", "no .rs file under core/crates/ changed"
     else:
-        command = ["cargo", "mutants", "--in-diff", "mutants.diff",
-                   *(word for pkg in packages for word in ("-p", pkg)),
-                   "-j", "1", "--no-times", "--caught", "--unviable", "--colors", "never"]
+        command = ["cargo", "mutants", "--in-place", "--in-diff", "mutants.diff",
+                   *(word for pkg in packages for word in ("-p", pkg)), "-j", "1",
+                   "--no-times", "--caught", "--unviable", "--colors", "never"]
         run = run_in_scratch(worktree, mb, commit, command, budget)
         value, why, excluded, missed, covered = judge(worktree, commit, run, budget)
         seconds, command_text = f"{run.seconds:.1f}", f"`{BIN / 'test-run'} -- {' '.join(command)}`"
