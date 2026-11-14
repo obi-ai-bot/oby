@@ -12,8 +12,6 @@ use super::briefing::{cause, line, post_mortem};
 use crate::failures::Record;
 use crate::job::Job;
 
-/// The most one read puts in the file, in bytes.
-pub const SIZE: usize = 8 * 1024;
 /// The most failure records one job's read carries, newest first.
 pub const FAILURES: usize = 3;
 /// The most changed files one job's read names.
@@ -276,6 +274,9 @@ fn mac_checks(job: &Job) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The most one read puts in the file, in bytes.
+    const SIZE: usize = 8 * 1024;
 
     /// A finished job whose Mac check failed in a step, on one test.
     fn failed(id: &str, title: &str) -> Job {

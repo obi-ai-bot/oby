@@ -140,8 +140,9 @@ fn main() -> ExitCode {
         }
     };
 
+    let log = obid::secrets::Redacting::new(obid::secrets::known(), std::io::stderr);
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
+        .with_writer(log)
         .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("OBID_LOG")
