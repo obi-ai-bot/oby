@@ -134,6 +134,9 @@ struct Thread {
     /// The account its turns have moved off and said so ([`Conversations::moved_off`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     moved_off: Option<String>,
+    /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 /// Where conversation `id`'s Cursor keeps its login copy and sessions: short, under `logins/` as a
@@ -170,7 +173,6 @@ pub const TASK_STATUSES: [&str; 5] = [
 /// One task of a conversation's own list (docs/runner-api.md, "obid only: the conversation
 /// manages its own work").
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Task {
     #[serde(default)]
     pub id: String,
@@ -180,6 +182,10 @@ pub struct Task {
     pub job: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Keys a newer obid wrote in the conversation's file, kept when it saves: never shown, and
+    /// never taken from an agent ([`checked_tasks`]).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 impl Task {
@@ -189,6 +195,13 @@ impl Task {
     }
 }
 
+/// `tasks` as an app or an agent sees them: without [`Task::extra`].
+fn shown(tasks: &[Task]) -> Vec<Task> {
+    let mut tasks = tasks.to_vec();
+    tasks.iter_mut().for_each(|t| t.extra.clear());
+    tasks
+}
+
 /// `tasks` as a list may hold them, ids given to those without (`t1`, `t2`, …, never one taken),
 /// or why not.
 pub fn checked_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>, String> {
@@ -196,6 +209,9 @@ pub fn checked_tasks(mut tasks: Vec<Task>) -> Result<Vec<Task>, String> {
         return Err(format!("A task list holds at most {TASKS} tasks."));
     }
     for task in &mut tasks {
+        if !task.extra.is_empty() {
+            return Err("A task holds only id, title, status, job and note.".into());
+        }
         task.title = task.title.trim().to_owned();
         if task.title.is_empty()
             || task.title.chars().count() > 200
@@ -265,7 +281,7 @@ impl Thread {
             "created": self.created,
             "lastActivity": self.last_activity(),
             "cursor": self.key().to_string(),
-            "tasks": self.tasks,
+            "tasks": shown(&self.tasks),
             "folders": self.folders,
         });
         // Only once there's something to say.
@@ -1323,7 +1339,7 @@ impl Conversations {
             .iter()
             .find(|t| t.id == id)
             .ok_or(Error::NoConversation)?;
-        Ok((thread.tasks.clone(), thread.tasks_tainted))
+        Ok((shown(&thread.tasks), thread.tasks_tainted))
     }
 
     /// Replaces the task list of the conversation `id` (`tainted`: written in a turn that read
@@ -2183,6 +2199,7 @@ mod tests {
             status: status.into(),
             job: None,
             note: None,
+            extra: Default::default(),
         };
         let checked = checked_tasks(vec![
             task("", " Fix it ", "pending"),
@@ -2201,6 +2218,13 @@ mod tests {
         let mut noted = task("", "x", "blocked");
         noted.note = Some("n".repeat(501));
         assert!(checked_tasks(vec![noted]).is_err());
+        // An agent's task holds only the keys obid knows: one more is refused, never kept.
+        let mut more = task("", "x", "pending");
+        more.extra.insert("fromAnAgent".into(), json!(1));
+        assert_eq!(
+            checked_tasks(vec![more]).unwrap_err(),
+            "A task holds only id, title, status, job and note."
+        );
         assert!(!task("", "x", "cancelled").open() && task("", "x", "blocked").open());
     }
 
@@ -2608,6 +2632,48 @@ mod tests {
         // Kept across a restart.
         let reopened = super::Conversations::open(&home, crate::events::Events::new());
         assert_eq!(reopened.from_obys().unwrap(), asks);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// HOME-10 (docs/contracts/home.md): keys a newer obid wrote on a conversation and on a task of
+    /// its list stay in its file when this obid saves it, and no summary or task list shows them.
+    #[test]
+    fn home_10_a_conversations_unknown_keys_survive_a_save() {
+        let home = std::env::temp_dir().join(format!("obid-newer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let conversations = super::Conversations::open(&home, crate::events::Events::new());
+        let id = conversations.start_for("Newer").unwrap();
+        let task = super::Task {
+            id: "t1".into(),
+            title: "Fix it".into(),
+            status: "pending".into(),
+            job: None,
+            note: None,
+            extra: Default::default(),
+        };
+        conversations.set_tasks(&id, vec![task], false).unwrap();
+        drop(conversations);
+        let file = home.join("conversations").join(format!("{id}.json"));
+        let mut kept: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        kept["fromANewerObid"] = json!({"a": 1});
+        kept["tasks"][0]["dueBy"] = json!("friday");
+        std::fs::write(&file, kept.to_string()).unwrap();
+        let conversations = super::Conversations::open(&home, crate::events::Events::new());
+        let summary = conversations
+            .change(&id, None, Some(true), None, None)
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved["pinned"], true);
+        assert_eq!(saved["fromANewerObid"], json!({"a": 1}));
+        assert_eq!(saved["tasks"][0]["dueBy"], "friday");
+        assert_eq!(summary["fromANewerObid"], serde_json::Value::Null);
+        let shown =
+            json!({"id": "t1", "title": "Fix it", "status": "pending", "job": null, "note": null});
+        assert_eq!(summary["tasks"][0], shown);
+        let (tasks, _) = conversations.tasks(&id).unwrap();
+        assert!(tasks[0].extra.is_empty(), "an agent never reads them");
         let _ = std::fs::remove_dir_all(&home);
     }
 

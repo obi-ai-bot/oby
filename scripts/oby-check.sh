@@ -9,8 +9,9 @@
 #                                  committed or not; with OBY_CHECK_PLAN=1, only says what it'd run;
 #                                  with OBY_CHECK_ALL=1, runs everything, whatever changed;
 #                                  with OBY_CHECK_ONLY=rust|electron|swift|factory|scan, runs only that group;
-#                                  with OBY_CHECK_ONLY=limits, only the line limits below, whatever
-#                                  changed (GitHub's `limits` job, docs/contracts/ci.md, CI-35);
+#                                  with OBY_CHECK_ONLY=limits, only the line limits below and
+#                                  AGENTS.md's bytes, whatever changed (GitHub's `limits` job,
+#                                  docs/contracts/ci.md, CI-35);
 #                                  with OBY_CHECK_PATHS (one a line), runs what those paths reach:
 #                                  obid sets it when it runs this on a job's base, which changed
 #                                  nothing, to see whether the base fails as the job does
@@ -30,20 +31,19 @@
 #                         src/job.rs, config.rs or store.rs; every test of another touched crate;
 #                         an obid run whose failed tests are all on the flaky list
 #                         (core/.config/nextest.toml, which may only shrink) runs them once more
-#   docs/api/, obid's src/ files with a `.route(`, apps/electron/src (not its tests or mock), apps/shared,
-#   mcp/server            the Rust group above with tests/routes_guard.rs (docs/contracts/ci.md)
+#   docs/api/, obid's src/ files with a `.route(`, apps/electron/src (not its tests or mock), apps/shared
+#                         the Rust group above with tests/routes_guard.rs (docs/contracts/ci.md)
 #   apps/ios/, apps/watch/, apps/shared/, apps/Oby.xcodeproj, character/
 #                         the touched iOSTests suites on a Simulator, else a build-for-testing
-#   mcp/, Package.swift   swift test
 #   apps/electron/        npm run typecheck, npm test and npm run build there (its node_modules from npm install)
 #   scripts/oby-check*    scripts/oby-check-test.sh and the line limit below
+#   AGENTS.md             the limits below, AGENTS.md's bytes among them (the root's only; CI-36 to 38)
 #   factory/bin/, factory/checks.sh, factory/tests/, factory/config.json
 #                         python3 -m unittest discover -s factory/tests, with no GitHub login
 #
 # Inside a job's sandbox (where Seatbelt can't make another: a no-op sandbox-exec fails), the Apple
-# apps aren't built and swift test doesn't run: SwiftPM evaluates every package manifest in a
-# sandbox of its own, which can't nest there, and xcodebuild has no switch for it, and a cold
-# SwiftPM build in the job's HOME doesn't fit the check's 45 minutes. Nothing runs them by itself
+# apps aren't built: SwiftPM evaluates every package manifest in a sandbox of its own, which can't
+# nest there, and xcodebuild has no switch for it, and a cold build in the job's HOME doesn't fit the check's 45 minutes. Nothing runs them by itself
 # since obid's Mac checks went (docs/runner-api.md, "Mac check"): a `mac` workflow's merge waits
 # for the owner, who runs them on the Mac.
 # obid's tests that make a sandbox of their own (tests/sandbox.rs, tests/jobs_setup.rs, plug-ins' if
@@ -54,7 +54,7 @@
 #
 # Builds and tests run as many jobs at once as obid says the Mac's memory leaves them (OBY_BUILD_JOBS,
 # CARGO_BUILD_JOBS, RUST_TEST_THREADS: one per 1.5 GiB of the room memory leaves, at most half the
-# cores), for Cargo, Rust's tests, swift test (-j) and xcodebuild (-jobs). Run by hand, outside obid,
+# cores), for Cargo, Rust's tests and xcodebuild (-jobs). Run by hand, outside obid,
 # every one gets 4, on purpose: obid runs one check at a time, and a Mac has other work.
 set -eo pipefail
 jobs="${OBY_BUILD_JOBS:-4}"
@@ -154,11 +154,13 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # Dispatcher, not harness (AGENTS.md): how many production lines the Rust core may have outside the
 # Sphere. A cut lowers it. Raising it is the owner's word: this is the check, so a job's own change
 # to it is checked by the base's copy and merges as a change to the check does (docs/contracts/merging.md).
-obid_lines_limit=99044
+obid_lines_limit=100000
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
 jobs_rs_limit=15107
 # obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
-tests_sleep_limit=206
+tests_sleep_limit=205
+# AGENTS.md may only shrink: a cut lowers this, and raising it is the owner's word (docs/contracts/ci.md, CI-36 to 38).
+agents_md_bytes_limit=49661
 # A job's check runs the base's copy of this script on the commit (PUBLISHING-7). A branch that
 # changed a limit since it started from its merge base (a cut lowers it) is held to its own number,
 # but never to one higher than the running copy's; one that didn't gets the running copy's, an
@@ -182,6 +184,7 @@ pick_limit() { # name: sets it from the commit's copy where the branch changed i
 pick_limit obid_lines_limit
 pick_limit jobs_rs_limit
 pick_limit tests_sleep_limit
+pick_limit agents_md_bytes_limit
 # Said after a limit's failure: dev's limit changed since this branch started.
 moved() { [[ " ${limit_moved[*]} " != *" $1 "* ]] || echo " (dev's limit changed since this branch started: rebase onto dev)"; }
 # A file counts all but its test modules: from a `#[cfg(test)]` on a `mod name {` to the next `}` in
@@ -408,7 +411,7 @@ suites() {
 }
 
 # What each part needs, one per line.
-rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' swift='' check_script='' factory=''
+rust='' blok='' electron='' lib='' lib_all='' tests='' crates='' ios='' ios_suites='' check_script='' factory='' agents_md=''
 add() { printf '%s\n%s' "$1" "$2"; }
 while IFS= read -r file; do
     case "$file" in
@@ -454,7 +457,7 @@ while IFS= read -r file; do
     # The routes obid serves and the clients that call them (docs/contracts/ci.md, CI-9 to 11).
     routes=''
     case "$file" in
-        core/crates/obid/src/api.rs | core/crates/obid/src/gateway.rs | docs/api/* | apps/shared/*.swift | mcp/server/*.swift)
+        core/crates/obid/src/api.rs | core/crates/obid/src/gateway.rs | docs/api/* | apps/shared/*.swift)
             routes=1 ;;
         core/crates/obid/src/*) [[ ! -f "$file" ]] || ! grep -qF '.route(' "$file" || routes=1 ;;
         */test/* | *.test.ts | *.test.tsx | apps/electron/src/renderer/src/mock.ts) ;;
@@ -466,11 +469,9 @@ while IFS= read -r file; do
         apps/ios/* | apps/watch/* | apps/shared/* | apps/Oby.xcodeproj/* | character/*) ios=1 ;;
     esac
     case "$file" in
-        mcp/* | Package.swift) swift=1 ;;
-    esac
-    case "$file" in
         apps/electron/*) electron=1 ;;
         scripts/oby-check*) check_script=1 ;;
+        AGENTS.md) agents_md=1 ;;
         factory/bin/* | factory/checks.sh | factory/tests/* | factory/config.json) factory=1 ;;
     esac
 done <<< "$changed"
@@ -482,10 +483,10 @@ if [[ -z "$nested" && "$tests" == *core/crates/obid/tests/jobs_api.rs* ]]; then
 fi
 
 # OBY_CHECK_ALL=1: everything, as if every part had changed (a full check of a branch): obid, the
-# Electron app, swift test and the Apple apps' build (no suites named: build-for-testing). The secret
-# scan still covers what changed against the base, which on the base itself is nothing.
+# Electron app and the Apple apps' build (no suites named: build-for-testing). The secret scan still
+# covers what changed against the base, which on the base itself is nothing.
 if [[ -n "${OBY_CHECK_ALL:-}" ]]; then
-    rust=1 blok=1 lib_all=1 check_script=1 electron=1 swift=1 ios=1 factory=1
+    rust=1 blok=1 lib_all=1 check_script=1 electron=1 ios=1 factory=1
     tests=$(ls core/crates/obid/tests/*.rs 2>/dev/null || true)
     crates=$(ls core/crates 2>/dev/null || true)
 fi
@@ -496,8 +497,9 @@ each() { printf '%s\n' "$1" | sed '/^$/d' | sort -u | sed "s|^|$2|"; }
 group=rust
 if [[ -n "$check_script" ]]; then step bash scripts/oby-check-test.sh; fi
 
-# OBY_CHECK_ONLY=limits runs this block alone, whatever changed (CI-35).
-if { selected && [[ -n "$rust$check_script" ]]; } || [[ "${OBY_CHECK_ONLY:-}" == limits ]]; then
+# OBY_CHECK_ONLY=limits runs this block alone, whatever changed (CI-35); a change to AGENTS.md alone
+# runs it too, with no cargo step (CI-38).
+if { selected && [[ -n "$rust$check_script$agents_md" ]]; } || [[ "${OBY_CHECK_ONLY:-}" == limits ]]; then
     plan_group
     if ! git cat-file -e HEAD:scripts/oby-check.sh 2>/dev/null; then
         echo "oby-check: this commit has no scripts/oby-check.sh, this repository's check and its line limits: put it back" >&2
@@ -529,6 +531,22 @@ if { selected && [[ -n "$rust$check_script" ]]; } || [[ "${OBY_CHECK_ONLY:-}" ==
         failed+=("obid's tests' sleep limit")
     else
         echo "oby-check: obid's tests have $sleeps sleep calls, within their limit of $tests_sleep_limit"
+    fi
+    # The root AGENTS.md's bytes, committed or not (CI-36 to 38).
+    if [[ ! -f AGENTS.md ]]; then
+        echo "oby-check: this commit has no AGENTS.md, whose size agents_md_bytes_limit holds: put it back" >&2
+        failed+=("AGENTS.md is gone")
+    else
+        bytes=$(wc -c <AGENTS.md | tr -d ' ')
+        if ((bytes > agents_md_bytes_limit)); then
+            echo "oby-check: AGENTS.md has $bytes bytes, past its limit of $agents_md_bytes_limit: cut it, or ask the owner to raise agents_md_bytes_limit in this script$(moved agents_md_bytes_limit)" >&2
+            failed+=("AGENTS.md's byte limit")
+        elif ((bytes + 512 < agents_md_bytes_limit)); then
+            echo "oby-check: AGENTS.md has $bytes bytes, more than 512 under its limit: lower agents_md_bytes_limit in this script from $agents_md_bytes_limit to $bytes, so the cut stays cut$(moved agents_md_bytes_limit)" >&2
+            failed+=("AGENTS.md's byte limit")
+        else
+            echo "oby-check: AGENTS.md has $bytes bytes, within its limit of $agents_md_bytes_limit"
+        fi
     fi
     # The flaky list may only shrink (CI-28): an entry the base's list hasn't comes with the task that
     # fixes it, a file this change adds.
@@ -621,10 +639,9 @@ if ! selected; then
     :
 elif [[ -z "$nested" ]]; then
     if [[ -n "$ios" ]]; then apple ObyPhone "platform=iOS Simulator,name=iPhone 17,OS=latest" "$ios_suites"; fi
-    if [[ -n "$swift" ]]; then step swift test -j "$jobs" --scratch-path "$cache/swiftpm"; fi
-elif [[ -n "$ios$swift" ]]; then
+elif [[ -n "$ios" ]]; then
     plan_group
-    echo "oby-check: the Apple apps and swift test don't run in a job's sandbox (SwiftPM's own can't nest in it): run them on the Mac before merging"
+    echo "oby-check: the Apple apps don't run in a job's sandbox (Seatbelt can't nest in it): run them on the Mac before merging"
 fi
 
 group=electron

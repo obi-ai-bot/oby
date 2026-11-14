@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16, 19 to 21), with a fake `az`, `ssh` and IP
+"""factory/bin/gate's remote path (REMOTE-1, 3, 4, 5, 6, 10, 13 to 16, 19 to 21, 28), with a fake `az`, `ssh` and IP
 lookup, never the VM, its network rule, the Mac worker or the network.
 
 Run from the repository root: python3 factory/tests/test_gate_remote.py
@@ -825,6 +825,33 @@ class GateRemote(unittest.TestCase):
         self.assertEqual(len(self.deallocations()), 1)
         state = json.loads(self.state.read_text())
         self.assertEqual((state["open"], state["used"]), ({}, started))
+
+    # ---- REMOTE-28 -------------------------------------------------------------------------------
+
+    def test_remote_28_slot_counts_reach_the_vm_only_when_set(self):
+        commit = self.git(self.worktree, "rev-parse", "HEAD")
+        code, out, err = self.gate()
+        self.assertEqual(code, 0, out + err)
+        [call] = self.remote_calls()
+        self.assertEqual(call["argv"][-2:], ["oby-gate", f"oby-remote-gate {commit} origin/dev"])
+        for keys, words in (({"slots": 6}, "--slots 6 --builder-slots 0"),
+                            ({"builder_slots": 8}, "--slots 4 --builder-slots 8"),
+                            ({"slots": 4, "builder_slots": 8, "builder_user": "oby-builder"},
+                             "--slots 4 --builder-slots 8")):
+            self.forget()
+            code, out, err = self.gate(FACTORY_REMOTE_GATE=json.dumps({**json.loads(REMOTE), **keys}))
+            self.assertEqual(code, 0, out + err)
+            [call] = self.remote_calls()
+            self.assertEqual(call["argv"][-1], f"oby-remote-gate {words} {commit} origin/dev")
+        # An invalid count or user makes the settings invalid: the whole check runs on the Mac, with no az or ssh.
+        for keys in ({"slots": 0}, {"slots": 65}, {"slots": "4"}, {"slots": True}, {"builder_slots": -1},
+                     {"builder_slots": 65}, {"builder_slots": 1.5}, {"builder_user": "bad name"},
+                     {"builder_user": 7}):
+            self.forget()
+            self.assert_fell_back(*self.gate(FACTORY_REMOTE_GATE=json.dumps({**json.loads(REMOTE), **keys})))
+            self.assertEqual((self.az_calls(), self.ssh_calls()), ([], []), keys)
+            self.assertTrue(self.fallback().startswith("FACTORY_REMOTE_GATE's slots must be a whole number from 1 "
+                                                       "to 64"), self.fallback())
 
     # ---- REMOTE-6 --------------------------------------------------------------------------------
 

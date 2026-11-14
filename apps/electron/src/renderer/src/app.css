@@ -444,6 +444,7 @@ button.crumb:hover { color: var(--ink); background: var(--hover); }
 .tc-ask { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--divider); }
 .tc-ask-kind { color: var(--needs); font-size: var(--text-sm); font-weight: 500; }
 .tc-ask-kind.is-failed { color: var(--danger); }
+.tc-ask-kind.is-unknown { color: var(--muted); }
 .tc-ask-head { margin: 4px 0 0; color: var(--ink); font-size: var(--text-base); font-weight: 500; line-height: 20px; overflow-wrap: anywhere; }
 .tc-ask-text { margin: 4px 0 0; color: var(--text); font-size: var(--text-md); line-height: 19px; overflow-wrap: anywhere; white-space: pre-line; }
 .tc-code {
@@ -1312,6 +1313,8 @@ button.connector { width: 100%; text-align: left; }
 .status-dot.is-queued { box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.45); }
 /* a stage's own: failed */
 .status-dot.is-failed { background: var(--danger); }
+/* a status obid sent that this build doesn't know (docs/contracts/wire.md): still and grey */
+.status-dot.is-unknown { background: var(--muted); }
 .status-dot.is-working { background: rgba(255, 255, 255, 0.75); animation: pulse-slow 1.6s ease-in-out infinite; }
 @keyframes pulse-slow { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }  /* white 15% to 75% (its colour is white 75%) */
 @media (prefers-reduced-motion: reduce) { .status-dot.is-working { animation: none; opacity: 0.8; } }

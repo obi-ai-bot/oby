@@ -8,7 +8,8 @@ session gets SIGTERM, and the process exits 128 + signal. Install it before anyt
 stop is never missed. A stop that arrives while the command is being started, before its pid is
 known, is remembered and honoured the moment it is. run() starts the command, waits for it, stops
 what it left in its session and returns its code (128 + signal when a signal killed it). A killpg
-that finds the group already gone never changes that code.
+that finds the group already gone never changes that code. start() starts it the same way and returns
+the process, for a caller that talks to it (test-run's ssh to the gate VM).
 """
 
 import os
@@ -46,13 +47,17 @@ def handle_stops():
     signal.signal(signal.SIGINT, stop)
 
 
-def run(command, **popen):
+def start(command, **popen):
     global child, starting
     starting = True
     child = Popen(command, start_new_session=True, **popen)
     starting = False
     if stopped:
         stop(stopped, None)
-    code = child.wait()
+    return child
+
+
+def run(command, **popen):
+    code = start(command, **popen).wait()
     leftovers()
     return 128 - code if code < 0 else code

@@ -62,12 +62,59 @@ child in a session of its own. When it ends, or test-run gets SIGTERM or SIGINT
 (while waiting for the lock too), everything still running in that session gets
 SIGTERM, and test-run exits with the command's code (128 + signal when it or
 test-run was stopped). The lock is released with test-run.
+
+The gate VM (docs/contracts/remote-gate.md, REMOTE-22 to 31). With the gate's
+VM settings valid (config.json's `remote_gate` in the main checkout, or
+FACTORY_REMOTE_GATE) and their `builder_slots` 1 or more, a heavy run that
+doesn't need macOS runs on the VM instead, before any lock; the command line
+stays the same. It stays here when a word's name is swift, xcodebuild,
+oby-check.sh or oby-check-blok; when the worktree's changes against its base
+(git merge-base HEAD origin/<base_branch>, to the working tree: committed,
+uncommitted and new files that aren't ignored) touch macOS-only code by the
+gate's own rule (factory/bin/gate's MACOS_ONLY, or a file whose copy here or on
+the base names target_os = "macos"); or when a `--test <name>` names such a
+core/crates/*/tests/<name>.rs. Then it says `factory/bin/test-run: on this Mac:
+<why>` and runs here as above.
+
+What is sent: the base's SHA, which is on origin, and the SHA of the worktree's
+tree, written from an index of its own (seeded from HEAD, then `git add -A`, so
+nothing ignored is in it; the worktree's own index is untouched), and on ssh's
+standard input a line with the size of `git diff --binary --full-index <base>
+<tree>`, then that diff, after `gitleaks stdin` with the main checkout's
+.gitleaks.toml passed it (a finding, or a scanner that can't run, keeps the run
+here). Standard input then stays open until the run ends. Nothing else goes: no
+environment variable, CARGO_TARGET_DIR, token, login or file. The call is `ssh
+<the gate's ssh options> -l <builder_user> <ssh_host> oby-remote-gate --run
+--slots <n> --builder-slots <m> --wait 600 <base> <tree> <folder> -- <command>`,
+quoted, with <folder> the run's folder in the worktree (FACTORY_BUILDER_WAIT_SECONDS
+lowers the 600, for the tests only). The VM applies the diff to the base in a
+builder slot of its own, checks the tree, gives every file under core/ and
+tools/ the current time, and runs the command there at nice 15, offline, with
+the slot's own CARGO_TARGET_DIR and its share of the VM's cores.
+
+While it runs, test-run's use of the VM is open in the main checkout's
+factory/jobs/remote-gate/state.json, as a gate's is, so `gate --idle` keeps the
+VM up; the gate's reach starts a stopped VM and waits for SSH (180 seconds, then
+the SSH rule follows this Mac's IP). The VM's output comes to stdout as it comes.
+Once it says `oby-remote-gate: running in builder slot <N>`, ssh's exit code is
+test-run's, and the command never runs here too. Before that line (the VM
+unreachable or not started in time, no builder user, ssh's 255, every builder
+slot busy for 600 seconds, a payload that doesn't apply), it says
+`factory/bin/test-run: fell back to this Mac: <why>` and runs here as above,
+lock included. SIGTERM or SIGINT stops ssh, which ends the run's session on the
+VM and frees its slot, and test-run exits 128 + signal. A run whose
+CARGO_TARGET_DIR is the shared folder is still refused first.
 """
 
 import fcntl
+import importlib.machinery
+import importlib.util
 import os
 import re
+import shlex
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -82,10 +129,23 @@ REPORT_SECONDS = float(os.environ.get("OBY_TEST_RUN_REPORT_SECONDS") or 300)
 PRIORITY = 15
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
 HEAVY = {"cargo", "cargo-nextest", "nextest", "rustc", "xcodebuild", "oby-check.sh", "oby-check-blok"}
+MAC_WORDS = ("swift", "xcodebuild", "oby-check.sh", "oby-check-blok")  # never sent to the gate VM
+WAIT = min(600, int(os.environ.get("FACTORY_BUILDER_WAIT_SECONDS") or 600))  # lower only in the tests
+FOLDER = re.compile(r"[A-Za-z0-9._/-]+")  # oby-remote-gate's rule for the run's folder
+RUNNING = re.compile(r"oby-remote-gate: running in builder slot \d+")
+
+
+class Here(Exception):
+    """The run stays on this Mac, for this reason."""
+
+
+def word_names(command):
+    """The command's words, each by the text after its last /."""
+    return [word.rsplit("/", 1)[-1] for word in re.split(r"[\s;&|()<>'\"`]+", " ".join(command)) if word]
 
 
 def heavy(command):
-    names = [word.rsplit("/", 1)[-1] for word in re.split(r"[\s;&|()<>'\"`]+", " ".join(command)) if word]
+    names = word_names(command)
     if any(name in HEAVY for name in names):
         return True
     return any(name == "swift" and {"build", "test"} & set(names[i + 1 :]) for i, name in enumerate(names))
@@ -129,6 +189,136 @@ def environment():
     return env
 
 
+def load_gate():
+    """factory/bin/gate beside this copy, as a module: the macOS rule, the VM's settings, reach and uses are its."""
+    path = str(Path(__file__).resolve().with_name("gate"))
+    loader = importlib.machinery.SourceFileLoader("gate", path)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("gate", loader))
+    loader.exec_module(module)
+    return module
+
+
+def git(*args, cwd=None, env=None, text=True):
+    res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=text, env=env)
+    if res.returncode != 0:
+        raise Here(f"`git {args[0]}` failed: {(res.stderr if text else res.stderr.decode(errors='replace')).strip()}")
+    return res.stdout.strip() if text else res.stdout
+
+
+def to_send(gate, command):
+    """What goes to the VM for this run, (base, tree, folder, payload), or Here."""
+    names = word_names(command)
+    said = [name for name in names if name in MAC_WORDS]
+    if said:
+        raise Here(f"{said[0]} runs only on a Mac")
+    top = git("rev-parse", "--show-toplevel")
+    base = git("merge-base", "HEAD", f"origin/{gate.CONFIG['base_branch']}")
+    # The worktree as it is, committed or not, untracked files too but never an ignored one, in an index of its own.
+    with tempfile.TemporaryDirectory() as scratch:
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(scratch, "index"))
+        git("read-tree", "HEAD", cwd=top, env=env)
+        git("add", "-A", cwd=top, env=env)
+        tree = git("write-tree", cwd=top, env=env)
+    touched = git("diff", "--name-only", "--no-renames", base, tree, cwd=top).splitlines()
+    macos = gate.macos_only(top, base, touched, tree)
+    if macos:
+        raise Here(f"the worktree's changes touch macOS-only code: {gate.named(macos)}")
+    tests = [names[i + 1] for i, name in enumerate(names[:-1]) if name == "--test"]
+    tests += [name.removeprefix("--test=") for name in names if name.startswith("--test=")]
+    if tests:
+        listed = git("ls-tree", "-r", "--name-only", tree, "--", "core/crates", cwd=top).splitlines()
+        wanted = {f"tests/{name}.rs" for name in tests}
+        files = [f for f in listed if re.fullmatch(r"core/crates/[^/]+/tests/[^/]+\.rs", f)
+                 and f.split("/", 3)[3] in wanted]
+        macos = gate.macos_only(top, base, files, tree)
+        if macos:
+            raise Here(f"its test is macOS-only: {gate.named(macos)}")
+    folder = os.path.relpath(os.path.realpath(os.getcwd()), os.path.realpath(top))
+    if not (FOLDER.fullmatch(folder) and ".." not in folder.split("/")):
+        raise Here(f"its folder, {folder}, can't be named to the VM")
+    if not (gate.SHA.fullmatch(base) and gate.SHA.fullmatch(tree)):
+        raise Here(f"the base or the tree isn't a full SHA: {base} {tree}")
+    payload = git("diff", "--binary", "--full-index", base, tree, cwd=top, text=False)
+    scan = [str(gate.REPO / ".gitleaks.toml")]
+    try:
+        found = subprocess.run(["gitleaks", "stdin", "--config", *scan, "--no-banner", "--redact"], input=payload,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except OSError as e:
+        raise Here(f"the secret scan couldn't run: {e}")
+    if found.returncode != 0:
+        sys.stderr.buffer.write(found.stdout)
+        raise Here(f"the secret scan found a secret in the changes, or couldn't run (gitleaks exit {found.returncode})")
+    return base, tree, folder, payload
+
+
+def send(stdin, payload):
+    """The payload's size and the payload, on ssh's standard input, which then stays open (REMOTE-7)."""
+    try:
+        stdin.write(b"%d\n" % len(payload) + payload)
+        stdin.flush()
+    except OSError:
+        pass
+
+
+def remote_run(gate, remote, base, tree, folder, payload, command):
+    """The run on the VM: its exit code once it started there, or gate.Fallback."""
+    slots, builders = gate.sizes(remote)
+    words = ["oby-remote-gate", "--run", "--slots", str(slots), "--builder-slots", str(builders), "--wait",
+             str(WAIT), base, tree, folder, "--", *command]
+    argv = ["ssh", *gate.SSH, "-l", remote["builder_user"], remote["ssh_host"], shlex.join(words)]
+    try:
+        proc = child_session.start(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except OSError as e:
+        raise gate.Fallback(f"ssh couldn't run: {e}")
+    writer = threading.Thread(target=send, args=(proc.stdin, payload), daemon=True)
+    writer.start()
+    ran, last = False, ""
+    for line in iter(proc.stdout.readline, b""):
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+        text = line.decode(errors="replace").strip()
+        if not ran and text:
+            ran, last = bool(RUNNING.fullmatch(text)), text
+    code = proc.wait()
+    writer.join(timeout=5)
+    proc.stdin.close()
+    code = 128 - code if code < 0 else code
+    if ran:
+        return code
+    if last == "oby-remote-gate: all builder slots are busy":
+        raise gate.Fallback(f"all builder slots were busy for {WAIT}s")
+    host = f"{remote['builder_user']}@{remote['ssh_host']}"
+    raise gate.Fallback(f"ssh {host} ended {code} before the run started" + (f": {last}" if last else ""))
+
+
+def on_the_vm(command):
+    """Run a heavy command on the gate VM: its exit code, or None to run it on this Mac (having said why when the
+    builder path is on)."""
+    gate = load_gate()
+    remote, _ = gate.remote_config()
+    if not remote or gate.sizes(remote)[1] < 1:
+        return None
+    try:
+        sent = to_send(gate, command)
+    except Here as e:
+        print(f"{NAME}: on this Mac: {e}", file=sys.stderr, flush=True)
+        return None
+    use = gate.open_use()
+    try:
+        log, moves = [], []
+        try:
+            gate.reach(remote, log, moves)
+        finally:
+            for line in log + moves:
+                print(f"{NAME}: {line}", file=sys.stderr, flush=True)
+        return remote_run(gate, remote, *sent, command)
+    except gate.Fallback as e:
+        print(f"{NAME}: fell back to this Mac: {e}", file=sys.stderr, flush=True)
+        return None
+    finally:
+        gate.close_use(use)
+
+
 def main(argv):
     if len(argv) < 3 or argv[1] != "--":
         print(__doc__, file=sys.stderr)
@@ -144,6 +334,9 @@ def main(argv):
         return 2
     child_session.handle_stops()
     if heavy(command):
+        code = on_the_vm(command)
+        if code is not None:
+            return code
         fd = lock()
         started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         os.ftruncate(fd, 0)

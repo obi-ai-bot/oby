@@ -1,9 +1,9 @@
 //! The route guard (docs/contracts/ci.md, CI-9 to 11): obid's API stays add-only, so a route that
 //! goes, a client call to a path obid doesn't serve and a gateway entry with no route each fail the
 //! check. The routes are read from the `.route(` calls in obid's source, and listed in
-//! docs/api/routes.txt; the client calls from the Electron app, the shared Swift client and
-//! oby-mcp's server; the gateway's entries from `ROUTES` in gateway.rs. Each checker also runs on
-//! inline fixtures, one that must fail and one that must pass, so the guard is seen red.
+//! docs/api/routes.txt; the client calls from the Electron app and the shared Swift client; the
+//! gateway's entries from `ROUTES` in gateway.rs. Each checker also runs on inline fixtures, one
+//! that must fail and one that must pass, so the guard is seen red.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -524,7 +524,7 @@ fn client_call_problems(
 }
 
 /// The client sources the guard reads: the Electron app's TypeScript but its tests and mock, and
-/// the Swift of the shared client and oby-mcp's server.
+/// the Swift of the shared client.
 fn client_sources() -> Vec<(String, String)> {
     let electron = files_under("apps/electron/src", &|f| {
         (f.ends_with(".ts") || f.ends_with(".tsx"))
@@ -536,7 +536,6 @@ fn client_sources() -> Vec<(String, String)> {
     let swift = |f: &str| f.ends_with(".swift");
     let mut files = electron;
     files.extend(files_under("apps/shared", &swift));
-    files.extend(files_under("mcp/server", &swift));
     with_source(files)
 }
 

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { knownUpTo, withEntries, withLine } from './liveTask';
 import { LIMIT_REACHED, LIMIT_WORDS, MANAGE_USAGE, manageUsage } from './chatgpt';
-import { ApiError, api, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
+import { ApiError, api, isInboxKind, isJobStatus, parseEvent, sseReader, type Conversation, type Event, type InboxItem, type Job, type LimitDecision, type Question, type Repo, type Status, type TranscriptEntry, type Turn, type AskMark } from './obid';
 import { carriedOn, detailOf, pageOf, publishOf, stagesOf } from './jobPage';
-import { AGENTS, STEER, TELL, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
+import { STEER, TELL, agentOf, type Ask, type AskKind, type Job as JobView, type Attachments, type Message, type Offer } from './mock';
 import { replaceChats, type Chat } from './chats';
 import { repoTicks } from './sharing';
 import { replaceTasks, type Asking, type PersonQuestion, type PersonReview, type Task } from './tasks';
@@ -11,6 +11,8 @@ import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders }
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
+import { has } from '../../shared/capabilities';
+import { answer, apply as applyToJobs, type ObidState } from '../../shared/live-state';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
@@ -21,15 +23,15 @@ import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 // it: the stream first, then the status, jobs, inbox and conversations, with the events that came
 // meanwhile applied over them. Sangam's screens don't change: what obid has goes into the same
 // stores the mock filled (chats.ts, tasks.ts), as conversations and tasks. Without ?everything
-// (lean.ts) the app runs on this; with it, on the mock.
-type Live = {
+// (lean.ts) the app runs on this; with it, on the mock. Its jobs and the deleted ones are
+// ObidState's, kept by the shared rule (shared/live-state.ts)
+type Live = ObidState & {
   connection: 'connecting' | 'live' | 'down';
   problem: string | null;        // why obid isn't answering (its own reason, main/obid.ts), or what last went wrong
   why?: 'waiting' | 'approval';  // and what kind of why (main/obid.ts, reason): 'waiting', none yet
   status: Status | null;
   repos: Repo[];                 // where a job may start (GET /v1/repos)
   github: GitHubWork | null;     // what GitHub wants from the owner (GET /v1/github/work), none from an older obid
-  jobs: Record<string, Job>;
   firstJobs: Set<string>;        // the jobs there when the app opened: never new
   seen: Set<string>;             // jobs opened since
   inbox: InboxItem[];            // open and put off
@@ -59,7 +61,6 @@ type Live = {
   answering: Set<string>;
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
-  gone: Set<string>;             // the jobs obid said it deleted: never back from an answer that crossed it
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
   previews: Record<string, { name: string; shown: string; preview?: string }[]>;
 };
@@ -78,6 +79,7 @@ const set = (patch: Partial<Live>) => {
 // putting back the job its own `deleted` event took away)
 const take = (e: Event) => {
   if (e.kind === 'transcript' || e.kind === 'transcriptLine') return heard(e);
+  if (e.kind === 'jobGone') sessions.delete(e.id);
   set(apply(state, e));
   if (e.kind === 'inbox') lookUpJobOf(e.item);
 };
@@ -112,10 +114,6 @@ const asksOn = (t: Turn): AskMark[] => (Array.isArray(t.asks) ? t.asks : []).fil
 const folded = (t: Turn) => !!t.relayed && asksOn(t).length > 0;
 // words this app has on their way in a conversation
 const inFlight = (s: Live, c: string) => Object.values(s.expected).includes(s.alias[c] ?? c);
-// of two copies of a job, the one to keep: the newer by obid's revision, as an answer can come
-// after an event that's newer than it (#1709). One with none (an older obid, after a downgrade)
-// is taken as it comes, never held off by a revision from before
-const newer = (had: Job | undefined, j: Job) => (had && j.revision !== undefined && (had.revision ?? 0) > j.revision ? had : j);
 // the app's id for one of obid's conversations, and back
 export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
@@ -124,7 +122,7 @@ nameFoldersBy(realId);
 // once obid takes folders, a conversation's go to it (one not yet named keeps its own meanwhile)
 sendFoldersBy((shown, folders) => {
   const c = realId(shown);
-  if (!state.status?.folders || c.startsWith('new:')) return undefined;
+  if (!has(state.status, 'folders-v1') || c.startsWith('new:')) return undefined;
   return api.editConversation(c, { folders }).then((conversation) => take({ kind: 'conversation', conversation }));
 }, say);
 let aliasSeen: Live['alias'] | undefined;
@@ -261,6 +259,8 @@ const limitHolds = (s: Live, j: Job) => !!j.accountLimit || s.limits.some((d) =>
 // What a job needs from you: that decision (a permission's command as its detail); or, failed or
 // interrupted and not let go, what's next for it
 export function askOf(s: Live, j: Job): Ask | undefined {
+  // a status this build doesn't know: no answer it could judge (docs/contracts/wire.md, WIRE-3)
+  if (!isJobStatus(j.status)) return undefined;
   const item = itemOf(s, j.id);
   // The grouped limit appears once, but unrelated permissions or questions still need attention.
   const limited = limitHolds(s, j);
@@ -295,6 +295,8 @@ export function askOf(s: Live, j: Job): Ask | undefined {
 // answered too.
 const LABELLED: Record<string, AskKind> = { github: 'start', failure: 'failed', agentQuestion: 'question' };
 export const itemAsk = (item: InboxItem, detail?: string): Ask => {
+  // a kind this build doesn't know: obid's words, its kind as its label, and nothing to answer (WIRE-2)
+  if (!isInboxKind(item.kind)) return { kind: item.kind as AskKind, headline: item.headline ?? item.title, text: item.text, options: [], unknown: true };
   // Oby's ask for a repository's check (set_check): the command under the question, and the
   // answers in plain words (answerJob turns them into obid's Confirm and Cancel)
   // (Cancel keeps the check a repository has; with none it's No check)
@@ -429,7 +431,7 @@ export function limitAsks(s: Live, conversation?: string, job?: string): Asking[
       ].filter(Boolean).join(' ');
       return {
         id: `limit:${d.id}:${d.revision}`, title: source?.name ?? d.agent,
-        brand: AGENTS[d.agent as keyof typeof AGENTS]?.brand,
+        brand: agentOf(d.agent).brand,
         ask: { kind: 'limit', headline: plan ? LIMIT_REACHED : `${source?.name ?? d.agent} reached its limit`, text, options: [...(plan ? [MANAGE_USAGE] : []), ...d.options.map(limitLabel)] },
       };
     });
@@ -481,10 +483,12 @@ function workOf(w: GitHubWork | null): GitHubItem[] {
   });
 }
 
-function taskOf(s: Live, j: Job): Task {
+export function taskOf(s: Live, j: Job): Task {
+  // a status this build doesn't know: placed as done, with no ask, shown neutral (WIRE-3)
+  const unknown = !isJobStatus(j.status);
   // answered here: answered until obid asks something else. Put off: until its time, by obid's item
   // where there's one, so a restart keeps it; settled meanwhile, it's over
-  const now = askOf(s, j), was = s.answered[j.id], item = itemOf(s, j.id);
+  const now = askOf(s, j), was = unknown ? undefined : s.answered[j.id], item = itemOf(s, j.id);
   const putOff = !!now && (item?.later ? Date.parse(item.later) > Date.now() : was?.option === 'Later' && item?.id === was.item && (was.until ?? 0) > Date.now());
   const answer = putOff ? 'Later' : was && was.option !== 'Later' && (!now || item?.id === was.item) ? was.option : undefined;
   const ask = answer && !putOff ? was!.ask : now;
@@ -503,9 +507,9 @@ function taskOf(s: Live, j: Job): Task {
   const needs = !!now && (!answer || putOff);
   job.page = pageOf(j, s.status?.accounts.find((a) => a.id === j.account), needs);
   return {
-    id: j.id, type: job.type, title: j.title, brand: AGENTS[j.agent]?.brand ?? AGENTS.claude.brand, job,
+    id: j.id, type: job.type, title: j.title, brand: agentOf(j.agent).brand, job,
     status: needs ? 'needs' : j.status === 'queued' || j.status === 'running' ? 'running' : 'done',
-    fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id), answer,
+    fresh: !s.firstJobs.has(j.id) && !s.seen.has(j.id), answer, ...(unknown ? { unknown } : {}),
   };
 }
 const tasksOf = (s: Live) => Object.values(s.jobs).sort((a, b) => b.created.localeCompare(a.created)).map((j) => taskOf(s, j));
@@ -516,7 +520,7 @@ let accountsFrom: Status | null = null;
 let sessionTurn: ReturnType<typeof setTimeout> | undefined;
 function publish() {
   if (state.alias !== aliasSeen) { aliasSeen = state.alias; saveFolders(); }
-  if (state.status?.folders) takeFolders(Object.fromEntries(state.conversations.map((c) => [shownId(c.id), c.folders ?? []])));
+  if (has(state.status, 'folders-v1')) takeFolders(Object.fromEntries(state.conversations.map((c) => [shownId(c.id), c.folders ?? []])));
   replaceChats(chatsOf(state));
   replaceTasks(tasksOf(state), { asks: asksOf(state), work: workOf(state.github), error: state.github?.error ?? undefined });
   // what's put off comes back when its time comes, which obid sends no event for: look again then
@@ -553,11 +557,8 @@ export function lookAtUsage() {
 
 export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
   switch (e.kind) {
-    case 'job':
-      return s.gone.has(e.job.id) ? s : { ...s, jobs: { ...s.jobs, [e.job.id]: newer(s.jobs[e.job.id], e.job) } };
-    case 'jobGone':
-      sessions.delete(e.id);
-      return { ...s, jobs: without(s.jobs, e.id), gone: new Set([...s.gone, e.id]) };
+    case 'job': case 'jobGone':
+      return { ...s, ...applyToJobs(s, e) };
     case 'inbox': {
       const rest = s.inbox.filter((i) => i.id !== e.item.id);
       return { ...s, inbox: e.item.state === 'done' ? rest : [...rest, e.item].sort((a, b) => a.created.localeCompare(b.created)) };
@@ -765,16 +766,22 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     // the iPhone, say), and goes
     const oldest = jobs.length < 100 ? undefined : jobs.at(-1)!.created;
     const older = Object.values(state.jobs).filter((j) => oldest && j.created <= oldest); // <=: created is whole seconds, so jobs past the 100th can share its second
+    // obid's list wins, but over a copy an answer brought while it was read: the newer of the two
+    // (a restart can take a job's revision back: obid's then, not one from before the stream went)
+    const listed = jobs.flatMap((j) => {
+      const had = state.jobs[j.id];
+      return Object.values(answer({ jobs: had && had !== before[j.id] ? { [j.id]: had } : {}, gone: state.gone }, j).jobs);
+    });
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       limits: limitVersion === limitRequest ? limits : state.limits,
-      // obid's list wins, but over a copy an answer brought while it was read: the newer of the two
-      // (a restart can take a job's revision back: obid's then, not one from before the stream went)
-      jobs: Object.fromEntries([...older, ...jobs.filter((j) => !state.gone.has(j.id))
-        .map((j) => (state.jobs[j.id] !== before[j.id] ? newer(state.jobs[j.id], j) : j))].map((j) => [j.id, j])),
+      jobs: Object.fromEntries([...older, ...listed].map((j) => [j.id, j])),
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
-    for (const e of pending) { if (e.kind === 'transcript' || e.kind === 'transcriptLine') heard(e); else next = apply(next, e); }
+    for (const e of pending) {
+      if (e.kind === 'transcript' || e.kind === 'transcriptLine') heard(e);
+      else { if (e.kind === 'jobGone') sessions.delete(e.id); next = apply(next, e); }
+    }
     pending.length = 0;
     // the folders of conversations deleted since (folders.ts); with the ones that moved up a page
     // while it was read (their events, just applied). A list cut short at allConversations' last
@@ -893,7 +900,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       // the working folders go with words that start a conversation, once obid takes them (an
       // older one refuses the key); a conversation's own are obid's already (sendFoldersBy)
       const a = await sent(() => api.plan(q ? q.said : words, q ? { question: q.text, option: words } : undefined, c ? { conversation: c } : { new: true },
-        state.status?.folders && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
+        has(state.status, 'folders-v1') && !c ? folders : undefined, { id: turn, attachments: paths, jobs }));
       const where = a.conversation ?? c;
       // the plan's answer is the one: it replaces a guess from the words' turn
       const alias = !c && a.conversation ? { ...Object.fromEntries(Object.entries(state.alias).filter(([, v]) => v !== id)), [a.conversation]: id } : state.alias;
@@ -902,7 +909,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       const listed = !where || state.conversations.some((x) => x.id === where) ? state.conversations
         : [...state.conversations, { id: where, title: (words || files[0]?.name || '').split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' }];
       set({
-        alias, conversations: listed, jobs: a.jobs.reduce((s, job) => apply(s, { kind: 'job', job }), state).jobs,
+        alias, conversations: listed, jobs: a.jobs.reduce(answer, state).jobs,
         ...(a.kind === 'question' && where ? { waiting: { ...state.waiting, [where]: { ...a.question, said: a.said } } } : {}),
       });
       // the turns of the one it started, from the start
