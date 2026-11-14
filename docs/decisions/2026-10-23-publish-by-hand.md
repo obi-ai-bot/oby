@@ -8,10 +8,6 @@
 
 ## The owner's words
 
-> Publishing by hand, Confirm and Disconnect are a click in the owner's own app, with no Touch ID, Face ID or password
-
-AGENTS.md's wording, not a quote.
-
 > (the owner's decision of 2026-10-24, replacing 2026-10-23's publish by hand)
 
 AGENTS.md's wording, not a quote.
@@ -27,4 +23,4 @@ AGENTS.md's wording, not a quote.
 
 ## Notes
 
-AGENTS.md still states this rule among the core audit's decisions under the launch build (the first sentence above), and the 2026-10-24 decision replaces it ("replacing 2026-10-23's publish by hand"): every job publishes by itself. Its date is the date of [2026-10-23-core-audit.md](2026-10-23-core-audit.md).
+AGENTS.md names this rule only where the 2026-10-24 decision replaces it ("replacing 2026-10-23's publish by hand") and in the core audit's "since 2026-10-24 both publish by themselves" clause; the rule's own text is no longer in AGENTS.md. Its date is the date of [2026-10-23-core-audit.md](2026-10-23-core-audit.md).
