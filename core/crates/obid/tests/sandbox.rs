@@ -435,6 +435,56 @@ fn run(world: &World, spec: &Spec) -> Ran {
     }
 }
 
+/// What `script` printed, run in the sandbox as [`run`] starts its probe.
+#[cfg(target_os = "linux")]
+fn printed(world: &World, spec: &Spec, script: &str) -> String {
+    let sandbox = Sandbox::detect(Path::new(env!("CARGO_BIN_EXE_obid")))
+        .unwrap_or_else(|why| panic!("this machine can't make the job sandbox: {why}"));
+    let argv: Vec<OsString> = vec!["/bin/sh".into(), "-c".into(), script.into()];
+    let argv = sandbox.wrap(spec, &argv);
+    if let Some(own) = spec.own_objects() {
+        std::fs::create_dir_all(own).unwrap();
+    }
+    let env = obid::process::sandbox_env(&obid::process::tools_path(), &spec.temp, &spec.git_env());
+    let output = Command::new(&argv[0])
+        .args(&argv[1..])
+        .env_clear()
+        .envs(env)
+        .current_dir(&world.worktree)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// LINUX-2: an agent and a check, and what they start, run at an `oom_score_adj` of 500, so the
+/// kernel's OOM kill takes a runaway build before obid.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_2_agents_are_the_first_to_go() {
+    let world = world("oom");
+    // `__session` raises the score to 500 and never lowers it: from where this test started, the
+    // run ends at the higher of the two. Started below 500 this proves the raise; started at or
+    // above it (a job's own agent), it can't.
+    let base: i32 = std::fs::read_to_string("/proc/self/oom_score_adj")
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let raised = base.max(500).to_string();
+    let probe = "cat /proc/self/oom_score_adj";
+    for (who, spec) in [
+        ("agent", spec(&world, true, false, true)),
+        ("check", spec(&world, false, false, false)),
+    ] {
+        assert_eq!(printed(&world, &spec, probe).trim(), raised, "the {who}'s");
+    }
+}
+
 fn expect(ran: &Ran, what: &str, result: &str) {
     assert_eq!(
         ran.lines.get(what).map(String::as_str),
