@@ -429,3 +429,108 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proofs {
+    #![cfg(kani)]
+    //! Kani's proofs of the lifecycle (R04-03's trial): `kani::any()` stands for every value of
+    //! the enums and numbers below; every other field comes from one fixed job.
+
+    use super::tests::{fill, is_clear};
+    use super::*;
+    use crate::job::ObiRef;
+
+    /// Any status, from a number.
+    fn any_status() -> Status {
+        match kani::any::<u8>() {
+            0 => Status::Queued,
+            1 => Status::Running,
+            2 => Status::Done,
+            3 => Status::Failed,
+            4 => Status::Stopped,
+            _ => Status::Interrupted,
+        }
+    }
+
+    /// The fixed job, every field of [`ROUND_CLEARS`] filled, in any status, round, count of
+    /// rounds and tries, with or without a session and as the owner's or another Obi's.
+    fn any_job() -> Job {
+        let mut job = Job::default();
+        fill(&mut job);
+        job.status = any_status();
+        job.phase = Some(Phase::Check);
+        job.round = kani::any();
+        job.rounds = kani::any();
+        job.recovery.tries = kani::any();
+        job.summary = "Half.".into();
+        if kani::any() {
+            job.session = Some("s".into());
+        }
+        if kani::any() {
+            job.obi = Some(ObiRef {
+                correlation_id: "c".into(),
+                from: "f".into(),
+                from_owner: "o".into(),
+                request_id: "r".into(),
+            });
+        }
+        job
+    }
+
+    /// An end of `kind` with a next step or none, any resume and any time.
+    fn any_end(kind: EndKind) -> Command {
+        Command::RunEnded(Ended {
+            kind,
+            reason: "It broke.".into(),
+            next: if kani::any() { Some(TRY_AGAIN) } else { None },
+            resumes: kani::any(),
+            review: None,
+            at: kani::any(),
+        })
+    }
+
+    /// `check` on any command, from a number: another round, or an end of any kind. Each command is
+    /// made where `check` runs on it, so the solver never merges two commands into one whose
+    /// review (a `serde_json::Value`, which it can't unwind) it no longer knows is empty. For the
+    /// same reason the proofs forget the jobs, commands and changes they made rather than drop
+    /// them: dropping isn't the lifecycle's code.
+    fn any_command(check: impl Fn(Command)) {
+        match kani::any::<u8>() {
+            0 => check(Command::NextRound),
+            1 => check(any_end(EndKind::Failed)),
+            2 => check(any_end(EndKind::NeedsYou)),
+            3 => check(any_end(EndKind::AccountLimit)),
+            _ => check(any_end(EndKind::Asked)),
+        }
+    }
+
+    /// `transition` answers every command in every status, and never panics or overflows.
+    #[kani::proof]
+    fn transition_answers_every_command_in_every_status() {
+        let job = any_job();
+        any_command(|cmd| {
+            let answer: Result<Change, Refused> = transition(&job, &cmd);
+            std::mem::forget((answer, cmd));
+        });
+        std::mem::forget(job);
+    }
+
+    /// JOBSTATE-7 for every status and command: a change that leaves the job queued for another
+    /// round leaves every field of [`ROUND_CLEARS`] empty.
+    #[kani::proof]
+    fn jobstate_7_holds_in_every_status() {
+        any_command(|cmd| {
+            let mut job = any_job();
+            if let Ok(change) = transition(&job, &cmd) {
+                change.apply(&mut job);
+                if job.status == Status::Queued && job.phase == Some(Phase::Work) {
+                    for field in ROUND_CLEARS {
+                        assert!(is_clear(field, &job));
+                    }
+                }
+                std::mem::forget(change);
+            }
+            std::mem::forget((job, cmd));
+        });
+    }
+}
