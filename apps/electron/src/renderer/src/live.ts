@@ -11,6 +11,7 @@ import { keepFoldersOf, nameFoldersBy, saveFolders, sendFoldersBy, takeFolders }
 import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
+import { answer, apply as applyToJobs, type ObidState } from '../../shared/live-state';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
@@ -21,15 +22,15 @@ import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 // it: the stream first, then the status, jobs, inbox and conversations, with the events that came
 // meanwhile applied over them. Sangam's screens don't change: what obid has goes into the same
 // stores the mock filled (chats.ts, tasks.ts), as conversations and tasks. Without ?everything
-// (lean.ts) the app runs on this; with it, on the mock.
-type Live = {
+// (lean.ts) the app runs on this; with it, on the mock. Its jobs and the deleted ones are
+// ObidState's, kept by the shared rule (shared/live-state.ts)
+type Live = ObidState & {
   connection: 'connecting' | 'live' | 'down';
   problem: string | null;        // why obid isn't answering (its own reason, main/obid.ts), or what last went wrong
   why?: 'waiting' | 'approval';  // and what kind of why (main/obid.ts, reason): 'waiting', none yet
   status: Status | null;
   repos: Repo[];                 // where a job may start (GET /v1/repos)
   github: GitHubWork | null;     // what GitHub wants from the owner (GET /v1/github/work), none from an older obid
-  jobs: Record<string, Job>;
   firstJobs: Set<string>;        // the jobs there when the app opened: never new
   seen: Set<string>;             // jobs opened since
   inbox: InboxItem[];            // open and put off
@@ -59,7 +60,6 @@ type Live = {
   answering: Set<string>;
   // the repository last picked for words sent here, by conversation (its app id), and when
   picked: Record<string, { repo: string; at: string }>;
-  gone: Set<string>;             // the jobs obid said it deleted: never back from an answer that crossed it
   // the files your words took, by their turn: the name obid kept, the one picked, a photo's preview
   previews: Record<string, { name: string; shown: string; preview?: string }[]>;
 };
@@ -78,6 +78,7 @@ const set = (patch: Partial<Live>) => {
 // putting back the job its own `deleted` event took away)
 const take = (e: Event) => {
   if (e.kind === 'transcript' || e.kind === 'transcriptLine') return heard(e);
+  if (e.kind === 'jobGone') sessions.delete(e.id);
   set(apply(state, e));
   if (e.kind === 'inbox') lookUpJobOf(e.item);
 };
@@ -112,10 +113,6 @@ const asksOn = (t: Turn): AskMark[] => (Array.isArray(t.asks) ? t.asks : []).fil
 const folded = (t: Turn) => !!t.relayed && asksOn(t).length > 0;
 // words this app has on their way in a conversation
 const inFlight = (s: Live, c: string) => Object.values(s.expected).includes(s.alias[c] ?? c);
-// of two copies of a job, the one to keep: the newer by obid's revision, as an answer can come
-// after an event that's newer than it (#1709). One with none (an older obid, after a downgrade)
-// is taken as it comes, never held off by a revision from before
-const newer = (had: Job | undefined, j: Job) => (had && j.revision !== undefined && (had.revision ?? 0) > j.revision ? had : j);
 // the app's id for one of obid's conversations, and back
 export const shownId = (c: string) => state.alias[c] ?? c;
 export const realId = (shown: string) => Object.keys(state.alias).find((k) => state.alias[k] === shown) ?? shown;
@@ -553,11 +550,8 @@ export function lookAtUsage() {
 
 export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
   switch (e.kind) {
-    case 'job':
-      return s.gone.has(e.job.id) ? s : { ...s, jobs: { ...s.jobs, [e.job.id]: newer(s.jobs[e.job.id], e.job) } };
-    case 'jobGone':
-      sessions.delete(e.id);
-      return { ...s, jobs: without(s.jobs, e.id), gone: new Set([...s.gone, e.id]) };
+    case 'job': case 'jobGone':
+      return { ...s, ...applyToJobs(s, e) };
     case 'inbox': {
       const rest = s.inbox.filter((i) => i.id !== e.item.id);
       return { ...s, inbox: e.item.state === 'done' ? rest : [...rest, e.item].sort((a, b) => a.created.localeCompare(b.created)) };
@@ -765,16 +759,22 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     // the iPhone, say), and goes
     const oldest = jobs.length < 100 ? undefined : jobs.at(-1)!.created;
     const older = Object.values(state.jobs).filter((j) => oldest && j.created <= oldest); // <=: created is whole seconds, so jobs past the 100th can share its second
+    // obid's list wins, but over a copy an answer brought while it was read: the newer of the two
+    // (a restart can take a job's revision back: obid's then, not one from before the stream went)
+    const listed = jobs.flatMap((j) => {
+      const had = state.jobs[j.id];
+      return Object.values(answer({ jobs: had && had !== before[j.id] ? { [j.id]: had } : {}, gone: state.gone }, j).jobs);
+    });
     let next: Live = {
       ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
       limits: limitVersion === limitRequest ? limits : state.limits,
-      // obid's list wins, but over a copy an answer brought while it was read: the newer of the two
-      // (a restart can take a job's revision back: obid's then, not one from before the stream went)
-      jobs: Object.fromEntries([...older, ...jobs.filter((j) => !state.gone.has(j.id))
-        .map((j) => (state.jobs[j.id] !== before[j.id] ? newer(state.jobs[j.id], j) : j))].map((j) => [j.id, j])),
+      jobs: Object.fromEntries([...older, ...listed].map((j) => [j.id, j])),
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
-    for (const e of pending) { if (e.kind === 'transcript' || e.kind === 'transcriptLine') heard(e); else next = apply(next, e); }
+    for (const e of pending) {
+      if (e.kind === 'transcript' || e.kind === 'transcriptLine') heard(e);
+      else { if (e.kind === 'jobGone') sessions.delete(e.id); next = apply(next, e); }
+    }
     pending.length = 0;
     // the folders of conversations deleted since (folders.ts); with the ones that moved up a page
     // while it was read (their events, just applied). A list cut short at allConversations' last
@@ -902,7 +902,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
       const listed = !where || state.conversations.some((x) => x.id === where) ? state.conversations
         : [...state.conversations, { id: where, title: (words || files[0]?.name || '').split('\n')[0].slice(0, 48), pinned: false, created: now, lastActivity: now, cursor: '' }];
       set({
-        alias, conversations: listed, jobs: a.jobs.reduce((s, job) => apply(s, { kind: 'job', job }), state).jobs,
+        alias, conversations: listed, jobs: a.jobs.reduce(answer, state).jobs,
         ...(a.kind === 'question' && where ? { waiting: { ...state.waiting, [where]: { ...a.question, said: a.said } } } : {}),
       });
       // the turns of the one it started, from the start
