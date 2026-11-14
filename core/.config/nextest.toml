@@ -29,8 +29,3 @@ retries = 2
 [[profile.ci.overrides]]
 filter = 'binary_id(obid::runner_api) & test(=admission_5_a_job_back_from_the_check_queue_never_passes_max_running)'
 retries = 2
-
-# R01-19: the first cut must come 6 to 12 seconds of wall clock after the start (long_jobs.rs:1152)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::long_jobs) & test(=recovery_12_an_idle_jobs_first_cut_comes_after_one_window)'
-retries = 2
