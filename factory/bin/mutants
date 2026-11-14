@@ -19,8 +19,10 @@ It reads the job's job.json (never writing it or taking its lock), round-N/check
 
 Its setting is config.json's `mutants.budget_s` (a positive integer, by default 1200): a run past it is stopped and
 written as TIMEOUT, with what it tested so far. A run with no result line, or one that ended other than 0, 2 or 3, is
-NO RESULT, never a count. The run's output is appended to round-N/mutants.log. SIGTERM or SIGINT stops the test-run
-it started, by its PID, removes the scratch copy and exits 128 + signal, with no mutants.md.
+NO RESULT, never a count. The run's output is appended to round-N/mutants.log. The result is written to
+round-N/mutants.md.tmp and renamed over mutants.md, so a reader sees no mutants.md or the whole of it; both are
+deleted at the start. SIGTERM or SIGINT stops the test-run it started, by its PID, removes the scratch copy and exits
+128 + signal, with no mutants.md.
 """
 
 import importlib.machinery
@@ -337,6 +339,7 @@ def mutants(job_id):
         die(f"round-{job['round']}/checks.md doesn't say GATE: PASS: run factory/bin/gate {job_id} first")
     commit = JOB.header(checks).get("COMMIT", "")
     (rd / "mutants.md").unlink(missing_ok=True)
+    (rd / "mutants.md.tmp").unlink(missing_ok=True)
     log = rd / "mutants.log"
     log.write_text("")
 
@@ -362,7 +365,9 @@ def mutants(job_id):
     if missed is not None:
         text += ("\n## Missed\n" + ("\n".join(missed) if missed else "None.") + "\n"
                  "\n## Missed in functions a Kani proof calls\n" + ("\n".join(covered) if covered else "None.") + "\n")
-    (rd / "mutants.md").write_text(text)
+    tmp = rd / "mutants.md.tmp"
+    tmp.write_text(text)
+    tmp.replace(rd / "mutants.md")
     print(f"MUTANTS: {value} ({job_id} round {job['round']})")
     return 0
 
