@@ -178,9 +178,11 @@ const TOOLS: Record<string, ToolKind> = { read: 'Read', search: 'Grep', edit: 'E
 // obid names a call as it starts ("Reading scan.rs"); ended, it says what it did. Refused, it never ran.
 const PAST: Record<string, string> = { Reading: 'Read', Running: 'Ran', Editing: 'Edited', Searching: 'Searched', Looking: 'Looked', Planning: 'Planned', Using: 'Used', Fetching: 'Fetched', Writing: 'Wrote' };
 // A line once made stays the same object while its entry does (live.ts keeps those), so a long
-// session's unchanged lines don't draw again; a call running has a clock in it, so it's made anew
+// session's unchanged lines don't draw again; a call running has a clock in it, so it's made anew.
+// A kind this build doesn't know has no line; a state it doesn't know stays obid's, drawn gray with
+// no word (docs/contracts/wire.md, WIRE-5)
 const lines = new WeakMap<TranscriptEntry, Entry>();
-function lineOf(e: TranscriptEntry, now: number): Entry {
+function lineOf(e: TranscriptEntry, now: number): Entry | undefined {
   const n = e.n;
   switch (e.kind) {
     case 'start': return { n, kind: 'start', text: e.summary, at: clock(e.at) };
@@ -189,26 +191,28 @@ function lineOf(e: TranscriptEntry, now: number): Entry {
     case 'you': return { n, kind: 'you', text: e.text ?? e.summary, at: clock(e.at) };
     case 'plan': return { n, kind: 'plan', todos: e.todos ?? [] };
     case 'tool': {
-      const { verb, rest } = verbOf(e.summary);
+      const { verb, rest } = verbOf(e.summary), state = e.state ?? 'failed', ended = state === 'done' || state === 'failed', known = ended || state === 'running';
       // ponytail: a tool kind the filters don't know (mcp, other) shows under All only
       return {
-        n, kind: 'tool', tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb: e.state === 'running' || e.state === 'declined' ? verb : PAST[verb] ?? verb, target: rest, summary: e.summary,
-        state: e.state === 'running' || e.state === 'done' || e.state === 'declined' ? e.state : 'failed',
-        seconds: e.seconds ?? (e.state === 'running' ? since(e.at, now) : 0),
-        meta: e.state === 'declined' ? 'Declined' : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
+        n, kind: 'tool', tool: TOOLS[e.activity ?? ''] ?? (e.tool as ToolKind), verb: ended ? PAST[verb] ?? verb : verb, target: rest, summary: e.summary,
+        state,
+        seconds: e.seconds ?? (state === 'running' ? since(e.at, now) : 0),
+        meta: state === 'declined' ? 'Declined' : !known ? undefined : e.exit ? `exit ${e.exit}` : e.added || e.removed ? `+${e.added ?? 0} −${e.removed ?? 0}` : undefined,
       };
     }
+    default: return undefined;
   }
 }
 export function sessionOf(entries: TranscriptEntry[], now = Date.now()): Entry[] {
   // one to-do list, the newest: each one obid wrote replaces the one before, as in Claude Code
   const plan = Math.max(0, ...entries.filter((e) => e.kind === 'plan').map((e) => e.n));
-  return entries.filter((e) => e.kind !== 'plan' || e.n === plan).sort((a, b) => a.n - b.n).map((e) => {
+  return entries.filter((e) => e.kind !== 'plan' || e.n === plan).sort((a, b) => a.n - b.n).flatMap((e) => {
     const had = lines.get(e);
-    if (had) return had;
+    if (had) return [had];
     const line = lineOf(e, now);
+    if (!line) return [];
     if (!(e.kind === 'tool' && e.state === 'running')) lines.set(e, line);
-    return line;
+    return [line];
   });
 }
 

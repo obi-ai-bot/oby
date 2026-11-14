@@ -20,11 +20,6 @@ path = "junit.xml"
 # shrinks: a new entry comes with its task, factory/queue/tasks/<key>.md, in the same change, and
 # the fix takes its entry out.
 
-# R01-16: a fixed 3-second sleep before it reads the settled card (merge_api.rs:3376)
-[[profile.ci.overrides]]
-filter = 'binary_id(obid::merge_api) & test(=merging_24_a_follow_ups_push_settles_the_tasks_open_card)'
-retries = 2
-
 # R01-17: Codex's process must end within 1.5 seconds of wall clock (codex.rs:1751)
 [[profile.ci.overrides]]
 filter = 'binary_id(obid) & test(=codex::tests::a_command_ends_the_codex_process_at_once)'

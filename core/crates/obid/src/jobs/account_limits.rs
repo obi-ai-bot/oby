@@ -1,7 +1,7 @@
-//! Application orchestration for the account-limit contract (#1563).
-//!
-//! The durable decision store is `crate::account_limits`; this adapter joins its decisions to
-//! jobs, provider usage, and the scheduler. Clients only render and sign the offered choices.
+//! Jobs at an account's usage limit (docs/contracts/account-limits.md): it owns a job's limit wait
+//! (`resumes_at`, `waiting`, the `account_limit_*` fields) and joins the owner's decisions to jobs,
+//! usage and the scheduler. The decisions are `crate::account_limits`'s, which alone writes them,
+//! and this module never writes a job's branch (docs/ARCHITECTURE.md, "State ownership").
 
 use super::*;
 

@@ -1,9 +1,7 @@
 import { type BrowserWindow } from 'electron';
-import { constants } from 'node:fs';
 import updater from 'electron-updater';
 import { EVERY, FEED, next, onFeed, settings as updaterSettings, type Event, type Update } from '../shared/updates';
-import { writeOwn } from './device';
-import { SETTINGS, settings } from './notify';
+import { settings, writeSettings } from './settings';
 import type { Trusted } from './obid';
 import { ipc } from './ipc';
 import { oneOf, orUndefined } from '../shared/decode';
@@ -50,7 +48,7 @@ export function updating(trusted: Trusted, current: () => BrowserWindow | null) 
     if (ask === 'check' || ask === 'install') on({ kind: ask });
     else if (typeof ask === 'boolean' && ask !== auto) {
       auto = ask;
-      writeOwn(SETTINGS(), JSON.stringify({ ...settings(), updatesAuto: auto }), constants.O_TRUNC);
+      writeSettings({ updatesAuto: auto });
       Object.assign(autoUpdater, updaterSettings(auto));
       on({ kind: 'auto', on: auto });
     }
