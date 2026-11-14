@@ -395,7 +395,9 @@ class TestRunRemote(RemoteHarness, unittest.TestCase):
 
     def test_remote_48_a_kani_run_after_another_command_stays_on_this_mac(self):
         self.write("core/crates/obid/src/sandbox.rs", "// changed\n")
-        code, out, err, _ = self.run_test_run("sh", "-c", "cargo kani && cargo test")
+        # A Mac worker with no builder slots, so the run's only other place is this Mac (REMOTE-40).
+        code, out, err, _ = self.run_test_run("sh", "-c", "cargo kani && cargo test",
+                                              FACTORY_MAC_WORKER=json.dumps({"ssh_host": "oby-mac-pro"}))
         self.assertEqual(code, 0, out + err)
         self.assertIn("factory/bin/test-run: on this Mac: the worktree's changes touch macOS-only code: "
                       "core/crates/obid/src/sandbox.rs", err.splitlines())
