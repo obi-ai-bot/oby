@@ -11,7 +11,8 @@ A map of Oby read from its own code, for the two people who work on it from oppo
   each other; the background work it starts; the files it keeps (obid has no database); the wire types beside their
   Rust structs; and AGENTS.md's "Rules Oby never breaks", each tied to the code that keeps it and the tests that prove
   it.
-- **Checks**: where the code, `docs/runner-api.md`, the phone allowlist, the config and the screens disagree.
+- **Checks**: where the code, the API docs (`docs/runner-api.md` and `docs/api/*.md`), the phone allowlist, the config and
+  the screens disagree.
 
 It is local only: the server listens on `127.0.0.1:4320`, nothing is published, and the generated map isn't in git.
 Nothing talks to a running obid; it's static analysis of the code. It started as the Brain of Wellington's Dieta
@@ -24,7 +25,7 @@ make brain
 ```
 
 or `cd tools/brain && npm install && npm run dev`, or the `oby-brain` launch configuration, then open
-<http://127.0.0.1:4320>. While it runs, saving a file of obid, the app, `docs/runner-api.md` or `AGENTS.md` reads the
+<http://127.0.0.1:4320>. While it runs, saving a file of obid, the app, an API doc or `AGENTS.md` reads the
 code again and the page updates. `⌘K` searches everything.
 
 **States** shows each state of the app on its mock: first run's steps, and the Control Center's scenarios
@@ -75,7 +76,8 @@ every kept-locally choice owned, and every owed one tied to an issue; every rule
 a test; no internal host in the open-source code; every phone route served, every documented route served and
 every call of the Swift client served but the test's named exceptions (RETIRED-7 to RETIRED-9, docs/contracts/retired.md). `scripts/oby-check.sh` doesn't run them: run `npm test` by hand.
 
-`docs/runner-api.md`'s section "Routes obid does not serve" (`goneSection` in `brain.config.ts`) lists the routes obid
-stopped serving: a mention of one anywhere in the doc never counts as documented, and one obid routes again is a
-`gone-but-routed` check. `cargo test --manifest-path obid-extract/Cargo.toml` tests the
+The Brain reads every API doc `apiDocs` in `brain.config.ts` names: `docs/runner-api.md` and `docs/api/*.md`. A route
+any of them mentions is documented. The section "Routes obid does not serve" (`goneSection`), in whichever of them holds
+it, lists the routes obid stopped serving: a mention of one in any doc never counts as documented, and one obid routes
+again is a `gone-but-routed` check. Each check names the doc and line it came from. `cargo test --manifest-path obid-extract/Cargo.toml` tests the
 extractor on small Rust snippets. `npm run typecheck` checks the generator and the interface.
