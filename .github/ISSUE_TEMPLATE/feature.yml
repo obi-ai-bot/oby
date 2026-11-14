@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Sangam's design is the spec: the words a person sees come from his screen, never from this contract. Once built, the contract moves to `docs/contracts/<area>.md` and the runner API to `docs/runner-api.md`.
+        Sangam's design is the spec: the words a person sees come from his screen, never from this contract. Once built, the contract moves to `docs/contracts/<area>.md` and the runner API to `docs/api/<area>.md`.
   - type: input
     id: screen
     attributes:

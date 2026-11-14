@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { config } from '../brain.config.js';
-import { generateBrain, normPath, patternMatches, readApiDoc, readApiDocs } from '../generator/index.js';
+import { apiDocFiles, generateBrain, normPath, patternMatches, readApiDoc, readApiDocs } from '../generator/index.js';
 
 const brain = generateBrain(config);
 const lineAt = (file: string, line: number) => readFileSync(join(config.root, file), 'utf8').split('\n')[line - 1] ?? '';
@@ -89,7 +89,15 @@ describe('retired routes', () => {
     ]);
     // the real docs: a list that reads nothing can't pass
     expect(brain.docRoutes.length).toBeGreaterThan(0);
-    expect(brain.docRoutes.filter(d => d.file !== 'docs/runner-api.md')).toEqual([]);
+    // the area files alone hold every documented route: the index adds none
+    const served = new Set(brain.routes.map(r => r.id));
+    const read = (patterns: string[]) => readApiDocs(
+      apiDocFiles(config.root, patterns).map(file => ({ file, text: readFileSync(join(config.root, file), 'utf8') })),
+      served, config.obid.goneSection,
+    ).docRoutes.map(d => d.id);
+    const areas = read(['docs/api/*.md']);
+    expect(areas.length).toBeGreaterThan(0);
+    expect(new Set(areas)).toEqual(new Set(read(config.obid.apiDocs)));
   });
 
   it('retired_9_the_swift_client_calls_only_served_routes', () => {
