@@ -34,8 +34,12 @@ export const mac = {
   event: (_name: string, _data: unknown) => {},
 };
 
+// The launch whose copy of notify.ts still reaches mac; every earlier one is retired
+let launches = 0;
+
 // A new app folder, nothing served
 export function fresh() {
+  launches++;
   Object.assign(mac, { userData: mkdtempSync(join(tmpdir(), 'oby-alerts-')), served: [], inbox: [], decisions: [], jobs: [], down: false, front: false });
 }
 
@@ -44,17 +48,23 @@ export const served = (key: string, more: Record<string, unknown> = {}) => ({
   key, what: 'open', title: 'Needs your OK: Fix it', body: 'npm test', category: 'inbox', thread: 'inbox', urgent: true, answers: [], ...more,
 });
 
-// One launch of Oby: notify.ts fresh, following obid until its first look
+// One launch of Oby: notify.ts fresh, following obid until its first look. The next launch or
+// fresh() retires it: notify.ts has no stop, and its timers would otherwise reach the shared mac.
+// Retired, its mocks post, badge, send and write nothing, and its reads never answer
 export async function launch() {
+  const me = ++launches;
+  const live = () => me === launches;
+  const never = new Promise<never>(() => {});
+  const userData = mac.userData;
   vi.resetModules();
   mac.posted = [];
   mac.badge = undefined;
   mac.sent = [];
   mac.opened = [];
   const handlers: Record<string, (e: unknown) => unknown> = {};
-  const window = { isVisible: () => true, isMinimized: () => false, isFocused: () => mac.front, webContents: { send: () => { mac.opened.push(handlers.opened({})); } } };
+  const window = { isVisible: () => true, isMinimized: () => false, isFocused: () => mac.front, webContents: { send: () => { if (live()) mac.opened.push(handlers.opened({})); } } };
   vi.doMock('electron', () => ({
-    app: { getPath: () => mac.userData, isPackaged: false, dock: { setBadge: (b: string) => { mac.badge = b; } } },
+    app: { getPath: () => userData, isPackaged: false, dock: { setBadge: (b: string) => { if (live()) mac.badge = b; } } },
     Notification: class {
       static isSupported = () => true;
       private on_: Record<string, (...a: never[]) => unknown> = {};
@@ -69,7 +79,7 @@ export async function launch() {
       }
       on(name: string, f: (...a: never[]) => unknown) { this.on_[name] = f; }
       close() { this.banner.closed = true; }
-      show() { mac.posted.push(this.banner); }
+      show() { if (live()) mac.posted.push(this.banner); }
     },
     ipcMain: { on() {}, handle: (name: string, f: (e: unknown) => unknown) => { handlers[name] = f; } },
     powerMonitor: { on() {}, getSystemIdleState: () => 'active' },
@@ -91,14 +101,15 @@ export async function launch() {
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   mac.event = (name, data) => stream.enqueue(new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
   vi.doMock('../../../main/obid', () => ({
-    obid: async (method: string, path: string, body?: unknown) => answer(method, path, body, false),
-    send: async () => new Response(new ReadableStream<Uint8Array>({ start: (c) => { stream = c; } })),
+    obid: async (method: string, path: string, body?: unknown) => (live() ? answer(method, path, body, false) : never),
+    send: async () => (live() ? new Response(new ReadableStream<Uint8Array>({ start: (c) => { stream = c; } })) : never),
   }));
   vi.doMock('../../../main/device', () => ({
-    answerLimit: async (...a: unknown[]) => { mac.sent.push({ method: 'POST', path: 'answerLimit', body: a, signed: true }); return { status: 200, text: '{}' }; },
-    notificationWords: async (method: string, path: string, body: unknown) => answer(method, path, body, true),
+    answerLimit: async (...a: unknown[]) => { if (!live()) return never; mac.sent.push({ method: 'POST', path: 'answerLimit', body: a, signed: true }); return { status: 200, text: '{}' }; },
+    notificationWords: async (method: string, path: string, body: unknown) => (live() ? answer(method, path, body, true) : never),
     // as device.ts's: never through a link
     writeOwn: (path: string, data: string, flags: number) => {
+      if (!live()) return;
       const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | flags, 0o600);
       try { writeSync(fd, data); } finally { closeSync(fd); }
     },
