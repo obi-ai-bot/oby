@@ -1,18 +1,18 @@
 # CLI versions: which Claude Code, Codex or cursor-agent a job ran on
 
-The business behavior contract for reading each agent CLI's version, from [the template](../business-contract-template.md). Issue #1096, roadmap tasks R01-07 and R01-08, milestone R01 Safety net.
+The business behavior contract for reading each agent CLI's version, from [the template](../business-contract-template.md). Issue #1096, roadmap tasks R01-07, R01-08 and R01-09, milestone R01 Safety net.
 
 ## Feature and status
 
-- **Outcome:** The owner, and any bug report, can say which Claude Code, Codex or cursor-agent version a job ran on, and `GET /v1/status` lists each tool's binary and version. Failures such as #1867 and #1095 can then be tied to a CLI version. A CLI doesn't update itself under a job obid runs; if it changed between two rounds anyway, the job's transcript says so (R01-08).
-- **Status:** **Implemented** (`core/crates/obid/src/cli_versions.rs`, `core/crates/obid/src/jobs/versions.rs`; `docs/runner-api.md`, `GET /v1/status`, "Job" and "Failure record"). CLIVERSIONS-1 to 6 are implemented.
-- **Scope:** Reading and caching each tool's version, `tools` on `GET /v1/status`, `agentVersion` on the job and on the failure record, one log line per change, each tool's self-update off in the runs obid starts where the tool documents an environment switch for it, and one transcript line when a job's tool version changed between two of its rounds. Outside it: the tested and known-bad version table and any warning or decision based on a version (R01-09), Settings › Accounts or any other screen showing a version (#1097), conversation turn records and the brain's runs (R05), Obi-to-Obi review jobs, the `clientInfo` that Codex and Cursor are sent, re-reading on a timer, events for a version change (a `job` event or any other), a new transcript entry kind, the owner's own terminal CLIs (they keep updating), pinning, installing or upgrading a CLI, any setting written to a settings file of the owner's or a `-c` setting for Codex, a new endpoint, a setting for the read, and moving this into the provider interface (R08).
+- **Outcome:** The owner, and any bug report, can say which Claude Code, Codex or cursor-agent version a job ran on, and `GET /v1/status` lists each tool's binary and version. Failures such as #1867 and #1095 can then be tied to a CLI version. A CLI doesn't update itself under a job obid runs; if it changed between two rounds anyway, the job's transcript says so (R01-08). obid also says whether each tool's version is tested, untested or known to break, and its automatic routing doesn't send work to a CLI known to break while another can take it; a job the owner pinned to one still runs, with one advisory line (R01-09).
+- **Status:** **Implemented** (`core/crates/obid/src/cli_versions.rs`, `core/crates/obid/cli-versions.json`, `core/crates/obid/src/jobs/versions.rs`, `Jobs::by_room` in `core/crates/obid/src/jobs/account_limits.rs`; `docs/runner-api.md`, `GET /v1/status`, "Job" and "Failure record"). CLIVERSIONS-1 to 9 are implemented. The advisory line's words are proposed, and Sangam's to change.
+- **Scope:** Reading and caching each tool's version, `tools` on `GET /v1/status`, `agentVersion` on the job and on the failure record, one log line per change, each tool's self-update off in the runs obid starts where the tool documents an environment switch for it, one transcript line when a job's tool version changed between two of its rounds, the checked-in table of tested and known-bad versions, `versionStatus` and `knownBadReason` on status, automatic routing ranking a known-bad tool last, and one advisory transcript line on a job that runs on a known-bad version. Outside it: updating the table automatically or any canary that measures versions (R01-11), Settings › Accounts or any other screen, badge, notification or warning showing a version or its status (#1097), refusing, holding, failing or moving a job because of its version, a wait for a CLI upgrade, a `config.json` override of the table, conversation turn records and the brain's runs (R05), Obi-to-Obi review jobs, the `clientInfo` that Codex and Cursor are sent, re-reading on a timer, events for a version change (a `job` event or any other), a new transcript entry kind, the owner's own terminal CLIs (they keep updating), pinning, installing or upgrading a CLI, any setting written to a settings file of the owner's or a `-c` setting for Codex, a new endpoint, a setting for the read, and moving this into the provider interface (R08).
 
 ## Behavior
 
 ### Actors and ownership
 
-- **obid** owns the reads: it finds each tool's binary, runs its `--version`, keeps what it read, stamps it on jobs and failure records, and logs a change. No model call decides anything here.
+- **obid** owns the reads: it finds each tool's binary, runs its `--version`, keeps what it read, stamps it on jobs and failure records, and logs a change. It owns the table of tested and known-bad versions, each version's status, and the routing rule. No model call decides anything here.
 - **The apps** show nothing yet and send nothing new: the keys are add-only, and older apps ignore them.
 
 ### Rules
@@ -32,6 +32,12 @@ The business behavior contract for reading each agent CLI's version, from [the t
   - **Codex:** none. Its documented control is the `config.toml` key `check_for_update_on_startup`, not an environment variable, and obid adds no `-c` setting to Codex (its own-lane settings are LANES-18's).
   - **cursor-agent:** none. Cursor's CLI documents that it updates itself by default and names no environment variable or setting that turns it off (its `cli-config.json` has only an update `channel`).
 - **The failure record.** A failure record copies its job's `agentVersion` when it is written.
+- **The table.** `core/crates/obid/cli-versions.json`, compiled into obid (`include_str!`): an object keyed by tool id (`claude`, `codex`, `cursor`), each `{"tested": {"from", "to"}, "knownBad": [{"version", "reason", "issue"}]}`. It ships with what the docs already name as tested: Claude Code 2.1.296 to 2.1.302, codex-cli 0.162.1 and cursor-agent 2026.10.01, and no known-bad version. It is parsed once.
+- **The status.** A version is `knownBad` when it equals a `knownBad` entry's `version` exactly, `tested` when it lies within `from` to `to` inclusive, comparing dot-separated parts each as the number its leading digits make (`2026.10.01` equals `2026.10.1`, `25-d5b3271` counts as 25), and `untested` otherwise: no version, a part with no leading digit, or a tool the table doesn't name. A version is never `knownBad` unless it is listed. Status's `tools[]` carry it as `versionStatus`, a plain string, with `knownBadReason` the entry's `reason` only when it is `knownBad` (`cli_versions::status`).
+- **Routing.** `Jobs::by_room` ranks every account of a tool whose last kept read is known bad after every account of a tool that isn't, the owner's default (`defaultAccount`) included; within each group the order is as before. So work Oby routes by itself (a new job naming no account, a move past a limit, `preferred_account` and `preferred_agent`) goes to a known-bad tool only when no other account can take it, and then runs there without waiting. The check reads only what's kept (`cli_versions::known_bad`): it never runs `--version`, resolves or stats a binary, or blocks; a tool with no kept read isn't known bad.
+- **The owner's word.** A job whose account or `agent` the owner named, and a hand move (`POST /v1/jobs/{id}/move`), run where they said, known bad or not, with nothing refused, delayed, held or moved.
+- **The advisory line.** When a round's read lands with the job still on that tool, and the version is known bad and differs from the one the job had stamped (none on a first round, or after a move to another tool cleared it), the job's transcript gets one `start` entry: `<Tool> <version> is known to break: <reason>` (`Claude Code 2.1.296 is known to break: resume loses the session`, `cli_versions::breaks`). It is decided in the same change of the job that sets `agentVersion`, as the version change line is, so later rounds on the same version and a restart say nothing again. It is the same whether the owner pinned the job or routing had nowhere else to send it, and it never blocks, fails, delays or moves the job.
+- **The test-only table.** In a debug build only, `OBID_TEST_CLI_VERSIONS` may name a JSON file in the table's format that replaces the shipped one. A release build never reads it.
 - **The log.** When a read's version differs from the one kept for that tool (the first read since obid started included), obid logs one line: `<Tool> at <path> is version <version>`, or `<Tool> at <path> has no version obid can read`. It is decided as the read is kept, so reads that overlap log a change once. A read whose version didn't change logs nothing.
 
 ### Failures and recovery
@@ -43,16 +49,20 @@ The business behavior contract for reading each agent CLI's version, from [the t
 - **A move to another tool** clears `agentVersion` until its next round's read lands; a failure record written in between has it null.
 - **A job that fails within moments of its round's start** may have its failure record written before the stamp lands; that record's `agentVersion` is then null.
 - **A restart** forgets what was read; obid reads again as it starts.
+- **A table that can't be read or parsed** (only the test-only one can be) leaves every version `untested`; obid never fails on it.
+- **No kept read** of a tool (just after obid starts, before its background read lands) isn't known bad: routing may briefly treat a known-bad tool as any other.
 
 ### Invariants
 
 - No login, token, account folder or account variable ever reaches a `--version` run.
 - The process runs only for a binary whose path, size or modified time changed, and never while obid holds the store's lock.
+- A job the owner pinned (its account or its `agent` named, or moved by hand) always runs where they said: the table only steers what Oby does by itself.
+- Reviews stay on their account; conversations' account choice and the brain's runs don't read the table.
 - Every key is add-only and optional when read: a job file or failure record written before this change loads, with `agentVersion` null.
 
 ## Interfaces and dependencies
 
-- **API:** `GET /v1/status` gains `tools`; the Job gains `agentVersion`; the failure record gains `agentVersion` (`docs/runner-api.md`). Older runners don't send them.
+- **API:** `GET /v1/status` gains `tools`, each with `versionStatus` and, when known bad, `knownBadReason`; the Job gains `agentVersion`; the failure record gains `agentVersion` (`docs/runner-api.md`). Older runners don't send them.
 - **Persistence:** `agentVersion` in `home/jobs/<id>.json` and `home/failures/<id>.json`, left out when none.
 - **Clients:** none change (#1097 shows it in Settings later). The version change line is a `start` transcript entry, which the apps already show whatever their filter.
 
@@ -64,5 +74,9 @@ The business behavior contract for reading each agent CLI's version, from [the t
 - **CLIVERSIONS-4** (implemented). Given the binary at the resolved path changes (new modified time), when the next round starts, then obid reads the version again and logs the change once. Test: `cliversions_4_a_changed_binary_is_read_again` (core/crates/obid/tests/cli_versions.rs).
 - **CLIVERSIONS-5** (implemented). Given a Claude Code job, when obid starts its run, then the run's environment has `DISABLE_AUTOUPDATER=1`. Test: `cliversions_5_runs_have_autoupdate_off` (core/crates/obid/tests/cli_versions.rs); both lanes: `jobs::tests::permissions_2_an_agent_runs_with_its_telemetry_off`.
 - **CLIVERSIONS-6** (implemented). Given a job whose round 1 ran on claude 2.1.300, when round 2 starts on 2.1.310, then the transcript has one line naming both versions and `agentVersion` is 2.1.310. Test: `cliversions_6_a_version_change_between_rounds_is_said` (core/crates/obid/tests/cli_versions.rs); the compare's edges: `cli_versions::tests::cliversions_6_only_a_real_change_is_said`.
+
+- **CLIVERSIONS-7** (implemented). Given codex's version is in the table's `knownBad` list, when status is read, then `tools[codex].versionStatus` is `knownBad` with its `knownBadReason`, a tested Claude Code's is `tested` with no reason, and a tool the table doesn't name is `untested`. Test: `cliversions_7_known_bad_is_said_in_status` (core/crates/obid/tests/cli_versions.rs); the status's edges: `cli_versions::tests::cliversions_7_a_versions_status_and_its_edges`; the shipped table: `cli_versions::tests::the_shipped_table_parses_with_each_tool`.
+- **CLIVERSIONS-8** (implemented). Given claude is known bad and codex tested, both signed in, claude's account first in the configuration, when a job naming no tool and no account is routed, then it goes to codex. Test: `cliversions_8_routing_skips_known_bad` (core/crates/obid/tests/cli_versions.rs); the ranking, the owner's default and a known-bad account alone included: `jobs::account_limits::tests::cliversions_8_a_known_bad_tool_ranks_last`.
+- **CLIVERSIONS-9** (implemented). Given the owner pins a job to a known-bad claude, when it starts, then it runs there and its transcript has one advisory `start` line with the reason; a second round on the same version adds none, and it ends done. Test: `cliversions_9_a_pinned_job_runs_with_an_advisory` (core/crates/obid/tests/cli_versions.rs).
 
 The parser's rules are tested in `core/crates/obid/src/cli_versions.rs`, and the failure record's key in `core/crates/obid/src/failures.rs`.

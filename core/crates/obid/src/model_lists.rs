@@ -7,7 +7,6 @@
 //! job path, and never blocking those.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -176,36 +175,8 @@ async fn read_codex_app_server(
     dir: Option<&Path>,
     scratch: &Path,
 ) -> Option<Vec<Offered>> {
-    let mut argv: Vec<OsString> = vec![bin.into()];
-    if dir.is_some() {
-        argv.extend(["-c".into(), r#"cli_auth_credentials_store="file""#.into()]);
-    }
-    argv.extend([
-        "-c".into(),
-        "features.plugins=false".into(),
-        "app-server".into(),
-    ]);
-    let mut env = crate::process::kept(|name| std::env::var_os(name));
-    env.push(("PATH".into(), crate::accounts::login_path(bin).into()));
-    env.push(("TMPDIR".into(), scratch.into()));
-    env.extend(
-        crate::accounts::account_env(Tool::Codex, dir, scratch)
-            .ok()?
-            .into_iter()
-            .map(|(k, v)| (k.into(), v)),
-    );
-    let launch = crate::agent::Launch {
-        argv,
-        env,
-        cwd: scratch.to_path_buf(),
-        stderr: scratch.join("stderr.log"),
-        own_sandbox: false,
-        group: None,
-    };
     let params = json!({"limit": 100, "includeHidden": false});
-    let said = crate::codex::ask_once(&launch, READ_WITHIN, "model/list", params)
-        .await
-        .ok()?;
+    let said = crate::accounts::ask_codex(bin, dir, scratch, "model/list", params).await?;
     parse_codex_model_list(&said)
 }
 
@@ -222,21 +193,12 @@ async fn run_cli(
     dir: Option<&Path>,
     scratch: &Path,
 ) -> Option<Vec<u8>> {
-    let mut command = tokio::process::Command::new(bin);
+    let mut command = crate::accounts::tool_command(bin, scratch);
     command
         .args(args)
-        .env_clear()
-        .envs(crate::process::kept(|name| std::env::var_os(name)))
-        .env("PATH", crate::accounts::login_path(bin))
-        .env("TMPDIR", scratch)
-        .env("BROWSER", "true")
         .envs(crate::accounts::account_env(tool, dir, scratch).ok()?)
-        .current_dir(scratch)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .process_group(0);
+        .stderr(std::process::Stdio::null());
     let child = command.spawn().ok()?;
     let group = child.id();
     match tokio::time::timeout(READ_WITHIN, child.wait_with_output()).await {

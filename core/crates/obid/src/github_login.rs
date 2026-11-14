@@ -522,23 +522,7 @@ async fn start(shared: &Arc<Shared>, gh: &Path, who: Who) -> Result<Arc<SignIn>,
         scratch: scratch.clone(),
         armed: true,
     };
-    let (lines, mut said) = tokio::sync::mpsc::unbounded_channel::<String>();
-    for out in [
-        child
-            .stdout
-            .take()
-            .map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-        child
-            .stderr
-            .take()
-            .map(|e| Box::new(e) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        tokio::spawn(crate::accounts::read_lines(out, lines.clone()));
-    }
-    drop(lines);
+    let mut said = crate::accounts::lines_of(&mut child);
     let wanted = async {
         while let Some(line) = said.recv().await {
             if let Some(code) = user_code(&crate::accounts::plain(&line)) {

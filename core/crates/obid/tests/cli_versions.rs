@@ -234,3 +234,136 @@ fn cliversions_6_a_version_change_between_rounds_is_said() {
     assert_eq!(said.len(), 1, "{}", transcript.text);
     assert_eq!(said[0]["kind"], "start", "{}", transcript.text);
 }
+
+/// obid as [`obid`] has it, with a test table of known versions (`OBID_TEST_CLI_VERSIONS`) and
+/// both accounts signed in: Claude Code's `stub` first, then Codex's `work`.
+fn obid_with_table(folder: &Folder, table: Value) -> Obid {
+    let remote = fixture(&folder.0.join("fixture"));
+    let mut config = config(&folder.0, &remote, &agents().join("fake-claude"));
+    let accounts = folder.0.join("home/accounts");
+    let (stub, work) = (accounts.join("stub"), accounts.join("codex-work"));
+    std::fs::create_dir_all(&stub).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    let ends = (std::time::SystemTime::now() + Duration::from_secs(86400))
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let login = json!({"claudeAiOauth": {"accessToken": "fake-claude", "expiresAt": ends}});
+    std::fs::write(stub.join(".credentials.json"), login.to_string()).unwrap();
+    let key = json!({"OPENAI_API_KEY": "fake-codex"});
+    std::fs::write(work.join("auth.json"), key.to_string()).unwrap();
+    config["agents"]["codex"] = json!({"bin": agents().join("fake-codex"),
+        "accounts": [{"id": "work", "name": "Work", "configDir": work}]});
+    let path = folder.0.join("cli-versions.json");
+    std::fs::write(&path, table.to_string()).unwrap();
+    let env = [("OBID_TEST_CLI_VERSIONS", path.to_str().unwrap())];
+    start_with(&folder.0, &config, None, &env)
+}
+
+/// A test table: `tool`'s `version` known bad for `reason`, each other tool's version tested.
+fn known_bad(tool: &str, version: &str, reason: &str) -> Value {
+    let mut table = json!({
+        "claude": {"tested": {"from": "2.1.296", "to": "2.1.302"}, "knownBad": []},
+        "codex": {"tested": {"from": "0.170.0", "to": "0.170.0"}, "knownBad": []}});
+    table[tool]["knownBad"] = json!([{"version": version, "reason": reason, "issue": 1}]);
+    table
+}
+
+/// Status's `tools`, once `agent`'s `versionStatus` reads `status`.
+fn tools_once(obid: &Obid, agent: &str, status: &str) -> Vec<Value> {
+    within(30, "the tool's version is read", || {
+        let (tools, _) = read_tools(obid);
+        let tool = tools.iter().find(|t| t["agent"] == agent)?;
+        (tool["versionStatus"] == status).then_some(tools.clone())
+    })
+}
+
+/// CLIVERSIONS-7: Codex's version is listed as known bad: status says so with the reason; Claude
+/// Code's, in its tested range, is tested with no reason; Cursor's, not in the table, untested.
+#[test]
+fn cliversions_7_known_bad_is_said_in_status() {
+    let folder = Folder::new("cliversions-7");
+    let reason = "turns hang after a resume";
+    let obid = obid_with_table(&folder, known_bad("codex", "0.170.0", reason));
+    let tools = tools_once(&obid, "codex", "knownBad");
+    assert_eq!(tools[1]["agent"], "codex", "{tools:?}");
+    assert_eq!(tools[1]["knownBadReason"], reason, "{tools:?}");
+    assert_eq!(tools[0]["versionStatus"], "tested", "{tools:?}");
+    assert!(tools[0].get("knownBadReason").is_none(), "{tools:?}");
+    assert_eq!(tools[2]["versionStatus"], "untested", "{tools:?}");
+    assert!(tools[2].get("knownBadReason").is_none(), "{tools:?}");
+}
+
+/// CLIVERSIONS-8: Claude Code is known bad and Codex tested, Claude Code's account first in the
+/// configuration: a job naming no tool and no account goes to Codex.
+#[test]
+fn cliversions_8_routing_skips_known_bad() {
+    let folder = Folder::new("cliversions-8");
+    let obid = obid_with_table(&folder, known_bad("claude", "2.1.296", "it breaks"));
+    tools_once(&obid, "claude", "knownBad");
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "research", "check": "true",
+                     "task": "Say hello."});
+    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap().to_owned();
+    let ended = ended_within(&obid, &id, 240);
+    assert_eq!(ended["agent"], "codex", "{ended}");
+    assert_eq!(ended["status"], "done", "{ended}");
+}
+
+/// CLIVERSIONS-9: a job the owner pinned to Claude Code, known bad, runs there, and its transcript
+/// says why once; its second round, on the same version, says nothing more, and it ends done.
+#[test]
+fn cliversions_9_a_pinned_job_runs_with_an_advisory() {
+    let folder = Folder::new("cliversions-9");
+    let reason = "resume loses the session";
+    let obid = obid_with_table(&folder, known_bad("claude", "2.1.296", reason));
+    // Its check passes only once round 2 committed b.txt: round 1 ends interrupted.
+    let job = json!({"repo": "obi-e2e/fixture-app", "kind": "build", "check": "test -f b.txt",
+                     "rounds": 1, "agent": "claude", "task": "COMMIT: a.txt"});
+    let answer = call(&obid, "POST", "/v1/jobs", Some(&json!({ "job": job })));
+    assert_eq!(answer.status, 201, "{}", answer.text);
+    let id = answer.body["id"].as_str().unwrap().to_owned();
+    let ended = ended_within(&obid, &id, 240);
+    assert_eq!(ended["status"], "interrupted", "{ended}");
+    assert_eq!(ended["agent"], "claude", "{ended}");
+    let advisories = || {
+        let transcript = call(&obid, "GET", &format!("/v1/jobs/{id}/transcript"), None);
+        assert_eq!(transcript.status, 200, "{}", transcript.text);
+        let entries = transcript.body["entries"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let said = |e: &&Value| e["summary"].as_str().unwrap_or_default().contains(reason);
+        entries.iter().filter(said).cloned().collect::<Vec<_>>()
+    };
+    let said = within(10, "the advisory line", || {
+        let said = advisories();
+        (!said.is_empty()).then_some(said)
+    });
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0]["kind"], "start", "{said:?}");
+    let summary = said[0]["summary"].as_str().unwrap();
+    assert_eq!(
+        summary,
+        format!("Claude Code 2.1.296 is known to break: {reason}")
+    );
+
+    // Try again's words, so the same job runs its round 2.
+    let text = json!({"text": "Try again, picking up where you left off. Finish with a short summary as asked. COMMIT: b.txt"});
+    let more = call(
+        &obid,
+        "POST",
+        &format!("/v1/jobs/{id}/messages"),
+        Some(&text),
+    );
+    assert_eq!(more.status, 200, "{}", more.text);
+    let ended = within(240, "round 2 ends", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["round"] == 2 && job["status"] != "queued" && job["status"] != "running")
+            .then_some(job)
+    });
+    assert_eq!(ended["status"], "done", "{ended}");
+    assert_eq!(ended["agent"], "claude", "{ended}");
+    assert_eq!(advisories().len(), 1, "{:?}", advisories());
+}

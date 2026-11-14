@@ -666,6 +666,21 @@ pub fn exec_in_own_session(argv: &[OsString]) -> std::io::Error {
         .exec()
 }
 
+/// `argv` to run in `cwd` with `env` alone, ended when dropped: an error when it names nothing.
+pub fn command(
+    argv: &[OsString],
+    env: &[(OsString, OsString)],
+    cwd: &Path,
+) -> std::io::Result<tokio::process::Command> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| std::io::Error::other("nothing to run"))?;
+    let mut command = tokio::process::Command::new(program);
+    command.args(args).env_clear().envs(env.iter().cloned());
+    command.current_dir(cwd).kill_on_drop(true);
+    Ok(command)
+}
+
 /// What tells `obid __session` the nice its program runs at: a job's agent's (PUBLISHING-30).
 pub const NICE: &str = "OBY_SESSION_NICE";
 
