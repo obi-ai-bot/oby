@@ -15,7 +15,8 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
 bin/route       risk + surfaces → the job's reviewers and models
 bin/test-run    a builder's or approver's own test, clippy or build run at nice 15, half the cores; only runs that can
                 build Rust or Xcode code take turns on its own lock, other runs start at once; it refuses a run whose
-                CARGO_TARGET_DIR is the shared Cargo folder: they build in <worktree>/core/target
+                CARGO_TARGET_DIR is the shared Cargo folder: they build in <worktree>/core/target; with
+                `builder_slots` set, a heavy run that doesn't need macOS goes to a builder slot on the gate VM
 bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
                 inside the lock it gives the worktree's tracked core/ and tools/ files the current time, so the
                 worktree's own code is built; it stops the check's leftovers and passes its exit code through
@@ -23,7 +24,7 @@ bin/child_session.py  runs a command in a session of its own and stops its lefto
                 and nightly
 bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
                 jobs/nightly/<stamp>.md, and a fix task on a failure
-remote/         the gate VM's and the Mac worker's side: setup.sh provisions the gate VM over SSH, setup-mac.sh the Mac worker; tighten.sh is what each runs last on its host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots on the VM, and with --mac the macOS groups it is given in one of two slots on the Mac worker
+remote/         the gate VM's and the Mac worker's side: setup.sh provisions the gate VM over SSH, setup-mac.sh the Mac worker; tighten.sh is what each runs last on its host, to leave the check's path writable only by its owner; oby-remote-gate runs a commit's Linux check groups in one of four slots on the VM (or `slots`), with --run a builder's command in one of the builder slots, as the no-sudo user oby-builder, and with --mac the macOS groups it is given in one of two slots on the Mac worker
 tests/          the factory's own tests, stdlib only, from the repository root: python3 -m unittest discover -s factory/tests;
                 the check runs them when bin/, checks.sh, tests/ or config.json change
 queue/tasks/    open tasks, one file each (R01-02.md)
@@ -65,6 +66,18 @@ With `mac_worker` (`{"ssh_host": "oby-mac-pro"}`, or `FACTORY_MAC_WORKER` for on
 runs on that second Mac, set up by `remote/setup-mac.sh`, once the VM's part passed: in one call, `ssh
 oby-mac-pro oby-worker/bin/oby-remote-gate --mac <commit> origin/dev <group>...`. When it doesn't answer within
 60 seconds, both its slots are busy, it couldn't judge or was cut off, that part runs on this Mac as before.
+
+Builders' heavy runs go to the gate VM too once the owner has run `remote/setup.sh` again (it adds the no-sudo
+user `oby-builder` and its `/srv/oby-builder`) and set `builder_slots` in `remote_gate` (`"slots": 4,
+"builder_slots": 8` on the 64-core VM; `slots`, by default 4, sizes the gates' slots). `bin/test-run` keeps
+the run here, saying `on this Mac: <why>`, when it is a Swift, Xcode or whole-check run, when the worktree's
+changes touch macOS-only code by the gate's own rule, or when its `--test` is a macOS-only one; otherwise it
+sends the base's SHA and the binary diff to the worktree's current tree (nothing ignored, scanned by gitleaks
+first) with `ssh -l oby-builder oby-gate oby-remote-gate --run …`, and the VM runs the same command line in a
+builder slot of its own, at nice 15, offline, with its own Cargo folder. Its output and exit code come back;
+anything that stops it before it starts there (the VM unreachable, no builder user, every builder slot busy
+for 10 minutes) says `fell back to this Mac: <why>` and runs here as before. Its use of the VM is recorded in the
+main checkout's `jobs/remote-gate/state.json` like a gate's.
 
 What differs from the reference factory: the queue is the task files here, not GitHub issues (the owner's
 decision of 2026-11-12). A task runs only in the active sprint (`sprint` in `config.json`) and after the tasks

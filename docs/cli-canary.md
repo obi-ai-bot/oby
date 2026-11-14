@@ -199,8 +199,6 @@ The canary should drive these through obid's adapters, as R01-11 says. Line numb
   - `adapters.rs:1309`, `the_real_cursor_agent_signed_out_says_so`. Needs `cursor-agent` on `PATH` and no login. obid starts it in a job's sandbox, and the job fails saying the account is signed out. It fits a runner as is.
   - `claude_bare.rs:533`, `issue_1867_the_real_claude_code_still_takes_a_plan_login`. Needs `claude` on `PATH` signed in with a plan, and spends a real turn. Owner's Mac only. Its flags and environment are the ones a job's turn uses, which a fake-model version can copy.
   - `chatgpt_api.rs:1728`, `chatgpt_real_codex_talks_through_the_relay`, and `chatgpt_api.rs:1789`, `chatgpt_real_codex_runs_through_the_relay`. They need `OBY_REAL_CODEX=<binary>` and no login: the real Codex runs through obid's ChatGPT relay to the test's own OpenAI stand-in. They are the closest existing thing to the Codex canary, and fit a runner as they are.
-  - `mcp_sphere.rs:197`, `a_review_request_goes_through_oby_mcp`. Needs `OBY_MCP_BIN` (the `oby-mcp` binary) and no agent CLI.
-  - `mcp_sphere.rs:294`, `a_claude_code_session_sends_a_review_request`. Needs `OBY_MCP_BIN` and, with `OBY_MCP_CLAUDE=1`, Claude Code signed in on the Mac. Owner's Mac only.
   - `jobs_api.rs:1732` (`a_command_in_a_jobs_box`) and `:1795` (`reach_from_inside_a_job`) are sandbox helpers, not real-CLI probes.
 - **Stand-in agents in `core/crates/obid/tests/agents/`.** What each fakes is what a canary case asserts against the real CLI.
   - `fake-claude`: Claude Code's stream-json for jobs: commits, edits, permission asks, questions, stops.

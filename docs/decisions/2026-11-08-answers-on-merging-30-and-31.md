@@ -23,3 +23,5 @@ AGENTS.md's wording, not a quote.
 ## Notes
 
 Amends [2026-11-06-split-it.md](2026-11-06-split-it.md) and [2026-11-06-tool-api-hosts-dont-mark-a-job.md](2026-11-06-tool-api-hosts-dont-mark-a-job.md).
+
+merging.md, MERGING-30, quoted the owner's answer on its accepted limit (reaching `chatgpt.com` withholds declared secrets from that job's own check only): "Accept as is." MERGING-31 named his answers 1 and 7 (a vendor's pages people write make a job someone else's code: two reviews), and his review answers: no check without the secrets stands for the Mac's; a host that serves anyone's source code is someone else's code.

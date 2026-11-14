@@ -600,6 +600,7 @@ fn admission_4_a_job_waiting_on_a_check_takes_no_slot_and_a_retry_keeps_its_own(
 /// waits for one. With `maxRunning` 2, one job checks, two wait for that check, one runs and a fifth
 /// is queued: when the first ends, the fifth starts and the second checks with no slot; once its
 /// check ends it waits for a free slot while the third checks, and at no time do more than 2 run.
+/// Each check waits for the test to release it, so the order is set by state, never by the clock.
 #[test]
 fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     let folder = Folder::new("idle-back");
@@ -613,6 +614,14 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
     assert_eq!(two.status, 200, "{}", two.text);
     let id = |job: Value| dispatch(&obid, job)["id"].as_str().unwrap().to_owned();
     let checking = |id: &str| job(&obid, id)["checks"][0]["steps"][0]["running"] == true;
+    let held = r#"i=0; until [ -e "$HOME/go" ] || [ $i -ge 1800 ]; do sleep 0.1; i=$((i+1)); done"#;
+    // A check with no declared secrets keeps its job's temporary folder, `<home>/tmp/<id>`, as its
+    // `HOME`, which its box lets it read where it hides the test's own folder: a `go` there ends
+    // it. Released only once that check runs.
+    let release = |id: &str| {
+        let go = obid.home.join("tmp").join(id).join("go");
+        std::fs::write(go, "").unwrap();
+    };
     let for_the_check = |id: &str| {
         within(60, "it waits for the check", || {
             (job(&obid, id)["step"] == "Waiting for another job's check to finish").then_some(())
@@ -624,13 +633,13 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
                   "check": check}),
         )
     };
-    let first = committing("a.txt", "sleep 15");
+    let first = committing("a.txt", held);
     within(60, "the first check runs", || {
         checking(&first).then_some(())
     });
-    let second = committing("b.txt", "sleep 3");
+    let second = committing("b.txt", held);
     for_the_check(&second);
-    let third = committing("c.txt", "sleep 60");
+    let third = committing("c.txt", held);
     for_the_check(&third);
     let fourth = id(json!({"repo": "obi-e2e/fixture-app", "kind": "investigate", "task": "SLEEP"}));
     within(60, "the fourth runs", || {
@@ -647,15 +656,22 @@ fn admission_5_a_job_back_from_the_check_queue_never_passes_max_running() {
             .unwrap();
         most = most.max(running);
     };
-    within(90, "the second waits for a free slot", || {
-        count();
-        let body = job(&obid, &second);
-        (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
-    });
+    release(&first);
     // The first ended and gave its slot to the fifth: on Linux's box it may still be publishing.
     within(60, "the fifth runs", || {
         count();
         (job(&obid, &fifth)["status"] == "running").then_some(())
+    });
+    within(60, "the second checks", || {
+        count();
+        checking(&second).then_some(())
+    });
+    // Only now, with both slots taken, so the second can't take the first's freed one.
+    release(&second);
+    within(90, "the second waits for a free slot", || {
+        count();
+        let body = job(&obid, &second);
+        (body["step"] == "Waiting for a free slot: 2 of 2 jobs running").then_some(())
     });
     // It gave the check's turn up first: the third checks meanwhile.
     within(30, "the third checks", || {
@@ -2252,4 +2268,160 @@ fn alerts_1_a_long_permission_gets_no_answers() {
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(listed[0]["title"], "Needs your OK: Alerts as data");
     assert_eq!(listed[0]["answers"], json!([]));
+}
+
+/// The names `GET /v1/status` serves in `capabilities`, each a string.
+fn served_capabilities(status: &Value) -> Vec<String> {
+    let list = status["capabilities"].as_array();
+    let list = list.unwrap_or_else(|| panic!("capabilities isn't a list: {status}"));
+    let names = list.iter().map(|name| name.as_str().map(str::to_owned));
+    let names = names.collect::<Option<Vec<_>>>();
+    names.unwrap_or_else(|| panic!("capabilities isn't all strings: {list:?}"))
+}
+
+/// CAPS-1: `capabilities` is a sorted list of strings with no duplicate, and holds `folders-v1`
+/// exactly when `folders` is `true`.
+#[test]
+fn caps_1_status_lists_capabilities() {
+    let folder = Folder::new("caps-1");
+    let (obid, _) = obid(&folder);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    let names = served_capabilities(&status);
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "capabilities isn't sorted");
+    sorted.dedup();
+    assert_eq!(names, sorted, "capabilities has a duplicate");
+    let folders = status["folders"].as_bool().unwrap();
+    assert_eq!(
+        names.iter().any(|name| name == "folders-v1"),
+        folders,
+        "{status}"
+    );
+    assert!(folders);
+}
+
+/// CAPS-2: every name obid serves has a row in docs/runner-api.md's Capabilities table, under
+/// `GET /v1/status`, and every row's name is served.
+#[test]
+fn caps_2_every_capability_is_documented() {
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runner-api.md");
+    let docs = std::fs::read_to_string(docs).unwrap();
+    let section = docs.split("\n### `GET /v1/status`\n").nth(1).unwrap();
+    let section = section.split("\n### ").next().unwrap();
+    let table = section
+        .lines()
+        .skip_while(|line| !line.starts_with("| Name |"));
+    let rows = table.skip(2).take_while(|line| line.starts_with('|'));
+    let documented: Vec<String> = rows
+        .map(|row| {
+            let cell = row.split('|').nth(1).unwrap().trim();
+            let name = cell
+                .strip_prefix('`')
+                .and_then(|cell| cell.strip_suffix('`'));
+            name.unwrap_or_else(|| panic!("a row's name isn't in backticks: {row}"))
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        !documented.is_empty(),
+        "no Capabilities table with rows under GET /v1/status"
+    );
+
+    let folder = Folder::new("caps-2");
+    let (obid, _) = obid(&folder);
+    let served = served_capabilities(&call(&obid, "GET", "/v1/status", None).body);
+    for name in &served {
+        assert!(
+            documented.contains(name),
+            "`{name}` is served but has no row in docs/runner-api.md"
+        );
+    }
+    for name in &documented {
+        assert!(
+            served.contains(name),
+            "`{name}` has a row in docs/runner-api.md but isn't served"
+        );
+    }
+}
+
+/// The keys of `GET /v1/status` a client from before CAPS decodes, with no `capabilities`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OldStatus {
+    runner: OldRunner,
+    accounts: Vec<Value>,
+    models: serde_json::Map<String, Value>,
+    max_running: u32,
+    running: u32,
+    cleared_at: Option<String>,
+    github: String,
+    checks: String,
+    permissions: serde_json::Map<String, Value>,
+    folders: bool,
+    receipts: bool,
+    scanner: serde_json::Map<String, Value>,
+    tools: Vec<Value>,
+    unreadable: Vec<Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct OldRunner {
+    version: String,
+    host: String,
+}
+
+/// CAPS-3: every key an older client decodes is still there with its old JSON type, and a decoder
+/// that doesn't know `capabilities` reads the status as before. swift_client.rs covers the Swift
+/// side (the phones' own `RunnerStatus`).
+#[test]
+fn caps_3_old_status_decoders_still_read() {
+    let folder = Folder::new("caps-3");
+    let (obid, _) = obid(&folder);
+    let status = call(&obid, "GET", "/v1/status", None).body;
+    assert!(status["runner"]["version"].is_string(), "{status}");
+    assert!(status["runner"]["host"].is_string(), "{status}");
+    for key in ["accounts", "tools", "unreadable"] {
+        assert!(status[key].is_array(), "{key}: {status}");
+    }
+    for key in ["models", "permissions", "scanner"] {
+        assert!(status[key].is_object(), "{key}: {status}");
+    }
+    for key in ["maxRunning", "running"] {
+        assert!(status[key].is_number(), "{key}: {status}");
+    }
+    for key in ["github", "checks"] {
+        assert!(status[key].is_string(), "{key}: {status}");
+    }
+    let cleared = status.get("clearedAt");
+    assert!(
+        cleared.is_some_and(|at| at.is_null() || at.is_string()),
+        "{status}"
+    );
+    assert_eq!(status["folders"], true);
+    assert!(status["receipts"].is_boolean(), "{status}");
+
+    let old: OldStatus = serde_json::from_value(status.clone()).unwrap();
+    assert_eq!(old.runner.version, status["runner"]["version"]);
+    assert_eq!(old.runner.host, status["runner"]["host"]);
+    assert_eq!(
+        old.accounts.len(),
+        status["accounts"].as_array().unwrap().len()
+    );
+    assert!(!old.models.is_empty() && old.permissions.contains_key("mode"));
+    assert_eq!(old.max_running, status["maxRunning"]);
+    assert_eq!(old.running, status["running"]);
+    assert_eq!(old.cleared_at.as_deref(), status["clearedAt"].as_str());
+    assert_eq!(
+        (old.github, old.checks),
+        ("owner".to_owned(), "no app".to_owned())
+    );
+    assert!(old.folders);
+    assert_eq!(old.receipts, status["receipts"]);
+    assert!(old.scanner.contains_key("gitleaks"));
+    assert_eq!(old.tools.len(), 3);
+    assert_eq!(
+        old.unreadable.len(),
+        status["unreadable"].as_array().unwrap().len()
+    );
 }

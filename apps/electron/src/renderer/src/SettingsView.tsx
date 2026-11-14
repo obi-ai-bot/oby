@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'rea
 import { Check } from 'lucide-react';
 import { BrandMark } from './brands';
 import { useScrollThumb } from './useScrollThumb';
-import { AGENTS, UNREADABLE_FILES, type Agent } from './mock';
+import { AGENTS, UNREADABLE_FILES, agentOf, type Agent } from './mock';
 import { MODES, SANDBOX } from './modes';
 import { OwnerAvatar } from './ObyFace';
 import { useSpheres } from './spheres';
@@ -48,16 +48,34 @@ export const SETTINGS_PAGES = [
 ].filter((p) => everything || !LATER.has(p.id));
 export const settingsLabel = (id: string) => SETTINGS_PAGES.find((p) => p.id === id)?.label ?? 'Settings';
 
-// What's set, kept while the app runs (a mock: nothing is saved anywhere)
+// What's set in this launch; in the Mac app each row is kept across launches by main, in
+// settings.json's `local` (main/settings.ts, docs/contracts/live-state.md, LIVE-25 and 26), and in
+// a browser (npm run web) only while the page is open. accounts is never kept: on obid it's
+// obid's own list (replaceAccounts).
 const values = new Map<string, unknown>();
 const listeners = new Set<() => void>();
 const subscribe = (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; };
+const NOT_KEPT = 'accounts';
+// what main kept, read once as the app starts: a row shows it until it's set again in this launch
+const kept = new Map<string, unknown>();
+window.app?.settings?.local().then((local) => {
+  if (!local) return;
+  for (const [key, v] of Object.entries(local)) if (key !== NOT_KEPT) kept.set(key, v);
+  listeners.forEach((l) => l());
+}, () => {});
+// a kept value only of the default's own type (LIVE-26)
+const sameType = (a: unknown, b: unknown) => typeof a === typeof b && Array.isArray(a) === Array.isArray(b) && (a === null) === (b === null);
 export function useSetting<T>(key: string, initial: T): [T, (v: T) => void] {
   const value = useSyncExternalStore(
     subscribe,
-    () => (values.has(key) ? values.get(key) : initial) as T,
+    () => (values.has(key) ? values.get(key) : kept.has(key) && sameType(kept.get(key), initial) ? kept.get(key) : initial) as T,
   );
-  return [value, (v) => { values.set(key, v); listeners.forEach((l) => l()); }];
+  return [value, (v) => {
+    values.set(key, v);
+    listeners.forEach((l) => l());
+    // one main can't keep stays for this launch only
+    if (key !== NOT_KEPT) window.app?.settings?.keep(key, v).catch(() => {});
+  }];
 }
 // The same, kept across launches (localStorage, oby.setting.<key>): what's set here and nowhere
 // else yet (obid has no such setting), so it isn't lost each time the app quits
@@ -181,7 +199,8 @@ function MacPermissions() {
   return <>
     {/* Sangam's four; obid's old Sandbox only while it's the one saved, until another is picked */}
     {mode && <ModeRow mode={mode} setMode={change} modes={mode === SANDBOX.id ? [...MODES, SANDBOX] : MODES} />}
-    <RuleRows rules={rules.map((r) => ({ ...r, decision: r.decision === 'deny' ? 'Denied' : 'Allowed' }))} onRemove={forget} />
+    {/* a decision this build doesn't know: obid's word for it (docs/contracts/wire.md, WIRE-5) */}
+    <RuleRows rules={rules.map((r) => ({ ...r, decision: r.decision === 'deny' ? 'Denied' : r.decision === 'allow' ? 'Allowed' : r.decision }))} onRemove={forget} />
     {problem && <Row label={<span className="set-problem" role="alert">{problem}</span>} />}
   </>;
 }
@@ -291,7 +310,7 @@ function MockRemote() {
 // session: the 5-hour window's use (null: none reported) and when it starts over; weekly: whether
 // used is the week's
 // chatgpt: signed in with Continue with ChatGPT (docs/contracts/chatgpt-sign-in.md)
-export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent; name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[]; modelsRead?: boolean };
+export type Account = { chatgpt?: boolean; background?: boolean; signingIn?: boolean; id: string; agent: Agent | (string & {}); name: string; payer: string; who?: string; used: number | null; resets: string; plan?: Plan; signedIn?: boolean; label?: string | null; session?: number | null; sessionResets?: string | null; weekly?: boolean; full?: boolean; models?: { id: string; name: string }[]; modelsRead?: boolean };
 // how full an account (or an agent) is: past 80% yellow, past 90% red
 export const fullness = (used: number) => (used > 90 ? 'is-over' : used > 80 ? 'is-high' : '');
 // what a card's bar shows: its 5-hour session, else its week
@@ -343,7 +362,7 @@ export const useAccounts = () => useSetting<Account[]>('accounts', onObid ? [] :
 export const replaceAccounts = (next: Account[]) => { values.set('accounts', next); listeners.forEach((l) => l()); };
 // Each tool's own login as obid lists it (core/crates/obid/src/accounts.rs): the person's, with no
 // folder of obid's, so obid never signs it in (the tool itself does)
-const OWN_LOGIN: Record<Agent, string> = { claude: 'default', codex: 'codex', cursor: 'cursor' };
+const OWN_LOGIN: Partial<Record<string, string>> = { claude: 'default', codex: 'codex', cursor: 'cursor' };
 const ownLogin = (a: Account) => OWN_LOGIN[a.agent] === a.id;
 // where an error of Add an account's shows (a row's shows on its row, by the account's id)
 const ADD = 'add';
@@ -434,7 +453,7 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
   const [removing, setRemoving] = useState<string | null>(null);
   const remove = (a: Account) => (onObid ? setRemoving(a.id) : setAccounts(accounts.filter((x) => x.id !== a.id)));
   const gone = accounts.find((x) => x.id === removing);
-  const removeWindow = gone && <ConfirmWindow brand={AGENTS[gone.agent].brand} title={`Remove ${gone.name}?`} text={removeNote(gone)} action="Remove"
+  const removeWindow = gone && <ConfirmWindow brand={agentOf(gone.agent).brand} title={`Remove ${gone.name}?`} text={removeNote(gone)} action="Remove"
     onConfirm={() => void tried(gone.id, () => api.removeAccount(gone.id).then((said) => {
       put(gone.id); look();
       if (said?.revoked === false) setProblems((p) => ({ ...p, [ADD]: `ChatGPT didn’t confirm ending ${gone.name}’s session. You can disconnect it in ChatGPT settings.` }));
@@ -445,7 +464,7 @@ function useSignIns(accounts: Account[], setAccounts: (a: Account[]) => void) {
 function Accounts() {
   const [accounts, setAccounts] = useAccounts();
   const { offered, look, signing, problems, busy, tried, signIn, sendCode, cancel, remove, removeWindow } = useSignIns(accounts, setAccounts);
-  const [agent, setAgent] = useState<Account['agent']>('claude');
+  const [agent, setAgent] = useState<Agent>('claude');
   const [name, setName] = useState('');
   const [payer, setPayer] = useState('');
   const add = () => tried(ADD, async () => {
@@ -459,7 +478,7 @@ function Accounts() {
   const roomiest = accounts.filter((a) => a.used != null).sort((a, b) => a.used! - b.used!)[0];
   return <>
     <Group i={1} title="Accounts on this Mac">
-      <Row label={roomiest ? <span className="set-plain">Most room: {roomiest.name} on {AGENTS[roomiest.agent].name}, {100 - roomiest.used!}% left this week</span> : <span className="set-none">None yet</span>} />
+      <Row label={roomiest ? <span className="set-plain">Most room: {roomiest.name} on {agentOf(roomiest.agent).name}, {100 - roomiest.used!}% left this week</span> : <span className="set-none">None yet</span>} />
     </Group>
     {(['claude', 'codex', 'cursor'] as const).filter((g) => accounts.some((a) => a.agent === g)).map((g, k) => (
       <Group key={g} i={2 + k} title={AGENTS[g].name}>
@@ -494,7 +513,7 @@ function Accounts() {
       </Group>
     ))}
     <Group i={5} title="Add an account" footer={problems[ADD] && <span className="set-problem" role="alert">{problems[ADD]}</span>}>
-      <Row label="Tool"><Select value={agent} onChange={(v) => setAgent(v as Account['agent'])} label="Tool" options={(Object.keys(AGENTS) as Agent[]).map((id) => [id, AGENTS[id].name] as const)} /></Row>
+      <Row label="Tool"><Select value={agent} onChange={(v) => setAgent(v as Agent)} label="Tool" options={(Object.keys(AGENTS) as Agent[]).map((id) => [id, AGENTS[id].name] as const)} /></Row>
       <Row label="Name"><TextField value={name} onChange={setName} placeholder="Personal" label="Account name" /></Row>
       <Row label="Paid by"><TextField value={payer} onChange={setPayer} placeholder="Wellington" label="Paid by" /></Row>
       <Row label="">
@@ -511,12 +530,13 @@ function Accounts() {
 // What removing one of obid's accounts does, and what it leaves (the Swift app's words), under
 // its window's Remove X?
 function removeNote(a: Account) {
-  const tool = AGENTS[a.agent].name, provider = { claude: 'Anthropic', codex: 'OpenAI', cursor: 'Cursor' }[a.agent];
+  // (a tool this build doesn't know: no provider to name, docs/contracts/wire.md)
+  const tool = agentOf(a.agent).name, provider = ({ claude: 'Anthropic', codex: 'OpenAI', cursor: 'Cursor' } as Partial<Record<string, string>>)[a.agent];
   if (a.chatgpt) return 'Oby signs it out of ChatGPT and deletes what it kept for it. Its registration stays in your ChatGPT settings until you disconnect it there.';
   if (ownLogin(a)) return `Oby stops using ${tool}’s own login on this Mac; nothing of it is deleted. Bring it back with Use ${tool}’s Own Login.`;
   // one obid made has eight hex digits; any other is in obid's configuration, whose folder stays
   const made = /^[0-9a-f]{8}$/.test(a.id);
-  return `Oby stops using it, and deletes the folder it made for it, if any. Your account with ${provider} stays signed in there until you sign it out.`
+  return `Oby stops using it, and deletes the folder it made for it, if any. Your account${provider ? ` with ${provider}` : ''} stays signed in there until you sign it out.`
     + (a.agent === 'claude' ? ' Its Keychain item stays too; Keychain Access removes it.' : '')
     + (made ? '' : ' It’s in obid’s configuration, so it can’t be added back here.');
 }
@@ -623,9 +643,9 @@ function Sharing() {
         const whom = g.who === 'everyone' ? 'Everyone' : g.who;
         return (
           <div key={a.id} className="set-row set-usage">
-            <BrandMark brand={AGENTS[a.agent].brand} size={16} mono />
+            <BrandMark brand={agentOf(a.agent).brand} size={16} mono />
             <span className="set-label">
-              {AGENTS[a.agent].name} · {a.name}
+              {agentOf(a.agent).name} · {a.name}
               <span className="set-about">{g.who === 'nobody' ? `Not shared · ${a.resets}` : `${whom} used ${g.used}% of ${g.share}% this month`}</span>
               {g.who !== 'nobody' && (
                 <span className="set-meter" role="meter" aria-valuenow={g.used} aria-valuemin={0} aria-valuemax={g.share} aria-label={`${g.used}% of ${g.share}% used`}>
@@ -644,8 +664,8 @@ function Sharing() {
     <Group i={4} title="Kept for you">
       {kept.map((a) => (
         <div key={a.id} className="set-row set-usage">
-          <BrandMark brand={AGENTS[a.agent].brand} size={16} mono />
-          <span className="set-label">{AGENTS[a.agent].name} · {a.name}<span className="set-about">{SHARING[a.plan ?? 'personal']}</span></span>
+          <BrandMark brand={agentOf(a.agent).brand} size={16} mono />
+          <span className="set-label">{agentOf(a.agent).name} · {a.name}<span className="set-about">{SHARING[a.plan ?? 'personal']}</span></span>
         </div>
       ))}
     </Group>
@@ -734,7 +754,7 @@ export function useModels(): [(x: Account) => Tuning, ModelOptions, (id: string,
   useEffect(() => { if (kept) api.modelOptions().then(setOptions, () => {}); }, [kept]);
   // each tool's on its own: what obid says it runs over the mock's, so a key obid leaves out isn't lost
   const base = Object.fromEntries((Object.keys(MOCK_MODELS) as Agent[]).map((a) => [a, { ...MOCK_MODELS[a], ...(onObid ? live?.[a] : { model: mockModels[a] }) }])) as Models;
-  const of = (x: Account): Tuning => ({ ...(base[x.agent] ?? { model: 'auto' }),
+  const of = (x: Account): Tuning => ({ ...(base[x.agent as Agent] ?? { model: 'auto' }),
     ...(kept ? tuningOf(status.accounts.find((a) => a.id === x.id)) : mine[x.id]) });
   const tune = async (id: string, change: Partial<Tuning>) => {
     if (!kept) return setMine({ ...mine, [id]: { ...mine[id], ...change } });
@@ -819,7 +839,7 @@ export function Agents() {
     <Group i={1} title="Default agent">
       {fallback
         ? <Row label="New tasks go to">
-            <Select wide value={fallback.id} onChange={(v) => void setChosen(v).catch(say)} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${AGENTS[x.agent].name}`] as const)} />
+            <Select wide value={fallback.id} onChange={(v) => void setChosen(v).catch(say)} label="Default agent" options={ready.map((x) => [x.id, `${x.name} · ${agentOf(x.agent).name}`] as const)} />
           </Row>
         : <Row label={<span className="set-none">No agents yet</span>} />}
       {fallback && (
@@ -828,14 +848,15 @@ export function Agents() {
         </Row>
       )}
     </Group>
-    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : offered.length ? `Found on this Mac: ${offered.map((l) => AGENTS[l.agent].name).join(', ')}` : undefined}>
+    <Group i={2} footer={problems[ADD] ? <span className="set-problem" role="alert">{problems[ADD]}</span> : offered.length ? `Found on this Mac: ${offered.map((l) => agentOf(l.agent).name).join(', ')}` : undefined}>
       {/* the card's action, not a row's: on the left */}
       <div className="set-row is-action">
         <button className="set-button is-primary" onClick={() => setAdding(true)}>Add account</button>
       </div>
     </Group>
     {agents.map((x, k) => {
-      const a = x.agent, t = tuning(x), o = options[a];
+      // (one of AGENTS' own tools: agents holds no other)
+      const a = x.agent as Agent, t = tuning(x), o = options[a];
       const efforts = a === 'codex' ? o?.models.find((m) => m.id === t.model)?.efforts : o?.efforts;
       const out = x.signedIn === false, sign = signing[x.id], tool = AGENTS[a].name, own = ownLogin(x);
       // Codex with no login on this Mac, or a ChatGPT one that ended
@@ -949,7 +970,7 @@ export function AddAccount({ accounts, setAccounts, found, onFound, onClose }: {
       else setAccounts([...accounts, { id: l.id, agent: l.agent, name: l.name, payer: 'You', used: 12, resets: 'Resets Monday', signedIn: true, session: 5, weekly: true }]);
       onFound(l);
       onClose();
-    } catch (e) { setStep({ at: 'tools', why: signInWhy(AGENTS[l.agent].name, e) }); }
+    } catch (e) { setStep({ at: 'tools', why: signInWhy(agentOf(l.agent).name, e) }); }
   };
   const stop = async (why?: string) => {
     tries.current++;
@@ -1159,7 +1180,7 @@ function ModeRow({ mode, setMode, modes = MODES }: { mode: string; setMode: (m: 
 }
 
 // The rules Always allow (or a deny) saved, each with Remove
-type Rule = { id?: string; decision: 'Allowed' | 'Denied'; repo: string; rule: string };
+type Rule = { id?: string; decision: 'Allowed' | 'Denied' | (string & {}); repo: string; rule: string };
 function Rules({ id, initial }: { id: string; initial: Rule[] }) {
   const [rules, setRules] = useSetting(id, initial);
   return <RuleRows rules={rules} onRemove={(r) => setRules(rules.filter((x) => x !== r))} />;

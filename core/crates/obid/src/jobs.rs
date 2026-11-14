@@ -1,12 +1,12 @@
 //! Jobs: made, queued, run side by side (at most `maxRunning` at once), stopped, waited on and
-//! kept across restarts. Each runs in its own worktree, `home/worktrees/<job id>`, with its agent
-//! and the repository's check in the job sandbox (`sandbox`).
+//! kept across restarts, each in its own worktree, `home/worktrees/<job id>`. The owner's own
+//! Claude Code jobs (and Codex's in Bypass, on macOS) run in the own lane under the CLI's sandbox;
+//! another Obi's work, untrusted work and the rest stay in Oby's box (docs/contracts/lanes.md).
 //!
-//! Two kinds of job run here. The owner's own work (`POST /v1/jobs`): a branch from the base, rounds
-//! of the agent and the check, commits counted, then published (crate::publish) and its pull
-//! request followed (crate::github). And a review another Obi asked for
-//! ([`Jobs::start_obi_review`]): a fresh worktree detached at the request's commit, the request
-//! quoted as data, the agent reading only, the check in the sandbox, a typed result body.
+//! It owns each job's status and side fields, its task chain and the in-memory `State` sets, and
+//! saves jobs through crate::store; it hands inbox items to the Sphere link, which writes them, and
+//! never writes a conversation or the vault (docs/ARCHITECTURE.md, "State ownership"). Two kinds:
+//! the owner's own (`POST /v1/jobs`), and another Obi's review ([`Jobs::start_obi_review`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -12666,7 +12666,10 @@ impl Jobs {
                             let reviews = merging.as_ref().ok().map(|m| m.reviews.as_slice());
                             crate::merge::closed(job, &pull_request, reviews);
                         }
-                        job.pull_request = Some(pull_request.clone());
+                        // A read from before obid's own merge doesn't undo it (MERGING-2).
+                        if !crate::merge::keep_read(job, &pull_request) {
+                            return;
+                        }
                         job.pull_request_error = None;
                         // What a merge needs, when it read: else nothing carries on this time.
                         carried = merging.ok().map(|merging| (pull_request, merging));
@@ -13045,8 +13048,8 @@ impl Jobs {
     }
 
     /// Right before obid sends `action` for the job `id` about `head` (crate::merge): whether the
-    /// job is still one to carry on at that head, and if so its mark (`Job::sending`), saved
-    /// before it's sent.
+    /// job is still one to carry on at that head, not merged already, and if so its mark
+    /// (`Job::sending`), saved before it's sent.
     fn about_to_send(
         &self,
         id: &str,
@@ -13066,7 +13069,7 @@ impl Jobs {
                 && job.obi.is_none()
                 && !(action == "branchDelete" && job.status.is_active());
             if (carries(job) && job.pushed_head() == Some(head)) || owners {
-                crate::merge::mark(
+                going = crate::merge::mark(
                     job,
                     crate::job::Sending {
                         action: action.into(),
@@ -13075,7 +13078,6 @@ impl Jobs {
                         login,
                     },
                 );
-                going = true;
             }
         });
         going
@@ -15048,18 +15050,8 @@ pub fn owner_review_item(
         text,
         options,
         details: Some(details),
-        recommended: None,
         created: obi_protocol::time::now(),
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(crate::sphere::inbox::arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
         watch: Some(Box::new(serde_json::json!({
             "source": "github",
             "url": format!("https://github.com/{repo}/pull/{number}"),
@@ -15072,6 +15064,7 @@ pub fn owner_review_item(
             "review": clean.then_some(summary),
             "verdict": verdict,
         }))),
+        ..Default::default()
     }
 }
 

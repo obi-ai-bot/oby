@@ -614,6 +614,11 @@ async fn method_not_allowed() -> ApiError {
 // ---------------------------------------------------------------------------------------------
 // GET /v1/status
 
+/// The optional features obid serves, by stable name (docs/contracts/capabilities.md): sorted, each
+/// name one behaviour forever (a changed behaviour gets a new name, such as `-v2`). A new optional
+/// feature adds its name here and its row in docs/runner-api.md's Capabilities table together.
+pub const CAPABILITIES: &[&str] = &["folders-v1"];
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -667,6 +672,8 @@ pub struct Status {
     pub tools: Vec<ToolJson>,
     /// The files obid kept aside or couldn't read, never loaded (HOME-8). Older obids don't send it.
     pub unreadable: Vec<serde_json::Value>,
+    /// [`CAPABILITIES`], sent even when empty (CAPS-1). Older obids don't send it.
+    pub capabilities: Vec<&'static str>,
 }
 
 /// `status.tools[]`: the binary's absolute path and what its `--version` said, each null when
@@ -1049,6 +1056,7 @@ async fn status(State(shared): State<Arc<Shared>>) -> Result<axum::Json<Status>,
                 waiting: serde_json::json!([]),
             }),
         folders: true,
+        capabilities: CAPABILITIES.to_vec(),
         receipts: shared.receipts.is_some(),
         scanner: ScannerJson {
             gitleaks: tokio::task::spawn_blocking(crate::scan::gitleaks_runs)

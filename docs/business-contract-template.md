@@ -2,6 +2,16 @@
 
 Use this template in the feature issue before implementation. Scale the detail to the feature: state each applicable rule precisely and mark sections that do not apply. Link the issue from the implementation and document the implemented runner API in [runner-api.md](runner-api.md). Plans, epics and ideas not yet scheduled belong in [oby-plan](https://github.com/obi-ai-bot/oby-plan).
 
+## Current behavior, not history
+
+A contract states what is true now, and its numbered scenarios.
+
+- An owner's decision behind a rule is linked from the rule as `([why](../decisions/<file>.md))`. The decision's words, its date, its reason and what it replaced live in that file ([the decision log](decisions/README.md), "Decisions from a contract").
+- Other history (what a fix replaced, a finding and its date, when a scenario was implemented) goes in the pull request's body.
+- A date or "before" that still decides behavior stays, because it is behavior: which older answers, jobs or items a rule covers, for example.
+- Ids stay as they are: scenario ids, other contracts' ids, the owner's decision codes and test names.
+- Other contracts follow this rule when they are next touched.
+
 ## Feature and status
 
 - **Outcome:** What can the person accomplish, and why does it matter?

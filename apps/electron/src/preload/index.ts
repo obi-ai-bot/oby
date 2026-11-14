@@ -112,6 +112,12 @@ contextBridge.exposeInMainWorld('app', {
     ipcRenderer.on('update', listener);
     return () => { ipcRenderer.off('update', listener); };
   },
+  // Settings rows obid has no setting for yet, kept by main (main/settings.ts): all of them, and
+  // one of them kept (null: refused)
+  settings: {
+    local: () => ipcRenderer.invoke('local-settings') as Promise<Record<string, unknown> | null>,
+    keep: (key: string, value: unknown) => ipcRenderer.invoke('local-setting', key, value) as Promise<boolean | null>,
+  },
   // an Obysphere joined by its invite link (main/sphere.ts), and Leave from its settings: main
   // holds the owner key; Leave answers why the Obysphere wasn't told, or null
   onSphere(fn: (joined: { sphere: string; name: string }) => void) {
