@@ -419,6 +419,10 @@ pub struct Item {
     /// (crate::watch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<Box<Value>>,
+    /// One more each time obid sends it changed (an `inbox` event), as a job's `revision`
+    /// (EVENTS-9). Kept in its file.
+    #[serde(default)]
+    pub revision: u64,
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -444,6 +448,13 @@ pub fn arrival() -> u64 {
 }
 
 impl Item {
+    /// A copy to keep and send, one revision on: taken under the lock it changed under, as
+    /// [`crate::job::Job::revised`].
+    pub fn revised(&mut self) -> Item {
+        self.revision += 1;
+        self.clone()
+    }
+
     /// The order items arrived in: `arrived`, or for an item without it the start of its second.
     pub fn arrival_order(&self) -> u64 {
         self.arrived
@@ -516,6 +527,7 @@ impl Item {
             "happened": null,
             "why": null,
             "obi": self.obi,
+            "revision": self.revision,
         });
         if let Some(plugin) = &self.plugin {
             shown["plugin"] = plugin.clone();
