@@ -111,7 +111,9 @@ impl Jobs {
                 return;
             }
             started = true;
-            next_round(job);
+            if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                change.apply(job);
+            }
             match round {
                 Round::Checks => {
                     job.checks_rounds += 1;

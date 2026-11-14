@@ -1,11 +1,16 @@
 //! A job: one piece of work, where it runs and how it went (docs/runner-api.md, "Job"), as obid
 //! keeps it and as the apps read it. The JSON carries every key the Swift runner's does
 //! (Runner/API.swift, `JobJSON`), null where nothing is known, plus obid's own `obi` and `worktree`.
-//! It owns the `Job` type and what a job decides from itself alone (`Job::note_mark`); it never
-//! saves a job, sets its status or runs anything (docs/ARCHITECTURE.md, "State ownership").
+//! It owns the `Job` type and what a job decides from itself alone (`Job::note_mark`), and sets its
+//! status for a new round or a run's end only in `job/lifecycle.rs`; it never saves a job or runs
+//! anything (docs/ARCHITECTURE.md, "State ownership").
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+mod lifecycle;
+pub use lifecycle::{Command, EndKind, Ended, Refused, transition};
+pub(crate) use lifecycle::{TAKING_OVER, hands_over};
 
 /// `queued`, `running`, `done`, `failed`, `stopped` or `interrupted`. On obid, `interrupted` is a
 /// job that needs the owner: it stopped part way, its work kept on its branch (`reason`, `nextStep`);
@@ -3007,7 +3012,7 @@ mod tests {
         job.finished = Some(100);
         job.offered(100);
         assert!(job.approvable_at(100));
-        // The job runs again (`next_round`) and ends in the same second.
+        // The job runs again (`Command::NextRound`) and ends in the same second.
         job.round = Some(job.current_round() + 1);
         job.finished = Some(100);
         assert!(!job.approvable_at(100));

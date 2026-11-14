@@ -5,7 +5,7 @@
 use std::path::Path;
 
 /// `.status = ` (never `==`) in all of `src/`.
-const STATUS_WRITES: usize = 19;
+const STATUS_WRITES: usize = 18;
 /// `store.save(` in `src/jobs.rs`.
 const JOBS_RS_SAVES: usize = 4;
 /// `j.branch == ` in all of `src/`: a follow-up carrying its first job's branch.

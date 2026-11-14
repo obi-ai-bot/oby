@@ -23,7 +23,7 @@ use tokio::sync::{Notify, watch};
 use crate::agent::{self, Answer, Event as AgentEvent, Launch, Ruling, Tool};
 use crate::config::{Config, Repo};
 use crate::events::Events;
-use crate::job::{Job, JobArtifact, ObiRef, Phase, Status, Waiting};
+use crate::job::{EndKind, Ended, Job, JobArtifact, ObiRef, Phase, Status, Waiting, transition};
 use crate::limits::holds::Work;
 use crate::permissions::{self, Call, Decision, Mode, Permission, Rule};
 use crate::process::{self, Signal};
@@ -509,6 +509,57 @@ enum End {
     Asked(permissions::QuestionCall),
 }
 
+impl End {
+    /// This end as the lifecycle hears it ([`crate::job::Command::RunEnded`]), with `review` as
+    /// another Obi's review result and `at` when it ended.
+    fn ended(&self, review: Option<Value>, at: i64) -> Ended {
+        let (kind, reason, next, resumes) = match self {
+            End::Failed(why) => {
+                let next = Some(crate::job::TRY_AGAIN);
+                (EndKind::Failed, why.clone(), next, None)
+            }
+            End::NeedsYou {
+                reason,
+                next,
+                resumes,
+            } => (EndKind::NeedsYou, reason.clone(), *next, *resumes),
+            End::AccountLimit { reason, .. } => (EndKind::AccountLimit, reason.clone(), None, None),
+            End::Asked(_) => (EndKind::Asked, String::new(), None, None),
+        };
+        Ended {
+            kind,
+            reason,
+            next,
+            resumes,
+            review,
+            at,
+        }
+    }
+}
+
+/// [`Jobs::apply`], where `Command` is the lifecycle's rather than `std::process`'s.
+mod lifecycle {
+    use super::Jobs;
+    use crate::job::{Command, Job, Refused, transition};
+
+    impl Jobs {
+        /// Runs the lifecycle's `cmd` on job `id` and keeps what it decided, as [`Jobs::update`]
+        /// does. `None` for a job obid doesn't have.
+        pub(super) fn apply(&self, id: &str, cmd: Command) -> Option<Result<Job, Refused>> {
+            let mut refused = None;
+            let job = self.update_after(
+                id,
+                |_| (),
+                |job, ()| match transition(job, &cmd) {
+                    Ok(change) => change.apply(job),
+                    Err(why) => refused = Some(why),
+                },
+            )?;
+            Some(refused.map_or(Ok(job), Err))
+        }
+    }
+}
+
 impl From<String> for End {
     fn from(why: String) -> End {
         End::Failed(why)
@@ -871,10 +922,7 @@ pub enum SettingsError {
     Unkept(std::io::Error),
 }
 
-/// Why a job couldn't be made: a person can read it (`422`).
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct Refused(pub String);
+pub use crate::job::Refused;
 
 struct State {
     jobs: HashMap<String, Job>,
@@ -4359,7 +4407,9 @@ impl Jobs {
                 job.ran_secs = None;
                 job.budget_from = Some(spent(&job));
             }
-            next_round(&mut job);
+            if let Ok(change) = transition(&job, &crate::job::Command::NextRound) {
+                change.apply(&mut job);
+            }
             job.asked = true;
             self.keep(&mut state, id, job.revised()).ok()?
         };
@@ -7125,16 +7175,18 @@ impl Jobs {
                     }
                     _ => None,
                 };
-                self.update(id, |job| {
-                    if let Some(failover) = failover.as_ref().filter(|_| job.status.is_active()) {
-                        return failover.apply(job, self);
-                    }
-                    if let Some(at) = resume_at {
-                        account_limits::start_wait(job, at);
-                        return;
-                    }
-                    settle_end(job, &end, id, review);
-                });
+                if let End::AccountLimit { reason, .. } = &end {
+                    self.update(id, |job| match (&failover, resume_at) {
+                        (Some(failover), _) if job.status.is_active() => failover.apply(job, self),
+                        (_, Some(at)) => account_limits::start_wait(job, at),
+                        // It moved or waits (LIMITS-15), or Stop came as it ended (LIMITS-6).
+                        _ => tracing::info!("job {id}: {reason}"),
+                    });
+                } else {
+                    use crate::job::Command;
+                    let at = obi_protocol::time::now();
+                    self.apply(id, Command::RunEnded(end.ended(review, at)));
+                }
                 // The `stalled` event (docs/runner-api.md): the job stays on its own card.
                 if let Some(job) = self.get(id).filter(|j| j.stalled.is_some()) {
                     self.events.send("stalled", job.to_json());
@@ -11731,7 +11783,9 @@ impl Jobs {
         self.update(id, |job| {
             job.heard.push(review::round_prompt(review.round));
             job.replies.push((review.round, String::new()));
-            next_round(job);
+            if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                change.apply(job);
+            }
             job.step = "Working on Oby's review".into();
         });
         self.review_items(id, None);
@@ -12000,7 +12054,9 @@ impl Jobs {
             if matches!(quoted, Some(Ok(()))) && job.status == Status::Done {
                 job.heard.push(review::round_prompt(round));
                 job.replies.push((round, String::new()));
-                next_round(job);
+                if let Ok(change) = transition(job, &crate::job::Command::NextRound) {
+                    change.apply(job);
+                }
                 job.step = "Working on Oby's review".into();
             }
         });
@@ -14080,86 +14136,6 @@ fn without_project_instructions(
         }
         Tool::Cursor => {}
     }
-}
-
-/// How job `id` ends after a run that didn't end done (`end`): interrupted or failed, and why,
-/// with `review` as another Obi's review result.
-fn settle_end(job: &mut Job, end: &End, id: &str, review: Option<Value>) {
-    let (reason, next, resumes) = match end {
-        // It moved or waits (LIMITS-15), or Stop came as it ended (LIMITS-6).
-        End::AccountLimit { reason, .. } => {
-            return tracing::info!("job {id}: {reason}");
-        }
-        End::Failed(why) => (why.clone(), Some(crate::job::TRY_AGAIN), None),
-        End::NeedsYou {
-            reason,
-            next,
-            resumes,
-        } => (reason.clone(), *next, *resumes),
-        // Only a stop or a shutdown ends a run that moved on, and one that asked
-        // waits: both handled above.
-        End::Asked(_) => (
-            "It stopped while moving to another account.".into(),
-            Some(crate::job::TRY_AGAIN),
-            None,
-        ),
-    };
-    // Needing the owner, with a session to pick up, at the cap or with its handoff
-    // to write (LIMITS-17): the agent's summary stays (`summaries` has every round's),
-    // and why it stopped is said apart. Else failed, its summary why; with a
-    // session, a failure keeps Try again (RECOVERY-14).
-    let owners_failed = matches!(end, End::Failed(_)) && job.obi.is_none();
-    let needs_you = matches!(end, End::AccountLimit { .. })
-        || moves::hands_over(job)
-        || (matches!(end, End::NeedsYou { .. }) && (job.session.is_some() || job.recovery.spent()))
-        || (owners_failed && job.session.is_some());
-    if needs_you {
-        job.status = Status::Interrupted;
-        if job.summary.trim().is_empty() {
-            job.summary = reason.clone();
-        }
-        job.next_step = next.map(str::to_owned);
-        job.resumes_at = resumes;
-    } else {
-        job.status = Status::Failed;
-        job.summary = reason.clone();
-        job.next_step = None;
-        job.resumes_at = None;
-    }
-    job.reason = Some(reason);
-    job.asked = false;
-    job.publish_step = None;
-    job.step = String::new();
-    job.finished = Some(obi_protocol::time::now());
-    if job.obi.is_some() {
-        job.review_result = review;
-    }
-}
-
-/// One more round of an ended job's session: queued for its work again, the round counted, and
-/// how it last ended gone (Try again, and Oby's review asking for changes).
-fn next_round(job: &mut Job) {
-    job.status = Status::Queued;
-    job.phase = Some(Phase::Work);
-    job.round = Some(job.current_round() + 1);
-    if let Some(rounds) = job.rounds.filter(|r| *r > 1) {
-        job.rounds = Some(rounds + 1);
-    }
-    job.finished = None;
-    job.dismissed = None;
-    job.archived = None;
-    job.limit = None;
-    job.reason = None;
-    job.stopped_by = None;
-    job.next_step = None;
-    (job.resumes_at, job.unjudged) = (None, None);
-    job.account_limit_blocked = false;
-    job.account_limit_episode = None;
-    job.account_limit_nonce = None;
-    job.account_limit_reset = None;
-    job.account_limit_choice = None;
-    job.stalled = None;
-    job.waiting = None;
 }
 
 /// A question its agent asked the owner and their answer, as [`Job::said`] keeps them.
@@ -22911,7 +22887,14 @@ mod tests {
         ];
         for (case, before, end, (status, summary, next, resumes)) in cases {
             let mut job = before.clone();
-            settle_end(&mut job, &end, "j", review.clone());
+            transition(
+                &job,
+                &crate::job::Command::RunEnded(
+                    end.ended(review.clone(), obi_protocol::time::now()),
+                ),
+            )
+            .unwrap()
+            .apply(&mut job);
             assert!(job.finished.is_some(), "{case}: {job:?}");
             let reason = match &end {
                 End::Asked(_) => asked,
@@ -22935,7 +22918,12 @@ mod tests {
         // An empty summary takes the reason, needing the owner too.
         let mut job = at_work(Some("s"));
         job.summary = " ".into();
-        settle_end(&mut job, &failed(), "j", None);
+        transition(
+            &job,
+            &crate::job::Command::RunEnded(failed().ended(None, obi_protocol::time::now())),
+        )
+        .unwrap()
+        .apply(&mut job);
         assert_eq!(
             (job.status, job.summary.as_str()),
             (Status::Interrupted, why)
@@ -22947,7 +22935,12 @@ mod tests {
             reason: "Full.".into(),
             reset: Some(7),
         };
-        settle_end(&mut job, &limit, "j", review.clone());
+        transition(
+            &job,
+            &crate::job::Command::RunEnded(limit.ended(review.clone(), obi_protocol::time::now())),
+        )
+        .unwrap()
+        .apply(&mut job);
         assert_eq!(job, before);
     }
 
@@ -23015,7 +23008,9 @@ mod tests {
             before.recovery.tries = 3;
             before.recovery.cut = Some("went down".into());
             let mut job = before.clone();
-            next_round(&mut job);
+            transition(&job, &crate::job::Command::NextRound)
+                .unwrap()
+                .apply(&mut job);
             let mut expected = before.clone();
             expected.status = Status::Queued;
             expected.phase = Some(Phase::Work);
