@@ -2708,24 +2708,33 @@ impl Link {
         if let Err(e) = self.read_directory().await {
             self.note_error(&e);
         }
-        let state = self.lock();
-        let me = state
-            .membership
-            .as_ref()
-            .map(|m| m.obi_id.clone())
-            .unwrap_or_default();
-        let mut list: Vec<Value> = state
-            .directory
-            .members
-            .iter()
-            .filter(|(obi, m)| **obi != me && m.active)
-            .map(|(obi, m)| {
-                let mut accepts = m.accepts.clone();
-                accepts.sort();
-                json!({"obi": obi, "owner": m.owner, "accepts": accepts,
-                       "sealed": m.seal.is_some(), "verified": self.pins.verified(&m.owner)})
-            })
-            .collect();
+        let mut list: Vec<Value> = {
+            let state = self.lock();
+            let me = state
+                .membership
+                .as_ref()
+                .map(|m| m.obi_id.clone())
+                .unwrap_or_default();
+            state
+                .directory
+                .members
+                .iter()
+                .filter(|(obi, m)| **obi != me && m.active)
+                .map(|(obi, m)| {
+                    let mut accepts = m.accepts.clone();
+                    accepts.sort();
+                    json!({"obi": obi, "owner": m.owner, "accepts": accepts,
+                           "sealed": m.seal.is_some(), "verified": self.pins.verified(&m.owner)})
+                })
+                .collect()
+        };
+        // Once the state is let go: who looks alike reads it again.
+        for item in &mut list {
+            let alike = self.lookalikes(item["owner"].as_str().unwrap_or_default());
+            if !alike.is_empty() {
+                item["lookalike"] = json!(alike);
+            }
+        }
         list.sort_by(|a, b| {
             (a["owner"].as_str(), a["obi"].as_str()).cmp(&(b["owner"].as_str(), b["obi"].as_str()))
         });

@@ -169,6 +169,20 @@ impl Link {
         named(members, &me)
     }
 
+    /// The owner ids that look like `owner` ([`crate::sphere::lookalike`]): among the other active
+    /// members as last read and every owner pinned, never the owner's own, which isn't compared.
+    pub fn lookalikes(&self, owner: &str) -> Vec<String> {
+        let me = self.owner();
+        if owner == me {
+            return Vec::new();
+        }
+        let members = self.ask_members();
+        let pinned = self.pins.owners();
+        let others = members.iter().map(|m| m.owner.as_str());
+        let others = others.chain(pinned.iter().map(String::as_str));
+        crate::sphere::lookalike::of(owner, others.filter(|other| *other != me))
+    }
+
     /// Who this Oby speaks for, for the model that answers by itself: without it, a question that
     /// names them looks like it's about someone else.
     pub(super) fn own_name(&self) -> Value {
@@ -396,14 +410,19 @@ impl Link {
             .iter()
             .flat_map(|e| e.posts(&me, verified))
             .collect();
-        Ok(json!({
+        let mut thread = json!({
             "owner": owner,
             "name": members.first().map_or(owner, |m| &m.name),
             "member": known.then_some(!members.is_empty()),
             "takesQuestions": known.then(|| members.iter().any(|m| m.takes_questions)),
             "verified": verified,
             "posts": posts,
-        }))
+        });
+        let alike = self.lookalikes(owner);
+        if !alike.is_empty() {
+            thread["lookalike"] = json!(alike);
+        }
+        Ok(thread)
     }
 
     /// Tells the apps which thread `exchange` changed: a `peerThread` event with its posts.
