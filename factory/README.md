@@ -13,10 +13,12 @@ bin/gate        runs checks.sh in a job's worktree → round-N/checks.md; with `
                 macOS part on the Mac worker (the second Mac) when it is free, else on this Mac; `gate --idle`
                 deallocates the idle VM (job queue runs it)
 bin/route       risk + surfaces → the job's reviewers and models
-bin/test-run    a builder's own test, clippy or build run at nice 15, half the cores; only runs that can build Rust or
-                Xcode code take turns on its own lock, other runs start at once
+bin/test-run    a builder's or approver's own test, clippy or build run at nice 15, half the cores; only runs that can
+                build Rust or Xcode code take turns on its own lock, other runs start at once; it refuses a run whose
+                CARGO_TARGET_DIR is the shared Cargo folder: they build in <worktree>/core/target
 bin/check-lock  the gate's lock holder for a check that builds Rust: one check at a time on the shared Cargo folder;
-                it stops the check's leftovers and passes its exit code through
+                inside the lock it gives the worktree's tracked core/ and tools/ files the current time, so the
+                worktree's own code is built; it stops the check's leftovers and passes its exit code through
 bin/child_session.py  runs a command in a session of its own and stops its leftovers; shared by check-lock, test-run
                 and nightly
 bin/nightly     the nightly full Mac check: checks.sh with OBY_CHECK_ALL=1 on origin/dev, when no gate waits →
@@ -34,8 +36,12 @@ jobs/           runtime state, local to this Mac (gitignored); jobs/remote-gate/
 started, the log's last 80 lines) and its `<stamp>.log` per run, named by the UTC start time; the dashboard
 shows the newest.
 
-Builders' own test, clippy and build runs go through `bin/test-run`, so they don't slow a gate past the check's
-caps. Only runs that can build Rust or Xcode code (a command naming `cargo`, `cargo-nextest`, `nextest`, `rustc`,
+Builders', code reviewers' and approvers' own test, clippy and build runs go through `bin/test-run`, so they don't
+slow a gate past the check's caps, and build in the worktree's own folder:
+`CARGO_TARGET_DIR=<worktree>/core/target bin/test-run -- cargo test -p obid --test <x>`. test-run refuses a run
+whose `CARGO_TARGET_DIR` is the shared Cargo folder (`~/Library/Caches/oby-factory/core-target`), where another
+worktree's build of a workspace crate can run in place of this one's: only the gate's check builds there, under
+`bin/check-lock`. Only runs that can build Rust or Xcode code (a command naming `cargo`, `cargo-nextest`, `nextest`, `rustc`,
 `xcodebuild`, `oby-check.sh`, `oby-check-blok`, or `swift` with `build` or `test`) take turns, one at a time on
 `~/Library/Caches/oby-factory/test-run.lock`, never the gate's lock, so a gate never waits on them; the holder
 line records its pid, when it took the lock, its folder and its command, and a run still waiting says who holds

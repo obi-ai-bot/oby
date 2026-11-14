@@ -47,8 +47,12 @@ is in the main checkout; your one file goes there.
 job folder has its output. Don't re-run the test suite, lint or build. Run a
 command yourself only to confirm a specific finding, and never use a mode that
 rewrites files, such as `--fix`. A test or build command you run goes through
-`factory/bin/test-run --` (`factory/bin/test-run -- cargo test -p obid --test <x>`),
-so it takes its turn with builders' runs and yields the CPU to gates.
+`factory/bin/test-run --`, so it takes its turn with builders' runs and yields
+the CPU to gates, and a cargo run builds in the worktree's own folder, never the
+factory's shared one (`~/Library/Caches/oby-factory/core-target`), where another
+worktree's build can run in place of this branch's; test-run refuses the shared
+folder. That is
+`cd <worktree> && CARGO_TARGET_DIR=<worktree>/core/target factory/bin/test-run -- cargo test -p obid --test <x>`.
 
 ## What to look for
 

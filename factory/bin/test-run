@@ -44,7 +44,17 @@ set to half the cores (at least 1); a smaller positive value the caller set is
 kept. An explicit `-j` or `--test-threads` on the command line overrides them.
 Commands that read none of them (npm test, npm run typecheck, swift test) are
 held only by the priority (and swift test by the lock), not by a core cap. Everything else in
-the environment, CARGO_TARGET_DIR included, passes through unchanged.
+the environment passes through unchanged.
+
+Build folder. A run whose CARGO_TARGET_DIR is the factory's shared Cargo folder
+(CARGO_TARGET_DIR_FACTORY, else ~/Library/Caches/oby-factory/core-target, as in
+factory/bin/job; compared with realpath, so a trailing / or a link counts),
+heavy or light, is refused before any lock: test-run says so in one line and
+exits 2 without running it. Cargo gives a workspace crate the same build record
+in every worktree and finds it fresh when no source file is newer than that
+build, so a crate another worktree built there can run in place of this one's.
+Run with CARGO_TARGET_DIR=<worktree>/core/target instead. Any other
+CARGO_TARGET_DIR, or none, passes through unchanged.
 
 Ending. As factory/bin/check-lock, through child_session.py beside it: the
 lock stays in test-run's own process and isn't inherited; the command runs as a
@@ -66,6 +76,8 @@ import child_session
 
 NAME = "factory/bin/test-run"
 LOCK = Path(os.environ.get("OBY_TEST_RUN_LOCK") or Path.home() / "Library/Caches/oby-factory/test-run.lock")
+SHARED = Path(os.environ.get("CARGO_TARGET_DIR_FACTORY",
+                             Path.home() / "Library/Caches/oby-factory/core-target"))
 REPORT_SECONDS = float(os.environ.get("OBY_TEST_RUN_REPORT_SECONDS") or 300)
 PRIORITY = 15
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
@@ -122,6 +134,14 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     command = argv[2:]
+    target = os.environ.get("CARGO_TARGET_DIR")
+    if target and os.path.realpath(target) == os.path.realpath(SHARED):
+        print(
+            f"{NAME}: CARGO_TARGET_DIR is the factory's shared Cargo folder ({SHARED}), where another worktree's"
+            " build can run in place of this one's; run with CARGO_TARGET_DIR=<worktree>/core/target",
+            file=sys.stderr,
+        )
+        return 2
     child_session.handle_stops()
     if heavy(command):
         fd = lock()

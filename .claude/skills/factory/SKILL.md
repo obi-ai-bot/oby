@@ -56,7 +56,7 @@ through the scripts. `factory/jobs/` is gitignored runtime state.
 <repo>/factory/bin/job                         the only writer of job.json
 <repo>/factory/bin/gate                        runs checks.sh in a worktree → round-N/checks.md
 <repo>/factory/bin/route                       risk + surfaces → the job's agents
-<repo>/factory/bin/test-run                    runs a builder's own test, clippy or build run: one at a time, below the gates
+<repo>/factory/bin/test-run                    runs a builder's or approver's own test, clippy or build run: one at a time, below the gates; refuses the shared Cargo folder
 <repo>/factory/bin/check-lock                  the gate's lock holder for a check that builds Rust: stops its leftovers, passes its code
 <repo>/factory/bin/child_session.py            a command in a session of its own, its leftovers stopped; shared by check-lock, test-run, nightly
 <repo>/factory/bin/nightly                     the nightly full Mac check of origin/dev when it is due → jobs/nightly/<stamp>.md
@@ -206,8 +206,13 @@ with one GitHub call at most every 2 minutes:
 is skipped until the next time. Run `factory/bin/job clean` yourself when the disk runs low; it prints
 the free space before and after.
 
-**Builders' own runs.** Builders, and a code reviewer confirming a finding, run their own tests, clippy
-and builds through `factory/bin/test-run -- <command>`. Those runs take turns on
+**Builders' own runs.** Builders, a code reviewer confirming a finding and an approver spot-checking a
+criterion run their own tests, clippy and builds through `factory/bin/test-run -- <command>`, building in the
+worktree's own folder: `CARGO_TARGET_DIR=<worktree>/core/target factory/bin/test-run -- cargo …`. test-run
+refuses a run whose `CARGO_TARGET_DIR` is the shared Cargo folder (`~/Library/Caches/oby-factory/core-target`),
+where another worktree's build of a workspace crate can run in place of this one's; only the gate's check builds
+there, under `check-lock`, which gives the worktree's tracked `core/` and `tools/` files the current time first.
+Those runs take turns on
 `~/Library/Caches/oby-factory/test-run.lock` (beside the shared Cargo folder, so pruning never deletes it),
 run at `nice -n 15` with `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS` and `NEXTEST_TEST_THREADS` at half the cores,
 and a run that waits says for whom. Gates never wait on it: the gate's check holds only `.factory-check.lock`,
