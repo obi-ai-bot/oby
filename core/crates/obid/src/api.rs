@@ -617,7 +617,7 @@ async fn method_not_allowed() -> ApiError {
 /// The optional features obid serves, by stable name (docs/contracts/capabilities.md): sorted, each
 /// name one behaviour forever (a changed behaviour gets a new name, such as `-v2`). A new optional
 /// feature adds its name here and its row in docs/runner-api.md's Capabilities table together.
-pub const CAPABILITIES: &[&str] = &["folders-v1"];
+pub const CAPABILITIES: &[&str] = &["events-replay-v1", "folders-v1"];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

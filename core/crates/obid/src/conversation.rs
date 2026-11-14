@@ -2053,6 +2053,7 @@ mod tests {
                 .send(crate::events::Event {
                     name: "job",
                     data: serde_json::json!({"id": id, "status": status}),
+                    id: None,
                 })
                 .unwrap();
         }

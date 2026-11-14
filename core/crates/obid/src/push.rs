@@ -2881,6 +2881,7 @@ mod tests {
             name: "turn",
             data: json!({"id": id, "who": who, "text": text, "conversation": conversation,
                          "at": "2026-10-23T12:00:00Z", "jobs": []}),
+            id: None,
         }
     }
 
@@ -3000,7 +3001,8 @@ mod tests {
         assert!(push.heard(&turn("c1", "t1", "oby", "Morning. Two jobs\nneed you.")));
         assert!(!push.heard(&Event {
             name: "step",
-            data: json!({})
+            data: json!({}),
+            id: None,
         }));
         look(vec![j.clone()], needs.clone(), paired.clone()).await;
         assert!(sent(&heard).is_empty());
