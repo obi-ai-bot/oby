@@ -20,8 +20,9 @@ use super::actions::{self, Asked, Outcome, Talk};
 use super::harness::{Place, Session};
 use super::plan::{Action, Dispatch, Plan};
 use crate::api::Shared;
+use crate::mcp;
 
-const VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+const SERVER: &str = "Oby's tools server";
 
 /// Oby's tools, as `tools/list` gives them.
 pub(super) fn list() -> Value {
@@ -182,67 +183,45 @@ pub(super) fn list() -> Value {
 }
 
 /// One JSON-RPC message from a conversation's Claude Code waiting for a turn
-/// (crate::brain::harness::Sessions::waiting_with): it connects and lists the tools, and calls
-/// none, since no turn is under way for a call to act for. None for a notification.
+/// (crate::brain::harness::Sessions::waiting_with), or any but a tool call during one: it connects
+/// and lists the tools, and calls none, since no turn is under way for a call to act for. None for
+/// a notification.
 pub fn handshake(body: &Value) -> Option<Value> {
-    let method = body.get("method")?.as_str()?;
-    let id = body.get("id").cloned().filter(|id| !id.is_null())?;
-    let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
-    Some(match plain(method, &params) {
-        Some(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-        None => json!({"jsonrpc": "2.0", "id": id,
-            "error": {"code": -32600, "message": "No turn of Oby's is under way: tools are called only in one."}}),
-    })
-}
-
-/// The answer to a message that isn't a tool call: `initialize`, `ping`, `tools/list`.
-fn plain(method: &str, params: &Value) -> Option<Value> {
-    Some(match method {
-        "initialize" => {
-            let asked = params["protocolVersion"].as_str().unwrap_or("");
-            json!({"protocolVersion": if VERSIONS.contains(&asked) { asked } else { VERSIONS[0] },
-                   "capabilities": {"tools": {"listChanged": false}},
-                   "serverInfo": {"name": "oby", "version": crate::api::API_VERSION},
-                   "instructions": "Oby's own tools: your room's files, jobs and managing them, your task list, the inbox and past conversations. obid checks every call by its rules."})
-        }
-        "ping" => json!({}),
-        "tools/list" => json!({"tools": list()}),
-        _ => return None,
-    })
-}
-
-/// One JSON-RPC message to the server; none for a notification.
-pub async fn handle(shared: &Arc<Shared>, session: &Session, body: Value) -> Option<Value> {
-    let method = body.get("method")?.as_str()?;
-    let id = body.get("id").cloned().filter(|id| !id.is_null())?;
-    let params = body.get("params").cloned().unwrap_or_else(|| json!({}));
+    let (method, id, params) = mcp::read(body)?;
     let result = match method {
-        "tools/call" => {
-            let name = params["name"].as_str().unwrap_or("");
-            let args = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            session.heard(name, &args, super::harness::READ_WAIT).await;
-            answered(call(shared, session, name, args).await)
-        }
-        other => match plain(other, &params) {
-            Some(result) => result,
-            None => {
-                return Some(json!({"jsonrpc": "2.0", "id": id,
-                    "error": {"code": -32601, "message": format!("Oby's tools don't answer {method}.")}}));
-            }
-        },
+        "initialize" => mcp::hello(
+            &params,
+            "oby",
+            "Oby's own tools: your room's files, jobs and managing them, your task list, the inbox and past conversations. obid checks every call by its rules.",
+        ),
+        "ping" => mcp::ping(),
+        "tools/list" => json!({"tools": list()}),
+        "tools/call" => return Some(mcp::refused(id, -32600, mcp::NO_TURN)),
+        _ => return Some(mcp::unknown(id, method, SERVER)),
     };
-    Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    Some(mcp::ok(id, result))
 }
 
-/// A tool call's result: its answer, or why it refused, with every secret obid knows taken out.
+/// One JSON-RPC message to the server during a turn; none for a notification.
+pub async fn handle(shared: &Arc<Shared>, session: &Session, body: Value) -> Option<Value> {
+    let (method, id, params) = mcp::read(&body)?;
+    if method != "tools/call" {
+        return handshake(&body);
+    }
+    let name = params["name"].as_str().unwrap_or("");
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    session.heard(name, &args, super::harness::READ_WAIT).await;
+    let answer = answered(call(shared, session, name, args).await);
+    Some(mcp::ok(id, answer))
+}
+
+/// A tool call's result: its answer, or why it refused ([`mcp::ok`] takes every secret out).
 fn answered(called: Result<String, String>) -> Value {
     let failed = called.is_err();
-    let text = called.unwrap_or_else(|why| why);
-    json!({"content": [{"type": "text", "text": crate::secrets::known().redact(&text)}],
-           "isError": failed})
+    json!({"content": [{"type": "text", "text": called.unwrap_or_else(|why| why)}], "isError": failed})
 }
 
 /// The tools that may leave a Confirm card when the turn isn't the owner's own word.
@@ -3024,8 +3003,7 @@ mod tests {
         crate::secrets::known().learn("a read tool's test secret", &secret);
         std::fs::write(place.room.join("leak.txt"), format!("key = {secret}\n")).unwrap();
         let (text, _) = run(&place, "oby_read", json!({"path": "leak.txt"})).unwrap();
-        let answered = answered(Ok(text));
-        let sent = answered.to_string();
+        let sent = mcp::ok(json!(1), answered(Ok(text))).to_string();
         assert!(!sent.contains(&secret), "{sent}");
         assert!(sent.contains("[redacted"), "{sent}");
         crate::secrets::known().forget("a read tool's test secret");
