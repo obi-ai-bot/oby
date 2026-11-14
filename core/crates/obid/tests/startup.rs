@@ -335,6 +335,98 @@ async fn an_agent_route_waits_for_the_api() {
     assert!(serving.await.unwrap().is_ok());
 }
 
+/// PUBLISHING-37: job files from before task chains (tests/fixtures/chains/: a chain of three, a
+/// lone job, a follow-up whose parent's file is gone) each get their chain at start and keep the
+/// branch they ran on: the chain of three its first job's id, the other two their own. Each
+/// root's file gets its record, and no file goes or is set aside.
+#[tokio::test(flavor = "multi_thread")]
+async fn publishing_37_old_job_files_get_their_chain() {
+    let folder = Folder::new("publishing-37");
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("jobs")).unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chains");
+    let mut kept = std::collections::BTreeMap::new();
+    for shape in std::fs::read_dir(&fixtures).unwrap().flatten() {
+        if !shape.path().is_dir() {
+            continue;
+        }
+        for file in std::fs::read_dir(shape.path()).unwrap().flatten() {
+            std::fs::copy(file.path(), home.join("jobs").join(file.file_name())).unwrap();
+            let job: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file.path()).unwrap()).unwrap();
+            assert!(job.get("chain").is_none() && job.get("chainRecord").is_none());
+            kept.insert(job["id"].as_str().unwrap().to_owned(), job);
+        }
+    }
+    assert_eq!(kept.len(), 5);
+    let port = free_port();
+    let mut config = config(&folder.0);
+    config.listen = format!("127.0.0.1:{port}").parse().unwrap();
+    let token = "t".repeat(64);
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(obid::serve(
+        config,
+        token.clone(),
+        async move {
+            let _ = stopped.await;
+        },
+        |_| {},
+    ));
+    let client = reqwest::Client::new();
+    first_status(&client, port, &token).await;
+    // A call made while obid starts waits for it.
+    let listed: serde_json::Value = client
+        .get(format!("http://127.0.0.1:{port}/v1/jobs"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let _ = stop.send(());
+    assert!(serving.await.unwrap().is_ok());
+
+    let listed = listed.as_array().unwrap();
+    let chain_of = |id: &str| {
+        let job = listed.iter().find(|j| j["id"] == id).expect(id);
+        assert_eq!(job["branch"], kept[id]["branch"], "{job}");
+        job["chain"].clone()
+    };
+    for id in ["c0000001", "c0000002", "c0000003"] {
+        assert_eq!(chain_of(id), "c0000001", "{id}");
+    }
+    assert_eq!(chain_of("a0000001"), "a0000001");
+    assert_eq!(chain_of("b0000002"), "b0000002");
+    let mut files: Vec<String> = std::fs::read_dir(home.join("jobs"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    files.sort();
+    let named: Vec<String> = kept.keys().map(|id| format!("{id}.json")).collect();
+    assert_eq!(files, named);
+    let unreadable = std::fs::read_dir(home.join("unreadable")).map_or(0, |d| d.count());
+    assert_eq!(unreadable, 0);
+    for root in ["c0000001", "a0000001", "b0000002"] {
+        let file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(home.join(format!("jobs/{root}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(file["chain"], root, "{file}");
+        assert_eq!(
+            file["chainRecord"]["branch"], kept[root]["branch"],
+            "{file}"
+        );
+    }
+    let tip: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.join("jobs/c0000001.json")).unwrap()).unwrap();
+    assert_eq!(tip["chainRecord"]["tip"], "c0000003", "{tip}");
+    let follow_up: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.join("jobs/c0000002.json")).unwrap()).unwrap();
+    assert!(follow_up.get("chainRecord").is_none(), "{follow_up}");
+}
+
 /// `home/schema.json`, read as JSON.
 fn schema(home: &Path) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(home.join("schema.json")).unwrap()).unwrap()

@@ -341,7 +341,10 @@ fn publishing_13_a_branch_someone_made_since_is_left_alone() {
     );
     // From now on it's theirs: nothing merges it, carries it on or deletes it by itself.
     let kept = std::fs::read_to_string(obid.home.join(format!("jobs/{id}.json"))).unwrap();
-    assert!(!kept.contains("madeBranch"), "{kept}");
+    let kept: Value = serde_json::from_str(&kept).unwrap();
+    assert!(kept.get("madeBranch").is_none(), "{kept}");
+    // Nor does its task chain's record make it obid's (PUBLISHING-37).
+    assert_ne!(kept["chainRecord"]["madeBranch"], true, "{kept}");
     assert_eq!(remote_branch(&remote, "codex/9-hello"), Some(main));
 }
 
@@ -645,6 +648,240 @@ fn publishing_32_a_carrier_on_another_letter_case_still_holds_the_branch() {
             .starts_with("Its follow-up "),
         "{}",
         answer.text
+    );
+}
+
+/// What `gh pr view` answers for a pull request that is open.
+const OPEN_VIEW: &str = r#"{"state":"OPEN","reviewDecision":"REVIEW_REQUIRED","mergedAt":null,"baseRefName":"main","headRefOid":""}"#;
+
+/// The owner's own words to job `id`, which ended, signed by their app: the follow-up they start.
+fn follow_up_with(obid: &Obid, id: &str, text: &str) -> Value {
+    let path = format!("/v1/jobs/{id}/messages");
+    let told = call_typed(obid, "POST", &path, &json!({ "text": text }));
+    assert_eq!(told.status, 201, "{}", told.text);
+    told.body
+}
+
+/// Job `id`'s file in the home of an obid that stopped, changed by `change`.
+fn rewrite_job(home: &Path, id: &str, change: impl FnOnce(&mut Value)) {
+    let stored = home.join(format!("jobs/{id}.json"));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(&stored).unwrap()).unwrap();
+    change(&mut kept);
+    std::fs::write(&stored, kept.to_string()).unwrap();
+}
+
+/// PUBLISHING-33 (#1859): a follow-up that failed before it committed anything doesn't break its
+/// task's line. The owner's words to it start one on the task's branch, at its head, and that one's
+/// publish adds to the task's pull request: no second one opens.
+#[test]
+fn publishing_33_another_round_after_a_failed_follow_up_keeps_the_branch() {
+    let folder = Folder::new("publish-33");
+    let bin = fake_gh(&folder.0);
+    std::fs::write(folder.0.join("gh/view.json"), OPEN_VIEW).unwrap();
+    let (obid, _remote, _) = obid_with(&folder, &bin);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "title": "Hello file"}),
+    );
+    let first = ended(&obid, &id);
+    assert_eq!(first["published"], PULL, "{first}");
+    let branch = first["branch"].as_str().unwrap().to_owned();
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let head = git(&clone, &["rev-parse", &format!("refs/heads/{branch}")]);
+    // Its follow-up fails in Prepare, as #1859's did: the branch isn't in obid's clone then.
+    let task_ref = format!("refs/heads/{branch}");
+    git(&clone, &["update-ref", "-d", &task_ref]);
+    let failed = follow_up_with(&obid, &id, "COMMIT: second.txt")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let failed_job = ended(&obid, &failed);
+    assert_eq!(failed_job["status"], "failed", "{failed_job}");
+    assert!(failed_job["worktree"].is_null(), "{failed_job}");
+    git(&clone, &["update-ref", &task_ref, &head]);
+
+    let next = follow_up_with(&obid, &failed, "COMMIT: second.txt");
+    assert_eq!(next["branch"], branch.as_str(), "{next}");
+    let follow = ended(&obid, next["id"].as_str().unwrap());
+    assert_eq!(follow["status"], "done", "{follow}\n{}", obid.log());
+    assert_eq!(follow["branch"], branch.as_str(), "{follow}");
+    assert_eq!(follow["startCommit"], head.as_str(), "{follow}");
+    assert_eq!(follow["published"], PULL, "{follow}");
+    assert!(follow["addedTo"].is_number(), "{follow}");
+    assert_eq!(kept(&folder.0, "calls").matches("pr create").count(), 1);
+}
+
+/// PUBLISHING-34 (#1861): a follow-up that carried its task's branch, committed and was stopped
+/// before it published keeps the line: words to it start a follow-up on that same branch, at the
+/// head it left.
+#[test]
+fn publishing_34_an_unpublished_follow_up_keeps_its_branch() {
+    let folder = Folder::new("publish-34");
+    let bin = fake_gh(&folder.0);
+    // Nothing goes out: the task's branch has no pull request.
+    let broken = broken_scanner(&folder, &bin);
+    let (mut obid, _remote, config) = obid_with(&folder, &broken);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "title": "Hello file"}),
+    );
+    let first = ended(&obid, &id);
+    assert!(first["publishError"].is_string(), "{first}");
+    let carrier = follow_up_with(&obid, &id, "COMMIT: second.txt")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let carried = ended(&obid, &carrier);
+    assert_eq!(carried["status"], "done", "{carried}");
+    assert!(carried["published"].is_null(), "{carried}");
+    let branch = carried["branch"].as_str().unwrap().to_owned();
+    // It was stopped before it published.
+    obid.stop();
+    rewrite_job(&obid.home, &carrier, |kept| {
+        kept["status"] = json!("stopped");
+        kept["stoppedBy"] = json!("You stopped it.");
+    });
+    let obid = start(&folder.0, &config, Some(&broken));
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let head = git(&clone, &["rev-parse", &format!("refs/heads/{branch}")]);
+
+    let next = follow_up_with(&obid, &carrier, "COMMIT: third.txt");
+    assert_eq!(next["branch"], branch.as_str(), "{next}");
+    let follow = ended(&obid, next["id"].as_str().unwrap());
+    assert_eq!(follow["branch"], branch.as_str(), "{follow}");
+    assert_eq!(follow["startCommit"], head.as_str(), "{follow}");
+}
+
+/// PUBLISHING-35 (#1846): a task whose worktree was cleaned up, whose clone a later job's start
+/// made again, still leads its follow-up to its branch: the chain's record keeps where the clone
+/// went, and the follow-up starts there with the task's commits.
+#[test]
+fn publishing_35_a_follow_up_finds_its_branch_after_a_clone_remake() {
+    let folder = Folder::new("publish-35");
+    let bin = fake_gh(&folder.0);
+    let (mut obid, remote, config) = obid_with(&folder, &bin);
+    declare_secrets(&folder.0, &remote);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "SLOW: hello.txt",
+               "check": "test -f hello.txt"}),
+    );
+    within(30, "the task runs", || {
+        let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+        (job["status"] == "running").then_some(())
+    });
+    // Words no app signed mark its clone, which the next job's start makes again.
+    let path = format!("/v1/jobs/{id}/messages");
+    let told = call(
+        &obid,
+        "POST",
+        &path,
+        Some(&json!({"text": "UNSIGNED words"})),
+    );
+    assert_eq!(told.status, 200, "{}", told.text);
+    let task = reviewed(&obid, &id, 1);
+    let branch = task["branch"].as_str().unwrap().to_owned();
+    // Its worktree is cleaned up.
+    obid.stop();
+    let clone = obid.home.join("clones/obi-e2e/fixture-app");
+    let worktree = task["worktree"].as_str().unwrap();
+    git(&clone, &["worktree", "remove", "--force", worktree]);
+    rewrite_job(&obid.home, &id, |kept| kept["worktree"] = Value::Null);
+    let obid = start(&folder.0, &config, Some(&bin));
+    let later = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "Look around"}),
+    );
+    ended(&obid, &later);
+    assert!(
+        obid.log().contains("its clone is made again"),
+        "{}",
+        obid.log()
+    );
+    let root: Value =
+        serde_json::from_slice(&std::fs::read(obid.home.join(format!("jobs/{id}.json"))).unwrap())
+            .unwrap();
+    let moved = root["chainRecord"]["cloneRoot"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        moved.starts_with(obid.home.join("marked").to_str().unwrap()),
+        "{root}"
+    );
+
+    let next = follow_up_with(&obid, &id, "COMMIT: second.txt");
+    let follow = ended(&obid, next["id"].as_str().unwrap());
+    let missing = format!("Couldn't find refs/heads/{branch}");
+    assert!(!follow.to_string().contains(&missing), "{follow}");
+    assert_ne!(follow["status"], "failed", "{follow}\n{}", obid.log());
+    assert_eq!(follow["branch"], branch.as_str(), "{follow}");
+    let worktree = Path::new(follow["worktree"].as_str().unwrap());
+    assert!(worktree.join("hello.txt").is_file(), "{follow}");
+}
+
+/// PUBLISHING-36 (#1779): while a follow-up carries a done job's branch, at work, the job offers
+/// no Publish (`canPublish` false, no "Ready to publish") and Publish refuses, as it does; the
+/// owner's Publish anyway still goes, naming the follow-up. `chainRecord` is never in the API.
+#[test]
+fn publishing_36_can_publish_is_false_while_a_follow_up_carries_the_branch() {
+    let folder = Folder::new("publish-36");
+    let bin = fake_gh(&folder.0);
+    // Its publish fails: Publish is offered.
+    let broken = broken_scanner(&folder, &bin);
+    let (mut obid, _remote, config) = obid_with(&folder, &broken);
+    let id = dispatch(
+        &obid,
+        json!({"repo": "obi-e2e/fixture-app", "kind": "build", "task": "COMMIT: hello.txt",
+               "check": "test -f hello.txt", "title": "Hello file"}),
+    );
+    let first = ended(&obid, &id);
+    assert!(first["publishError"].is_string(), "{first}");
+    assert_eq!(first["canPublish"], true, "{first}");
+    let next = follow_up_with(&obid, &id, "Look around.")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let follow = ended(&obid, &next);
+    // Its follow-up waits for a reset, at work, on the job's branch.
+    obid.stop();
+    rewrite_job(&obid.home, &next, |kept| {
+        kept["branch"] = first["branch"].clone();
+        kept["status"] = json!("queued");
+        kept["resumesAt"] = json!(obi_protocol::time::now() + 86_400);
+        kept.as_object_mut().unwrap().remove("finished");
+    });
+    let obid = start(&folder.0, &config, Some(&broken));
+
+    let job = call(&obid, "GET", &format!("/v1/jobs/{id}"), None).body;
+    assert_eq!(job["canPublish"], false, "{job}");
+    assert_eq!(job["canPublishAnyway"], true, "{job}");
+    assert_ne!(
+        stage(&job, "publish")["detail"],
+        "Ready to publish",
+        "{job}"
+    );
+    assert!(job.get("chainRecord").is_none(), "{job}");
+    assert_eq!(job["chain"], id.as_str(), "{job}");
+    let publish = |query: &str| call(&obid, "GET", &format!("/v1/jobs/{id}/publish{query}"), None);
+    let refused = publish("");
+    assert_eq!(refused.status, 409, "{}", refused.text);
+    assert!(
+        refused.body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Its follow-up "),
+        "{}",
+        refused.text
+    );
+    let anyway = publish("?anyway=true");
+    assert_eq!(anyway.status, 200, "{}", anyway.text);
+    let title = follow["title"].as_str().unwrap();
+    assert!(
+        anyway.body["action"].as_str().unwrap().contains(title),
+        "{}",
+        anyway.text
     );
 }
 
