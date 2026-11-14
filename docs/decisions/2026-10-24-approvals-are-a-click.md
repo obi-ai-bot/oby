@@ -3,7 +3,7 @@
 - **Date:** 2026-10-24
 - **Status:** In force
 - **Replaced:** the earlier Touch ID, Face ID and password approvals (AGENTS.md gives them no date or issue number)
-- **Changed by:** Nothing
+- **Changed by:** [2026-11-14-own-work-merges-itself.md](2026-11-14-own-work-merges-itself.md)
 - **Contracts and scenarios:** None named in AGENTS.md
 
 ## The owner's words
