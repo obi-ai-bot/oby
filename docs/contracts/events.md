@@ -42,7 +42,7 @@ The business behavior contract for numbered events on `GET /v1/events`, from [th
 
 - `GET /v1/events`: the SSE `id:` line on numbered events; the query `after=<epoch>-<seq>` and the header `Last-Event-ID`; the event `resync`, `{"epoch": string}`, sent only to a client that asked to resume (docs/runner-api.md, `GET /v1/events`).
 - `GET /v1/status`: `events-replay-v1` and `revisions-v1` in `capabilities` (R06-01, [capabilities.md](capabilities.md)).
-- Conversation, Turn and Inbox item JSON (R06-03): `revision`, a whole number (add-only), in `GET /v1/conversations` (and its search), `GET /v1/conversation`, `GET /v1/inbox`, `PATCH /v1/conversations/{id}`'s answer and the `conversation`, `turn`, `turnAsks`, `turnDelivery` and `inbox` events (docs/runner-api.md).
+- Conversation, Turn and Inbox item JSON (R06-03): `revision`, a whole number (add-only), in `GET /v1/conversations` (and its search), `GET /v1/conversation`, `GET /v1/inbox`, `PATCH /v1/conversations/{id}`'s answer and the `conversation`, `turn`, `turnAsks`, `turnDelivery` and `inbox` events ([docs/api/conversations.md](../api/conversations.md), [docs/api/inbox.md](../api/inbox.md), [docs/api/events.md](../api/events.md)).
 - The gateway: no change. A phone's `?after=` reaches obid with the path and query; `Last-Event-ID` isn't forwarded.
 
 ## Acceptance scenarios
