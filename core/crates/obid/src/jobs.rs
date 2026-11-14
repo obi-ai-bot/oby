@@ -1311,7 +1311,9 @@ impl Jobs {
         }
         // Task chains, once (PUBLISHING-37): a file that doesn't save is built again next start.
         for id in chain::settle(&mut jobs) {
-            let _ = store.save(&jobs[&id]);
+            if let Err(e) = store.save(&jobs[&id]) {
+                tracing::warn!("job {id}: can't keep its task chain: {e}");
+            }
         }
         for id in jobs.keys().cloned().collect::<Vec<_>>() {
             chain::mark_carried(&mut jobs, &id);
@@ -3557,7 +3559,9 @@ impl Jobs {
         // `rule` (it's never from the API): found here. So is an untrusted one's.
         // One line of follow-ups on a branch: it follows the newest of them (MERGING-23).
         job.follow_up_of = job.follow_up_of.map(|of| chain_tip(&self.lock().jobs, &of));
+        // Its marks are its whole chain's (MERGING-23), whichever job of it it follows up.
         let of = job.follow_up_of.as_deref().and_then(|of| self.get(of));
+        let of = of.map(|of| chain::marked(&self.lock().jobs, of));
         job.untrusted = new.untrusted || of.as_ref().is_some_and(|of| of.untrusted);
         job.unsigned = new.unsigned || of.as_ref().is_some_and(|of| of.unsigned);
         job.client_request_id = new.client_request_id;
@@ -19545,6 +19549,98 @@ mod tests {
             confirmed.payload,
             json!({"words": "Use this", "attachments": files})
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// MERGING-23: a follow-up carries every mark of its task chain, whichever job of it the
+    /// chain's branch has it follow up. A task's pull request was closed, so its follow-up worked
+    /// on a branch of its own, marked (files the owner attached, or a reach past the registries
+    /// and a run past obid's proxy), and committed nothing. The owner's words to that follow-up
+    /// start one from the task's branch head, following up the task (`chain::place`): it is still
+    /// untrusted and in Oby's box, its check gets none of the declared secrets, and it needs two
+    /// reviews.
+    #[tokio::test]
+    async fn merging_23_a_follow_up_keeps_every_mark_of_its_chain() {
+        let root = std::env::temp_dir().join(format!("obid-chain-marks-{}", uuid::Uuid::new_v4()));
+        let account = root.join("accounts/c");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), "{}").unwrap();
+        let config = crate::config::Config::parse(
+            &json!({"listen": "127.0.0.1:0", "home": root.join("home"), "owner": "o",
+                "repos": [{"repo": "o/r", "remote": "https://example.com/o/r.git"}],
+                "agents": {"claude": {"bin": "/usr/bin/true",
+                                      "accounts": [{"id": "c", "name": "C", "configDir": account}]}}})
+            .to_string(),
+        )
+        .unwrap();
+        let jobs = Jobs::open(
+            config,
+            crate::events::Events::new(),
+            Err("no sandbox".into()),
+        )
+        .unwrap();
+        let ended = |id: &str, of: Option<&str>| {
+            let mut job = Job::new(
+                id.into(),
+                "o/r".into(),
+                "fix".into(),
+                "Fix it".into(),
+                "claude".into(),
+                "c".into(),
+            );
+            (job.branch, job.follow_up_of) = (format!("oby/fix-{id}"), of.map(str::to_owned));
+            (job.status, job.base, job.vetted) = (Status::Done, Some("main".into()), true);
+            job
+        };
+        let attached = |job: &mut Job| {
+            job.untrusted = true;
+            job.foreign = Some("files the owner attached, which may hold anyone's words".into());
+            job.vetted = false;
+        };
+        let reached = |job: &mut Job| {
+            job.reached = Some("its agent reached example.com".into());
+            job.ran_unproxied = true;
+        };
+        for (task, marked, mark) in [
+            ("aaaa2301", "aaaa2302", &attached as &dyn Fn(&mut Job)),
+            ("aaaa2311", "aaaa2312", &reached),
+        ] {
+            let mut first = ended(task, None);
+            first.commits = Some(1);
+            first.published = Some(format!("https://github.com/o/r/pull/{}", &task[6..]));
+            first.pull_request = Some(crate::github::PullRequest {
+                state: "CLOSED".into(),
+                review_decision: None,
+                base: "main".into(),
+                merged_at: None,
+                checked_at: 0,
+                head: None,
+            });
+            jobs.insert(first).unwrap();
+            let mut follow_up = ended(marked, Some(task));
+            mark(&mut follow_up);
+            jobs.insert(follow_up).unwrap();
+
+            let next = jobs.message(marked, "Look again", Source::Owner);
+            let Some(Ok(next)) = next else {
+                panic!("{marked}: {next:?}")
+            };
+            // The chain's branch is the task's: the new one follows up the task, not `marked`.
+            assert_eq!(next.follow_up_of.as_deref(), Some(task));
+            assert_eq!(next.start_from, Some(format!("oby/fix-{task}")));
+            if marked == "aaaa2302" {
+                // Untrusted, so in Oby's box; someone else's code, so no declared secrets for its
+                // check (crate::secretspec); and two reviews (MERGING-14).
+                assert!(next.untrusted && !next.vetted, "{next:?}");
+                assert!(!Jobs::own_lane(&next, Tool::Claude));
+                assert!(next.someone_elses().is_some());
+                assert!(next.two_reviews_why().is_some());
+            } else {
+                // A reach withholds the declared secrets from its check (MERGING-31), and so does
+                // a run past obid's proxy (LANE-3a).
+                assert!(next.reached.is_some() && next.ran_unproxied, "{next:?}");
+            }
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

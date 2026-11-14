@@ -126,6 +126,27 @@ pub fn place(jobs: &HashMap<String, Job>, job: &Job, next: &mut NewJob) {
     }
 }
 
+/// `of`, the job a new follow-up follows up, with the marks that only restrict a job of every job
+/// of its chain on it, so the follow-up carries them all whichever job of it [`place`] points it
+/// at (MERGING-23): untrusted, unsigned, someone else's code, a reach, a run past obid's proxy, a
+/// memory from others, a clone apart, and not vetted.
+pub fn marked(jobs: &HashMap<String, Job>, mut of: Job) -> Job {
+    let chain = jobs_of(jobs, self::of(&of));
+    let api_only = chain.iter().all(|j| j.someone_elses_but_api().is_none());
+    of.foreign_by_api = (of.foreign_by_api || chain.iter().any(|j| j.foreign_by_api)) && api_only;
+    for j in chain {
+        of.untrusted |= j.untrusted;
+        of.unsigned |= j.unsigned;
+        of.memory_from_others |= j.memory_from_others;
+        of.ran_unproxied |= j.ran_unproxied;
+        of.apart |= j.apart || j.obi.is_some();
+        of.vetted &= j.vetted && j.foreign.is_none();
+        of.foreign = of.foreign.take().or_else(|| j.someone_elses());
+        of.reached = of.reached.take().or_else(|| j.reached.clone());
+    }
+    of
+}
+
 /// Gives new job `job` its chain: the job's it follows up (that one's id when it has none), else
 /// its own, with the record of itself.
 pub fn join(jobs: &HashMap<String, Job>, job: &mut Job) {
@@ -647,6 +668,31 @@ mod tests {
         assert_eq!(moved.as_deref(), Some("/marked/2"));
         // Told once: a later move doesn't take it elsewhere.
         assert!(super::moved(&jobs, "obi-e2e/fixture-app", "/marked/3").is_empty());
+    }
+
+    /// MERGING-23, 33a: a job a follow-up follows up lends it every mark of its chain, a
+    /// sibling's too; marks only unsigned API words made stay only those, until another joins.
+    #[test]
+    fn merging_23_every_mark_of_the_chain_is_the_follow_ups() {
+        let mut task = made("a", 1, None, "oby/build-a", Status::Done);
+        task.vetted = true;
+        let mut api = made("b", 2, Some("a"), "oby/build-b", Status::Done);
+        (api.foreign, api.foreign_by_api) = (Some("unsigned words".into()), true);
+        let mut jobs = chained(vec![task, api]);
+        let lent = marked(&jobs, jobs["a"].clone());
+        assert_eq!(lent.foreign.as_deref(), Some("unsigned words"));
+        assert!(lent.foreign_by_api && !lent.vetted && !lent.untrusted);
+        let mut read = made("c", 3, Some("a"), "oby/build-c", Status::Failed);
+        (read.untrusted, read.reached) = (true, Some("example.com".into()));
+        join(&jobs, &mut read);
+        jobs.insert("c".into(), read);
+        let lent = marked(&jobs, jobs["a"].clone());
+        assert!(lent.untrusted && !lent.foreign_by_api, "{lent:?}");
+        assert_eq!(lent.reached.as_deref(), Some("example.com"));
+        // A job of another chain lends nothing.
+        let other = chained(vec![made("x", 4, None, "oby/build-x", Status::Done)]);
+        jobs.extend(other);
+        assert!(!marked(&jobs, jobs["x"].clone()).untrusted);
     }
 
     /// The jobs of one fixture shape (tests/fixtures/chains/<shape>), as obid loads them.
