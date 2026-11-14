@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run one commit's Linux check groups on the gate VM, in one of four slots, or the macOS groups it is
-given on the factory's second Mac, in one of two.
+given on the factory's second Mac, in one of two, or a builder's command on the VM, in a builder slot.
 
 Usage:
-  oby-remote-gate <commit> <base>
+  oby-remote-gate [--slots <n> --builder-slots <m>] <commit> <base>
   oby-remote-gate --mac <commit> <base> <group>...
+  oby-remote-gate --run --slots <n> --builder-slots <m> --wait <seconds> <base> <tree> <folder> -- <command>...
 
   <commit>  the commit to check: its full 40-character SHA, which origin must have
   <base>    what the check compares it with: origin/<branch>, or a full 40-character SHA
@@ -18,7 +19,7 @@ Callers keep its standard input open, as ssh without -n does: standard input rea
 end of file is how it learns the connection dropped (ssh with no terminal sends no
 signal then), and it stops the check and frees its slot. Nothing is read from it.
 
-Slots. Four, <root>/slot-1 to slot-4 (<root> is /srv/oby), each with its own lock
+Slots. Four, or --slots' 1 to 64, <root>/slot-1 to slot-4 (<root> is /srv/oby), each with its own lock
 file, git worktree and Cargo build folder (slot-N/target, the check's CARGO_TARGET_DIR)
 and the check's own cache (slot-N/cache, its OBY_CHECK_CACHE). It takes the first free
 one; with all four held it says so once and tries again every second. The lock stays
@@ -33,7 +34,8 @@ tools/ gets the current time, as factory/checks.sh does.
 
 Check. The commit's own `OBY_CHECK_PLAN=1 scripts/oby-check.sh <base>` says which
 groups run; rust, electron and scan run here, in that order, each with OBY_CHECK_ONLY
-set and OBY_BUILD_JOBS at the cores / 4, every one to its end. swift is the Mac's and
+set and OBY_BUILD_JOBS at the cores / (slots + builder slots), 4 and 0 unless
+--slots and --builder-slots say otherwise, every one to its end. swift is the Mac's and
 never runs here. Before rust, `cargo fetch --locked`; before electron, `npm ci` in
 apps/electron. Those two have the network; the groups then run offline, with
 CARGO_NET_OFFLINE=true and npm_config_offline=true, as oby-check-blok runs them on the
@@ -56,6 +58,24 @@ wait, no fetch and nothing run, so the gate runs that part on its own Mac. It re
 exactly the groups given, each with OBY_CHECK_ONLY, offline, and OBY_BUILD_JOBS at the cores / 2.
 /opt/homebrew/bin and /usr/local/bin follow ~/.cargo/bin on PATH, ahead of the inherited one.
 
+Builder mode (--run, docs/contracts/remote-gate.md, REMOTE-22 to 31), as the user oby-builder, which
+has no sudo, for factory/bin/test-run. <base> and <tree> are full SHAs, <folder> the run's folder
+relative to the worktree (`.` at its root; [A-Za-z0-9._/-]+ with no .. component). Standard input
+holds a line with the payload's size, then the payload (at most 64 MiB): `git diff --binary
+--full-index <base> <tree>`; after it, its end is the dropped connection, as above. <root> is
+/srv/oby-builder, with its own repo.git; it takes the first free of builder-1 to builder-<m> (never a
+gate's slot), each with its own lock, worktree and Cargo build folder (builder-N/target), waiting at
+most --wait seconds, then says `all builder slots are busy` and exits 2. In the slot: the checkout
+above on <base> (fetched by its SHA), `git apply --index --binary` of the payload, a check that `git
+write-tree` is <tree>, then every file under core/ and tools/ in the index gets the current time, and
+`cargo fetch --locked`. If the command's program (and for `cargo nextest`, cargo-nextest) is on PATH,
+~/.cargo/bin first, it says `running in builder slot <N>` and runs the command's words, with no shell,
+from <slot>/worktree/<folder> under `nice -n 15`, offline, with CARGO_TARGET_DIR=<slot>/target and
+OBY_BUILD_JOBS, CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS at the cores / (slots +
+builder slots). Output is relayed as it comes; the last line is `ended <code> in builder slot <N>
+after <s>s`, and it exits with the command's code (128 + signal when stopped). Anything that fails
+before the `running in` line exits 2 with a line saying why.
+
 OBY_REMOTE_ROOT and OBY_REMOTE_URL point it at another root and origin, for the tests.
 """
 
@@ -63,6 +83,7 @@ import fcntl
 import os
 import re
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -74,10 +95,17 @@ NAME = "oby-remote-gate"
 ROOT = Path(os.environ.get("OBY_REMOTE_ROOT") or "/srv/oby")
 URL = os.environ.get("OBY_REMOTE_URL") or "https://github.com/obi-ai-bot/oby.git"
 SLOTS = 4
+BUILDERS = 0
+MAX_SLOTS = 64
 LINUX_GROUPS = ("rust", "electron", "scan")
 MAC_ROOT = Path(os.environ.get("OBY_REMOTE_ROOT") or Path.home() / "oby-worker")
 MAC_SLOTS = 2
 MAC_GROUPS = ("rust", "swift", "factory")
+BUILDER_ROOT = Path(os.environ.get("OBY_REMOTE_ROOT") or "/srv/oby-builder")
+MAX_PAYLOAD = 64 << 20
+FOLDER = re.compile(r"[A-Za-z0-9._/-]+")
+PRIORITY = 15
+CORE_VARS = ("OBY_BUILD_JOBS", "CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
 VERDICTS = {0: "passed", 1: "failed", 2: "couldn't judge"}
 SHA = re.compile(r"[0-9a-f]{40}")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
@@ -197,12 +225,15 @@ def usage(why):
     return 2
 
 
-def take_slot(wait=True):
-    """The first free slot and its lock, waiting for one; (None, None) when none is free and not wait."""
+def take_slot(name="slot", count=None, wait=None, waiting_line=None):
+    """The first free <name>-N of count (SLOTS by default) and its lock, waiting up to wait seconds for one (None:
+    for as long as it takes), having said waiting_line once; (None, None) when none frees up in time."""
+    count = count or SLOTS
+    deadline = None if wait is None else time.monotonic() + wait
     waiting = False
     while True:
-        for n in range(1, SLOTS + 1):
-            folder = ROOT / f"slot-{n}"
+        for n in range(1, count + 1):
+            folder = ROOT / f"{name}-{n}"
             folder.mkdir(exist_ok=True)
             fd = os.open(folder / "lock", os.O_RDWR | os.O_CREAT, 0o644)
             try:
@@ -210,16 +241,17 @@ def take_slot(wait=True):
                 return n, fd
             except BlockingIOError:
                 os.close(fd)
-        if not wait:
+        if deadline is not None and time.monotonic() >= deadline:
             return None, None
         if not waiting:
-            say("all four slots are busy; waiting")
+            say(waiting_line or f"all {'four' if count == 4 else count} slots are busy; waiting")
             waiting = True
         time.sleep(1)
 
 
-def check_out(commit, base, worktree):
-    """Fetch the commit and the base and make the slot's worktree: an error to say, or None."""
+def check_out(commit, base, worktree, touch=True):
+    """Fetch the commit and the base and make the slot's worktree (its files under core/ and tools/ touched,
+    unless not touch): an error to say, or None."""
     repo = str(ROOT / "repo.git")
     fd = os.open(ROOT / "repo.lock", os.O_RDWR | os.O_CREAT, 0o644)
     try:
@@ -242,6 +274,12 @@ def check_out(commit, base, worktree):
     for step in (["checkout", "--quiet", "--force", "--detach", commit], ["clean", "-ffdq"]):
         if git(*step, cwd=worktree) != 0:
             return f"git {step[0]} failed in {worktree}"
+    return touch_tracked(worktree) if touch else None
+
+
+def touch_tracked(worktree):
+    """Give every file under core/ and tools/ in the index the current time, so no build another tree left in the
+    slot's target looks fresh (A00-23): an error to say, or None."""
     files = subprocess.run(["git", "ls-files", "-z", "--", "core", "tools"], cwd=worktree, capture_output=True)
     if files.returncode != 0:
         return f"can't list the tracked files under core/ and tools/ in {worktree}"
@@ -266,8 +304,131 @@ def prepare(group, worktree, env):
     return None
 
 
+def counts(args):
+    """--slots <n> --builder-slots <m> at the start of args: (the rest, None), with SLOTS and BUILDERS set, or
+    (None, why). Without them, 4 and 0."""
+    global SLOTS, BUILDERS
+    if args[:1] != ["--slots"]:
+        return args, None
+    numbers = args[1:4:2]
+    if args[2:3] != ["--builder-slots"] or len(numbers) != 2 or not all(re.fullmatch(r"[0-9]{1,2}", n)
+                                                                         for n in numbers):
+        return None, "--slots and --builder-slots each take a number"
+    SLOTS, BUILDERS = map(int, numbers)
+    if not (1 <= SLOTS <= MAX_SLOTS and 0 <= BUILDERS <= MAX_SLOTS):
+        return None, f"--slots takes 1 to {MAX_SLOTS}, and --builder-slots 0 to {MAX_SLOTS}"
+    return args[4:], None
+
+
+def share():
+    """Each slot's share of the cores, gates' and builders' alike."""
+    return str(max(1, (os.cpu_count() or 1) // (SLOTS + BUILDERS)))
+
+
+def read_payload():
+    """A builder's payload on standard input: a line with its size in bytes, then that many bytes. (it, None) or
+    (None, why)."""
+    head = b""
+    while not head.endswith(b"\n"):
+        byte = os.read(0, 1)
+        if not byte or len(head) > 20:
+            return None, "standard input held no payload size line"
+        head += byte
+    if not head[:-1].isdigit():
+        return None, "the payload's size line isn't a number"
+    size = int(head)
+    if size > MAX_PAYLOAD:
+        return None, f"the payload is {size} bytes, more than 64 MiB"
+    data = bytearray()
+    while len(data) < size:
+        chunk = os.read(0, min(65536, size - len(data)))
+        if not chunk:
+            return None, f"standard input ended after {len(data)} of the payload's {size} bytes"
+        data += chunk
+    return bytes(data), None
+
+
+def builder_run(args):
+    """--run: a builder's command on its worktree's tree, in a builder slot. Its exit code, or 2 before it ran."""
+    global ROOT
+    ROOT = BUILDER_ROOT
+    args, why = counts(args)
+    if why:
+        return usage(why)
+    if BUILDERS < 1:
+        return usage("--run needs --slots and --builder-slots, with 1 or more builder slots")
+    if len(args) < 7 or args[0] != "--wait" or not re.fullmatch(r"[0-9]{1,4}", args[1]) or args[5] != "--":
+        return usage("--run takes --wait <seconds>, a base, a tree, a folder, -- and a command")
+    wait, base, tree, folder, command = int(args[1]), args[2], args[3], args[4], args[6:]
+    if not (SHA.fullmatch(base) and SHA.fullmatch(tree)):
+        return usage("the base and the tree must each be a full 40-character SHA")
+    if not (FOLDER.fullmatch(folder) and not folder.startswith("/") and ".." not in folder.split("/")):
+        return usage(f"the folder isn't a relative path inside the worktree: {folder}")
+    if not (ROOT / "repo.git").is_dir():
+        print(f"{NAME}: {ROOT / 'repo.git'} is missing: run factory/remote/setup.sh from the Mac first", file=sys.stderr)
+        return 2
+    payload, why = read_payload()
+    if why:
+        say(why)
+        return 2
+    started = time.monotonic()
+    for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, stop)
+    threading.Thread(target=watch_stdin, daemon=True).start()
+
+    slot, _lock = take_slot("builder", BUILDERS, wait, f"all {BUILDERS} builder slots are held; waiting up to {wait}s")
+    if slot is None:
+        say("all builder slots are busy")
+        return 2
+    place = ROOT / f"builder-{slot}"
+    worktree = place / "worktree"
+    why = check_out(base, base, worktree, touch=False)
+    if why:
+        say(why)
+        return 2
+    if payload:
+        applied = subprocess.run(["git", "apply", "--index", "--binary"], cwd=worktree, input=payload,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if applied.returncode != 0:
+            write(applied.stdout)
+            say(f"the payload doesn't apply to {base}")
+            return 2
+    written = subprocess.run(["git", "write-tree"], cwd=worktree, capture_output=True, text=True)
+    if written.stdout.strip() != tree:
+        say(f"the slot's tree is {written.stdout.strip() or 'unreadable'}, not {tree}")
+        return 2
+    why = touch_tracked(worktree)
+    if why:
+        say(why)
+        return 2
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_CHECK_")}
+    env.update(OFFLINE, CARGO_TARGET_DIR=str(place / "target"), **dict.fromkeys(CORE_VARS, share()))
+    env["PATH"] = os.pathsep.join([str(Path.home() / ".cargo" / "bin"), env.get("PATH", "")])
+    why = prepare("rust", worktree, {k: v for k, v in env.items() if k not in OFFLINE})
+    if why:
+        say(why)
+        return 2
+    needed = [command[0], *(["cargo-nextest"] if command[:2] == ["cargo", "nextest"] else [])]
+    missing = [program for program in needed if not shutil.which(program, path=env["PATH"])]
+    if missing:
+        say(f"{missing[0]} isn't on the builder's PATH")
+        return 2
+    cwd = worktree / folder
+    if not cwd.is_dir():
+        say(f"the tree has no folder {folder}")
+        return 2
+    say(f"running in builder slot {slot}")
+    code = run(["nice", "-n", str(PRIORITY), *command], cwd, env)[0]
+    code = 128 - code if code < 0 else code
+    say(f"ended {code} in builder slot {slot} after {round(time.monotonic() - started)}s")
+    return code
+
+
 def main(argv):
     global ROOT, SLOTS
+    if argv[1:2] == ["--run"]:
+        return builder_run(argv[2:])
     mac = argv[1:2] == ["--mac"]
     if mac:
         ROOT, SLOTS = MAC_ROOT, MAC_SLOTS
@@ -277,10 +438,13 @@ def main(argv):
         unknown = [g for g in given if g not in MAC_GROUPS]
         if unknown:
             return usage(f"--mac runs only {', '.join(MAC_GROUPS)}, not {' '.join(unknown)}")
-    elif len(argv) != 3:
-        return usage("takes a commit and a base")
     else:
-        commit, base = argv[1], argv[2]
+        rest, why = counts(argv[1:])
+        if why:
+            return usage(why)
+        if len(rest) != 2:
+            return usage("takes a commit and a base")
+        commit, base = rest
     if not SHA.fullmatch(commit):
         return usage(f"the commit isn't a full 40-character SHA: {commit}")
     branch = base.removeprefix("origin/")
@@ -295,7 +459,7 @@ def main(argv):
         signal.signal(signum, stop)
     threading.Thread(target=watch_stdin, daemon=True).start()
 
-    slot, _lock = take_slot(wait=not mac)
+    slot, _lock = take_slot(wait=0 if mac else None)
     if slot is None:
         say("both slots are busy")
         return 2
@@ -310,7 +474,7 @@ def main(argv):
     env = {k: v for k, v in os.environ.items() if not k.startswith("OBY_CHECK_")}
     env["CARGO_TARGET_DIR"] = str(folder / "target")
     env["OBY_CHECK_CACHE"] = str(folder / "cache")
-    env["OBY_BUILD_JOBS"] = str(max(1, (os.cpu_count() or 1) // SLOTS))
+    env["OBY_BUILD_JOBS"] = str(max(1, (os.cpu_count() or 1) // SLOTS)) if mac else share()
     # A command over ssh reads no profile: on a Mac, Homebrew's folders too.
     first = [Path.home() / ".cargo" / "bin", *(["/opt/homebrew/bin", "/usr/local/bin"] if mac else [])]
     env["PATH"] = os.pathsep.join([*map(str, first), env.get("PATH", "")])
