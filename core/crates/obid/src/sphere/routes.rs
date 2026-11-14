@@ -278,14 +278,15 @@ pub async fn answer(
             let key = shared.devices.public_key(&approval.device);
             let now = obi_protocol::time::now();
             let confirms = shared.jobs.approvals();
-            confirms.check_confirm(&approval, &id, &item.title, key.as_deref(), now)
+            let held = confirms.check_confirm(&approval, &id, &item.title, key.as_deref(), now);
+            (item, held)
         });
     let mut judged = sent;
     if let Some(map) = judged.as_object_mut() {
         map.remove("clientRequestId");
         map.remove("approval");
     }
-    let approved = checked.as_ref().map(Result::is_ok);
+    let approved = checked.as_ref().map(|(_, held)| held.is_ok());
     let judged = serde_json::json!({"body": judged, "signed": typed, "approved": approved});
     let route = format!("POST /v1/inbox/{id}/answer");
     let work = async {
@@ -349,10 +350,11 @@ pub async fn answer(
             ));
         }
         // Not a Confirm of an open confirm item: answered as before (one already done says so).
-        let Some(item) = confirm_item.filter(|i| confirming && i.done.is_none()) else {
+        let Some(live) = confirm_item.filter(|i| confirming && i.done.is_none()) else {
             let answered = shared.link.answer_typed(&id, &rest, typed).await?;
             return Ok((StatusCode::OK, answered, None));
         };
+        let (item, checked) = as_checked(checked, live);
         // Refused: a 403, so no receipt is kept.
         let refuse = |why: &str| {
             let refused = serde_json::json!({"error": why, "action": item.title});
@@ -368,8 +370,6 @@ pub async fn answer(
             ));
         };
         let signed_at = obi_protocol::time::parse(&approval.signed_at).unwrap_or_default();
-        // Checked before the lookup; none when the item wasn't a confirm item then.
-        let checked = checked.unwrap_or_else(|| Err(super::link::NEEDS_YOUR_TAP.to_owned()));
         if let Err(why) = checked {
             return refuse(&why);
         }
@@ -386,6 +386,17 @@ pub async fn answer(
     };
     let stored = crate::routes::stored;
     crate::routes::keyed(&shared, key.as_deref(), &route, &judged, stored, work).await
+}
+
+/// What a Confirm confirms (#776): the item as its approval was checked before the lookup, never as
+/// read again since, so a title changed in between (`inbox::tick_repos` on the sharing card) is
+/// refused by `answer_as` and the signature counts only for what was signed. One that wasn't a
+/// confirm item then (`checked` none) needs the owner's tap.
+pub(super) fn as_checked(
+    checked: Option<(super::inbox::Item, Result<(), String>)>,
+    live: super::inbox::Item,
+) -> (super::inbox::Item, Result<(), String>) {
+    checked.unwrap_or_else(|| (live, Err(super::link::NEEDS_YOUR_TAP.to_owned())))
 }
 
 #[derive(serde::Deserialize)]
