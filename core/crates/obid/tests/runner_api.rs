@@ -2381,6 +2381,178 @@ fn events_5_no_id_no_replay() {
     }
 }
 
+/// The conversation an obid from before R06-03 kept, with no `revision`.
+const KEPT_CONVERSATION: &str = "00000000-0000-4000-8000-000000000007";
+/// An inbox item an obid from before R06-03 kept, with no `revision`: an approval obid couldn't
+/// dismiss, which Dismiss settles with nothing else to carry out.
+const KEPT_ITEM: &str = "approval-dismissal-c-7";
+
+/// obid with the stand-in agent, a conversation and an inbox item kept from before revisions,
+/// and the test's own home as the person's (`OBID_PERSON_HOMES`), so a folder picked there passes.
+fn revisions_obid(folder: &Folder) -> (Obid, Value) {
+    let remote = fixture(&folder.0.join("fixture"));
+    let config = config(&folder.0, &remote, &fake_claude());
+    let home = folder.0.join("home");
+    std::fs::create_dir_all(home.join("conversations")).unwrap();
+    std::fs::create_dir_all(home.join("inbox")).unwrap();
+    let thread = json!({"id": KEPT_CONVERSATION, "title": "Number 7", "pinned": false,
+        "created": "2026-10-01T00:00:00Z", "sequence": 7,
+        "turns": [{"id": "10000000-0000-4000-8000-000000000007", "who": "user", "text": "number 7",
+                   "at": "2026-10-01T00:00:00Z", "jobs": [], "conversation": KEPT_CONVERSATION}]});
+    let file = home.join(format!("conversations/{KEPT_CONVERSATION}.json"));
+    std::fs::write(file, thread.to_string()).unwrap();
+    let item = json!({"id": KEPT_ITEM, "kind": "failed", "job": "", "title": "Remove an approval",
+        "text": "Remove it on GitHub.", "options": ["Dismiss"], "details": null,
+        "recommended": null, "created": 1, "done": null, "later": null, "answer": null,
+        "obi": null});
+    std::fs::write(
+        home.join(format!("inbox/{KEPT_ITEM}.json")),
+        item.to_string(),
+    )
+    .unwrap();
+    (restarted(folder, &config), config)
+}
+
+/// obid started (again) on `folder`'s home, as [`revisions_obid`] starts it.
+fn restarted(folder: &Folder, config: &Value) -> Obid {
+    let person = folder.0.join("env-home");
+    start_with(
+        &folder.0,
+        config,
+        None,
+        &[("OBID_PERSON_HOMES", person.to_str().unwrap())],
+    )
+}
+
+/// `GET /v1/conversations`' entry for the kept conversation.
+fn kept_conversation(obid: &Obid) -> Value {
+    let answer = call(obid, "GET", "/v1/conversations", None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let listed = answer.body.as_array().unwrap().iter();
+    let found = listed.clone().find(|c| c["id"] == KEPT_CONVERSATION);
+    found.unwrap_or_else(|| panic!("{}", answer.text)).clone()
+}
+
+/// `GET /v1/inbox?state=<state>`'s entry for the kept item.
+fn kept_item(obid: &Obid, state: &str) -> Value {
+    let answer = call(obid, "GET", &format!("/v1/inbox?state={state}"), None);
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let listed = answer.body.as_array().unwrap().iter();
+    let found = listed.clone().find(|i| i["id"] == KEPT_ITEM);
+    found.unwrap_or_else(|| panic!("{}", answer.text)).clone()
+}
+
+/// `PATCH /v1/conversations/{id}` of the kept conversation with `change`, and the revision its
+/// `conversation` event came with, which the answer carries too.
+fn changed(obid: &Obid, events: &std::sync::mpsc::Receiver<(String, Value)>, change: Value) -> u64 {
+    let target = format!("/v1/conversations/{KEPT_CONVERSATION}");
+    let answer = call(obid, "PATCH", &target, Some(&change));
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let sent = events_named(events, "conversation", 20, |got| !got.is_empty());
+    assert_eq!(sent[0]["id"], KEPT_CONVERSATION, "{sent:?}");
+    assert_eq!(sent[0]["revision"], answer.body["revision"], "{sent:?}");
+    sent[0]["revision"].as_u64().unwrap()
+}
+
+/// Answers the kept item with `body`, and the revisions of its `inbox` events, until one is
+/// `state`.
+fn answered(
+    obid: &Obid,
+    events: &std::sync::mpsc::Receiver<(String, Value)>,
+    body: Value,
+    state: &str,
+) -> Vec<u64> {
+    let answer = call(
+        obid,
+        "POST",
+        &format!("/v1/inbox/{KEPT_ITEM}/answer"),
+        Some(&body),
+    );
+    assert_eq!(answer.status, 200, "{}", answer.text);
+    let told = events_named(events, "inbox", 20, |got| {
+        got.iter()
+            .any(|i| i["id"] == KEPT_ITEM && i["state"] == state)
+    });
+    let told = told.iter().filter(|i| i["id"] == KEPT_ITEM);
+    told.map(|i| i["revision"].as_u64().unwrap()).collect()
+}
+
+/// EVENTS-7: a conversation renamed, pinned and given folders comes in each `conversation` event
+/// one revision on, `GET /v1/conversations` lists the latest, and its delete says the next one.
+#[test]
+fn events_7_conversation_revision_goes_up() {
+    let folder = Folder::new("events-7");
+    let (obid, _) = revisions_obid(&folder);
+    let api = folder.0.join("env-home/Projects/api");
+    std::fs::create_dir_all(&api).unwrap();
+    let api = api.canonicalize().unwrap();
+    // Kept before revisions: 0.
+    assert_eq!(kept_conversation(&obid)["revision"], 0);
+    let events = follow_events(&obid);
+    let changes = [
+        json!({"title": "Renamed"}),
+        json!({"pinned": true}),
+        json!({"folders": [api]}),
+    ];
+    for (before, change) in (0u64..).zip(changes) {
+        assert_eq!(changed(&obid, &events, change), before + 1);
+        assert_eq!(kept_conversation(&obid)["revision"], before + 1);
+    }
+    let target = format!("/v1/conversations/{KEPT_CONVERSATION}");
+    assert_eq!(call(&obid, "DELETE", &target, None).status, 204);
+    let sent = events_named(&events, "conversation", 20, |got| !got.is_empty());
+    assert_eq!(
+        sent[0],
+        json!({"id": KEPT_CONVERSATION, "deleted": true, "revision": 4})
+    );
+}
+
+/// EVENTS-9: an inbox item answered on the route the iPhone uses comes in each `inbox` event
+/// one revision on, the first one more than before, and `GET /v1/inbox` lists the last.
+#[test]
+fn events_9_inbox_revision_goes_up() {
+    let folder = Folder::new("events-9");
+    let (obid, _) = revisions_obid(&folder);
+    assert_eq!(kept_item(&obid, "open")["revision"], 0);
+    let events = follow_events(&obid);
+    let told = answered(&obid, &events, json!({"answer": "Dismiss"}), "done");
+    let counted: Vec<u64> = (1..=told.len() as u64).collect();
+    assert_eq!(told, counted);
+    let done = kept_item(&obid, "done");
+    assert_eq!(done["answer"], "Dismiss", "{done}");
+    assert_eq!(done["revision"], *told.last().unwrap());
+}
+
+/// EVENTS-10: a conversation and an inbox item raised to a revision, then obid restarted, go on
+/// from it: their next change is one more, not 1.
+#[test]
+fn events_10_revision_survives_a_restart() {
+    let folder = Folder::new("events-10");
+    let (mut obid, config) = revisions_obid(&folder);
+    let events = follow_events(&obid);
+    for n in 1..=7 {
+        changed(&obid, &events, json!({"title": format!("Name {n}")}));
+    }
+    let later = json!({"later": "2099-01-01T00:00:00Z"});
+    answered(&obid, &events, later.clone(), "later");
+    answered(&obid, &events, later.clone(), "later");
+    let conversation = kept_conversation(&obid)["revision"].as_u64().unwrap();
+    let item = kept_item(&obid, "open")["revision"].as_u64().unwrap();
+    assert_eq!(conversation, 7);
+    assert!(item > 1, "{item}");
+    drop(events);
+    obid.stop();
+
+    let obid = restarted(&folder, &config);
+    assert_eq!(kept_conversation(&obid)["revision"], conversation);
+    assert_eq!(kept_item(&obid, "open")["revision"], item);
+    let events = follow_events(&obid);
+    let renamed = changed(&obid, &events, json!({"title": "After the restart"}));
+    assert_eq!(renamed, conversation + 1);
+    let told = answered(&obid, &events, later, "later");
+    assert_eq!(told[0], item + 1, "{told:?}");
+}
+
 /// A job titled "Alerts as data" whose agent asks for each of `calls` in turn, in `ask` mode.
 fn titled_asking(obid: &Obid, calls: Value) -> String {
     dispatch(

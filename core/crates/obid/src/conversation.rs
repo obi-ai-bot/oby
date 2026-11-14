@@ -75,6 +75,10 @@ pub struct Turn {
     /// On the owner's words sent by `POST /v1/plans`: where they stand (crate::delivery).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Delivery>,
+    /// One more each time obid sends it changed (`turn`, `turnAsks`, `turnDelivery`), as a job's
+    /// `revision` (EVENTS-8). Kept in its conversation's file.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 impl Turn {
@@ -85,6 +89,13 @@ impl Turn {
             text,
             ..Turn::default()
         }
+    }
+
+    /// A copy to keep and send, one revision on: taken under the lock it changed under, as
+    /// [`crate::job::Job::revised`].
+    pub fn revised(&mut self) -> Turn {
+        self.revision += 1;
+        self.clone()
     }
 }
 
@@ -153,6 +164,10 @@ struct Thread {
     /// What its queued words need to be sent again, by their turn's id: never served.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     replays: BTreeMap<String, Replay>,
+    /// One more each time obid sends it changed (a `conversation` event), as a job's `revision`
+    /// (EVENTS-7). Kept in its file.
+    #[serde(default)]
+    revision: u64,
     /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
@@ -302,6 +317,7 @@ impl Thread {
             "cursor": self.key().to_string(),
             "tasks": shown(&self.tasks),
             "folders": self.folders,
+            "revision": self.revision,
         });
         // Only once there's something to say.
         if let Some(account) = &self.talk_account {
@@ -317,6 +333,13 @@ impl Thread {
             summary["fromObys"] = json!(true);
         }
         summary
+    }
+
+    /// Its summary to send, one revision on: taken under the lock it changed under, before the
+    /// write that keeps it, as [`crate::job::Job::revised`].
+    fn revised(&mut self) -> Value {
+        self.revision += 1;
+        self.summary()
     }
 }
 
@@ -822,7 +845,7 @@ impl Conversations {
             return Ok(());
         };
         turn.asks.push(card);
-        let turn = turn.clone();
+        let turn = turn.revised();
         if let Err(error) = self.write(thread) {
             *thread = kept;
             return Err(Error::Io(error));
@@ -848,7 +871,7 @@ impl Conversations {
                 continue;
             };
             if delivery.apply(change) {
-                moved.push(serde_json::to_value(&*turn).unwrap_or_default());
+                moved.push(serde_json::to_value(turn.revised()).unwrap_or_default());
             } else {
                 let (turn, status) = (&turn.id, &delivery.status);
                 tracing::warn!("conversation {id}: turn {turn}: {status}, {change:?} refused");
@@ -885,15 +908,16 @@ impl Conversations {
     /// (crate::routines). Its first turn follows at once.
     pub fn start_for(&self, title: &str) -> Result<String, Error> {
         let mut threads = self.lock();
-        let thread = Thread {
+        let mut thread = Thread {
             id: new_id(),
             title: titled(title),
             created: obi_protocol::time::format(obi_protocol::time::now()),
             sequence: next_sequence(&threads),
             ..Thread::default()
         };
+        let summary = thread.revised();
         self.write(&thread).map_err(Error::Io)?;
-        self.events.send("conversation", thread.summary());
+        self.events.send("conversation", summary);
         let id = thread.id.clone();
         threads.push(thread);
         // ponytail: a conversation forgotten here leaves its files to the uploads' own bound
@@ -912,7 +936,7 @@ impl Conversations {
         if let Some(found) = threads.iter().find(|t| t.from_obys) {
             return Ok(found.id.clone());
         }
-        let thread = Thread {
+        let mut thread = Thread {
             id: new_id(),
             title: titled("Questions from other Obys"),
             created: obi_protocol::time::format(obi_protocol::time::now()),
@@ -922,8 +946,9 @@ impl Conversations {
             from_obys: true,
             ..Thread::default()
         };
+        let summary = thread.revised();
         self.write(&thread).map_err(Error::Io)?;
-        self.events.send("conversation", thread.summary());
+        self.events.send("conversation", summary);
         let id = thread.id.clone();
         threads.push(thread);
         Ok(id)
@@ -1093,17 +1118,18 @@ impl Conversations {
         }
         turn.at = obi_protocol::time::format(obi_protocol::time::now());
         turn.conversation = thread.id.clone();
-        thread.turns.push(turn.clone());
+        thread.turns.push(turn.revised());
         let excess = thread.turns.len().saturating_sub(KEPT);
         for gone in thread.turns.drain(..excess) {
             thread.replays.remove(&gone.id);
         }
         thread.sequence = sequence;
+        let summary = thread.revised();
         if let Err(error) = self.write(thread) {
             *thread = kept;
             return Err(Error::Io(error));
         }
-        self.events.send("conversation", thread.summary());
+        self.events.send("conversation", summary);
         self.events
             .send("turn", serde_json::to_value(&turn).unwrap_or_default());
         Ok(turn)
@@ -1252,11 +1278,11 @@ impl Conversations {
             // the owner chose again: the pill names it at once, and a move off it is news again
             thread.moved_off = None;
         }
+        let summary = thread.revised();
         if let Err(e) = self.write(thread) {
             *thread = kept;
             return Err(Error::Io(e));
         }
-        let summary = thread.summary();
         self.events.send("conversation", summary.clone());
         Ok(summary)
     }
@@ -1278,12 +1304,14 @@ impl Conversations {
         let kept = (
             std::mem::replace(&mut thread.tasks, tasks),
             std::mem::replace(&mut thread.tasks_tainted, tainted),
+            thread.revision,
         );
+        let summary = thread.revised();
         if let Err(e) = self.write(thread) {
-            (thread.tasks, thread.tasks_tainted) = kept;
+            (thread.tasks, thread.tasks_tainted, thread.revision) = kept;
             return Err(Error::Io(e));
         }
-        self.events.send("conversation", thread.summary());
+        self.events.send("conversation", summary);
         Ok(())
     }
 
@@ -1373,8 +1401,12 @@ impl Conversations {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(id.clone());
-        self.events
-            .send("conversation", json!({"id": id, "deleted": true}));
+        // The revision after its last one, so no event from before reads as newer (EVENTS-7).
+        let revision = gone.revision + 1;
+        self.events.send(
+            "conversation",
+            json!({"id": id, "deleted": true, "revision": revision}),
+        );
         Ok(gone.uploads)
     }
 
@@ -1428,12 +1460,14 @@ impl Conversations {
             .filter(|t| t.talk_account.as_deref() == Some(account))
         {
             thread.talk_account = None;
+            let summary = thread.revised();
             if let Err(e) = self.write(thread) {
                 thread.talk_account = Some(account.to_owned());
+                thread.revision -= 1;
                 tracing::warn!("conversation {}: its choice stays: {e}", thread.id);
                 continue;
             }
-            self.events.send("conversation", thread.summary());
+            self.events.send("conversation", summary);
         }
     }
 
@@ -2980,5 +3014,45 @@ mod tests {
         for bad in ["", "2-1", "1-", "-1", "1-x", "1-2-3", "a"] {
             assert_eq!(Cursor::parse(bad), None, "{bad}");
         }
+    }
+
+    /// EVENTS-8: a question's card on a turn sends `turnAsks` one revision on, and the page lists
+    /// the same; a card that can't be kept sends nothing and leaves the revision as it was.
+    #[test]
+    fn events_8_turn_asks_revision_goes_up() {
+        let home = std::env::temp_dir().join(format!("obid-revision-{}", uuid::Uuid::new_v4()));
+        let events = crate::events::Events::new();
+        let conversations = super::Conversations::open(&home, events.clone());
+        let id = conversations.start_for("Ask around").unwrap();
+        let turn = conversations
+            .append(&id, "oby", "Asking Zoe's Oby.".into(), vec![], None)
+            .unwrap();
+        assert_eq!(turn.revision, 1);
+        let mut received = events.subscribe();
+        let listed = |conversations: &super::Conversations| {
+            let page = conversations.page(Some(&id), None, 10).unwrap();
+            page.iter().find(|t| t.id == turn.id).unwrap().revision
+        };
+        for revision in [2, 3] {
+            conversations
+                .add_ask(&id, json!({"exchange": format!("x{revision}")}))
+                .unwrap();
+            let sent = received.try_recv().unwrap();
+            assert_eq!(sent.name, "turnAsks");
+            assert_eq!(sent.data["id"], turn.id.as_str());
+            assert_eq!(sent.data["revision"], revision);
+            assert_eq!(listed(&conversations), revision);
+        }
+        let saved = home.join("saved");
+        std::fs::rename(&conversations.dir, &saved).unwrap();
+        std::fs::write(&conversations.dir, b"not a directory").unwrap();
+        assert!(
+            conversations
+                .add_ask(&id, json!({"exchange": "x4"}))
+                .is_err()
+        );
+        assert!(received.try_recv().is_err());
+        assert_eq!(listed(&conversations), 3);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

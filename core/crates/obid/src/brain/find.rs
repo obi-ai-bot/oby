@@ -69,6 +69,7 @@ mod tests {
                         relayed: false,
                         asks: vec![],
                         delivery: None,
+                        revision: 0,
                     },
                 )
             })

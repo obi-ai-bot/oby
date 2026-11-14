@@ -914,6 +914,7 @@ mod tests {
             relayed: false,
             asks: vec![],
             delivery: None,
+            revision: 0,
         };
         Briefing {
             turns: vec![turn("user", "how is it going?"), turn("oby", "Fine.")],
@@ -1039,6 +1040,7 @@ mod tests {
             start: None,
             github: None,
             watch: None,
+            revision: 0,
             extra: Default::default(),
         };
         let briefing = briefing(vec![old, done, failed, running], vec![permission]);
@@ -1286,6 +1288,7 @@ mod tests {
                 relayed: false,
                 asks: vec![],
                 delivery: None,
+                revision: 0,
             })
             .collect();
         let text = briefing.text();

@@ -1712,6 +1712,7 @@ async fn the_inbox_lists_answers_and_tells_every_app() {
                 "obi",
                 "options",
                 "recommended",
+                "revision",
                 "state",
                 "text",
                 "title",
