@@ -130,10 +130,12 @@ describe('WIRE-4: an agent this build doesn’t know', () => {
   it('wire_4_unknown_agent_renders_with_its_own_name', async () => {
     const { agentOf } = await import('../mock');
     const { BRANDS } = await import('../brands');
-    expect(agentOf('gemini')).toEqual({ name: 'gemini', brand: BRANDS.circle });
+    // the gray circle with its first letter (docs/contracts/providers.md, PROVIDERS-5)
+    const lettered = { ...BRANDS.circle, letter: 'G' };
+    expect(agentOf('gemini')).toEqual({ name: 'gemini', brand: lettered });
     expect(agentOf('codex').name).toBe('Codex');
     const task = taskFor(job({ agent: 'gemini', status: 'done', finished: at }));
-    expect(task.brand).toBe(BRANDS.circle);
+    expect(task.brand).toEqual(lettered);
     const { thread, card } = markup(task);
     expect(thread).toContain('gemini · ');
     expect(card).toContain('gemini · ');
