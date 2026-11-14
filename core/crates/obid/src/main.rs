@@ -171,6 +171,11 @@ fn main() -> ExitCode {
     ) {
         return fail(Some(&home), e, 2);
     }
+    match obid::keep_home_format(&home) {
+        Err(e @ obid::StartError::HomeFormat(..)) => return fail(Some(&home), e, 3),
+        Err(e) => return fail(Some(&home), e, 1),
+        Ok(()) => {}
+    }
     if let Err(e) = obid::prepare_home(&config) {
         return fail(Some(&home), e, 1);
     }
@@ -198,6 +203,7 @@ fn main() -> ExitCode {
     runtime.shutdown_timeout(std::time::Duration::from_secs(1));
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e @ obid::StartError::HomeFormat(..)) => fail(Some(&home), e, 3),
         Err(e) => fail(Some(&home), e, 1),
     }
 }
