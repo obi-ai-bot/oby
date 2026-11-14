@@ -419,6 +419,9 @@ pub struct Item {
     /// (crate::watch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<Box<Value>>,
+    /// Keys this obid doesn't know (a newer one's), kept as they were when it saves. Never shown.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 /// Now in nanoseconds since the epoch, strictly later than any earlier answer in this process:
@@ -645,7 +648,6 @@ pub fn review_request_item(
     Item {
         id: format!("obi-{correlation_id}"),
         kind: "obiRequest".into(),
-        job: String::new(),
         title: format!("Review request from {from_owner}"),
         text,
         options: OBI_OPTIONS.iter().map(|o| (*o).to_owned()).collect(),
@@ -740,7 +742,6 @@ pub fn question_item(
     Item {
         id: format!("obi-{correlation_id}"),
         kind: "obiRequest".into(),
-        job: String::new(),
         title: format!("Question from {from_owner}"),
         text: format!(
             "{from_owner}'s Obi ({from}) asks a question{on}, quoted below. Answer it in your own words, or say no."
@@ -887,7 +888,6 @@ pub fn github_item(work: &crate::github_work::Item, known: bool, now: i64) -> It
     Item {
         id: github_item_id(work),
         kind: "github".into(),
-        job: String::new(),
         title,
         text,
         options: vec![start.into(), DISMISS.into()],
@@ -959,7 +959,6 @@ pub fn routine_paused_item(routine: &str, name: &str, failures: u32, now: i64) -
     Item {
         id: format!("{ROUTINE_PAUSED}{routine}"),
         kind: "routine".into(),
-        job: String::new(),
         title: "Routine paused".into(),
         text: format!("{name} failed {failures} times in a row, so it's paused."),
         options: vec![TURN_BACK_ON.into(), DISMISS.into()],
@@ -1059,6 +1058,28 @@ impl Inbox {
 
 #[cfg(test)]
 mod tests {
+    /// HOME-10 (docs/contracts/home.md): a key a newer obid wrote on an inbox item stays in its
+    /// file through a load and a save, and is never shown.
+    #[test]
+    fn home_10_an_items_unknown_key_survives_a_save() {
+        let home = std::env::temp_dir().join(format!("obid-inbox-newer-{}", uuid::Uuid::new_v4()));
+        let inbox = Inbox::open(&home);
+        let item = routine_paused_item("r1", "Nightly", 3, 1);
+        let mut kept = serde_json::to_value(&item).unwrap();
+        kept["fromANewerObid"] = json!({"a": 1});
+        let file = home.join("inbox").join(format!("{}.json", item.id));
+        std::fs::write(&file, kept.to_string()).unwrap();
+        let mut loaded = inbox.load_all();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].to_json()["fromANewerObid"], Value::Null);
+        loaded[0].done = Some(2);
+        inbox.save(&loaded[0]).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved["fromANewerObid"], json!({"a": 1}));
+        assert_eq!(saved["done"], 2);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// MERGING-28
     #[test]
     fn merging_28_only_the_answer_that_settled_it_names_a_device() {

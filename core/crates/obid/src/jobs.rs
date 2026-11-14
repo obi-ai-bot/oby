@@ -15048,18 +15048,8 @@ pub fn owner_review_item(
         text,
         options,
         details: Some(details),
-        recommended: None,
         created: obi_protocol::time::now(),
-        done: None,
-        later: None,
-        answer: None,
-        obi: None,
-        plugin: None,
         arrived: Some(crate::sphere::inbox::arrival()),
-        answered_by: None,
-        confirm: None,
-        start: None,
-        github: None,
         watch: Some(Box::new(serde_json::json!({
             "source": "github",
             "url": format!("https://github.com/{repo}/pull/{number}"),
@@ -15072,6 +15062,7 @@ pub fn owner_review_item(
             "review": clean.then_some(summary),
             "verdict": verdict,
         }))),
+        ..Default::default()
     }
 }
 
