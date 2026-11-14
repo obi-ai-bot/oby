@@ -68,7 +68,7 @@ A draft with dictated words in it is a spoken request when you send it, even aft
 The iPhone target generates its Info.plist from project build settings. Both Debug and Release include these separate permission reasons:
 
 - `INFOPLIST_KEY_NSMicrophoneUsageDescription`: “Oby listens when you tap the mic to dictate, until you tap stop or for up to 60 seconds.” Oby is English only (the owner's decision of 2026-11-01): there are no other languages' strings.
-- `INFOPLIST_KEY_NSSpeechRecognitionUsageDescription`: “Oby writes down your iPhone and Apple Watch speech on this iPhone to plan your request.”
+- `INFOPLIST_KEY_NSSpeechRecognitionUsageDescription`: “Oby writes down your iPhone speech on this iPhone to plan your request.”
 
 A build without either reason refuses voice input safely and leaves typing available.
 

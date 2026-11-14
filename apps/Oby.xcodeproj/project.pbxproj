@@ -564,7 +564,7 @@
 				INFOPLIST_FILE = ios/app/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Oby listens when you tap the mic to dictate, until you tap stop or for up to 60 seconds.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Oby writes down your iPhone and Apple Watch speech on this iPhone to plan your request.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Oby writes down your iPhone speech on this iPhone to plan your request.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -606,7 +606,7 @@
 				INFOPLIST_FILE = ios/app/Info.plist;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Oby listens when you tap the mic to dictate, until you tap stop or for up to 60 seconds.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Oby writes down your iPhone and Apple Watch speech on this iPhone to plan your request.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Oby writes down your iPhone speech on this iPhone to plan your request.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
