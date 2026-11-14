@@ -84,6 +84,11 @@ ESCALATE if any of them fails, or if the change:
 - rests on a spec Assumption that is really the owner's decision: what
   launches, what is cut, a default that changes what Oby does by itself.
 
+For a job whose `job.json` `intake.surfaces` holds `proofs`, read the final
+round's `round-<N>/proofs.md` too. When its `MODE:` is `advisory`, never
+escalate, or withhold APPROVE, on its `PROOFS:` line alone: the reviews,
+`review-proofs.md` among them, judge the properties.
+
 ## Write decision.md
 
 ```markdown
@@ -97,6 +102,10 @@ Two or three sentences.
 
 ## Acceptance criteria
 1. <criterion>: met / not met, and how you know
+
+## Proofs
+Only for a `proofs` job: the final round's `PROOFS:` line from
+`round-<N>/proofs.md`, quoted, and its `RESULT:` line when there is one.
 
 ## For the human
 Only when you escalate: the exact decision or check you need from them, and the
