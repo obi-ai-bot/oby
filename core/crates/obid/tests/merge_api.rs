@@ -2017,13 +2017,24 @@ fn leave(folder: &Folder, kept: &Value, file: &str) {
 
 /// The card that says the checks failed on GitHub.
 fn red_card(obid: &Obid) -> Value {
+    red_card_on(obid, None)
+}
+
+/// The card that says the checks failed on GitHub, on `head` when it's given.
+fn red_card_on(obid: &Obid, head: Option<&str>) -> Value {
     within(30, "the card", || {
         open_merge_cards(obid).into_iter().find(|c| {
             c["text"]
                 .as_str()
                 .is_some_and(|t| t.contains("Its checks failed on GitHub."))
+                && names(c, head)
         })
     })
+}
+
+/// Whether `card`'s id names `head`, when one is given.
+fn names(card: &Value, head: Option<&str>) -> bool {
+    head.is_none_or(|h| card["id"].as_str().is_some_and(|id| id.contains(h)))
 }
 
 fn read(path: &Path) -> String {
@@ -2102,9 +2113,9 @@ fn merging_39_a_second_red_head_asks_the_owner() {
         |kept| leave(&folder, kept, "fix-checks"),
     );
     rounded(&obid, &id);
-    let card = red_card(&obid);
-    let second = git(&remote, &["rev-parse", "refs/heads/oby/fix-7"]);
+    let second = pushed_over(&remote, &head);
     assert_ne!(second, head);
+    let card = red_card_on(&obid, Some(&second));
     assert!(card["id"].as_str().unwrap().contains(&second), "{card}");
     let fixed = git(&remote, &["show", "refs/heads/oby/fix-7:checks.txt"]);
     assert!(
@@ -2241,17 +2252,29 @@ fn wrote(folder: &Folder, change: impl FnOnce(&mut Value)) {
 
 /// The card that says a review asks for changes.
 fn changes_card(obid: &Obid) -> Value {
+    changes_card_on(obid, None)
+}
+
+/// The card that says a review asks for changes, on `head` when it's given.
+fn changes_card_on(obid: &Obid, head: Option<&str>) -> Value {
     let line = obid::merge::hold_line(obid::merge::CHANGES_ASKED);
     within(30, "the card", || {
         open_merge_cards(obid)
             .into_iter()
-            .find(|c| c["text"].as_str().is_some_and(|t| t.contains(&line)))
+            .find(|c| c["text"].as_str().is_some_and(|t| t.contains(&line)) && names(c, head))
     })
 }
 
 /// fixture-app's `oby/fix-7` as `remote` has it now.
 fn head_of(remote: &Path) -> String {
     git(remote, &["rev-parse", "refs/heads/oby/fix-7"])
+}
+
+/// fixture-app's `oby/fix-7` once a round pushed over `head`.
+fn pushed_over(remote: &Path, head: &str) -> String {
+    within(30, "the round's new head", || {
+        Some(head_of(remote)).filter(|now| now != head)
+    })
 }
 
 /// MERGING-40: a change request on obid's own branch by a member of the owner's organization
@@ -2294,7 +2317,7 @@ fn merging_40_a_members_change_request_starts_one_round() {
         "{prompts}"
     );
     assert!(!prompts.contains("Ignore your task"), "{prompts}");
-    let pushed = head_of(&remote);
+    let pushed = pushed_over(&remote, &head);
     assert_ne!(pushed, head);
     let made = git(&remote, &["show", "refs/heads/oby/fix-7:changes.txt"]);
     assert!(made.contains("This line needs a test."), "{made}");
@@ -2306,7 +2329,7 @@ fn merging_40_a_members_change_request_starts_one_round() {
     assert!(calls.contains(&format!(
         "|api --paginate --slurp repos/{REPO}/pulls/7/reviews/51/comments?per_page=100"
     )));
-    let card = changes_card(&obid);
+    let card = changes_card_on(&obid, Some(&pushed));
     assert!(card["id"].as_str().unwrap().contains(&pushed), "{card}");
     no_second_round(&obid, &id);
     assert_eq!(kept(&folder, &id)["changesRounds"], json!([head]));

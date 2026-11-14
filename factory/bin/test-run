@@ -8,12 +8,30 @@ e.g.
   factory/bin/test-run -- cargo test -p obid --test jobs_api
   factory/bin/test-run -- npm test
 
-Lock. One such run at a time on this Mac: test-run holds
+Heavy and light. Only a run that can build Rust or Xcode code takes turns. The
+command's arguments are joined with spaces and split into words on whitespace
+and on ; & | ( ) < > ' " and the backquote; a word's name is the text after its
+last /. The command is heavy when any word's name is cargo, cargo-nextest,
+nextest, rustc, xcodebuild, oby-check.sh or oby-check-blok, or when a word's
+name is swift and a later word is build or test. Matching is case-sensitive
+(Cargo.toml doesn't count). So `sh -c "cargo test"`, `env X=1 cargo test`,
+`/path/to/cargo clippy` and `swift test` are heavy; `python3 -m unittest`,
+`npm test`, `npx vitest` and `npm run typecheck` are light. A light run starts
+at once: it never opens, takes or waits for the lock, and writes no holder
+line; everything below but the lock still holds for it.
+
+Lock. One heavy run at a time on this Mac: test-run holds
 ~/Library/Caches/oby-factory/test-run.lock (OBY_TEST_RUN_LOCK overrides it, for
 the tests only), beside the shared Cargo folder and not in it, so pruning that
 folder never deletes it. It is never the gate's lock: a gate's check holds only
-its own, so a gate never waits on a builder's run. A run that finds the lock
-held says who holds it (pid, working directory, command) and waits.
+its own, so a gate never waits on a builder's run. The holder writes the line
+`<pid> <started> <cwd> <command>` into it, <started> the UTC time it took the
+lock (2026-11-14T05:04:52Z). A heavy run that finds the lock held says who
+holds it once ("another test run holds the lock (<holder line>); waiting for
+it") and blocks on it; while it still waits it says so again every 5 minutes,
+reading the holder line afresh: "still waiting for the lock after <N> min; it
+is held by (<holder line>)". OBY_TEST_RUN_REPORT_SECONDS overrides those 300
+seconds, for the tests only.
 
 Priority. The command runs at `nice -n 15`, so a gate's check, at normal
 priority, gets the CPU first whenever both want it, and the run has the whole
@@ -25,7 +43,7 @@ Cores. CARGO_BUILD_JOBS, RUST_TEST_THREADS and NEXTEST_TEST_THREADS are each
 set to half the cores (at least 1); a smaller positive value the caller set is
 kept. An explicit `-j` or `--test-threads` on the command line overrides them.
 Commands that read none of them (npm test, npm run typecheck, swift test) are
-held only by the lock and the priority, not by a core cap. Everything else in
+held only by the priority (and swift test by the lock), not by a core cap. Everything else in
 the environment, CARGO_TARGET_DIR included, passes through unchanged.
 
 Ending. As factory/bin/check-lock, through child_session.py beside it: the
@@ -38,15 +56,41 @@ test-run was stopped). The lock is released with test-run.
 
 import fcntl
 import os
+import re
 import sys
+import threading
+import time
 from pathlib import Path
 
 import child_session
 
 NAME = "factory/bin/test-run"
 LOCK = Path(os.environ.get("OBY_TEST_RUN_LOCK") or Path.home() / "Library/Caches/oby-factory/test-run.lock")
+REPORT_SECONDS = float(os.environ.get("OBY_TEST_RUN_REPORT_SECONDS") or 300)
 PRIORITY = 15
 CORE_VARS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "NEXTEST_TEST_THREADS")
+HEAVY = {"cargo", "cargo-nextest", "nextest", "rustc", "xcodebuild", "oby-check.sh", "oby-check-blok"}
+
+
+def heavy(command):
+    names = [word.rsplit("/", 1)[-1] for word in re.split(r"[\s;&|()<>'\"`]+", " ".join(command)) if word]
+    if any(name in HEAVY for name in names):
+        return True
+    return any(name == "swift" and {"build", "test"} & set(names[i + 1 :]) for i, name in enumerate(names))
+
+
+def holder():
+    return LOCK.read_text(errors="replace").strip()
+
+
+def remind(got, since):
+    while not got.wait(REPORT_SECONDS):
+        minutes = int((time.monotonic() - since) // 60)
+        print(
+            f"{NAME}: still waiting for the lock after {minutes} min; it is held by ({holder()})",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def lock():
@@ -55,9 +99,11 @@ def lock():
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        holder = LOCK.read_text(errors="replace").strip()
-        print(f"{NAME}: another test run holds the lock ({holder}); waiting for it", file=sys.stderr, flush=True)
+        print(f"{NAME}: another test run holds the lock ({holder()}); waiting for it", file=sys.stderr, flush=True)
+        got = threading.Event()
+        threading.Thread(target=remind, args=(got, time.monotonic()), daemon=True).start()
         fcntl.flock(fd, fcntl.LOCK_EX)
+        got.set()
     return fd
 
 
@@ -77,9 +123,11 @@ def main(argv):
         return 2
     command = argv[2:]
     child_session.handle_stops()
-    fd = lock()
-    os.ftruncate(fd, 0)
-    os.pwrite(fd, f"{os.getpid()} {os.getcwd()} {' '.join(command)}\n".encode(), 0)
+    if heavy(command):
+        fd = lock()
+        started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, f"{os.getpid()} {started} {os.getcwd()} {' '.join(command)}\n".encode(), 0)
     return child_session.run(["nice", "-n", str(PRIORITY), *command], env=environment())
 
 
