@@ -533,6 +533,26 @@ class TestRunRemote(unittest.TestCase):
         self.assertEqual(state["open"], {})
         self.assertGreater(state["used"], ago(1))
 
+    def test_remote_31_a_bare_clones_worktree_uses_its_own_checkout(self):
+        # As in a slot on the gate VM or the Mac worker, where the factory's tests run: a worktree of a bare clone
+        # has no main checkout, so the copy's own config.json and state.json are the ones read.
+        bare, slot = self.dir / "slot-repo.git", self.dir / "slot-worktree"
+        self.git(self.dir, "clone", "-q", "--bare", str(self.origin), str(bare))
+        self.git(bare, "worktree", "add", "-q", "--detach", str(slot), self.base)
+        self.git(slot, "update-ref", "refs/remotes/origin/dev", self.base)
+        self.settings()
+        code, out, err, pid = self.run_test_run("cargo", "test", "--test", "one", worktree=slot)
+        self.assertEqual((code, out, err), (0, "this Mac's cargo ran\n", ""))
+        self.settings(builder_slots=2)
+        (self.fake / "hold").touch()
+        proc = self.start("cargo", "test", "--test", "one", worktree=slot)
+        self.wait_for_vm_runs(1)
+        [use] = json.loads((slot / "factory" / "jobs" / "remote-gate" / "state.json").read_text())["open"].values()
+        self.assertEqual(use["pid"], proc.pid)
+        (self.fake / "hold").unlink()
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, out + err)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
