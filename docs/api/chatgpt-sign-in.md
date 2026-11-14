@@ -1,0 +1,8 @@
+### obid only: ChatGPT's welcome
+
+**`GET /v1/settings/chatgpt`** answers `{"welcomed": bool}`, and **`PUT /v1/settings/chatgpt`** with `{"welcomed": true}` keeps that OpenAI's welcome for a first ChatGPT sign-in was shown, across restarts and whatever the app's own storage (CHATGPT-17). Off the gateway.
+
+### obid only: ChatGPT's relay
+
+**`POST /v1/agent/chatgpt/{run}/responses`** and **`GET /v1/agent/chatgpt/{run}/models`**: how a Codex run on a ChatGPT login reaches OpenAI (docs/contracts/chatgpt-sign-in.md), with the job's broker token, or a conversation turn's token for `conversation-<id>`, and only on an account signed in with ChatGPT; anything else is `401`. Off the gateway; admitted on Linux at the agents' gateway host, like the agent's MCP routes. Codex's `base_url` is this address and its `env_key` is `OBY_MCP_TOKEN`, so no run holds an OpenAI token. obid adds the current access token and forwards the request to `https://api.openai.com/v1`, refreshing first near its end, and on a 401 within 10 minutes of its end, or on a token another run has replaced, refreshing or taking the new one and sending it again; the answer comes back as OpenAI streams it, event by event, scrubbed like every answer. What OpenAI refuses is read here, since Codex's own error drops the code: a usage limit stays a 429; what OpenAI's page calls final goes to Codex as a `400` with obid's own sentence, which becomes the turn's error, and whatever Codex tries next in that run is answered here without reaching OpenAI. Anything else goes to Codex as it came, to try again. A stream that stops with no end of its own counts as that, and the job's bounded tries follow Codex's. On these logins only this says a run hit a limit, never a turn's words.
+

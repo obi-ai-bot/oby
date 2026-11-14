@@ -1,6 +1,6 @@
 # Business behavior contract template
 
-Use this template in the feature issue before implementation. Scale the detail to the feature: state each applicable rule precisely and mark sections that do not apply. Link the issue from the implementation and document the implemented runner API in [runner-api.md](runner-api.md). Plans, epics and ideas not yet scheduled belong in [oby-plan](https://github.com/obi-ai-bot/oby-plan).
+Use this template in the feature issue before implementation. Scale the detail to the feature: state each applicable rule precisely and mark sections that do not apply. Link the issue from the implementation and document the implemented runner API in its area file under [docs/api/](api/) (index: [runner-api.md](runner-api.md)). Plans, epics and ideas not yet scheduled belong in [oby-plan](https://github.com/obi-ai-bot/oby-plan).
 
 ## Current behavior, not history
 
