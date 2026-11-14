@@ -7,10 +7,12 @@ import { OwnerAvatar } from './ObyFace';
 import { api } from './obid';
 import { keyed } from './live';
 import type { InboxItem } from '../../shared/obid-wire';
+import { STARTER_RULE_ID } from '../../shared/policy';
+import type { Policy, PolicyAnswer } from '../../shared/sphere';
 import RepoTicks from './RepoTicks';
 import { canAddProgress, canChangeRepos, canOpenRoom, confirmIsOff, repoTicks, whatItTells, type SharingRule } from './sharing';
 import { roomOpens, useRoom } from './room';
-import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
+import { ME, SUFFIX, cancelInvite, deleteSphere, memberCount, removeMember, ruleWords, trimSlug, slugOf, slugProblem, updateSphere, urlOf, useSpheres, type Sphere } from './spheres';
 
 export const sphereSettingsLabel = (id: string, spheres: Sphere[]) => `${spheres.find((s) => s.id === id)?.name ?? ''} settings`;
 
@@ -148,9 +150,10 @@ function Settings({ sphere }: { sphere: Sphere }) {
         </div>
       ))}
     </Group>
+    {sphere.live && window.app?.spherePolicy && <SphereRules />}
     {sphere.live && <WhatItTells sphere={sphere} />}
     {/* last, set apart: what it does, then its button under it at the left */}
-    <Group i={4}>
+    <Group i={5}>
       <div className="set-row set-danger">
         <span className="set-label">
           {admin ? 'Delete Obysphere' : `Leave ${sphere.name}`}
@@ -179,7 +182,7 @@ function WhatItTells({ sphere }: { sphere: Sphere }) {
   useEffect(() => change(), []);
   const open = (forRoom = false) => void api.offerSharing(forRoom).then(setCard, (e: Error) => setProblem(e.message));
   return (
-    <Group i={3} title="What your Oby tells" footer={rules?.length ? 'It answers by itself only from this. Never logs, diffs, prompts or files.' : undefined}>
+    <Group i={4} title="What your Oby tells" footer={rules?.length ? 'It answers by itself only from this. Never logs, diffs, prompts or files.' : undefined}>
       {rules?.map((rule) => {
         const { label, about } = whatItTells(rule, sphere.members);
         return (
@@ -206,6 +209,41 @@ function WhatItTells({ sphere }: { sphere: Sphere }) {
       )}
       {problem && <Row label={<span className="set-problem">{problem}</span>} />}
       {card && <ShareModal card={card} onClose={() => setCard(null)} onAnswered={() => { setCard(null); change(); }} />}
+    </Group>
+  );
+}
+
+// Who may ask whom: the Obysphere's rules, read once as the page opens, in words and read-only
+// (docs/contracts/sphere-policy.md, POLICY-5 and 6; q048). Its admin, as the policy's answer says
+// (the store's admin is never true for the live one), gets one button that adds the members rule
+// at the version shown; main writes it only right after that click. Each answer, read or write,
+// shows the policy it brings; one without keeps what's shown, and its why is a plain-text line.
+export function SphereRules() {
+  const [shown, setShown] = useState<{ policy: Policy; admin: boolean } | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [came, setCame] = useState(false);
+  const take = (a: PolicyAnswer | null) => {
+    setCame(true);
+    if (a?.policy) setShown({ policy: a.policy, admin: a.admin });
+    setProblem(a ? a.why : 'Oby couldn’t read the Obysphere’s rules.');
+  };
+  useEffect(() => void window.app?.spherePolicy?.().then(take, () => take(null)), []);
+  if (!came) return null;
+  const rules = shown?.policy.rules;
+  const letAsk = (version: number) => void window.app?.sphereSetPolicy?.(version).then(take, () => take(null));
+  return (
+    <Group i={3} title="Who may ask whom" footer={shown && !shown.admin ? 'Only its admins can change these.' : undefined}>
+      {rules?.map((rule, n) => {
+        const { label, about } = ruleWords(rule);
+        return <Row key={n} label={label} about={about} />;
+      })}
+      {rules?.length === 0 && <Row label="Nobody may ask yet" about="Every question to another member’s Oby is refused." />}
+      {shown?.admin && !shown.policy.rules.some((r) => r.id === STARTER_RULE_ID) && (
+        <Row label="Members may ask each other’s Obys" about="Questions and reviews, in every repository.">
+          <button className="set-button set-member-action" onClick={() => letAsk(shown.policy.version)}>Let members ask</button>
+        </Row>
+      )}
+      {problem && <Row label={<span className="set-problem">{problem}</span>} />}
     </Group>
   );
 }

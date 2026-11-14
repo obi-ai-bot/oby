@@ -5,15 +5,15 @@ The business behavior contract for reading and writing an Obysphere's policy fro
 ## Feature and status
 
 - **Outcome:** An admin of an Obysphere adds, from their own Oby, the rule that lets every member ask every other a question or a review, so a new Obysphere stops refusing every question (`policy_denied`). Any member's Oby can read the rules.
-- **Status:** The engine is **implemented** in the Electron app (`apps/electron`): `readPolicy`, `writePolicy`, `starterRule` and `addStarterRule` in `src/shared/sphere.ts`, carried out by `src/main/sphere.ts` and reached through the preload (POLICY-1 to 4). Nothing shows them yet: the screen, its words and the offer on a `policy_denied` refusal are R10-07's, POLICY-5 to 7, still to come.
-- **Scope:** reading the policy, and adding the members rule at the version the page read. **Out of scope:** the screen (R10-07); a page call that sends rules, edits or removes one (a later editor, #1220); anything in obid or in obi-sphere; caching the policy, the admin flag or a token; polling or pushing policy changes.
+- **Status:** The engine is **implemented** in the Electron app (`apps/electron`): `readPolicy`, `writePolicy`, `starterRule` and `addStarterRule` in `src/shared/sphere.ts`, carried out by `src/main/sphere.ts` and reached through the preload (POLICY-1 to 4). The screen is **implemented** too: the "Who may ask whom" group in Settings › Obysphere (`SphereRules` in `src/renderer/src/SphereSettings.tsx`), each rule in the words `ruleWords` in `src/renderer/src/spheres.ts` gives it, with "Let members ask" for an admin (POLICY-5 and 6). The members rule and its id are written once, in `src/shared/policy.ts`.
+- **Scope:** reading the policy, and adding the members rule at the version the page read. **Out of scope:** an offer on a `policy_denied` refusal (the ask card and the thread box carry none) and removing a rule: the rules are read-only for everyone and the button is only in Settings, by the owner's decision [q048](../decisions/2026-11-13-roadmap-answers.md#r10-07-q048); a page call that sends rules, edits or removes one (a later editor, #1220); anything in obid or in obi-sphere; caching the policy, the admin flag or a token; polling or pushing policy changes.
 
 ## Behavior
 
 ### Actors and ownership
 
 - **Main** (the Electron app's main process) holds the owner key (`ownerKey()` in `src/main/sphere.ts`) and is the only place a token for the policy exists. For each call it makes the owner's own new 5-minute assertion, exchanges it at the Sphere for a short-lived token (`directory:read` to read, `admin directory:read` to write) and calls the Sphere with it. It decides what it signs and writes: the rules it reads again, with the members rule added.
-- **The page** sends only the version it read (`window.app.sphereSetPolicy(version)`), right after the owner's click, and gets back a `PolicyAnswer`: `{ sphere, policy, admin, refused, why }`. It never gets a token or the key, and can't hand main rules, a scope or an address.
+- **The page** sends only the version it read (`window.app.sphereSetPolicy(version)`), right after the owner's click, and gets back a `PolicyAnswer`: `{ sphere, policy, admin, refused, why }`. It never gets a token or the key, and can't hand main rules, a scope or an address. The admin flag the screen goes by is that answer's `admin`, never the store's (`liveSphere()` sets `admin` false for the live Obysphere).
 - **obid** holds nothing new: main reads its membership (`GET /v1/obid/sphere`: `url`, `sphere`, `owner`) and nothing else. It has no policy route and never holds an owner or admin token.
 - **The Obysphere** says who may write (its `admins`, and the `admin` it grants or leaves out of an exchange) and keeps the policy's version.
 
@@ -35,7 +35,7 @@ The business behavior contract for reading and writing an Obysphere's policy fro
 | A write whose exchange doesn't grant `admin`, or whose `PUT` is `403` | No `PUT` (or nothing replaced). "Only the Obysphere's admins can change its rules." | `not_admin` |
 | A write answered `409` `conflict` | The policy read again with a new `directory:read` token, never the admin one. A version other than the one written at: nothing more written, the policy as now, "The rules changed meanwhile: …". The same version: the Sphere's `message` as `why`, never parsed, as one line of plain text (control and direction characters made spaces, at most 300 characters). | `changed` / `failed` |
 
-The members rule is `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "actions": ["question", "review_request"], "repos": ["*"]}` (ask-an-oby.md). These words are carried in `why` until R10-07's screen sets what a person reads.
+The members rule is `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "actions": ["question", "review_request"], "repos": ["*"]}` (ask-an-oby.md). The screen shows `why` as a plain-text problem line in its group, and opens no dialog.
 
 ### Failures and recovery
 
@@ -62,11 +62,13 @@ The members rule is `{"id": "members-ask", "from_owner": "*", "to_owner": "*", "
 - **POLICY-2** Given a member who isn't an admin, when the page asks to write, then no `PUT` is sent (an exchange that leaves `admin` out sends none, and the members rule for an owner not in `admins` never asks for `admin`) and the answer is `not_admin`, its words naming the admins; not joined answers `not_joined` with no owner key used and nothing sent. `policy_2_a_member_cannot_write` in `sphere.test.ts`.
 - **POLICY-3** Given the policy changed since it was read, when main writes at the old version, then nothing is replaced, the policy is read again with a new `directory:read` token, and the answer is `changed` with the new policy and "changed meanwhile"; a `409 conflict` at an unchanged version answers `failed` with the Sphere's message. `policy_3_a_stale_version_replaces_nothing` in `test-sphere.mjs` (a real obi-sphere) and in `sphere.test.ts`.
 - **POLICY-4** Given any policy write, when it runs, then every request has `redirect: 'error'`, each write makes its own exchange with a new `jti`, the admin token is on exactly one request (the `PUT`), no answer carries a token or an assertion, and the preload names no `ownerKey`, `assertion` or `access_token`; a write the page asks for with no click or key main saw itself just before is refused (`failed`, "Adding the rule takes your own click.") and writes nothing, and one click allows one write. `policy_4_the_owner_key_stays_in_main` in `sphere.test.ts`, `policy_4_the_members_rule_is_written_only_right_after_a_click_main_saw` in `apps/electron/src/renderer/src/test/ipc.test.ts`.
-- **POLICY-5 to 7** (R10-07, to come): the screen that shows the rules, its button, and the offer on a `policy_denied` refusal.
+- **POLICY-5** Given an admin (the answer's `admin` true) with policy `[]`, when they open Settings › Obysphere, then they read that nobody may ask yet, and "Let members ask" writes the members rule at the version read, after which the group shows it and the button is gone; a refusal shows its `why` as text, keeps the rules shown and the button. `policy_5_an_admin_turns_on_members_ask` in `apps/electron/src/renderer/src/test/spherePolicy.test.tsx`.
+- **POLICY-6** Given a member who is not an admin, when they open it, then they read the same rules, a rule Oby can't put in words by its id and everything from the Sphere as text, with no control. `policy_6_a_member_reads_only` in `spherePolicy.test.tsx`.
+- The `policy_denied` refusal offers no button: the button is only in Settings, by the owner's decision q048 ([roadmap answers](../decisions/2026-11-13-roadmap-answers.md#r10-07-q048)), and POLICY-7 is unused.
 
 ### Test it when it's done (on a real Mac)
 
-1. With R10-07's screen: an admin's Oby on a new Obysphere adds the members rule, and a member's question to another member arrives.
+1. An admin's Oby on a new Obysphere clicks "Let members ask" in Settings › Obysphere, and a member's question to another member arrives.
 
 ## What the Sphere offers
 
