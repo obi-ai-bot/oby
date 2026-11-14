@@ -1,6 +1,6 @@
 # Checks
 
-Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20); the design behind it, with the merge queue on `dev` still to come (R01-03), is [docs/ci-architecture.md](ci-architecture.md).
+Checks run in two places: GitHub's `CI` workflow (`.github/workflows/ci.yml`) and the Mac's `scripts/oby-check.sh`. Every pull request says what was run and what it printed. This page is what runs today (docs/contracts/ci.md, CI-1 to 6 and CI-17 to 20) and how a merge lands (CI-7, 8 and 21); the design behind it is [docs/ci-architecture.md](ci-architecture.md).
 
 ## What GitHub runs
 
@@ -49,7 +49,7 @@ A newer push to the same pull request cancels the run it supersedes; merge queue
 
 **`Check`'s rule.** It fails when `plan` didn't succeed (so skipped lanes can never pass over a broken plan), or when any job failed or was cancelled; a skipped job passes. Its step summary shows the mode, the lanes, each job's result, each failed shard with its failing tests (from that shard's JUnit), and under "Flaky" every test that passed only on its retry.
 
-**Shards and retries.** nextest runs each test in its own process. `core/.config/nextest.toml`'s `ci` profile retries a failed test once, writes `target/nextest/ci/junit.xml`, and stops a test after 5 minutes (60-second periods, 5 of them). A test that passes on its retry shows as `flakyFailure` in the JUnit and in `Check`'s "Flaky" list. The quarantine list (R01-13) goes in the same file.
+**Shards and retries.** nextest runs each test in its own process. `core/.config/nextest.toml`'s `ci` profile retries a failed test once, writes `target/nextest/ci/junit.xml`, and stops a test after 5 minutes (60-second periods, 5 of them). A test that passes on its retry shows as `flakyFailure` in the JUnit and in `Check`'s "Flaky" list. The same file holds the flaky list (docs/contracts/ci.md, CI-26 to 28): its `[[profile.ci.overrides]]` entries, each naming one exact test and the task that fixes it, get `retries = 2`.
 
 **Caches.** Only the nightly and on-demand runs save the Rust caches (`Swatinem/rust-cache`'s `save-if`), one `shared-key` per job kind: `lint`, `test-build`, `e2e`, `tools`. `rust-test` compiles nothing and has none. Every other run only restores them, because a pull request's caches are scoped to `refs/pull/<n>/merge` and no other pull request can read them. The pnpm and npm caches from `actions/setup-node` have no save switch and are left as they are, because they are small.
 
@@ -71,6 +71,18 @@ The Mac's `scripts/oby-check.sh` runs the suites each change reaches, tests incl
 | obi-sphere | In `server/`: `pnpm run check`, `pnpm test`, `pnpm run check:validators`, `pnpm run test:client`, and `pnpm run conformance` with `spec/` installed. |
 
 The route guard, obid's `tests/routes_guard.rs` (docs/contracts/ci.md, CI-9 to 11), fails when a route goes, when a client calls a path obid doesn't serve, or when the gateway's `ROUTES` lists one; `scripts/oby-check.sh` plans it for a change to `api.rs`, `gateway.rs`, another obid source with a `.route(`, `docs/api/`, or the clients' sources (`apps/electron/src` but its tests and mock, `apps/shared`, `mcp/server`). To add a route, commit its line in `docs/api/routes.txt` with it. `docs/api/dead-client-calls.txt`, the calls already dead when the guard came, only shrinks.
+
+The Mac retries a failed obid test once, and only a test on the flaky list in `core/.config/nextest.toml` (docs/contracts/ci.md, CI-26 to 28): when every test a test binary or the lib's tests failed was on the list at the merge base and still is, those tests run once more alone, and the output says `retried flaky: <binary id> <test name>`. Any other failure isn't retried. The list only shrinks: a new entry comes with its fixing task file, `factory/queue/tasks/<KEY>.md`, in the same change, else the check fails naming `the flaky list`.
+
+## How a merge lands
+
+A merge into `dev` goes through GitHub's merge queue and needs its `Check` (docs/contracts/ci.md, CI-7, 8 and 21). `dev`'s ruleset asks for a pull request with 0 approvals and the required status check `Check`, and queues it: squash, build concurrency 1, a minimum group of 2 with a 15-minute wait, a maximum group of 5, every entry must pass, and a status-check timeout of 60 minutes. The queue tests each group on top of `dev` and squash-merges its pull requests in order, so the code that lands is the code that was tested; a group whose `Check` fails merges nothing.
+
+Oby (MERGING-41) and the factory (`job merge`, CI-23) hand an approved pull request to GitHub with `gh pr merge --auto --match-head-commit <head>`, which queues it pinned to the head that was reviewed. A pull request into `main` needs `Check` green, with no queue.
+
+The Mac's check still gates each pull request before approval, and the nightly full Mac run (CI-29) checks `dev` as merged.
+
+The queue and the required check are GitHub's limits, not Oby's: the owner, as the repository's admin, changes or bypasses them in its settings, and when one holds a merge Oby says what holds it.
 
 ## Signing
 

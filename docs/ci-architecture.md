@@ -261,11 +261,18 @@ requests wait for the owner.
 ### Flaky tests: one list that only shrinks
 
 - The list lives in `core/.config/nextest.toml` (`[[profile.ci.overrides]]`, one `filter` naming
-  each test). The Mac check reads the same list and re-runs a failed test once only if it is on it
-  (R01-13). That changes `scripts/oby-check.sh` and `tools/oby-check-blok`, the check's own files,
-  so the owner decides.
-- An entry needs a task that fixes it. R01-06 already covers #1656 and #1804; R01-13 adds the other
-  three seen today.
+  one exact test, `retries = 2`, and a comment naming its fixing task). The Mac check reads the
+  same list and re-runs a failed test once only if it is on it, at the merge base and in the
+  change (docs/contracts/ci.md, CI-26 to 28).
+- Built in R01-13: the list, the retry for obid's test binaries and lib tests, and a guard in
+  `scripts/oby-check.sh` that fails `the flaky list` when an entry comes without the task file the
+  same change adds. Only `scripts/oby-check.sh` changed of the check's files: `tools/oby-check-blok`
+  relays the script's lines and takes its exit status, so it needed nothing. The owner accepted on
+  2026-11-13 ("merge #2163 and accept all three decisions") that R01-13 merges on approval,
+  though it changes the check's own files.
+- An entry needs a task that fixes it. R01-06 fixed #1656 and #1804, and A00-01 the other
+  `plans_api` test, so neither is listed. R01-13 listed the six tests the factory's gate logs and
+  builders' notes showed failing on changes that didn't touch them, with tasks R01-15 to R01-19.
 - Fixing a test removes its line. The list never grows without a task, and nothing is retried
   blind on the Mac.
 
