@@ -663,6 +663,17 @@ impl Link {
             }
             inbox::action::SHARE_STATUS => self.share_status(&confirmed.payload),
             inbox::action::SHARE_ROOM => self.share_room(),
+            // A member's changed owner key, trusted on the owner's tap (SPHERE-9).
+            inbox::action::TRUST_KEY => {
+                let fingerprint = confirmed.payload["fingerprint"].as_str().unwrap_or("");
+                if confirmed.payload["owner"] != target || fingerprint.is_empty() {
+                    return Err(api(StatusCode::CONFLICT, "That key's plan was lost."));
+                }
+                self.trust_key(target, fingerprint)
+                    .await
+                    .map(|_| ())
+                    .map_err(|why| api(StatusCode::CONFLICT, why))
+            }
             inbox::action::SET_SETTINGS => {
                 let asked: crate::brain::owners_word::Settings =
                     serde_json::from_value(confirmed.payload["settings"].clone())
@@ -1023,8 +1034,8 @@ impl Link {
 
     /// `Confirm` or `Cancel` on a `confirm` item made before the owner's own signed words, in a
     /// conversation turn that read nothing untrusted, said so (crate::brain::actions, TASKCONV-9):
-    /// as their tap would. A teammate's approval on GitHub, and a standing one, keep their tap
-    /// (crate::sphere::approval).
+    /// as their tap would. A teammate's approval on GitHub, a standing one (crate::sphere::approval)
+    /// and trusting a changed owner key keep their tap.
     pub async fn answer_on_owners_word(
         self: &Arc<Self>,
         id: &str,
@@ -1037,6 +1048,7 @@ impl Link {
         if item.confirm.as_ref().is_some_and(|c| {
             c.action == inbox::action::APPROVE_ON_HOST
                 || c.action == inbox::action::REMEMBER_APPROVAL
+                || c.action == inbox::action::TRUST_KEY
         }) {
             return Err(api(StatusCode::FORBIDDEN, NEEDS_YOUR_TAP));
         }

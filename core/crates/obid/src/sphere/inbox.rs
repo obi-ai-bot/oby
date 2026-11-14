@@ -154,6 +154,32 @@ pub mod action {
     /// Post in the Sphere's room as the owner's jobs start and end (ROOMS-17,
     /// docs/contracts/rooms.md): `target` empty, `payload` null.
     pub const SHARE_ROOM: &str = "share_room";
+    /// Trust a member's changed owner key (SPHERE-8, crate::sphere::pins): `target` the owner id,
+    /// `payload` `{"owner", "fingerprint"}`, the new key's fingerprint.
+    pub const TRUST_KEY: &str = "trust_key";
+}
+
+/// Oby's ask to trust `owner`'s changed owner key (SPHERE-8): obid's own fixed words with only the
+/// owner id and the new key's fingerprint, so nothing the Sphere or a card says goes on the card.
+pub fn trust_key_item(owner: &str, fingerprint: &str, now: i64) -> Item {
+    let mut item = confirm_item(
+        "",
+        format!("New key for {owner}: compare with them ({fingerprint})"),
+        format!(
+            "{owner}'s owner key changed. Compare its fingerprint with them before you trust it."
+        ),
+        Confirmed {
+            action: action::TRUST_KEY.into(),
+            target: owner.into(),
+            payload: json!({"owner": owner, "fingerprint": fingerprint}),
+        },
+        now,
+    );
+    item.details = Some(vec![
+        format!("Trusts {fingerprint} as {owner}'s owner key and brings them back."),
+        format!("Keeps {owner} out until you trust a key of theirs."),
+    ]);
+    item
 }
 
 /// A `confirm` item: `title` says exactly what `Confirm` does, `confirmed` is what obid carries

@@ -1932,37 +1932,7 @@ async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_i
     assert_eq!(ernesto_pin["verified"], false);
     // The Sphere now serves a card for obi-ernesto signed with a key of its own.
     let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
-    {
-        let mut state = sphere.lock();
-        let accepts = vec!["review_request".to_owned()];
-        let issued_at = obi_protocol::time::format(obi_protocol::time::now());
-        let unsigned = obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
-            sphere_url: &sphere.url,
-            sphere: SPHERE,
-            obi_id: "obi-ernesto",
-            owner: "ernesto",
-            owner_key: &mallory.public_key(),
-            name: "A test Obi",
-            description: obi_protocol::identity::DEFAULT_DESCRIPTION,
-            version: "0.1.0",
-            key_id: &ernesto.key.key_id(),
-            public_key: &ernesto.key.public_key(),
-            accepts: &accepts,
-            card_seq: 2,
-            issued_at: &issued_at,
-            seal: None,
-            runtime: None,
-        });
-        let signed = obi_protocol::card::sign(&unsigned, &mallory).unwrap();
-        let member = state
-            .members
-            .iter_mut()
-            .find(|m| m["obi"] == "obi-ernesto")
-            .unwrap();
-        member["card"] = signed;
-        member["owner_key"] = json!(mallory.public_key());
-        member["owner_key_id"] = json!(mallory.key_id());
-    }
+    serve_owner_key(&sphere, &ernesto, &mallory, 2);
     let refused = ask();
     assert_eq!(refused.status, 422, "{}", refused.text);
     let pins = tokio::task::block_in_place(|| get(&obid, "/v1/obid/sphere/pins"));
@@ -1996,6 +1966,284 @@ async fn a_member_whose_owner_key_changes_isnt_trusted_until_the_owner_accepts_i
     assert_eq!(accepted.status, 200, "{}", accepted.text);
     assert_eq!(accepted.body["verified"], true);
     assert_eq!(ask().status, 202);
+}
+
+/// The fake Sphere serves obi-ernesto's card signed with `owner_key`, bound to it, at `card_seq`.
+fn serve_owner_key(
+    sphere: &FakeSphere,
+    ernesto: &TestObi,
+    owner_key: &obi_protocol::keys::Keypair,
+    card_seq: u64,
+) {
+    let mut state = sphere.lock();
+    let accepts = vec!["review_request".to_owned()];
+    let issued_at = obi_protocol::time::format(obi_protocol::time::now());
+    let unsigned = obi_protocol::identity::unsigned_card(&obi_protocol::identity::CardFields {
+        sphere_url: &sphere.url,
+        sphere: SPHERE,
+        obi_id: "obi-ernesto",
+        owner: "ernesto",
+        owner_key: &owner_key.public_key(),
+        name: "A test Obi",
+        description: obi_protocol::identity::DEFAULT_DESCRIPTION,
+        version: "0.1.0",
+        key_id: &ernesto.key.key_id(),
+        public_key: &ernesto.key.public_key(),
+        accepts: &accepts,
+        card_seq,
+        issued_at: &issued_at,
+        seal: None,
+        runtime: None,
+    });
+    let signed = obi_protocol::card::sign(&unsigned, owner_key).unwrap();
+    let member = state
+        .members
+        .iter_mut()
+        .find(|m| m["obi"] == "obi-ernesto")
+        .unwrap();
+    member["card"] = signed;
+    member["owner_key"] = json!(owner_key.public_key());
+    member["owner_key_id"] = json!(owner_key.key_id());
+}
+
+/// The `trust_key` cards in `GET /v1/inbox` (`state` empty: the open ones).
+fn trust_cards(obid: &Obid, state: &str) -> Vec<Value> {
+    get(obid, &format!("/v1/inbox{state}"))
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "confirm" && i["confirm"]["action"] == "trust_key")
+        .cloned()
+        .collect()
+}
+
+/// obid reads the directory now, as Settings › Obysphere's members list does.
+fn read_members(obid: &Obid) -> Value {
+    get(obid, "/v1/obid/sphere/members")
+}
+
+/// ernesto's pin, as `GET /v1/obid/sphere/pins` shows it.
+fn ernestos_pin(obid: &Obid) -> Value {
+    get(obid, "/v1/obid/sphere/pins")
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["owner"] == "ernesto")
+        .cloned()
+        .unwrap()
+}
+
+/// SPHERE-8: a pinned member whose owner key changes becomes one `trust_key` Confirm, naming the
+/// owner and the new fingerprint, and no second one on the next read, after a restart or after
+/// Cancel. A third key closes it and one card stands for that key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_8_a_changed_key_asks_once() {
+    let folder = Folder::new("sphere-8");
+    let (sphere, mut obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| read_members(&obid));
+    let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
+    serve_owner_key(&sphere, &ernesto, &mallory, 2);
+    let id = tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        let card = &cards[0];
+        let fingerprint = mallory.key_id();
+        assert_eq!(card["confirm"]["target"], "ernesto");
+        assert_eq!(
+            card["confirm"]["payload"],
+            json!({"owner": "ernesto", "fingerprint": fingerprint})
+        );
+        assert_eq!(
+            card["title"],
+            format!("New key for ernesto: compare with them ({fingerprint})")
+        );
+        assert_eq!(card["job"], "");
+        assert_eq!(card["options"], json!(["Confirm", "Cancel"]));
+        assert!(
+            !card["details"]
+                .to_string()
+                .contains("Oby's plan is dropped"),
+            "{card:#}"
+        );
+        read_members(&obid);
+        assert_eq!(trust_cards(&obid, "").len(), 1);
+        card["id"].as_str().unwrap().to_owned()
+    });
+    // A restart keeps the inbox and the waiting key: still the one card.
+    let status = obid.stop();
+    assert!(status.success(), "obid exited {status}");
+    let remote = folder.0.join("fixture/remote.git");
+    let obid = start(&folder.0, &config(&folder.0, &remote, &stub_agent()), None);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        assert_eq!(cards[0]["id"], id.as_str());
+        // Cancel keeps the member out, and no card comes again for that key.
+        let cancelled = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{id}/answer"),
+            Some(&json!({"answer": "Cancel"})),
+        );
+        assert_eq!(cancelled.status, 200, "{}", cancelled.text);
+        let members = read_members(&obid);
+        assert!(
+            !members
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["owner"] == "ernesto"),
+            "{members:#}"
+        );
+        assert!(trust_cards(&obid, "").is_empty());
+    });
+    // A third key: one card stands, for it.
+    let third = obi_protocol::keys::Keypair::from_seed_string("yet another owner key");
+    serve_owner_key(&sphere, &ernesto, &third, 3);
+    tokio::task::block_in_place(|| {
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        assert_eq!(
+            cards[0]["confirm"]["payload"]["fingerprint"],
+            third.key_id()
+        );
+        let earlier = cards[0]["id"].as_str().unwrap().to_owned();
+        // And a fourth closes that one, with no answer.
+        let fourth = obi_protocol::keys::Keypair::from_seed_string("a fourth owner key");
+        serve_owner_key(&sphere, &ernesto, &fourth, 4);
+        read_members(&obid);
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        assert_eq!(
+            cards[0]["confirm"]["payload"]["fingerprint"],
+            fourth.key_id()
+        );
+        let closed = trust_cards(&obid, "?state=done");
+        let closed = closed.iter().find(|i| i["id"] == earlier.as_str()).unwrap();
+        assert_eq!(closed["answer"], Value::Null);
+    });
+}
+
+/// SPHERE-9: the owner's device-signed Confirm on the card pins the new key verified and the member
+/// is back; an unsigned Confirm is `403` and leaves the card open and the key waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_9_a_signed_confirm_trusts_the_new_key() {
+    let folder = Folder::new("sphere-9");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    let ask = || {
+        let body = json!({"to": "obi-ernesto", "type": "review_request", "body": brief(), "expiresIn": 3600});
+        tokio::task::block_in_place(|| call(&obid, "POST", "/v1/obid/sphere/requests", Some(&body)))
+    };
+    assert_eq!(ask().status, 202);
+    let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
+    serve_owner_key(&sphere, &ernesto, &mallory, 2);
+    assert_eq!(ask().status, 422);
+    tokio::task::block_in_place(|| {
+        let cards = trust_cards(&obid, "");
+        assert_eq!(cards.len(), 1, "{cards:#?}");
+        let id = cards[0]["id"].as_str().unwrap().to_owned();
+        let unsigned = call(
+            &obid,
+            "POST",
+            &format!("/v1/inbox/{id}/answer"),
+            Some(&json!({"answer": "Confirm"})),
+        );
+        assert_eq!(unsigned.status, 403, "{}", unsigned.text);
+        assert_eq!(trust_cards(&obid, "").len(), 1);
+        assert_eq!(ernestos_pin(&obid)["changedTo"], mallory.key_id());
+
+        let confirmed = confirm(&obid, &id);
+        assert_eq!(confirmed.status, 200, "{}", confirmed.text);
+        let pin = ernestos_pin(&obid);
+        assert_eq!(pin["fingerprint"], mallory.key_id());
+        assert_eq!(pin["verified"], true);
+        assert_eq!(pin["changedTo"], Value::Null);
+        let members = read_members(&obid);
+        assert!(
+            members
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["obi"] == "obi-ernesto"),
+            "{members:#}"
+        );
+        assert!(trust_cards(&obid, "").is_empty());
+    });
+    assert_eq!(ask().status, 202);
+}
+
+/// SPHERE-10: the card closes, with no answer and an `inbox` event, when the owner accepts the key
+/// through `POST /v1/obid/sphere/pins/{owner}`, when the member leaves the Sphere, and when obid
+/// leaves it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sphere_10_the_card_closes_when_settled_elsewhere() {
+    let folder = Folder::new("sphere-10");
+    let (sphere, obid, ernesto) = setup(&folder, &stub_agent(), None).await;
+    tokio::task::block_in_place(|| read_members(&obid));
+    let events = tokio::task::block_in_place(|| follow_events(&obid));
+    // A fresh card for `key`, at `card_seq`: its id.
+    let card_for = |key: &obi_protocol::keys::Keypair, card_seq: u64| {
+        serve_owner_key(&sphere, &ernesto, key, card_seq);
+        tokio::task::block_in_place(|| {
+            read_members(&obid);
+            let cards = trust_cards(&obid, "");
+            assert_eq!(cards.len(), 1, "{cards:#?}");
+            assert_eq!(cards[0]["confirm"]["payload"]["fingerprint"], key.key_id());
+            cards[0]["id"].as_str().unwrap().to_owned()
+        })
+    };
+    // It's done with no answer, and the apps heard so.
+    let closed = |id: &str| {
+        tokio::task::block_in_place(|| {
+            assert!(trust_cards(&obid, "").is_empty());
+            let done = trust_cards(&obid, "?state=done");
+            let done = done.iter().find(|i| i["id"] == id).unwrap();
+            assert_eq!(done["answer"], Value::Null);
+            events_named(&events, "inbox", 10, |got| {
+                got.iter().any(|i| i["id"] == id && i["state"] == "done")
+            });
+        });
+    };
+
+    // (a) Accepted through the pins route.
+    let mallory = obi_protocol::keys::Keypair::from_seed_string("a Sphere operator's own key");
+    let id = card_for(&mallory, 2);
+    let accepted = tokio::task::block_in_place(|| {
+        call(
+            &obid,
+            "POST",
+            "/v1/obid/sphere/pins/ernesto",
+            Some(&json!({"fingerprint": mallory.key_id()})),
+        )
+    });
+    assert_eq!(accepted.status, 200, "{}", accepted.text);
+    closed(&id);
+
+    // (b) The member leaves the Sphere.
+    let second = obi_protocol::keys::Keypair::from_seed_string("a second owner key");
+    let id = card_for(&second, 3);
+    let gone = {
+        let mut state = sphere.lock();
+        let at = state
+            .members
+            .iter()
+            .position(|m| m["obi"] == "obi-ernesto")
+            .unwrap();
+        state.members.remove(at)
+    };
+    tokio::task::block_in_place(|| read_members(&obid));
+    closed(&id);
+
+    // (c) obid leaves the Sphere.
+    sphere.lock().members.push(gone);
+    let third = obi_protocol::keys::Keypair::from_seed_string("a third owner key");
+    let id = card_for(&third, 4);
+    let left = tokio::task::block_in_place(|| call(&obid, "DELETE", "/v1/obid/sphere", None));
+    assert_eq!(left.status, 200, "{}", left.text);
+    closed(&id);
 }
 
 /// A Sphere that rolls its chain back, or shows a chain without one of obid's sends, is caught

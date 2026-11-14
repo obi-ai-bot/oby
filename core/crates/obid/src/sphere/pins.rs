@@ -258,6 +258,16 @@ impl Pins {
             .is_some_and(|p| p.verified)
     }
 
+    /// The fingerprint of `owner`'s changed key waiting for this owner's OK, if one does.
+    pub fn waiting(&self, owner: &str) -> Option<String> {
+        self.pins
+            .lock()
+            .unwrap()
+            .owners
+            .get(owner)
+            .and_then(|p| p.changed_to.as_deref().map(fingerprint))
+    }
+
     /// Every owner pinned, sorted: whoever obid ever trusted, members who left too.
     pub fn owners(&self) -> Vec<String> {
         self.pins.lock().unwrap().owners.keys().cloned().collect()

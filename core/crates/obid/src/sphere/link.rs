@@ -1696,7 +1696,7 @@ impl Link {
     /// that takes the owner's own token, which obid never holds. What's open is settled as at a
     /// revoke, and `home/sphere` goes (the membership, the delegation, what obid saw of the chain,
     /// the owner keys it pinned), and the Obi key with it: a Sphere never takes a key twice, so the
-    /// next join makes a new one. The exchanges and the inbox stay.
+    /// next join makes a new one. The exchanges and the inbox stay; its `trust_key` cards close.
     pub async fn leave(&self) -> Result<Value, ApiError> {
         let _one = self.joining.lock().await;
         // No send under way, and nothing left to send: an exchange's waiting replies were for this
@@ -1744,6 +1744,7 @@ impl Link {
         }
         *self.chain.lock().unwrap_or_else(|e| e.into_inner()) = ChainKept::default();
         self.pins.forget_all();
+        self.close_trust_cards(|_| true);
         self.forget_the_offer();
         // Its file went with `home/sphere`, and what waits was for this Sphere.
         {
@@ -1833,16 +1834,66 @@ impl Link {
     pub async fn accept_pin(&self, owner: &str, body: &[u8]) -> Result<Value, ApiError> {
         let map = object(body, &["fingerprint"])?;
         let seen = text_field(&map, "fingerprint")?;
-        let pinned = self
-            .pins
-            .accept(owner, seen, time::now())
-            .map_err(|m| api(StatusCode::UNPROCESSABLE_ENTITY, m))?;
+        self.trust_key(owner, seen)
+            .await
+            .map_err(|m| api(StatusCode::UNPROCESSABLE_ENTITY, m))
+    }
+
+    /// The owner trusts `owner`'s key named by `fingerprint` (`Pins::accept`), by the pins route or
+    /// a signed `trust_key` Confirm: the cards asking about that owner's key close (SPHERE-10) and
+    /// the directory is read again, so the member is back.
+    pub(super) async fn trust_key(&self, owner: &str, fingerprint: &str) -> Result<Value, String> {
+        let pinned = self.pins.accept(owner, fingerprint, time::now())?;
+        // Before the read: a card it raises for yet another key stays.
+        self.close_trust_cards(|c| c.target == owner);
         if self.lock().membership.is_some()
             && let Err(e) = self.read_directory().await
         {
             self.note_error(&e);
         }
         Ok(pinned)
+    }
+
+    /// One `trust_key` card for `owner`'s changed key, `fingerprint` (SPHERE-8): none while one for
+    /// it is open or after the owner's Cancel on one, and a card for an earlier key closes.
+    fn ask_to_trust(&self, owner: &str, fingerprint: &str) {
+        // Not for a key the owner trusted while this read ran.
+        if self.pins.waiting(owner).as_deref() != Some(fingerprint) {
+            return;
+        }
+        self.close_trust_cards(|c| c.target == owner && c.payload["fingerprint"] != fingerprint);
+        let item = inbox::trust_key_item(owner, fingerprint, time::now());
+        let _ = self.add_new(item, |i| {
+            (i.done.is_none() || i.answer.as_deref() == Some(inbox::CANCEL))
+                && i.confirm.as_deref().is_some_and(|c| {
+                    c.action == inbox::action::TRUST_KEY
+                        && c.target == owner
+                        && c.payload["fingerprint"] == fingerprint
+                })
+        });
+    }
+
+    /// Closes the open `trust_key` cards `closes` picks, with no answer, and tells the apps.
+    fn close_trust_cards(&self, closes: impl Fn(&inbox::Confirmed) -> bool) {
+        let now = time::now();
+        let closed: Vec<Item> = self
+            .lock()
+            .inbox
+            .values_mut()
+            .filter(|i| {
+                i.done.is_none()
+                    && i.confirm
+                        .as_deref()
+                        .is_some_and(|c| c.action == inbox::action::TRUST_KEY && closes(c))
+            })
+            .map(|i| {
+                i.done = Some(now);
+                i.clone()
+            })
+            .collect();
+        for item in closed {
+            self.save_item(&item);
+        }
     }
 
     /// `POST /v1/obid/sphere/card`: the card the owner is to sign, around obid's own key.
@@ -2339,6 +2390,10 @@ impl Link {
             // Only a card signed with the owner key pinned here, whatever the Sphere bound.
             let owner_key = params.and_then(|p| p["owner_key"].as_str()).unwrap_or("");
             if !self.pins.check(owner, owner_key, now) {
+                // A changed key: the owner is asked, once, whether to trust it.
+                if member["status"] == "active" {
+                    self.ask_to_trust(owner, &super::pins::fingerprint(owner_key));
+                }
                 continue;
             }
             // Never an older card than one trusted before (a key rotated away coming back).
@@ -2495,6 +2550,12 @@ impl Link {
                 relay.wake();
             }
         }
+        // A member who left is asked about no more (SPHERE-10).
+        self.close_trust_cards(|c| {
+            !members
+                .iter()
+                .any(|m| m["status"] == "active" && m["owner"] == c.target.as_str())
+        });
         Ok(())
     }
 
