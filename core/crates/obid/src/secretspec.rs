@@ -41,7 +41,7 @@
 //!   checkouts, its own list and a job's end that's clean throughout keep it so; anything else
 //!   marks it for good: words no app signed, turns its client wrote, attachments, a recap, a check-in, a routine's run, another job's report or words, the inbox, past
 //!   conversations, the web, a command, a helper, any tool
-//!   it doesn't know (`crate::brain::tools`, `reads_foreign`; `crate::brain::harness`,
+//!   it doesn't know (`crate::mcp`, `marks_on_result`; `crate::brain::harness`,
 //!   `known_safe`). What a marked conversation starts is someone else's from the start, in a clone
 //!   apart; its words, a tell, a continue or a no's, make the job they reach someone else's
 //!   (`crate::brain::written_in`, `written_after`). A memory carries where it was found

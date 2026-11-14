@@ -228,6 +228,32 @@ class TestRun(unittest.TestCase):
         self.assertIn("waiting for it", err)
         self.assertTrue(marker.exists())
 
+    def test_remote_50_a_quint_run_is_heavy(self):
+        # This Mac's quint, with no VM: it writes the lock's holder line where it is told, as it runs.
+        quint = self.dir / "bin" / "quint"
+        quint.write_text('#!/bin/sh\ncat "$OBY_TEST_RUN_LOCK" >"$2"\n')
+        quint.chmod(0o755)
+        holder = self.start("cargo", "sleep")
+        self.wait_for_holder(holder)
+        marker = self.dir / "marker"
+        waiter = self.start("quint", "verify", str(marker))
+        time.sleep(1)
+        self.assertFalse(marker.exists(), "quint ran while another run held the lock")
+        self.assertIsNone(waiter.poll())
+        holder.send_signal(signal.SIGTERM)
+        holder.communicate(timeout=10)
+        _, err = waiter.communicate(timeout=15)
+        self.assertEqual(waiter.returncode, 0, err)
+        self.assertIn(f"another test run holds the lock ({holder.pid} ", err)
+        self.assertTrue(marker.read_text().startswith(f"{waiter.pid} "), marker.read_text())
+        self.assertRegex(marker.read_text(), r" quint verify ")
+        # Only as its first word: in a shell's words it is light, as any word but the heavy ones is.
+        heavy = load_test_run().heavy
+        self.assertTrue(heavy(["quint", "typecheck", "docs/models/job_race.qnt"]))
+        self.assertTrue(heavy(["/usr/local/bin/quint", "verify"]))
+        self.assertFalse(heavy(["sh", "-c", "quint verify docs/models/job_race.qnt"]))
+        self.assertFalse(heavy(["npx", "quint", "verify"]))
+
     def test_long_wait_names_the_holder_and_since_when(self):
         self.env["OBY_TEST_RUN_REPORT_SECONDS"] = "1"
         holder = self.start("cargo", "sleep")

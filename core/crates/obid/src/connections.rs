@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::api::{ApiError, Shared};
+use crate::mcp::failure;
 
 /// The permission rule that lets a job's agent call the broker's tools (`mcp__oby__<connection>_<tool>`),
 /// in the job's rules only when it was given the broker.
@@ -336,15 +337,8 @@ impl Connections {
             "ping" => crate::mcp::ping(),
             "tools/list" => json!({"tools": self.tools(id).await}),
             "tools/call" => {
-                self.call(
-                    id,
-                    params.get("name").and_then(Value::as_str).unwrap_or(""),
-                    params
-                        .get("arguments")
-                        .cloned()
-                        .unwrap_or_else(|| json!({})),
-                )
-                .await
+                let (name, args) = crate::mcp::called(&params);
+                self.call(id, name, args).await
             }
             _ => return Some(crate::mcp::unknown(rpc_id, method, "Oby's broker")),
         };
@@ -352,18 +346,18 @@ impl Connections {
     }
 
     async fn tools(&self, id: &str) -> Vec<Value> {
-        let mut out = Vec::new();
-        if self.asks_through_oby(id) {
-            out.push(json!({"name": crate::permissions::ASK_OWNER,
-                "description": "Ask your user one question and wait for their answer: only when you truly can't go on without them (a choice only they can make, or something only they know). It returns at once: then end your turn with a one-line summary, and Oby resumes this session with their answer (one of your options, or their own words).",
-                "inputSchema": {"type": "object", "required": ["question"], "properties": {
-                    "question": {"type": "string", "description": "The whole question, up to 1,000 characters."},
-                    "options": {"type": "array", "description": "A few clear choices, when there are some (up to 8). The user may answer in their own words instead.",
-                        "items": {"type": "object", "required": ["label"], "properties": {
-                            "label": {"type": "string"}, "description": {"type": "string"}}}}}},
-                "annotations": {"readOnlyHint": true}}));
-        }
-        out
+        self.given(id)
+            .filter_map(crate::mcp::Tool::listed)
+            .collect()
+    }
+
+    /// The broker's tools job `id`'s agent is given: an owner-only one only when its agent asks
+    /// the owner here ([`crate::jobs::asks_through_oby`]).
+    fn given(&self, id: &str) -> impl Iterator<Item = &'static crate::mcp::Tool> {
+        let job = self.jobs.upgrade().and_then(|jobs| jobs.get(id));
+        let owners = job.is_some_and(|job| crate::jobs::asks_through_oby(&job));
+        let ours = crate::mcp::every().iter();
+        ours.filter(move |t| t.server == crate::mcp::Server::Broker && (owners || !t.owner_only))
     }
 
     pub(crate) async fn upstream_tools(
@@ -650,21 +644,14 @@ impl Connections {
         Ok(req)
     }
 
-    /// Whether job `id`'s agent asks the owner here ([`crate::jobs::asks_through_oby`]).
-    fn asks_through_oby(&self, id: &str) -> bool {
-        self.jobs
-            .upgrade()
-            .and_then(|jobs| jobs.get(id))
-            .is_some_and(|job| crate::jobs::asks_through_oby(&job))
-    }
-
     async fn call(&self, id: &str, name: &str, args: Value) -> Value {
         // The question raised for the owner, nothing more: its words never answer or allow anything.
-        if name == crate::permissions::ASK_OWNER && self.asks_through_oby(id) {
+        let does = self.given(id).find(|t| t.name == name).map(|t| &t.does);
+        if let Some(crate::mcp::Does::Broker(handler, _, _)) = does {
             let Some(jobs) = self.jobs.upgrade() else {
                 return failure("The job is gone.");
             };
-            return match jobs.ask_owner(id, &args) {
+            return match handler(&jobs, id, &args) {
                 Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                 Err(why) => failure(why),
             };
@@ -719,8 +706,20 @@ pub fn keep_use(uses: &mut Vec<ConnectionUse>, use_record: ConnectionUse) {
     }
 }
 
-fn failure(text: impl Into<String>) -> Value {
-    json!({"content":[{"type":"text","text":text.into()}],"isError":true})
+/// The code the broker's tool runs for job `id`'s agent: its answer, or why it refused.
+pub(crate) type Handler = fn(&crate::jobs::Jobs, &str, &Value) -> Result<&'static str, String>;
+
+/// The broker's one tool: the owner's own job's agent asks them a question.
+#[rustfmt::skip]
+pub(crate) fn table() -> Vec<crate::mcp::Tool> {
+    use crate::mcp::{Does, Marks, Server, Tool};
+    vec![Tool { name: crate::permissions::ASK_OWNER, server: Server::Broker, confirm_unless_owners_word: false, owner_only: true, marks_on_result: Marks::Nothing, read_only: true,
+        does: Does::Broker(crate::jobs::Jobs::ask_owner, "Ask your user one question and wait for their answer: only when you truly can't go on without them (a choice only they can make, or something only they know). It returns at once: then end your turn with a one-line summary, and Oby resumes this session with their answer (one of your options, or their own words).",
+        json!({"type": "object", "required": ["question"], "properties": {
+            "question": {"type": "string", "description": "The whole question, up to 1,000 characters."},
+            "options": {"type": "array", "description": "A few clear choices, when there are some (up to 8). The user may answer in their own words instead.",
+                "items": {"type": "object", "required": ["label"], "properties": {
+                    "label": {"type": "string"}, "description": {"type": "string"}}}}}})) }]
 }
 
 fn append_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
@@ -778,17 +777,11 @@ async fn agent_mcp(
         let Some(session) = shared.harness.session(&job, token) else {
             // Its Claude Code waiting for a turn connects and lists Oby's tools, and calls none.
             if shared.harness.waiting_with(&job, token) {
-                return match crate::brain::tools::handshake(&value) {
-                    Some(answer) => (StatusCode::OK, Json(answer)).into_response(),
-                    None => StatusCode::ACCEPTED.into_response(),
-                };
+                return replied(crate::brain::tools::handshake(&value));
             }
             return ApiError::new(StatusCode::UNAUTHORIZED, crate::api::NO_TOKEN).into_response();
         };
-        return match crate::brain::tools::handle(&shared, &session, value).await {
-            Some(answer) => (StatusCode::OK, Json(answer)).into_response(),
-            None => StatusCode::ACCEPTED.into_response(),
-        };
+        return replied(crate::brain::tools::handle(&shared, &session, value).await);
     }
     if !shared.connections.allows(&job, token) {
         return ApiError::new(StatusCode::UNAUTHORIZED, crate::api::NO_TOKEN).into_response();
@@ -797,7 +790,12 @@ async fn agent_mcp(
     if value.get("method").and_then(Value::as_str) == Some("notifications/initialized") {
         return StatusCode::ACCEPTED.into_response();
     }
-    match shared.connections.handle(&job, value).await {
+    replied(shared.connections.handle(&job, value).await)
+}
+
+/// An MCP server's answer over HTTP: `200` with it, or `202` with no body for a notification.
+pub(crate) fn replied(answer: Option<Value>) -> Response {
+    match answer {
         Some(answer) => (StatusCode::OK, Json(answer)).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }

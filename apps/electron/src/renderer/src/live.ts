@@ -12,7 +12,7 @@ import { accountRow, moveKeptChoices, replaceAccounts } from './SettingsView';
 import { BRANDS } from './brands';
 import { ANOTHER_ROUND, TRY_AGAIN } from '../../shared/words';
 import { has } from '../../shared/capabilities';
-import { answer, apply as applyToJobs, type ObidState } from '../../shared/live-state';
+import { LATEST_JOBS, answer, answerStatus, answerTurns, apply as applyToObid, synced, type ObidState } from '../../shared/live-state';
 import { onObid } from './lean';
 import type { GitHubItem } from './mock';
 import type { GitHubWork } from './obid';
@@ -23,21 +23,16 @@ import { lookAgainAtThreads, plainId, threadChanged } from './peers';
 // it: the stream first, then the status, jobs, inbox and conversations, with the events that came
 // meanwhile applied over them. Sangam's screens don't change: what obid has goes into the same
 // stores the mock filled (chats.ts, tasks.ts), as conversations and tasks. Without ?everything
-// (lean.ts) the app runs on this; with it, on the mock. Its jobs and the deleted ones are
-// ObidState's, kept by the shared rule (shared/live-state.ts)
+// (lean.ts) the app runs on this; with it, on the mock. What obid has (its jobs, conversations,
+// turns, inbox, status and GitHub's work) is ObidState's, kept by the shared rule (shared/live-state.ts)
 type Live = ObidState & {
   connection: 'connecting' | 'live' | 'down';
   problem: string | null;        // why obid isn't answering (its own reason, main/obid.ts), or what last went wrong
   why?: 'waiting' | 'approval';  // and what kind of why (main/obid.ts, reason): 'waiting', none yet
-  status: Status | null;
   repos: Repo[];                 // where a job may start (GET /v1/repos)
-  github: GitHubWork | null;     // what GitHub wants from the owner (GET /v1/github/work), none from an older obid
   firstJobs: Set<string>;        // the jobs there when the app opened: never new
   seen: Set<string>;             // jobs opened since
-  inbox: InboxItem[];            // open and put off
   limits: LimitDecision[];       // one decision for the jobs stopped by an account's limit
-  conversations: Conversation[];
-  turns: Record<string, Turn[]>; // by conversation: each opened one's, and any that came since
   loaded: Set<string>;           // the conversations whose turns were fetched
   working: Record<string, string>;            // a turn under way, by conversation: what it's on
   on: Record<string, string>;                 // and whose words it's for, by conversation: a supervisor's are nobody's
@@ -67,7 +62,7 @@ type Live = ObidState & {
 
 let state: Live = {
   connection: 'connecting', problem: null, status: null, repos: [], github: null, jobs: {}, firstJobs: new Set(), seen: new Set(), inbox: [], limits: [],
-  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, expected: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(),
+  conversations: [], turns: {}, loaded: new Set(), working: {}, on: {}, expected: {}, unanswered: new Set(), words: {}, pace: {}, waiting: {}, starting: null, alias: {}, answered: {}, answering: new Set(), picked: {}, previews: {}, gone: new Set(), goneConversations: new Set(), settledInbox: {},
 };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<Live>) => {
@@ -103,8 +98,6 @@ export const useLimitCount = () => useSyncExternalStore((l) => { listeners.add(l
 export const liveState = () => state;
 
 const minutesAgo = (iso: string | null | undefined) => (iso ? Math.max(0, (Date.now() - Date.parse(iso)) / 60_000) : 0);
-const byAt = (a: Turn, b: Turn) => a.at.localeCompare(b.at);
-const merged = (had: Turn[], more: Turn[]) => [...had.filter((t) => !more.some((m) => m.id === t.id)), ...more].sort(byAt);
 const without = <T,>(r: Record<string, T>, key: string) => { const { [key]: _, ...rest } = r; return rest; };
 // Oby answering words: not a job's report or a routine's run, which come whenever they come
 const answers = (t: Turn) => t.who === 'oby' && !t.ended && !t.routine && !folded(t);
@@ -550,28 +543,28 @@ export function patchStatus(patch: Partial<Status>) {
 // the usage panel opened: obid asks the tools for usage it hasn't read in 10 minutes, which comes
 // in an `accounts` event a few seconds later
 export function lookAtUsage() {
-  if (state.connection === 'live') void api.status().then((status) => set({ status }), () => {});
+  if (state.connection === 'live') void api.status().then((status) => set(answerStatus(state, status)), () => {});
 }
 
 // --- events
 
 export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcriptLine' }>): Live {
   switch (e.kind) {
-    case 'job': case 'jobGone':
-      return { ...s, ...applyToJobs(s, e) };
-    case 'inbox': {
-      const rest = s.inbox.filter((i) => i.id !== e.item.id);
-      return { ...s, inbox: e.item.state === 'done' ? rest : [...rest, e.item].sort((a, b) => a.created.localeCompare(b.created)) };
-    }
+    // a conversation's isn't taken as the one this app's words start: another device may start one
+    // meanwhile (the words' own turn, or the plan's answer, says which is this app's). A question's
+    // card on a turn changes only the card, and nothing about a turn under way
+    case 'job': case 'jobGone': case 'inbox': case 'turnAsks': case 'conversation': case 'conversationGone': case 'accounts': case 'github':
+      return { ...s, ...applyToObid(s, e) };
     case 'turn': {
-      const c = e.turn.conversation;
-      if (!c) return s;
+      const c = e.turn.conversation, reduced = { ...s, ...applyToObid(s, e) };
+      // one the rule kept out (an older copy, a deleted conversation's, or one of none) changes nothing shown
+      if (!c || reduced.turns === s.turns) return s;
       let alias = s.alias;
       // the words this app sent to start one: that conversation is the one shown for them
       if (s.starting && e.turn.who === 'user' && (e.turn.id === s.starting.turn || e.turn.text.trim() === s.starting.said) && !(c in s.alias) && !s.turns[c]?.length) {
         alias = { ...alias, [c]: s.starting.id };
       }
-      const next = { ...s, alias, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } };
+      const next = { ...reduced, alias };
       // an answer: the words it answers expect nothing more (the next, not here yet, still do). One
       // a turn for other words gave (a supervisor's) leaves the last words what they started
       const said = next.turns[c].filter((t) => t.who === 'user').at(-1);
@@ -596,11 +589,6 @@ export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcr
       // your words after Oby's: the rest of its last answer shows whole
       return s.pace[c]?.turn ? { ...next, pace: without(s.pace, c) } : next;
     }
-    // a question's card on a turn: only the card changes, and nothing about a turn under way
-    case 'turnAsks': {
-      const c = e.turn.conversation;
-      return c ? { ...s, turns: { ...s.turns, [c]: merged(s.turns[c] ?? [], [e.turn]) } } : s;
-    }
     case 'step': {
       const c = e.step.conversation ?? Object.keys(s.turns).find((k) => s.turns[k].some((t) => t.id === e.step.turn));
       if (!c || e.step.state !== 'running') return s;
@@ -610,17 +598,6 @@ export function apply(s: Live, e: Exclude<Event, { kind: 'transcript' | 'transcr
       const c = e.delta.conversation, words = (s.words[c] ?? '') + e.delta.text;
       return { ...s, working: { ...s.working, [c]: s.working[c] ?? 'Writing' }, on: { ...s.on, [c]: e.delta.turn }, words: { ...s.words, [c]: words }, pace: paced(s, c, words) };
     }
-    case 'accounts':
-      return s.status ? { ...s, status: { ...s.status, accounts: e.accounts } } : s;
-    case 'conversation': {
-      // not taken as the one this app's words start: another device may start one meanwhile (the
-      // words' own turn, or the plan's answer, says which is this app's)
-      return { ...s, conversations: [...s.conversations.filter((c) => c.id !== e.conversation.id), e.conversation] };
-    }
-    case 'conversationGone':
-      return { ...s, conversations: s.conversations.filter((c) => c.id !== e.id), turns: without(s.turns, e.id) };
-    case 'github':
-      return { ...s, github: e.work };
     // the room keeps its own (room.ts); taking one twice changes nothing
     case 'roomPost':
       takeRoomPost(e.post);
@@ -752,30 +729,20 @@ function down(mine: number, problem: string, why?: Live['why']) {
 async function sync(mine: number, pending: Event[], onSynced: () => void) {
   try {
     const limitVersion = ++limitRequest;
-    const before = state.jobs;
+    const before: ObidState = state;
     const [status, jobs, inbox, { list: conversations, complete }, github, limits] = await Promise.all([
-      api.status(), api.jobs(100), api.inbox().catch(() => []), allConversations(),
+      api.status(), api.jobs(LATEST_JOBS), api.inbox().catch(() => []), allConversations(),
       // GitHub's work: not read, the last read stands, with why (as obid keeps its last lists)
       api.githubWork().catch((e) => (state.github ? { ...state.github, error: e instanceof Error ? e.message : String(e) } : null)),
       api.limitDecisions().catch(() => state.limits),
     ]);
     if (mine !== generation) return;
     retry = 0;
-    // obid's latest 100, newest first, and the older ones a conversation fetched (openConversation),
-    // which aren't among them: any other this app had was deleted while the stream was away (on
-    // the iPhone, say), and goes
-    const oldest = jobs.length < 100 ? undefined : jobs.at(-1)!.created;
-    const older = Object.values(state.jobs).filter((j) => oldest && j.created <= oldest); // <=: created is whole seconds, so jobs past the 100th can share its second
-    // obid's list wins, but over a copy an answer brought while it was read: the newer of the two
-    // (a restart can take a job's revision back: obid's then, not one from before the stream went)
-    const listed = jobs.flatMap((j) => {
-      const had = state.jobs[j.id];
-      return Object.values(answer({ jobs: had && had !== before[j.id] ? { [j.id]: had } : {}, gone: state.gone }, j).jobs);
-    });
+    // obid's lists win, but over a copy an answer brought while they were read: the newer of the
+    // two (a restart can take a revision back: obid's then, not one from before the stream went)
     let next: Live = {
-      ...state, connection: 'live', problem: null, why: undefined, status, inbox: inbox.filter((i) => i.state !== 'done'), conversations, github,
+      ...state, ...synced(state, before, { jobs, conversations, complete, inbox, status, github }), connection: 'live', problem: null, why: undefined,
       limits: limitVersion === limitRequest ? limits : state.limits,
-      jobs: Object.fromEntries([...older, ...listed].map((j) => [j.id, j])),
       firstJobs: state.status ? state.firstJobs : new Set(jobs.map((j) => j.id)),
     };
     for (const e of pending) {
@@ -801,7 +768,7 @@ async function sync(mine: number, pending: Event[], onSynced: () => void) {
     // words of the newest ones, for their lines in Conversations
     const latest = [...conversations].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).slice(0, 20).map((c) => c.id);
     for (const c of new Set([...state.loaded, ...latest])) {
-      void api.conversation({ id: c, limit: state.loaded.has(c) ? 100 : 2 }).then((turns) => set({ turns: { ...state.turns, [c]: merged(state.turns[c] ?? [], turns) } }), () => {});
+      void api.conversation({ id: c, limit: state.loaded.has(c) ? 100 : 2 }).then((turns) => set(answerTurns(state, c, turns)), () => {});
     }
   } catch (e) {
     down(mine, e instanceof Error ? e.message : String(e));
@@ -862,7 +829,7 @@ export async function openConversation(shown: string) {
   set({ loaded: new Set([...state.loaded, c]) });
   try {
     const turns = await api.conversation({ id: c, limit: 100 });
-    set({ turns: { ...state.turns, [c]: merged(state.turns[c] ?? [], turns) } });
+    set(answerTurns(state, c, turns));
     for (const j of new Set(turns.flatMap((t) => t.jobs))) {
       if (!state.jobs[j] && !state.gone.has(j)) await api.job(j).then((job) => take({ kind: 'job', job }), () => {});
     }
@@ -917,7 +884,7 @@ export function ask(said: string, shown?: string, repo?: string, folders?: strin
         set({ loaded: new Set([...state.loaded, where]) });
         // (the turns as they are once these come: any that came meanwhile stay)
         const turns = await api.conversation({ id: where, limit: 100 });
-        set({ turns: { ...state.turns, [where]: merged(state.turns[where] ?? [], turns) } });
+        set(answerTurns(state, where, turns));
       }
       // Oby's turn is in a reply or a question (its event may land after this answer, and the card
       // would jump); a `none` has none, unless it's the same words again, answered in their turn.
@@ -995,7 +962,8 @@ export async function stopConversation(shown: string) {
 }
 export async function deleteConversation(shown: string) {
   const c = realId(shown);
-  take({ kind: 'conversationGone', id: c });
+  // hidden at once, but not as deleted: only obid's own event says so, and one it refuses can come back
+  set({ conversations: state.conversations.filter((x) => x.id !== c), turns: without(state.turns, c) });
   try { await api.deleteConversation(c); } catch (e) { if (!(e instanceof ApiError && e.status === 404)) say(e); }
 }
 

@@ -89,6 +89,11 @@ round's `round-<N>/proofs.md` too. When its `MODE:` is `advisory`, never
 escalate, or withhold APPROVE, on its `PROOFS:` line alone: the reviews,
 `review-proofs.md` among them, judge the properties.
 
+Read the final round's `round-<N>/mutants.md` too, if it is there when you
+look; never wait for it. It is advisory: never escalate, or withhold APPROVE,
+on its `MUTANTS:` line alone, and a missing or unfinished run never delays,
+escalates or withholds APPROVE.
+
 ## Write decision.md
 
 ```markdown
@@ -106,6 +111,10 @@ Two or three sentences.
 ## Proofs
 Only for a `proofs` job: the final round's `PROOFS:` line from
 `round-<N>/proofs.md`, quoted, and its `RESULT:` line when there is one.
+
+## Mutants
+The final round's `MUTANTS:` line from `round-<N>/mutants.md`, quoted, or
+`MUTANTS: not finished` when the file is not there.
 
 ## For the human
 Only when you escalate: the exact decision or check you need from them, and the
