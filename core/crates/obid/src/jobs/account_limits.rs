@@ -852,11 +852,7 @@ impl Jobs {
             if past_safety(job) {
                 return Err("The job needs a separate safety confirmation.".into());
             }
-            if state
-                .jobs
-                .values()
-                .any(|j| j.follow_up_of.as_deref() == Some(id) && j.branch == job.branch)
-            {
+            if chain::branch_carrier(&state.jobs, job, chain::Holds::Any).is_some() {
                 return Err("A follow-up now carries the job's branch.".into());
             }
             // Resumed, it would move a branch another job works on now (PUBLISHING-4).

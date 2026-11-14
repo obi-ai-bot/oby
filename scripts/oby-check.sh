@@ -158,7 +158,7 @@ cache="${OBY_CHECK_CACHE:-$HOME/Library/Caches/oby-check}"
 # `# payback: #<issue>` or `# payback: <task key>` line directly above it (docs/contracts/ci.md, CI-39 to 41).
 obid_lines_limit=100000
 # jobs.rs alone may only shrink: past this it fails (the owner's decision of 2026-11-06, "1.3 Both").
-jobs_rs_limit=15043
+jobs_rs_limit=14967
 # obid's tests may only lose sleeps: a test waits for state with support::within (docs/contracts/ci.md, CI-12, CI-13).
 tests_sleep_limit=205
 # AGENTS.md may only shrink: a cut lowers this, and raising it is the owner's word (docs/contracts/ci.md, CI-36 to 38).

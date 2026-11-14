@@ -9,7 +9,7 @@ const STATUS_WRITES: usize = 18;
 /// `store.save(` in `src/jobs.rs`.
 const JOBS_RS_SAVES: usize = 4;
 /// `j.branch == ` in all of `src/`: a follow-up carrying its first job's branch.
-const BRANCH_CARRIES: usize = 6;
+const BRANCH_CARRIES: usize = 0;
 
 /// `text` without its test modules, by `production_lines`'s rule in scripts/oby-check.sh: from a
 /// `#[cfg(test)]` in column 0 directly on a `mod name {` (blank lines between) to the next `}` in

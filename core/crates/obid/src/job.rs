@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub(crate) mod chain;
 mod lifecycle;
 pub use lifecycle::{Command, EndKind, Ended, Refused, transition};
 pub(crate) use lifecycle::{TAKING_OVER, hands_over};
