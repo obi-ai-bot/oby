@@ -31,26 +31,26 @@ impl Tool {
     /// In the order routing tries them when a job names no tool.
     pub const ALL: [Tool; 3] = [Tool::Claude, Tool::Codex, Tool::Cursor];
 
+    /// Its facts: its row in [`crate::providers::PROVIDERS`], at its place in [`Tool::ALL`].
+    pub fn row(self) -> &'static crate::providers::Descriptor {
+        &crate::providers::PROVIDERS[self as usize]
+    }
+
     /// The id jobs, accounts and the configuration name it by: `claude`, `codex`, `cursor`.
     pub fn id(self) -> &'static str {
-        match self {
-            Tool::Claude => "claude",
-            Tool::Codex => "codex",
-            Tool::Cursor => "cursor",
-        }
+        self.row().id
     }
 
     /// How reports say it.
     pub fn name(self) -> &'static str {
-        match self {
-            Tool::Claude => "Claude Code",
-            Tool::Codex => "Codex",
-            Tool::Cursor => "Cursor",
-        }
+        self.row().name
     }
 
     pub fn from_id(id: &str) -> Option<Tool> {
-        Tool::ALL.into_iter().find(|tool| tool.id() == id)
+        crate::providers::PROVIDERS
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.tool)
     }
 }
 

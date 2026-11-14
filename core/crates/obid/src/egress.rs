@@ -1041,12 +1041,12 @@ fn within(host: &str, domain: &str) -> bool {
 /// `api2.cursor.sh`), and the rest of the vendor's domains, which the CLIs call for settings and
 /// feature flags.
 pub fn tools_own(tool: Tool, host: &str, port: u16) -> bool {
-    let domains: &[&str] = match tool {
-        Tool::Claude => &["anthropic.com", "claude.ai", "claude.com"],
-        Tool::Codex => &["openai.com", "chatgpt.com"],
-        Tool::Cursor => &["cursor.sh", "cursor.com"],
-    };
-    port == 443 && domains.iter().any(|domain| within(host, domain))
+    port == 443
+        && tool
+            .row()
+            .own_domains
+            .iter()
+            .any(|domain| within(host, domain))
 }
 
 /// Whether `host` is one of `tool`'s API hosts: what its agent calls its model and its login
@@ -1057,16 +1057,7 @@ pub fn tools_own(tool: Tool, host: &str, port: u16) -> bool {
 /// declared secrets. Reaching any other of [`tools_own`]'s hosts makes the job someone else's
 /// code (crate::secretspec).
 pub fn tools_api(tool: Tool, host: &str) -> bool {
-    let hosts: &[&str] = match tool {
-        Tool::Claude => &[
-            "api.anthropic.com",
-            "statsig.anthropic.com",
-            "console.anthropic.com",
-        ],
-        Tool::Codex => &["api.openai.com", "auth.openai.com"],
-        Tool::Cursor => &["api2.cursor.sh", "api3.cursor.sh", "api4.cursor.sh"],
-    };
-    hosts.contains(&host)
+    tool.row().api_hosts.contains(&host)
 }
 
 /// The package registries a job in Sandbox mode reaches without asking, on 443 (the PR's
@@ -1345,6 +1336,54 @@ mod tests {
         assert!(!tools_api(Tool::Codex, "chatgpt.com"));
         assert!(tools_api(Tool::Cursor, "api2.cursor.sh"));
         assert!(!tools_api(Tool::Cursor, "cursor.com"));
+    }
+
+    /// PROVIDERS-2 (docs/contracts/providers.md): each tool's API hosts, which leave its job
+    /// unmarked (MERGING-30), are exactly these, matched exactly, and its vendor's domains too.
+    #[test]
+    fn providers_2_tool_api_hosts_are_unchanged() {
+        let hosts: [(Tool, &[&str]); 3] = [
+            (
+                Tool::Claude,
+                &[
+                    "api.anthropic.com",
+                    "statsig.anthropic.com",
+                    "console.anthropic.com",
+                ],
+            ),
+            (Tool::Codex, &["api.openai.com", "auth.openai.com"]),
+            (
+                Tool::Cursor,
+                &["api2.cursor.sh", "api3.cursor.sh", "api4.cursor.sh"],
+            ),
+        ];
+        for (tool, api) in hosts {
+            assert_eq!(tool.row().api_hosts, api, "{tool:?}");
+            for host in api {
+                for other in Tool::ALL {
+                    assert_eq!(tools_api(other, host), other == tool, "{other:?} {host}");
+                }
+            }
+        }
+        for host in [
+            "claude.ai",
+            "claude.com",
+            "chatgpt.com",
+            "cursor.com",
+            "api.anthropic.com.evil.example",
+        ] {
+            for tool in Tool::ALL {
+                assert!(!tools_api(tool, host), "{tool:?} {host}");
+            }
+        }
+        let own: [(Tool, &[&str]); 3] = [
+            (Tool::Claude, &["anthropic.com", "claude.ai", "claude.com"]),
+            (Tool::Codex, &["openai.com", "chatgpt.com"]),
+            (Tool::Cursor, &["cursor.sh", "cursor.com"]),
+        ];
+        for (tool, domains) in own {
+            assert_eq!(tool.row().own_domains, domains, "{tool:?}");
+        }
     }
 
     /// The default registries and those left off them for their edge are apart, and the npm,
