@@ -1,4 +1,4 @@
-// The watch publishes through the iPhone, or with its own pairing key (apps/watch/WatchLink.swift).
+// This device's key, which signs the owner's approvals (docs/runner-api.md).
 #if !os(watchOS)
 import CryptoKit
 import Foundation

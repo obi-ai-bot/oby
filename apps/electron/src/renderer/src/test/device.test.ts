@@ -177,4 +177,13 @@ describe('main signs again only the request obid didn’t answer', () => {
     the.receipts = false;
     expect(await send(body('k7'))).toBeUndefined();
   });
+  it('words_16: at most twice, however many identical resends arrive at once', async () => {
+    await lost(body('k8'));
+    the.calls.length = 0;
+    later(1000);
+    await Promise.all([1, 2, 3, 4, 5].map(() => ownersWords('POST', path, body('k8'), false)));
+    const sent = the.calls.filter((c) => c.path === path);
+    expect(sent).toHaveLength(5);
+    expect(sent.filter((c) => c.words?.startsWith('d1 '))).toHaveLength(2);
+  });
 });

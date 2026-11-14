@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog } from 'electron';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { keptKey } from './device';
 import { obid, type Trusted } from './obid';
+import { ipc } from './ipc';
 import { NotThisKey, join, joinWarning, keepMembership, leave, parseInvite } from '../shared/sphere';
 
 // Joining an Obysphere by a private link (docs/contracts/obysphere.md). The owner key, Ed25519, is
@@ -68,8 +69,7 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
 
   // Leave, from the Obysphere's settings (SPHERE-4): when the Obysphere couldn't be told, or obid
   // couldn't leave, the owner is told why; answers that, or null
-  ipcMain.handle('sphere-leave', async (e) => {
-    if (!trusted(e)) return 'Not this app’s page.';
+  ipc(trusted).handle('sphere-leave', [], async (e) => {
     const w = BrowserWindow.fromWebContents(e.sender) ?? show();
     try {
       const { membership, untold, sphere } = await leave(obid, ownerKey);
@@ -80,5 +80,5 @@ export function sphering(trusted: Trusted, show: () => BrowserWindow) {
       void said(w, 'Oby couldn’t leave the Obysphere.', why);
       return why;
     }
-  });
+  }, 'Not this app’s page.');
 }

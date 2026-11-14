@@ -272,7 +272,9 @@ async function main() {
 
   // 9. Publish by hand (PUBLISHING-14): a check that keeps failing stops the task; its page offers
   // the owner's word, shows obid's sentence, and goes out on the click, signed in main.
-  const { id: stopped } = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'build', title: 'Stopped task', task: 'COMMIT: stopped.txt', check: 'exit 1', rounds: 1 } })
+  // The check passes on the base and fails only once the agent's stopped.txt is there: a round-1
+  // failure the base shares ends the job done, with Publish by hand (PUBLISHING-18), not interrupted.
+  const { id: stopped } = await s.call('POST', '/v1/jobs', { job: { repo: 'obi-e2e/fixture-app', kind: 'build', title: 'Stopped task', task: 'COMMIT: stopped.txt', check: 'test ! -f stopped.txt', rounds: 1 } })
     .then((a) => a.job ?? a);
   const stoppedJob = await until('it stops at its limit', async () => {
     const j = await s.call('GET', `/v1/jobs/${stopped}`);

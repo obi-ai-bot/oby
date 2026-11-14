@@ -33,11 +33,11 @@ A second obid on a Mac isn't **This Mac**: the app looks only at `127.0.0.1:7777
 ### From a checkout, before there is a release
 
 ```sh
-sh install/package.sh          # builds obid, the web app is taken from apps/web/dist if built
+sh install/package.sh          # builds obid
 sh install/install.sh --archive build/obid/obid-linux-x86_64.tar.gz   # the name says your system
 ```
 
-`package.sh` needs Rust ([core/](../core)); run `npm run build` in `apps/web` first if you want the web app at `/app/`. It uploads nothing.
+`package.sh` needs Rust ([core/](../core)). It uploads nothing.
 
 ### On Linux, first
 
@@ -55,7 +55,7 @@ Then run the install line again. The installer also needs `systemctl` (systemd),
 
 1. Puts obid in `--prefix`: `bin/obid` (an older archive's `share/` folders are installed as they are; obid no longer reads them). What it makes there, and the service file, only you can change (0755 folders and program, 0644 files), whatever your umask.
 2. Makes obid's **home** (mode 0700) and **`home/api-token`** (mode 0600, 64 hex characters from `/dev/urandom`), where [runner-api.md](runner-api.md) ("obid only: configuration") says obid keeps its token. It is made straight into the file and read back from the file: it is never an argument or an environment variable of any command the script runs, never printed, and not in the service file or the configuration ([ARCHITECTURE.md](ARCHITECTURE.md) 5.3). A token already there is kept. The installer refuses to run when `OBID_API_TOKEN` is set, as obid does.
-3. Writes `config.json` unless there is one (an edited one is never overwritten): `listen` `127.0.0.1:7777`, `home`, `owner`, Claude Code as the `claude` command with its default login (and Codex when your login shell finds `codex`; obid finds both on your login shell's `PATH`, as the apps do), and `bundledPlugins` and `web` in the prefix. No repositories are listed: add them under `repos` ([runner-api.md](runner-api.md)). **When there is a `config.json`, its `home` and `listen` are the ones used**: the token is made in that home, and the installer asks obid on that port. A `--home` or `--listen` that says otherwise stops it before anything changes.
+3. Writes `config.json` unless there is one (an edited one is never overwritten): `listen` `127.0.0.1:7777`, `home`, `owner`, Claude Code as the `claude` command with its default login (and Codex when your login shell finds `codex`; obid finds both on your login shell's `PATH`, as the apps do). No repositories are listed: add them under `repos` ([runner-api.md](runner-api.md)). **When there is a `config.json`, its `home` and `listen` are the ones used**: the token is made in that home, and the installer asks obid on that port. A `--home` or `--listen` that says otherwise stops it before anything changes.
 4. Installs the service, starts it, and asks it `GET /v1/status` with the token (sent from a file, not an argument, and never through a proxy: curl would otherwise send even `127.0.0.1` through `http_proxy`) until it answers `"engine": "obid"`, so a port held by something else, like the Swift runner, is reported at once instead of looking like success.
 
 | | Linux | macOS |
@@ -96,12 +96,7 @@ journalctl --user -u obid -n 20        # Linux; on a Mac: tail ~/Library/Logs/ob
 systemctl --user status obid           # Linux
 ```
 
-On a Mac, open Oby: Settings › Runner shows **This Mac** connected. On Linux, from your own Mac, tunnel to it and open the web app obid serves:
-
-```sh
-ssh -L 7780:127.0.0.1:7777 tetrix-lab      # leave it open
-open http://127.0.0.1:7780/app/            # signs in with the token in ~/.local/share/obid/api-token on tetrix-lab
-```
+On a Mac, open Oby: Settings › Runner shows **This Mac** connected. On Linux, the log and status above say it is running.
 
 ## Update
 
@@ -115,7 +110,7 @@ A job running when you update is carried on after the restart, as after any rest
 curl -fsSL https://downloads.oby.deskree.com/obid/install.sh | sh -s -- uninstall      # or: sh install/install.sh uninstall
 ```
 
-It stops and disables the service (on Linux: `systemctl --user disable --now`; on a Mac: `launchctl bootout`), removes the service file, ends any process still running from the prefix (a job that left its session), removes the program, plug-ins and web app, and says if anything is still running. It **keeps** your home (jobs, clones, the token) and `config.json`, so installing again picks up where you were.
+It stops and disables the service (on Linux: `systemctl --user disable --now`; on a Mac: `launchctl bootout`), removes the service file, ends any process still running from the prefix (a job that left its session), removes the program and any plug-ins or web app an older install left, and says if anything is still running. It **keeps** your home (jobs, clones, the token) and `config.json`, so installing again picks up where you were.
 
 To remove those too: `uninstall --purge`. It deletes the home named in `config.json` (or `--home`), the configuration and, on a Mac, the log, and prints the folder first. It deletes a folder only when it is obid's: it holds a regular `api-token` file, and where it really is (links and `..` resolved) it is not `/`, your home folder, or a folder your home folder is in. Otherwise it refuses before it stops anything, and the folder is yours to delete. It also refuses a home that holds `oby.sqlite`: on a Mac the `Runner` folder can be the Swift runner's too, and its data isn't obid's to delete. Then uninstall without `--purge` and delete obid's own files there by hand: `api-token`, `jobs/*.json`, `clones/`, `worktrees/`, `keys/`, `logs/`, `failures/`, `plugins/`, `plugin-data/`, `vault/`, `settings.json`, `permissions.json` and `approvals.json` ([runner-api.md](runner-api.md), "obid only: configuration"). Leave `devices.json` and `cleared.json`: the Swift runner reads the same files. It does not touch the vault's Keychain items on a Mac (`obid vault --config <path> remove NAME` does that, one at a time), your logins, or lingering (other services of yours may use it; `sudo loginctl disable-linger <you>` turns it off).
 
@@ -130,8 +125,7 @@ The Swift runner (`oby-runner`: the Mac app's login item, and tetrix-lab's `oby-
 obid's API token is `home/api-token` (0600, in a 0700 home). The installer makes it there, it is never in an argument, an environment variable, the service file or `config.json`, and the installer never prints it.
 
 - **The Mac app** (Settings › Runner › **This Mac**) looks at `127.0.0.1:7777` and reads the token straight from `~/Library/Application Support/Oby/Runner/api-token`: that is why the installer's home on a Mac is that folder. It takes the file only when it's a regular file of yours with no group or other permissions, at most 4096 bytes, of at least 32 visible characters. When there is no usable file, or the server answers it with `401`, it falls back to the Swift runner's Keychain item (`com.deskree.oby.runner`, account `token`). So the same app reaches whichever of the two is running, with nothing to set ([runner-api.md](runner-api.md), "The Mac app on the same Mac").
-- **The web app** obid serves at `/app/` signs in with that same token, pasted once into the browser on that machine.
-- **On tetrix-lab** the token is in obid's home there (`~/.local/share/obid/api-token`, or the `--home` you gave). The gateway has shipped (#446): set `"gateway": "127.0.0.1:8810"` in `config.json`, restart obid, and expose that gateway on the tailnet with `tailscale serve --bg --https=8443 http://127.0.0.1:8810`. Make an invitation with `POST /v1/pairing/invite` on the loopback API using the API token and `url` set to `https://<the server's tailnet name>:8443`. On the iPhone, paste the invitation JSON (`url`, `link` as an object with `name` and `hostname`, and `secret`) in Settings › Your Mac to pair; it is good for two minutes and once, and the phone then uses its own device token. The gateway stays on `127.0.0.1`, with no LAN listener or Bonjour advertisement ([runner-api.md](runner-api.md#obid-only-the-gateway)). obid still has no Watch API. SSH remains an option for the web app (`ssh -L 7780:127.0.0.1:7777 tetrix-lab`, above).
+- **On tetrix-lab** the token is in obid's home there (`~/.local/share/obid/api-token`, or the `--home` you gave). The gateway has shipped (#446): set `"gateway": "127.0.0.1:8810"` in `config.json`, restart obid, and expose that gateway on the tailnet with `tailscale serve --bg --https=8443 http://127.0.0.1:8810`. Make an invitation with `POST /v1/pairing/invite` on the loopback API using the API token and `url` set to `https://<the server's tailnet name>:8443`. On the iPhone, paste the invitation JSON (`url`, `link` as an object with `name` and `hostname`, and `secret`) in Settings › Your Mac to pair; it is good for two minutes and once, and the phone then uses its own device token. The gateway stays on `127.0.0.1`, with no LAN listener or Bonjour advertisement ([runner-api.md](runner-api.md#obid-only-the-gateway)). obid still has no Watch API.
 
 ### What moves, what you redo, what stays behind
 
