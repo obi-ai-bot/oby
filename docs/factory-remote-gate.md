@@ -6,7 +6,7 @@ commit's Linux check groups in one of four slots there. Task A00-10 built the ga
 those groups on the VM, starts it when it is stopped, keeps the macOS-only part on the Mac and falls back to
 the Mac, and the Mac's `factory/bin/job queue` deallocates the VM once it is idle. Gates use the VM once the
 owner adds `remote_gate` to `factory/config.json` ("The owner's steps", below). The scenarios are
-[REMOTE-1 to 12](contracts/remote-gate.md).
+[REMOTE-1 to 15](contracts/remote-gate.md).
 
 ## The VM as it is
 
@@ -58,7 +58,7 @@ The Linux suite has been green since #2170, so most of the check no longer needs
    │           and OBY_CHECK_ONLY=factory when planned
    └─ round-N/checks.md: verdict, commit, checks.sh hash, HOST: oby-gate | oby-gate, mac | mac
  factory/bin/job queue → gate --idle
-   └─ idle 30 min, no job in gate or merging: az vm deallocate --no-wait ──▶ deallocated
+   └─ no VM use open, the last ended 30 min ago: az vm deallocate --no-wait ──▶ deallocated
 ```
 
 - **Up to 4 gates run at once on the VM**, one per slot. Each slot has its own checkout and its own
@@ -90,13 +90,20 @@ The Linux suite has been green since #2170, so most of the check no longer needs
   ever reaches it.
 - **It decides nothing new.** The VM runs the same `scripts/oby-check.sh` (the branch's copy, as the Mac
   does today) with the same `oby-check-blok`, built from `origin/dev`. `checks.md` names the host.
+- **The SSH rule follows the Mac's IP.** When SSH hasn't answered within 3 minutes, the gate reads this
+  Mac's public IPv4 from `https://checkip.amazonaws.com` (AWS's plain-text echo, no key) and, when it is one
+  global address other than the source of `oby-gateNSG/ssh-from-owner`, sets that rule's source to `<ip>/32`
+  with `az network nsg rule update` and gives SSH 60 seconds more. `checks.md` says it moved the rule. The
+  rule only ever holds one `/32`; no other rule or resource is touched (REMOTE-13, 14).
 - **It falls back to the Mac.** If the VM can't be reached or started within 3 minutes, the remote gate
   couldn't judge or was cut off, or the commit isn't on origin, the gate runs the whole check on the Mac
   as without a VM, and `checks.md` says why. A real failure on the VM fails the gate.
 - **The Mac stops it.** The VM has no managed identity, so it can't deallocate itself. Every gate that uses
-  it stamps `factory/jobs/remote-gate/state.json`; `factory/bin/job queue` runs `factory/bin/gate --idle`,
-  which deallocates it (`az vm deallocate --no-wait`) once that stamp is 30 minutes old and no job is in
-  `gate` or `merging`. Only deallocation stops compute billing; a stopped-but-allocated VM is billed as
+  it records its use in `factory/jobs/remote-gate/state.json`, open while it runs and then ended;
+  `factory/bin/job queue` runs `factory/bin/gate --idle`, which deallocates it (`az vm deallocate --no-wait`)
+  once no use is open and the last one ended 30 minutes ago, whatever stage any job is in, so a gate running
+  on the Mac doesn't keep it up. A use whose gate died counts as ended when it started (REMOTE-5, 15). Only
+  deallocation stops compute billing; a stopped-but-allocated VM is billed as
   running. A VM the owner started by hand, with no gate since, is left to the 05:00 UTC shutdown.
 
 ## Measured (A00-03, 2026-11-13)
@@ -148,7 +155,8 @@ Expected effect, an estimate until the gate uses the VM (A00-03 measured one com
    Or create the VM in the portal and skip to step 4.
 2. **Create the VM.** Claude can do this once you say so: a resource group `oby-factory`, the size above,
    Ubuntu 24.04, SSH key only. The owner chose pay-as-you-go in East US 2 with one 256 GB OS disk.
-   The network rule allows SSH from your IP only, or use Tailscale.
+   The network rule (`oby-gateNSG/ssh-from-owner`) allows SSH from your IP only; when your IP changes,
+   the gate moves that rule's source to your new `/32` by itself (REMOTE-13).
 3. **Set a budget alert** in Cost Management on the resource group (for example $150 a month), so a
    VM that fails to stop can't surprise you.
 4. **Add an SSH host `oby-gate`** to `~/.ssh/config` and accept its host key once:
