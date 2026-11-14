@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, randomUUID, sign, type KeyObject } from 'node:crypto';
+import { STARTER_RULE_ID, starterRule } from './policy';
 
 // The owner's side of joining an Obysphere (docs/contracts/obysphere.md; obi-sphere's spec
 // identity.md): what the owner key signs (the Oby's card, its delegation, the owner's own short
@@ -251,9 +252,8 @@ export type PolicyAnswer = {
   refused: null | 'not_joined' | 'not_admin' | 'changed' | 'failed'; why: string | null;
 };
 
-// What lets every member ask every other a question or a review (ask-an-oby.md)
-const STARTER = 'members-ask';
-export const starterRule = (): Rule => ({ id: STARTER, from_owner: '*', to_owner: '*', actions: ['question', 'review_request'], repos: ['*'] });
+// the members rule, with its id, is shared/policy.ts's
+export { starterRule };
 
 const NOT_JOINED = 'This Oby isn’t in an Obysphere.';
 const ONLY_ADMINS = 'Only the Obysphere’s admins can change its rules.';
@@ -333,6 +333,6 @@ export async function addStarterRule(call: Call, ownerKey: () => KeyObject, seen
   if (now.refused || !now.policy) return now;
   if (now.policy.version !== seenVersion) return { ...now, refused: 'changed', why: CHANGED };
   if (!now.admin) return { ...now, refused: 'not_admin', why: ONLY_ADMINS };
-  if (now.policy.rules.some((r) => r.id === STARTER)) return now;
+  if (now.policy.rules.some((r) => r.id === STARTER_RULE_ID)) return now;
   return writePolicy(call, ownerKey, [...now.policy.rules, starterRule()], seenVersion, http);
 }
