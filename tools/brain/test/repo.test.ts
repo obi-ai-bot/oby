@@ -63,9 +63,6 @@ describe('retired routes', () => {
 
   it('retired_9_the_swift_client_calls_only_served_routes', () => {
     const exceptions = [
-      'GET /v1/watches', // R03-07, the Watch's pairing
-      'POST /v1/watches', // R03-07, the Watch's pairing
-      'DELETE /v1/watches/{}', // R03-07, the Watch's pairing
       'POST /v1/jobs/{}/proposals/{}/file', // the task page's file-a-proposal button: removing it changes a screen, its own task
     ];
     const swift = count('call-without-route').filter(c => config.swiftClient.some(d => c.source?.file.startsWith(`${d}/`)) && c.source!.file.endsWith('.swift'));
