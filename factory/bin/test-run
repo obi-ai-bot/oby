@@ -90,7 +90,8 @@ here). Standard input then stays open until the run ends. Nothing else goes: no
 environment variable, CARGO_TARGET_DIR, token, login or file. The call is `ssh
 <the gate's ssh options> -l <builder_user> <ssh_host> oby-remote-gate --run
 --slots <n> --builder-slots <m> --wait 600 <base> <tree> <folder> -- <command>`,
-quoted, with <folder> the run's folder in the worktree (FACTORY_BUILDER_WAIT_SECONDS
+its words quoted so fish and bash read them the same (the gate's command_line),
+with <folder> the run's folder in the worktree (FACTORY_BUILDER_WAIT_SECONDS
 lowers the 600, for the tests only). The VM applies the diff to the base in a
 builder slot of its own, checks the tree, gives every file under core/ and
 tools/ the current time, and runs the command there at nice 15, offline, with
@@ -116,7 +117,8 @@ Mac worker instead, with or without the VM: it says `factory/bin/test-run: to th
 Mac worker <host>: <why>` and sends the same base, tree, folder and scanned
 payload, through `ssh <the gate's ssh options> <ssh_host> oby-worker/bin/
 oby-remote-gate --mac --run --slots 2 --builder-slots <m> --wait 600 <base>
-<tree> <folder> -- <command>`, quoted, with no -l. It runs there in a builder
+<tree> <folder> -- <command>`, its words quoted so fish and bash read them the
+same, with no -l. It runs there in a builder
 slot of its own under ~/oby-worker/builders, never a gate's. No use is opened in
 state.json, and nothing is started or probed first. Streaming, the `running in
 builder slot <N>` line, exit codes, stops and the fallback to this Mac before
@@ -132,7 +134,6 @@ import importlib.machinery
 import importlib.util
 import os
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -290,7 +291,7 @@ def remote_run(gate, host, user, runner, base, tree, folder, payload, command):
     """The run on the VM, or the Mac worker (user None: the one SSH logs in as), through its runner's words: its exit
     code once it started there, or gate.Fallback."""
     words = [*runner, "--wait", str(WAIT), base, tree, folder, "--", *command]
-    argv = ["ssh", *gate.SSH, *(["-l", user] if user else []), host, shlex.join(words)]
+    argv = ["ssh", *gate.SSH, *(["-l", user] if user else []), host, gate.command_line(words)]
     try:
         proc = child_session.start(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except OSError as e:

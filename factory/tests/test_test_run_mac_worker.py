@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""factory/bin/test-run's macOS-only runs on the Mac worker (REMOTE-35 to 42), with a fake `ssh`, never the Mac
-worker, the VM or the network.
+"""factory/bin/test-run's macOS-only runs on the Mac worker (REMOTE-35 to 42, 45 and 46), with a fake `ssh`, never
+the Mac worker, the VM or the network.
 
 Run from the repository root: python3 factory/tests/test_test_run_mac_worker.py
 The throwaway repository, the fake `az`, this Mac's stand-in cargo and swift and the VM's builder root are
@@ -25,7 +25,7 @@ import time
 import unittest
 
 import test_remote_gate
-from test_test_run_remote import CORE_VARS, FAKE_SSH, OBY_REMOTE_GATE, RemoteHarness, gone
+from test_test_run_remote import AWKWARD, CORE_VARS, FAKE_SSH, OBY_REMOTE_GATE, RemoteHarness, gone
 
 PRO = {"ssh_host": "oby-mac-pro", "builder_slots": 2}
 SANDBOX = "core/crates/obid/src/sandbox.rs"
@@ -42,6 +42,32 @@ def worker(argv):
 '''
 FAKE_MAC_SSH = FAKE_SSH.replace("signal.signal(signal.SIGUSR1", WORKER + "signal.signal(signal.SIGUSR1", 1).replace(
     "start_new_session=True)", "start_new_session=True, **worker(argv))", 1)
+
+
+def fish_words(line):
+    """The words fish reads from a command line, by its documented quoting: in single quotes only \\\\ and \\' are
+    escapes; in double quotes \\\\, \\" and \\$ are; outside quotes \\\\ and \\' give \\ and '; whitespace splits
+    words; an unterminated quote is an error. Variables and fish's other escapes aren't modelled: neither quoting
+    here writes them for these words."""
+    escapes = {None: ("\\\\", "\\'"), "'": ("\\\\", "\\'"), '"': ("\\\\", '\\"', "\\$")}
+    words, word, quote, i = [], None, None, 0
+    while i < len(line):
+        c, pair = line[i], line[i:i + 2]
+        if pair in escapes[quote]:
+            word, i = (word or "") + pair[1], i + 2
+            continue
+        if c in "'\"" and quote in (None, c):
+            quote, word = None if quote else c, word or ""
+        elif c.isspace() and quote is None:
+            if word is not None:
+                words.append(word)
+            word = None
+        else:
+            word = (word or "") + c
+        i += 1
+    if quote:
+        raise ValueError(f"an unterminated quote in {line!r}")
+    return words + ([word] if word is not None else [])
 
 
 class TestRunMacWorker(RemoteHarness, unittest.TestCase):
@@ -151,6 +177,40 @@ class TestRunMacWorker(RemoteHarness, unittest.TestCase):
         [run] = self.vm_runs()
         self.assertEqual(run["cwd"], str(self.root / "builder-1" / "worktree" / "core"))
         self.assertFalse(list(self.builders.glob("builder-*")))
+
+    # ---- REMOTE-45 -------------------------------------------------------------------------------
+
+    def test_remote_45_the_mac_workers_builder_clone_keeps_its_macos_settings(self):
+        config = self.builders / "repo.git" / "config"
+        subprocess.run(["git", "config", "--file", str(config), "core.hooksPath", str(self.dir)], check=True)
+        self.write(SANDBOX, "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "test", "--test", "one")
+        self.assertEqual(code, 0, out + err)
+        [run] = self.vm_runs()
+        self.assertEqual(run["cwd"], str(self.builders / "builder-1" / "worktree" / "core"))
+        read = [subprocess.run(["git", "config", "--file", str(config), key], capture_output=True, text=True)
+                for key in ("core.ignorecase", "core.precomposeunicode", "core.bare", "gc.auto", "core.hooksPath")]
+        self.assertEqual([(done.returncode, done.stdout) for done in read],
+                         [(0, "true\n"), (0, "true\n"), (0, "true\n"), (0, "0\n"), (1, "")], config.read_text())
+
+    # ---- REMOTE-46 -------------------------------------------------------------------------------
+
+    def test_remote_46_words_reach_the_mac_worker_as_fish_and_bash_read_them(self):
+        self.write(SANDBOX, "// changed\n")
+        code, out, err, _ = self.run_test_run("cargo", "test", "--test", "one", "--", *AWKWARD)
+        self.assertEqual(code, 0, out + err)
+        [call] = self.run_calls()
+        self.assert_on_the_worker(call)
+        [run] = self.vm_runs()
+        self.assertEqual(run["args"], ["test", "--test", "one", "--", *AWKWARD])
+        # fish reads the line as sh did; it reads shlex.join's quoting of the same words otherwise, or not at all.
+        words = shlex.split(call["argv"][-1])
+        self.assertEqual(words[-len(AWKWARD):], AWKWARD)
+        self.assertEqual(fish_words(call["argv"][-1]), words)
+        try:
+            self.assertNotEqual(fish_words(shlex.join(words)), words)
+        except ValueError:
+            pass
 
     # ---- REMOTE-36 -------------------------------------------------------------------------------
 
